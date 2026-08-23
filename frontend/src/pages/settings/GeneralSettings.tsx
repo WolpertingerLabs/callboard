@@ -990,7 +990,8 @@ export default function GeneralSettings() {
             lineHeight: 1.5,
           }}
         >
-          Sessions whose project-folder name starts with one of these prefixes are hidden from the chat list. Project folders under{" "}
+          Sessions whose project-folder name starts with one of these prefixes are hidden from the chat list and excluded from chat search. Project folders
+          under{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>~/.claude/projects/</code> are slugified absolute paths — each{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/</code> becomes{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-</code>. So{" "}

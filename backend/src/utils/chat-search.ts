@@ -8,8 +8,7 @@
 import { existsSync, readdirSync, statSync } from "fs";
 import { execFileSync } from "child_process";
 import { join } from "path";
-import { CLAUDE_PROJECTS_DIR } from "./paths.js";
-import { projectDirToFolder } from "./paths.js";
+import { CLAUDE_PROJECTS_DIR, folderToProjectDir, isIgnoredProjectDir, projectDirToFolder } from "./paths.js";
 import { resolveWorktreeToMainRepoCached } from "./git.js";
 import { getGitInfo } from "./git.js";
 import { chatFileService } from "../services/chat-file-service.js";
@@ -52,14 +51,6 @@ export interface ChatSearchResponse {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /**
- * Encode a folder path the same way the Claude SDK does.
- * /home/cybil/callboard → -home-cybil-callboard
- */
-function folderToProjectDir(folder: string): string {
-  return folder.replace(/[^a-zA-Z0-9]/g, "-");
-}
-
-/**
  * Discover all project directories in ~/.claude/projects/ that belong to
  * the target folder — including worktrees of that repo.
  *
@@ -80,6 +71,27 @@ function discoverProjectDirs(targetFolder: string): {
     const allDirs = readdirSync(CLAUDE_PROJECTS_DIR);
 
     for (const dirName of allDirs) {
+      // Ignored dirs are dropped *before* the folder match, not after — the
+      // same order Codex, ACP, Cline and Pi use in their own `searchSessions`.
+      // So a folder-scoped search naming an ignored directory finds nothing,
+      // and that is deliberate:
+      //
+      // - It is the only thing filtering here can change. `folder` is required
+      //   and Claude's decoder can't resolve an empty one, so every call that
+      //   reaches this function names a directory; there is no global mode to
+      //   restrict separately. `GET /api/chats/search` without a folder derives
+      //   its folder set from `discoverSessions`, which already prunes.
+      // - The results were unusable anyway. `_findLogPath` and
+      //   `_findSubagentFiles` walk `listClaudeProjectDirs()`, which prunes, so
+      //   a session under an ignored dir has `resolveSession() === null` and
+      //   parses to zero messages. Search was handing callers — `find_chats`
+      //   above all — ids that nothing else in the app would open.
+      //
+      // Per *dir name*, not per resolved folder, because a worktree can be
+      // ignored while its main repo is not; `dirName` is the representation the
+      // prefixes are written against.
+      if (isIgnoredProjectDir(dirName)) continue;
+
       // Must be exact match or start with the target prefix followed by a dash
       // (to catch worktree dirs like -home-cybil-callboard-feat-xyz)
       if (dirName !== targetEncoded && !dirName.startsWith(targetEncoded + "-")) {
