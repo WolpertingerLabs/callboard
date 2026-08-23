@@ -59,7 +59,7 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
     localPermissions.webAccess !== permissions.webAccess;
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onClose}>
       <div
         style={{
           background: "var(--bg)",

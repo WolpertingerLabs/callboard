@@ -22,19 +22,34 @@ import { Component, Fragment, type CSSProperties, type ErrorInfo, type ReactNode
  *   remaining subtree worth re-mounting.
  * - `region` — the sidebar and the main pane in `SplitLayout`. A crash here is
  *   contained to one column; the other one keeps working, so the fallback offers
- *   "Try again" (re-mount just this subtree) before it offers a reload.
+ *   "Try again" (re-mount just this subtree) before it offers a reload. This is
+ *   the **only** variant that gets that button, and the reason is structural:
+ *   here the boundary owns the subtree, so clearing the error re-mounts
+ *   `ChatList` / `FolderList` / `Chat` and their fetches re-run. A modal's
+ *   `children` are built by the parent component, which sits *outside* the
+ *   boundary and does not re-render when the boundary resets — the same broken
+ *   element object comes straight back, so a retry there is a control that
+ *   cannot ever do anything.
  * - `modal` — `ModalOverlay`, which is the single ancestor of ~16 dialogs
  *   including the workspace manager that produced the crash above. It also
  *   offers "Dismiss", which renders nothing at all: the dialog that threw took
  *   its own Escape handler and close button down with it, so without this the
  *   fallback would be a backdrop the user cannot get out of.
  *
- * The modal seam covers what a dialog *renders* — its rows, its lists, the
- * `removability` case verbatim — because all of that is a descendant of the
- * overlay. It does not cover a throw in the modal component's own body before
- * it returns `<ModalOverlay>`, since the boundary has not mounted yet; that
- * lands on the enclosing region boundary instead, which is why the layering
- * exists rather than one boundary in one clever place.
+ * **The modal seam catches descendant components only**, which is narrower than
+ * it sounds. A dialog whose rows are real sub-components is covered — and
+ * `WorkspaceManagerModal` is, since the `removability` reads live in `RecordRow`
+ * inside the overlay, so the #364 case genuinely lands here. But a dialog whose
+ * content is inline JSX in its own body (`ConfirmModal`, `DraftModal`) has
+ * *nothing* inside the boundary: every throw happens while the parent renders,
+ * before `<ModalOverlay>` mounts, and falls to the enclosing region instead.
+ *
+ * That fall-through is survivable rather than fatal, and worth knowing when
+ * reading a report: with the fault still armed, "Try again" on the region
+ * restores it, because re-mounting `FolderList` resets `showManager` to `false`
+ * and the broken dialog is simply never constructed again. The layering is
+ * doing the work there — which is the argument for having it rather than one
+ * boundary in one clever place.
  *
  * **What this does not catch**, because React boundaries cannot: errors thrown
  * from event handlers, from `setTimeout`/`Promise` callbacks, from SSE handlers,
@@ -61,32 +76,38 @@ interface ErrorBoundaryProps {
    * leave its fallback sitting there over an unrelated page.
    */
   resetKey?: string | number;
+  /**
+   * Modal only: how the dialog is closed in the state of whoever opened it.
+   *
+   * Hiding the fallback is not enough on its own. `dismissed` is sticky for this
+   * boundary instance, but the parent still holds `showManager === true`, so
+   * clicking "Manage" again sets the same values, React bails out of the
+   * re-render, and the user gets nothing at all — no overlay, no error, no
+   * feedback. Routing Dismiss through the parent's own close handler puts that
+   * state back where the next open can succeed.
+   */
+  onDismiss?: () => void;
 }
 
 interface ErrorBoundaryState {
   error: Error | null;
-  /**
-   * Bumped on every recovery. The subtree is keyed on it so "Try again" gives
-   * the children a fresh mount rather than a re-render over the same state that
-   * just threw — which would usually throw again on the spot.
-   */
-  generation: number;
   /** Modal only: the user chose to close the broken dialog rather than retry. */
   dismissed: boolean;
 }
 
 export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { error: null, generation: 0, dismissed: false };
+  state: ErrorBoundaryState = { error: null, dismissed: false };
 
   static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
     return { error };
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // React only logs boundary-caught errors itself in development builds. In a
-    // production bundle this line is the *only* record of the crash, so it has
-    // to carry the error object (for its stack) and the component stack both —
-    // otherwise this change would make debugging harder than the white page did.
+    // React does log boundary-caught errors itself, in production as well as
+    // dev — but only `console.error(error)`, bare. No component stack, and no
+    // way to tell which seam gave way. This line carries the error object (for
+    // its stack), the component stack, and the region name, so a report pasted
+    // from a production console says where it broke as well as what broke.
     // eslint-disable-next-line no-console
     console.error(`[callboard] ${this.props.region} crashed during render:`, error, "\nComponent stack:", info.componentStack);
   }
@@ -96,11 +117,14 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   }
 
   reset = () => {
-    this.setState((s) => ({ error: null, generation: s.generation + 1, dismissed: false }));
+    this.setState({ error: null, dismissed: false });
   };
 
   dismiss = () => {
     this.setState({ dismissed: true });
+    // Closing it in the parent's state as well is what makes the dialog
+    // re-openable; `dismissed` alone is a one-way door. See the prop.
+    this.props.onDismiss?.();
   };
 
   reload = () => {
@@ -108,7 +132,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   };
 
   render() {
-    const { error, dismissed, generation } = this.state;
+    const { error, dismissed } = this.state;
     const { children, region, variant = "region" } = this.props;
 
     if (error && dismissed) return null;
@@ -119,7 +143,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
           region={region}
           variant={variant}
           error={error}
-          onRetry={variant === "root" ? undefined : this.reset}
+          onRetry={variant === "region" ? this.reset : undefined}
           onDismiss={variant === "modal" ? this.dismiss : undefined}
           onReload={this.reload}
         />
@@ -127,8 +151,17 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
       return variant === "modal" ? <div style={modalBackdropStyle}>{fallback}</div> : fallback;
     }
 
-    // Keyed so a retry re-mounts rather than re-renders. See `generation`.
-    return <Fragment key={generation}>{children}</Fragment>;
+    // Clearing `error` is enough to get a *fresh mount* of the children, which
+    // is what makes a region retry re-run its loaders. React unmounted this
+    // subtree the moment the fallback rendered in its place, so coming back to
+    // it is always a mount, never a re-render over the state that threw.
+    //
+    // This carried a bumped `key` for a while to force exactly that. It was
+    // inert — verified by deleting it, which changed no behaviour and failed no
+    // test, including the one that watches mount/unmount directly. Left out
+    // rather than left in, so the next reader is not told a `key` is doing work
+    // that React's own unmount-on-error already did.
+    return <Fragment>{children}</Fragment>;
   }
 }
 
@@ -244,6 +277,16 @@ const panelStyle: CSSProperties = {
   boxShadow: "var(--shadow-md)",
 };
 
+/**
+ * Fills its column, and paints nothing.
+ *
+ * It used to set `background: var(--bg)`, which is the *main pane's* token —
+ * over the sidebar, whose column is `--bg-sidebar`, that showed up in dark mode
+ * as a visibly lighter panel. There is no one right token here because one
+ * wrapper serves both columns, and there does not need to be: the column behind
+ * it already paints the correct one, and on mobile `body` paints `--bg`. So the
+ * fallback inherits instead of guessing.
+ */
 const regionWrapStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -252,9 +295,6 @@ const regionWrapStyle: CSSProperties = {
   height: "100%",
   minHeight: 0,
   overflow: "auto",
-  // Opaque, because a region fallback stands in for a whole column and would
-  // otherwise show the layout's own background bleeding through at the seams.
-  background: "var(--bg)",
 };
 
 const rootWrapStyle: CSSProperties = {

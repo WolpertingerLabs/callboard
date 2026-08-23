@@ -5,6 +5,16 @@ interface ModalOverlayProps {
   children: ReactNode;
   /** Additional styles applied to the overlay container */
   style?: CSSProperties;
+  /**
+   * The dialog's own close handler, used only when its content crashes: the
+   * fallback's "Dismiss" runs it so the modal closes in the *parent's* state.
+   *
+   * Optional because not every call site has one to hand, but pass it if you
+   * do. Without it, Dismiss hides the fallback and nothing more — the parent
+   * still believes the dialog is open, so re-opening it sets state that has
+   * not changed, React bails out, and the button appears to do nothing at all.
+   */
+  onClose?: () => void;
 }
 
 const overlayStyle: CSSProperties = {
@@ -34,10 +44,13 @@ const overlayStyle: CSSProperties = {
  * children so that "Dismiss" can remove the backdrop too; a fallback rendered
  * *inside* it would leave a full-screen click trap with no way out, since the
  * dialog that threw owns the Escape handler and the close button.
+ *
+ * What it covers is **descendant components** — see `ErrorBoundary`'s note on
+ * the seam, which is narrower than "everything a modal does".
  */
-export default function ModalOverlay({ children, style }: ModalOverlayProps) {
+export default function ModalOverlay({ children, style, onClose }: ModalOverlayProps) {
   return (
-    <ErrorBoundary region="This dialog" variant="modal">
+    <ErrorBoundary region="This dialog" variant="modal" onDismiss={onClose}>
       <div style={{ ...overlayStyle, ...style }}>{children}</div>
     </ErrorBoundary>
   );

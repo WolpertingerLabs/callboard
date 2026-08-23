@@ -330,7 +330,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
 
       {/* Fullscreen modal */}
       {expanded && (
-        <ModalOverlay>
+        <ModalOverlay onClose={() => setExpanded(false)}>
           <div
             onClick={(e) => {
               if (e.target === e.currentTarget) setExpanded(false);

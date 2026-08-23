@@ -53,7 +53,7 @@ export default function CodeLoginModal({ isOpen, onClose, onStatusChange, status
   };
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onClose}>
       <div
         style={{
           background: "var(--bg)",

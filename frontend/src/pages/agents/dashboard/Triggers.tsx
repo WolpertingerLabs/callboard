@@ -953,7 +953,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
 
       {/* Template variable info modal */}
       {showTemplateInfo && (
-        <ModalOverlay style={{ padding: "20px" }}>
+        <ModalOverlay style={{ padding: "20px" }} onClose={() => setShowTemplateInfo(false)}>
           <div
             style={{
               backgroundColor: "var(--bg)",

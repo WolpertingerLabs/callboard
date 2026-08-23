@@ -565,7 +565,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
   };
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onClose}>
       <div
         style={{
           background: "var(--bg)",

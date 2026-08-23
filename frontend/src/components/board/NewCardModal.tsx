@@ -47,7 +47,7 @@ export default function NewCardModal({ categories, onCreate, onClose }: NewCardM
   };
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onClose}>
       <div
         style={{
           background: "var(--bg)",

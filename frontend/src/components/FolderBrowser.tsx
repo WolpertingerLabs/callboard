@@ -121,7 +121,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
   if (!isOpen) return null;
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onClose}>
       <div
         style={{
           background: "var(--bg)",

@@ -33,7 +33,7 @@ export default function CardPicker({ cards, onSelect, onCreate, onClose }: CardP
   };
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onClose}>
       <div
         style={{
           background: "var(--bg)",

@@ -736,7 +736,7 @@ export default function JobsSettings() {
 
       {/* ── Import conflict modal ───────────────────────────────── */}
       {conflict && (
-        <ModalOverlay>
+        <ModalOverlay onClose={() => setConflict(null)}>
           <div
             style={{
               background: "var(--bg)",

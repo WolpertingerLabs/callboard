@@ -172,7 +172,7 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
   const excludeRegexValid = !local.directoryExclude.value || isValidRegex(local.directoryExclude.value);
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onClose}>
       <div
         style={{
           background: "var(--bg)",

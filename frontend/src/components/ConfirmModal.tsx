@@ -19,7 +19,7 @@ export default function ConfirmModal({ isOpen, onClose, onConfirm, title, messag
   };
 
   return (
-    <ModalOverlay>
+    <ModalOverlay onClose={onClose}>
       <div
         style={{
           background: "var(--bg)",
