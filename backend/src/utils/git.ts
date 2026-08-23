@@ -63,7 +63,130 @@ export interface GitInfo {
 }
 
 /**
+ * Where this checkout keeps `HEAD`, without asking git.
+ *
+ * Three shapes, and the pointer case covers two of them: a linked worktree's
+ * `.git` file names `<mainRepo>/.git/worktrees/<slug>`, a submodule's names
+ * `<parent>/.git/modules/<name>`, and **both of those directories hold their
+ * own HEAD** — which is exactly the HEAD `git branch --show-current` reads when
+ * run there. So the pointer is followed generically rather than through
+ * {@link resolveWorktreeToMainRepo}, which deliberately rejects submodules
+ * because it is answering a different question (where is the main checkout).
+ *
+ * Returns undefined when `.git` is absent, unreadable, or a file that does not
+ * parse. That is not a failure — it is the signal to fall back to git itself.
+ *
+ * `statSync`, not `lstatSync`: a `.git` that is a *symlink* to the real git
+ * directory is a working checkout, and following the link keeps it on the fast
+ * path. {@link resolveWorktreeToMainRepo} uses `lstatSync` for the opposite
+ * reason — it needs to know whether `.git` is literally a file — and the two are
+ * answering different questions, so they differ on purpose.
+ */
+function resolveHeadHome(directory: string): string | undefined {
+  const gitPath = join(directory, ".git");
+  try {
+    const stat = statSync(gitPath);
+    if (stat.isDirectory()) return gitPath;
+    if (stat.isFile()) {
+      // Git's own parser, `read_gitfile_gently`, in two rules:
+      //
+      //   1. the file must begin with the literal `gitdir: `;
+      //   2. the path is the *entire remainder*, with trailing `\n` and `\r`
+      //      stripped — and nothing else. Not spaces, and not a second line.
+      //
+      // Both are matched exactly rather than approximately, and rule 2 is the
+      // one it is tempting to get wrong. Taking the first line and trimming it
+      // would be *more* forgiving than git: `gitdir: <path>   ` and
+      // `gitdir: <path>\nextra` both name a directory git cannot open, and git
+      // fails on them — so quietly repairing them here would answer where git
+      // refuses to. A looser prefix rule is worse still, because the parse
+      // *succeeds* and the fallback never fires, so a corrupt checkout gets a
+      // confidently wrong branch instead of being handed to git to reject.
+      //
+      // Verified against real git rather than read off the source: a trailing
+      // `\r` is accepted and resolves, trailing spaces are kept in the path and
+      // produce `fatal: not a git repository: <path>   `.
+      const contents = readFileSync(gitPath, "utf-8");
+      const PREFIX = "gitdir: ";
+      if (!contents.startsWith(PREFIX)) return undefined;
+      const pointer = contents.slice(PREFIX.length).replace(/[\n\r]+$/, "");
+      // `gitdir:` may be relative to the checkout, so resolve against it.
+      if (pointer) return resolve(directory, pointer);
+    }
+  } catch {
+    // Fall through — the caller asks git instead.
+  }
+  return undefined;
+}
+
+/**
+ * The current branch, read from `HEAD` rather than spawned for.
+ *
+ * `HEAD` is one line and it is the same line `git branch --show-current`
+ * shells out to interpret:
+ *
+ *   `ref: refs/heads/<name>`  → on `<name>` (which may itself contain slashes)
+ *   a raw object id           → detached; `--show-current` prints nothing
+ *
+ * Returns `null` for the detached case so the caller can apply the same
+ * "empty means main" fallback it always has, and `undefined` for anything else
+ * — an unreadable file, or a symref pointing outside `refs/heads` — which means
+ * *this function has no answer*, not that there is no branch. Those two must
+ * stay distinct: collapsing them would silently report "main" for a checkout
+ * git could have described correctly.
+ */
+function branchFromHead(headHome: string): string | null | undefined {
+  try {
+    const head = readFileSync(join(headHome, "HEAD"), "utf-8").trim();
+    // `\s*` after `ref:` rather than a literal space, because git skips
+    // arbitrary whitespace there too. The capture cannot come back empty:
+    // `head` is already trimmed, so `(.+)$` has at least one non-whitespace
+    // character in it.
+    const symbolic = head.match(/^ref:\s*refs\/heads\/(.+)$/);
+    if (symbolic) return symbolic[1].trim();
+    // Object ids are hex and 40 (sha-1) or 64 (sha-256) characters. A sha-256
+    // repository is the only thing that produces the second length, and its
+    // detached HEAD has to read as detached rather than as an unparseable file.
+    if (/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(head)) return null;
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Check if a directory is a git repository and get the current branch
+ *
+ * ## Why the branch is read and not asked for
+ *
+ * `git branch --show-current` is a subprocess, and this function is called once
+ * per **directory** on the two listing routes — `GET /api/chats/folders` (24
+ * directories on the profiled machine) and `GET /api/chats` (95) — plus once per
+ * candidate project dir in chat search. For the folder listing that was 26
+ * spawns: a branch lookup for each of the 24, and a `rev-parse --git-dir` for
+ * the 2 that have no `.git` of their own. Measured at 90 ms of blocked event
+ * loop warm, 271 ms cold.
+ *
+ * It is not a one-time cost, which is the part a single cold measurement hides.
+ * `getCachedGitInfo` memoises for five minutes; every entry is created by the
+ * same request and therefore expires at the same instant; and the sidebar polls
+ * every fifteen seconds. Whichever poll lands after the boundary re-fetches all
+ * 24 in one synchronous run — measured at 347 ms and 276 ms, at t+303 s and
+ * t+606 s of a live poll, and 295 ms end to end over HTTP.
+ *
+ * Reading `HEAD` answers the same question for the same directories in 1.1 ms,
+ * and it takes the spawn count from 26 to 2. Verified against `git branch
+ * --show-current` over the real folder set: 22 agreed, 0 disagreed. The other 2
+ * are directories *inside* a repository, where `.git` is somewhere above and
+ * there is no HEAD to find; they still spawn `rev-parse`, because that is the
+ * only thing that can decide whether they are in a repository at all — but its
+ * output names the git dir, so the branch is read from there rather than asked
+ * for a second time.
+ *
+ * The fallback is what makes this safe to do in a shared helper rather than
+ * only on the listing path: every case `branchFromHead` cannot decode still
+ * reaches git, so the worst outcome of an unfamiliar repository layout is the
+ * cost this function had already.
  */
 export function getGitInfo(directory: string): GitInfo {
   if (!directory || !existsSync(directory)) {
@@ -80,16 +203,24 @@ export function getGitInfo(directory: string): GitInfo {
     // Check if it's a git repository by looking for .git folder or if it's inside a git repo
     const gitDir = join(directory, ".git");
     let isGitRepo = existsSync(gitDir);
+    let headHome = isGitRepo ? resolveHeadHome(directory) : undefined;
 
     // If no .git folder in current directory, check if we're inside a git repo
     if (!isGitRepo) {
       try {
-        execSync("git rev-parse --git-dir", {
+        // `--git-dir` is the answer to "am I in a repository" *and* the location
+        // of the HEAD that answers the next question, so its output is kept
+        // rather than discarded. The spawn happens either way; this just stops a
+        // second one following it.
+        const answer = execSync("git rev-parse --git-dir", {
           cwd: directory,
+          encoding: "utf8",
           stdio: "pipe",
           timeout: 5000, // 5 second timeout
-        });
+        }).trim();
         isGitRepo = true;
+        // Relative when git feels like it (`.git`, `../.git`), so resolve.
+        if (answer) headHome = resolve(directory, answer);
       } catch {
         // Not a git repo or git not available
         return { isGitRepo: false };
@@ -97,6 +228,13 @@ export function getGitInfo(directory: string): GitInfo {
     }
 
     if (isGitRepo) {
+      // The cheap answer first. `null` is a real answer — detached HEAD, which
+      // is what the empty-output fallback below has always reported as "main".
+      const fromHead = headHome ? branchFromHead(headHome) : undefined;
+      if (fromHead !== undefined) {
+        return { isGitRepo: true, branch: fromHead ?? "main" };
+      }
+
       try {
         // Get current branch name
         const branch = execSync("git branch --show-current", {

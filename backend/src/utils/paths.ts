@@ -607,13 +607,52 @@ function resolveProjectDirToFolder(dirName: string): string {
  * is bounded by what discovery already enumerates — it cannot grow on
  * attacker-chosen input.
  */
-const projectDirFolderCache = new Map<string, { folder: string; resolvedAt: number }>();
+const projectDirFolderCache = new Map<string, { folder: string; expiresAt: number }>();
 
 /**
- * How long a decode is reused. Matches the git-info and disk-usage memos in
- * this codebase so all three freshness windows are the same number.
+ * How long a decode is reused, on average. Matches the git-info and disk-usage
+ * memos in this codebase so all three freshness windows are the same number.
+ *
+ * It is a *mean* rather than a fixed span — see {@link jitteredExpiry}.
  */
 const PROJECT_DIR_CACHE_TTL = 300_000;
+
+/**
+ * When an entry minted now should expire: uniformly in [½·TTL, 1½·TTL), so the
+ * mean is exactly {@link PROJECT_DIR_CACHE_TTL}.
+ *
+ * ## Why the spread, and why it is on this memo and not the others
+ *
+ * Every entry in this map is minted by the *same request* — the first listing,
+ * which decodes all ~83 project-dir names in one synchronous pass — so with a
+ * fixed TTL every entry also expires in the same millisecond. The sidebar polls
+ * every fifteen seconds, so whichever poll lands past the boundary re-decodes
+ * all of them at once. Measured on the profiled corpus: **49.8 ms of blocked
+ * event loop, recurring every five minutes** for as long as a tab is open.
+ *
+ * That is the same shape as the `git branch --show-current` herd this change
+ * set removed, but it does not have the same fix available. The git spike was
+ * cured by making the underlying read cheap — a subprocess became a file read.
+ * A decode cannot be made cheap: it *is* filesystem probing, and probing is the
+ * answer, not an implementation detail of it. So the refills are spread instead
+ * of eliminated. Same total work, ~2–3 ms per poll rather than 49.8 ms on one
+ * poll in twenty.
+ *
+ * The freshness contract is unchanged in the way that matters: the mean window
+ * is still five minutes, and the *maximum* staleness rises from 300 s to 450 s
+ * for what the TTL is actually left covering — a best-effort decode of a missing
+ * path resolving differently once an unrelated directory appears by hand. See
+ * {@link projectDirToFolder} for why that residue is all the TTL is for; every
+ * move Callboard makes itself goes through {@link clearProjectDirFolderCache}
+ * and is unaffected by any of this.
+ *
+ * Not applied to the git-info memo, deliberately: refilling all of it costs
+ * ~12 ms now that the branch is read rather than spawned for, and there is no
+ * herd worth breaking up at that price.
+ */
+function jitteredExpiry(now: number): number {
+  return now + PROJECT_DIR_CACHE_TTL * (0.5 + Math.random());
+}
 
 /**
  * Drop every memoised decode.
@@ -667,11 +706,14 @@ export function clearProjectDirFolderCache(): void {
  * compute, which is the case worth memoising.
  */
 export function projectDirToFolder(dirName: string): string {
+  const now = Date.now();
   const cached = projectDirFolderCache.get(dirName);
-  if (cached && Date.now() - cached.resolvedAt < PROJECT_DIR_CACHE_TTL) return cached.folder;
+  if (cached && now < cached.expiresAt) return cached.folder;
 
   const folder = resolveProjectDirToFolder(dirName);
-  projectDirFolderCache.set(dirName, { folder, resolvedAt: Date.now() });
+  // Each entry gets its own expiry rather than a shared deadline — see
+  // {@link jitteredExpiry}. Minting them together must not expire them together.
+  projectDirFolderCache.set(dirName, { folder, expiresAt: jitteredExpiry(now) });
   return folder;
 }
 

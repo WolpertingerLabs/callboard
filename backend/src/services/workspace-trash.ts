@@ -436,9 +436,10 @@ export function restoreTrashEntry(entryName: string, opts?: { root?: string }): 
   // The checkout is back at `originalPath`. Drop the decode memo before
   // anything reads a listing again: while the directory was in the trash, any
   // decode of its project-dir name fell through to a best-effort guess, and a
-  // guess cached for five minutes would hide the row that just came back. This
-  // is the restore half of the pair; the quarantine half is in
-  // utils/worktree-trash.ts.
+  // guess cached for up to 7.5 minutes would hide the row that just came back
+  // — the memo's entries expire on a spread over [½, 1½] of a five-minute TTL,
+  // so five minutes is its mean and not a bound. This is the restore half of
+  // the pair; the quarantine half is in utils/worktree-trash.ts.
   clearProjectDirFolderCache();
 
   // Copy back what git does not track. Every failure below is per-path: the
