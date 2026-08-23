@@ -26,10 +26,7 @@ export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 export const DEFAULT_IGNORED_PROJECT_DIR_PREFIXES: readonly string[] = ["-tmp", "-private-"];
 
 /** JSON file persisting the user's configured ignored prefixes. */
-const IGNORED_DIRS_CONFIG_FILE = join(
-  process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard"),
-  "ignored-project-dirs.json",
-);
+const IGNORED_DIRS_CONFIG_FILE = join(process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard"), "ignored-project-dirs.json");
 
 let _ignoredPrefixesCache: string[] | null = null;
 
@@ -150,9 +147,14 @@ const ENCODED_SEPARATOR = "-";
  * defaults — is a directory boundary as written: it means "everything under
  * `/private/`". Demanding a further separator after it would break it (encoded
  * `/private/tmp/x` is `-private-tmp-x`, which never has `--`), so a trailing
- * separator is accepted as the boundary it already is. That also gives an
- * existing over-broad entry somewhere to go: `-home-scratch-` still means the
- * subtree, spelled explicitly.
+ * separator is accepted as the boundary it already is.
+ *
+ * It is back-compat for that default and nothing more; it is not an escape
+ * hatch for an entry this fix narrows. The trailing form is strictly *narrower*
+ * than the bare one — `-tmp-` matches everything under `/tmp` but not `/tmp`
+ * itself, where `-tmp` matches both — so a user whose entry was over-broad in
+ * the sense above gains nothing by adding the `-`. The repair for that is a
+ * second entry naming the other directory.
  *
  * ## Kept in step with `find`
  *

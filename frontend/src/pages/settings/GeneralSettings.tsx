@@ -32,8 +32,18 @@ const CONTACT_FIELDS: {
   help: string;
   disabled?: boolean;
 }[] = [
-  { key: "discord", label: "Discord username", placeholder: "username", help: "Requires a working Discord integration (configure under Settings → Connections)." },
-  { key: "telegram", label: "Telegram account", placeholder: "@handle", help: "Requires a working Telegram integration (configure under Settings → Connections)." },
+  {
+    key: "discord",
+    label: "Discord username",
+    placeholder: "username",
+    help: "Requires a working Discord integration (configure under Settings → Connections).",
+  },
+  {
+    key: "telegram",
+    label: "Telegram account",
+    placeholder: "@handle",
+    help: "Requires a working Telegram integration (configure under Settings → Connections).",
+  },
   { key: "phone", label: "Phone number", placeholder: "+1 555 123 4567", help: "Coming soon.", disabled: true },
   { key: "email", label: "Email address", placeholder: "you@example.com", help: "Requires the AgentMail connection (configure under Settings → Connections)." },
 ];
@@ -395,8 +405,8 @@ export default function GeneralSettings() {
         </div>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
           Provide ways for agents to reach you when you&apos;re away. When you enable a channel, the{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>notify_user</code> tool will
-          tell the agent how to message you there through your connections.
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>notify_user</code> tool will tell the agent how to message you
+          there through your connections.
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -405,10 +415,7 @@ export default function GeneralSettings() {
             return (
               <div key={key} style={{ display: "flex", flexDirection: "column", gap: 4, opacity: disabled ? 0.55 : 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <label
-                    htmlFor={`contact-${key}`}
-                    style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: 130, flexShrink: 0 }}
-                  >
+                  <label htmlFor={`contact-${key}`} style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: 130, flexShrink: 0 }}>
                     {label}
                     {disabled && <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 11 }}> (soon)</span>}
                   </label>
@@ -880,11 +887,10 @@ export default function GeneralSettings() {
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Session Completion Callbacks</span>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
-          When a session spawns another with{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>start_chat_session</code> — or messages one
-          with <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>continue_chat</code> — using{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>onComplete</code>, the calling chat is
-          automatically re-invoked when that session finishes — no polling. These limits guard against runaway loops. Set either to{" "}
+          When a session spawns another with <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>start_chat_session</code> — or
+          messages one with <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>continue_chat</code> — using{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>onComplete</code>, the calling chat is automatically re-invoked
+          when that session finishes — no polling. These limits guard against runaway loops. Set either to{" "}
           <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>0</code> to disable new callbacks entirely.
         </div>
 
@@ -1007,11 +1013,12 @@ export default function GeneralSettings() {
             lineHeight: 1.5,
           }}
         >
-          A match has to end at a folder boundary, so{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-tmp</code> does not hide a separate folder named{" "}
-          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/tmpish</code> — add that as its own entry. An entry already
-          ending in <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-</code> is a boundary as written, and covers
-          everything below it.
+          A match has to end at a folder boundary, so <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-tmp</code> does not
+          hide a separate folder named <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>/tmpish</code> — add that as its own
+          entry. An entry already ending in <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-</code> covers everything below
+          that folder but not the folder itself, which is why the built-in{" "}
+          <code style={{ background: "var(--surface)", padding: "1px 4px", borderRadius: 4 }}>-private-</code> is written that way. For your own entries, prefer
+          the plain form.
         </div>
 
         {/* Current list */}
@@ -1020,9 +1027,7 @@ export default function GeneralSettings() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
             {ignoredPrefixes.length === 0 && (
-              <div style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic" }}>
-                No prefixes configured — every project folder is shown.
-              </div>
+              <div style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic" }}>No prefixes configured — every project folder is shown.</div>
             )}
             {ignoredPrefixes.map((prefix) => {
               const isDefault = ignoredDefaults.includes(prefix);
@@ -1151,11 +1156,7 @@ export default function GeneralSettings() {
           </div>
         </div>
 
-        {ignoredError && (
-          <div style={{ marginTop: 12, fontSize: 12, color: "var(--error)" }}>
-            {ignoredError}
-          </div>
-        )}
+        {ignoredError && <div style={{ marginTop: 12, fontSize: 12, color: "var(--error)" }}>{ignoredError}</div>}
       </div>
     </>
   );
