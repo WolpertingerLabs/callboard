@@ -18,7 +18,7 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-catalog-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 process.env.PI_OFFLINE = "1";
 
-const { getPiModels, listPiProviderIds, clearPiModelCacheForTesting, countPiRevalidationsForTesting, PI_CATALOG_TTL_MS } = await import("./modelCatalog.js");
+const { getPiModels, listPiProviderIds, clearPiModelCacheForTesting, getPiCatalogStatsForTesting, PI_CATALOG_TTL_MS } = await import("./modelCatalog.js");
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -87,13 +87,13 @@ describe("catalog revalidation", () => {
     // removed.
     const first = await getPiModels("openrouter");
     expect(await getPiModels("openrouter")).toBe(first);
-    expect(countPiRevalidationsForTesting()).toBe(0);
+    expect(getPiCatalogStatsForTesting().revalidations).toBe(0);
   });
 
   it("revalidates once the catalog ages past the TTL", async () => {
     const first = await getPiModels("openrouter");
     expect(first.length).toBeGreaterThan(100);
-    expect(countPiRevalidationsForTesting()).toBe(0);
+    expect(getPiCatalogStatsForTesting().revalidations).toBe(0);
 
     // The module reads Date.now(), so faking it is enough to age the entry out.
     vi.useFakeTimers();
@@ -103,20 +103,7 @@ describe("catalog revalidation", () => {
     // The revalidation is a background job, so this read is still served from
     // the previous view — the point is that it is *equal*, not that it blocked.
     expect(second.map((m) => m.value)).toEqual(first.map((m) => m.value));
-    expect(countPiRevalidationsForTesting()).toBe(1);
-  });
-
-  it("keeps serving the catalog when a revalidation fails", async () => {
-    const first = await getPiModels("openrouter");
-
-    vi.useFakeTimers();
-    vi.setSystemTime(Date.now() + PI_CATALOG_TTL_MS + 1);
-
-    // Whatever the refresh does — including failing — the list survives it
-    // intact, rather than emptying out or being replaced by a partial one.
-    const models = await getPiModels("openrouter");
-    expect(models.map((m) => m.value)).toEqual(first.map((m) => m.value));
-    expect(countPiRevalidationsForTesting()).toBe(1);
+    expect(getPiCatalogStatsForTesting().revalidations).toBe(1);
   });
 
   it("collapses concurrent stale reads into one revalidation", async () => {
@@ -127,7 +114,7 @@ describe("catalog revalidation", () => {
     const all = await Promise.all([getPiModels("openrouter"), getPiModels("openrouter"), getPiModels("openrouter")]);
     for (const list of all) expect(list.length).toBeGreaterThan(100);
     // Three stale reads, one refresh — not three.
-    expect(countPiRevalidationsForTesting()).toBe(1);
+    expect(getPiCatalogStatsForTesting().revalidations).toBe(1);
   });
 });
 

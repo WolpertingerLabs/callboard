@@ -121,6 +121,33 @@ describe("the fallback is not sticky", () => {
     expect(runCodex).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps it across *repeated* failures, not just the first", async () => {
+    // The first failure rewrites `source` to "fallback" while keeping the real
+    // models. A carry-forward that asks "was the last result live?" instead of
+    // "do I have anything?" therefore survives one failure and discards the
+    // catalog on the second — a CLI upgrade is easily two failures apart.
+    await getCodexModelsAsync();
+    runCodex.mockRejectedValue(new Error("mid-upgrade"));
+
+    for (let attempt = 2; attempt <= 4; attempt++) {
+      // The first gap has to clear the *live* TTL; every gap after it only has
+      // to clear the retry window, because each failure re-stamps the entry as
+      // a fallback.
+      vi.advanceTimersByTime(attempt === 2 ? CODEX_MODELS_TTL_MS : CODEX_MODELS_RETRY_MS);
+      expect((await getCodexModelsAsync()).map((m) => m.id)).toEqual(["gpt-5.5"]);
+      expect(runCodex).toHaveBeenCalledTimes(attempt);
+    }
+  });
+
+  it("does not hand out the shared STATIC_MODELS array", async () => {
+    runCodex.mockRejectedValue(new Error("ENOENT"));
+    const first = await getCodexModelsAsync();
+    first.length = 0; // a caller mutating its own copy must not empty the fallback
+
+    resetCodexModelsCacheForTesting();
+    expect((await getCodexModelsAsync()).length).toBeGreaterThan(0);
+  });
+
   it("does not reject when the binary cannot be resolved", async () => {
     // resolveCodexBin() reads settings and can throw. That happens outside the
     // CLI call, and a rejection would strand the in-flight promise and stop the

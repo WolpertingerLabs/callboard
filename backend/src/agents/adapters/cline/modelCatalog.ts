@@ -59,6 +59,16 @@ interface CachedProviderModels {
 /** Cached catalogs, keyed by provider id. */
 const _cache = new Map<string, CachedProviderModels>();
 
+/**
+ * In-flight reads, keyed by provider id.
+ *
+ * The read is local and cheap, so this is about consistency rather than cost:
+ * pi, Codex and the OpenRouter catalog all collapse a concurrent burst onto one
+ * lookup, and a picker that opens while another is already loading should not
+ * double the work.
+ */
+const _inFlight = new Map<string, Promise<ClineModelOption[]>>();
+
 /** Provider ids the SDK ships support for. */
 export function listClineProviderIds(): string[] {
   return [...BUILT_IN_PROVIDER_IDS];
@@ -78,21 +88,31 @@ export async function getClineModels(providerId: string): Promise<ClineModelOpti
   const cached = _cache.get(id);
   if (cached && Date.now() - cached.readAt < CLINE_CATALOG_TTL_MS) return cached.options;
 
-  try {
-    const { models } = await getLocalProviderModels(id);
-    const options = (models ?? []).map((m) => ({
-      value: m.id,
-      displayName: m.name || m.id,
-      description: describeModel(m),
-    }));
-    if (options.length > 0) _cache.set(id, { options, readAt: Date.now() });
-    return options;
-  } catch (err) {
-    log.warn(`could not list models for Cline provider "${id}": ${err instanceof Error ? err.message : String(err)}`);
-    // Serve the expired entry rather than nothing: a failed re-read should cost
-    // freshness, not the list itself.
-    return cached?.options ?? [];
-  }
+  const existing = _inFlight.get(id);
+  if (existing) return existing;
+
+  const read = (async () => {
+    try {
+      const { models } = await getLocalProviderModels(id);
+      const options = (models ?? []).map((m) => ({
+        value: m.id,
+        displayName: m.name || m.id,
+        description: describeModel(m),
+      }));
+      if (options.length > 0) _cache.set(id, { options, readAt: Date.now() });
+      return options;
+    } catch (err) {
+      log.warn(`could not list models for Cline provider "${id}": ${err instanceof Error ? err.message : String(err)}`);
+      // Serve the expired entry rather than nothing: a failed re-read should
+      // cost freshness, not the list itself.
+      return cached?.options ?? [];
+    } finally {
+      _inFlight.delete(id);
+    }
+  })();
+
+  _inFlight.set(id, read);
+  return read;
 }
 
 /**
@@ -112,4 +132,5 @@ function describeModel(model: { supportsVision?: boolean; supportsReasoning?: bo
 /** Test-only: drop cached catalogs so a case can control what a lookup returns. */
 export function clearClineModelCacheForTesting(): void {
   _cache.clear();
+  _inFlight.clear();
 }

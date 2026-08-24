@@ -84,3 +84,14 @@ it("keys the TTL per provider", async () => {
 
   expect(getLocalProviderModels.mock.calls.map(([id]) => id)).toEqual(["anthropic", "openrouter", "anthropic"]);
 });
+
+it("collapses a concurrent burst onto one read", async () => {
+  let release: (v: { models: Array<{ id: string }> }) => void = () => {};
+  getLocalProviderModels.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+
+  const burst = Promise.all([getClineModels("anthropic"), getClineModels("anthropic"), getClineModels("anthropic")]);
+  release({ models: [{ id: "claude-opus-4.8" }] });
+
+  for (const list of await burst) expect(list.map((m) => m.value)).toEqual(["claude-opus-4.8"]);
+  expect(getLocalProviderModels).toHaveBeenCalledTimes(1);
+});

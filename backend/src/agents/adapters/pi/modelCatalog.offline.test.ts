@@ -19,7 +19,19 @@ import { join } from "node:path";
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-offline-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
-const refresh = vi.fn<(opts: { allowNetwork: boolean; signal?: AbortSignal }) => Promise<void>>();
+/**
+ * The mock resolves `{ aborted, errors }` because the real
+ * `ModelRuntime.refresh` does. That is not incidental fidelity: pi reports a
+ * timed-out or partly-failed refresh *in the resolved value* rather than by
+ * rejecting, so a mock that resolved `undefined` would encode the very
+ * assumption — "resolved means it worked" — that this module got wrong.
+ */
+type RefreshResult = { aborted: boolean; errors: ReadonlyMap<string, Error> };
+const ok = (): RefreshResult => ({ aborted: false, errors: new Map() });
+const timedOut = (): RefreshResult => ({ aborted: true, errors: new Map() });
+const providerFailed = (): RefreshResult => ({ aborted: false, errors: new Map([["openrouter", new Error("502")]]) });
+
+const refresh = vi.fn<(opts: { allowNetwork: boolean; signal?: AbortSignal }) => Promise<RefreshResult>>();
 const getModels = vi.fn(() => [{ id: "vendor/model", name: "Model", provider: "openrouter" }]);
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
@@ -31,12 +43,13 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   },
 }));
 
-const { getPiModels, clearPiModelCacheForTesting, PI_CATALOG_TTL_MS } = await import("./modelCatalog.js");
+const { getPiModels, clearPiModelCacheForTesting, getPiCatalogStatsForTesting, PI_CATALOG_TTL_MS, PI_CATALOG_RETRY_MS } =
+  await import("./modelCatalog.js");
 
 beforeEach(() => {
   clearPiModelCacheForTesting();
   refresh.mockReset();
-  refresh.mockResolvedValue(undefined);
+  refresh.mockResolvedValue(ok());
   delete process.env.PI_OFFLINE;
 });
 
@@ -94,4 +107,54 @@ it("re-reads PI_OFFLINE per refresh rather than capturing it once", async () => 
   await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
 
   expect(refresh.mock.calls.map((c) => c[0].allowNetwork)).toEqual([false, true]);
+});
+
+it("treats a timed-out refresh as a failure, not an hour of freshness", async () => {
+  // The failure that actually happens. `AbortSignal.timeout` firing makes
+  // `refresh` *resolve* `{ aborted: true }` — it does not throw — so a module
+  // that only awaited the promise would record a refresh which fetched nothing
+  // as a success and go quiet for a full TTL.
+  await readThenAge();
+  refresh.mockResolvedValue(timedOut());
+
+  await getPiModels("openrouter");
+  await vi.waitFor(() => expect(getPiCatalogStatsForTesting().lastRefreshOk).toBe(false));
+});
+
+it("treats a partly-failed refresh as a failure too", async () => {
+  await readThenAge();
+  refresh.mockResolvedValue(providerFailed());
+
+  await getPiModels("openrouter");
+  await vi.waitFor(() => expect(getPiCatalogStatsForTesting().lastRefreshOk).toBe(false));
+});
+
+it("retries on the short window after a failed refresh, not the full TTL", async () => {
+  await readThenAge();
+  refresh.mockResolvedValue(timedOut());
+  await getPiModels("openrouter");
+  await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+
+  // Well inside the success TTL, but past the retry window: a failed refresh
+  // must not buy the same hour of quiet that a successful one does.
+  vi.setSystemTime(Date.now() + PI_CATALOG_RETRY_MS + 1);
+  refresh.mockResolvedValue(ok());
+  await getPiModels("openrouter");
+
+  await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(getPiCatalogStatsForTesting().lastRefreshOk).toBe(true));
+});
+
+it("keeps serving the catalog when a revalidation fails", async () => {
+  const first = await getPiModels("openrouter");
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.now() + PI_CATALOG_TTL_MS + 1);
+  refresh.mockResolvedValue(timedOut());
+
+  const second = await getPiModels("openrouter");
+  await vi.waitFor(() => expect(getPiCatalogStatsForTesting().lastRefreshOk).toBe(false));
+
+  // The list survives the failure intact rather than emptying out.
+  expect(second.map((m) => m.value)).toEqual(first.map((m) => m.value));
+  expect((await getPiModels("openrouter")).map((m) => m.value)).toEqual(first.map((m) => m.value));
 });

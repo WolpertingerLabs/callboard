@@ -224,12 +224,19 @@ async function fetchCodexModels(): Promise<CodexModelsCache> {
     log.info(`Codex models fetched: ${models.filter((m) => m.visibility === "list").length} visible models (${models.length} total)`);
     return { models, fetchedAt: Date.now(), source: "live" };
   } catch (err) {
-    // Prefer the last *live* catalog over the static guess. A CLI that times
-    // out once should not cost the user the real model list they already had.
+    // Carry whatever we are holding forward, and note that the condition is
+    // "do we have anything", NOT "was the last result live". Gating on
+    // `source === "live"` looks equivalent and is not: the first failure
+    // rewrites `source` to "fallback" while keeping the real models, so the
+    // *second* consecutive failure would see a non-live source and throw the
+    // user's real catalog away in favour of three hardcoded guesses. Two failed
+    // runs a minute apart is an ordinary CLI upgrade.
     const message = err instanceof Error ? err.message : String(err);
-    const previousLive = cache?.source === "live" ? cache.models : null;
-    log.error(`Failed to fetch Codex models: ${message}${previousLive ? ` (keeping ${previousLive.length} cached)` : ""}`);
-    return { models: previousLive ?? STATIC_MODELS, fetchedAt: Date.now(), source: "fallback" };
+    const previous = cache?.models.length ? cache.models : null;
+    log.error(`Failed to fetch Codex models: ${message}${previous ? ` (keeping ${previous.length} cached)` : ""}`);
+    // Copied, not aliased: `STATIC_MODELS` is module-level and this array is
+    // handed to every caller of getCodexModelsAsync().
+    return { models: previous ?? [...STATIC_MODELS], fetchedAt: Date.now(), source: "fallback" };
   }
 }
 

@@ -103,6 +103,14 @@ let _refreshInFlight: Promise<void> | null = null;
 let _revalidations = 0;
 
 /**
+ * Bumped whenever the module is reset. A refresh that started before the bump
+ * must not write its results — or its timestamp — into the state that replaced
+ * it, which is how an orphaned background job would otherwise leak across a
+ * test boundary in the very seam whose job is isolation.
+ */
+let _generation = 0;
+
+/**
  * A bare `ModelRuntime` for catalog reads, with **no credentials**.
  *
  * Deliberately separate from the per-query runtime that `PiAgentQuery` builds.
@@ -114,21 +122,33 @@ let _catalogRuntime: Promise<ModelRuntime> | null = null;
 
 function getCatalogRuntime(): Promise<ModelRuntime> {
   if (!_catalogRuntime) {
-    // The freshly-built runtime *is* a catalog read, so start the TTL clock
-    // here. Without this the first read of every process would find the
-    // catalog stale and immediately revalidate over the network — a cold
-    // picker paying for a refresh of data it just loaded.
-    _refreshedAt = Date.now();
-    _lastRefreshOk = true;
     const agentDir = resolvePiAgentDir();
     _catalogRuntime = ModelRuntime.create({
       authPath: join(agentDir, "auth.json"),
       modelsPath: join(agentDir, "models.json"),
-      // Never reach out. A model picker is not worth a network stall, and the
-      // bundled catalog is complete enough that the spike found 307 OpenRouter
-      // models in it offline.
+      // Never reach out *here*. A model picker is not worth a network stall,
+      // and the bundled catalog is complete enough that the spike found 307
+      // OpenRouter models in it offline. Freshness is the revalidation's job.
       allowModelNetwork: false,
-    });
+    }).then(
+      (runtime) => {
+        // The freshly-built runtime *is* a catalog read, so start the TTL clock
+        // on success. Without this the first read of every process would find
+        // the catalog stale and immediately revalidate over the network — a
+        // cold picker paying for a refresh of data it just loaded.
+        _refreshedAt = Date.now();
+        _lastRefreshOk = true;
+        return runtime;
+      },
+      (err: unknown) => {
+        // Drop the rejected promise so the next read can retry. Holding it
+        // would make one bad create permanent for the process, which is the
+        // opposite of what a module that advertises "re-read on a TTL" should
+        // do — and it would leave the clock reading "fresh success" forever.
+        _catalogRuntime = null;
+        throw err;
+      },
+    );
   }
   return _catalogRuntime;
 }
@@ -160,14 +180,24 @@ function isCatalogFresh(): boolean {
  * picker that is instantly populated and current a moment later beats one that
  * blocks on a provider being slow.
  *
- * Never rejects: a failed refresh leaves the previous catalog in place and only
- * shortens the window until the next attempt.
+ * Never rejects: a failed or partial refresh leaves the previous catalog in
+ * place and only shortens the window until the next attempt — which requires
+ * *reading* what `refresh` resolved, since it reports failure in its return
+ * value rather than by throwing.
  */
 function revalidateCatalog(): Promise<void> {
   if (_refreshInFlight) return _refreshInFlight;
   _revalidations++;
+  const gen = _generation;
 
-  _refreshInFlight = (async () => {
+  const job = (async () => {
+    // Suspend before touching anything. An async IIFE runs synchronously up to
+    // its first `await`, so a synchronous throw below would reach the `finally`
+    // — nulling `_refreshInFlight` — *before* the assignment underneath this
+    // block completed, stranding it non-null and freezing the catalog forever.
+    // That is precisely the failure #373 existed to kill, so close it
+    // structurally rather than relying on today's call order.
+    await Promise.resolve();
     try {
       const runtime = await getCatalogRuntime();
       // `allowNetwork` must be computed, not hardcoded `true`. pi's own switch
@@ -175,22 +205,38 @@ function revalidateCatalog(): Promise<void> {
       // treats an explicit `allowNetwork` as an override — so passing `true`
       // unconditionally would quietly defeat a user who air-gapped pi on
       // purpose. Mirror pi's rule instead of overriding it.
-      await runtime.refresh({ allowNetwork: isPiNetworkAllowed(), signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) });
-      // Only the derived views are dropped; the runtime is reused. A refresh
-      // can change any provider's models, so none of them survive it.
+      const result = await runtime.refresh({ allowNetwork: isPiNetworkAllowed(), signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) });
+      if (gen !== _generation) return;
+
+      // The result must be *read*, not merely awaited. `refresh` reports
+      // failure by resolving `{ aborted, errors }` — pi-ai collects every
+      // per-provider error into that map instead of throwing — so the `catch`
+      // below never sees the failures that actually happen. Treating a resolved
+      // promise as success would bank a 15s timeout that fetched nothing as a
+      // full hour of freshness, and make the retry window dead code.
+      _lastRefreshOk = !result.aborted && result.errors.size === 0;
+
+      // The derived views are dropped either way: `refresh` updates the
+      // runtime's snapshot even on a partial pass, so keeping them risks the
+      // picker disagreeing with what a turn would actually resolve.
       _cache.clear();
-      _lastRefreshOk = true;
-      log.debug("pi model catalog refreshed");
+      if (_lastRefreshOk) log.debug("pi model catalog refreshed");
+      else log.warn(`pi model catalog refresh incomplete (aborted=${result.aborted}, providers with errors=${result.errors.size})`);
     } catch (err) {
+      if (gen !== _generation) return;
       _lastRefreshOk = false;
       log.warn(`could not refresh the pi model catalog: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      _refreshedAt = Date.now();
-      _refreshInFlight = null;
+      // A generation bump means a reset replaced us; it owns this state now.
+      if (gen === _generation) {
+        _refreshedAt = Date.now();
+        _refreshInFlight = null;
+      }
     }
   })();
 
-  return _refreshInFlight;
+  _refreshInFlight = job;
+  return job;
 }
 
 /** Kick a revalidation if the catalog has aged out, without waiting for it. */
@@ -295,6 +341,9 @@ function describeModel(model: { reasoning?: boolean; input?: readonly string[]; 
 
 /** Test-only: drop cached catalogs, the shared runtime, and the TTL state. */
 export function clearPiModelCacheForTesting(): void {
+  // Ahead of the rest: any refresh still in flight belongs to the old
+  // generation and must not stamp its timestamp into the fresh state.
+  _generation++;
   _cache.clear();
   _catalogRuntime = null;
   _refreshedAt = 0;
@@ -303,7 +352,15 @@ export function clearPiModelCacheForTesting(): void {
   _revalidations = 0;
 }
 
-/** Test-only: how many background revalidations this module has started. */
-export function countPiRevalidationsForTesting(): number {
-  return _revalidations;
+/**
+ * Test-only view of the revalidation state.
+ *
+ * `revalidations` counts *starts*, which is the right invariant for "a cold
+ * read must not begin a refresh" and "concurrent stale reads begin one".
+ * `lastRefreshOk` is what makes a refresh's *outcome* observable — without it
+ * nothing could distinguish a refresh that fetched the catalog from one that
+ * timed out having fetched nothing, since both resolve.
+ */
+export function getPiCatalogStatsForTesting(): { revalidations: number; lastRefreshOk: boolean } {
+  return { revalidations: _revalidations, lastRefreshOk: _lastRefreshOk };
 }
