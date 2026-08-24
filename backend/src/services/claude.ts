@@ -1,5 +1,5 @@
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
-import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
@@ -64,9 +64,12 @@ export type { StreamEvent };
 export class RetiredProviderError extends Error {}
 
 /**
- * Narrow a free-form metadata.provider value to a usable AgentProviderKind,
- * falling back to "claude-code" on anything unrecognized. Logs a warn for
- * malformed values so corrupted metadata is observable instead of silent.
+ * Narrow a free-form metadata.provider value to an InternalProviderKind — a
+ * kind that can actually back a chat, so never `"mock"` — falling back to
+ * "claude-code" on anything unrecognized. Logs a warn for malformed values so
+ * corrupted metadata is observable instead of silent. The narrower return type
+ * is what lets the session hand its own kind to the tool specs below as the
+ * engine children inherit, with no re-validation at that call site.
  *
  * A retired kind refuses instead of falling back. `"openrouter"`'s harness was
  * removed with 155 chat records still naming it, and the fallback would hand
@@ -75,7 +78,7 @@ export class RetiredProviderError extends Error {}
  * UI has already started a run. A named refusal at the boundary is the whole
  * difference between "this chat can't run any more" and a confusing half-start.
  */
-function resolveProviderKind(value: unknown): AgentProviderKind {
+function resolveProviderKind(value: unknown): InternalProviderKind {
   if (typeof value !== "string" || value === "") return "claude-code";
   if (isRetiredProvider(value)) {
     throw new RetiredProviderError(
@@ -1031,18 +1034,26 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // ...and cline (→ Cline `thinking` / `reasoningEffort`), whose vocabulary is
       // callboard's `EffortLevel` minus `"none"` — see cline/optionsAdapter.
       ...(opts.effort && (opts.provider === "codex" || opts.provider === "cline" || opts.provider === "pi") && { effort: opts.effort }),
-      // Pin the per-chat model alongside provider/effort. claude-code chats pass
-      // it to the SDK as options.model. Ignored for codex/mock.
-      // ...and for acp, where it names one of the vendor's own models and is
-      // applied via `session/set_config_option` once the session exists.
-      // ...and for cline, where it names a model within the configured Cline
-      // provider and is passed on `CoreSessionConfig.modelId`.
-      // ...and for pi, where it names a model within the configured pi provider
-      // and is resolved through `ModelRegistry.find()`.
-      ...(opts.model &&
-        (opts.provider === "acp" || opts.provider === "cline" || opts.provider === "pi" || (opts.provider ?? "claude-code") === "claude-code") && {
-          model: opts.model,
-        }),
+      // Pin the per-chat model alongside provider/effort. Every kind that can
+      // back a chat reads this value back out of metadata in its config block
+      // below, each in its own vocabulary: claude-code passes it to the SDK as
+      // options.model; codex resolves it against the Codex catalog; acp names one
+      // of the vendor's own models and applies it via `session/set_config_option`
+      // once the session exists; cline names a model within the configured Cline
+      // provider and passes it on `CoreSessionConfig.modelId`; pi resolves it
+      // through `ModelRegistry.find()`.
+      //
+      // So the guard is the INTERNAL allowlist rather than a hand-listed set —
+      // "can this kind back a chat" is the same question as "does it read a
+      // model", and the two cannot drift apart. It was a hand-listed set until
+      // this commit, and `"codex"` was missing from it: the Codex block read the
+      // override that creation never wrote, so a per-chat Codex model was
+      // silently discarded and the chat ran on the global default. Whatever kind
+      // lands next must not be able to re-introduce that by omission.
+      //
+      // `mock` is excluded, as it is from every other pin here — it is never a
+      // chat's persisted provider and has no model of its own to name.
+      ...(opts.model && isInternalProvider(opts.provider ?? "claude-code") && { model: opts.model }),
       // Pin the explicit-completion requirement so follow-up messages to
       // this chat keep nudging for objective_complete without every caller
       // having to re-thread the flag.
@@ -1272,9 +1283,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const spec = buildCallboardToolsSpec(
       () => trackingId,
       () => opts.agentAlias,
-      // Agent sessions get the job management tools on the "callboard" agent
-      // server (alongside deploy_agent etc.) — skip them here to avoid duplicates.
-      { includeJobTools: !opts.agentAlias },
+      {
+        // Agent sessions get the job management tools on the "callboard" agent
+        // server (alongside deploy_agent etc.) — skip them here to avoid duplicates.
+        includeJobTools: !opts.agentAlias,
+        // The engine this session runs on, so start_chat_session spawns children
+        // onto it by default instead of always handing them to Claude Code.
+        provider: providerKind,
+        ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
+      },
     );
     const server = agentProvider.buildToolServer(spec);
     if (server) {
@@ -1381,7 +1398,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
 
     try {
-      const spec = buildAgentToolsSpec(opts.agentAlias, () => trackingId);
+      const spec = buildAgentToolsSpec(opts.agentAlias, () => trackingId, {
+        provider: providerKind,
+        ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
+      });
       const server = agentProvider.buildToolServer(spec);
       if (server) {
         mcpServers["callboard"] = server;
