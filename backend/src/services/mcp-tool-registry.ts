@@ -406,7 +406,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     description: "Pause execution for a specified number of seconds (1-300). Shown to the user as a live countdown they can end early.",
     parameters: [
       { name: "seconds", type: "number", description: "Number of seconds to wait (1-300)", required: true },
-      { name: "flavor", type: "string", description: "Fun flavor description of what you're doing while waiting", required: false },
+      { name: "flavor", type: "string", description: "Fun flavor description of what you're doing while waiting", required: true },
       { name: "reason", type: "string", description: "Actual reason for waiting (for your own logging)", required: false },
       {
         name: "require_condition",
@@ -691,7 +691,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     qualifiedName: "mcp__callboard__talk_to_agent",
     description: "Send a message to another agent and wait for their response.",
     parameters: [
-      { name: "targetAgent", type: "string", description: "Alias of the agent to talk to", required: true },
+      { name: "targetAlias", type: "string", description: "Alias of the agent to talk to", required: true },
       { name: "message", type: "string", description: "Message to send", required: true },
       { name: "maxTurns", type: "number", description: "Maximum turns for the target agent", required: false },
       {
@@ -712,7 +712,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     qualifiedName: "mcp__callboard__deploy_agent",
     description: "Start a new session as another agent (fire-and-forget). Unlike talk_to_agent, does NOT wait for completion.",
     parameters: [
-      { name: "targetAgent", type: "string", description: "Alias of the agent to deploy", required: true },
+      { name: "targetAlias", type: "string", description: "Alias of the agent to deploy", required: true },
       { name: "prompt", type: "string", description: "Task or message for the agent", required: true },
       { name: "maxTurns", type: "number", description: "Maximum turns", required: false },
       {
@@ -745,7 +745,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       { name: "name", type: "string", description: "Human-readable name for the job", required: true },
       { name: "schedule", type: "string", description: "Cron expression (e.g. '0 9 * * *')", required: true },
       { name: "prompt", type: "string", description: "Prompt to execute on schedule", required: true },
-      { name: "type", type: "enum", description: "Job type", required: false, enumValues: ["new_session", "continue_session"] },
+      { name: "type", type: "enum", description: "Job type (default: recurring)", required: false, enumValues: ["one-off", "recurring", "indefinite"] },
       { name: "skipIfRunning", type: "boolean", description: "Skip execution if previous run is still active", required: false },
     ],
     serverName: "callboard",
@@ -757,11 +757,11 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     qualifiedName: "mcp__callboard__update_cron_job",
     description: "Update an existing cron job.",
     parameters: [
-      { name: "id", type: "string", description: "Cron job ID", required: true },
+      { name: "jobId", type: "string", description: "Cron job ID", required: true },
       { name: "name", type: "string", description: "Updated name", required: false },
       { name: "schedule", type: "string", description: "Updated cron expression", required: false },
       { name: "prompt", type: "string", description: "Updated prompt", required: false },
-      { name: "status", type: "enum", description: "Job status", required: false, enumValues: ["active", "paused"] },
+      { name: "status", type: "enum", description: "Job status", required: false, enumValues: ["active", "paused", "completed"] },
       { name: "skipIfRunning", type: "boolean", description: "Skip execution if previous run is still active", required: false },
     ],
     serverName: "callboard",
@@ -772,7 +772,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     name: "delete_cron_job",
     qualifiedName: "mcp__callboard__delete_cron_job",
     description: "Delete a cron job by its ID.",
-    parameters: [{ name: "id", type: "string", description: "Cron job ID to delete", required: true }],
+    parameters: [{ name: "jobId", type: "string", description: "Cron job ID to delete", required: true }],
     serverName: "callboard",
     serverLabel: "Callboard Agent",
     category: "agent",
@@ -792,7 +792,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     description: "Create a new event trigger. When matching events arrive, a session starts with the prompt template.",
     parameters: [
       { name: "name", type: "string", description: "Human-readable trigger name", required: true },
-      { name: "source", type: "string", description: "Event source to match", required: true },
+      { name: "source", type: "string", description: "Event source to match. Omit to match any source.", required: false },
       { name: "eventType", type: "string", description: "Event type to match", required: false },
       { name: "prompt", type: "string", description: "Prompt template with {{event.*}} placeholders", required: true },
     ],
@@ -805,7 +805,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     qualifiedName: "mcp__callboard__update_trigger",
     description: "Update an existing event trigger.",
     parameters: [
-      { name: "id", type: "string", description: "Trigger ID", required: true },
+      { name: "triggerId", type: "string", description: "Trigger ID", required: true },
       { name: "name", type: "string", description: "Updated name", required: false },
       { name: "status", type: "enum", description: "Trigger status", required: false, enumValues: ["active", "paused"] },
       { name: "prompt", type: "string", description: "Updated prompt template", required: false },
@@ -818,7 +818,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     name: "delete_trigger",
     qualifiedName: "mcp__callboard__delete_trigger",
     description: "Delete an event trigger by its ID.",
-    parameters: [{ name: "id", type: "string", description: "Trigger ID to delete", required: true }],
+    parameters: [{ name: "triggerId", type: "string", description: "Trigger ID to delete", required: true }],
     serverName: "callboard",
     serverLabel: "Callboard Agent",
     category: "agent",
@@ -840,9 +840,15 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     qualifiedName: "mcp__callboard__log_activity",
     description: "Record an entry in your agent's activity log.",
     parameters: [
-      { name: "type", type: "string", description: "Activity type (e.g., 'task', 'error')", required: true },
-      { name: "summary", type: "string", description: "Brief description", required: true },
-      { name: "details", type: "string", description: "Detailed information", required: false },
+      {
+        name: "activityType",
+        type: "enum",
+        description: "Type of activity",
+        required: true,
+        enumValues: ["chat", "event", "cron", "connection", "system"],
+      },
+      { name: "message", type: "string", description: "Human-readable description of what happened", required: true },
+      { name: "metadata", type: "object", description: "Additional structured data to store with the entry", required: false },
     ],
     serverName: "callboard",
     serverLabel: "Callboard Agent",
@@ -875,7 +881,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       { name: "name", type: "string", description: "Display name", required: true },
       { name: "emoji", type: "string", description: "Emoji icon", required: false },
       { name: "role", type: "string", description: "Agent role description", required: false },
-      { name: "description", type: "string", description: "What the agent does", required: false },
+      { name: "description", type: "string", description: "What the agent does (1-512 characters)", required: true },
       { name: "personality", type: "string", description: "Personality traits for the system prompt", required: false },
     ],
     serverName: "callboard",
@@ -934,7 +940,7 @@ const AGENT_TOOLS: McpToolDefinition[] = [
     description: "Update an existing custom UI theme. Only provided CSS variables are changed.",
     parameters: [
       { name: "name", type: "string", description: "Theme name to update", required: true },
-      { name: "newName", type: "string", description: "Optionally rename the theme", required: false },
+      { name: "new_name", type: "string", description: "Optionally rename the theme", required: false },
       { name: "dark", type: "object", description: "Dark mode CSS variable overrides", required: false },
       { name: "light", type: "object", description: "Light mode CSS variable overrides", required: false },
     ],
