@@ -1,5 +1,5 @@
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
-import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery } from "../agents/ports/AgentProvider.js";
+import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
@@ -64,9 +64,12 @@ export type { StreamEvent };
 export class RetiredProviderError extends Error {}
 
 /**
- * Narrow a free-form metadata.provider value to a usable AgentProviderKind,
- * falling back to "claude-code" on anything unrecognized. Logs a warn for
- * malformed values so corrupted metadata is observable instead of silent.
+ * Narrow a free-form metadata.provider value to an InternalProviderKind — a
+ * kind that can actually back a chat, so never `"mock"` — falling back to
+ * "claude-code" on anything unrecognized. Logs a warn for malformed values so
+ * corrupted metadata is observable instead of silent. The narrower return type
+ * is what lets the session hand its own kind to the tool specs below as the
+ * engine children inherit, with no re-validation at that call site.
  *
  * A retired kind refuses instead of falling back. `"openrouter"`'s harness was
  * removed with 155 chat records still naming it, and the fallback would hand
@@ -75,7 +78,7 @@ export class RetiredProviderError extends Error {}
  * UI has already started a run. A named refusal at the boundary is the whole
  * difference between "this chat can't run any more" and a confusing half-start.
  */
-function resolveProviderKind(value: unknown): AgentProviderKind {
+function resolveProviderKind(value: unknown): InternalProviderKind {
   if (typeof value !== "string" || value === "") return "claude-code";
   if (isRetiredProvider(value)) {
     throw new RetiredProviderError(
@@ -1272,9 +1275,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const spec = buildCallboardToolsSpec(
       () => trackingId,
       () => opts.agentAlias,
-      // Agent sessions get the job management tools on the "callboard" agent
-      // server (alongside deploy_agent etc.) — skip them here to avoid duplicates.
-      { includeJobTools: !opts.agentAlias },
+      {
+        // Agent sessions get the job management tools on the "callboard" agent
+        // server (alongside deploy_agent etc.) — skip them here to avoid duplicates.
+        includeJobTools: !opts.agentAlias,
+        // The engine this session runs on, so start_chat_session spawns children
+        // onto it by default instead of always handing them to Claude Code.
+        provider: providerKind,
+        ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
+      },
     );
     const server = agentProvider.buildToolServer(spec);
     if (server) {
@@ -1381,7 +1390,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
 
     try {
-      const spec = buildAgentToolsSpec(opts.agentAlias, () => trackingId);
+      const spec = buildAgentToolsSpec(opts.agentAlias, () => trackingId, {
+        provider: providerKind,
+        ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
+      });
       const server = agentProvider.buildToolServer(spec);
       if (server) {
         mcpServers["callboard"] = server;

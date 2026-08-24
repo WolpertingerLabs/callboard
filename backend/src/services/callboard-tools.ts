@@ -30,7 +30,7 @@ import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { startActivity, endActivity, withActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
-import type { ConditionWatch } from "shared/types/index.js";
+import type { ConditionWatch, UiAgentProviderKind } from "shared/types/index.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelAliasTools } from "./model-alias-tools.js";
 import { buildWorkspaceTools } from "./workspace-tools.js";
@@ -51,7 +51,9 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
-  provider?: "claude-code" | "codex";
+  provider?: UiAgentProviderKind;
+  /** Which ACP vendor, when `provider` is `"acp"`. Ignored for every other kind. */
+  acpProviderId?: string;
   model?: string;
   requireExplicitCompletion?: boolean;
   parentChatId?: string;
@@ -183,6 +185,18 @@ export function buildCallboardToolsSpec(
      * instead, so each session sees exactly one copy.
      */
     includeJobTools?: boolean;
+    /**
+     * The engine this session is itself running on, and (for ACP) which vendor.
+     * `start_chat_session` inherits it when the caller does not name a provider,
+     * so a Pi session spawns Pi children rather than silently handing them to
+     * Claude Code.
+     *
+     * Plain values, not getters: a chat's provider is immutable by design (see
+     * plans/openrouter-adapter.md), so these are fixed for the session's whole
+     * lifetime and there is nothing to re-read.
+     */
+    provider?: UiAgentProviderKind;
+    acpProviderId?: string;
   },
 ): ToolServerSpec {
   return {
@@ -788,7 +802,8 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "start_chat_session",
-        "Start a new Claude Code chat session in any directory. Returns the chatId of the new session. Supports optional git branch/worktree configuration. " +
+        "Start a new chat session in any directory, on this session's own engine unless you ask for another one. Returns the chatId of the new " +
+          "session. Supports optional git branch/worktree configuration. " +
           "The session runs asynchronously. Prefer onComplete=true to be notified (a new turn in THIS chat) when it finishes — no polling at all. " +
           "If you must poll, use get_session_status and sleep between checks with the `wait` tool. " +
           "Do NOT sleep by running `sleep` as a background Bash command: `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes. " +
@@ -825,7 +840,7 @@ export function buildCallboardToolsSpec(
           try {
             const sendMessage = getSendMessage();
 
-            const providerModel = resolveProviderModelArgs(args);
+            const providerModel = resolveProviderModelArgs(args, { provider: opts?.provider, acpProviderId: opts?.acpProviderId });
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
@@ -873,6 +888,7 @@ export function buildCallboardToolsSpec(
               maxTurns: args.maxTurns ?? 200,
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
               provider: providerModel.provider,
+              ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
               ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),

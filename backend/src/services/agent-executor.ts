@@ -30,6 +30,8 @@ type MessageSender = (opts: {
   triggered?: boolean;
   triggeredBy?: "cron" | "event" | "trigger" | "tool";
   provider?: UiAgentProviderKind;
+  /** Which ACP vendor, when `provider` is `"acp"`. Ignored for every other kind. */
+  acpProviderId?: string;
   model?: string;
   effort?: EffortLevel;
   requireExplicitCompletion?: boolean;
@@ -59,6 +61,12 @@ export interface ExecuteAgentOptions {
   metadata?: Record<string, unknown>;
   maxTurns?: number;
   provider?: UiAgentProviderKind;
+  /**
+   * Which ACP vendor, when `provider` is `"acp"`. Required there and ignored
+   * everywhere else: `"acp"` is one kind covering many CLIs, so the kind alone
+   * does not identify a harness.
+   */
+  acpProviderId?: string;
   model?: string;
   /** OR-only reasoning effort. Ignored when provider is claude-code. */
   effort?: EffortLevel;
@@ -90,7 +98,7 @@ export interface ExecuteAgentResult {
  * Returns the chatId of the new session, or null if it failed.
  */
 export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAgentResult | null> {
-  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, model, effort, requireExplicitCompletion } = opts;
+  const { agentAlias, prompt, triggeredBy, metadata, maxTurns, provider, acpProviderId, model, effort, requireExplicitCompletion } = opts;
 
   try {
     const config = getAgent(agentAlias);
@@ -131,6 +139,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
         webAccess: "allow",
       },
       ...(provider && { provider }),
+      ...(provider === "acp" && acpProviderId && { acpProviderId }),
       ...(model && { model }),
       ...(effort && { effort }),
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),

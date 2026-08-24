@@ -26,7 +26,7 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { themeFileService } from "./theme-file-service.js";
 import { generateThemeCSS } from "./quick-completion.js";
 import { prepareThemeWrite, describeFailures, describeCorrections } from "./theme-write.js";
-import type { CustomTheme } from "shared/types/index.js";
+import type { CustomTheme, UiAgentProviderKind } from "shared/types/index.js";
 
 import { createLogger } from "../utils/logger.js";
 
@@ -48,7 +48,9 @@ type MessageSender = (opts: {
   agentAlias?: string;
   maxTurns?: number;
   defaultPermissions?: any;
-  provider?: "claude-code" | "codex";
+  provider?: UiAgentProviderKind;
+  /** Which ACP vendor, when `provider` is `"acp"`. Ignored for every other kind. */
+  acpProviderId?: string;
   model?: string;
   parentChatId?: string;
   chatRole?: string;
@@ -79,8 +81,17 @@ function getSendMessage(): MessageSender {
  * `getChatId` (when provided) exposes the calling chat's id so orchestration
  * tools (talk_to_agent, deploy_agent) can link spawned sessions into the
  * chat parentage tree.
+ *
+ * `opts.provider` / `opts.acpProviderId` are the engine this session is itself
+ * running on — what talk_to_agent and deploy_agent start the target agent on
+ * when the caller does not name a provider. Plain values, not getters: a chat's
+ * provider is immutable by design, so they are fixed for the session's lifetime.
  */
-export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string): ToolServerSpec {
+export function buildAgentToolsSpec(
+  agentAlias: string,
+  getChatId?: () => string,
+  opts?: { provider?: UiAgentProviderKind; acpProviderId?: string },
+): ToolServerSpec {
   const agentConfig = getAgent(agentAlias);
   const agentTimezone = agentConfig?.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -112,7 +123,7 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
               return { content: [{ type: "text" as const, text: "Error: An agent cannot talk to itself" }] };
             }
 
-            const providerModel = resolveProviderModelArgs(args);
+            const providerModel = resolveProviderModelArgs(args, { provider: opts?.provider, acpProviderId: opts?.acpProviderId });
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
@@ -146,6 +157,7 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
               maxTurns: args.maxTurns ?? 50,
               defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
               provider: providerModel.provider,
+              ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
               ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-consult" }),
             });
@@ -242,7 +254,7 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
               return { content: [{ type: "text" as const, text: `Agent "${args.targetAlias}" not found` }] };
             }
 
-            const providerModel = resolveProviderModelArgs(args);
+            const providerModel = resolveProviderModelArgs(args, { provider: opts?.provider, acpProviderId: opts?.acpProviderId });
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
@@ -256,6 +268,7 @@ export function buildAgentToolsSpec(agentAlias: string, getChatId?: () => string
               metadata: { deployedBy: agentAlias },
               maxTurns: args.maxTurns,
               provider: providerModel.provider,
+              ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
               ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-deploy" }),
             });

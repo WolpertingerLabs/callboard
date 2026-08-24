@@ -13,6 +13,7 @@
 import type { McpToolDefinition, McpToolServerInfo, McpToolsResponse } from "shared/types/index.js";
 import { getEnabledMcpServers, getEnabledAppPlugins } from "./app-plugins.js";
 import { getAgentSettings, getActiveMcpConfigDir } from "./agent-settings.js";
+import { ROUTABLE_PROVIDER_KINDS } from "../agents/ports/AgentProvider.js";
 
 // ─── Callboard Tools (always injected) ──────────────────────────────
 
@@ -241,7 +242,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "start_chat_session",
     qualifiedName: "mcp__callboard-tools__start_chat_session",
-    description: "Start a new Claude Code chat session in any directory. Runs asynchronously.",
+    description: "Start a new chat session in any directory, on this session's own engine unless told otherwise. Runs asynchronously.",
     parameters: [
       { name: "prompt", type: "string", description: "The task or message for the chat session", required: true },
       { name: "folder", type: "string", description: "Absolute path to the working directory", required: true },
@@ -270,11 +271,11 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       {
         name: "provider",
         type: "enum",
-        description: 'Agent provider. Defaults to "claude-code".',
+        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
         required: false,
-        enumValues: ["claude-code", "codex"],
+        enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
-      { name: "model", type: "string", description: 'Model slug for provider="codex"', required: false },
+      { name: "model", type: "string", description: "Model id, in the form the chosen provider names its models. Never inherited.", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -693,8 +694,14 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       { name: "targetAgent", type: "string", description: "Alias of the agent to talk to", required: true },
       { name: "message", type: "string", description: "Message to send", required: true },
       { name: "maxTurns", type: "number", description: "Maximum turns for the target agent", required: false },
-      { name: "provider", type: "enum", description: 'Agent provider. Defaults to "claude-code".', required: false, enumValues: ["claude-code", "codex"] },
-      { name: "model", type: "string", description: 'Codex model slug (only valid with provider="codex")', required: false },
+      {
+        name: "provider",
+        type: "enum",
+        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
+        required: false,
+        enumValues: [...ROUTABLE_PROVIDER_KINDS],
+      },
+      { name: "model", type: "string", description: "Model id, in the form the chosen provider names its models. Never inherited.", required: false },
     ],
     serverName: "callboard",
     serverLabel: "Callboard Agent",
@@ -708,8 +715,14 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       { name: "targetAgent", type: "string", description: "Alias of the agent to deploy", required: true },
       { name: "prompt", type: "string", description: "Task or message for the agent", required: true },
       { name: "maxTurns", type: "number", description: "Maximum turns", required: false },
-      { name: "provider", type: "enum", description: 'Agent provider. Defaults to "claude-code".', required: false, enumValues: ["claude-code", "codex"] },
-      { name: "model", type: "string", description: 'Codex model slug (only valid with provider="codex")', required: false },
+      {
+        name: "provider",
+        type: "enum",
+        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
+        required: false,
+        enumValues: [...ROUTABLE_PROVIDER_KINDS],
+      },
+      { name: "model", type: "string", description: "Model id, in the form the chosen provider names its models. Never inherited.", required: false },
     ],
     serverName: "callboard",
     serverLabel: "Callboard Agent",
