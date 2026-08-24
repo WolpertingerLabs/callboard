@@ -156,6 +156,12 @@ export default function KeywordsSettings() {
               color: "var(--danger)",
               fontSize: 13,
               marginBottom: 12,
+              // Store-level failures name a path and a remedy, so they are a
+              // sentence or three rather than a phrase. Wrapping on words and
+              // honouring line breaks keeps `keywords.json.corrupt-…` readable
+              // instead of running it off the edge of the banner.
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
             }}
           >
             {error}

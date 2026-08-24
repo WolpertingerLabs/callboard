@@ -1,8 +1,17 @@
+import { useEffect, useRef } from "react";
 import type { Keyword } from "../api";
 
 interface Props {
   /** Candidates, already filtered and ranked by `matchKeywords`. */
   matches: Keyword[];
+  /**
+   * How many keywords the query matched before `matchKeywords` capped the list.
+   *
+   * Separate from `matches.length` because the cap is invisible otherwise: an
+   * install with 40 keywords rendering "Keywords (10)" on a bare `$` states a
+   * total that is not the total.
+   */
+  totalMatches: number;
   /**
    * Index of the highlighted row, or -1 for none.
    *
@@ -30,7 +39,26 @@ interface Props {
  * trigger chain: it is what makes `$HOME` and `$PATH` inert on an install with
  * no keyword of that name, rather than showing an empty box.
  */
-export default function KeywordAutocomplete({ matches, highlightedIndex, onHighlight, onSelect }: Props) {
+export default function KeywordAutocomplete({ matches, totalMatches, highlightedIndex, onHighlight, onSelect }: Props) {
+  const highlightedRef = useRef<HTMLButtonElement | null>(null);
+
+  /**
+   * Keep the highlighted row on screen.
+   *
+   * The list scrolls — 200px of box against ~35px rows and a header shows about
+   * five of a possible ten — so arrowing past the fifth row, or wrapping with
+   * ArrowUp to the last, moves the highlight out of view. Enter then inserts
+   * something the user cannot see, which is squarely inside the keyboard
+   * contract this menu exists to honour.
+   *
+   * `block: "nearest"` scrolls the minimum needed, so a highlight that is
+   * already visible does not jump the list under a mouse. The optional call is
+   * for jsdom, which has no layout and therefore no `scrollIntoView`.
+   */
+  useEffect(() => {
+    highlightedRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [highlightedIndex]);
+
   if (matches.length === 0) return null;
 
   return (
@@ -60,7 +88,7 @@ export default function KeywordAutocomplete({ matches, highlightedIndex, onHighl
           fontWeight: 600,
         }}
       >
-        Keywords ({matches.length})
+        Keywords ({totalMatches > matches.length ? `${matches.length} of ${totalMatches}` : matches.length})
       </div>
 
       {matches.map((keyword, index) => {
@@ -68,6 +96,7 @@ export default function KeywordAutocomplete({ matches, highlightedIndex, onHighl
         return (
           <button
             key={keyword.name}
+            ref={isHighlighted ? highlightedRef : undefined}
             // Insertion has to survive the click without the textarea losing
             // focus first — mousedown-preventDefault keeps the caret where the
             // token is, so the replacement lands in the right place.

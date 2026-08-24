@@ -1981,13 +1981,6 @@ export async function listKeywords(): Promise<Keyword[]> {
   return data.keywords;
 }
 
-export async function getKeyword(name: string): Promise<Keyword> {
-  const res = await fetch(`${BASE}/keywords/${encodeURIComponent(name)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get keyword");
-  const data = await res.json();
-  return data.keyword;
-}
-
 export async function createKeyword(keyword: { name: string; description?: string; body: string }): Promise<Keyword> {
   const res = await fetch(`${BASE}/keywords`, {
     method: "POST",

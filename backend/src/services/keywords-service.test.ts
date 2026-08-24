@@ -9,7 +9,7 @@
  * never throw out of a read.
  */
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync, chmodSync, symlinkSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,7 +18,7 @@ import { join } from "node:path";
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-keywords-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
-const { keywordsService, slugifyKeywordName } = await import("./keywords-service.js");
+const { keywordsService, slugifyKeywordName, KeywordStoreUnwritableError } = await import("./keywords-service.js");
 
 const KEYWORDS_FILE = join(tmpRoot, "keywords.json");
 
@@ -26,8 +26,12 @@ afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+/** Every file the service has left in the data dir besides the store itself. */
+const strays = () => readdirSync(tmpRoot).filter((f) => f !== "keywords.json");
+const backups = () => strays().filter((f) => f.startsWith("keywords.json.corrupt-"));
+
 beforeEach(() => {
-  rmSync(KEYWORDS_FILE, { force: true });
+  for (const file of readdirSync(tmpRoot)) rmSync(join(tmpRoot, file), { force: true });
 });
 
 describe("slugifyKeywordName", () => {
@@ -225,17 +229,252 @@ describe("missing and corrupt file recovery", () => {
     expect(() => new Date(list[1].createdAt).toISOString()).not.toThrow();
   });
 
-  it("a write over a corrupt file replaces it with a clean store", () => {
-    writeFileSync(KEYWORDS_FILE, "not json at all", "utf8");
+  it("leaves no temp file behind after a write", () => {
+    keywordsService.createKeyword({ name: "atomic", body: "c" });
+    expect(strays()).toEqual([]);
+  });
+});
+
+/**
+ * Reading a file we did not fully understand is survivable. *Writing over* one
+ * is not, and the two are one keystroke apart: degrading a corrupt store to `[]`
+ * on read is documented behaviour, and the very next `createKeyword` used to
+ * persist that empty list straight over the top — no error, no copy, every
+ * keyword gone. The file is meant to be hand-edited, so a stray comma is an
+ * expected state rather than an exotic one.
+ *
+ * The rule these pin is deliberately broader than "unparseable": a write never
+ * overwrites a file whose contents were not fully represented in the read it is
+ * based on, whatever the reason.
+ */
+describe("a write never destroys a file it could not fully parse", () => {
+  it("copies an unparseable file aside before replacing it", () => {
+    writeFileSync(KEYWORDS_FILE, '{ "version": 1, "keywords": [{"name": "precious",,, ', "utf8");
     keywordsService.createKeyword({ name: "fresh", body: "c" });
 
+    // The new store is written and usable…
     const raw = JSON.parse(readFileSync(KEYWORDS_FILE, "utf8"));
     expect(raw.version).toBe(1);
     expect(raw.keywords.map((k: { name: string }) => k.name)).toEqual(["fresh"]);
+
+    // …and the bytes it replaced still exist, verbatim, one `mv` from recovery.
+    expect(backups()).toHaveLength(1);
+    expect(readFileSync(join(tmpRoot, backups()[0]), "utf8")).toBe('{ "version": 1, "keywords": [{"name": "precious",,, ');
   });
 
-  it("leaves no temp file behind after a write", () => {
-    keywordsService.createKeyword({ name: "atomic", body: "c" });
-    expect(existsSync(`${KEYWORDS_FILE}.tmp`)).toBe(false);
+  it("copies aside a file that parses but is not a store", () => {
+    writeFileSync(KEYWORDS_FILE, '{"keywords": "not an array"}', "utf8");
+    keywordsService.createKeyword({ name: "fresh", body: "c" });
+    expect(backups()).toHaveLength(1);
+  });
+
+  it("copies aside when entries were dropped, not only when nothing parsed", () => {
+    // The good entry survives into the new store, but the malformed ones are
+    // about to be written out of existence — so the original is kept.
+    writeFileSync(
+      KEYWORDS_FILE,
+      JSON.stringify({
+        version: 1,
+        keywords: [{ name: "good", body: "b" }, { name: "Bad Slug", body: "b" }, { body: "nameless" }],
+      }),
+      "utf8",
+    );
+    keywordsService.createKeyword({ name: "fresh", body: "c" });
+
+    expect(keywordsService.listKeywords().map((k) => k.name)).toEqual(["fresh", "good"]);
+    expect(backups()).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(tmpRoot, backups()[0]), "utf8")).keywords).toHaveLength(3);
+  });
+
+  it("copies aside when a duplicate name was shadowed", () => {
+    writeFileSync(
+      KEYWORDS_FILE,
+      JSON.stringify({ version: 1, keywords: [{ name: "dup", body: "first" }, { name: "dup", body: "second" }] }),
+      "utf8",
+    );
+    keywordsService.deleteKeyword("dup");
+    expect(backups()).toHaveLength(1);
+  });
+
+  it("keeps a copy on update and delete too, not only on create", () => {
+    for (const mutate of [
+      () => keywordsService.updateKeyword("good", { body: "changed" }),
+      () => keywordsService.deleteKeyword("good"),
+    ]) {
+      writeFileSync(KEYWORDS_FILE, JSON.stringify({ version: 1, keywords: [{ name: "good", body: "b" }, null] }), "utf8");
+      mutate();
+      expect(backups()).toHaveLength(1);
+      for (const file of readdirSync(tmpRoot)) rmSync(join(tmpRoot, file), { force: true });
+    }
+  });
+
+  it("does not litter backups when the file was understood completely", () => {
+    keywordsService.createKeyword({ name: "one", body: "c" });
+    keywordsService.createKeyword({ name: "two", body: "c" });
+    keywordsService.updateKeyword("one", { body: "changed" });
+    keywordsService.deleteKeyword("two");
+    expect(strays()).toEqual([]);
+  });
+
+  it("does not treat a blank file as something to preserve", () => {
+    writeFileSync(KEYWORDS_FILE, "  \n ", "utf8");
+    keywordsService.createKeyword({ name: "fresh", body: "c" });
+    expect(strays()).toEqual([]);
+  });
+
+  it("keeps every copy when the same file is written over twice", () => {
+    writeFileSync(KEYWORDS_FILE, "not json at all", "utf8");
+    keywordsService.createKeyword({ name: "one", body: "c" });
+    writeFileSync(KEYWORDS_FILE, "still not json", "utf8");
+    keywordsService.createKeyword({ name: "two", body: "c" });
+
+    // Timestamps collide at millisecond resolution; a collision must not make
+    // the second backup silently overwrite the first.
+    expect(backups()).toHaveLength(2);
+    const contents = backups().map((f) => readFileSync(join(tmpRoot, f), "utf8")).sort();
+    expect(contents).toEqual(["not json at all", "still not json"]);
+  });
+
+  /**
+   * "Understood the whole file" has to mean the whole file, not just the parts
+   * this version happens to look at. A store is a plain JSON document the user
+   * is invited to hand-edit, and the population that hand-edits a config file
+   * is exactly the population that annotates it — and a future format is the
+   * same problem arriving from the other direction, since a downgrade would
+   * otherwise rewrite a v2 store as v1 and drop every v2 field on the floor.
+   *
+   * Neither costs anything today. Both are silent, unrecoverable, and against
+   * the rule the rest of this file exists to enforce.
+   */
+  describe("fields this version does not know about", () => {
+    it("preserves a store carrying an unrecognized version", () => {
+      writeFileSync(KEYWORDS_FILE, JSON.stringify({ version: 2, keywords: [{ name: "kw", body: "b" }] }), "utf8");
+      keywordsService.createKeyword({ name: "fresh", body: "c" });
+      expect(backups()).toHaveLength(1);
+      expect(JSON.parse(readFileSync(join(tmpRoot, backups()[0]), "utf8")).version).toBe(2);
+    });
+
+    it("preserves unknown top-level keys", () => {
+      writeFileSync(
+        KEYWORDS_FILE,
+        JSON.stringify({ version: 1, comment: "hand-written notes I care about", keywords: [{ name: "kw", body: "b" }] }),
+        "utf8",
+      );
+      keywordsService.createKeyword({ name: "fresh", body: "c" });
+      expect(backups()).toHaveLength(1);
+      expect(JSON.parse(readFileSync(join(tmpRoot, backups()[0]), "utf8")).comment).toBe("hand-written notes I care about");
+    });
+
+    it("preserves unknown per-keyword keys", () => {
+      writeFileSync(
+        KEYWORDS_FILE,
+        JSON.stringify({ version: 1, keywords: [{ name: "kw", body: "b", tags: ["a"], pinned: true }] }),
+        "utf8",
+      );
+      keywordsService.createKeyword({ name: "fresh", body: "c" });
+      expect(backups()).toHaveLength(1);
+      expect(JSON.parse(readFileSync(join(tmpRoot, backups()[0]), "utf8")).keywords[0].tags).toEqual(["a"]);
+    });
+
+    it("still reads such a store normally — preserving is not refusing", () => {
+      writeFileSync(
+        KEYWORDS_FILE,
+        JSON.stringify({ version: 2, note: "x", keywords: [{ name: "kw", body: "b", tags: ["a"] }] }),
+        "utf8",
+      );
+      expect(keywordsService.listKeywords().map((k) => k.name)).toEqual(["kw"]);
+    });
+
+    it("treats a missing version as nothing to lose", () => {
+      // An absent key is not data; a hand-written file without one is fine.
+      writeFileSync(KEYWORDS_FILE, JSON.stringify({ keywords: [{ name: "kw", body: "b" }] }), "utf8");
+      keywordsService.createKeyword({ name: "fresh", body: "c" });
+      expect(strays()).toEqual([]);
+    });
+
+    it("accepts every field this version does write, without a backup", () => {
+      // The guard must not fire on the service's own output.
+      keywordsService.createKeyword({ name: "kw", description: "d", body: "b" });
+      keywordsService.createKeyword({ name: "kw2", body: "b" });
+      expect(strays()).toEqual([]);
+    });
+  });
+
+  /**
+   * When the copy itself cannot be made, the write is refused — bytes that
+   * cannot be preserved must not be overwritten. What the user then sees has to
+   * name the real problem: their *store* is broken and unbackupable, their
+   * input was fine, and nothing was lost. "500 Failed to create keyword" says
+   * none of that and points at the wrong thing.
+   */
+  describe("when the store cannot even be copied aside", () => {
+    // Root bypasses the permission bits this leans on, so the setup would
+    // silently succeed and the test would pass for the wrong reason.
+    const asRoot = process.getuid?.() === 0;
+
+    it.skipIf(asRoot)("refuses the write and explains why, in a sentence a user can act on", () => {
+      writeFileSync(KEYWORDS_FILE, '{"keywords": [{"name": "precious", "body": "b"}],,,', "utf8");
+      chmodSync(KEYWORDS_FILE, 0o000); // unreadable: neither parseable nor copyable
+
+      try {
+        let caught: unknown;
+        try {
+          keywordsService.createKeyword({ name: "fresh", body: "c" });
+        } catch (err) {
+          caught = err;
+        }
+
+        expect(caught).toBeInstanceOf(KeywordStoreUnwritableError);
+        const { message } = caught as Error;
+        expect(message).toMatch(/could not be read as valid JSON/);
+        expect(message).toMatch(/backup copy of it could not be written/);
+        expect(message).toMatch(/[Nn]othing was changed and nothing was lost/);
+        // Names the file to fix, so the remedy does not require guessing.
+        expect(message).toContain(KEYWORDS_FILE);
+        // …and carries the underlying cause rather than hiding it.
+        expect(message).toMatch(/EACCES|EPERM/);
+      } finally {
+        chmodSync(KEYWORDS_FILE, 0o600);
+      }
+
+      // The refusal is the point: the original bytes are still there.
+      expect(readFileSync(KEYWORDS_FILE, "utf8")).toBe('{"keywords": [{"name": "precious", "body": "b"}],,,');
+    });
+  });
+
+  /**
+   * A store reached through a symlink — into a dotfiles repo, a synced folder —
+   * must stay a symlink. The write ends in a rename, which would otherwise
+   * replace the link with a regular file and leave the real target frozen with
+   * whatever it held when the link was made.
+   */
+  describe("a symlinked store", () => {
+    it("writes through the link instead of replacing it", () => {
+      const real = join(tmpRoot, "real-store.json");
+      writeFileSync(real, JSON.stringify({ version: 1, keywords: [{ name: "existing", body: "b" }] }), "utf8");
+      symlinkSync(real, KEYWORDS_FILE);
+
+      keywordsService.createKeyword({ name: "added", body: "c" });
+
+      // Still a link…
+      expect(lstatSync(KEYWORDS_FILE).isSymbolicLink()).toBe(true);
+      // …and the real file behind it is the one that changed.
+      const written = JSON.parse(readFileSync(real, "utf8"));
+      expect(written.keywords.map((k: { name: string }) => k.name)).toEqual(["added", "existing"]);
+      expect(keywordsService.listKeywords().map((k) => k.name)).toEqual(["added", "existing"]);
+    });
+
+    it("puts a quarantine copy beside the real file, not beside the link", () => {
+      const real = join(tmpRoot, "real-store.json");
+      writeFileSync(real, "not json at all", "utf8");
+      symlinkSync(real, KEYWORDS_FILE);
+
+      keywordsService.createKeyword({ name: "fresh", body: "c" });
+
+      expect(lstatSync(KEYWORDS_FILE).isSymbolicLink()).toBe(true);
+      const copies = readdirSync(tmpRoot).filter((f) => f.startsWith("real-store.json.corrupt-"));
+      expect(copies).toHaveLength(1);
+      expect(readFileSync(join(tmpRoot, copies[0]), "utf8")).toBe("not json at all");
+    });
   });
 });
