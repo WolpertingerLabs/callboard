@@ -145,6 +145,13 @@ export interface KeywordDismissal {
  *   dismisses the whole catalogue, which is a far weaker statement than
  *   dismissing a list the user typed their way to. A second Escape, now
  *   carrying a non-empty query, sticks the way it should.
+ *
+ *   Do not read that as "Escape makes a literal `$` safe". Matching is
+ *   case-insensitive *substring*, so a keyword named `home` matches `$HOME`
+ *   and a user who Escaped the bare `$` meaning a literal one gets the menu
+ *   back on the very next character. That hazard predates this predicate and
+ *   lives in the highlight rule, not here; the recourse is the second Escape
+ *   above.
  * - `$` → Enter → Enter still sends rather than expanding, because the token is
  *   still `""` at the second Enter and the dismissal therefore still holds.
  *   That sequence is the reason this predicate has to keep returning `true` for
