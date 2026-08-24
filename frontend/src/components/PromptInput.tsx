@@ -2,9 +2,43 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { ArrowUp, Paperclip, Edit, ImageIcon, Menu } from "lucide-react";
 import ImageUpload, { ALLOWED_IMAGE_TYPES, validateImageFiles } from "./ImageUpload";
 import SlashCommandAutocomplete from "./SlashCommandAutocomplete";
+import CommandChip from "./CommandChip";
 import MenuRow, { type MenuItem } from "./MenuRow";
 
 export type PromptMenuItem = MenuItem;
+
+/**
+ * Fold a chip back into the prompt string the harness expects.
+ *
+ * The chip is presentation only — what leaves this component is byte-identical
+ * to what the composer produced when the command was plain text, so nothing
+ * downstream (queue, draft, session) learns that chips exist. Prose typed
+ * alongside the chip becomes the command's arguments, which is what makes
+ * `/model opus` still expressible.
+ */
+export function composePrompt(command: string | null, text: string): string {
+  const trimmed = text.trim();
+  if (!command) return trimmed;
+  return trimmed ? `/${command} ${trimmed}` : `/${command}`;
+}
+
+/**
+ * Inverse of {@link composePrompt}, for values handed in from outside (a draft
+ * being reloaded, mostly). Only a leading token that is a *known* command
+ * chips; anything else stays literal text, so raw `/whatever` keeps behaving
+ * exactly as it did before chips existed.
+ */
+export function parseLeadingCommand(text: string, commands: string[]): { command: string | null; rest: string } {
+  const match = /^\s*\/(\S+)(?:[ \t]+([\s\S]*))?$/.exec(text);
+  if (!match || !commands.includes(match[1])) return { command: null, rest: text };
+  return { command: match[1], rest: match[2] ?? "" };
+}
+
+/** Drop the leading `/token` the autocomplete matched on, keeping the rest. */
+export function stripLeadingCommandToken(text: string): string {
+  const match = /^\s*\/\S*[ \t]?/.exec(text);
+  return match ? text.slice(match[0].length) : text;
+}
 
 interface Props {
   onSend: (prompt: string, images?: File[]) => void;
@@ -13,6 +47,16 @@ interface Props {
   slashCommands?: string[];
   commandDescriptions?: Record<string, string>;
   onSetValue?: (setValue: (value: string) => void) => void;
+  /** Chat the composer is attached to — the chip popover fetches against it. */
+  chatId?: string;
+  /**
+   * Directory the composer's chat lives in. The chip popover falls back to it
+   * when there is no chat yet: on `/chat/new` the id is undefined, and picking
+   * a skill there is the single most common way a chip gets created.
+   */
+  folder?: string;
+  /** Per-directory plugin ids the user has switched on, as the listing uses. */
+  activePlugins?: string[];
   /**
    * Optional extra entries for the hamburger menu next to the Send button.
    * Used by Chat.tsx to mount the per-chat model/effort picker per the
@@ -23,45 +67,128 @@ interface Props {
   menuItems?: PromptMenuItem[];
 }
 
-export default function PromptInput({ onSend, disabled, onSaveDraft, slashCommands = [], commandDescriptions, onSetValue, menuItems = [] }: Props) {
+export default function PromptInput({
+  onSend,
+  disabled,
+  onSaveDraft,
+  slashCommands = [],
+  commandDescriptions,
+  onSetValue,
+  chatId,
+  folder,
+  activePlugins,
+  menuItems = [],
+}: Props) {
   const [value, setValue] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
+  const [focused, setFocused] = useState(false);
   const [autocompleteDismissed, setAutocompleteDismissed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // The one command currently held as a chip. Picking a second replaces it.
+  const [activeCommand, setActiveCommand] = useState<string | null>(null);
+  const [chipPopoverOpen, setChipPopoverOpen] = useState(false);
+  // A value handed in from outside that did not chip. Held because the command
+  // list it was matched against may simply not have arrived yet — see below.
+  const [unchippedValue, setUnchippedValue] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Set the chip, and close any popover belonging to the chip being replaced.
+   *
+   * `chipPopoverOpen` is reported *by* the chip, so a chip that goes away while
+   * its popover is open (replaced from an external setValue, unmounted on a
+   * route change) never gets to report the close, and the stale `true` would
+   * silently disable Backspace-deletes-chip for the rest of the session.
+   */
+  const changeActiveCommand = useCallback((next: string | null) => {
+    setActiveCommand(next);
+    setChipPopoverOpen(false);
+  }, []);
+
+  /**
+   * The composer's value as the rest of the app sets it — a whole prompt
+   * string, which may lead with a command. Splitting it here is what makes a
+   * saved draft come back as the chip it was sent as, rather than as text.
+   */
+  const applyExternalValue = useCallback(
+    (next: string) => {
+      const { command, rest } = parseLeadingCommand(next, slashCommands);
+      changeActiveCommand(command);
+      setValue(rest);
+      setAutocompleteDismissed(false);
+      // Nothing matched — but `slashCommands` is fetched, and the app restores
+      // a router draft on the render right after it hands out this setter, so
+      // "no match" here usually means "the list is still in flight" rather than
+      // "not a command". Keep the string so a later list can still chip it.
+      setUnchippedValue(command ? null : next);
+    },
+    [slashCommands, changeActiveCommand],
+  );
+
+  /**
+   * Second look at a value that arrived before the command list did.
+   *
+   * Only while the textarea still holds exactly what was put there: once the
+   * user has typed, the string is theirs and re-chipping it under them would be
+   * the composer editing their message.
+   */
+  useEffect(() => {
+    if (unchippedValue === null || value !== unchippedValue) return;
+    const { command, rest } = parseLeadingCommand(unchippedValue, slashCommands);
+    if (!command) return;
+    changeActiveCommand(command);
+    setValue(rest);
+    setUnchippedValue(null);
+  }, [unchippedValue, value, slashCommands, changeActiveCommand]);
 
   useEffect(() => {
     if (onSetValue) {
       // Wrap in arrow function because setState interprets functions as updaters
       // When passing a function to setState, React calls it - so we return the function we want to store
-      onSetValue(() => setValue);
+      onSetValue(() => applyExternalValue);
     }
-  }, [onSetValue]);
+  }, [onSetValue, applyExternalValue]);
 
-  const handleSend = useCallback(async () => {
-    const trimmed = value.trim();
-    if ((!trimmed && images.length === 0) || disabled) return;
-
-    // Send message with images
-    onSend(trimmed, images.length > 0 ? images : undefined);
-
-    // Clear input and images
+  const clearComposer = useCallback(() => {
     setValue("");
     setImages([]);
-    setAutocompleteDismissed(false);
-
+    setUnchippedValue(null);
+    changeActiveCommand(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [value, images, disabled, onSend]);
+  }, [changeActiveCommand]);
+
+  const handleSend = useCallback(async () => {
+    const prompt = composePrompt(activeCommand, value);
+    if ((!prompt && images.length === 0) || disabled) return;
+
+    // Send message with images
+    onSend(prompt, images.length > 0 ? images : undefined);
+
+    // Clear input and images
+    clearComposer();
+    setAutocompleteDismissed(false);
+  }, [value, activeCommand, images, disabled, onSend, clearComposer]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (showAutocomplete && e.key === "Escape") {
       e.preventDefault();
       setAutocompleteDismissed(true);
       return;
+    }
+
+    // Backspace at the very start of the prose deletes the chip, the way it
+    // would delete the character that used to sit there.
+    if (e.key === "Backspace" && activeCommand && !chipPopoverOpen) {
+      const el = e.currentTarget as HTMLTextAreaElement;
+      if (el.selectionStart === 0 && el.selectionEnd === 0) {
+        e.preventDefault();
+        changeActiveCommand(null);
+        return;
+      }
     }
 
     if (e.key === "Enter" && !e.shiftKey) {
@@ -83,18 +210,11 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
   };
 
   const handleSaveDraft = useCallback(() => {
-    if (!onSaveDraft || !value.trim() || disabled) return;
+    const prompt = composePrompt(activeCommand, value);
+    if (!onSaveDraft || !prompt || disabled) return;
 
-    const clearInput = () => {
-      setValue("");
-      setImages([]);
-      if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
-      }
-    };
-
-    onSaveDraft(value.trim(), images.length > 0 ? images : undefined, clearInput);
-  }, [value, images, disabled, onSaveDraft]);
+    onSaveDraft(prompt, images.length > 0 ? images : undefined, clearComposer);
+  }, [value, activeCommand, images, disabled, onSaveDraft, clearComposer]);
 
   // Drag-and-drop handlers for the textarea area
   const handleDrop = useCallback(
@@ -157,13 +277,21 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
   // Derive autocomplete visibility from value (no effect needed)
   const showAutocomplete = !autocompleteDismissed && value.trim().startsWith("/") && slashCommands.length > 0;
 
-  const handleCommandSelect = useCallback((command: string) => {
-    setValue("/" + command + " ");
-    setAutocompleteDismissed(true);
-    textareaRef.current?.focus();
-  }, []);
+  const handleCommandSelect = useCallback(
+    (command: string) => {
+      // Only the token the autocomplete matched on leaves the textarea — anything
+      // typed after it was the user's prose and stays theirs.
+      changeActiveCommand(command);
+      setUnchippedValue(null);
+      setValue((prev) => stripLeadingCommandToken(prev));
+      setAutocompleteDismissed(true);
+      textareaRef.current?.focus();
+    },
+    [changeActiveCommand],
+  );
 
-  const canSend = (value.trim() || images.length > 0) && !disabled;
+  // A chip alone is sendable: /compact and /clear take no argument.
+  const canSend = (value.trim() || activeCommand || images.length > 0) && !disabled;
 
   const hasMenu = Boolean(onSaveDraft) || menuItems.length > 0;
   const menuHasActiveItem = menuItems.some((item) => item.active);
@@ -213,8 +341,21 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
           alignItems: "flex-end",
         }}
       >
+        {/* The input "box" is this wrapper, not the textarea: the chip has to
+            read as sitting inside the field alongside the prose, so the border,
+            background and radius live out here and the textarea is transparent.
+            It was already the positioning context for the drag overlay and the
+            paperclip button, so nothing else had to move. */}
         <div
-          style={{ flex: 1, position: "relative" }}
+          className="composer-field"
+          style={{
+            flex: 1,
+            position: "relative",
+            background: "var(--surface)",
+            border: `1px solid ${dragActive || focused ? "var(--accent)" : "var(--border)"}`,
+            borderRadius: 10,
+            transition: "border-color 0.2s ease",
+          }}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           onDragEnter={handleDragEnter}
@@ -228,29 +369,56 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
             commandDescriptions={commandDescriptions}
           />
 
+          {activeCommand && (
+            <div style={{ padding: "8px 40px 0 12px" }}>
+              <CommandChip
+                // Keyed on the command: the chip caches the body it fetched,
+                // so replacing one command with another has to be a new chip
+                // and not the old one wearing a new name.
+                key={activeCommand}
+                name={activeCommand}
+                chatId={chatId}
+                folder={folder}
+                activePlugins={activePlugins}
+                description={commandDescriptions?.[activeCommand]}
+                onRemove={() => changeActiveCommand(null)}
+                onOpenChange={setChipPopoverOpen}
+              />
+            </div>
+          )}
+
           <textarea
             ref={textareaRef}
+            className="composer-textarea"
             value={value}
             onChange={(e) => {
               setValue(e.target.value);
               setAutocompleteDismissed(false);
+              // Typed text is the user's; a late command list must not rewrite it.
+              setUnchippedValue(null);
             }}
             onKeyDown={handleKeyDown}
             onInput={handleInput}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
             placeholder={images.length > 0 ? "Add a message (optional)..." : "Send a message..."}
             disabled={disabled}
             rows={1}
             style={{
+              display: "block",
               width: "100%",
-              background: "var(--surface)",
-              border: `1px solid ${dragActive ? "var(--accent)" : "var(--border)"}`,
-              borderRadius: 10,
+              background: "transparent",
+              border: "none",
+              // No `outline: none` here, deliberately. The ring moves to the
+              // wrapper (see `focused` above), but suppressing it inline would
+              // outrank every rule in index.css and take the :focus-visible and
+              // forced-colors fallbacks down with it. `.composer-textarea` owns
+              // both halves of that trade-off in the stylesheet.
               padding: "10px 40px 10px 14px",
               fontSize: 15,
               resize: "none",
               maxHeight: 120,
               lineHeight: 1.4,
-              transition: "border-color 0.2s ease",
             }}
           />
 
@@ -338,7 +506,7 @@ export default function PromptInput({ onSend, disabled, onSaveDraft, slashComman
                       icon={<Edit size={16} />}
                       label="Save as draft"
                       title="Save as draft"
-                      disabled={!value.trim() || disabled}
+                      disabled={(!value.trim() && !activeCommand) || disabled}
                       onClick={() => {
                         setMenuOpen(false);
                         handleSaveDraft();

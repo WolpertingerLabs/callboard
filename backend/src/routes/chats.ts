@@ -1,8 +1,9 @@
 import { Router } from "express";
+import type { Request } from "express";
 import { existsSync } from "fs";
 import { randomUUID } from "node:crypto";
 import { chatFileService } from "../services/chat-file-service.js";
-import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
+import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory, resolveSlashCommandContent } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
@@ -1564,6 +1565,78 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
     log.error(`Failed to get slash commands and plugins: ${error}`);
     res.json({ slashCommands: [], plugins: [], allCommands: [], appPlugins: { scanRoots: [], plugins: [], mcpServers: [] } });
   }
+});
+
+/**
+ * Body of one slash command, resolved lazily.
+ *
+ * The composer chips a command the moment it is picked but fetches nothing;
+ * these routes are what a chip's popover calls the first time it is opened,
+ * which for most chips is never. That is the whole reason the body is not
+ * folded into `GET /:id/slash-commands` — it would turn one cheap listing into
+ * N file reads per composer mount.
+ *
+ * The name arrives as a QUERY parameter, not a path segment, because command
+ * names contain colons (`callboard:foo`, `deep-research:investigate`).
+ *
+ * There are two doors because the composer has two lives. On an existing chat
+ * the folder comes from the chat record; on `/chat/new` there is no chat yet
+ * and the folder is the one the user picked — the same trade `/new/info` above
+ * already makes, and the same pseudo-id (`/new/…`) it already claims. Both
+ * doors call one resolver in slashCommands.ts, so the name gate cannot drift
+ * apart between them.
+ *
+ * `null` back from the resolver means the string could not be a command name at
+ * all → 400. Anything else is 200, including the built-in case with no body.
+ */
+function parseActivePlugins(req: Request): string[] {
+  const raw = req.query.activePlugins;
+  if (!raw) return [];
+  return (Array.isArray(raw) ? raw : [raw]).filter((v): v is string => typeof v === "string");
+}
+
+// Registered ahead of the `/:id/` variant below: `new` would otherwise be
+// swallowed as a chat id, the same way `/new/info` has to precede `/:id`.
+chatsRouter.get("/new/slash-commands/content", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Get the body of one slash command, by folder'
+  // #swagger.description = 'Same as the per-chat route, for the new-chat composer, which has no chat id yet.'
+  /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path to the project folder' } */
+  /* #swagger.parameters['name'] = { in: 'query', required: true, type: 'string', description: 'Full command name, e.g. callboard:my-skill' } */
+  /* #swagger.parameters['activePlugins'] = { in: 'query', type: 'array', items: { type: 'string' }, description: 'Active per-directory plugin ids' } */
+  /* #swagger.responses[200] = { description: "{ name, source, description, content }" } */
+  /* #swagger.responses[400] = { description: "Missing folder, or missing/unusable command name" } */
+  const folder = typeof req.query.folder === "string" ? req.query.folder : "";
+  if (!folder) return res.status(400).json({ error: "folder query param is required" });
+  if (!existsSync(folder)) return res.status(400).json({ error: "folder does not exist" });
+
+  const name = typeof req.query.name === "string" ? req.query.name : "";
+  if (!name) return res.status(400).json({ error: "name query parameter is required" });
+
+  const result = resolveSlashCommandContent(folder, name, parseActivePlugins(req));
+  if (!result) return res.status(400).json({ error: "Invalid command name" });
+  res.json(result);
+});
+
+chatsRouter.get("/:id/slash-commands/content", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Get the body of one slash command'
+  // #swagger.description = 'Returns the full markdown content behind a slash command (custom skill or plugin command). Harness built-ins resolve with content: null.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.parameters['name'] = { in: 'query', required: true, type: 'string', description: 'Full command name, e.g. callboard:my-skill' } */
+  /* #swagger.parameters['activePlugins'] = { in: 'query', type: 'array', items: { type: 'string' }, description: 'Active per-directory plugin ids' } */
+  /* #swagger.responses[200] = { description: "{ name, source, description, content }" } */
+  /* #swagger.responses[400] = { description: "Missing or unusable command name" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const chat = findChat(req.params.id) as any;
+  if (!chat) return res.status(404).json({ error: "Not found" });
+
+  const name = typeof req.query.name === "string" ? req.query.name : "";
+  if (!name) return res.status(400).json({ error: "name query parameter is required" });
+
+  const result = resolveSlashCommandContent(chat.folder, name, parseActivePlugins(req));
+  if (!result) return res.status(400).json({ error: "Invalid command name" });
+  res.json(result);
 });
 
 // Session parsing functions have been extracted to
