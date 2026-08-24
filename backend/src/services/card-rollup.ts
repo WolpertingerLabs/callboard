@@ -10,6 +10,7 @@
  * can run without the registry (production deps in ROLLUP_DEPS).
  */
 import type { Card, CardChatActivity, CardMemberChat, CardMemberRun, CardPendingKind, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
+import { metaCardId } from "./card-member-index.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest } from "./claude.js";
 import { getSessionProviders } from "../agents/factory.js";
@@ -96,11 +97,6 @@ function parseMeta(chat: Chat): ChatMeta {
   }
 }
 
-/** String-typed cardId or undefined — unassign merges `cardId: null`, so key presence is not membership. */
-function metaCardId(meta: ChatMeta): string | undefined {
-  return typeof meta.cardId === "string" && meta.cardId ? meta.cardId : undefined;
-}
-
 function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberChat {
   // metadata.preview is only stamped by the chats route at response time, so
   // raw file-storage records won't have it — previewOf reads the session log.
@@ -165,9 +161,14 @@ function rollupState(chats: CardMemberChat[], runs: CardMemberRun[]): CardRollup
   return "idle";
 }
 
-export function buildCardSummaries(cards: Card[], allChats: Chat[], allRuns: JobRunListItem[], deps: RollupDeps = ROLLUP_DEPS): CardSummary[] {
+/**
+ * `chats` may be every chat record or only the ones carrying a `cardId` — the
+ * loop below skips the rest anyway, so the two are interchangeable and the
+ * caller is free to hand over the cheaper set (see card-member-index.ts).
+ */
+export function buildCardSummaries(cards: Card[], chats: Chat[], allRuns: JobRunListItem[], deps: RollupDeps = ROLLUP_DEPS): CardSummary[] {
   const chatsByCard = new Map<string, CardMemberChat[]>();
-  for (const chat of allChats) {
+  for (const chat of chats) {
     const meta = parseMeta(chat);
     const cardId = metaCardId(meta);
     if (!cardId) continue;

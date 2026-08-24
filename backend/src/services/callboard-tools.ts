@@ -25,6 +25,7 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId } from "./chat-lineage.js";
 import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX, CARD_CATEGORY_MAX } from "./card-store.js";
+import { listCardMemberChats } from "./card-member-index.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
@@ -523,8 +524,9 @@ export function buildCallboardToolsSpec(
         async (args) => {
           const card = getCard(args.card_id);
           if (!card) return error(`Card "${args.card_id}" not found`);
-          const members = chatFileService
-            .getAllChats()
+          // Same stat-gated index the board's rollup reads: the ~3% of records
+          // that are on a card, without re-reading the other ~97% to find out.
+          const members = listCardMemberChats()
             .map((chat) => {
               let meta: Record<string, unknown> = {};
               try {
