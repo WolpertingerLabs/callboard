@@ -13,6 +13,7 @@
 import { readFileSync } from "fs";
 import type { ParsedMessage } from "shared/types/index.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
+import { scanJsonlLines } from "../../../utils/jsonl-scan.js";
 
 // ── CLI plumbing filters ────────────────────────────────────────────
 
@@ -166,34 +167,45 @@ export function readJsonlFile(path: string): any[] {
 /**
  * Extract the first user message from a session JSONL file.
  * Used for chat list preview text.
+ *
+ * Scans lazily via {@link scanJsonlLines} and stops at the hit. The message it
+ * wants is at the top of the file — byte ~3,000 even in a 13.5 MB transcript —
+ * so slurping the whole thing read the entire corpus to return 200 characters
+ * per row. See the header of `utils/jsonl-scan.ts` for the measurement.
+ *
+ * A user turn whose content carries no text block falls through to the next
+ * line rather than ending the scan, which is what the whole-file loop this
+ * replaced did with its `continue`.
+ *
+ * The visitor swallows its own errors, and that is not defensive padding. A
+ * transcript line can parse as JSON and still be a shape this code cannot walk
+ * — a bare `null` line, a `null` inside a `content` array, a `text` block whose
+ * `text` is a number — and each of those throws a TypeError here. The loop this
+ * replaced caught them per line and moved on, because `scanJsonlLines` calls
+ * `visit` outside its own parse guard. Without this, one malformed line in one
+ * transcript propagates through `getSessionPreview` and `attachPreview` into the
+ * `GET /api/chats` handler and 500s the entire sidebar.
  */
 export function getFirstUserMessage(filePath: string, maxLength: number = 200): string | null {
-  try {
-    const lines = readFileSync(filePath, "utf-8").split("\n");
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        if (msg.type === "user" && msg.message?.role === "user") {
-          const content = msg.message.content;
-          if (typeof content === "string") {
-            return content.substring(0, maxLength);
-          }
-          if (Array.isArray(content)) {
-            const textBlock = content.find((b: any) => b.type === "text");
-            if (textBlock?.text) {
-              return textBlock.text.substring(0, maxLength);
-            }
-          }
-        }
-      } catch {
-        continue;
+  const hit = scanJsonlLines<string>(filePath, (msg) => {
+    try {
+      if (msg?.type !== "user" || msg.message?.role !== "user") return undefined;
+      const content = msg.message.content;
+      // `""` is deliberately returned rather than skipped: it is a hit, and the
+      // whole-file loop this replaced stopped on it too. Every caller treats an
+      // empty preview and a null one identically, so the only thing preserving
+      // this buys is that the scan cannot run further than it used to.
+      if (typeof content === "string") return content.substring(0, maxLength);
+      if (Array.isArray(content)) {
+        const textBlock = content.find((b: any) => b?.type === "text");
+        if (typeof textBlock?.text === "string" && textBlock.text) return textBlock.text.substring(0, maxLength);
       }
+      return undefined;
+    } catch {
+      return undefined;
     }
-    return null;
-  } catch {
-    return null;
-  }
+  });
+  return hit ?? null;
 }
 
 // ── Tool result content coercion ────────────────────────────────────

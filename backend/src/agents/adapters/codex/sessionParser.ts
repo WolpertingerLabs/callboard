@@ -40,10 +40,10 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import type { ParsedMessage } from "shared/types/index.js";
 import { getAgentSettings } from "../../../services/agent-settings.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
+import { scanJsonlLines } from "../../../utils/jsonl-scan.js";
 import { createLogger } from "../../../utils/logger.js";
 import { DATA_DIR } from "../../../utils/paths.js";
 
@@ -188,67 +188,16 @@ function readRolloutLines(filePath: string): RolloutLine[] {
  * fields the chat list needs — `session_meta.cwd` and the first user prompt —
  * sit at the very top. {@link readRolloutLines} slurps and `JSON.parse`s the
  * whole file, so answering "what cwd is this?" for every rollout used to read
- * the entire corpus; this reads a 64 KB chunk at a time and stops at the hit.
+ * the entire corpus.
  *
- * A torn/partial line is skipped exactly as the slurping reader skips it, and a
- * missing/unreadable file yields `undefined` rather than throwing — including
- * when the failure is the *read* rather than the open (`EIO` on a failing disk,
- * `ESTALE` on a network-mounted home). One unreadable rollout must cost the
- * chat list that rollout, not the whole response.
- *
- * Chunk boundaries are a decoding hazard, not just a line-splitting one: a
- * multi-byte character straddling one would become U+FFFD on both sides if each
- * chunk were decoded on its own, and — because the corruption lands *inside* a
- * JSON string — the line would still parse, so the damage would surface as
- * mojibake in a sidebar preview rather than as an error. {@link StringDecoder}
- * carries the partial sequence across the boundary, which is what the whole-file
- * `readFileSync(…, "utf-8")` this replaced did implicitly.
+ * The chunked scan that fixes it now lives in `utils/jsonl-scan.ts`, because
+ * every session format here is JSONL and the Claude Code parser wanted the same
+ * thing for the same reason — see that module's header for the decoding and
+ * torn-line reasoning this used to carry. This stays as the rollout-typed door
+ * onto it.
  */
 function scanRolloutLines<T>(filePath: string, visit: (line: RolloutLine) => T | undefined): T | undefined {
-  let fd: number;
-  try {
-    fd = openSync(filePath, "r");
-  } catch {
-    return undefined;
-  }
-  try {
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    const decoder = new StringDecoder("utf8");
-    let pending = "";
-    for (;;) {
-      let bytes: number;
-      try {
-        bytes = readSync(fd, chunk, 0, chunk.length, null);
-      } catch {
-        return undefined;
-      }
-      const atEof = bytes === 0;
-      // `end()` flushes any dangling partial sequence as U+FFFD, matching what
-      // decoding the whole (truncated) file at once would have produced.
-      pending += atEof ? decoder.end() : decoder.write(chunk.subarray(0, bytes));
-      // Everything before the last newline is complete; the tail may be a line
-      // split across this chunk boundary, so it waits for the next read. At EOF
-      // there is no next read, so the tail is complete too.
-      const cut = atEof ? pending.length : pending.lastIndexOf("\n") + 1;
-      const ready = pending.slice(0, cut);
-      pending = pending.slice(cut);
-      for (const line of ready.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        let parsed: RolloutLine;
-        try {
-          parsed = JSON.parse(trimmed) as RolloutLine;
-        } catch {
-          continue;
-        }
-        const hit = visit(parsed);
-        if (hit !== undefined) return hit;
-      }
-      if (atEof) return undefined;
-    }
-  } finally {
-    closeSync(fd);
-  }
+  return scanJsonlLines<T>(filePath, (line) => visit(line as RolloutLine));
 }
 
 /** Read up to `maxBytes` from the front of a file; `null` when unreadable. */
