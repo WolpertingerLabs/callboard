@@ -271,7 +271,9 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       {
         name: "provider",
         type: "enum",
-        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
+        description:
+          'Agent engine for the new session. Defaults to the engine this session is running on. "acp" is only usable from a session already ' +
+          "running ACP, which is the only place its vendor id can come from.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
@@ -697,7 +699,9 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       {
         name: "provider",
         type: "enum",
-        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
+        description:
+          'Agent engine for the new session. Defaults to the engine this session is running on. "acp" is only usable from a session already ' +
+          "running ACP, which is the only place its vendor id can come from.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
@@ -718,7 +722,9 @@ const AGENT_TOOLS: McpToolDefinition[] = [
       {
         name: "provider",
         type: "enum",
-        description: "Agent engine for the new session. Defaults to the engine this session is running on.",
+        description:
+          'Agent engine for the new session. Defaults to the engine this session is running on. "acp" is only usable from a session already ' +
+          "running ACP, which is the only place its vendor id can come from.",
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },

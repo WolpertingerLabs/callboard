@@ -146,4 +146,27 @@ describe("the MCP tool manifest matches the schemas it describes", () => {
       expect(param.enumValues, toolName).toEqual(["claude-code", "codex", "acp", "cline", "pi"]);
     }
   });
+
+  it("does not advertise acp without its caveat", () => {
+    // Deliberately the ONLY thing asserted about description text in this file.
+    // A manifest description is a compact UI listing and the Zod `.describe()`
+    // is the long-form model-facing copy; requiring them to match would be
+    // over-fitting, and would make every wording tweak a two-file edit.
+    //
+    // This one earns its keep because listing `"acp"` is an offer the tool will
+    // refuse from all but ACP sessions — an enum member that is conditionally
+    // unusable, which is the one case where the value alone actively misleads.
+    // Adding it to the enum without the caveat is the same
+    // "documented-but-not-how-it-works" drift the rest of this file exists to
+    // catch, one layer up.
+    for (const entry of manifest) {
+      for (const param of entry.parameters) {
+        if (!param.enumValues?.includes("acp")) continue;
+        // `description` is optional on the type; an absent one fails here too,
+        // which is the right answer — offering acp with no explanation at all is
+        // the same defect as offering it with an explanation that omits this.
+        expect(param.description?.toLowerCase() ?? "", `${entry.name}.${param.name}`).toContain("acp");
+      }
+    }
+  });
 });
