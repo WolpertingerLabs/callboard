@@ -25,6 +25,7 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId } from "./chat-lineage.js";
 import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX, CARD_CATEGORY_MAX } from "./card-store.js";
+import { listCardMemberChats } from "./card-member-index.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
@@ -523,8 +524,14 @@ export function buildCallboardToolsSpec(
         async (args) => {
           const card = getCard(args.card_id);
           if (!card) return error(`Card "${args.card_id}" not found`);
-          const members = chatFileService
-            .getAllChats()
+          // Same stat-gated index the board's rollup reads: the ~3% of records
+          // that are on a card, without re-reading the other ~97% to find out.
+          // It returns them in directory order, so the newest-first ordering
+          // this list has always had is applied here rather than inherited —
+          // an agent reads memberChats[0] as "the chat this card is on right
+          // now", and readdir order would make that an arbitrary member.
+          const members = listCardMemberChats()
+            .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
             .map((chat) => {
               let meta: Record<string, unknown> = {};
               try {

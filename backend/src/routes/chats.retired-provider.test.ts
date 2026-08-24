@@ -174,9 +174,10 @@ describe("card rollups agree with the chat list", () => {
   };
 
   it("counts only the members that still exist, and does not crash on the one that does not", () => {
-    // Rollups scan chat RECORDS (routes/cards.ts passes getAllChats()), never
-    // discovery — so without an explicit rule the board would report a member
-    // count the sidebar cannot reproduce.
+    // Rollups scan chat RECORDS (routes/cards.ts passes the card-member
+    // index, which reads the same files), never discovery — so without an
+    // explicit rule the board would report a member count the sidebar cannot
+    // reproduce.
     const summary = buildCardSummaries([cardFixture], fileChats as unknown as Chat[], [], IDLE_DEPS)[0];
     expect(summary.chatCount).toBe(1);
     expect(summary.memberChats.map((c) => c.chatId)).toEqual(["live-member"]);

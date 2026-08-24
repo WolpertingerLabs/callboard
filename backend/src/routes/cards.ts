@@ -1,17 +1,29 @@
 /**
  * Cards REST API — CRUD for cards (tickets) plus per-card rollups for the
- * /board view. Rollups scan all chats + runs per request, the same cost the
- * uncached chat list and folder summaries already pay. No TTL cache on
- * purpose: the frontend refetches ~300ms after a mutation bumps
- * metadataVersion, exactly when a cache would serve stale data.
+ * /board view.
+ *
+ * A rollup is recomputed per request, and deliberately so: the board and the
+ * sidebar both refetch ~300 ms after a mutation bumps metadataVersion, which
+ * is exactly when a response cache would serve stale data. That leaves the
+ * cost of a recompute as the thing to hold down, and it is *blocked event
+ * loop* — the handler is one synchronous block, so while it runs nothing else
+ * in the daemon does. Membership comes from the stat-gated index in
+ * card-member-index.ts for that reason; the ~8k-record scan it replaced was
+ * measured at up to 1.9 s of frozen daemon per request.
+ *
+ * The sibling listings (`GET /api/chats`, `GET /api/chats/folders`) took the
+ * other route out of the same problem — a short TTL plus a fingerprint of the
+ * state that moves without a request. That does not transfer here: the state
+ * this route reads *is* the chat corpus, so validating an entry would cost the
+ * same scan the entry exists to avoid.
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { Card, CardPatch, CardSummary } from "shared";
 import { listCards, getCard, createCard, updateCard, deleteCard, CardValidationError, CARD_CATEGORY_MAX } from "../services/card-store.js";
 import { buildCardSummaries } from "../services/card-rollup.js";
+import { listCardMemberChats } from "../services/card-member-index.js";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
-import { chatFileService } from "../services/chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setChatCardMembership, unassignAllChatsFromCard } from "../services/card-membership.js";
 import { listRuns } from "../services/job-store.js";
@@ -24,9 +36,13 @@ const log = createLogger("cards");
 export const cardsRouter = Router();
 
 function summarize(cards: Card[]): CardSummary[] {
-  // Only card-bearing runs matter to a rollup; filtering here (not slicing the
-  // newest N) keeps a long-dormant member run from silently dropping out.
-  return buildCardSummaries(cards, chatFileService.getAllChats(), listRuns({ assignedToCard: true }));
+  // Only card-bearing chats and runs matter to a rollup; filtering both here
+  // (not slicing the newest N) keeps a long-dormant member from silently
+  // dropping out. The chats come from the stat-gated index rather than a fresh
+  // read of all ~8k records: the same set for a fifth of the blocked event
+  // loop, which on this route is the cost that matters (see the module header
+  // of card-member-index.ts).
+  return buildCardSummaries(cards, listCardMemberChats(), listRuns({ assignedToCard: true }));
 }
 
 cardsRouter.get("/", (_req: Request, res: Response) => {
