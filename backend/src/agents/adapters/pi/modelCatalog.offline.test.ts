@@ -50,6 +50,7 @@ beforeEach(() => {
   clearPiModelCacheForTesting();
   refresh.mockReset();
   refresh.mockResolvedValue(ok());
+  getModels.mockReturnValue([{ id: "vendor/model", name: "Model", provider: "openrouter" }]);
   delete process.env.PI_OFFLINE;
 });
 
@@ -147,14 +148,32 @@ it("retries on the short window after a failed refresh, not the full TTL", async
 
 it("keeps serving the catalog when a revalidation fails", async () => {
   const first = await getPiModels("openrouter");
+  expect(first.map((m) => m.value)).toEqual(["vendor/model"]);
+
   vi.useFakeTimers();
   vi.setSystemTime(Date.now() + PI_CATALOG_TTL_MS + 1);
   refresh.mockResolvedValue(timedOut());
 
+  // A failed refresh fetches nothing, so the runtime still reports what it had.
   const second = await getPiModels("openrouter");
   await vi.waitFor(() => expect(getPiCatalogStatsForTesting().lastRefreshOk).toBe(false));
 
-  // The list survives the failure intact rather than emptying out.
-  expect(second.map((m) => m.value)).toEqual(first.map((m) => m.value));
-  expect((await getPiModels("openrouter")).map((m) => m.value)).toEqual(first.map((m) => m.value));
+  expect(second.map((m) => m.value)).toEqual(["vendor/model"]);
+  expect((await getPiModels("openrouter")).map((m) => m.value)).toEqual(["vendor/model"]);
+});
+
+it("picks up models a successful refresh brought in", async () => {
+  // The counterpart to the test above, and what makes its equality assertions
+  // mean something: on their own they hold for a fixed `getModels` no matter
+  // what the module does. Here the runtime's answer genuinely changes, so this
+  // fails if the derived views are not dropped after a refresh.
+  expect((await getPiModels("openrouter")).map((m) => m.value)).toEqual(["vendor/model"]);
+
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.now() + PI_CATALOG_TTL_MS + 1);
+  getModels.mockReturnValue([{ id: "vendor/model-2", name: "Model 2", provider: "openrouter" }]);
+
+  await getPiModels("openrouter");
+  await vi.waitFor(() => expect(getPiCatalogStatsForTesting().lastRefreshOk).toBe(true));
+  await vi.waitFor(async () => expect((await getPiModels("openrouter")).map((m) => m.value)).toEqual(["vendor/model-2"]));
 });

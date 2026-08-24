@@ -123,6 +123,12 @@ let _catalogRuntime: Promise<ModelRuntime> | null = null;
 function getCatalogRuntime(): Promise<ModelRuntime> {
   if (!_catalogRuntime) {
     const agentDir = resolvePiAgentDir();
+    // Both handlers below write generation-guarded state, so they take the
+    // guard too. A `create()` outliving a reset would otherwise stamp its
+    // timestamp into the state that replaced it, or null a newer live promise
+    // and cost a duplicate 1,157-model build — the exact leak `_generation`
+    // exists to stop, in the one place that was still exempt from it.
+    const gen = _generation;
     _catalogRuntime = ModelRuntime.create({
       authPath: join(agentDir, "auth.json"),
       modelsPath: join(agentDir, "models.json"),
@@ -136,8 +142,10 @@ function getCatalogRuntime(): Promise<ModelRuntime> {
         // on success. Without this the first read of every process would find
         // the catalog stale and immediately revalidate over the network — a
         // cold picker paying for a refresh of data it just loaded.
-        _refreshedAt = Date.now();
-        _lastRefreshOk = true;
+        if (gen === _generation) {
+          _refreshedAt = Date.now();
+          _lastRefreshOk = true;
+        }
         return runtime;
       },
       (err: unknown) => {
@@ -145,7 +153,7 @@ function getCatalogRuntime(): Promise<ModelRuntime> {
         // would make one bad create permanent for the process, which is the
         // opposite of what a module that advertises "re-read on a TTL" should
         // do — and it would leave the clock reading "fresh success" forever.
-        _catalogRuntime = null;
+        if (gen === _generation) _catalogRuntime = null;
         throw err;
       },
     );
@@ -214,6 +222,15 @@ function revalidateCatalog(): Promise<void> {
       // below never sees the failures that actually happen. Treating a resolved
       // promise as success would bank a 15s timeout that fetched nothing as a
       // full hour of freshness, and make the retry window dead code.
+      //
+      // `errors` is per-provider, so one permanently broken provider — a
+      // revoked OAuth credential, say — keeps this false while the other ~29
+      // refresh fine, and every picker open past the retry window tries again
+      // for something only a re-login will fix. That is deliberate and bounded:
+      // revalidation is read-driven, not on a timer, so an idle daemon does
+      // nothing, and the alternative (`!result.aborted` alone) would score a
+      // refresh where *every* provider failed as a full hour of success. If the
+      // log noise ever becomes the bigger problem, that is the knob.
       _lastRefreshOk = !result.aborted && result.errors.size === 0;
 
       // The derived views are dropped either way: `refresh` updates the

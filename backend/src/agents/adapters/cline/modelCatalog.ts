@@ -92,6 +92,14 @@ export async function getClineModels(providerId: string): Promise<ClineModelOpti
   if (existing) return existing;
 
   const read = (async () => {
+    // Suspend before the body runs, so a synchronous throw out of
+    // `getLocalProviderModels` could not reach the `finally` — deleting a key
+    // not yet set — before the `_inFlight.set` below installed this promise,
+    // which would freeze a settled entry in the map for the process. The
+    // shipped SDK export is an async function and so cannot throw
+    // synchronously, but that is a property of a minified third-party bundle
+    // across version bumps, which is not the kind of thing to depend on.
+    await Promise.resolve();
     try {
       const { models } = await getLocalProviderModels(id);
       const options = (models ?? []).map((m) => ({
