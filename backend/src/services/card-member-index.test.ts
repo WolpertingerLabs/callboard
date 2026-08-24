@@ -9,7 +9,7 @@
  * the whole contract under test.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, utimesSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Chat } from "shared";
@@ -64,6 +64,17 @@ function chat(sessionId: string, meta: Record<string, unknown>, overrides: Parti
 /** Write a record straight to disk, as chatFileService does (same filename rule). */
 function write(sessionId: string, meta: Record<string, unknown>, overrides: Partial<Chat> = {}): void {
   writeFileSync(join(chatsDir, `${sessionId}.json`), JSON.stringify(chat(sessionId, meta, overrides), null, 2));
+}
+
+/**
+ * Push a record's mtime into the past, so the index is willing to cache it.
+ * A just-written file is inside its own mtime tick and deliberately is not
+ * cacheable — see COARSE_MTIME_WINDOW_MS — which every test about *reuse* has
+ * to step around, and one test below is about precisely that rule.
+ */
+function age(sessionId: string, secondsAgo = 3600): void {
+  const when = new Date(Date.now() - secondsAgo * 1000);
+  utimesSync(join(chatsDir, `${sessionId}.json`), when, when);
 }
 
 function memberIds(): string[] {
@@ -153,6 +164,7 @@ describe("listCardMemberChats", () => {
     write("a", { cardId: "card-1" });
     write("b", { title: "Loose" });
     write("c", { cardId: "card-2" });
+    ["a", "b", "c"].forEach((id) => age(id));
 
     listCardMemberChats();
     expect(readsInChatsDir().sort()).toEqual(["a.json", "b.json", "c.json"]);
@@ -165,6 +177,7 @@ describe("listCardMemberChats", () => {
     // it is not re-read either — that is what keeps the warm scan flat.
     reads.length = 0;
     write("b", { title: "Loose", cardId: "card-3" });
+    age("b");
     expect(memberIds()).toEqual(["a", "b", "c"]);
     expect(readsInChatsDir()).toEqual(["b.json"]);
   });
@@ -172,6 +185,7 @@ describe("listCardMemberChats", () => {
   it("skips an unreadable record without caching the failure", () => {
     write("good", { cardId: "card-1" });
     writeFileSync(join(chatsDir, "corrupt.json"), "{ not json");
+    ["good", "corrupt"].forEach((id) => age(id));
     expect(memberIds()).toEqual(["good"]);
 
     // The rule, asserted directly rather than inferred: a failed read is NOT
@@ -187,6 +201,62 @@ describe("listCardMemberChats", () => {
     // And a repaired file becomes a member.
     write("corrupt", { cardId: "card-1" });
     expect(memberIds()).toEqual(["corrupt", "good"]);
+  });
+
+  it("does not cache a record still inside its own mtime tick", () => {
+    // A just-written file could be written again in the same tick, so its
+    // (mtime, size) is not yet evidence of anything. Two warm scans in a row
+    // both open it.
+    write("fresh", { cardId: "card-1" });
+    expect(memberIds()).toEqual(["fresh"]);
+
+    reads.length = 0;
+    expect(memberIds()).toEqual(["fresh"]);
+    expect(readsInChatsDir()).toEqual(["fresh.json"]);
+
+    // And once the tick has closed it becomes cacheable, so this is a delay
+    // rather than an opt-out.
+    age("fresh");
+    listCardMemberChats();
+    reads.length = 0;
+    expect(memberIds()).toEqual(["fresh"]);
+    expect(readsInChatsDir()).toEqual([]);
+  });
+
+  it("sees a rewrite that a whole-second clock would have hidden", () => {
+    // ext3, HFS+ and FAT report mtime in whole seconds or worse, so two writes
+    // to one record inside a tick present the *same* (mtime, size) — and these
+    // rewrites are equal-length by nature. Simulated by pinning both writes to
+    // the same recent second, which is what such a filesystem would report.
+    const filepath = join(chatsDir, "coarse.json");
+    const tick = new Date(Math.floor(Date.now() / 1000) * 1000);
+
+    write("coarse", { cardId: "card-aaa" });
+    utimesSync(filepath, tick, tick);
+    expect(listCardMemberChats().map((c) => chatCardId(c))).toEqual(["card-aaa"]);
+
+    write("coarse", { cardId: "card-bbb" });
+    utimesSync(filepath, tick, tick);
+    expect(statSync(filepath).size).toBeGreaterThan(0);
+
+    expect(listCardMemberChats().map((c) => chatCardId(c))).toEqual(["card-bbb"]);
+  });
+
+  it("reuses an entry whose tick closed, even if the timestamp is then restored", () => {
+    // The residual bound, stated rather than hoped about: once a record's tick
+    // has closed the pair IS taken as evidence, so a rewrite that restores the
+    // old timestamp is invisible. Nothing does that — writeFileSync always
+    // moves mtime forward — but the window above is the whole of the guarantee,
+    // and this is the other side of it.
+    const filepath = join(chatsDir, "settled.json");
+    write("settled", { cardId: "card-aaa" });
+    age("settled");
+    const { atime, mtime } = statSync(filepath);
+    expect(listCardMemberChats().map((c) => chatCardId(c))).toEqual(["card-aaa"]);
+
+    write("settled", { cardId: "card-bbb" });
+    utimesSync(filepath, atime, mtime);
+    expect(listCardMemberChats().map((c) => chatCardId(c))).toEqual(["card-aaa"]);
   });
 
   it("ignores files that are not .json", () => {

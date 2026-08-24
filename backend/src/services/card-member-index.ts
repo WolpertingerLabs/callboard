@@ -47,16 +47,17 @@
  *
  * An entry is reused when `(mtimeNs, size)` both match, and the timestamp is
  * the load-bearing half — a same-length rewrite is the normal case for these
- * records (`cardId` swapped for another id of equal length), so size alone
- * would miss it. Nanosecond mtimes come from `statSync(..., { bigint: true })`
- * and are what ext4 stores, so two writes cannot share one: they are
- * sequential, and `writeFileSync` is synchronous on a single-threaded event
- * loop, so no two writes to one record can land in the same nanosecond.
+ * records (`updated_at` is a fixed-width timestamp, one `cardId` swaps for
+ * another of equal length), so size alone would miss it.
  *
- * Restoring a timestamp to hide a write is not reachable from here either:
- * `utimesSync` takes seconds as a float, so it cannot reproduce a nanosecond
- * mtime even deliberately. Something outside Node could; nothing in Callboard
- * does.
+ * That leaves exactly one way for a write to hide: landing in the same mtime
+ * *tick* as the read that cached the entry. The tick is the filesystem's to
+ * choose — nanoseconds on ext4 with 256-byte inodes, whole seconds on ext3 and
+ * HFS+, two on FAT — so rather than assume a resolution, an entry read while
+ * its mtime is still inside the current tick is simply not cached. See
+ * {@link COARSE_MTIME_WINDOW_MS}. With that rule the reuse gate is sound on any
+ * granularity, and on a nanosecond filesystem the writes it re-reads are ones
+ * two sequential `writeFileSync` calls could never have collided on anyway.
  *
  * Only successful reads are cached. A read or parse that throws leaves the
  * file out of the index entirely, so a transient failure (EMFILE, a record
@@ -104,6 +105,27 @@ export function chatCardId(chat: Pick<Chat, "metadata">): string | undefined {
     return undefined;
   }
 }
+
+/**
+ * How far in the past a file's mtime must already be, at the moment we read
+ * it, before that mtime is allowed to stand in for the file's contents.
+ *
+ * This is the guard against a *coarse* clock, and it has to exist because the
+ * granularity is the filesystem's to choose, not ours: ext4 stores nanoseconds
+ * only with 256-byte inodes, HFS+ and ext3 store whole seconds, FAT stores two.
+ * On any of those, a record written twice inside one tick with an equal-length
+ * payload — the normal shape here, since `updated_at` is a fixed-width
+ * timestamp — presents the same `(mtime, size)` before and after, and a scan
+ * that ran between the two writes would cache the first forever.
+ *
+ * So an entry read while its mtime is still inside the current tick is not
+ * cacheable: a later write could still land in that same tick. Two seconds
+ * covers the coarsest granularity in play. The next scan re-reads it, by which
+ * time the tick has closed and the entry becomes cacheable — so the cost is a
+ * re-read of the handful of records written in the last two seconds, not a
+ * standing penalty. Same rule `make` and `rsync` use for the same reason.
+ */
+const COARSE_MTIME_WINDOW_MS = 2_000;
 
 interface IndexEntry {
   mtimeNs: bigint;
@@ -158,6 +180,11 @@ export function listCardMemberChats(): Chat[] {
       continue;
     }
 
+    // Only entries whose tick has already closed are worth remembering; see
+    // COARSE_MTIME_WINDOW_MS. Computed before the read so a slow read cannot
+    // talk us into trusting a timestamp that was fresh when we opened it.
+    const cacheable = Date.now() - Number(stats.mtimeNs / 1_000_000n) >= COARSE_MTIME_WINDOW_MS;
+
     let chat: Chat;
     try {
       chat = JSON.parse(readFileSync(filepath, "utf8"));
@@ -171,7 +198,8 @@ export function listCardMemberChats(): Chat[] {
     }
 
     const onCard = chatCardId(chat) !== undefined ? chat : null;
-    index.set(file, { mtimeNs: stats.mtimeNs, size: stats.size, chat: onCard });
+    if (cacheable) index.set(file, { mtimeNs: stats.mtimeNs, size: stats.size, chat: onCard });
+    else index.delete(file);
     if (onCard) members.push(onCard);
   }
 
