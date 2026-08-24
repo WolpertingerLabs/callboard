@@ -4,9 +4,25 @@
  *
  * Codex does not expose model discovery through the TypeScript SDK, but the CLI
  * documents `codex debug models` as the raw model catalog Codex sees. We run it
- * once on startup, non-blocking, and keep the result for the process lifetime.
- * If the installed CLI is missing/old/offline, we fall back to a small static
- * suggestion list so free-text model entry still works.
+ * on startup, non-blocking, and re-run it when a read finds the answer older
+ * than {@link CODEX_MODELS_TTL_MS}. If the installed CLI is missing/old/offline,
+ * we fall back to a small static suggestion list so free-text model entry still
+ * works.
+ *
+ * ## Why the TTL
+ *
+ * This used to keep the first answer for the process lifetime: `fetchedAt` was
+ * recorded and never read. On a daemon that is days, and it fails in the
+ * direction that hurts — upgrading the Codex CLI, or logging in so the catalog
+ * stops being the anonymous one, changed nothing until someone restarted
+ * callboard. Worse, the fallback was cached on exactly the same terms, so a
+ * daemon that started before Codex was installed served the static list
+ * forever.
+ *
+ * Failures are therefore retried on a much shorter window than successes, and a
+ * failed refresh keeps the last *live* catalog rather than collapsing back to
+ * the static one. No timer, unlike the OpenRouter catalog: every consumer here
+ * is async, so a read is always available to carry the refresh.
  */
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
@@ -63,8 +79,31 @@ interface RawCodexModel {
   service_tiers?: unknown;
 }
 
+/** How long a live catalog is served before a read re-runs the CLI. */
+export const CODEX_MODELS_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * How long a fallback result is served before a read tries again.
+ *
+ * Much shorter than the success TTL because the fallback is a guess, and the
+ * conditions that produce it — Codex not installed yet, not logged in yet, a
+ * half-finished upgrade — are exactly the ones a user fixes and then expects to
+ * see reflected.
+ */
+export const CODEX_MODELS_RETRY_MS = 60 * 1000;
+
 let cache: CodexModelsCache | null = null;
 let fetchPromise: Promise<CodexModelsCache> | null = null;
+
+/**
+ * Bumped by {@link refreshCodexModelsCache}. A run that started before the bump
+ * describes the previous binary or credentials, so it must not overwrite the
+ * newer answer; it captures the generation it began in and drops out on
+ * mismatch. This one is not hypothetical — the refresh is wired to settings
+ * changes at `routes/agent-settings.ts`, so a slow `codex debug models` racing
+ * a settings save is an ordinary Tuesday.
+ */
+let generation = 0;
 
 /**
  * Which `codex` answers `debug models`.
@@ -163,11 +202,15 @@ export function parseCodexModelsCatalog(rawBody: unknown): CodexModelInfo[] {
 }
 
 async function fetchCodexModels(): Promise<CodexModelsCache> {
-  const { command, argsPrefix } = resolveCodexBin();
-  const args = [...argsPrefix, "debug", "models"];
-  log.info(`Fetching Codex models via ${[command, ...args].join(" ")}...`);
-
   try {
+    // Inside the try: this resolves a binary path off settings and can throw,
+    // and this function is contracted never to reject — callers treat its
+    // promise as the cache itself, so a rejection would strand `fetchPromise`
+    // and stop the catalog refreshing for the life of the process.
+    const { command, argsPrefix } = resolveCodexBin();
+    const args = [...argsPrefix, "debug", "models"];
+    log.info(`Fetching Codex models via ${[command, ...args].join(" ")}...`);
+
     const env = { ...process.env, ...getApiEnvOverrides() };
     const { stdout } = await execFileAsync(command, args, {
       env,
@@ -180,10 +223,41 @@ async function fetchCodexModels(): Promise<CodexModelsCache> {
     }
     log.info(`Codex models fetched: ${models.filter((m) => m.visibility === "list").length} visible models (${models.length} total)`);
     return { models, fetchedAt: Date.now(), source: "live" };
-  } catch (err: any) {
-    log.error(`Failed to fetch Codex models: ${err.message}`);
-    return { models: STATIC_MODELS, fetchedAt: Date.now(), source: "fallback" };
+  } catch (err) {
+    // Prefer the last *live* catalog over the static guess. A CLI that times
+    // out once should not cost the user the real model list they already had.
+    const message = err instanceof Error ? err.message : String(err);
+    const previousLive = cache?.source === "live" ? cache.models : null;
+    log.error(`Failed to fetch Codex models: ${message}${previousLive ? ` (keeping ${previousLive.length} cached)` : ""}`);
+    return { models: previousLive ?? STATIC_MODELS, fetchedAt: Date.now(), source: "fallback" };
   }
+}
+
+/** True while `entry` may still be served without re-running the CLI. */
+function isFresh(entry: CodexModelsCache): boolean {
+  return Date.now() - entry.fetchedAt < (entry.source === "live" ? CODEX_MODELS_TTL_MS : CODEX_MODELS_RETRY_MS);
+}
+
+/**
+ * The cache, re-running the CLI first if it has aged out. Concurrent callers
+ * share one in-flight run. Never rejects.
+ */
+function ensureCodexModels(): Promise<CodexModelsCache> {
+  if (cache && isFresh(cache)) return Promise.resolve(cache);
+  if (!fetchPromise) {
+    const gen = generation;
+    fetchPromise = fetchCodexModels()
+      .then((result) => {
+        if (gen === generation) cache = result;
+        return result;
+      })
+      .finally(() => {
+        // In `finally`, not `then`: were this ever skipped, `fetchPromise`
+        // would stay non-null and no read could refresh the cache again.
+        if (gen === generation) fetchPromise = null;
+      });
+  }
+  return fetchPromise;
 }
 
 /**
@@ -191,22 +265,15 @@ async function fetchCodexModels(): Promise<CodexModelsCache> {
  * Non-blocking — runs in the background.
  */
 export function initCodexModelsCache(): void {
-  if (fetchPromise) return;
-  fetchPromise = fetchCodexModels().then((result) => {
-    cache = result;
-    return result;
-  });
+  void ensureCodexModels();
 }
 
 /**
- * Get cached Codex models, waiting for the initial fetch if needed.
- * If init was never called, kicks it off now.
+ * Get cached Codex models, waiting for a run if the cache is cold or has aged
+ * past {@link CODEX_MODELS_TTL_MS}.
  */
 export async function getCodexModelsAsync(): Promise<CodexModelInfo[]> {
-  if (cache) return cache.models;
-  if (fetchPromise) return (await fetchPromise).models;
-  initCodexModelsCache();
-  return (await fetchPromise!).models;
+  return (await ensureCodexModels()).models;
 }
 
 export async function getVisibleCodexModelsAsync(): Promise<CodexModelInfo[]> {
@@ -242,10 +309,15 @@ export async function searchCodexModels(query: string, limit = 50): Promise<Code
  * change, or for manual refresh endpoints.
  */
 export function refreshCodexModelsCache(): Promise<CodexModelsCache> {
+  generation++;
   cache = null;
-  fetchPromise = fetchCodexModels().then((result) => {
-    cache = result;
-    return result;
-  });
-  return fetchPromise;
+  fetchPromise = null;
+  return ensureCodexModels();
+}
+
+/** Test-only: drop the cached catalog and any in-flight run. */
+export function resetCodexModelsCacheForTesting(): void {
+  generation++;
+  cache = null;
+  fetchPromise = null;
 }

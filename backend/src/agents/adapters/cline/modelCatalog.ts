@@ -12,12 +12,26 @@
  * from the SDK's provider layer without starting anything. A user who has never
  * run a Cline chat still gets a populated picker.
  *
- * What it *can* do is hit the network — some providers fetch a live catalog —
- * so results are cached per provider id and a failure resolves to an empty list
- * rather than throwing. An empty list is the honest answer to "we could not
- * reach the provider", and every model field in callboard accepts free text
- * anyway, exactly as the Codex and ACP selectors already do for slugs newer than
- * their catalog.
+ * Results are cached per provider id and a failure resolves to an empty list
+ * rather than throwing. An empty list is the honest answer to "we could not read
+ * the provider", and every model field in callboard accepts free text anyway,
+ * exactly as the Codex and ACP selectors already do for slugs newer than their
+ * catalog.
+ *
+ * ## The cache has a TTL because the store is not ours
+ *
+ * `getLocalProviderModels` reads the *local* provider store — the SDK's network
+ * refresh is a separate entry point (`refreshProviderModelsFromSource`) that
+ * callboard never calls. So the list does not move under us on its own, and an
+ * earlier version of this cache held each provider's answer for the process
+ * lifetime on that basis.
+ *
+ * That reasoning has a hole: callboard is not the only writer. Cline's own CLI
+ * and editor extension refresh the same on-disk store, so a user who adds a
+ * model there sees callboard keep offering the old list until the daemon is
+ * restarted. The read is local and cheap, so re-reading it on a TTL costs
+ * approximately nothing and closes that gap. This is a weaker version of the
+ * bug that `services/openrouter-models.ts` had — same shape, lower stakes.
  *
  * @see plans/cline-adapter.md
  * @see ../acp/modelCatalog.ts (the harvesting one, and why this isn't)
@@ -34,8 +48,16 @@ export interface ClineModelOption {
   description: string;
 }
 
+/** How long a provider's models are served before the next read re-reads them. */
+export const CLINE_CATALOG_TTL_MS = 60 * 60 * 1000;
+
+interface CachedProviderModels {
+  options: ClineModelOption[];
+  readAt: number;
+}
+
 /** Cached catalogs, keyed by provider id. */
-const _cache = new Map<string, ClineModelOption[]>();
+const _cache = new Map<string, CachedProviderModels>();
 
 /** Provider ids the SDK ships support for. */
 export function listClineProviderIds(): string[] {
@@ -43,18 +65,18 @@ export function listClineProviderIds(): string[] {
 }
 
 /**
- * Models for one provider, cached after the first successful lookup.
+ * Models for one provider, cached for {@link CLINE_CATALOG_TTL_MS} after a
+ * successful lookup.
  *
  * Only *successful* lookups are cached: caching an empty list would pin a
- * transient network failure for the life of the process, and the next call is
- * cheap.
+ * transient failure until the TTL elapsed, and the next call is cheap.
  */
 export async function getClineModels(providerId: string): Promise<ClineModelOption[]> {
   const id = providerId.trim();
   if (!id) return [];
 
   const cached = _cache.get(id);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.readAt < CLINE_CATALOG_TTL_MS) return cached.options;
 
   try {
     const { models } = await getLocalProviderModels(id);
@@ -63,11 +85,13 @@ export async function getClineModels(providerId: string): Promise<ClineModelOpti
       displayName: m.name || m.id,
       description: describeModel(m),
     }));
-    if (options.length > 0) _cache.set(id, options);
+    if (options.length > 0) _cache.set(id, { options, readAt: Date.now() });
     return options;
   } catch (err) {
     log.warn(`could not list models for Cline provider "${id}": ${err instanceof Error ? err.message : String(err)}`);
-    return [];
+    // Serve the expired entry rather than nothing: a failed re-read should cost
+    // freshness, not the list itself.
+    return cached?.options ?? [];
   }
 }
 
