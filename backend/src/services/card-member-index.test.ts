@@ -174,8 +174,17 @@ describe("listCardMemberChats", () => {
     writeFileSync(join(chatsDir, "corrupt.json"), "{ not json");
     expect(memberIds()).toEqual(["good"]);
 
-    // Not latched: repairing the file makes it a member on the next call, with
-    // no other write to force a re-read.
+    // The rule, asserted directly rather than inferred: a failed read is NOT
+    // remembered, so the file is opened again on an otherwise-warm scan. This
+    // is what stops a transient failure (EMFILE, a record caught mid-rewrite)
+    // latching a chat off the board until something happens to touch it —
+    // repairing the file would move its mtime and force a re-read either way,
+    // so only the read count can tell the two designs apart.
+    reads.length = 0;
+    expect(memberIds()).toEqual(["good"]);
+    expect(readsInChatsDir()).toEqual(["corrupt.json"]);
+
+    // And a repaired file becomes a member.
     write("corrupt", { cardId: "card-1" });
     expect(memberIds()).toEqual(["corrupt", "good"]);
   });

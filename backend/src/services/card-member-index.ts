@@ -119,9 +119,12 @@ interface IndexEntry {
 const index = new Map<string, IndexEntry>();
 
 /**
- * Every chat record that currently carries a `metadata.cardId`, in directory
- * order — unsorted, because both consumers group by card and sort the members
- * of each group themselves.
+ * Every chat record that currently carries a `metadata.cardId`, in **directory
+ * order** — which on ext4 is a hash of the filename, so treat it as arbitrary.
+ *
+ * Deliberately unsorted: the rollup groups by card and orders each group's
+ * members itself, so a sort here would be thrown away. A caller that renders
+ * this list directly has to apply its own — `get_card` does.
  */
 export function listCardMemberChats(): Chat[] {
   let files: string[];
