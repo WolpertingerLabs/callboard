@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "
 import { join, resolve } from "path";
 import { createHash } from "crypto";
 import { DATA_DIR, ensureDataDir } from "../utils/paths.js";
+import { readCommandFile } from "./plugins.js";
 import { createLogger } from "../utils/logger.js";
 import type { AppPlugin, McpServerConfig, AppPluginsData, ScanResult, PluginHooksConfig } from "shared/types/index.js";
 import type { PluginManifest, PluginCommand } from "shared/types/index.js";
@@ -115,6 +116,17 @@ function discoverPluginCommands(pluginSourcePath: string, marketplaceDir: string
     log.warn(`Failed to discover commands for plugin source ${pluginSourcePath}: ${error}`);
     return [];
   }
+}
+
+/**
+ * Read the full markdown body of one command belonging to an app-wide plugin.
+ *
+ * Unlike the per-directory case, `pluginPath` is already absolute (resolved at
+ * scan time), so there is no marketplace-relative hop to redo. The name gate
+ * lives in {@link readCommandFile} — see it for what "safe name" means here.
+ */
+export function readAppPluginCommandContent(plugin: AppPlugin, commandName: string): string | null {
+  return readCommandFile(join(plugin.pluginPath, "commands"), commandName);
 }
 
 // ─── MCP Server Discovery ──────────────────────────────────────────────────

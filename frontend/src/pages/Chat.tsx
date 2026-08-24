@@ -3385,6 +3385,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           slashCommands={allSlashCommands}
           commandDescriptions={pluginCommandDescriptions}
           onSetValue={setPromptInputSetValue}
+          chatId={id}
           menuItems={
             !streaming && composerProvider
               ? [

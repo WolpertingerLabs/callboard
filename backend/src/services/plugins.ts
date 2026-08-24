@@ -1,5 +1,5 @@
 import { readFileSync, existsSync, readdirSync } from "fs";
-import { join, dirname, resolve } from "path";
+import { join, dirname, resolve, sep } from "path";
 import type { PluginCommand, PluginManifest, Plugin } from "shared/types/index.js";
 
 export type { PluginCommand, PluginManifest, Plugin };
@@ -42,6 +42,52 @@ function discoverPluginCommands(pluginSourcePath: string, marketplaceDir: string
     console.warn(`Failed to discover commands for plugin source ${pluginSourcePath}:`, error);
     return [];
   }
+}
+
+/**
+ * Read the body of `<commandsDir>/<commandName>.md`, or null when there is none.
+ *
+ * The command name reaches this function from a query parameter, so it is
+ * treated as hostile: it must be a bare file name (no separator, no parent hop,
+ * no null byte) *and* the path it resolves to must still sit directly inside
+ * `commandsDir`. The second check is not redundant — it is what holds if the
+ * first is ever loosened, and it is the one that survives a platform where the
+ * separator set differs from the one spelled out below.
+ *
+ * Shared by both discovery paths (per-directory plugins here, app-wide plugins
+ * in app-plugins.ts) so the gate exists once rather than once per caller.
+ */
+export function readCommandFile(commandsDir: string, commandName: string): string | null {
+  if (!commandName || /[/\\\0]/.test(commandName) || commandName.includes("..")) {
+    return null;
+  }
+
+  const dir = resolve(commandsDir);
+  const filePath = resolve(dir, `${commandName}.md`);
+  if (!filePath.startsWith(dir + sep)) {
+    return null;
+  }
+
+  try {
+    if (!existsSync(filePath)) return null;
+    return readFileSync(filePath, "utf-8");
+  } catch (error) {
+    console.warn(`Failed to read plugin command file ${filePath}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Read the full markdown body of one command belonging to a per-directory
+ * plugin. `manifest.source` is relative to the marketplace's own directory —
+ * the same resolution `discoverPluginCommands` performs when it lists them.
+ */
+export function readPluginCommandContent(plugin: Plugin, commandName: string): string | null {
+  // plugin.path is <dir>/.claude-plugin/marketplace.json; sources resolve
+  // against <dir>.
+  const marketplaceDir = dirname(dirname(plugin.path));
+  const commandsDir = join(resolve(marketplaceDir, plugin.manifest.source), "commands");
+  return readCommandFile(commandsDir, commandName);
 }
 
 /**

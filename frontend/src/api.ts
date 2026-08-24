@@ -648,6 +648,36 @@ export async function getSlashCommandsAndPlugins(chatId: string): Promise<{ slas
   };
 }
 
+export interface SlashCommandContent {
+  name: string;
+  source: "custom-skill" | "plugin" | "builtin";
+  description: string | null;
+  content: string | null;
+}
+
+/**
+ * Bodies are immutable for the life of a tab.
+ *
+ * A command chip fetches its body the first time its popover is opened, and a
+ * user who opens the same popover twice — or re-picks the same command later in
+ * the session — should not pay for it twice. The cost of that is a body edited
+ * on disk mid-session showing stale until reload, which is the right trade for
+ * content that is essentially static.
+ */
+const slashCommandContentCache = new Map<string, SlashCommandContent>();
+
+export async function getSlashCommandContent(chatId: string, name: string): Promise<SlashCommandContent> {
+  const key = `${chatId}:${name}`;
+  const cached = slashCommandContentCache.get(key);
+  if (cached) return cached;
+
+  const res = await fetch(`${BASE}/chats/${encodeURIComponent(chatId)}/slash-commands/content?name=${encodeURIComponent(name)}`);
+  await assertOk(res, "Failed to get command content");
+  const data = (await res.json()) as SlashCommandContent;
+  slashCommandContentCache.set(key, data);
+  return data;
+}
+
 // Branch / worktree configuration
 export async function getGitBranches(folder: string): Promise<{ branches: string[] }> {
   const res = await fetch(`${BASE}/git/branches?folder=${encodeURIComponent(folder)}`);

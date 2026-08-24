@@ -3,7 +3,9 @@ import { existsSync } from "fs";
 import { randomUUID } from "node:crypto";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory } from "../services/slashCommands.js";
-import { getAllAppPluginsData } from "../services/app-plugins.js";
+import { getAllAppPluginsData, getEnabledAppPlugins, readAppPluginCommandContent } from "../services/app-plugins.js";
+import { getPluginsForDirectory, readPluginCommandContent } from "../services/plugins.js";
+import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "../services/custom-skills-service.js";
 import { getGitInfo } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
@@ -1564,6 +1566,86 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
     log.error(`Failed to get slash commands and plugins: ${error}`);
     res.json({ slashCommands: [], plugins: [], allCommands: [], appPlugins: { scanRoots: [], plugins: [], mcpServers: [] } });
   }
+});
+
+/**
+ * Body of one slash command, resolved lazily.
+ *
+ * The composer chips a command the moment it is picked but fetches nothing;
+ * this route is what a chip's popover calls the first time it is opened, which
+ * for most chips is never. That is the whole reason the body is not folded into
+ * `GET /:id/slash-commands` — it would turn one cheap listing into N file reads
+ * per composer mount.
+ *
+ * The name arrives as a QUERY parameter, not a path segment, because command
+ * names contain colons (`callboard:foo`, `deep-research:investigate`).
+ *
+ * Resolution order mirrors how the harness itself would resolve the name:
+ * custom skill, then per-directory plugin, then enabled app-wide plugin. A name
+ * that matches none of those is a harness built-in — real, invocable, and with
+ * no body Callboard can read — so it answers 200 with `content: null` rather
+ * than 404. Only a name that could not be a command at all (one carrying a path
+ * separator) is rejected outright.
+ */
+chatsRouter.get("/:id/slash-commands/content", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Get the body of one slash command'
+  // #swagger.description = 'Returns the full markdown content behind a slash command (custom skill or plugin command). Harness built-ins resolve with content: null.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.parameters['name'] = { in: 'query', required: true, type: 'string', description: 'Full command name, e.g. callboard:my-skill' } */
+  /* #swagger.responses[200] = { description: "{ name, source, description, content }" } */
+  /* #swagger.responses[400] = { description: "Missing or unusable command name" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const chat = findChat(req.params.id) as any;
+  if (!chat) return res.status(404).json({ error: "Not found" });
+
+  const name = typeof req.query.name === "string" ? req.query.name : "";
+  if (!name) return res.status(400).json({ error: "name query parameter is required" });
+  // Gate before anything resolves a path: a command name is never a path.
+  if (/[/\\\0]/.test(name) || name.includes("..")) {
+    return res.status(400).json({ error: "Invalid command name" });
+  }
+
+  const colon = name.indexOf(":");
+  const namespace = colon > 0 ? name.slice(0, colon) : null;
+  const command = colon > 0 ? name.slice(colon + 1) : null;
+
+  try {
+    if (namespace && command) {
+      if (namespace === CUSTOM_SKILLS_PLUGIN_NAME) {
+        const skill = customSkillsService.getSkill(command);
+        if (skill) {
+          return res.json({ name, source: "custom-skill", description: skill.description, content: skill.content });
+        }
+      }
+
+      // Per-directory plugins for this chat's folder win over app-wide ones,
+      // matching the precedence the command listing itself builds with.
+      for (const plugin of getPluginsForDirectory(chat.folder)) {
+        if (plugin.manifest.name !== namespace) continue;
+        const content = readPluginCommandContent(plugin, command);
+        if (content !== null) {
+          const description = plugin.commands.find((c) => c.name === command)?.description ?? null;
+          return res.json({ name, source: "plugin", description, content });
+        }
+      }
+
+      for (const plugin of getEnabledAppPlugins()) {
+        if (plugin.manifest.name !== namespace) continue;
+        const content = readAppPluginCommandContent(plugin, command);
+        if (content !== null) {
+          const description = plugin.commands.find((c) => c.name === command)?.description ?? null;
+          return res.json({ name, source: "plugin", description, content });
+        }
+      }
+    }
+  } catch (error) {
+    // A broken marketplace.json or an unreadable plugin dir must not 500 a
+    // popover — the command is still invocable, we just can't show its body.
+    log.warn(`Failed to resolve content for slash command "${name}": ${error}`);
+  }
+
+  res.json({ name, source: "builtin", description: null, content: null });
 });
 
 // Session parsing functions have been extracted to
