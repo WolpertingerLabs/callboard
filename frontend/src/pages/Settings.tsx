@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
-import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags } from "lucide-react";
+import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags, Braces } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import GeneralSettings from "./settings/GeneralSettings";
 import PluginsSettings from "./settings/PluginsSettings";
@@ -10,6 +10,7 @@ import AccountSettings from "./settings/AccountSettings";
 import AboutSettings from "./settings/AboutSettings";
 import ApiSettings from "./settings/ApiSettings";
 import SkillsSettings from "./settings/SkillsSettings";
+import KeywordsSettings from "./settings/KeywordsSettings";
 import JobsSettings from "./settings/JobsSettings";
 import ModelAliasesSettings from "./settings/ModelAliasesSettings";
 
@@ -18,6 +19,7 @@ const tabs = [
   { key: "api", label: "API", icon: Key },
   { key: "model-aliases", label: "Model Aliases", icon: Tags },
   { key: "skills", label: "Skills", icon: Sparkles },
+  { key: "keywords", label: "Keywords", icon: Braces },
   { key: "jobs", label: "Jobs", icon: Workflow },
   { key: "plugins", label: "Plugins & MCP", icon: Plug },
   { key: "proxy", label: "Proxy", icon: Globe },
@@ -154,6 +156,7 @@ export default function Settings({ onLogout }: SettingsProps) {
         {activeTab === "api" && <ApiSettings />}
         {activeTab === "model-aliases" && <ModelAliasesSettings />}
         {activeTab === "skills" && <SkillsSettings />}
+        {activeTab === "keywords" && <KeywordsSettings />}
         {activeTab === "jobs" && <JobsSettings />}
         {activeTab === "plugins" && <PluginsSettings />}
         {activeTab === "proxy" && <ProxySettings />}

@@ -51,9 +51,11 @@ import {
   type Plugin,
   type NewChatInfo,
   type DefaultPermissions,
+  listKeywords,
   type BranchConfig,
   type AppPluginsData,
   type McpToolsResponse,
+  type Keyword,
 } from "../api";
 import { useIsSessionActive, useMetadataVersion } from "../contexts/SessionContext";
 import { newChatTrackingId } from "../utils/ids";
@@ -256,10 +258,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [activePluginIds, setActivePluginIds] = useState<string[]>([]);
   const [appPluginsData, setAppPluginsData] = useState<AppPluginsData | null>(null);
   const [showSlashCommandsModal, setShowSlashCommandsModal] = useState(false);
-  const [slashCommandsModalTab, setSlashCommandsModalTab] = useState<"commands" | "tools">("commands");
+  const [slashCommandsModalTab, setSlashCommandsModalTab] = useState<"commands" | "tools" | "keywords">("commands");
+  // Injectable keywords, fetched once per mount and handed to the composer.
+  // Install-global (not per-chat, not per-folder), so nothing re-fetches them
+  // when the chat or directory changes — only a save from the composer or a
+  // pick from Settings can change the list, and the former pushes back through
+  // `onKeywordCreated`.
+  const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [mcpTools, setMcpTools] = useState<McpToolsResponse | null>(null);
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
+  const [promptInputInsertAtCaret, setPromptInputInsertAtCaret] = useState<((text: string) => void) | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [compacting, setCompacting] = useState(false);
   // Cumulative USD spend in the most recently completed run, when the adapter
@@ -928,10 +937,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   // the trailer, because the reason message (if any) explains
                   // the end of the run that killed them.
                   const trailing: ParsedMessage[] = [];
-                  const killed = abandonedTaskMarker(
-                    Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [],
-                    msgArray,
-                  );
+                  const killed = abandonedTaskMarker(Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [], msgArray);
                   if (killed) trailing.push(killed);
                   if (reasonMsg && !redundant) trailing.push({ role: "system", type: "system", content: reasonMsg });
                   setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
@@ -1240,6 +1246,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       console.warn("Failed to load slash commands and plugins:", error);
     }
   }, [id]);
+
+  // Fetch injectable keywords once on mount. Install-global, so no `id` or
+  // `folder` in the deps: navigating between chats does not change the list.
+  useEffect(() => {
+    listKeywords()
+      .then(setKeywords)
+      .catch((err) => console.warn("Failed to load keywords:", err));
+  }, []);
 
   // Fetch MCP tools once on mount (context-independent, cached for the session)
   useEffect(() => {
@@ -2280,6 +2294,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     },
     [promptInputSetValue],
   );
+
+  const handleKeywordSelect = useCallback(
+    (keyword: Keyword) => {
+      promptInputInsertAtCaret?.(keyword.body);
+    },
+    [promptInputInsertAtCaret],
+  );
+
+  /** Splice a just-created keyword in so the autocomplete sees it immediately. */
+  const handleKeywordCreated = useCallback((keyword: Keyword) => {
+    setKeywords((prev) => [...prev.filter((k) => k.name !== keyword.name), keyword].sort((a, b) => a.name.localeCompare(b.name)));
+  }, []);
 
   // Early return: no folder specified in new chat mode
   if (!id && !folder) {
@@ -3389,6 +3415,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           slashCommands={allSlashCommands}
           commandDescriptions={pluginCommandDescriptions}
           onSetValue={setPromptInputSetValue}
+          onInsertAtCaret={setPromptInputInsertAtCaret}
+          keywords={keywords}
+          onKeywordCreated={handleKeywordCreated}
           chatId={id}
           // New-chat mode has no id, and the chip popover still has to resolve
           // — the folder is what the lookup actually keys on server-side.
@@ -3451,6 +3480,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         mcpToolsLoading={mcpToolsLoading}
         activeTab={slashCommandsModalTab}
         onTabChange={setSlashCommandsModalTab}
+        keywords={keywords}
+        onKeywordSelect={handleKeywordSelect}
       />
 
       <ChatPermissionsModal
