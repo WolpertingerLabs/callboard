@@ -283,6 +283,82 @@ describe("projectDirToFolder", () => {
         "/Users/me/My Projects",
       );
     });
+
+    /**
+     * The two cases above put the special character in the *leaf*, which is the
+     * only place a single-entry scan can find one. Everything below it is the
+     * same character one level up, where the greedy pass stalls and swallows
+     * every remaining segment — so recovery has to descend, not just match.
+     */
+    it("resolves an underscore in an intermediate directory, not just the leaf", () => {
+      setupFS({
+        dirs: ["/home", "/home/user", "/home/user/my_repos", "/home/user/my_repos/callboard"],
+        listings: {
+          "/home/user": ["my_repos", "documents"],
+          "/home/user/my_repos": ["callboard", "other"],
+        },
+      });
+
+      // Greedy: /home ✓, /home/user ✓, then "/home/user/my" is not a directory
+      // and neither is "/home/user/my.repos", so "my-repos-callboard" becomes
+      // one segment. No entry of /home/user encodes to all of it.
+      expect(projectDirToFolder("-home-user-my-repos-callboard")).toBe("/home/user/my_repos/callboard");
+    });
+
+    it("descends through several unguessable levels at once", () => {
+      // macOS $TMPDIR, which is why the test suite itself found this: a random
+      // per-boot directory with underscores, four levels above the target.
+      setupFS({
+        dirs: [
+          "/var",
+          "/var/folders",
+          "/var/folders/t2",
+          "/var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn",
+          "/var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn/T",
+          "/var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn/T/callboard-abc",
+          "/var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn/T/callboard-abc/main-kept",
+        ],
+        listings: {
+          "/var/folders/t2": ["zwj_rw5x1yg07r7_p0mqgrf40000gn"],
+          "/var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn": ["T", "C"],
+          "/var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn/T": ["callboard-abc"],
+          "/var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn/T/callboard-abc": ["main", "main-kept"],
+        },
+      });
+
+      expect(projectDirToFolder("-var-folders-t2-zwj-rw5x1yg07r7-p0mqgrf40000gn-T-callboard-abc-main-kept")).toBe(
+        "/var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn/T/callboard-abc/main-kept",
+      );
+    });
+
+    it("prefers a literal-dash directory over splitting at the same dash", () => {
+      // Both readings exist. The descent tries whole-entry matches before
+      // prefixes, so `a-b` wins over `a/b` — the same precedence the greedy
+      // pass would have applied had it got that far.
+      setupFS({
+        dirs: ["/home", "/home/user", "/home/user/x_y", "/home/user/x_y/a-b", "/home/user/x_y/a", "/home/user/x_y/a/b"],
+        listings: {
+          "/home/user": ["x_y"],
+          "/home/user/x_y": ["a", "a-b"],
+        },
+      });
+
+      expect(projectDirToFolder("-home-user-x-y-a-b")).toBe("/home/user/x_y/a-b");
+    });
+
+    it("returns the best-effort path when no descent reaches a real directory", () => {
+      // Non-vacuous guard on the recursion: a suffix that matches a prefix at
+      // every level but dead-ends must not resolve to the partial path.
+      setupFS({
+        dirs: ["/home", "/home/user", "/home/user/my_repos"],
+        listings: {
+          "/home/user": ["my_repos"],
+          "/home/user/my_repos": ["callboard"],
+        },
+      });
+
+      expect(projectDirToFolder("-home-user-my-repos-nothing-here")).toBe("/home/user/my-repos-nothing-here");
+    });
   });
 
   describe("scan recovery with multiple merge levels", () => {

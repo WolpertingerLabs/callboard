@@ -750,6 +750,10 @@ function encodeSegment(s: string): string {
  *   → merge last 2: encoded = "callboard-feat-xyz"
  *   → scan /Users/me/WolpertingerLabs/ for entry encoding to "callboard-feat-xyz"
  *   → finds "callboard.feat-xyz" → return "/Users/me/WolpertingerLabs/callboard.feat-xyz"
+ *
+ * The scan *descends* — see {@link scanDescend} — because the merged suffix is
+ * not always one directory. It is one per special character the greedy pass
+ * could not guess, and those compound.
  */
 function tryScanRecovery(segments: string[]): string | null {
   // Try merging the last N segments and scanning the parent for a matching entry.
@@ -772,17 +776,80 @@ function tryScanRecovery(segments: string[]): string | null {
     const mergeSegments = segments.slice(segments.length - mergeCount);
     const encodedSuffix = mergeSegments.join("-");
 
-    try {
-      const entries = readdirSync(parentPath);
-      for (const entry of entries) {
-        if (encodeSegment(entry) === encodedSuffix) {
-          const candidate = parentPath === "/" ? "/" + entry : parentPath + "/" + entry;
-          if (pathExists(candidate)) return candidate;
-        }
-      }
-    } catch {
-      // Parent directory not readable — skip to next merge count
+    const found = scanDescend(parentPath, encodedSuffix, SCAN_RECOVERY_MAX_DEPTH);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+/**
+ * How many directory levels {@link scanDescend} will spend one encoded suffix
+ * across. Every level costs one `readdirSync` of a directory that is already on
+ * the path being resolved, and the prefix test below prunes to the entries that
+ * could still match, so the practical cost is one readdir per level rather than
+ * a tree walk. Eight is well past the two or three any real path needs and
+ * still bounds a pathological name.
+ */
+const SCAN_RECOVERY_MAX_DEPTH = 8;
+
+/**
+ * Spend `encodedSuffix` against the real directory tree under `parentPath`,
+ * returning the path it names or null.
+ *
+ * Matching only whole entries — what this did before — recovers exactly one
+ * special character, in the leaf. That is not where they stop. The greedy pass
+ * in {@link resolveProjectDirToFolder} can only commit a split it can confirm
+ * on disk, so the *first* segment it cannot guess swallows every segment to its
+ * right into one, however many directories those actually were:
+ *
+ *   /var/folders/t2/zwj_rw5x1yg07r7_p0mqgrf40000gn/T/wt/main-kept
+ *     → greedy stalls at `zwj`, merges the other five levels into it
+ *     → leaf scan finds nothing; four directories are hidden inside one segment
+ *
+ * That is macOS's `$TMPDIR`, and it is also `~/my_repos/callboard` and
+ * `~/Google Drive/callboard` — an underscore or space anywhere but the last
+ * component. So consume the suffix one directory at a time: an entry whose
+ * encoding is a dash-terminated prefix of what is left is a candidate for the
+ * next level down, and the dash it ends at was a separator.
+ *
+ * Exact matches are tried before prefixes at every level, and longer prefixes
+ * before shorter ones, so a directory literally named `a-b` wins over `a/b`.
+ * Entries are sorted because readdir order is not guaranteed and this answer is
+ * memoised — an unstable one would be a heisenbug with a five-minute half-life.
+ */
+function scanDescend(parentPath: string, encodedSuffix: string, depth: number): string | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(parentPath);
+  } catch {
+    return null; // not readable — the caller tries the next merge count
+  }
+  entries.sort();
+
+  const childOf = (entry: string) => (parentPath === "/" ? "/" + entry : parentPath + "/" + entry);
+
+  // A whole-suffix match is the answer: there is no encoding left to spend, so
+  // nothing deeper can match either.
+  for (const entry of entries) {
+    if (encodeSegment(entry) === encodedSuffix) {
+      const candidate = childOf(entry);
+      if (pathExists(candidate)) return candidate;
     }
+  }
+
+  if (depth <= 0) return null;
+
+  const prefixes = entries
+    .map((entry) => ({ entry, encoded: encodeSegment(entry) }))
+    .filter(({ encoded }) => encodedSuffix.startsWith(encoded + "-"))
+    .sort((a, b) => b.encoded.length - a.encoded.length || (a.entry < b.entry ? -1 : 1));
+
+  for (const { entry, encoded } of prefixes) {
+    const child = childOf(entry);
+    if (!isDirectory(child)) continue;
+    const found = scanDescend(child, encodedSuffix.slice(encoded.length + 1), depth - 1);
+    if (found) return found;
   }
 
   return null;

@@ -106,6 +106,11 @@ process.env.HOME = tmpRoot;
 
 const projectFolder = join(tmpRoot, "proj");
 mkdirSync(projectFolder, { recursive: true });
+// `du -sk` charges an empty directory 0 blocks on APFS and one 4 KiB block on
+// ext4, so "this row has a size" is only a portable assertion about a directory
+// with something in it. Content, not the directory itself, is what the
+// disk-usage assertion below reads.
+writeFileSync(join(projectFolder, "occupies-a-block.txt"), "x".repeat(4096));
 // A second real directory, so a row can exist for it. `buildFolderSummaries`
 // drops rows whose directory is gone unless a workspace record claims them.
 const olderFolder = join(tmpRoot, "older-proj");
