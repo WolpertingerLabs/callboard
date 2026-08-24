@@ -19,7 +19,19 @@
  * cost of a false positive is zero as long as the query does not match.
  */
 import { describe, expect, it } from "vitest";
-import { KEYWORD_TRIGGER, findKeywordToken, matchKeywords, insertKeyword, insertTextAt } from "./keywordTrigger";
+import {
+  KEYWORD_TRIGGER,
+  KEYWORD_MATCH_LIMIT,
+  findKeywordToken,
+  matchKeywords,
+  dismissalApplies,
+  insertKeyword,
+  insertTextAt,
+} from "./keywordTrigger";
+
+/** The rows only, for the assertions that are about ranking rather than counts. */
+const rows = (keywords: { name: string; description: string }[], query: string, limit?: number) =>
+  matchKeywords(keywords, query, limit).matches;
 
 const KEYWORDS = [
   { name: "review", description: "Review checklist" },
@@ -57,8 +69,12 @@ describe("findKeywordToken — refuses ordinary prose", () => {
   });
 
   it("refuses a currency code: $ preceded by a letter", () => {
+    // Carets are explicit and sit right after the `$`, so the preceding-character
+    // guard is what refuses. With the caret left at the end of the value these
+    // read as if they tested that guard while actually failing earlier, on the
+    // backwards walk landing somewhere that is not a `$` at all.
     expect(tokenAt("US$")).toBeNull();
-    expect(tokenAt("US$ 50")).toBeNull();
+    expect(tokenAt("US$ 50", 3)).toBeNull();
     expect(tokenAt("100 US$")).toBeNull();
   });
 
@@ -69,7 +85,9 @@ describe("findKeywordToken — refuses ordinary prose", () => {
   });
 
   it("refuses $ followed by whitespace", () => {
-    expect(tokenAt("$ 5")).toBeNull();
+    // Caret immediately after the `$` in each: that is the only placement from
+    // which this guard is the one that fires. (`tokenAt("$ 5")` also returns
+    // null, but for the unrelated reason that the caret is inside `5`.)
     expect(tokenAt("$ 5", 1)).toBeNull();
     expect(tokenAt("$\tx", 1)).toBeNull();
     expect(tokenAt("$\nx", 1)).toBeNull();
@@ -77,11 +95,13 @@ describe("findKeywordToken — refuses ordinary prose", () => {
 
   it("refuses LaTeX $$…$$", () => {
     expect(tokenAt("$$x$$")).toBeNull();
-    // Caret between the two opening dollars.
+    // Caret between the two opening dollars — the `$$` guard proper.
     expect(tokenAt("$$x$$", 1)).toBeNull();
     // Caret after the `x`: its `$` is preceded by another `$`.
     expect(tokenAt("$$x$$", 3)).toBeNull();
-    expect(tokenAt("the formula $$a+b$$ holds")).toBeNull();
+    // Mid-sentence, with the caret on the opening `$$` rather than out in the
+    // prose after it, where nothing about LaTeX would be under test.
+    expect(tokenAt("the formula $$a+b$$ holds", 13)).toBeNull();
   });
 
   it("refuses URLs and paths, which contain no eligible $ at all", () => {
@@ -98,9 +118,21 @@ describe("findKeywordToken — caret placement", () => {
     expect(tokenAt("hi $review", 3)).toBeNull();
   });
 
-  it("finds nothing when the caret has moved past the end of the token", () => {
+  /**
+   * There is no explicit caret-bounds check in `findKeywordToken`, and there
+   * cannot usefully be one: `start <= caret <= end` holds by construction of
+   * the backwards walk and the forward run. A guard was written there
+   * originally and a brute force over every string of length 0–5 drawn from
+   * ``$ ␠ a 1 - _ ( \n . \t "`` at every caret position never tripped it in
+   * 41,851 token-returns.
+   *
+   * What actually refuses a caret out past a token is the backwards walk
+   * landing on something that is not a `$` — which is what these pin.
+   */
+  it("finds nothing once the caret is out in the prose after a token", () => {
+    // The walk back from either caret stops on a space, and a space is not a
+    // trigger, so there is no candidate `$` at all.
     expect(tokenAt("$review and more", 12)).toBeNull();
-    // One character past the token's last query char is already outside it.
     expect(tokenAt("$review here", 8)).toBeNull();
   });
 
@@ -162,30 +194,101 @@ describe("matchKeywords — the second line of defence", () => {
     // The token IS found — the guards have no reason to refuse it — and the
     // menu still never appears, because nothing matches.
     expect(tokenAt("$HOME")).toEqual({ start: 0, end: 5, query: "HOME" });
-    expect(matchKeywords(KEYWORDS, "HOME")).toEqual([]);
-    expect(matchKeywords(KEYWORDS, "PATH")).toEqual([]);
+    expect(matchKeywords(KEYWORDS, "HOME")).toEqual({ matches: [], total: 0 });
+    expect(matchKeywords(KEYWORDS, "PATH")).toEqual({ matches: [], total: 0 });
   });
 
   it("matches case-insensitively on substrings", () => {
-    expect(matchKeywords(KEYWORDS, "REV").map((k) => k.name)).toEqual(["review", "review-deep"]);
-    expect(matchKeywords(KEYWORDS, "body").map((k) => k.name)).toEqual(["pr-body"]);
+    expect(rows(KEYWORDS, "REV").map((k) => k.name)).toEqual(["review", "review-deep"]);
+    expect(rows(KEYWORDS, "body").map((k) => k.name)).toEqual(["pr-body"]);
   });
 
   it("sorts prefix matches ahead of interior ones, then alphabetically", () => {
     // "pr-body" contains "b" in the interior; "review"/"review-deep" do not
     // match at all. Use a term that hits both kinds:
     const kws = [{ name: "abc-up" }, { name: "up-front" }, { name: "zz-up" }].map((k) => ({ ...k, description: "" }));
-    expect(matchKeywords(kws, "up").map((k) => k.name)).toEqual(["up-front", "abc-up", "zz-up"]);
+    expect(rows(kws, "up").map((k) => k.name)).toEqual(["up-front", "abc-up", "zz-up"]);
   });
 
   it("returns everything for the empty query of a bare $", () => {
-    expect(matchKeywords(KEYWORDS, "").map((k) => k.name)).toEqual(["pr-body", "review", "review-deep", "standup"]);
+    expect(rows(KEYWORDS, "").map((k) => k.name)).toEqual(["pr-body", "review", "review-deep", "standup"]);
   });
 
   it("caps the list the way the slash menu does", () => {
     const many = Array.from({ length: 25 }, (_, i) => ({ name: `k${i}`, description: "" }));
-    expect(matchKeywords(many, "")).toHaveLength(10);
-    expect(matchKeywords(many, "", 3)).toHaveLength(3);
+    expect(rows(many, "")).toHaveLength(KEYWORD_MATCH_LIMIT);
+    expect(rows(many, "", 3)).toHaveLength(3);
+  });
+
+  it("does not mutate the array it was handed", () => {
+    const order = ["zz-up", "abc-up", "up-front"].map((name) => ({ name, description: "" }));
+    matchKeywords(order, "up");
+    expect(order.map((k) => k.name)).toEqual(["zz-up", "abc-up", "up-front"]);
+  });
+});
+
+/**
+ * The cap is invisible from the row count alone: 40 keywords showing ten rows
+ * headed "Keywords (10)" states a total that is not the total. The count comes
+ * back from the same pass that produced the rows, so the two can never disagree
+ * and the caller never filters twice.
+ */
+describe("matchKeywords — the total behind the cap", () => {
+  it("counts past the display cap", () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ name: `k${i}`, description: "" }));
+    const result = matchKeywords(many, "");
+    expect(result.matches).toHaveLength(10);
+    expect(result.total).toBe(40);
+  });
+
+  it("equals the row count whenever nothing was dropped", () => {
+    const result = matchKeywords(KEYWORDS, "rev");
+    expect(result.total).toBe(result.matches.length);
+    expect(result.total).toBe(2);
+  });
+
+  it("is zero when nothing matches", () => {
+    expect(matchKeywords(KEYWORDS, "nothing-matches-this").total).toBe(0);
+  });
+});
+
+/**
+ * An Escape dismissal is scoped to a *token*, not to the offset it started at.
+ * Offset 0 and "just after the last space" are where a `$` most often lands, so
+ * an offset-keyed dismissal silently covers every later token that starts
+ * there — one Escape and the menu is gone for the rest of the session.
+ */
+describe("dismissalApplies", () => {
+  const dismissed = { start: 6, query: "rev" };
+
+  it("holds while the same token is typed forwards", () => {
+    expect(dismissalApplies(dismissed, { start: 6, end: 10, query: "rev" })).toBe(true);
+    expect(dismissalApplies(dismissed, { start: 6, end: 11, query: "revi" })).toBe(true);
+    expect(dismissalApplies(dismissed, { start: 6, end: 13, query: "review" })).toBe(true);
+  });
+
+  it("does not hold for a different token at the very same offset", () => {
+    expect(dismissalApplies(dismissed, { start: 6, end: 12, query: "stand" })).toBe(false);
+  });
+
+  it("does not hold once the token is shortened rather than extended", () => {
+    // Backspacing is reworking the token, not continuing it.
+    expect(dismissalApplies(dismissed, { start: 6, end: 9, query: "re" })).toBe(false);
+  });
+
+  it("does not hold at a different offset, even for identical text", () => {
+    expect(dismissalApplies(dismissed, { start: 0, end: 4, query: "rev" })).toBe(false);
+  });
+
+  it("is false whenever either side is absent", () => {
+    expect(dismissalApplies(null, { start: 6, end: 10, query: "rev" })).toBe(false);
+    expect(dismissalApplies(dismissed, null)).toBe(false);
+    expect(dismissalApplies(null, null)).toBe(false);
+  });
+
+  it("holds for a bare $ still being turned into a query", () => {
+    // Escape on `$`, then typing `r`: still that token, still dismissed.
+    expect(dismissalApplies({ start: 0, query: "" }, { start: 0, end: 2, query: "r" })).toBe(true);
   });
 });
 

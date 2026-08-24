@@ -22,8 +22,17 @@
  * A missing or corrupt file is never fatal. Reads log and fall back to empty so
  * a hand-edited `keywords.json` with a stray comma degrades the autocomplete
  * rather than taking the daemon down with it.
+ *
+ * That tolerance has one hard limit, and it is the whole point of `readStore`
+ * reporting `lossy`: **a read that did not understand everything on disk must
+ * never be written back over the original.** Degrading to `[]` is a fine way to
+ * *serve* a broken file; it is a catastrophic way to *save* one, because the
+ * next `createKeyword` would persist the empty list and the user's keywords
+ * would be gone with no error and no copy. Every write therefore preserves the
+ * existing file first whenever anything about it was not fully represented in
+ * what the read returned — see {@link KeywordsService.preserve}.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, copyFileSync } from "fs";
 import { join, dirname } from "path";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
@@ -84,6 +93,20 @@ function validateBody(body: string): string {
   return text;
 }
 
+/**
+ * What a read recovered, and whether it recovered *everything*.
+ *
+ * `lossy` is not a diagnostic — it is the input to the write path's decision
+ * about whether overwriting the file would destroy something. It is true
+ * whenever any byte on disk is not represented in `keywords`: the file would
+ * not parse, parsed to the wrong shape, could not be read at all, or parsed
+ * fine but contained entries that were dropped.
+ */
+interface StoreRead {
+  keywords: Keyword[];
+  lossy: boolean;
+}
+
 class KeywordsService {
   /**
    * Read and parse the store, tolerating every way the file can be unusable.
@@ -91,28 +114,61 @@ class KeywordsService {
    * Returns the keywords that survived: a file that is missing, unreadable,
    * not JSON, or JSON of the wrong shape all yield `[]`, and individual entries
    * that fail their shape check are dropped rather than poisoning the list.
+   * Sorted here, once, so every caller gets the same order without re-sorting —
+   * a hand-edited file need not be in any order to begin with.
    */
-  private read(): Keyword[] {
-    if (!existsSync(KEYWORDS_FILE)) return [];
+  private readStore(): StoreRead {
+    if (!existsSync(KEYWORDS_FILE)) return { keywords: [], lossy: false };
+
+    let text: string;
+    try {
+      text = readFileSync(KEYWORDS_FILE, "utf8");
+    } catch (err) {
+      // Unreadable is the most dangerous case, not the least: we know nothing
+      // about the contents, so a write must not assume there is nothing to lose.
+      log.error(`Failed to read ${KEYWORDS_FILE} — treating as empty: ${(err as Error).message}`);
+      return { keywords: [], lossy: true };
+    }
+
+    // A blank file is indistinguishable from a missing one and holds nothing
+    // worth preserving, so it is not lossy.
+    if (!text.trim()) return { keywords: [], lossy: false };
+
     let parsed: unknown;
     try {
-      parsed = JSON.parse(readFileSync(KEYWORDS_FILE, "utf8"));
+      parsed = JSON.parse(text);
     } catch (err: any) {
       log.error(`Failed to parse ${KEYWORDS_FILE} — treating as empty: ${err.message}`);
-      return [];
+      return { keywords: [], lossy: true };
     }
     const raw = (parsed as KeywordsFile | null)?.keywords;
     if (!Array.isArray(raw)) {
       log.error(`${KEYWORDS_FILE} has no keywords array — treating as empty`);
-      return [];
+      return { keywords: [], lossy: true };
     }
+
     const seen = new Set<string>();
     const keywords: Keyword[] = [];
+    // Counted apart, because they are different faults with different fixes:
+    // a malformed entry is a typo to correct, a duplicate is a shadowed keyword
+    // whose second copy the user will never see. Lumping them together reported
+    // a clean-but-duplicated file as "malformed".
+    let malformed = 0;
+    let duplicates = 0;
     for (const entry of raw) {
-      if (!entry || typeof entry !== "object") continue;
+      if (!entry || typeof entry !== "object") {
+        malformed++;
+        continue;
+      }
       const { name, description, body, createdAt, updatedAt } = entry as Partial<Keyword>;
-      if (typeof name !== "string" || !NAME_RE.test(name) || typeof body !== "string" || !body) continue;
-      if (seen.has(name)) continue;
+      if (typeof name !== "string" || !NAME_RE.test(name) || typeof body !== "string" || !body) {
+        malformed++;
+        continue;
+      }
+      if (seen.has(name)) {
+        duplicates++;
+        continue;
+      }
       seen.add(name);
       keywords.push({
         name,
@@ -122,21 +178,61 @@ class KeywordsService {
         updatedAt: typeof updatedAt === "string" ? updatedAt : new Date(0).toISOString(),
       });
     }
-    if (keywords.length !== raw.length) {
-      log.warn(`Dropped ${raw.length - keywords.length} malformed keyword entr${raw.length - keywords.length === 1 ? "y" : "ies"}`);
+    if (malformed > 0) {
+      log.warn(`Dropped ${malformed} malformed keyword entr${malformed === 1 ? "y" : "ies"} from ${KEYWORDS_FILE}`);
     }
-    return keywords;
+    if (duplicates > 0) {
+      log.warn(`Ignored ${duplicates} duplicate keyword name${duplicates === 1 ? "" : "s"} in ${KEYWORDS_FILE} — the first of each wins`);
+    }
+
+    keywords.sort((a, b) => a.name.localeCompare(b.name));
+    return { keywords, lossy: malformed > 0 || duplicates > 0 };
+  }
+
+  private read(): Keyword[] {
+    return this.readStore().keywords;
+  }
+
+  /**
+   * Copy the file aside before a write that would otherwise destroy it.
+   *
+   * Called only when the read that produced the new list did not fully
+   * understand the old one. Chosen over refusing the write outright: refusing
+   * is safe for the data but leaves the user unable to add a keyword until they
+   * hand-repair a JSON file they may not know exists, discoverable only through
+   * a failed save. A copy is strictly non-destructive, keeps the feature
+   * working, and names the backup in the log — recovery is a `mv` away.
+   *
+   * Throws if the copy fails. If the bytes cannot be preserved they must not be
+   * overwritten; a failed create is recoverable, a deleted store is not.
+   */
+  private preserve(): void {
+    if (!existsSync(KEYWORDS_FILE)) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    let backup = `${KEYWORDS_FILE}.corrupt-${stamp}`;
+    for (let i = 2; existsSync(backup); i++) backup = `${KEYWORDS_FILE}.corrupt-${stamp}-${i}`;
+    copyFileSync(KEYWORDS_FILE, backup);
+    log.error(`${KEYWORDS_FILE} could not be fully parsed; the original was copied to ${backup} before being rewritten`);
   }
 
   /**
    * Write the store atomically — temp file then rename — so a crash mid-write
    * leaves the previous list intact rather than a truncated file the next read
    * would discard entirely.
+   *
+   * `preserveExisting` comes from the {@link StoreRead.lossy} flag of the read
+   * this write is based on. Callers must thread it through: it is the only
+   * thing standing between a stray comma and total data loss.
    */
-  private write(keywords: Keyword[]): void {
+  private write(keywords: Keyword[], preserveExisting: boolean): void {
+    if (preserveExisting) this.preserve();
+    // Sorted on disk as well as in memory, because the file is meant to be
+    // hand-editable and a human reading it should find it in an order.
     const payload: KeywordsFile = { version: 1, keywords: [...keywords].sort((a, b) => a.name.localeCompare(b.name)) };
     mkdirSync(dirname(KEYWORDS_FILE), { recursive: true });
-    const tmp = `${KEYWORDS_FILE}.tmp`;
+    // Process-scoped temp name: two daemons sharing a data dir would otherwise
+    // write the same path and rename each other's half-written file into place.
+    const tmp = `${KEYWORDS_FILE}.${process.pid}.tmp`;
     try {
       writeFileSync(tmp, JSON.stringify(payload, null, 2), "utf8");
       renameSync(tmp, KEYWORDS_FILE);
@@ -151,7 +247,7 @@ class KeywordsService {
   }
 
   listKeywords(): Keyword[] {
-    return this.read().sort((a, b) => a.name.localeCompare(b.name));
+    return this.read();
   }
 
   getKeyword(name: string): Keyword | null {
@@ -164,7 +260,7 @@ class KeywordsService {
     const description = validateDescription(input.description ?? "");
     const body = validateBody(input.body);
 
-    const keywords = this.read();
+    const { keywords, lossy } = this.readStore();
     if (keywords.some((k) => k.name === name)) {
       throw new Error(`Keyword "${name}" already exists`);
     }
@@ -174,13 +270,13 @@ class KeywordsService {
 
     const now = new Date().toISOString();
     const keyword: Keyword = { name, description, body, createdAt: now, updatedAt: now };
-    this.write([...keywords, keyword]);
+    this.write([...keywords, keyword], lossy);
     log.info(`Created keyword "${name}"`);
     return keyword;
   }
 
   updateKeyword(name: string, updates: KeywordUpdateInput): Keyword {
-    const keywords = this.read();
+    const { keywords, lossy } = this.readStore();
     const existing = keywords.find((k) => k.name === name);
     if (!existing) throw new Error(`Keyword "${name}" not found`);
 
@@ -199,17 +295,23 @@ class KeywordsService {
       createdAt: existing.createdAt,
       updatedAt: new Date().toISOString(),
     };
-    this.write(keywords.map((k) => (k.name === name ? keyword : k)));
+    this.write(
+      keywords.map((k) => (k.name === name ? keyword : k)),
+      lossy,
+    );
     log.info(`Updated keyword "${newName}"${newName !== name ? ` (renamed from "${name}")` : ""}`);
     return keyword;
   }
 
   deleteKeyword(name: string): void {
-    const keywords = this.read();
+    const { keywords, lossy } = this.readStore();
     if (!keywords.some((k) => k.name === name)) {
       throw new Error(`Keyword "${name}" not found`);
     }
-    this.write(keywords.filter((k) => k.name !== name));
+    this.write(
+      keywords.filter((k) => k.name !== name),
+      lossy,
+    );
     log.info(`Deleted keyword "${name}"`);
   }
 }

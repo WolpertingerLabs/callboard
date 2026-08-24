@@ -4,20 +4,15 @@ import { keywordsService } from "../services/keywords-service.js";
 
 export const keywordsRouter = Router();
 
-// List all keywords
+// List all keywords.
+//
+// There is deliberately no `GET /:name` alongside this. Unlike a skill, a
+// keyword has no lazily-fetched body — the list response already carries every
+// field the editor and the composer need, so a per-row read would be a second
+// round trip for data the client is holding.
 keywordsRouter.get("/", (_req: Request, res: Response): void => {
   const keywords = keywordsService.listKeywords();
   res.json({ keywords });
-});
-
-// Get a single keyword
-keywordsRouter.get("/:name", (req: Request, res: Response): void => {
-  const keyword = keywordsService.getKeyword(req.params.name);
-  if (!keyword) {
-    res.status(404).json({ error: "Keyword not found" });
-    return;
-  }
-  res.json({ keyword });
 });
 
 // Create a new keyword

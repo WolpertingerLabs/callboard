@@ -6,7 +6,16 @@ import KeywordAutocomplete from "./KeywordAutocomplete";
 import SaveKeywordModal from "./SaveKeywordModal";
 import CommandChip from "./CommandChip";
 import MenuRow, { type MenuItem } from "./MenuRow";
-import { findKeywordToken, matchKeywords, insertKeyword, insertTextAt } from "../utils/keywordTrigger";
+import {
+  findKeywordToken,
+  matchKeywords,
+  dismissalApplies,
+  insertKeyword,
+  insertTextAt,
+  NO_KEYWORD_MATCHES,
+  type KeywordDismissal,
+  type KeywordMatches,
+} from "../utils/keywordTrigger";
 import type { Keyword } from "../api";
 
 export type PromptMenuItem = MenuItem;
@@ -125,12 +134,17 @@ export default function PromptInput({
   // menu is derived at render time and the DOM's selection is not reactive.
   const [caret, setCaret] = useState(0);
   /**
-   * Start offset of a `$token` the user dismissed with Escape.
+   * The `$token` the user dismissed with Escape, or that an insertion parked
+   * the caret inside — see `commitInsertion`.
    *
-   * Keyed on the offset rather than a bare boolean so the menu stays shut while
-   * they keep typing *that* token, but a `$` typed anywhere else opens normally.
+   * Keyed on the token's *text as well as* its offset, not a bare offset and
+   * not a bare boolean. The offset alone is not an identity: offset 0 and "just
+   * after the last space" are where a `$` most often lands, so an offset-keyed
+   * dismissal quietly applies to every later token starting there and one
+   * Escape takes the feature out for the rest of the composer session.
+   * {@link dismissalApplies} owns the "is this still that token" rule.
    */
-  const [keywordDismissedAt, setKeywordDismissedAt] = useState<number | null>(null);
+  const [keywordDismissal, setKeywordDismissal] = useState<KeywordDismissal | null>(null);
   /**
    * An explicitly chosen highlight, or null to mean "use the default".
    *
@@ -189,6 +203,14 @@ export default function PromptInput({
       const { command, rest } = parseLeadingCommand(next, slashCommands);
       changeActiveCommand(command);
       setValue(rest);
+      // The caret mirror has to move with the value it mirrors. Left behind, it
+      // points into the string that used to be here, and the keyword menu — which
+      // is derived from (value, caret) at render time — opens on a `$` the user
+      // never typed and can then swallow the Enter meant to send the restored
+      // draft. Every caller today either fires on a fresh composer or shrinks the
+      // value below the stale offset, so nothing reaches that; nothing enforces
+      // it either, which is the whole reason to just keep the two in step.
+      setCaret(rest.length);
       setAutocompleteDismissed(false);
       // Nothing matched — but `slashCommands` is fetched, and the app restores
       // a router draft on the render right after it hands out this setter, so
@@ -212,6 +234,12 @@ export default function PromptInput({
     if (!command) return;
     changeActiveCommand(command);
     setValue(rest);
+    // Third site that rewrites `value` behind the textarea, and the caret
+    // mirror moves with it here for the same reason as in `applyExternalValue`.
+    // This one only ever shrinks the string, so a stale caret would land out of
+    // range and `findKeywordToken` would refuse it — safe by accident, which is
+    // not a property worth relying on twice.
+    setCaret(rest.length);
     setUnchippedValue(null);
   }, [unchippedValue, value, slashCommands, changeActiveCommand]);
 
@@ -229,7 +257,7 @@ export default function PromptInput({
     setUnchippedValue(null);
     changeActiveCommand(null);
     setCaret(0);
-    setKeywordDismissedAt(null);
+    setKeywordDismissal(null);
     setKeywordHighlightOverride(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -261,7 +289,7 @@ export default function PromptInput({
     if (keywordMenuOpen && activeKeywordToken) {
       if (e.key === "Escape") {
         e.preventDefault();
-        setKeywordDismissedAt(activeKeywordToken.start);
+        setKeywordDismissal({ start: activeKeywordToken.start, query: activeKeywordToken.query });
         setKeywordHighlightOverride(null);
         return;
       }
@@ -275,11 +303,18 @@ export default function PromptInput({
         setKeywordHighlightOverride((from + step + keywordMatches.length) % keywordMatches.length);
         return;
       }
-      if (e.key === "Tab") {
-        // Tab is the primary insert key and has no competing meaning here, so
-        // it completes the top match even when nothing is highlighted yet.
+      // Forward Tab completes the highlighted row, on the same condition as
+      // Enter and for the same reason: with no query typed there is no
+      // expressed intent and "the top match" is just whatever sorts first.
+      //
+      // Everything else about Tab falls through *unprevented* — Shift+Tab
+      // always, and forward Tab with nothing highlighted. A menu that eats both
+      // Tab directions leaves a keyboard-only user unable to move focus in
+      // either direction for as long as any `$token` is live, with only Escape
+      // to escape on.
+      if (e.key === "Tab" && !e.shiftKey && keywordHighlight >= 0) {
         e.preventDefault();
-        selectKeyword(keywordMatches[keywordHighlight >= 0 ? keywordHighlight : 0]);
+        selectKeyword(keywordMatches[keywordHighlight]);
         return;
       }
       if (e.key === "Enter" && !e.shiftKey) {
@@ -290,7 +325,7 @@ export default function PromptInput({
           // Nothing highlighted: dismiss, and deliberately do *not* send. Same
           // shape as the slash autocomplete's Enter — one keystroke closes the
           // menu, the next one sends.
-          setKeywordDismissedAt(activeKeywordToken.start);
+          setKeywordDismissal({ start: activeKeywordToken.start, query: activeKeywordToken.query });
         }
         return;
       }
@@ -406,9 +441,15 @@ export default function PromptInput({
    * compiler bail out of optimizing the whole component.
    */
   const rawKeywordToken = showAutocomplete || keywords.length === 0 ? null : findKeywordToken(value, caret);
-  const activeKeywordToken = rawKeywordToken && rawKeywordToken.start !== keywordDismissedAt ? rawKeywordToken : null;
+  const activeKeywordToken = dismissalApplies(keywordDismissal, rawKeywordToken) ? null : rawKeywordToken;
 
-  const keywordMatches = activeKeywordToken ? matchKeywords(keywords, activeKeywordToken.query) : [];
+  // One call, both facts: the rows to render and how many the cap left out, so
+  // the menu header can say "10 of 40" rather than presenting a truncated list
+  // as the whole of it. Counting in a second pass here reads more simply but
+  // makes the React compiler bail out of optimizing the entire component.
+  const { matches: keywordMatches, total: keywordMatchTotal } = activeKeywordToken
+    ? matchKeywords(keywords, activeKeywordToken.query)
+    : (NO_KEYWORD_MATCHES as KeywordMatches<Keyword>);
 
   /**
    * Which row Enter and Tab act on, or -1 for none.
@@ -430,10 +471,28 @@ export default function PromptInput({
 
   const keywordMenuOpen = keywordMatches.length > 0;
 
-  /** Track the caret so the menu can be derived from it. */
-  const syncCaret = useCallback((el: HTMLTextAreaElement) => {
-    setCaret(el.selectionStart ?? 0);
-  }, []);
+  /**
+   * Track the caret so the menu can be derived from it.
+   *
+   * A plain function, not a `useCallback`: it has to read the token derived
+   * this render, and hand-memoizing over that made the React compiler bail out
+   * of optimizing the component (same trade-off as `selectKeyword` below).
+   *
+   * Only for caret *moves* — clicks, arrows, selection changes. `onChange` does
+   * its own bookkeeping, because the value it has to reason about is the new
+   * one and this closure still holds the old.
+   */
+  const syncCaret = (el: HTMLTextAreaElement) => {
+    const next = el.selectionStart ?? 0;
+    setCaret(next);
+    // An explicit highlight belongs to the match list it was made against, and
+    // moving to a different token produces a different list. `onChange` already
+    // resets on typing; this is the other way the list can change under it.
+    const movedTo = findKeywordToken(value, next);
+    if ((movedTo?.start ?? null) !== (rawKeywordToken?.start ?? null)) {
+      setKeywordHighlightOverride(null);
+    }
+  };
 
   /**
    * Commit a programmatic value change and park the caret after the new text.
@@ -447,7 +506,24 @@ export default function PromptInput({
     setValue(next);
     setCaret(nextCaret);
     pendingCaretRef.current = nextCaret;
-    setKeywordDismissedAt(null);
+    /**
+     * Dismiss whatever token the caret has just landed *in*, rather than
+     * clearing the dismissal outright.
+     *
+     * The caret parks at the end of the body just pasted, so a body whose tail
+     * is a valid `$token` — `"please do $review"` — drops the caret inside one.
+     * Clearing here re-opened the menu on text the user never typed, and since
+     * the re-derived token has a non-empty query the highlight defaults to row
+     * 0, so the very next Enter *expanded* it instead of sending: recursive
+     * expansion by accident, and a message silently rewritten. It is the exact
+     * failure the `keywordHighlight === -1` rule exists to prevent, arriving by
+     * the one route that rule does not cover.
+     *
+     * Usually there is no token here and this is a plain `null`, which is what
+     * the old code assumed unconditionally.
+     */
+    const landedIn = findKeywordToken(next, nextCaret);
+    setKeywordDismissal(landedIn ? { start: landedIn.start, query: landedIn.query } : null);
     setKeywordHighlightOverride(null);
     // Typed-or-inserted text is the user's; a late command list must not chip it.
     setUnchippedValue(null);
@@ -509,9 +585,16 @@ export default function PromptInput({
     (command: string) => {
       // Only the token the autocomplete matched on leaves the textarea — anything
       // typed after it was the user's prose and stays theirs.
+      //
+      // `valueRef` rather than a `setValue` updater, because the caret mirror
+      // has to be moved in the same breath and that needs the resulting string.
+      // The ref lags by a commit, and a click is always at least a commit after
+      // the keystroke that produced the value it is reading.
+      const rest = stripLeadingCommandToken(valueRef.current);
       changeActiveCommand(command);
       setUnchippedValue(null);
-      setValue((prev) => stripLeadingCommandToken(prev));
+      setValue(rest);
+      setCaret(rest.length);
       setAutocompleteDismissed(true);
       textareaRef.current?.focus();
     },
@@ -521,9 +604,6 @@ export default function PromptInput({
   // A chip alone is sendable: /compact and /clear take no argument.
   const canSend = (value.trim() || activeCommand || images.length > 0) && !disabled;
 
-  // "Save as keyword" is unconditional, so the menu always has at least one
-  // entry — the other two sources only decide how full it is.
-  const hasMenu = true;
   const menuHasActiveItem = menuItems.some((item) => item.active);
 
   // Close the menu on Escape
@@ -603,6 +683,7 @@ export default function PromptInput({
               makes `$HOME`, `$PATH` and LaTeX `$$…$$` harmless in prose. */}
           <KeywordAutocomplete
             matches={keywordMatches}
+            totalMatches={keywordMatchTotal}
             highlightedIndex={keywordHighlight}
             onHighlight={setKeywordHighlightOverride}
             onSelect={selectKeyword}
@@ -631,15 +712,22 @@ export default function PromptInput({
             className="composer-textarea"
             value={value}
             onChange={(e) => {
-              setValue(e.target.value);
+              const next = e.target.value;
+              const nextCaret = e.target.selectionStart ?? next.length;
+              setValue(next);
               setAutocompleteDismissed(false);
               // Typed text is the user's; a late command list must not rewrite it.
               setUnchippedValue(null);
-              syncCaret(e.target);
+              setCaret(nextCaret);
               // Typing re-derives the highlight from the query: an explicit
               // choice belongs to the match list it was made against, and that
               // list has just changed under it.
               setKeywordHighlightOverride(null);
+              // …and so does the dismissal, which is on a token and not on an
+              // offset. Dropping it the moment it stops describing what is
+              // actually under the caret is what keeps one Escape from taking
+              // the menu out for the rest of the composer session.
+              setKeywordDismissal((prev) => (dismissalApplies(prev, findKeywordToken(next, nextCaret)) ? prev : null));
             }}
             onKeyDown={handleKeyDown}
             onKeyUp={(e) => syncCaret(e.currentTarget)}
@@ -725,9 +813,10 @@ export default function PromptInput({
 
         {/* Hamburger menu — consolidates save-draft and caller-supplied
             actions (e.g. model/effort picker on OR chats) into a single
-            button whose menu expands upward above the composer. */}
-        {hasMenu && (
-          <div style={{ position: "relative", flexShrink: 0 }}>
+            button whose menu expands upward above the composer. Always
+            rendered: "Save as keyword" is unconditional, so the menu is never
+            empty and there is nothing left for a visibility guard to decide. */}
+        <div style={{ position: "relative", flexShrink: 0 }}>
             {menuOpen && (
               <>
                 {/* Click-away overlay */}
@@ -831,8 +920,7 @@ export default function PromptInput({
                 />
               )}
             </button>
-          </div>
-        )}
+        </div>
 
         {/* Send button */}
         <button
