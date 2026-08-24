@@ -1034,18 +1034,26 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // ...and cline (→ Cline `thinking` / `reasoningEffort`), whose vocabulary is
       // callboard's `EffortLevel` minus `"none"` — see cline/optionsAdapter.
       ...(opts.effort && (opts.provider === "codex" || opts.provider === "cline" || opts.provider === "pi") && { effort: opts.effort }),
-      // Pin the per-chat model alongside provider/effort. claude-code chats pass
-      // it to the SDK as options.model. Ignored for codex/mock.
-      // ...and for acp, where it names one of the vendor's own models and is
-      // applied via `session/set_config_option` once the session exists.
-      // ...and for cline, where it names a model within the configured Cline
-      // provider and is passed on `CoreSessionConfig.modelId`.
-      // ...and for pi, where it names a model within the configured pi provider
-      // and is resolved through `ModelRegistry.find()`.
-      ...(opts.model &&
-        (opts.provider === "acp" || opts.provider === "cline" || opts.provider === "pi" || (opts.provider ?? "claude-code") === "claude-code") && {
-          model: opts.model,
-        }),
+      // Pin the per-chat model alongside provider/effort. Every kind that can
+      // back a chat reads this value back out of metadata in its config block
+      // below, each in its own vocabulary: claude-code passes it to the SDK as
+      // options.model; codex resolves it against the Codex catalog; acp names one
+      // of the vendor's own models and applies it via `session/set_config_option`
+      // once the session exists; cline names a model within the configured Cline
+      // provider and passes it on `CoreSessionConfig.modelId`; pi resolves it
+      // through `ModelRegistry.find()`.
+      //
+      // So the guard is the INTERNAL allowlist rather than a hand-listed set —
+      // "can this kind back a chat" is the same question as "does it read a
+      // model", and the two cannot drift apart. It was a hand-listed set until
+      // this commit, and `"codex"` was missing from it: the Codex block read the
+      // override that creation never wrote, so a per-chat Codex model was
+      // silently discarded and the chat ran on the global default. Whatever kind
+      // lands next must not be able to re-introduce that by omission.
+      //
+      // `mock` is excluded, as it is from every other pin here — it is never a
+      // chat's persisted provider and has no model of its own to name.
+      ...(opts.model && isInternalProvider(opts.provider ?? "claude-code") && { model: opts.model }),
       // Pin the explicit-completion requirement so follow-up messages to
       // this chat keep nudging for objective_complete without every caller
       // having to re-thread the flag.
