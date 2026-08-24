@@ -71,6 +71,14 @@ import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("pi-query");
 
+/**
+ * Deadline for the catalog refresh that `setRuntimeApiKey` performs.
+ *
+ * Matches the 15s default pi applies to its own create-time refresh, so both
+ * network paths in a turn's setup are bounded the same way.
+ */
+const MODEL_REFRESH_TIMEOUT_MS = 15_000;
+
 // ── Push → pull bridge ──────────────────────────────────────────────
 
 /** Unbounded FIFO bridging the subscription callback to an async iterator. */
@@ -243,8 +251,14 @@ export class PiAgentQuery implements AgentQuery {
     const runtime = await ModelRuntime.create({
       authPath: join(agentDir, "auth.json"),
       modelsPath: join(agentDir, "models.json"),
-      // No network during construction. A turn should not stall on a catalog
+      // No network during *construction*. A turn should not stall on a catalog
       // refresh, and the bundled catalog carries 1,157 models.
+      //
+      // Note what this does not cover: `setRuntimeApiKey` below refreshes the
+      // catalog internally, and that refresh is governed by pi's own
+      // `PI_OFFLINE` check rather than this flag — so a keyed turn does reach
+      // the network, whatever is set here. That call is given an explicit
+      // deadline for exactly that reason.
       allowModelNetwork: false,
     });
 
@@ -267,7 +281,12 @@ export class PiAgentQuery implements AgentQuery {
     }
 
     if (apiKey) {
-      await runtime.setRuntimeApiKey(providerId, apiKey);
+      // The signal is the point. Setting a key makes pi refresh its catalog
+      // over the network, and that refresh carries no deadline of its own —
+      // `create()` bounds its own refresh with a 15s abort, but this path
+      // passes whatever we give it and otherwise waits indefinitely. Without a
+      // deadline a hung catalog host stalls the turn, not just the catalog.
+      await runtime.setRuntimeApiKey(providerId, apiKey, { signal: AbortSignal.timeout(MODEL_REFRESH_TIMEOUT_MS) });
     } else {
       // Not fatal: pi falls back to its own environment lookup, and the
       // provider's own error message reaching the user is better than a

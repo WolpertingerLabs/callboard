@@ -121,6 +121,30 @@ function catalogPath(): string {
   return join(dirname(resolveAcpSessionsRoot()), "acp-models.json");
 }
 
+/**
+ * In-memory mirror of the catalog file.
+ *
+ * Deliberately has no TTL, unlike every other model catalog in this codebase
+ * (`services/openrouter-models.ts`, `services/codex-models.ts`, the pi and
+ * Cline adapters) — and the difference is structural, not an oversight.
+ *
+ * Two reasons, and the first is the strong one:
+ *
+ * 1. **A running chat never reads this.** `AcpAgentQuery.supportedModels()`
+ *    projects `this.configOptions`, i.e. what the vendor process advertised on
+ *    the session that is open right now. For OpenCode and every other vendor,
+ *    the models a live session offers come from the agent itself, not from
+ *    here. This cache only answers the picker *before* a session exists.
+ * 2. **We are the only writer.** {@link recordAcpModels} mutates the very
+ *    object {@link load} returns before persisting it, and it runs on every
+ *    session open and every model switch — so the banked list is refreshed at
+ *    exactly the moments new information arrives. There is no upstream to age
+ *    against, and a timer would only re-read our own writes.
+ *
+ * The one gap a TTL *would* close is another process editing `acp-models.json`
+ * underneath us. Nothing does, and the file is an implementation detail rather
+ * than a documented config surface.
+ */
 let cache: Record<string, AcpModelCatalog> | null = null;
 
 function load(): Record<string, AcpModelCatalog> {
