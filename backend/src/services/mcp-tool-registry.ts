@@ -277,7 +277,14 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
-      { name: "model", type: "string", description: "Model id, in the form the chosen provider names its models. Never inherited.", required: false },
+      {
+        name: "model",
+        type: "string",
+        description:
+          "Model id, in the form the chosen provider names its models — with `provider` omitted that is this session's own engine, not " +
+          "Claude Code. Never inherited from the calling session.",
+        required: false,
+      },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -705,7 +712,14 @@ const AGENT_TOOLS: McpToolDefinition[] = [
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
-      { name: "model", type: "string", description: "Model id, in the form the chosen provider names its models. Never inherited.", required: false },
+      {
+        name: "model",
+        type: "string",
+        description:
+          "Model id, in the form the chosen provider names its models — with `provider` omitted that is this session's own engine, not " +
+          "Claude Code. Never inherited from the calling session.",
+        required: false,
+      },
     ],
     serverName: "callboard",
     serverLabel: "Callboard Agent",
@@ -728,7 +742,14 @@ const AGENT_TOOLS: McpToolDefinition[] = [
         required: false,
         enumValues: [...ROUTABLE_PROVIDER_KINDS],
       },
-      { name: "model", type: "string", description: "Model id, in the form the chosen provider names its models. Never inherited.", required: false },
+      {
+        name: "model",
+        type: "string",
+        description:
+          "Model id, in the form the chosen provider names its models — with `provider` omitted that is this session's own engine, not " +
+          "Claude Code. Never inherited from the calling session.",
+        required: false,
+      },
     ],
     serverName: "callboard",
     serverLabel: "Callboard Agent",

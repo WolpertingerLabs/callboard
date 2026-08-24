@@ -30,12 +30,15 @@ export const providerModelSchema = {
     .string()
     .optional()
     .describe(
-      'Model for the session, in whatever form the session\'s provider names its models. With provider="claude-code": an Anthropic model alias ' +
-        '("opus", "sonnet", "haiku", "opusplan") or full model ID (e.g. "claude-sonnet-4-6"). With provider="codex": a Codex model slug (e.g. ' +
-        '"gpt-5.5") — use search_codex_models to discover. With any other provider: that harness\'s own model id. A cross-harness model alias ' +
-        '(e.g. "planner") also works with ANY provider and resolves to that provider\'s configured target — use list_model_aliases to discover. ' +
-        "Omit to use the provider's configured default. Note that a model is never inherited from the calling session even when the provider is: " +
-        "a model id is only meaningful to the harness it belongs to.",
+      "Model for the session, in whatever form the chosen provider names its models — and the chosen provider is `provider` if you passed one, " +
+        "or THIS session's own engine if you did not. So passing `model` without `provider` means naming a model of the engine you are running " +
+        'on right now, which is not necessarily Claude Code: "opus" passed from a Codex session is a Codex chat with an Anthropic alias for a ' +
+        'model slug, and it fails at startup. With provider="claude-code": an Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or ' +
+        'full model ID (e.g. "claude-sonnet-4-6"). With provider="codex": a Codex model slug (e.g. "gpt-5.5") — use search_codex_models to ' +
+        'discover. With any other provider: that harness\'s own model id. A cross-harness model alias (e.g. "planner") works with ANY provider ' +
+        "and resolves to that provider's configured target — use list_model_aliases to discover; it is the safe choice when you are not certain " +
+        "which engine the new session will run on. Omit to use the provider's configured default. A model is never inherited from the calling " +
+        "session even when the provider is: a model id is only meaningful to the harness it belongs to.",
     ),
 };
 
@@ -71,6 +74,19 @@ export type ResolvedProviderModel = { ok: true; provider: UiAgentProviderKind; a
  * carried across would either error or, worse, be silently ignored. An omitted
  * model falls through to the target provider's configured default, which is the
  * only value guaranteed to be valid there. See plans/cross-harness-handoff.md.
+ *
+ * What that costs, and why it is not guarded: `model` without `provider` used to
+ * mean "a Claude Code model", because the provider was always claude-code. It now
+ * means "a model of whatever engine the caller is running", and a stored prompt
+ * that names an Anthropic alias with no provider fails at startup when a Codex or
+ * pi session runs it. That is not checkable here — a cross-harness alias resolves
+ * per-provider, so "is this a Claude alias" and "is this valid for this harness"
+ * are not distinguishable from a bare string. Rejecting an inherited-provider
+ * `model` outright would trade this rare failure for breaking the common one: a
+ * Codex session spawning a Codex child with a Codex model and no explicit
+ * `provider` is a correct call. It is left loud instead of guarded, and the
+ * coupling is spelled out in the `model` description above, which is the only
+ * place the caller actually reads.
  *
  * The `modelRouting` / `modelRoutingRankId` params lived here too until the
  * OpenRouter harness was withdrawn. Routing only ever applied to that provider,
