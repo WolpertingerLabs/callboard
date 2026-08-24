@@ -1,13 +1,13 @@
-import { X, Hash, Puzzle, Check, Server, AlertTriangle, Wrench } from "lucide-react";
+import { X, Hash, Puzzle, Check, Server, AlertTriangle, Wrench, Braces } from "lucide-react";
 import { useState } from "react";
 import { Plugin } from "../types/plugins";
 import { getCommandDescription, getCommandCategory } from "../utils/commands";
 import { getActivePlugins, setActivePlugins } from "../utils/plugins";
-import { toggleAppPlugin, toggleMcpServer, type AppPluginsData, type AppPlugin, type McpServerConfig, type McpToolsResponse } from "../api";
+import { toggleAppPlugin, toggleMcpServer, type AppPluginsData, type AppPlugin, type McpServerConfig, type McpToolsResponse, type Keyword } from "../api";
 import ModalOverlay from "./ModalOverlay";
 import McpToolsPanel from "./McpToolsPanel";
 
-type ModalTab = "commands" | "tools";
+type ModalTab = "commands" | "tools" | "keywords";
 
 interface Props {
   isOpen: boolean;
@@ -24,6 +24,16 @@ interface Props {
   activeTab?: ModalTab;
   /** Called when user switches tab */
   onTabChange?: (tab: ModalTab) => void;
+  /**
+   * Injectable keywords, for the Keywords tab.
+   *
+   * This tab is the discovery path for a feature whose only other entry point
+   * is typing `$` — which on iOS is a keyboard layer away, making this the
+   * *primary* path on mobile rather than a convenience.
+   */
+  keywords?: Keyword[];
+  /** Insert a keyword's body at the composer's caret, then close the modal. */
+  onKeywordSelect?: (keyword: Keyword) => void;
 }
 
 export default function SlashCommandsModal({
@@ -39,6 +49,8 @@ export default function SlashCommandsModal({
   mcpToolsLoading,
   activeTab: activeTabProp,
   onTabChange,
+  keywords = [],
+  onKeywordSelect,
 }: Props) {
   const [activePluginIds, setActivePluginIds] = useState<Set<string>>(() => getActivePlugins());
   const activeTab = activeTabProp ?? "commands";
@@ -143,6 +155,11 @@ export default function SlashCommandsModal({
     onClose();
   };
 
+  const handleKeywordClick = (keyword: Keyword) => {
+    onKeywordSelect?.(keyword);
+    onClose();
+  };
+
   const appPlugins = appPluginsData?.plugins ?? [];
   const mcpServers = appPlugins.flatMap((p) => p.mcpServers ?? []);
   const hasAppPlugins = appPlugins.length > 0;
@@ -188,7 +205,7 @@ export default function SlashCommandsModal({
                 color: "var(--text)",
               }}
             >
-              {activeTab === "commands" ? "Commands & Plugins" : "MCP Tools"}
+              {activeTab === "commands" ? "Commands & Plugins" : activeTab === "keywords" ? "Keywords" : "MCP Tools"}
             </h2>
             <button
               onClick={onClose}
@@ -268,6 +285,42 @@ export default function SlashCommandsModal({
                 </span>
               )}
             </button>
+            <button
+              onClick={() => setActiveTab("keywords")}
+              style={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
+                padding: "10px 16px",
+                background: "none",
+                border: "none",
+                borderBottom: activeTab === "keywords" ? "2px solid var(--accent)" : "2px solid transparent",
+                cursor: "pointer",
+                color: activeTab === "keywords" ? "var(--accent)" : "var(--text-muted)",
+                fontSize: "13px",
+                fontWeight: 600,
+                transition: "all 0.15s ease",
+              }}
+            >
+              <Braces size={14} />
+              Keywords
+              {keywords.length > 0 && (
+                <span
+                  style={{
+                    fontSize: "10px",
+                    background: activeTab === "keywords" ? "var(--accent)" : "var(--bg-secondary)",
+                    color: activeTab === "keywords" ? "var(--text-on-accent)" : "var(--text-muted)",
+                    padding: "1px 6px",
+                    borderRadius: "8px",
+                    fontWeight: 600,
+                  }}
+                >
+                  {keywords.length}
+                </span>
+              )}
+            </button>
           </div>
         </div>
 
@@ -281,6 +334,61 @@ export default function SlashCommandsModal({
         >
           {/* ── Tools Tab ── */}
           {activeTab === "tools" && <McpToolsPanel mcpTools={mcpTools ?? null} loading={!!mcpToolsLoading} />}
+
+          {/* ── Keywords Tab ── */}
+          {activeTab === "keywords" &&
+            (keywords.length === 0 ? (
+              <div style={{ textAlign: "center" as const, color: "var(--text-muted)", padding: "40px 20px" }}>
+                <p>No keywords yet.</p>
+                <p style={{ fontSize: "14px", marginTop: "8px" }}>
+                  Save one from the composer&rsquo;s menu, or add them in Settings &rsaquo; Keywords. Then type <code>$name</code> to paste it back in.
+                </p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {keywords.map((keyword) => (
+                  <button
+                    key={keyword.name}
+                    onClick={() => handleKeywordClick(keyword)}
+                    style={{
+                      background: "transparent",
+                      border: "1px solid var(--border)",
+                      borderRadius: "8px",
+                      padding: "12px 16px",
+                      textAlign: "left" as const,
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
+                      width: "100%",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "var(--bg-secondary)";
+                      e.currentTarget.style.borderColor = "var(--accent)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "transparent";
+                      e.currentTarget.style.borderColor = "var(--border)";
+                    }}
+                  >
+                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "14px", fontWeight: 600, color: "var(--accent-text)" }}>${keyword.name}</div>
+                    {keyword.description && <div style={{ fontSize: "13px", color: "var(--text-muted)", marginTop: "4px" }}>{keyword.description}</div>}
+                    <div
+                      style={{
+                        fontSize: "12px",
+                        color: "var(--text-muted)",
+                        marginTop: "6px",
+                        fontFamily: "var(--font-mono)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        opacity: 0.8,
+                      }}
+                    >
+                      {keyword.body.split("\n")[0]}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ))}
 
           {/* ── Commands Tab ── */}
           {activeTab === "commands" && (
@@ -927,7 +1035,9 @@ export default function SlashCommandsModal({
           >
             {activeTab === "commands"
               ? 'Type "/" in the message input to see autocomplete suggestions'
-              : "These are the MCP tools available to the AI agent in this chat"}
+              : activeTab === "keywords"
+                ? 'Type "$" in the message input to expand a keyword inline'
+                : "These are the MCP tools available to the AI agent in this chat"}
           </p>
         </div>
       </div>

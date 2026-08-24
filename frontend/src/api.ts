@@ -50,6 +50,7 @@ import type {
   ThemeContrastFailure,
   CustomSkill,
   CustomSkillListItem,
+  Keyword,
   McpToolDefinition,
   McpToolParameter,
   McpToolServerInfo,
@@ -164,6 +165,7 @@ export type {
   ThemeContrastFailure,
   CustomSkill,
   CustomSkillListItem,
+  Keyword,
   McpToolDefinition,
   McpToolParameter,
   McpToolServerInfo,
@@ -1598,11 +1600,7 @@ export async function startEngineInstall(engineId: string): Promise<EngineInstal
  * `ok: false`, and an install that npm completed but the daemon cannot see is an
  * `install_verified` with `visible: false`. Both are data, not errors.
  */
-export async function readEngineInstallStream(
-  installId: string,
-  onEvent: (event: EngineInstallEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
+export async function readEngineInstallStream(installId: string, onEvent: (event: EngineInstallEvent) => void, signal?: AbortSignal): Promise<void> {
   const res = await fetch(`${BASE}/engines/installs/${encodeURIComponent(installId)}/stream`, { credentials: "include", signal });
   if (res.status === 404) {
     // Tagged, because the caller has to tell "this install no longer exists"
@@ -1972,6 +1970,54 @@ export async function deleteCustomSkill(name: string): Promise<void> {
     credentials: "include",
   });
   await assertOk(res, "Failed to delete skill");
+}
+
+// ── Keywords ─────────────────────────────────────────────────────────
+
+export async function listKeywords(): Promise<Keyword[]> {
+  const res = await fetch(`${BASE}/keywords`, { credentials: "include" });
+  await assertOk(res, "Failed to list keywords");
+  const data = await res.json();
+  return data.keywords;
+}
+
+export async function getKeyword(name: string): Promise<Keyword> {
+  const res = await fetch(`${BASE}/keywords/${encodeURIComponent(name)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get keyword");
+  const data = await res.json();
+  return data.keyword;
+}
+
+export async function createKeyword(keyword: { name: string; description?: string; body: string }): Promise<Keyword> {
+  const res = await fetch(`${BASE}/keywords`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(keyword),
+  });
+  await assertOk(res, "Failed to create keyword");
+  const data = await res.json();
+  return data.keyword;
+}
+
+export async function updateKeyword(originalName: string, updates: { name?: string; description?: string; body?: string }): Promise<Keyword> {
+  const res = await fetch(`${BASE}/keywords/${encodeURIComponent(originalName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  await assertOk(res, "Failed to update keyword");
+  const data = await res.json();
+  return data.keyword;
+}
+
+export async function deleteKeyword(name: string): Promise<void> {
+  const res = await fetch(`${BASE}/keywords/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  await assertOk(res, "Failed to delete keyword");
 }
 
 // ── MCP Tools ────────────────────────────────────────────────────────

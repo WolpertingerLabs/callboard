@@ -130,6 +130,8 @@ export type { CustomTheme, ThemeVariables, ThemeListItem, ThemeContrastReport, T
 
 export type { CustomSkill, CustomSkillListItem } from "./customSkill.js";
 
+export type { Keyword, KeywordsFile, KeywordCreateInput, KeywordUpdateInput } from "./keyword.js";
+
 export type { McpToolParameter, McpToolDefinition, McpToolServerInfo, McpToolsResponse } from "./mcpTool.js";
 
 export type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "./openrouter.js";

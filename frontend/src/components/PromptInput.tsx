@@ -1,9 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { ArrowUp, Paperclip, Edit, ImageIcon, Menu } from "lucide-react";
+import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces } from "lucide-react";
 import ImageUpload, { ALLOWED_IMAGE_TYPES, validateImageFiles } from "./ImageUpload";
 import SlashCommandAutocomplete from "./SlashCommandAutocomplete";
+import KeywordAutocomplete from "./KeywordAutocomplete";
+import SaveKeywordModal from "./SaveKeywordModal";
 import CommandChip from "./CommandChip";
 import MenuRow, { type MenuItem } from "./MenuRow";
+import { findKeywordToken, matchKeywords, insertKeyword, insertTextAt } from "../utils/keywordTrigger";
+import type { Keyword } from "../api";
 
 export type PromptMenuItem = MenuItem;
 
@@ -65,6 +69,29 @@ interface Props {
    * is provided); these render below it.
    */
   menuItems?: PromptMenuItem[];
+  /**
+   * Injectable keywords, fetched once by the page and handed down.
+   *
+   * A prop rather than a fetch in here: the composer is mounted on every chat
+   * and on `/chat/new`, and the list is install-global, so fetching locally
+   * would be one request per mount for data that never varies by chat.
+   */
+  keywords?: Keyword[];
+  /**
+   * Called with a keyword just created from the composer's "Save as keyword"
+   * entry, so the caller can splice it into `keywords` and make it usable
+   * immediately rather than on the next page load.
+   */
+  onKeywordCreated?: (keyword: Keyword) => void;
+  /**
+   * Registration callback handing out an insert-at-caret function, following
+   * the same shape as {@link Props.onSetValue}.
+   *
+   * The slash-commands modal's Keywords tab inserts through this: it has no
+   * `$token` to replace, only a caret. That path is also the mobile path —
+   * typing `$` is a keyboard layer away on iOS — so it is not a nicety.
+   */
+  onInsertAtCaret?: (insert: (text: string) => void) => void;
 }
 
 export default function PromptInput({
@@ -78,6 +105,9 @@ export default function PromptInput({
   folder,
   activePlugins,
   menuItems = [],
+  keywords = [],
+  onKeywordCreated,
+  onInsertAtCaret,
 }: Props) {
   const [value, setValue] = useState("");
   const [images, setImages] = useState<File[]>([]);
@@ -91,8 +121,50 @@ export default function PromptInput({
   // A value handed in from outside that did not chip. Held because the command
   // list it was matched against may simply not have arrived yet — see below.
   const [unchippedValue, setUnchippedValue] = useState<string | null>(null);
+  // Caret offset in the textarea, mirrored into state because the `$keyword`
+  // menu is derived at render time and the DOM's selection is not reactive.
+  const [caret, setCaret] = useState(0);
+  /**
+   * Start offset of a `$token` the user dismissed with Escape.
+   *
+   * Keyed on the offset rather than a bare boolean so the menu stays shut while
+   * they keep typing *that* token, but a `$` typed anywhere else opens normally.
+   */
+  const [keywordDismissedAt, setKeywordDismissedAt] = useState<number | null>(null);
+  /**
+   * An explicitly chosen highlight, or null to mean "use the default".
+   *
+   * The default is the crux of the Enter-key behaviour: index 0 once a query
+   * character has been typed, and *nothing* for a bare `$`. See
+   * `keywordHighlight` below.
+   */
+  const [keywordHighlightOverride, setKeywordHighlightOverride] = useState<number | null>(null);
+  const [saveKeywordBody, setSaveKeywordBody] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Caret to restore once React has committed a programmatic value change.
+   *
+   * Setting `value` re-renders the textarea and drops the caret at the end, so
+   * insertion has to put it back *after* the commit — hence a ref plus the
+   * dep-less effect below, rather than a `setSelectionRange` inline.
+   */
+  const pendingCaretRef = useRef<number | null>(null);
+  /**
+   * The current value, for callbacks that must stay referentially stable —
+   * `insertAtCaret` is handed to the parent, and re-registering it on every
+   * keystroke would push a re-render up the tree per character typed.
+   *
+   * Synced in an effect rather than assigned during render: a ref written
+   * mid-render is a mutation the React compiler cannot reason about, and it
+   * bails out of optimizing this whole component when it sees one. The lag is
+   * immaterial here — `insertAtCaret` is only ever called from a modal the user
+   * had to open first, which is many commits later.
+   */
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   /**
    * Set the chip, and close any popover belonging to the chip being replaced.
@@ -156,6 +228,9 @@ export default function PromptInput({
     setImages([]);
     setUnchippedValue(null);
     changeActiveCommand(null);
+    setCaret(0);
+    setKeywordDismissedAt(null);
+    setKeywordHighlightOverride(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -178,6 +253,47 @@ export default function PromptInput({
       e.preventDefault();
       setAutocompleteDismissed(true);
       return;
+    }
+
+    // ── Keyword menu ────────────────────────────────────────────────────
+    // Only reachable when the slash autocomplete is closed — `keywordMenuOpen`
+    // is false whenever `showAutocomplete` is true, so slash always wins.
+    if (keywordMenuOpen && activeKeywordToken) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setKeywordDismissedAt(activeKeywordToken.start);
+        setKeywordHighlightOverride(null);
+        return;
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        // From "nothing highlighted", ArrowDown lands on the first row and
+        // ArrowUp on the last — and either way a highlight now exists, so the
+        // next Enter inserts instead of dismissing.
+        const from = keywordHighlight < 0 ? (step === 1 ? -1 : 0) : keywordHighlight;
+        setKeywordHighlightOverride((from + step + keywordMatches.length) % keywordMatches.length);
+        return;
+      }
+      if (e.key === "Tab") {
+        // Tab is the primary insert key and has no competing meaning here, so
+        // it completes the top match even when nothing is highlighted yet.
+        e.preventDefault();
+        selectKeyword(keywordMatches[keywordHighlight >= 0 ? keywordHighlight : 0]);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (keywordHighlight >= 0) {
+          selectKeyword(keywordMatches[keywordHighlight]);
+        } else {
+          // Nothing highlighted: dismiss, and deliberately do *not* send. Same
+          // shape as the slash autocomplete's Enter — one keystroke closes the
+          // menu, the next one sends.
+          setKeywordDismissedAt(activeKeywordToken.start);
+        }
+        return;
+      }
     }
 
     // Backspace at the very start of the prose deletes the chip, the way it
@@ -277,6 +393,118 @@ export default function PromptInput({
   // Derive autocomplete visibility from value (no effect needed)
   const showAutocomplete = !autocompleteDismissed && value.trim().startsWith("/") && slashCommands.length > 0;
 
+  /**
+   * The `$name` token the caret is inside, or null.
+   *
+   * Suppressed outright while the slash-command autocomplete is up: slash wins,
+   * and the two menus are never both on screen. (A composer whose value starts
+   * with `/` is a command, and `$` inside its arguments can wait.)
+   *
+   * Derived plainly rather than through `useMemo`, like `showAutocomplete`
+   * above: a backwards scan of one token and a filter over a short list are
+   * cheaper than the bookkeeping, and hand-memoizing them made the React
+   * compiler bail out of optimizing the whole component.
+   */
+  const rawKeywordToken = showAutocomplete || keywords.length === 0 ? null : findKeywordToken(value, caret);
+  const activeKeywordToken = rawKeywordToken && rawKeywordToken.start !== keywordDismissedAt ? rawKeywordToken : null;
+
+  const keywordMatches = activeKeywordToken ? matchKeywords(keywords, activeKeywordToken.query) : [];
+
+  /**
+   * Which row Enter and Tab act on, or -1 for none.
+   *
+   * A bare `$` highlights nothing on purpose. The failure this prevents is the
+   * expensive one: a menu that pops up on a stray `$` and then swallows the
+   * Enter the user meant as "send". With no highlight there is nothing to
+   * insert, so Enter falls through to the same dismiss-without-sending branch
+   * the slash autocomplete already uses — one keystroke lost, not a message
+   * mangled. Typing a query character, or pressing an arrow, opts in.
+   */
+  const keywordHighlight = (() => {
+    if (keywordMatches.length === 0) return -1;
+    const fallback = activeKeywordToken?.query ? 0 : -1;
+    const raw = keywordHighlightOverride ?? fallback;
+    if (raw < 0) return -1;
+    return Math.min(raw, keywordMatches.length - 1);
+  })();
+
+  const keywordMenuOpen = keywordMatches.length > 0;
+
+  /** Track the caret so the menu can be derived from it. */
+  const syncCaret = useCallback((el: HTMLTextAreaElement) => {
+    setCaret(el.selectionStart ?? 0);
+  }, []);
+
+  /**
+   * Commit a programmatic value change and park the caret after the new text.
+   *
+   * Shared by both insertion paths — the `$token` replacement and the modal's
+   * insert-at-caret — because both have the same three obligations: keep focus
+   * in the textarea, put the caret where the user's next keystroke belongs, and
+   * re-run the autosize so the box grows to fit a multi-line snippet.
+   */
+  const commitInsertion = useCallback((next: string, nextCaret: number) => {
+    setValue(next);
+    setCaret(nextCaret);
+    pendingCaretRef.current = nextCaret;
+    setKeywordDismissedAt(null);
+    setKeywordHighlightOverride(null);
+    // Typed-or-inserted text is the user's; a late command list must not chip it.
+    setUnchippedValue(null);
+  }, []);
+
+  // A plain function, not a `useCallback`: it closes over the token derived
+  // this render and is only ever passed to the menu, which re-renders with it
+  // anyway. Memoizing it bought nothing and cost the compiler its optimization.
+  const selectKeyword = (keyword: Keyword) => {
+    if (!activeKeywordToken) return;
+    const { value: next, caret: nextCaret } = insertKeyword(value, activeKeywordToken, keyword.body);
+    commitInsertion(next, nextCaret);
+  };
+
+  /**
+   * Insert text wherever the caret is, replacing any selection.
+   *
+   * Referentially stable (reads `valueRef`), because it is handed to the parent
+   * through `onInsertAtCaret` and re-registering it per keystroke would push a
+   * re-render up the tree on every character typed.
+   */
+  const insertAtCaret = useCallback(
+    (text: string) => {
+      const el = textareaRef.current;
+      const current = valueRef.current;
+      const start = el?.selectionStart ?? current.length;
+      const end = el?.selectionEnd ?? current.length;
+      const { value: next, caret: nextCaret } = insertTextAt(current, start, end, text);
+      commitInsertion(next, nextCaret);
+    },
+    [commitInsertion],
+  );
+
+  useEffect(() => {
+    // Wrapped in an arrow for the same reason `onSetValue` is: the parent holds
+    // this in a `useState`, which would otherwise call it as an updater.
+    onInsertAtCaret?.(() => insertAtCaret);
+  }, [onInsertAtCaret, insertAtCaret]);
+
+  /**
+   * Restore the caret after a programmatic value change lands in the DOM.
+   *
+   * No dependency array on purpose: this has to run after *whichever* render
+   * commits the new value, and it costs one null check on the renders where
+   * nothing is pending.
+   */
+  useEffect(() => {
+    const target = pendingCaretRef.current;
+    if (target === null) return;
+    pendingCaretRef.current = null;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(target, target);
+    handleInput();
+  });
+
   const handleCommandSelect = useCallback(
     (command: string) => {
       // Only the token the autocomplete matched on leaves the textarea — anything
@@ -293,7 +521,9 @@ export default function PromptInput({
   // A chip alone is sendable: /compact and /clear take no argument.
   const canSend = (value.trim() || activeCommand || images.length > 0) && !disabled;
 
-  const hasMenu = Boolean(onSaveDraft) || menuItems.length > 0;
+  // "Save as keyword" is unconditional, so the menu always has at least one
+  // entry — the other two sources only decide how full it is.
+  const hasMenu = true;
   const menuHasActiveItem = menuItems.some((item) => item.active);
 
   // Close the menu on Escape
@@ -369,6 +599,15 @@ export default function PromptInput({
             commandDescriptions={commandDescriptions}
           />
 
+          {/* Renders nothing when no keyword matches — which is exactly what
+              makes `$HOME`, `$PATH` and LaTeX `$$…$$` harmless in prose. */}
+          <KeywordAutocomplete
+            matches={keywordMatches}
+            highlightedIndex={keywordHighlight}
+            onHighlight={setKeywordHighlightOverride}
+            onSelect={selectKeyword}
+          />
+
           {activeCommand && (
             <div style={{ padding: "8px 40px 0 12px" }}>
               <CommandChip
@@ -396,8 +635,16 @@ export default function PromptInput({
               setAutocompleteDismissed(false);
               // Typed text is the user's; a late command list must not rewrite it.
               setUnchippedValue(null);
+              syncCaret(e.target);
+              // Typing re-derives the highlight from the query: an explicit
+              // choice belongs to the match list it was made against, and that
+              // list has just changed under it.
+              setKeywordHighlightOverride(null);
             }}
             onKeyDown={handleKeyDown}
+            onKeyUp={(e) => syncCaret(e.currentTarget)}
+            onSelect={(e) => syncCaret(e.currentTarget)}
+            onClick={(e) => syncCaret(e.currentTarget)}
             onInput={handleInput}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
@@ -513,6 +760,23 @@ export default function PromptInput({
                       }}
                     />
                   )}
+                  {/* Turn what is in the composer into a reusable `$keyword`.
+                      Seeded from the selection when there is one, otherwise
+                      from the whole composer — read off the DOM here because
+                      the selection is not mirrored into state. */}
+                  <MenuRow
+                    icon={<Braces size={16} />}
+                    label="Save as keyword"
+                    title="Save the composer's text as a reusable $keyword"
+                    disabled={!value.trim() || disabled}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      const el = textareaRef.current;
+                      const start = el?.selectionStart ?? 0;
+                      const end = el?.selectionEnd ?? 0;
+                      setSaveKeywordBody(end > start ? value.slice(start, end) : value);
+                    }}
+                  />
                   {menuItems.map((item) => (
                     <MenuRow
                       key={item.key}
@@ -607,6 +871,16 @@ export default function PromptInput({
           {images.length} image{images.length === 1 ? "" : "s"} selected
         </div>
       )}
+
+      <SaveKeywordModal
+        isOpen={saveKeywordBody !== null}
+        initialBody={saveKeywordBody ?? ""}
+        onClose={() => setSaveKeywordBody(null)}
+        onSaved={(keyword) => {
+          setSaveKeywordBody(null);
+          onKeywordCreated?.(keyword);
+        }}
+      />
     </div>
   );
 }
