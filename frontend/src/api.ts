@@ -656,6 +656,17 @@ export interface SlashCommandContent {
 }
 
 /**
+ * Where to resolve a command name. A chat supplies its own folder server-side;
+ * a composer on `/chat/new` has no chat yet and supplies the folder directly.
+ */
+export interface SlashCommandScope {
+  chatId?: string;
+  folder?: string;
+  /** Per-directory plugin ids the user has switched on. */
+  activePlugins?: string[];
+}
+
+/**
  * Bodies are immutable for the life of a tab.
  *
  * A command chip fetches its body the first time its popover is opened, and a
@@ -663,15 +674,33 @@ export interface SlashCommandContent {
  * the session — should not pay for it twice. The cost of that is a body edited
  * on disk mid-session showing stale until reload, which is the right trade for
  * content that is essentially static.
+ *
+ * The active-plugin set is part of the key, not just the request: toggling a
+ * plugin on changes what resolves, and a cached "no body" from before the
+ * toggle would outlive the reason it was true. Nothing negative is cached on
+ * *failure* — `assertOk` throws before the write.
  */
 const slashCommandContentCache = new Map<string, SlashCommandContent>();
 
-export async function getSlashCommandContent(chatId: string, name: string): Promise<SlashCommandContent> {
-  const key = `${chatId}:${name}`;
+export async function getSlashCommandContent(name: string, scope: SlashCommandScope): Promise<SlashCommandContent> {
+  const { chatId, folder, activePlugins = [] } = scope;
+  if (!chatId && !folder) throw new Error("Cannot resolve a command without a chat or a folder");
+
+  const key = `${chatId ?? `folder:${folder}`}|${activePlugins.join(",")}|${name}`;
   const cached = slashCommandContentCache.get(key);
   if (cached) return cached;
 
-  const res = await fetch(`${BASE}/chats/${encodeURIComponent(chatId)}/slash-commands/content?name=${encodeURIComponent(name)}`);
+  const params = new URLSearchParams({ name });
+  for (const id of activePlugins) params.append("activePlugins", id);
+  let path: string;
+  if (chatId) {
+    path = `/chats/${encodeURIComponent(chatId)}/slash-commands/content`;
+  } else {
+    path = "/chats/new/slash-commands/content";
+    params.set("folder", folder!);
+  }
+
+  const res = await fetch(`${BASE}${path}?${params.toString()}`);
   await assertOk(res, "Failed to get command content");
   const data = (await res.json()) as SlashCommandContent;
   slashCommandContentCache.set(key, data);

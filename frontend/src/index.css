@@ -870,3 +870,52 @@ select option {
   background: var(--bg);
   color: var(--text);
 }
+
+/* Composer focus ring.
+   The composer's box is the wrapper, not the <textarea> — a command chip has to
+   sit inside the field, above the prose — so the textarea's own ring is
+   suppressed here and focus reads as the wrapper's border colour
+   (PromptInput.tsx). The suppression lives in this file rather than in the
+   component's inline styles for one specific reason: an inline declaration
+   outranks every author rule short of `!important`, so an inline `outline:none`
+   would silently kill the fallback below — a ring that looks handled and never
+   paints. Cascade-wise the two rules here are unambiguous: `:focus-visible`
+   carries more specificity than the bare class, so the ring wins whenever it
+   matches.
+
+   A border colour is precisely what forced-colors mode discards, and a custom
+   theme is free to land --accent on --border, so keyboard focus gets a real
+   outline on the wrapper rather than resting on the border alone. */
+.composer-textarea {
+  outline: none;
+}
+
+.composer-field:has(.composer-textarea:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Forced colors throws author colours away; `Highlight` is a system colour, not
+   a hardcoded one, and is the only thing guaranteed to be visible here. */
+@media (forced-colors: active) {
+  .composer-field:has(.composer-textarea:focus-visible) {
+    outline: 2px solid Highlight;
+  }
+}
+
+/* Browsers without :has still owe the keyboard user a ring. The textarea's own
+   box is a smaller target than the field, but it is a visible one. Scoped to
+   the same feature query in both colour modes, so a browser that *does* have
+   :has draws one ring rather than two nested ones. */
+@supports not selector(:has(*)) {
+  .composer-textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  @media (forced-colors: active) {
+    .composer-textarea:focus-visible {
+      outline: 2px solid Highlight;
+    }
+  }
+}

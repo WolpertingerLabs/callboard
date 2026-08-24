@@ -3007,7 +3007,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                               key={i}
                               onClick={() => {
                                 if (promptInputSetValue) {
-                                  promptInputSetValue(cmd);
+                                  // With the leading slash, as the commands
+                                  // modal already sends it — the composer
+                                  // parses a command out of the value it is
+                                  // handed, and a bare name is just text.
+                                  promptInputSetValue(`/${cmd} `);
                                 }
                               }}
                               style={{
@@ -3386,6 +3390,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           commandDescriptions={pluginCommandDescriptions}
           onSetValue={setPromptInputSetValue}
           chatId={id}
+          // New-chat mode has no id, and the chip popover still has to resolve
+          // — the folder is what the lookup actually keys on server-side.
+          folder={folder}
+          activePlugins={activePluginIds}
           menuItems={
             !streaming && composerProvider
               ? [

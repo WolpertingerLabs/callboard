@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, existsSync, readdirSync, realpathSync } from "fs";
 import { join, dirname, resolve, sep } from "path";
 import type { PluginCommand, PluginManifest, Plugin } from "shared/types/index.js";
 
@@ -48,11 +48,23 @@ function discoverPluginCommands(pluginSourcePath: string, marketplaceDir: string
  * Read the body of `<commandsDir>/<commandName>.md`, or null when there is none.
  *
  * The command name reaches this function from a query parameter, so it is
- * treated as hostile: it must be a bare file name (no separator, no parent hop,
- * no null byte) *and* the path it resolves to must still sit directly inside
- * `commandsDir`. The second check is not redundant — it is what holds if the
- * first is ever loosened, and it is the one that survives a platform where the
- * separator set differs from the one spelled out below.
+ * treated as hostile, in two layers that catch different attacks:
+ *
+ *  1. **The name must be a bare file name** — no separator, no parent hop, no
+ *     null byte. This is lexical and cheap, and it stops `../../etc/passwd`.
+ *  2. **The file must really live in the directory.** `resolve()` is pure string
+ *     arithmetic and does not follow symlinks, so layer 1 has nothing to say
+ *     about `commands/pw.md -> /etc/passwd`: that name is impeccable and its
+ *     target is anywhere at all. A repo can ship such a link, and opening the
+ *     repo in Callboard is enough to read the target. So containment is checked
+ *     between `realpathSync` results, which do follow links.
+ *
+ * Both sides are real-pathed, not just the file: a plugin reached through a
+ * symlinked directory is legitimate (and common in monorepos), and comparing a
+ * resolved file against an unresolved directory would reject it.
+ *
+ * A missing file or directory is ENOENT out of `realpathSync`, which is the
+ * ordinary "no such command" case and returns null rather than throwing.
  *
  * Shared by both discovery paths (per-directory plugins here, app-wide plugins
  * in app-plugins.ts) so the gate exists once rather than once per caller.
@@ -68,11 +80,23 @@ export function readCommandFile(commandsDir: string, commandName: string): strin
     return null;
   }
 
+  let realDir: string;
+  let realFile: string;
   try {
-    if (!existsSync(filePath)) return null;
-    return readFileSync(filePath, "utf-8");
+    realDir = realpathSync(dir);
+    realFile = realpathSync(filePath);
+  } catch {
+    // ENOENT (no such command / no commands dir), ELOOP, EACCES — all "no body".
+    return null;
+  }
+  if (!realFile.startsWith(realDir + sep)) {
+    return null;
+  }
+
+  try {
+    return readFileSync(realFile, "utf-8");
   } catch (error) {
-    console.warn(`Failed to read plugin command file ${filePath}:`, error);
+    console.warn(`Failed to read plugin command file ${realFile}:`, error);
     return null;
   }
 }

@@ -9,6 +9,10 @@ interface Props {
   name: string;
   /** Chat the command belongs to. Absent on a chat that has no id yet. */
   chatId?: string;
+  /** Folder to resolve against when there is no chat id (the `/chat/new` case). */
+  folder?: string;
+  /** Per-directory plugin ids the user has switched on. */
+  activePlugins?: string[];
   /** Description already known to the composer (plugin listings carry one). */
   description?: string;
   /** Drop the chip. Wired to the popover's X. */
@@ -27,13 +31,15 @@ interface Props {
  * Click-away and Escape only close it; neither is a way to lose the command by
  * accident.
  */
-export default function CommandChip({ name, chatId, description, onRemove, onOpenChange }: Props) {
+export default function CommandChip({ name, chatId, folder, activePlugins, description, onRemove, onOpenChange }: Props) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<SlashCommandContent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
-  // The body is fetched at most once per chip, so a command with no content
-  // (a harness built-in) isn't re-requested every time the popover reopens.
+  // A *successful* body is fetched at most once per chip, so a command with no
+  // content (a harness built-in) isn't re-requested every time the popover
+  // reopens. A failure releases the latch again — a daemon restart or a dropped
+  // request must not make the chip permanently blank.
   const requested = useRef(false);
 
   const setOpenState = useCallback(
@@ -47,16 +53,20 @@ export default function CommandChip({ name, chatId, description, onRemove, onOpe
   const toggle = useCallback(() => {
     const next = !open;
     setOpenState(next);
-    if (!next || requested.current || !chatId) return;
+    if (!next || requested.current || (!chatId && !folder)) return;
 
     requested.current = true;
     setLoading(true);
     setError(false);
-    getSlashCommandContent(chatId, name)
+    getSlashCommandContent(name, { chatId, folder, activePlugins })
       .then(setDetail)
-      .catch(() => setError(true))
+      .catch(() => {
+        // Let the next open try again rather than latching the failure.
+        requested.current = false;
+        setError(true);
+      })
       .finally(() => setLoading(false));
-  }, [open, setOpenState, chatId, name]);
+  }, [open, setOpenState, chatId, folder, activePlugins, name]);
 
   // Escape closes the popover without removing the chip.
   useEffect(() => {

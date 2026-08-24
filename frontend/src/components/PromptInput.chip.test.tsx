@@ -13,13 +13,13 @@ import PromptInput, { composePrompt, parseLeadingCommand, stripLeadingCommandTok
 
 // The chip popover fetches a body on first open; nothing here cares what it
 // says, only that the composer's own bookkeeping survives the round trip.
-const getSlashCommandContent = vi.fn(async (_chatId: string, name: string) => ({
+const getSlashCommandContent = vi.fn(async (name: string, _scope: unknown) => ({
   name,
   source: "custom-skill",
   description: `${name} description`,
   content: `body of ${name}`,
 }));
-vi.mock("../api", () => ({ getSlashCommandContent: (...args: [string, string]) => getSlashCommandContent(...args) }));
+vi.mock("../api", () => ({ getSlashCommandContent: (...args: [string, unknown]) => getSlashCommandContent(...args) }));
 
 const COMMANDS = ["callboard:foo", "compact", "model"];
 
@@ -32,24 +32,29 @@ function renderComposer(props: Partial<React.ComponentProps<typeof PromptInput>>
   const onSend = vi.fn();
   const onSaveDraft = vi.fn();
   let setValue: ((v: string) => void) | null = null;
-  render(
-    <PromptInput
-      onSend={onSend}
-      disabled={false}
-      onSaveDraft={onSaveDraft}
-      slashCommands={COMMANDS}
-      chatId="chat-1"
-      // PromptInput hands its setter out the way a React state setter takes
-      // one: wrapped in an updater, so setState doesn't invoke it. Unwrap it
-      // here exactly as Chat.tsx's useState setter would.
-      onSetValue={(fn) => {
-        setValue = (fn as unknown as () => (v: string) => void)();
-      }}
-      {...props}
-    />,
-  );
+  const baseProps: React.ComponentProps<typeof PromptInput> = {
+    onSend,
+    disabled: false,
+    onSaveDraft,
+    slashCommands: COMMANDS,
+    chatId: "chat-1",
+    // PromptInput hands its setter out the way a React state setter takes
+    // one: wrapped in an updater, so setState doesn't invoke it. Unwrap it
+    // here exactly as Chat.tsx's useState setter would.
+    onSetValue: (fn) => {
+      setValue = (fn as unknown as () => (v: string) => void)();
+    },
+    ...props,
+  };
+  const view = render(<PromptInput {...baseProps} />);
   const textarea = screen.getByPlaceholderText("Send a message...") as HTMLTextAreaElement;
-  return { onSend, onSaveDraft, textarea, setValue: (v: string) => act(() => setValue!(v)) };
+  return {
+    onSend,
+    onSaveDraft,
+    textarea,
+    setValue: (v: string) => act(() => setValue!(v)),
+    rerender: (next: Partial<React.ComponentProps<typeof PromptInput>>) => act(() => view.rerender(<PromptInput {...baseProps} {...next} />)),
+  };
 }
 
 /**
@@ -174,6 +179,25 @@ describe("PromptInput command chips", () => {
     expect(textarea.value).toBe("my text");
   });
 
+  /**
+   * Backspace-deletes-chip is suppressed while the popover is up (Backspace
+   * belongs to whatever the popover is doing). The chip is what reports that
+   * state, so a chip replaced *while its popover is open* never gets to report
+   * the close — and a stale `true` would disable the shortcut for good.
+   */
+  it("does not strand the Backspace shortcut when a chip is replaced with its popover open", () => {
+    const { textarea, setValue } = renderComposer();
+
+    pick(textarea, "callboard:foo");
+    fireEvent.click(chip("callboard:foo")!);
+    setValue("/model");
+
+    expect(chip("model")).toBeTruthy();
+    textarea.setSelectionRange(0, 0);
+    fireEvent.keyDown(textarea, { key: "Backspace" });
+    expect(chip("model")).toBeNull();
+  });
+
   it("keeps the chip when Backspace lands mid-prose", () => {
     const { textarea } = renderComposer();
 
@@ -184,20 +208,47 @@ describe("PromptInput command chips", () => {
     expect(chip("callboard:foo")).toBeTruthy();
   });
 
-  it("round-trips a chipped prompt through a saved draft", () => {
-    const { textarea, onSaveDraft, setValue } = renderComposer();
+  /**
+   * The draft round trip, in the order the app actually performs it.
+   *
+   * Chat.tsx installs the setter and restores the router's draft on the very
+   * next render, while the command list is still in flight (it comes from a
+   * fetch). A test that hands the value to a composer whose `slashCommands` are
+   * already populated proves nothing about the app — it tests an ordering that
+   * never happens. So the list arrives *after* the value here.
+   */
+  it("round-trips a chipped prompt through a saved draft, with the command list arriving late", () => {
+    const { textarea, onSaveDraft } = renderComposer();
 
     pick(textarea, "callboard:foo", "my text");
     fireEvent.click(screen.getByTitle("More actions"));
     fireEvent.click(screen.getByText("Save as draft"));
 
     expect(onSaveDraft).toHaveBeenCalledWith("/callboard:foo my text", undefined, expect.any(Function));
+    cleanup();
 
-    // Reloading that draft into the composer must show the chip again, not the
-    // serialized text — otherwise the chip is a one-way door.
-    setValue(onSaveDraft.mock.calls[0][0]);
+    // A fresh composer, as after a reload/navigation: no commands known yet.
+    const restored = renderComposer({ slashCommands: [] });
+    restored.setValue(onSaveDraft.mock.calls[0][0]);
+    expect(chip("callboard:foo")).toBeNull();
+    expect(restored.textarea.value).toBe("/callboard:foo my text");
+
+    // …and the moment the list lands, the draft becomes the chip it was sent
+    // as, rather than staying raw text forever.
+    restored.rerender({ slashCommands: COMMANDS });
     expect(chip("callboard:foo")).toBeTruthy();
-    expect(textarea.value).toBe("my text");
+    expect(restored.textarea.value).toBe("my text");
+  });
+
+  it("leaves a late-arriving command list alone once the user has typed", () => {
+    const { textarea, setValue, rerender } = renderComposer({ slashCommands: [] });
+
+    setValue("/callboard:foo my text");
+    fireEvent.change(textarea, { target: { value: "changed my mind" } });
+    rerender({ slashCommands: COMMANDS });
+
+    expect(chip("callboard:foo")).toBeNull();
+    expect(textarea.value).toBe("changed my mind");
   });
 
   it("leaves a value whose leading token is not a known command as literal text", () => {

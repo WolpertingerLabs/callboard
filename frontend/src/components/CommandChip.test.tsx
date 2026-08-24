@@ -38,7 +38,7 @@ describe("CommandChip", () => {
 
     fireEvent.click(name());
 
-    expect(getSlashCommandContent).toHaveBeenCalledWith("chat-1", "callboard:foo");
+    expect(getSlashCommandContent).toHaveBeenCalledWith("callboard:foo", { chatId: "chat-1", folder: undefined, activePlugins: undefined });
     expect(await screen.findByText("The body of the skill.")).toBeTruthy();
     expect(screen.getByText("Does the thing")).toBeTruthy();
   });
@@ -115,7 +115,40 @@ describe("CommandChip", () => {
     expect(await screen.findByText("Could not load command content.")).toBeTruthy();
   });
 
-  it("does not fetch at all without a chat to fetch against", async () => {
+  /**
+   * The fetch-once latch is about not re-asking for an answer we have — a
+   * failure is not an answer. Latching it would mean one dropped request (a
+   * daemon restart, a sleeping laptop) blanks that chip until it is removed and
+   * re-picked, with the retry the user reaches for doing nothing.
+   */
+  it("retries after a failure instead of latching it", async () => {
+    getSlashCommandContent.mockRejectedValueOnce(new Error("boom"));
+    const { container, name } = renderChip();
+
+    fireEvent.click(name());
+    await screen.findByText("Could not load command content.");
+    fireEvent.click(container.querySelector('[style*="position: fixed"]') as HTMLElement);
+
+    fireEvent.click(name());
+    expect(await screen.findByText("The body of the skill.")).toBeTruthy();
+    expect(getSlashCommandContent).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * On `/chat/new` there is no chat id at all — and that is where a skill is
+   * most often picked. The folder is what the lookup keys on server-side, so a
+   * chip with a folder is a chip that works.
+   */
+  it("resolves against the folder when there is no chat yet", async () => {
+    const { name } = renderChip({ chatId: undefined, folder: "/tmp/proj", activePlugins: ["p1"] });
+
+    fireEvent.click(name());
+
+    expect(getSlashCommandContent).toHaveBeenCalledWith("callboard:foo", { chatId: undefined, folder: "/tmp/proj", activePlugins: ["p1"] });
+    expect(await screen.findByText("The body of the skill.")).toBeTruthy();
+  });
+
+  it("does not fetch at all with neither a chat nor a folder", async () => {
     const { name } = renderChip({ chatId: undefined, description: "Does the thing" });
 
     fireEvent.click(name());
