@@ -99,6 +99,72 @@ function keyDown(textarea: HTMLTextAreaElement, init: Parameters<typeof createEv
   return { prevented: event.defaultPrevented };
 }
 
+/**
+ * Edit the composer the way a keystroke does: new value *and* new caret, both
+ * visible to the same `onChange`.
+ *
+ * `type()` above cannot express this. It routes through `fireEvent.change`,
+ * which assigns the value and lets jsdom collapse the selection to the end —
+ * so every test written on it sees a caret at the end of the string, and the
+ * whole mid-string half of the composer goes untested. That matters here
+ * specifically: the dismissal state machine reads `(value, caret)` together in
+ * `onChange`, and correcting the caret afterwards with a separate `select`
+ * event would run that logic once with the wrong caret and once with the right
+ * one, which is not what a keystroke does.
+ *
+ * Going through the prototype's value setter is what keeps React's change
+ * tracker from swallowing the event as a no-op; setting the selection before
+ * dispatch is what puts the right `selectionStart` in front of the handler.
+ */
+const nativeValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+
+function edit(textarea: HTMLTextAreaElement, value: string, caret: number) {
+  act(() => {
+    nativeValueSetter.call(textarea, value);
+    textarea.setSelectionRange(caret, caret);
+    fireEvent(textarea, new Event("input", { bubbles: true }));
+  });
+}
+
+/** Move the caret without changing the text, as a click or Arrow-Left/Right does. */
+function placeCaret(textarea: HTMLTextAreaElement, caret: number) {
+  act(() => {
+    textarea.setSelectionRange(caret, caret);
+  });
+  fireEvent.select(textarea);
+}
+
+/** Type `text` at the caret, as a real keystroke would. */
+function typeAt(textarea: HTMLTextAreaElement, text: string) {
+  const at = textarea.selectionStart ?? textarea.value.length;
+  edit(textarea, textarea.value.slice(0, at) + text + textarea.value.slice(at), at + text.length);
+}
+
+/**
+ * Press Backspace for real: the key event first, and the deletion only if the
+ * composer did not claim the key (it claims Backspace at offset 0 to delete a
+ * chip, which is a branch a value-replacing helper can never reach).
+ */
+function pressBackspace(textarea: HTMLTextAreaElement, times = 1) {
+  for (let i = 0; i < times; i++) {
+    const at = textarea.selectionStart ?? textarea.value.length;
+    if (keyDown(textarea, { key: "Backspace" }).prevented || at === 0) continue;
+    edit(textarea, textarea.value.slice(0, at - 1) + textarea.value.slice(at), at - 1);
+  }
+}
+
+/**
+ * Press Arrow-Left/Right, moving the caret only if the composer let the key
+ * through. (Arrow-Up/Down are the menu's, and move the highlight instead.)
+ */
+function pressArrow(textarea: HTMLTextAreaElement, key: "ArrowLeft" | "ArrowRight", times = 1) {
+  for (let i = 0; i < times; i++) {
+    if (keyDown(textarea, { key }).prevented) continue;
+    const at = textarea.selectionStart ?? 0;
+    placeCaret(textarea, Math.max(0, Math.min(textarea.value.length, at + (key === "ArrowRight" ? 1 : -1))));
+  }
+}
+
 describe("keyword menu visibility", () => {
   it("opens on a bare $ and lists every keyword", () => {
     const { textarea } = renderComposer();
@@ -343,6 +409,136 @@ describe("Escape dismissal", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("$rev", undefined);
   });
+
+  /**
+   * Escaping the bare-`$` menu dismisses a list of *everything*, which is a
+   * much weaker statement than dismissing a list the user narrowed by typing.
+   * Typing a query afterwards is fresh intent and re-opens; a second Escape
+   * then sticks properly, because it carries a non-empty query.
+   */
+  it("re-opens when a query is typed after dismissing the bare $ menu", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(menu()).toBeNull();
+
+    typeAt(textarea, "rev");
+    expect(menu()).toBeTruthy();
+
+    // …and Escape at *this* point does stick, because it is a dismissal of
+    // the narrowed list rather than of the whole catalogue.
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(menu()).toBeNull();
+    typeAt(textarea, "i");
+    expect(menu()).toBeNull();
+  });
+
+  /**
+   * Pinned deliberately: a dismissal is dropped once the caret leaves the token
+   * it was made on, so coming back re-opens. Under #381 it stayed shut forever
+   * — but that is the same offset-keyed stickiness that made one Escape kill
+   * the feature for a session, and typing elsewhere and returning is a new
+   * interaction rather than a continuation of the dismissed one. If this test
+   * fails, the question is whether the *rule* changed, not whether to relax it.
+   */
+  it("re-opens on returning to a token the caret had left", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$rev");
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(menu()).toBeNull();
+
+    typeAt(textarea, " hello");
+    expect(textarea.value).toBe("$rev hello");
+    expect(menu()).toBeNull();
+
+    // Arrow back into the token: a fresh visit, so a fresh menu.
+    placeCaret(textarea, 4);
+    expect(menu()).toBeTruthy();
+  });
+
+  it("re-opens when an edit elsewhere shifts the token's offset", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$rev");
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(menu()).toBeNull();
+
+    // Insert at the very start; `$rev` is now at offset 3, not 0.
+    placeCaret(textarea, 0);
+    typeAt(textarea, "hi ");
+    placeCaret(textarea, 7);
+    expect(textarea.value).toBe("hi $rev");
+    expect(menu()).toBeTruthy();
+  });
+});
+
+/**
+ * The composer's whole dismissal state machine lives on `(value, caret)` pairs,
+ * and until these existed every test drove it through a helper that replaced
+ * the entire value and left the caret at the end. Mid-string editing, real
+ * Backspace and arrow navigation were therefore uncovered — not broken, but
+ * unprotected, which for this particular state machine is the same risk.
+ */
+describe("mid-string editing", () => {
+  it("Escapes and re-opens on Backspace without touching the prose around it", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "a $rev z");
+    placeCaret(textarea, 6); // inside `$rev`, prose on both sides
+    expect(menu()).toBeTruthy();
+
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(menu()).toBeNull();
+
+    // Backspacing is reworking the token, not continuing it.
+    pressBackspace(textarea);
+    expect(textarea.value).toBe("a $re z");
+    expect(textarea.selectionStart).toBe(5);
+    expect(menu()).toBeTruthy();
+  });
+
+  it("keeps the dismissal while the token is extended mid-string", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "a $rev z");
+    placeCaret(textarea, 6);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+
+    typeAt(textarea, "i");
+    expect(textarea.value).toBe("a $revi z");
+    expect(menu()).toBeNull();
+  });
+
+  it("opens when an arrow key walks the caret back into a token", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$rev ok");
+    expect(menu()).toBeNull(); // caret is out in the prose
+
+    pressArrow(textarea, "ArrowLeft", 3); // back over " ok" into the token
+    expect(textarea.selectionStart).toBe(4);
+    expect(menu()).toBeTruthy();
+    expect(row("review")).toBeTruthy();
+  });
+
+  it("closes again when an arrow key walks the caret back out", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$rev ok");
+    pressArrow(textarea, "ArrowLeft", 3);
+    expect(menu()).toBeTruthy();
+
+    pressArrow(textarea, "ArrowRight", 3);
+    expect(textarea.selectionStart).toBe(7);
+    expect(menu()).toBeNull();
+  });
+
+  it("Backspace still deletes the chip at offset 0 rather than a character", () => {
+    const { textarea } = renderComposer();
+    fireEvent.change(textarea, { target: { value: "/callboard" } });
+    fireEvent.click(screen.getByText("callboard:foo"));
+    type(textarea, "my text");
+    placeCaret(textarea, 0);
+
+    pressBackspace(textarea);
+    expect(screen.queryByRole("button", { name: "/callboard:foo" })).toBeNull();
+    expect(textarea.value).toBe("my text");
+  });
 });
 
 /**
@@ -382,6 +578,72 @@ describe("a keyword body ending in a $token", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     type(textarea, "please do $review then $rev");
     expect(menu()).toBeTruthy();
+  });
+});
+
+/**
+ * A body ending in a *bare* `$` is the same suppression with an empty query,
+ * and an empty query is where a prefix rule goes catastrophically wrong:
+ * `"".startsWith(anything)` is true, so the suppression would cover every token
+ * that ever starts at that offset, for good. The user dismissed nothing — the
+ * insertion did — so there would be no affordance whatsoever explaining why
+ * `$` had stopped working in that one spot.
+ */
+describe("a keyword body ending in a bare $", () => {
+  const TAIL = [
+    kw("dollar-tail", "the price is $", "Ends in a bare dollar"),
+    kw("standup", "Yesterday:\nToday:\nBlockers:", "Standup template"),
+    kw("review", "Check the tests.", "Review checklist"),
+  ];
+
+  function insertTail() {
+    const view = renderComposer({ keywords: TAIL });
+    type(view.textarea, "$dollar");
+    fireEvent.keyDown(view.textarea, { key: "Enter" });
+    expect(view.textarea.value).toBe("the price is $");
+    // Correct so far: the pasted trailing `$` must not spring the menu open.
+    expect(menu()).toBeNull();
+    return view;
+  }
+
+  it("suppresses the menu on the $ it just pasted", () => {
+    insertTail();
+  });
+
+  it("opens again as soon as the user types a query onto it", () => {
+    const { textarea } = insertTail();
+    typeAt(textarea, "stand");
+    expect(textarea.value).toBe("the price is $stand");
+    expect(menu()).toBeTruthy();
+    expect(row("standup")).toBeTruthy();
+  });
+
+  it("does not stay dead at that offset for the rest of the session", () => {
+    const { textarea } = insertTail();
+
+    // The reviewer's sequence, verbatim: type a query, backspace all of it
+    // back to the bare `$`, then type a different query.
+    typeAt(textarea, "stand");
+    expect(menu()).toBeTruthy();
+
+    pressBackspace(textarea, 5);
+    expect(textarea.value).toBe("the price is $");
+    // Open, not closed: typing `stand` dropped the inflicted suppression for
+    // good, so what is left is an ordinary bare `$` with nothing suppressing
+    // it — which shows the whole catalogue, exactly as typing `$` always has.
+    expect(menu()).toBeTruthy();
+
+    typeAt(textarea, "rev");
+    expect(textarea.value).toBe("the price is $rev");
+    expect(menu()).toBeTruthy();
+    expect(row("review")).toBeTruthy();
+  });
+
+  it("does not swallow the Enter that follows the query", () => {
+    const { textarea } = insertTail();
+    typeAt(textarea, "rev");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("the price is Check the tests.");
   });
 });
 

@@ -32,7 +32,7 @@
  * existing file first whenever anything about it was not fully represented in
  * what the read returned — see {@link KeywordsService.preserve}.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, copyFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, copyFileSync, realpathSync } from "fs";
 import { join, dirname } from "path";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
@@ -98,14 +98,55 @@ function validateBody(body: string): string {
  *
  * `lossy` is not a diagnostic — it is the input to the write path's decision
  * about whether overwriting the file would destroy something. It is true
- * whenever any byte on disk is not represented in `keywords`: the file would
- * not parse, parsed to the wrong shape, could not be read at all, or parsed
- * fine but contained entries that were dropped.
+ * whenever anything on disk is not represented in `keywords`: the file would
+ * not parse, parsed to the wrong shape, could not be read at all, parsed fine
+ * but contained entries that were dropped, or carried fields this version does
+ * not know about.
+ *
+ * That last clause is the easy one to under-implement, because nothing visibly
+ * breaks without it. `keywords.json` is documented as hand-editable, and the
+ * population that hand-edits a config file is the population that annotates it;
+ * a `"note"` key or a per-keyword `"tags"` array would be silently deleted by
+ * the next save. An unrecognized `version` is the same hazard arriving from the
+ * other direction — a downgrade after a future v2 format would rewrite the
+ * store as v1 and drop every v2 field. Reading such a store still works
+ * normally; only *overwriting* it takes a copy first.
  */
 interface StoreRead {
   keywords: Keyword[];
   lossy: boolean;
 }
+
+/**
+ * The store could not be saved because the file already there could not be
+ * understood *and* could not be copied aside first.
+ *
+ * A distinct type because it is the one failure the user can actually act on,
+ * and because "500 Failed to create keyword" tells them nothing: the keyword
+ * they typed is fine, their store is broken, nothing was lost, and the fix is a
+ * `mv`. The routes translate this into that sentence rather than a stack trace.
+ */
+export class KeywordStoreUnwritableError extends Error {
+  constructor(
+    readonly path: string,
+    readonly cause: Error,
+  ) {
+    super(
+      `Your keywords file could not be read as valid JSON, and a backup copy of it could not be written either ` +
+        `(${cause.message}). Nothing was changed and nothing was lost. Move or repair ${path}, then try again.`,
+    );
+    this.name = "KeywordStoreUnwritableError";
+  }
+}
+
+/** The store version this build writes and fully understands. */
+const STORE_VERSION = 1;
+
+/** Top-level keys of a store this version knows how to round-trip. */
+const KNOWN_STORE_KEYS = new Set(["version", "keywords"]);
+
+/** Keys of a single keyword this version knows how to round-trip. */
+const KNOWN_KEYWORD_KEYS = new Set(["name", "description", "body", "createdAt", "updatedAt"]);
 
 class KeywordsService {
   /**
@@ -147,6 +188,14 @@ class KeywordsService {
       return { keywords: [], lossy: true };
     }
 
+    // Anything this build would not write back. A *missing* version is not
+    // counted: an absent key is not data, and a hand-written file without one
+    // loses nothing by being given the current version on save.
+    const store = parsed as Record<string, unknown>;
+    const unknownStoreKeys = Object.keys(store).filter((k) => !KNOWN_STORE_KEYS.has(k));
+    const foreignVersion = store.version !== undefined && store.version !== STORE_VERSION;
+    let unknownEntryKeys = 0;
+
     const seen = new Set<string>();
     const keywords: Keyword[] = [];
     // Counted apart, because they are different faults with different fixes:
@@ -169,6 +218,7 @@ class KeywordsService {
         duplicates++;
         continue;
       }
+      unknownEntryKeys += Object.keys(entry).filter((k) => !KNOWN_KEYWORD_KEYS.has(k)).length;
       seen.add(name);
       keywords.push({
         name,
@@ -184,9 +234,23 @@ class KeywordsService {
     if (duplicates > 0) {
       log.warn(`Ignored ${duplicates} duplicate keyword name${duplicates === 1 ? "" : "s"} in ${KEYWORDS_FILE} — the first of each wins`);
     }
+    if (foreignVersion) {
+      log.warn(`${KEYWORDS_FILE} declares version ${JSON.stringify(store.version)}, but this build writes version ${STORE_VERSION}`);
+    }
+    if (unknownStoreKeys.length > 0 || unknownEntryKeys > 0) {
+      log.warn(
+        `${KEYWORDS_FILE} carries fields this build does not know about` +
+          `${unknownStoreKeys.length > 0 ? ` (top-level: ${unknownStoreKeys.join(", ")})` : ""}` +
+          `${unknownEntryKeys > 0 ? ` (${unknownEntryKeys} on individual keywords)` : ""}` +
+          ` — they are readable but would not survive a save, so one will be kept`,
+      );
+    }
 
     keywords.sort((a, b) => a.name.localeCompare(b.name));
-    return { keywords, lossy: malformed > 0 || duplicates > 0 };
+    return {
+      keywords,
+      lossy: malformed > 0 || duplicates > 0 || foreignVersion || unknownStoreKeys.length > 0 || unknownEntryKeys > 0,
+    };
   }
 
   private read(): Keyword[] {
@@ -203,16 +267,44 @@ class KeywordsService {
    * a failed save. A copy is strictly non-destructive, keeps the feature
    * working, and names the backup in the log — recovery is a `mv` away.
    *
-   * Throws if the copy fails. If the bytes cannot be preserved they must not be
-   * overwritten; a failed create is recoverable, a deleted store is not.
+   * Throws {@link KeywordStoreUnwritableError} if the copy fails. If the bytes
+   * cannot be preserved they must not be overwritten; a failed create is
+   * recoverable, a deleted store is not. The typed error is what lets the
+   * routes tell the user their *store* is the problem rather than their input.
    */
-  private preserve(): void {
-    if (!existsSync(KEYWORDS_FILE)) return;
+  private preserve(target: string): void {
+    if (!existsSync(target)) return;
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    let backup = `${KEYWORDS_FILE}.corrupt-${stamp}`;
-    for (let i = 2; existsSync(backup); i++) backup = `${KEYWORDS_FILE}.corrupt-${stamp}-${i}`;
-    copyFileSync(KEYWORDS_FILE, backup);
-    log.error(`${KEYWORDS_FILE} could not be fully parsed; the original was copied to ${backup} before being rewritten`);
+    let backup = `${target}.corrupt-${stamp}`;
+    for (let i = 2; existsSync(backup); i++) backup = `${target}.corrupt-${stamp}-${i}`;
+    try {
+      copyFileSync(target, backup);
+    } catch (err) {
+      log.error(`${target} could not be fully parsed AND could not be copied aside — refusing to overwrite it: ${(err as Error).message}`);
+      throw new KeywordStoreUnwritableError(target, err as Error);
+    }
+    log.error(`${target} could not be fully parsed; the original was copied to ${backup} before being rewritten`);
+  }
+
+  /**
+   * The path a write must actually land on.
+   *
+   * `keywords.json` may well be a symlink — into a dotfiles repo, a synced
+   * folder — and this write finishes with a rename, which would replace the
+   * *link* with a regular file and strand the target holding stale data.
+   * Resolving once, here, also puts the temp file beside the real target, which
+   * is what keeps the rename atomic in the first place: `rename(2)` across
+   * filesystems fails outright.
+   *
+   * Falls back to the configured path when it does not resolve — overwhelmingly
+   * because the file does not exist yet, which is the first-run case.
+   */
+  private storePath(): string {
+    try {
+      return realpathSync(KEYWORDS_FILE);
+    } catch {
+      return KEYWORDS_FILE;
+    }
   }
 
   /**
@@ -225,17 +317,18 @@ class KeywordsService {
    * thing standing between a stray comma and total data loss.
    */
   private write(keywords: Keyword[], preserveExisting: boolean): void {
-    if (preserveExisting) this.preserve();
+    const target = this.storePath();
+    if (preserveExisting) this.preserve(target);
     // Sorted on disk as well as in memory, because the file is meant to be
     // hand-editable and a human reading it should find it in an order.
-    const payload: KeywordsFile = { version: 1, keywords: [...keywords].sort((a, b) => a.name.localeCompare(b.name)) };
-    mkdirSync(dirname(KEYWORDS_FILE), { recursive: true });
+    const payload: KeywordsFile = { version: STORE_VERSION, keywords: [...keywords].sort((a, b) => a.name.localeCompare(b.name)) };
+    mkdirSync(dirname(target), { recursive: true });
     // Process-scoped temp name: two daemons sharing a data dir would otherwise
     // write the same path and rename each other's half-written file into place.
-    const tmp = `${KEYWORDS_FILE}.${process.pid}.tmp`;
+    const tmp = `${target}.${process.pid}.tmp`;
     try {
       writeFileSync(tmp, JSON.stringify(payload, null, 2), "utf8");
-      renameSync(tmp, KEYWORDS_FILE);
+      renameSync(tmp, target);
     } catch (err) {
       try {
         if (existsSync(tmp)) unlinkSync(tmp);

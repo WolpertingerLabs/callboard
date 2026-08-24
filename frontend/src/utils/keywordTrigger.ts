@@ -126,10 +126,34 @@ export interface KeywordDismissal {
  * user has done nothing to but keep typing forwards. Backspacing into it, or
  * replacing it, is the user reworking the token rather than continuing it —
  * which is exactly the moment the menu becomes useful again.
+ *
+ * The empty query is a special case rather than a degenerate one, because
+ * `"".startsWith(anything)` is `true`: read as a prefix, an empty-query
+ * dismissal would cover *every* token that ever starts at that offset, for the
+ * rest of the composer session, and backspacing to the bare `$` would not lapse
+ * it either — the only way out would be deleting the `$` itself. That is the
+ * same permanent wedge that keying on a bare offset caused, arriving by a
+ * different route, and `commitInsertion` inflicts one with no user action at
+ * all whenever an inserted body happens to end in a bare `$`.
+ *
+ * So an empty-query dismissal holds only while the token is still bare. Two
+ * consequences, both wanted:
+ *
+ * - typing a query onto it re-opens the menu, because a query is intent the
+ *   user has just expressed and the dismissal was of a list they had not
+ *   narrowed. The same then applies to Escape on a bare `$`, deliberately: it
+ *   dismisses the whole catalogue, which is a far weaker statement than
+ *   dismissing a list the user typed their way to. A second Escape, now
+ *   carrying a non-empty query, sticks the way it should.
+ * - `$` → Enter → Enter still sends rather than expanding, because the token is
+ *   still `""` at the second Enter and the dismissal therefore still holds.
+ *   That sequence is the reason this predicate has to keep returning `true` for
+ *   an untouched bare `$` instead of ignoring empty dismissals outright.
  */
 export function dismissalApplies(dismissal: KeywordDismissal | null, token: KeywordToken | null): boolean {
   if (!dismissal || !token) return false;
-  return token.start === dismissal.start && token.query.startsWith(dismissal.query);
+  if (token.start !== dismissal.start) return false;
+  return dismissal.query === "" ? token.query === "" : token.query.startsWith(dismissal.query);
 }
 
 /** A keyword as this module needs to see it — name and description only. */

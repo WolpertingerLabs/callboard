@@ -521,6 +521,12 @@ export default function PromptInput({
      *
      * Usually there is no token here and this is a plain `null`, which is what
      * the old code assumed unconditionally.
+     *
+     * Note the tail can also be a *bare* `$` — `"the price is $"` — which parks
+     * an empty-query dismissal here without the user having dismissed anything.
+     * That is why {@link dismissalApplies} treats the empty query as "still
+     * bare" rather than as a prefix: as a prefix it would match every token
+     * that ever starts at this offset and kill the trigger there for good.
      */
     const landedIn = findKeywordToken(next, nextCaret);
     setKeywordDismissal(landedIn ? { start: landedIn.start, query: landedIn.query } : null);
@@ -727,6 +733,19 @@ export default function PromptInput({
               // offset. Dropping it the moment it stops describing what is
               // actually under the caret is what keeps one Escape from taking
               // the menu out for the rest of the composer session.
+              //
+              // A deliberate consequence, not a side effect: because the
+              // dismissal is *dropped* rather than merely not-applying, leaving
+              // the token and coming back re-opens the menu — Escape on `$rev`,
+              // type " hello", arrow back into `$rev`, and it is up again. The
+              // same goes for an edit elsewhere that shifts the token's offset.
+              // #381 kept it shut forever, but that is precisely the sticky
+              // offset-keyed behaviour that killed the feature for a whole
+              // session; typing elsewhere and returning is a new interaction
+              // rather than a continuation of the dismissed one. Pinned by
+              // "re-opens on returning to a token the caret had left" — if that
+              // test fails, the rule changed and wants re-deciding, rather than
+              // relaxing back.
               setKeywordDismissal((prev) => (dismissalApplies(prev, findKeywordToken(next, nextCaret)) ? prev : null));
             }}
             onKeyDown={handleKeyDown}

@@ -1,8 +1,22 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { keywordsService } from "../services/keywords-service.js";
+import { keywordsService, KeywordStoreUnwritableError } from "../services/keywords-service.js";
 
 export const keywordsRouter = Router();
+
+/**
+ * The store itself is broken and could not be backed up, so the write was
+ * refused. Distinguished from every other 500 because it is the only one the
+ * user can act on, and because blaming their input would be actively
+ * misleading — the keyword they submitted was fine.
+ *
+ * Returns true when it handled the error, so callers can fall through.
+ */
+function handleStoreUnwritable(err: unknown, res: Response): boolean {
+  if (!(err instanceof KeywordStoreUnwritableError)) return false;
+  res.status(500).json({ error: err.message, storeUnwritable: true, path: err.path });
+  return true;
+}
 
 // List all keywords.
 //
@@ -38,6 +52,7 @@ keywordsRouter.post("/", (req: Request, res: Response): void => {
     const keyword = keywordsService.createKeyword({ name, description, body });
     res.status(201).json({ keyword });
   } catch (err: any) {
+    if (handleStoreUnwritable(err, res)) return;
     if (err.message.includes("already exists")) {
       res.status(409).json({ error: err.message });
     } else if (
@@ -78,6 +93,7 @@ keywordsRouter.put("/:name", (req: Request, res: Response): void => {
     });
     res.json({ keyword });
   } catch (err: any) {
+    if (handleStoreUnwritable(err, res)) return;
     if (err.message.includes("not found")) {
       res.status(404).json({ error: err.message });
     } else if (err.message.includes("already exists")) {
@@ -96,6 +112,7 @@ keywordsRouter.delete("/:name", (req: Request, res: Response): void => {
     keywordsService.deleteKeyword(req.params.name);
     res.json({ ok: true });
   } catch (err: any) {
+    if (handleStoreUnwritable(err, res)) return;
     if (err.message.includes("not found")) {
       res.status(404).json({ error: err.message });
     } else {

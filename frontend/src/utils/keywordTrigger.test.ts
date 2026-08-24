@@ -286,9 +286,41 @@ describe("dismissalApplies", () => {
     expect(dismissalApplies(null, null)).toBe(false);
   });
 
-  it("holds for a bare $ still being turned into a query", () => {
-    // Escape on `$`, then typing `r`: still that token, still dismissed.
-    expect(dismissalApplies({ start: 0, query: "" }, { start: 0, end: 2, query: "r" })).toBe(true);
+  /**
+   * The empty query is the case a prefix rule gets catastrophically wrong:
+   * `"".startsWith(anything)` is true, so an empty-query dismissal would cover
+   * *every* token that ever starts at that offset, permanently, and backspacing
+   * back to the bare `$` would not lapse it either. `commitInsertion` inflicts
+   * exactly such a dismissal — with no user action at all — whenever an
+   * inserted body happens to end in a bare `$`.
+   */
+  describe("an empty-query dismissal", () => {
+    const bare = { start: 12, query: "" };
+
+    it("holds only while the token is still a bare $", () => {
+      expect(dismissalApplies(bare, { start: 12, end: 13, query: "" })).toBe(true);
+    });
+
+    it("lapses the moment a query character is typed", () => {
+      expect(dismissalApplies(bare, { start: 12, end: 18, query: "stand" })).toBe(false);
+      expect(dismissalApplies(bare, { start: 12, end: 14, query: "r" })).toBe(false);
+    });
+
+    it("does not swallow every future token at that offset", () => {
+      for (const query of ["rev", "review", "x", "HOME", "a-b_c9"]) {
+        expect(dismissalApplies(bare, { start: 12, end: 12 + 1 + query.length, query })).toBe(false);
+      }
+    });
+
+    it("still does not reach a token at another offset", () => {
+      expect(dismissalApplies(bare, { start: 0, end: 1, query: "" })).toBe(false);
+    });
+  });
+
+  it("holds for a bare $ that is still bare, which is what makes Enter send", () => {
+    // `$` → Enter dismisses without sending; the second Enter has to fall
+    // through to send, and it only does so while this still reports true.
+    expect(dismissalApplies({ start: 0, query: "" }, { start: 0, end: 1, query: "" })).toBe(true);
   });
 });
 
