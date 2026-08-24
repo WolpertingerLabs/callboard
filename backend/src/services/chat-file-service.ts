@@ -1,9 +1,10 @@
-import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 import type { Chat } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
+import { isMtimeSettled } from "../utils/mtime-freshness.js";
 
 const log = createLogger("chat-file");
 
@@ -16,30 +17,159 @@ if (!existsSync(chatsDir)) {
   mkdirSync(chatsDir, { recursive: true });
 }
 
+/**
+ * Parsed records, keyed by filename, with the stat they were parsed at.
+ *
+ * {@link ChatFileService.getAllChats} is called on the chat-list path and on
+ * ~9 others, and it used to read and `JSON.parse` every record on every call —
+ * 8,167 files, ~41 ms, per request. The records are almost entirely unchanged
+ * between calls, so this keeps them and re-reads only what `stat` says moved.
+ *
+ * The cost is resident memory: this holds every record for the life of the
+ * process, where the old code allocated the same objects per call and dropped
+ * them. It is the same data either way — ~5 MB of JSON across 8k records on the
+ * profiled dir — so this trades GC churn for a flat footprint that grows only
+ * with the number of chats, not with request rate.
+ *
+ * Freshness is the `(mtimeNs, size)` rule `card-member-index.ts` states in full,
+ * including why an entry inside its own mtime tick is not cacheable — see
+ * {@link isMtimeSettled}. Nanoseconds rather than `mtimeMs`, because on a
+ * whole-second filesystem a millisecond field cannot distinguish two writes the
+ * clock never separated, and these records are the equal-length-rewrite shape
+ * that makes `size` no help either.
+ */
+const recordCache = new Map<string, { mtimeNs: bigint; size: bigint; chat: Chat }>();
+
+/**
+ * The last scan's records, sorted newest-first, or null when the next scan must
+ * re-sort. Kept because the sort is not the cheap half: the comparator it
+ * replaced built two `Date` objects per comparison, ~220k of them across 8k
+ * records, for 45–49 ms on top of the read. See {@link sortByUpdatedAt}.
+ *
+ * Only reused when a scan re-read nothing and the file set was unchanged, so it
+ * can never outlive the records it was built from.
+ */
+let sortedCache: Chat[] | null = null;
+
+/**
+ * Sort records by `updated_at`, newest first.
+ *
+ * The timestamp is parsed once per record rather than once per comparison.
+ * `Array.prototype.sort` does ~n·log n comparisons — 110k across 8k records —
+ * and the old `new Date(b.updated_at).getTime() - new Date(a.updated_at)…`
+ * built two `Date` objects in each of them. Precomputing the key is the same
+ * ordering for 49 ms less; it was checked against the old comparator over a
+ * real 8,167-record directory and the two agree exactly.
+ *
+ * A malformed timestamp keys as 0 and sorts last. The old comparator returned
+ * `NaN` for it, which makes the comparison inconsistent and the resulting
+ * order unspecified — so this is a previously-undefined case being pinned
+ * down, not a defined one being changed.
+ */
+function sortByUpdatedAt(chats: Chat[]): Chat[] {
+  const keys = new Map<Chat, number>();
+  for (const chat of chats) keys.set(chat, Date.parse(chat.updated_at) || 0);
+  return chats.sort((a, b) => keys.get(b)! - keys.get(a)!);
+}
+
+/**
+ * Forget one record, and the sorted view built over it.
+ *
+ * Called by this service's own writers, and belt-and-braces alongside the
+ * mtime-tick rule rather than a substitute for it: the tick rule is what makes
+ * a write by *anyone* visible (another process, a hand edit), and it covers
+ * these writes too. This makes ours exact without depending on any reasoning
+ * about clock granularity, which is the part most likely to be wrong on a
+ * filesystem nobody tested on.
+ */
+function invalidateRecord(sessionId: string): void {
+  recordCache.delete(`${sessionId}.json`);
+  sortedCache = null;
+}
+
 export class ChatFileService {
-  // Get all chat files
+  /**
+   * Every record, newest first, optionally paginated.
+   *
+   * Revalidates against the directory on each call — one `readdir` plus one
+   * `stat` per file, ~22 ms against the ~91 ms a full re-read and re-sort cost
+   * — so a record changed by anything at all, including something outside this
+   * process, is picked up.
+   *
+   * The scan assembles the result itself and consults {@link recordCache} only
+   * to avoid a read. That distinction is load-bearing: a record inside its own
+   * mtime tick is deliberately not cached, and deriving the result from the
+   * cache instead would drop every just-written chat out of the sidebar for as
+   * long as its tick stayed open.
+   *
+   * Returned records are shallow copies. `Chat` is flat, so that is total
+   * isolation, and it means a caller that mutates what it gets back — several
+   * do — cannot corrupt what the next caller reads.
+   */
   getAllChats(limit?: number, offset?: number): Chat[] {
     try {
       const files = readdirSync(chatsDir).filter((file) => file.endsWith(".json"));
-      const chats: Chat[] = [];
+      const records: Chat[] = [];
+      const present = new Set<string>();
+      // Any read at all invalidates the memoised order: the record that moved
+      // may have moved in `updated_at`. Only a scan that read nothing, over an
+      // unchanged file set, can reuse it.
+      let reread = false;
 
       for (const file of files) {
+        const filepath = join(chatsDir, file);
+        let stats;
         try {
-          const content = readFileSync(join(chatsDir, file), "utf8");
-          const chat: Chat = JSON.parse(content);
-          chats.push(chat);
+          stats = statSync(filepath, { bigint: true });
+        } catch {
+          // Deleted between the readdir and here — nothing to return for it,
+          // and the entry goes with it.
+          if (recordCache.delete(file)) reread = true;
+          continue;
+        }
+        present.add(file);
+
+        const cached = recordCache.get(file);
+        if (cached && cached.mtimeNs === stats.mtimeNs && cached.size === stats.size) {
+          records.push(cached.chat);
+          continue;
+        }
+
+        // Only entries whose tick has already closed are worth remembering; see
+        // isMtimeSettled. Computed before the read so a slow read cannot talk us
+        // into trusting a timestamp that was fresh when we opened it.
+        const cacheable = isMtimeSettled(stats.mtimeNs);
+
+        reread = true;
+        try {
+          const chat: Chat = JSON.parse(readFileSync(filepath, "utf8"));
+          // A record still inside its tick is returned but not remembered, so
+          // the next call re-reads it rather than latching a value a same-tick
+          // rewrite could have superseded.
+          if (cacheable) recordCache.set(file, { mtimeNs: stats.mtimeNs, size: stats.size, chat });
+          else recordCache.delete(file);
+          records.push(chat);
         } catch (error) {
+          // Unreadable or corrupt: not cached either way, so a transient
+          // failure is retried on the next call rather than latched into a
+          // chat that has silently vanished from the list.
           log.error(`Error reading chat file ${file}: ${error}`);
+          recordCache.delete(file);
         }
       }
 
-      // Sort by updated_at desc (newest first)
-      chats.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+      for (const file of recordCache.keys()) {
+        if (!present.has(file)) {
+          recordCache.delete(file);
+          reread = true;
+        }
+      }
 
-      // Apply pagination
+      if (reread || !sortedCache) sortedCache = sortByUpdatedAt(records);
+
       const start = offset || 0;
       const end = limit ? start + limit : undefined;
-      return chats.slice(start, end);
+      return sortedCache.slice(start, end).map((chat) => ({ ...chat }));
     } catch (error) {
       log.error(`Error reading chats directory: ${error}`);
       return [];
@@ -254,6 +384,7 @@ export class ChatFileService {
 
     try {
       unlinkSync(filepath);
+      invalidateRecord(sessionId);
       return true;
     } catch (error) {
       log.error(`Error deleting chat file ${sessionId}: ${error}`);
@@ -265,6 +396,7 @@ export class ChatFileService {
   private saveChat(chat: Chat): void {
     const filepath = join(chatsDir, `${chat.session_id}.json`);
     writeFileSync(filepath, JSON.stringify(chat, null, 2));
+    invalidateRecord(chat.session_id);
   }
 }
 

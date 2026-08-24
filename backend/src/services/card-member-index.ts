@@ -77,6 +77,7 @@ import { join } from "path";
 import type { Chat } from "shared";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
+import { isMtimeSettled } from "../utils/mtime-freshness.js";
 
 const log = createLogger("card-member-index");
 
@@ -105,27 +106,6 @@ export function chatCardId(chat: Pick<Chat, "metadata">): string | undefined {
     return undefined;
   }
 }
-
-/**
- * How far in the past a file's mtime must already be, at the moment we read
- * it, before that mtime is allowed to stand in for the file's contents.
- *
- * This is the guard against a *coarse* clock, and it has to exist because the
- * granularity is the filesystem's to choose, not ours: ext4 stores nanoseconds
- * only with 256-byte inodes, HFS+ and ext3 store whole seconds, FAT stores two.
- * On any of those, a record written twice inside one tick with an equal-length
- * payload — the normal shape here, since `updated_at` is a fixed-width
- * timestamp — presents the same `(mtime, size)` before and after, and a scan
- * that ran between the two writes would cache the first forever.
- *
- * So an entry read while its mtime is still inside the current tick is not
- * cacheable: a later write could still land in that same tick. Two seconds
- * covers the coarsest granularity in play. The next scan re-reads it, by which
- * time the tick has closed and the entry becomes cacheable — so the cost is a
- * re-read of the handful of records written in the last two seconds, not a
- * standing penalty. Same rule `make` and `rsync` use for the same reason.
- */
-const COARSE_MTIME_WINDOW_MS = 2_000;
 
 interface IndexEntry {
   mtimeNs: bigint;
@@ -181,9 +161,9 @@ export function listCardMemberChats(): Chat[] {
     }
 
     // Only entries whose tick has already closed are worth remembering; see
-    // COARSE_MTIME_WINDOW_MS. Computed before the read so a slow read cannot
-    // talk us into trusting a timestamp that was fresh when we opened it.
-    const cacheable = Date.now() - Number(stats.mtimeNs / 1_000_000n) >= COARSE_MTIME_WINDOW_MS;
+    // isMtimeSettled. Computed before the read so a slow read cannot talk us
+    // into trusting a timestamp that was fresh when we opened it.
+    const cacheable = isMtimeSettled(stats.mtimeNs);
 
     let chat: Chat;
     try {
