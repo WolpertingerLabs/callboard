@@ -86,6 +86,23 @@ describe("getFirstUserMessage", () => {
     expect(getFirstUserMessage(join(tmpRoot, "nope.jsonl"))).toBeNull();
   });
 
+  // A line can parse as JSON and still be a shape this code cannot walk. Each
+  // of these throws a TypeError if the visitor is written naively, and because
+  // `scanJsonlLines` calls `visit` outside its own parse guard, that exception
+  // escapes into `GET /api/chats` and 500s the whole sidebar over one bad line
+  // in one transcript. The whole-file loop this replaced caught them per line.
+  it.each([
+    ["a bare null line", null],
+    ["a null element in a content array", { type: "user", message: { role: "user", content: [null] } }],
+    ["a text block whose text is not a string", { type: "user", message: { role: "user", content: [{ type: "text", text: 42 }] } }],
+    ["a null message", { type: "user", message: null }],
+    ["a JSON string line", "just a string"],
+    ["a JSON number line", 7],
+  ])("walks past %s to reach the real prompt", (_label, junk) => {
+    const path = transcript([junk, userLine("real prompt")]);
+    expect(getFirstUserMessage(path)).toBe("real prompt");
+  });
+
   it("stops at the first user turn instead of reading the rest of the file", () => {
     // The answer is on line 2; everything after it is unparseable. A reader
     // that walked the whole file would still return the same string, so the

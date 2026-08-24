@@ -179,6 +179,26 @@ describe("getAllChats record cache", () => {
     expect(chatFileService.getAllChats().map((c) => c.id)).toEqual(["b"]);
   });
 
+  it("drops an in-tick record whose file disappears out-of-band", () => {
+    // The nastiest combination the tick rule creates. `intick` is returned but
+    // deliberately not cached, so when its file vanishes without going through
+    // this service — a second daemon on the same data dir, a manual `rm` — it
+    // is absent from `readdir` and was never in the cache, so neither the
+    // stat-catch nor the prune loop notices. Nothing was read either, since
+    // `settled` is cached and unchanged. Only comparing the assembled set
+    // against the memoised order catches it.
+    writeRecord("settled", "2026-01-01T00:00:00.000Z");
+    settle("settled");
+    writeRecord("intick", "2026-01-02T00:00:00.000Z"); // mtime = now, uncacheable
+
+    expect(chatFileService.getAllChats().map((c) => c.id)).toEqual(["intick", "settled"]);
+
+    rmSync(join(chatsDir, "intick.json"));
+
+    expect(chatFileService.getAllChats().map((c) => c.id)).toEqual(["settled"]);
+    expect(chatFileService.getAllChats().map((c) => c.id)).toEqual(["settled"]);
+  });
+
   it("returns copies, so a mutating caller cannot corrupt the cache", () => {
     writeRecord("a", "2026-01-01T00:00:00.000Z");
     // Settled, so the second call is served from the cache rather than a fresh

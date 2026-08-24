@@ -124,7 +124,8 @@ export class ChatFileService {
         } catch {
           // Deleted between the readdir and here — nothing to return for it,
           // and the entry goes with it.
-          if (recordCache.delete(file)) reread = true;
+          recordCache.delete(file);
+          reread = true;
           continue;
         }
         present.add(file);
@@ -165,7 +166,16 @@ export class ChatFileService {
         }
       }
 
-      if (reread || !sortedCache) sortedCache = sortByUpdatedAt(records);
+      // The size check is not redundant with `reread`. A record inside its own
+      // mtime tick is returned but not cached, so when its file disappears
+      // out-of-band — a second daemon on the same data dir, a manual `rm` —
+      // neither the stat-catch nor the prune loop above sees it: it is absent
+      // from `readdir` and was never in `recordCache`. Every *addition* forces
+      // a read and so raises `reread`, which leaves a shrunk set as the one way
+      // the assembled records can differ from the memoised order while nothing
+      // was read. Without this, the deleted chat keeps being served until some
+      // unrelated record happens to change.
+      if (reread || !sortedCache || sortedCache.length !== records.length) sortedCache = sortByUpdatedAt(records);
 
       const start = offset || 0;
       const end = limit ? start + limit : undefined;
