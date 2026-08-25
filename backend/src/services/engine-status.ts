@@ -165,7 +165,10 @@ export function resetEngineStatusCache(): void {
  * - this module — the cached `claude --version` (in `utils/binary-version.ts`,
  *   which since the system-info parallelization is also what answers that
  *   endpoint's `claudeCliVersion` — so a Recheck covers a CLI upgrade for the
- *   About page too) and the manifest reads;
+ *   About page too) and the manifest reads. That cache also expires on its own
+ *   now, because Claude Code upgrades itself in place and About offers no
+ *   Recheck of its own; dropping it here is what makes the button *immediate*
+ *   rather than what makes the answer eventually right;
  * - `sdk-info.ts` — the **account info**, and this one is the reason the button
  *   was previously a lie. It is populated once at boot and invalidated from
  *   exactly one other place (the agent-settings save route), so the Credentials

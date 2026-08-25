@@ -214,7 +214,13 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
   useEffect(() => {
-    getSystemInfo()
+    // `refresh` rather than the cached default, because what this gates is not a
+    // chat the user is about to watch start. A stale `codexConfigured: true`
+    // lets someone save a cron job against a Codex that is not configured, and
+    // that does not fail here — it fails on a schedule, hours later, with nobody
+    // watching. Deferred unattended failure is worse than the immediate kind,
+    // not a lesser version of it, so this one pays the round trip.
+    getSystemInfo({ refresh: true })
       .then((info) => {
         setCodexConfigured(info.codexConfigured ?? false);
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));

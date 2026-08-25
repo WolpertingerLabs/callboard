@@ -855,11 +855,18 @@ export default function ApiSettings() {
       });
 
     try {
-      // `refresh` on every one of this page's five system-info reads. It is the
-      // page where the things this payload reports get *changed* — keys, binary
-      // overrides, routing toggles, engine installs — so the stale-while-
-      // revalidate default would show a user the state they just left. `loadData`
-      // is also what a save re-runs, which is why the initial load takes it too.
+      // `refresh` on every one of this page's five system-info reads, this one
+      // included. It is the page where the things this payload reports get
+      // *changed* — keys, binary overrides, routing toggles, engine installs —
+      // and `getSystemInfo`'s cached default resolves with the last payload this
+      // tab saw and hands the revalidation to the cache rather than to the
+      // caller, so a stale read here is not "current, a moment late"; it is what
+      // the page displays until something else refetches.
+      //
+      // The initial load in particular: `loadAll` is what runs on every arrival
+      // at this route, including the arrival straight after a user changed one
+      // of these settings somewhere else in the app, and its answer is what the
+      // form fields are populated from.
       const [s, sys] = await Promise.all([getAgentSettings(), getSystemInfo({ refresh: true }).catch(() => null)]);
       setSettings(s);
       setSystemInfo(sys);
@@ -1030,8 +1037,13 @@ export default function ApiSettings() {
       // would report the wrong outcome for the thing the user pressed. A stale
       // card is recoverable with Recheck; a false failure sends someone looking
       // for a problem that is not there.
+      //
+      // **One** request id for this whole post-save follow-up, claimed once and
+      // shared by both reads below. Two `++`s would be worse than none: the
+      // second would immediately invalidate the first's guard, so the engine
+      // list would fetch and then discard its own answer.
+      const requestId = ++enginesRequestId.current;
       if (overridesChanged) {
-        const requestId = ++enginesRequestId.current;
         void getEngines()
           .then((fresh) => {
             if (enginesRequestId.current === requestId) {
@@ -1043,9 +1055,19 @@ export default function ApiSettings() {
       }
       // Re-fetch system info so the Account / Models display reflects new overrides.
       // The backend kicks off a refresh on save; give it a moment before polling.
+      //
+      // Guarded like its neighbours, which this one was not — pre-existing, and
+      // the 800ms delay is what makes it bite: a Recheck or an install
+      // completing inside that window sets `systemInfo` from a *newer* probe,
+      // and then this older response landed on top and reverted the page to the
+      // pre-Recheck answer. `handleRecheckEngines` and `handleEnginesUpdated`
+      // already claim the id for exactly this reason, so all three writers to
+      // this state now settle by who asked last rather than by who replied last.
       setTimeout(() => {
         getSystemInfo({ refresh: true })
-          .then(setSystemInfo)
+          .then((sys) => {
+            if (enginesRequestId.current === requestId) setSystemInfo(sys);
+          })
           .catch(() => {});
       }, 800);
     } catch (err: any) {

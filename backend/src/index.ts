@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 import { spawn } from "child_process";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -12,8 +12,7 @@ const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 // Load .env: ~/.callboard/.env is the base config, then the project-root .env
 // overrides it. This lets local dev runs use a local .env to override
 // the global ~/.callboard config (e.g. different ports, passwords, log levels).
-import { DATA_DIR, ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName, isValidIgnoredPrefix } from "./utils/paths.js";
-import { resolveClaudeBinary } from "./services/claude-binary.js";
+import { ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName, isValidIgnoredPrefix } from "./utils/paths.js";
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
 migrateDrawlatchDirs();
@@ -59,7 +58,6 @@ import { openRouterRouter } from "./routes/openrouter.js";
 import { codexRouter } from "./routes/codex.js";
 import { acpRouter } from "./routes/acp.js";
 import { clineRouter } from "./routes/cline.js";
-import { DEFAULT_CLINE_PROVIDER_ID } from "./agents/adapters/cline/optionsAdapter.js";
 import { piRouter } from "./routes/pi.js";
 import { enginesRouter } from "./routes/engines.js";
 import { jobsRouter } from "./routes/jobs.js";
@@ -75,24 +73,15 @@ import { initJobRunner, shutdownJobRunner } from "./services/job-runner.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { shutdownDebounce } from "./services/trigger-debounce.js";
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
-import {
-  getAgentSettings,
-  ensureRemoteProxyConfigDir,
-  migrateDrawlatchDirs,
-  migrateKeyDirectories,
-  detectClaudeCodeOpenRouterEnv,
-  isClaudeCodeRoutedThroughOpenRouter,
-} from "./services/agent-settings.js";
+import { getAgentSettings, ensureRemoteProxyConfigDir, migrateDrawlatchDirs, migrateKeyDirectories } from "./services/agent-settings.js";
 import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
 import { startWebTunnel, stopWebTunnel } from "./services/web-tunnel.js";
-import { initSdkInfoCache, getSdkInfoAsync } from "./services/sdk-info.js";
+import { initSdkInfoCache } from "./services/sdk-info.js";
 import { getClaudeAuthStatus } from "./services/claude-auth-status.js";
 import { initOpenRouterModelsCache, stopOpenRouterModelsRefresh } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
-import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
-import { listAcpProviderAvailability } from "./agents/adapters/acp/availability.js";
-import { binaryVersionLine } from "./utils/binary-version.js";
+import { buildSystemInfo } from "./services/system-info.js";
 
 const log = createLogger("server");
 
@@ -358,215 +347,10 @@ app.get(
   // #swagger.description = 'Returns Callboard version, Node.js version, platform, Claude Agent SDK version, account info, and supported models.'
   /* #swagger.responses[200] = { description: "System information" } */
   async (_req, res) => {
-    let version = "unknown";
-    let pkgName = "@wolpertingerlabs/callboard";
-    try {
-      const pkgPath = path.join(__pkgRoot, "package.json");
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      version = pkg.version;
-      pkgName = pkg.name || pkgName;
-    } catch {
-      // ignore
-    }
-
-    let sdkVersion = "unknown";
-    try {
-      const sdkPkgPath = path.join(__pkgRoot, "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json");
-      const sdkPkg = JSON.parse(readFileSync(sdkPkgPath, "utf-8"));
-      sdkVersion = sdkPkg.version;
-    } catch {
-      // ignore
-    }
-
-    // ── The four independent probes, started together ────────────────
-    //
-    // These used to be four sequential `await`s, so the response shipped at the
-    // *sum* of their latencies. Nothing below reads anything the probe above it
-    // produced, and the cost was not evenly spread: measured against a warm
-    // daemon, the whole endpoint was ~120ms and `claude --version` alone was
-    // ~108ms of it. The ACP vendor list is cheap — its PATH lookups are cached
-    // for the process lifetime — but it was computed last, so the New Chat
-    // picker's OpenCode button (the only provider button that comes from this
-    // payload rather than from hardcoded JSX) could not paint until a `claude`
-    // spawn it has nothing to do with had finished. Started together, the
-    // response costs the slowest probe instead of all of them.
-    //
-    // Each probe keeps its own try/catch rather than relying on a wrapper,
-    // because `Promise.all` rejects on the first rejection: a shared handler
-    // would discard three good answers to report one failure. That failure
-    // isolation is being *preserved* here, not added — every one of these
-    // already degraded to a fallback, and each still degrades to the same one.
-
-    // Same resolver as chats and the login check. `"not installed"` rather than
-    // `"unknown"` when nothing resolved: this used to run the bare name
-    // `"claude"` through a shell and report `unknown` on the resulting
-    // not-found, which reads as "Callboard could not tell" when in fact it
-    // looked and there was nothing there.
-    //
-    // The spawn itself now lives in `utils/binary-version.ts`, which memoizes it
-    // per resolved path for the process lifetime. It is the same argument
-    // `adapters/acp/availability.ts` makes for its own probes: the binary does
-    // not change under a running daemon, and this is a *polled* endpoint, so an
-    // `execFile` per poll bought nothing. Keyed on the resolved path rather than
-    // the name `claude`, so a user who repoints the binary-override setting is
-    // not answered from the old binary's entry — and dropped by
-    // `POST /api/engines/refresh` (through `resetEngineProbeCaches`), so the
-    // existing Recheck button covers a CLI upgrade without a daemon restart.
-    //
-    // `binaryVersionLine`, not `binaryVersion`: this field is *displayed*, and
-    // `"2.0.1 (Claude Code)"` is what the About page has always rendered. The
-    // dotted-token accessor is for the callers that compare versions.
-    const claudeCliProbe = (async (): Promise<{ binary: string | undefined; version: string }> => {
-      const binary = (await resolveClaudeBinary()).path;
-      if (!binary) return { binary, version: "not installed" };
-      return { binary, version: (await binaryVersionLine(binary)) ?? "unknown" };
-    })();
-
-    // Fetch latest version from npm (cached, best effort)
-    const latestVersionProbe = (async (): Promise<string | undefined> => {
-      let latest: string | undefined;
-      try {
-        const cacheFile = path.join(DATA_DIR, "version-check.json");
-        const cacheTtl = 4 * 60 * 60 * 1000; // 4 hours
-        let cached: { latestVersion: string; ts: number } | null = null;
-        try {
-          if (existsSync(cacheFile)) {
-            cached = JSON.parse(readFileSync(cacheFile, "utf-8"));
-          }
-        } catch {
-          // ignore corrupt cache
-        }
-        if (cached && Date.now() - cached.ts < cacheTtl) {
-          latest = cached.latestVersion;
-        } else {
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 5000);
-          const npmRes = await fetch(`https://registry.npmjs.org/${pkgName}/latest`, {
-            signal: controller.signal,
-            headers: { Accept: "application/json" },
-          });
-          clearTimeout(timeout);
-          if (npmRes.ok) {
-            const npmData = (await npmRes.json()) as { version?: string };
-            if (npmData.version) {
-              latest = npmData.version;
-              try {
-                writeFileSync(cacheFile, JSON.stringify({ latestVersion: latest, ts: Date.now() }) + "\n");
-              } catch {
-                // best effort
-              }
-            }
-          }
-        }
-      } catch {
-        // best effort — don't fail the endpoint
-      }
-      return latest;
-    })();
-
-    // Include cached SDK info (account + models) if available. Deliberately
-    // un-`catch`ed, because `fetchSdkInfo` already swallows its own failures and
-    // resolves with an empty cache — wrapping it here would claim a failure mode
-    // it does not have.
-    const sdkInfoProbe = getSdkInfoAsync();
-
-    // ACP vendors are one kind covering many CLIs, so there is no single
-    // "acpConfigured" flag — the picker needs the per-vendor list. Cached after
-    // the first PATH lookup, so this is cheap on every subsequent poll.
-    //
-    // A failed PATH probe must not take the whole system-info payload down; an
-    // empty list reads as "no ACP vendors", which is the safe answer.
-    const acpProvidersProbe: Promise<Awaited<ReturnType<typeof listAcpProviderAvailability>>> = listAcpProviderAvailability().catch(() => []);
-
-    const [claudeCli, latestVersion, sdkInfo, acpProviders] = await Promise.all([claudeCliProbe, latestVersionProbe, sdkInfoProbe, acpProvidersProbe]);
-    const { binary: claudeCliBinary, version: claudeCliVersion } = claudeCli;
-
-    // Whether each native harness is EFFECTIVELY routed through OpenRouter —
-    // toggle on and credentials available, from settings or from the ambient
-    // env. The model selectors and New Chat panel read these to switch their
-    // catalog/ordering to OpenRouter, so they must agree with what the session
-    // actually does; the predicates are the same ones getApiEnvOverrides and the
-    // Codex options adapter resolve from. Keys themselves are never exposed.
-    let claudeCodeUseOpenRouter = false;
-    let codexUseOpenRouter = false;
-    // Which Cline provider new chats run on. The model picker needs it to know
-    // WHICH catalog to offer: Cline's model list is per-provider, so a user who
-    // set the provider to `openrouter` should be offered OpenRouter's ~270
-    // models and one on `anthropic` should not. Blank means the adapter's own
-    // default (`anthropic`) — see cline/optionsAdapter.
-    let clineProviderId = DEFAULT_CLINE_PROVIDER_ID;
-    try {
-      const s = getAgentSettings();
-      clineProviderId = s.clineProviderId?.trim() || DEFAULT_CLINE_PROVIDER_ID;
-      claudeCodeUseOpenRouter = isClaudeCodeRoutedThroughOpenRouter(s);
-      codexUseOpenRouter = isCodexRoutedThroughOpenRouter(s);
-    } catch {
-      // Settings unreadable — treat every routing mode as off.
-    }
-
-    // Whether the Codex provider has usable credentials (api key set, a
-    // parseable $CODEX_HOME/auth.json from `codex login`, or a config.toml
-    // declaring a model_provider). Lets the UI enable the Codex toggle without
-    // exposing the credentials themselves. `codexAuthSource` surfaces which
-    // path matched so the settings page can label it accurately.
-    let codexConfigured = false;
-    let codexAuthSource: CodexAuthSource = null;
-    try {
-      codexAuthSource = getCodexAuthSource();
-      codexConfigured = codexAuthSource !== null;
-    } catch {
-      // Treat any failure as unconfigured.
-    }
-    // OpenRouter routing is its own credential path: the native Codex harness
-    // authenticates via the OpenRouter key, so it's usable even without a
-    // ChatGPT login / OpenAI key / config.toml provider.
-    if (codexUseOpenRouter) {
-      codexConfigured = true;
-      if (!codexAuthSource) codexAuthSource = "config.toml";
-    }
-
-    // Detect whether the ambient environment already routes each harness through
-    // OpenRouter (ANTHROPIC_BASE_URL / OPENAI base / config.toml pointing at
-    // openrouter.ai). Settings → API defaults the routing toggle on from these
-    // when the user hasn't explicitly saved a choice.
-    let claudeCodeOpenRouterDetected = false;
-    let codexOpenRouterDetected = false;
-    try {
-      claudeCodeOpenRouterDetected = detectClaudeCodeOpenRouterEnv();
-      codexOpenRouterDetected = detectCodexOpenRouterEnv();
-    } catch {
-      // best effort — detection failures just leave the toggles defaulting off
-    }
-
-    res.json({
-      version,
-      latestVersion,
-      nodeVersion: process.version,
-      platform: `${process.platform} (${process.arch})`,
-      sdkVersion,
-      claudeCliVersion,
-      claudeCliBinary,
-      proxyMode: process.env.MCP_PROXY_MODE || undefined,
-      environment: process.env.NODE_ENV || "development",
-      account: sdkInfo.account || undefined,
-      models: sdkInfo.models.length > 0 ? sdkInfo.models : undefined,
-      claudeCodeUseOpenRouter,
-      codexUseOpenRouter,
-      claudeCodeOpenRouterDetected,
-      codexOpenRouterDetected,
-      codexConfigured,
-      codexAuthSource,
-      // Which ACP vendors have their CLI installed. One entry per built-in
-      // preset, present even when unavailable so the picker can say what to
-      // install. Availability here means "the binary resolves", never
-      // "authenticated" — see adapters/acp/availability.ts.
-      acpProviders,
-      // The Cline provider new chats use. There is deliberately no
-      // `clineConfigured` flag to match `codexConfigured`: Cline is an embedded
-      // SDK that falls back to the backend's own environment credentials, so
-      // there is no state in which the picker could honestly be disabled.
-      clineProviderId,
-    });
+    // Assembly lives in `services/system-info.ts` — see that module for why the
+    // probes run concurrently and why not one of them is allowed to reject.
+    // `__pkgRoot` is passed in because it is derived from *this* file's depth.
+    res.json(await buildSystemInfo({ pkgRoot: __pkgRoot }));
   },
 );
 

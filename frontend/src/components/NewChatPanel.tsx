@@ -111,7 +111,15 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const [codexModel, setCodexModel] = useState<string>(getDefaultCodexModel);
   // `null` until /system-info returns — Codex treated as available until an
   // explicit false.
-  const [codexConfigured, setCodexConfigured] = useState<boolean | null>(() => seed?.codexConfigured ?? null);
+  //
+  // Deliberately **not** seeded from the cache, unlike the fields below. The
+  // Codex button is hardcoded JSX either way, so a seed buys no paint here; all
+  // it could change is the `disabled` prop, and there `null` strictly dominates.
+  // A cached `true` is indistinguishable from `null` (both leave the button
+  // live), while a cached `false` would disable a button that may well be fine —
+  // turning "still loading, trust the user's choice" into a claim the tab has no
+  // current evidence for.
+  const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
   // ACP vendors from /system-info. Empty until it returns, and empty is the
   // honest default — unlike the two tri-states above, an unknown ACP list means
   // there are no buttons to render at all, so there is no optimistic case.
@@ -124,6 +132,12 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // effect below cannot close that gap no matter how fast the fetch is —
   // `useEffect` runs after the first paint by definition. `null` from the cache
   // means "never fetched in this tab", which still yields the empty list.
+  //
+  // It is a seed and not an answer: the effect re-fetches with `refresh` and
+  // overwrites this a frame later, which is what keeps a vendor uninstalled
+  // since the cache warmed from staying clickable. The window in which this list
+  // is both stale and interactive is that one round trip — the price of drawing
+  // anything at all before the daemon has answered.
   const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>(() => seed?.acpProviders ?? []);
   const [acpProviderId, setAcpProviderId] = useState<string>(getDefaultAcpProviderId);
   // Per-chat ACP model, as the vendor names it. Empty = leave the vendor CLI's
@@ -341,15 +355,31 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // flip the in-memory state to claude-code without touching localStorage (the
   // user's saved preference survives for the next time they reconfigure it).
   //
-  // `getSystemInfo()` is stale-while-revalidate, so on a re-open this resolves
-  // from cache and the work below is a confirmation of what the initializers
-  // already seeded. It still runs: the seed only fills state, and it is *these*
-  // branches that validate the saved provider against the live vendor list.
-  // Exactly one payload is delivered per mount — see the note on `getSystemInfo`
-  // — so there is no stale-then-fresh sequence here to flip a decision twice.
+  // ## Why `refresh` here, when the seed above is what fixes the pop-in
+  //
+  // The two are separate jobs and only one of them is about speed. The
+  // synchronous `cachedSystemInfo()` seed is the entire reason the OpenCode
+  // button paints on frame one; nothing about that requires *this* call to be
+  // cached as well.
+  //
+  // And it must not be. `getSystemInfo()`'s default resolves with the cached
+  // payload and hands the revalidation to the module cache rather than to the
+  // caller — so a panel that took the default was pinned to whatever this tab
+  // last saw, for its whole lifetime, with no correction until the next open.
+  // That is not a slower version of the truth, it is a different answer:
+  // uninstall the OpenCode CLI and reopen, and the button rendered enabled,
+  // `downgradeProvider` read the same stale list and agreed, and the chat failed
+  // at start instead of quietly falling back. `main` always had fresh data one
+  // frame in, so serving stale here was a regression rather than a trade.
+  //
+  // `refresh` restores that and keeps the instant paint — and it is still
+  // exactly one payload per mount, so the flip-flop hazard the seed-plus-stale
+  // arrangement was reaching for does not come back. The seed decides what is
+  // *drawn* first; this decides what is *believed*. Do not drop the `refresh` to
+  // save a round trip: the round trip is the point.
   useEffect(() => {
     let cancelled = false;
-    getSystemInfo()
+    getSystemInfo({ refresh: true })
       .then((info) => {
         if (cancelled) return;
         const codexOk = Boolean(info.codexConfigured);

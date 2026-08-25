@@ -117,11 +117,57 @@ describe("getSystemInfo", () => {
     await getSystemInfo();
     fetchMock.mockRejectedValue(new Error("offline"));
 
-    // A tab that goes offline must not lose the answer it already had — and the
-    // rejection must not escape as an unhandled one.
+    // A tab that goes offline must not lose the answer it already had.
     expect((await getSystemInfo()).version).toBe("1");
     await settle();
     expect(cachedSystemInfo()?.version).toBe("1");
+  });
+
+  it("does not let a failed background revalidation escape as an unhandled rejection", async () => {
+    // Nobody is awaiting a revalidation — that is what makes it a background
+    // one — so without the `.catch` on the fire-and-forget call, going offline
+    // raises a process-level unhandled rejection from a request the user never
+    // made. Asserted rather than claimed in a comment: `unhandledRejection`
+    // fires after the microtask queue drains, which is what `settle` waits for.
+    const escaped: unknown[] = [];
+    const record = (reason: unknown) => escaped.push(reason);
+    process.on("unhandledRejection", record);
+    try {
+      await getSystemInfo();
+      fetchMock.mockRejectedValue(new Error("offline"));
+
+      await getSystemInfo(); // stale hit; kicks off the revalidation that fails
+      await settle();
+
+      expect(escaped).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+  });
+
+  it("lets an older successful response win over a newer one that failed", async () => {
+    // The cache gate keys on "has anyone newer already written", not on "am I
+    // the newest request that started" — because a request that produced
+    // nothing must not out-rank one that produced an answer. Press Recheck
+    // twice in Settings → API after installing a CLI, let the second 500 and the
+    // first succeed: the page displays the fresh payload while the module cache
+    // would otherwise still hold the pre-install one, so the next New Chat popup
+    // contradicts the engine card the user is looking at.
+    await getSystemInfo();
+
+    // A: started first, answers last, succeeds.
+    let releaseA: (v: unknown) => void = () => {};
+    fetchMock.mockReturnValueOnce(new Promise((r) => (releaseA = r)));
+    const a = getSystemInfo({ refresh: true });
+
+    // B: started second, fails immediately.
+    fetchMock.mockRejectedValueOnce(new Error("500"));
+    await expect(getSystemInfo({ refresh: true })).rejects.toThrow();
+
+    releaseA(payload("2"));
+    await a;
+
+    expect(cachedSystemInfo()?.version).toBe("2");
   });
 });
 
