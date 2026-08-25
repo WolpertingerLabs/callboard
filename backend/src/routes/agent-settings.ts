@@ -87,6 +87,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     openRouterUtilityOpusModel,
     openRouterModelAliases,
     modelAliases,
+    acpProviderModels,
     codexAuthMode,
     codexApiKey,
     codexBaseUrl,
@@ -137,34 +138,77 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
   // flag) so a deliberate "off" persists rather than leaving a stale `true`.
   const normalizeBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
 
+  /**
+   * Sanitize a string→string map from request JSON: rejects non-object /
+   * array / null input with the given message, trims keys and values, drops
+   * entries with an empty key or value (blank rows, not errors), and
+   * collapses to `undefined` when nothing is left — so the caller clears the
+   * stored setting rather than persisting `{}`. When `duplicateErrorMessage`
+   * is supplied, two keys that only differ by case are rejected instead of
+   * one silently shadowing the other (JS object keys are case-sensitive, so
+   * `{"Planner": "x", "planner": "y"}` is a valid object that would otherwise
+   * just pick whichever key iteration saw last).
+   *
+   * Shared by `normalizeAliases` (below, which layers its own duplicate-name
+   * and one-hop cycle checks on top — those entries ARE a self-referential
+   * alias registry) and the ACP per-vendor default-model map (which needs
+   * neither: vendor ids map straight to raw model ids, not to each other).
+   */
+  const normalizeStringMap = (
+    v: unknown,
+    opts: { typeErrorMessage: string; duplicateErrorMessage?: (key: string) => string },
+  ): { map?: Record<string, string>; error?: string } => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) {
+      return { error: opts.typeErrorMessage };
+    }
+    const map: Record<string, string> = {};
+    const seenKeys = new Set<string>();
+    for (const [rawKey, rawValue] of Object.entries(v)) {
+      const key = rawKey.trim();
+      const value = typeof rawValue === "string" ? rawValue.trim() : "";
+      if (!key || !value) continue; // blank rows are dropped, not errors
+      const lower = key.toLowerCase();
+      if (opts.duplicateErrorMessage && seenKeys.has(lower)) {
+        return { error: opts.duplicateErrorMessage(key) };
+      }
+      seenKeys.add(lower);
+      map[key] = value;
+    }
+    return { map: Object.keys(map).length > 0 ? map : undefined };
+  };
+
   // Sanitize the OpenRouter model alias map. Returns undefined when the map
   // ends up empty (clears the setting), or a string error for invalid input
   // the user must fix (the UI surfaces it inline).
   const normalizeAliases = (v: unknown): { aliases?: Record<string, string>; error?: string } => {
-    if (typeof v !== "object" || v === null || Array.isArray(v)) {
-      return { error: "openRouterModelAliases must be an object mapping alias names to model slugs" };
-    }
-    const aliases: Record<string, string> = {};
-    const seenNames = new Set<string>();
-    for (const [rawAlias, rawTarget] of Object.entries(v)) {
-      const alias = rawAlias.trim();
-      const target = typeof rawTarget === "string" ? rawTarget.trim() : "";
-      if (!alias || !target) continue; // blank rows are dropped, not errors
-      const key = alias.toLowerCase();
-      if (seenNames.has(key)) {
-        return { error: `Duplicate alias name (case-insensitive): "${alias}"` };
-      }
-      seenNames.add(key);
-      aliases[alias] = target;
-    }
+    const { map, error } = normalizeStringMap(v, {
+      typeErrorMessage: "openRouterModelAliases must be an object mapping alias names to model slugs",
+      duplicateErrorMessage: (alias) => `Duplicate alias name (case-insensitive): "${alias}"`,
+    });
+    if (error) return { error };
     // Resolution is intentionally one hop — an alias pointing at another
     // alias would either chain or cycle, so reject it at write time.
-    for (const [alias, target] of Object.entries(aliases)) {
-      if (seenNames.has(target.toLowerCase())) {
-        return { error: `Alias "${alias}" points to another alias ("${target}") — targets must be real model slugs` };
+    if (map) {
+      const seenNames = new Set(Object.keys(map).map((k) => k.toLowerCase()));
+      for (const [alias, target] of Object.entries(map)) {
+        if (seenNames.has(target.toLowerCase())) {
+          return { error: `Alias "${alias}" points to another alias ("${target}") — targets must be real model slugs` };
+        }
       }
     }
-    return { aliases: Object.keys(aliases).length > 0 ? aliases : undefined };
+    return { aliases: map };
+  };
+
+  // Sanitize the per-ACP-vendor default-model map. Unlike normalizeAliases,
+  // there's no cycle check: these are vendor ids to raw model ids, not a
+  // self-referential alias registry, so a duplicate check is unneeded too —
+  // vendor ids come from the settings UI's own tabs, not free-typed rows.
+  const normalizeAcpProviderModels = (v: unknown): { models?: Record<string, string>; error?: string } => {
+    const { map, error } = normalizeStringMap(v, {
+      typeErrorMessage: "acpProviderModels must be an object mapping ACP vendor id to model id",
+    });
+    if (error) return { error };
+    return { models: map };
   };
 
   // Track whether any API / auth / model override field was included so we
@@ -287,6 +331,16 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     normalizedModelAliases = value.length > 0 ? value : undefined;
   }
 
+  let normalizedAcpProviderModels: Record<string, string> | undefined;
+  if (acpProviderModels !== undefined) {
+    const result = normalizeAcpProviderModels(acpProviderModels);
+    if (result.error) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    normalizedAcpProviderModels = result.models;
+  }
+
   // Codex enum fields — validate against the allowed values; an unrecognized
   // value clears the override (falls back to the default at consume time).
   const normalizeCodexAuthMode = (v: unknown): "subscription" | "api-key" | undefined => (v === "subscription" || v === "api-key" ? v : undefined);
@@ -402,6 +456,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
       ...(acpUseOpenRouter !== undefined && { acpUseOpenRouter: normalizeBool(acpUseOpenRouter) }),
       ...(acpOpenRouterApiKey !== undefined && { acpOpenRouterApiKey: normalize(acpOpenRouterApiKey) }),
+      ...(acpProviderModels !== undefined && { acpProviderModels: normalizedAcpProviderModels }),
       ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
       ...(codexOpenRouterModel !== undefined && { codexOpenRouterModel: normalize(codexOpenRouterModel) }),
       ...(clineProviderId !== undefined && { clineProviderId: normalize(clineProviderId) }),

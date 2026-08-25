@@ -432,6 +432,26 @@ export interface AgentSettings {
   acpOpenRouterApiKey?: string;
 
   /**
+   * Default model per ACP vendor id (e.g. `{ opencode: "opencode/gpt-5.5" }`).
+   *
+   * Keyed by vendor id rather than a single flat field — the analogue of
+   * {@link codexModel} / {@link clineModel} / {@link piModel} for ACP has to
+   * be, because `"acp"` is one kind covering many vendors whose catalogs
+   * share nothing. That is the same limitation documented on
+   * {@link ModelAlias}'s `acp` target, but this field doesn't inherit it: the
+   * settings UI always knows which vendor tab is open when it writes an entry,
+   * so there is no ambiguity about which vendor a value belongs to.
+   *
+   * Resolved through `resolveSessionModel` exactly like the other harnesses'
+   * provider-default fields: a per-chat override wins first (itself
+   * alias-aware), then this vendor's entry here (also alias-aware), then
+   * nothing — the vendor CLI's own configured default stands. An entry with
+   * an empty value is dropped by the settings route rather than stored, so a
+   * vendor absent from this map and one explicitly cleared read identically.
+   */
+  acpProviderModels?: Record<string, string>;
+
+  /**
    * Default model for new Codex chats while {@link codexUseOpenRouter} is on.
    * Separate from {@link codexModel} for the same reason the Claude Code pair is
    * split: native Codex wants a bare CLI slug ("gpt-5.5") and the routed harness
