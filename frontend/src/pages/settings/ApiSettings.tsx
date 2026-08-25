@@ -985,6 +985,13 @@ export default function ApiSettings() {
   // `loadAll` because that runs once at mount, before `activeAcpProviderId` has
   // necessarily settled on its final pick (see the "prefer saved pick" logic
   // there); this effect re-runs once it does.
+  //
+  // Trips the same `react-hooks/set-state-in-effect` lint warning as the
+  // `loadAll` effect just above — deriving local editable state from a prop
+  // that only settles after a fetch has no synchronous-during-render
+  // alternative here (there's no earlier point in this component's own
+  // render to read `settings`/`activeAcpProviderId` from), so this is left
+  // consistent with that existing precedent rather than introduced fresh.
   useEffect(() => {
     setAcpProviderModel(settings?.acpProviderModels?.[activeAcpProviderId] ?? "");
   }, [settings, activeAcpProviderId]);
@@ -1056,6 +1063,13 @@ export default function ApiSettings() {
         // empty string rather than deleted client-side: the backend normalizer
         // already drops a blank-value entry from the map (same rule it applies
         // to every row of it), so there's no need to duplicate that here.
+        // The `activeAcpProviderId` guard exists so a save can never write a
+        // `""`-keyed entry into the map if it's still unresolved (e.g.
+        // `getSystemInfo()` hasn't returned yet, or failed) — in that case the
+        // map is passed through unchanged instead. Effectively unreachable
+        // today, since the ACP tab body (and this field within it) can't
+        // render without a resolved vendor id in the first place, but the
+        // guard is cheap insurance against that changing later.
         acpProviderModels: activeAcpProviderId
           ? { ...settings?.acpProviderModels, [activeAcpProviderId]: acpProviderModel.trim() }
           : settings?.acpProviderModels,
