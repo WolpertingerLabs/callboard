@@ -1619,16 +1619,29 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // than requesting it on `session/new`. There is still no effort knob: ACP has
   // no reasoning-effort concept at all, so there would be nothing honest to send.
   if (providerKind === "acp") {
-    // The vendor's own model id, e.g. "opencode/nemotron-3-ultra-free". Empty
-    // means "whatever the vendor CLI is already configured for" — callboard has
-    // no global ACP model default to fall back to, because one kind covers many
-    // vendors whose catalogs share nothing.
-    // Through the alias registry like every other harness, so `planner` resolves
-    // to whatever the user pointed the `acp` target at. There is no global ACP
-    // model default to pass as a fallback: one kind covers many vendors whose
-    // catalogs share nothing, so "leave the vendor CLI's own choice alone" is
-    // the only honest default.
-    const acpModel = resolveSessionModel(typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, undefined, "acp", agentSettings);
+    // The vendor's own model id, e.g. "opencode/nemotron-3-ultra-free". Resolved
+    // with the same three-step fallback every other harness uses
+    // (resolveSessionModel): a per-chat override wins first — itself alias-aware,
+    // so `planner` on the chat resolves through the `acp` alias target — then
+    // this vendor's stored default from `agentSettings.acpProviderModels`
+    // (looked up by `acpProviderId`, also alias-aware), then nothing at all —
+    // the vendor CLI's own configured default stands.
+    //
+    // The per-vendor lookup exists because "acp" is one kind covering many
+    // vendors whose catalogs share nothing: a flat default (like a single alias
+    // `acp` target) would apply the same model id to every vendor a user
+    // configures, and the wrong one would be refused by that vendor's own CLI
+    // rather than silently substituted. `acpProviderModels` is keyed by vendor id
+    // for exactly that reason; an alias whose `acp` target only makes sense for
+    // one vendor still applies to all of them if used as a per-chat override —
+    // that limitation is real and lives on the alias mechanism, not here.
+    const acpProviderDefaultModel = acpProviderId ? agentSettings.acpProviderModels?.[acpProviderId] : undefined;
+    const acpModel = resolveSessionModel(
+      typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
+      acpProviderDefaultModel,
+      "acp",
+      agentSettings,
+    );
     // OpenRouter credential, when the user turned it on. The dedicated key wins,
     // then the account-wide one — unlike the Codex pair, which requires its own,
     // because nothing here rewrites the agent's provider config and there is no

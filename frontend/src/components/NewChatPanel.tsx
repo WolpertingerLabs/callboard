@@ -140,9 +140,12 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // anything at all before the daemon has answered.
   const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>(() => seed?.acpProviders ?? []);
   const [acpProviderId, setAcpProviderId] = useState<string>(getDefaultAcpProviderId);
-  // Per-chat ACP model, as the vendor names it. Empty = leave the vendor CLI's
-  // own configured model alone; there is no callboard-side global ACP default,
-  // because one kind covers many vendors whose catalogs share nothing.
+  // Per-chat ACP model, as the vendor names it. Empty falls back to this
+  // vendor's entry in `AgentSettings.acpProviderModels` (Settings → API), and
+  // to the vendor CLI's own configured model when that is blank too. That
+  // settings field is keyed by vendor id rather than flat precisely because one
+  // kind covers many vendors whose catalogs share nothing — there is still no
+  // single global ACP default, only a per-vendor one.
   const [acpModel, setAcpModel] = useState<string>(getDefaultAcpModel);
   // Per-chat Cline model, within the provider configured in Settings → API.
   // Empty = that global default (and when that is blank too, the adapter asks

@@ -65,11 +65,17 @@ const rowLabelStyle: React.CSSProperties = {
  * {@link ClaudeModelSelector}: three model fields that behaved differently would
  * cost more than one duplicated combobox.
  *
- * Empty means "leave the vendor CLI's own configured model alone". Anything
- * typed is sent as-is; unlike the other two the agent *rejects* an unknown model
- * rather than falling back, and the turn fails with the vendor's own message —
- * which is the right outcome, since running on a model the user did not pick
- * would bill them for it.
+ * What empty means depends on which field this renders, because there are two
+ * rungs below it: on a per-chat picker it falls back to this vendor's entry in
+ * `AgentSettings.acpProviderModels` (Settings → API), and on that settings
+ * field itself it falls back to the vendor CLI's own configured model. The
+ * component takes no position on either — it reports "" and `resolveSessionModel`
+ * in `services/claude.ts` walks the chain.
+ *
+ * Anything typed is sent as-is; unlike the other two the agent *rejects* an
+ * unknown model rather than falling back, and the turn fails with the vendor's
+ * own message — which is the right outcome, since running on a model the user
+ * did not pick would bill them for it.
  */
 export default function AcpModelSelector({ id, value, onChange, placeholder, providerId }: Props) {
   const [models, setModels] = useState<AcpModelOption[]>([]);

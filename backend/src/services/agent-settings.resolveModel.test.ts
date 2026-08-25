@@ -121,3 +121,44 @@ describe("resolveSessionModel", () => {
     expect(resolveSessionModel("  openai/gpt-4o ", "x", "openrouter", s)).toBe("openai/gpt-4o");
   });
 });
+
+/**
+ * `AgentSettings.acpProviderModels` is a Record<vendorId, modelId> rather than
+ * a single field, because "acp" is one kind covering many vendors whose
+ * catalogs share nothing (see the field's doc-comment). The caller in
+ * `services/claude.ts` looks up `acpProviderModels[acpProviderId]` and hands
+ * the result to `resolveSessionModel` as the provider default — exactly the
+ * same call every other harness makes with its own settings field
+ * (`codexModel`, `clineModel`, `piModel`). These tests exercise that lookup +
+ * resolveSessionModel call directly, since that IS the resolution logic; there
+ * is nothing ACP-specific inside resolveSessionModel itself to test.
+ */
+describe("resolveSessionModel — per-ACP-vendor default (acpProviderModels)", () => {
+  const settingsWithOpenCodeDefault: AgentSettings = {
+    proxyMode: "local",
+    acpProviderModels: { opencode: "opencode/gpt-5.5" },
+  };
+
+  it("resolves the vendor's stored default when there is no per-chat model", () => {
+    const vendorDefault = settingsWithOpenCodeDefault.acpProviderModels?.["opencode"];
+    expect(resolveSessionModel(undefined, vendorDefault, "acp", settingsWithOpenCodeDefault)).toBe("opencode/gpt-5.5");
+  });
+
+  it("still lets a per-chat override win over the vendor's stored default", () => {
+    const vendorDefault = settingsWithOpenCodeDefault.acpProviderModels?.["opencode"];
+    expect(resolveSessionModel("opencode/mimo-v2.5-free", vendorDefault, "acp", settingsWithOpenCodeDefault)).toBe("opencode/mimo-v2.5-free");
+  });
+
+  it("a different vendor's chat does not see this vendor's default", () => {
+    // The whole reason the field is keyed by vendor id: looking it up under
+    // any OTHER vendor's id (as the caller does, keyed by acpProviderId) finds
+    // nothing, so a second vendor is unaffected by the first's configured model.
+    const otherVendorDefault = settingsWithOpenCodeDefault.acpProviderModels?.["some-other-vendor"];
+    expect(resolveSessionModel(undefined, otherVendorDefault, "acp", settingsWithOpenCodeDefault)).toBeUndefined();
+  });
+
+  it("falls all the way through to undefined when neither is set", () => {
+    const s: AgentSettings = { proxyMode: "local" };
+    expect(resolveSessionModel(undefined, s.acpProviderModels?.["opencode"], "acp", s)).toBeUndefined();
+  });
+});

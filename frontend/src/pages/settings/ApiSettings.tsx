@@ -13,6 +13,8 @@ import {
   checkEngineBinary,
 } from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
+import AcpModelSelector from "../../components/AcpModelSelector";
+import { mergeAcpProviderModel } from "./acpProviderModels";
 import EngineStatusCard, { EngineStatusDot, StatusRow } from "./EngineStatusCard";
 import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
@@ -218,6 +220,8 @@ function AcpProviderSection({
   openRouterApiKey,
   onOpenRouterApiKeyChange,
   accountKeySet,
+  defaultModel,
+  onDefaultModelChange,
 }: {
   vendor: AcpProviderInfo;
   /** This vendor's row from `GET /api/engines`; absent while it loads or if the call failed. */
@@ -233,6 +237,9 @@ function AcpProviderSection({
   onOpenRouterApiKeyChange: (v: string) => void;
   /** Whether the account-wide OpenRouter key is set, so the copy can say what blank falls back to. */
   accountKeySet: boolean;
+  /** This vendor's entry in `agentSettings.acpProviderModels`, or "" if unset. */
+  defaultModel: string;
+  onDefaultModelChange: (v: string) => void;
 }) {
   const [catalog, setCatalog] = useState<AcpModelCatalogInfo | null>(null);
 
@@ -275,6 +282,27 @@ function AcpProviderSection({
             <>None yet — the list is learned from chats you run, so it fills in after the first one.</>
           )}
         </StatusRow>
+      </div>
+
+      <div style={sectionStyle}>
+        <div style={headerStyle}>
+          <Cpu size={16} style={{ color: "var(--accent-text)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Model</span>
+        </div>
+        <div style={subtitleStyle}>Default model for new {vendor.label} chats.</div>
+
+        <div style={fieldWrap}>
+          <label htmlFor="acpProviderModel" style={labelStyle}>
+            Default Model
+          </label>
+          <AcpModelSelector id="acpProviderModel" value={defaultModel} onChange={onDefaultModelChange} providerId={vendor.id} placeholder={vendor.label + "'s own default"} />
+          <div style={helpStyle}>
+            Blank leaves {vendor.label}&rsquo;s own configured model alone — the same one it would use if you ran it from a terminal. Suggestions come from
+            models {vendor.label} has actually reported in past chats (see &ldquo;Models&rdquo; above), same as the per-chat picker; free text is accepted and
+            sent as-is, and an unknown model id fails the turn with {vendor.label}&rsquo;s own error rather than silently falling back. A per-chat model, when
+            one is picked for a chat, always overrides this.
+          </div>
+        </div>
       </div>
 
       <div style={sectionStyle}>
@@ -816,6 +844,12 @@ export default function ApiSettings() {
   // pair to keep alongside it.
   const [acpUseOpenRouter, setAcpUseOpenRouter] = useState(false);
   const [acpOpenRouterApiKey, setAcpOpenRouterApiKey] = useState("");
+  // Default model for the ACTIVE ACP vendor tab. Unlike every other model
+  // field above, this one can't be seeded once at load: `settings` holds a map
+  // keyed by vendor id (`acpProviderModels`), and which entry is "the" value
+  // depends on which tab is open. Kept in sync by the effect below rather than
+  // in `loadAll`, so switching tabs re-seeds it without a re-fetch.
+  const [acpProviderModel, setAcpProviderModel] = useState("");
   const [codexOpenRouterBaseUrl, setCodexOpenRouterBaseUrl] = useState("");
   const [codexOpenRouterModel, setCodexOpenRouterModel] = useState("");
   // Cline (embedded SDK). No auth *mode* to pick: the runtime is in-process and
@@ -947,6 +981,22 @@ export default function ApiSettings() {
     loadAll();
   }, []);
 
+  // Re-seed the ACP default-model field whenever settings load or the active
+  // vendor tab changes — the two events that can invalidate it. Separate from
+  // `loadAll` because that runs once at mount, before `activeAcpProviderId` has
+  // necessarily settled on its final pick (see the "prefer saved pick" logic
+  // there); this effect re-runs once it does.
+  //
+  // Trips the same `react-hooks/set-state-in-effect` lint warning as the
+  // `loadAll` effect just above — deriving local editable state from a prop
+  // that only settles after a fetch has no synchronous-during-render
+  // alternative here (there's no earlier point in this component's own
+  // render to read `settings`/`activeAcpProviderId` from), so this is left
+  // consistent with that existing precedent rather than introduced fresh.
+  useEffect(() => {
+    setAcpProviderModel(settings?.acpProviderModels?.[activeAcpProviderId] ?? "");
+  }, [settings, activeAcpProviderId]);
+
   const handleSave = async () => {
     setSaving(true);
     setError("");
@@ -1008,6 +1058,12 @@ export default function ApiSettings() {
         codexOpenRouterModel,
         acpUseOpenRouter,
         acpOpenRouterApiKey,
+        // One tab is open but the stored value is a map, so this tab's edit is
+        // merged into the map rather than sent alone — see
+        // `mergeAcpProviderModel` for why every other vendor's entry survives,
+        // why a blank passes through instead of being deleted here, and why an
+        // unresolved vendor id is a no-op.
+        acpProviderModels: mergeAcpProviderModel(settings?.acpProviderModels, activeAcpProviderId, acpProviderModel),
         clineProviderId,
         clineModel,
         clineApiKey,
@@ -1709,6 +1765,8 @@ export default function ApiSettings() {
               openRouterApiKey={acpOpenRouterApiKey}
               onOpenRouterApiKeyChange={setAcpOpenRouterApiKey}
               accountKeySet={Boolean(settings?.openRouterApiKey?.trim())}
+              defaultModel={acpProviderModel}
+              onDefaultModelChange={setAcpProviderModel}
             />
           ) : null;
         })()}

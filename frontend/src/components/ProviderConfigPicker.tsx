@@ -41,11 +41,13 @@ interface ProviderConfigPickerProps {
   // Selecting an ACP vendor sets BOTH the kind and the id, so callers wire this
   // together with onProviderChange rather than as an independent control.
   onAcpProviderChange?: (providerId: string) => void;
-  // Per-chat ACP model, as the vendor names it. Empty = leave the vendor CLI's
-  // own configured model alone. Kept separate from the other providers' model
-  // values so switching the toggle restores each one's prior selection, the same
-  // way `model` / `claudeModel` / `codexModel` already do. Optional — callers
-  // that don't surface a per-chat ACP model omit it and the field hides.
+  // Per-chat ACP model, as the vendor names it. Empty = this vendor's default
+  // from Settings → API (`AgentSettings.acpProviderModels`, keyed by vendor id),
+  // and when that is blank too, the vendor CLI's own configured model. Kept
+  // separate from the other providers' model values so switching the toggle
+  // restores each one's prior selection, the same way `model` / `claudeModel` /
+  // `codexModel` already do. Optional — callers that don't surface a per-chat
+  // ACP model omit it and the field hides.
   acpModel?: string;
   onAcpModelChange?: (model: string) => void;
   // Per-chat Cline model, within the provider configured in Settings → API.
@@ -292,11 +294,13 @@ export default function ProviderConfigPicker({
           value={acpModel ?? ""}
           onChange={onAcpModelChange}
           providerId={acpProviderId ?? ""}
-          placeholder={inline ? "(vendor default)" : "(leave empty to use the vendor's own configured model)"}
+          placeholder={inline ? "(default)" : "(default — uses Settings → API)"}
         />
         {!inline && (
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-            Suggestions come from models this agent has advertised before. Any model it does not have is refused outright rather than swapped for a default.
+            Optional — leave empty to use this vendor&rsquo;s default model from Settings → API, and the vendor&rsquo;s own configured model when that is blank
+            too. Suggestions come from models this agent has advertised before. Any model it does not have is refused outright rather than swapped for a
+            default.
           </div>
         )}
       </div>

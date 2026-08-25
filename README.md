@@ -119,6 +119,8 @@ Or use OpenCode's own installer — see the [OpenCode docs](https://opencode.ai/
 
 Authentication is mostly OpenCode's own: run `opencode auth login` in a terminal. Callboard never touches OpenCode's credential file, which OpenCode shares with your own terminal sessions. The one credential Callboard does hold for it is **Give ACP agents an OpenRouter key**, under **Settings → API → OpenCode** — handed to the spawned process as `OPENROUTER_API_KEY` so OpenCode's own OpenRouter provider works.
 
+**Default Model**, on the same tab, sets which model new OpenCode chats start on. Blank leaves OpenCode's own configured model alone — the same one it would use if you ran it from a terminal — and a per-chat model, when you pick one for a chat, always overrides it.
+
 Note that "installed" and "signed in" are separate questions here, and Callboard can only answer the first — it checks that the binary resolves on your `PATH`. ACP gives no way to ask an agent who is logged in, so an OpenCode you installed but never signed into shows as available and then fails when you send your first message, with OpenCode's own error. When that happens, `opencode auth login` is the fix.
 
 ### After installing an engine, or signing in
