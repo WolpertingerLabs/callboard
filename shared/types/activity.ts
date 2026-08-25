@@ -1,8 +1,8 @@
 /**
  * Chat activity — what a chat is currently doing that takes time.
  *
- * Callboard agents call tools that block the turn (`wait`, `talk_to_agent`,
- * `continue_chat` with `waitForCompletion`) or kick off work that outlives it.
+ * Callboard agents call tools that block the turn (`wait`, `talk_to_agent`) or
+ * kick off work that outlives it.
  * None of that was observable: a chat sitting inside a 300-second `wait`
  * rendered identically to a finished one. An activity is the server-side
  * record that makes the difference visible.
@@ -25,6 +25,16 @@
  * with `run_in_background` can finish and report. It was the third way a chat
  * could legitimately be busy and the only one with nothing on screen — a chat
  * patiently holding a subprocess open rendered as idle and finished.
+ *
+ * `await_chat` has no producer, and it is not alone: `generating` and
+ * `scanning` have none either. It was last raised by `continue_chat`'s blocking
+ * mode, removed in favour of the `onComplete` callback both chat tools now
+ * share. Activities are in-memory only (`chat-activity.ts`), so nothing is
+ * still carrying the string — the member stays because deleting it buys
+ * nothing, while re-adding it later would be a *new kind*, which costs exactly
+ * what the section below describes. Keep its consumers (`ActivityDock`,
+ * `pendingLabels`) for the same reason, even though the `await_chat` arm of
+ * each is currently unreachable.
  *
  * ## Adding a kind
  *
