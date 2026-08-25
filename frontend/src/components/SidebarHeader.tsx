@@ -18,6 +18,19 @@ const VIEW_MODES: { mode: SidebarViewMode; label: string; Icon: typeof List }[] 
   { mode: "chats", label: "Chats", Icon: List },
 ];
 
+// Give the new-chat/sidebar-view controls and the main-page navigation controls
+// one explicit footprint. Their different active borders (and the selectively
+// suppressed borders inside each group) must not change the controls' size.
+const HEADER_BUTTON_STYLE = {
+  width: 28,
+  height: 28,
+  padding: 0,
+  boxSizing: "border-box",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+} as const;
+
 export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange, claudeLoggedIn, onShowClaudeModal, onToggleSidebar }: SidebarHeaderProps) {
   const [instanceName, setInstanceName] = useState("");
   const navigate = useNavigate();
@@ -54,13 +67,10 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
         <button
           onClick={onToggleNew}
           style={{
+            ...HEADER_BUTTON_STYLE,
             background: "var(--accent)",
             color: "var(--text-on-accent)",
-            padding: "6px",
             borderRadius: 6,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
           }}
           title="New Chat"
         >
@@ -77,9 +87,9 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
                   key={mode}
                   onClick={isActiveMode ? undefined : () => onViewModeChange(mode)}
                   style={{
+                    ...HEADER_BUTTON_STYLE,
                     background: isActiveMode ? "var(--accent)" : "var(--bg-secondary)",
                     color: isActiveMode ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                    padding: "6px",
                     borderTopLeftRadius: isFirst ? 6 : 0,
                     borderBottomLeftRadius: isFirst ? 6 : 0,
                     borderTopRightRadius: isLast ? 6 : 0,
@@ -87,9 +97,6 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
                     border: isActiveMode ? "none" : "1px solid var(--chatlist-item-border)",
                     ...(isFirst && { borderRight: "none" }),
                     ...(isLast && { borderLeft: "none" }),
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
                   }}
                   title={isActiveMode ? `${label} view (active)` : `Switch to ${label.toLowerCase()} view`}
                 >
@@ -103,18 +110,15 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
           <button
             onClick={() => navigate("/board")}
             style={{
+              ...HEADER_BUTTON_STYLE,
               background: isBoardActive ? "var(--accent)" : "var(--bg-secondary)",
               color: isBoardActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-              padding: "6px",
               borderTopLeftRadius: 6,
               borderBottomLeftRadius: 6,
               borderTopRightRadius: 0,
               borderBottomRightRadius: 0,
               border: isBoardActive ? "none" : "1px solid var(--chatlist-item-border)",
               borderRight: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
             }}
             title="Board"
           >
@@ -123,16 +127,13 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
           <button
             onClick={() => navigate("/agents")}
             style={{
+              ...HEADER_BUTTON_STYLE,
               background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
               color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-              padding: "6px",
               borderRadius: 0,
               border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
               borderRight: "none",
               borderLeft: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
             }}
             title="Agents"
           >
@@ -141,18 +142,15 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
           <button
             onClick={() => navigate("/settings")}
             style={{
+              ...HEADER_BUTTON_STYLE,
               background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
               color: isSettingsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-              padding: "6px",
               borderTopLeftRadius: 0,
               borderBottomLeftRadius: 0,
               borderTopRightRadius: 6,
               borderBottomRightRadius: 6,
               border: isSettingsActive ? "none" : "1px solid var(--chatlist-item-border)",
               borderLeft: "none",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
             }}
             title="Settings"
           >
