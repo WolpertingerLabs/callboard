@@ -20,6 +20,17 @@ export interface OpenRouterModelInfo {
    * whose catalog entry omitted the field.
    */
   supportedParameters: string[];
+  /**
+   * Context window in tokens, from OpenRouter's `context_length`. Optional
+   * because a catalog entry may omit it (every live entry carries one today,
+   * but the field is not contractual).
+   *
+   * Carried for the pi adapter, which has to *synthesize* a model definition
+   * for a slug newer than its bundled catalog — and pi compacts a turn as soon
+   * as the context exceeds `contextWindow - reserveTokens`, so a wrong or
+   * absent window is not cosmetic. See `adapters/pi/modelCatalog.ts`.
+   */
+  contextLength?: number;
 }
 
 /**

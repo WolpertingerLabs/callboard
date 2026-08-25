@@ -49,6 +49,7 @@
  */
 import { join } from "node:path";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { getOpenRouterModelsSnapshot } from "../../../services/openrouter-models.js";
 import { resolvePiAgentDir } from "./optionsAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -274,6 +275,63 @@ export async function listPiProviderIds(): Promise<string[]> {
 }
 
 /**
+ * Merge Callboard's live OpenRouter catalog onto pi's bundled provider models
+ * when the provider is `"openrouter"`.
+ *
+ * ## pi never refreshes OpenRouter — the list is frozen at the package version
+ *
+ * The TTL-and-revalidate machinery above is real but it does nothing for this
+ * provider. `pi-ai`'s `createProvider` only builds a `refreshModels` when the
+ * definition supplies a `fetchModels`, and `openrouterProvider()` supplies
+ * none: it passes a static `OPENROUTER_MODELS` and nothing else. So OpenRouter
+ * is not among the providers `runtime.refresh()` even visits, and pi's
+ * OpenRouter list is exactly what shipped in the installed package — measured
+ * at 303 models against 349 tool-calling models live, i.e. **62 missing**,
+ * including current flagships.
+ *
+ * That gap does not close on its own; only a pi upgrade moves it. Callboard
+ * already warms an hourly-refreshed catalog of OpenRouter's tool-calling
+ * models, so overlaying its ids onto pi's list is the cheapest way to close it:
+ * fresh models appear in the picker within an hour of release, and the
+ * pi-provided ones are never dropped.
+ *
+ * A model that only exists in the overlay is not in pi's catalog either, so
+ * `ModelRegistry.find()` cannot resolve it — {@link findPiModel} synthesizes a
+ * definition rather than let the turn silently fall back to pi's default.
+ *
+ * The overlay is applied *after* the cache lookup, not stored with the cached
+ * entry. This keeps the cache coherent with pi's own data (whose TTL is
+ * independent) while letting the overlay refresh at the OpenRouter cache's
+ * cadence.
+ *
+ * ## Snapshot, not `getOpenRouterModelsAsync`
+ *
+ * The async accessor *awaits* a re-fetch whenever the OpenRouter catalog is
+ * cold or past its TTL, bounded at 30s — and its periodic background refresh
+ * is gated on callboard's *own* OpenRouter settings, which a pi user routing
+ * through pi's `auth.json` has never filled in. Awaiting it would put a network
+ * round trip on the picker's path once an hour for exactly that user, undoing
+ * this module's whole "no model lookup can hang on a provider being down"
+ * premise. The snapshot answers from memory, never throws, and kicks the
+ * refresh in the background — the same stale-while-revalidate trade this file
+ * already makes for pi's own catalog.
+ */
+function overlayOpenRouterModels(options: PiModelOption[]): PiModelOption[] {
+  const orModels = getOpenRouterModelsSnapshot();
+  if (orModels.length === 0) return options;
+  const piIds = new Set(options.map((o) => o.value));
+  const extras = orModels
+    .filter((m) => !piIds.has(m.id))
+    .map((m) => ({
+      value: m.id,
+      displayName: m.name || m.id,
+      description: "",
+    }));
+  if (extras.length === 0) return options;
+  return [...options, ...extras].sort((a, b) => a.value.localeCompare(b.value));
+}
+
+/**
  * Models for one provider, cached after the first successful lookup.
  *
  * Only *successful, non-empty* lookups are cached: caching an empty list would
@@ -281,6 +339,11 @@ export async function listPiProviderIds(): Promise<string[]> {
  * cheap. An empty list is the honest answer to "we could not read the catalog",
  * and every model field in callboard accepts free text anyway — exactly as the
  * Codex and ACP selectors already do for slugs newer than their catalog.
+ *
+ * When the provider is `"openrouter"`, the cached pi list is overlaid with
+ * Callboard's live OpenRouter catalog — pi's OpenRouter list is frozen at the
+ * installed package version and no refresh here can move it. See
+ * {@link overlayOpenRouterModels}.
  */
 export async function getPiModels(providerId: string): Promise<PiModelOption[]> {
   const id = providerId.trim();
@@ -301,7 +364,7 @@ export async function getPiModels(providerId: string): Promise<PiModelOption[]> 
     revalidateIfStale();
 
     const cached = _cache.get(id);
-    if (cached) return cached;
+    if (cached) return id === "openrouter" ? overlayOpenRouterModels(cached) : cached;
 
     const options = runtime
       .getModels(id)
@@ -312,11 +375,89 @@ export async function getPiModels(providerId: string): Promise<PiModelOption[]> 
       }))
       .sort((a, b) => a.value.localeCompare(b.value));
     if (options.length > 0) _cache.set(id, options);
-    return options;
+    return id === "openrouter" ? overlayOpenRouterModels(options) : options;
   } catch (err) {
     log.warn(`could not list models for pi provider "${id}": ${err instanceof Error ? err.message : String(err)}`);
     return [];
   }
+}
+
+/**
+ * pi's own fallbacks for a model definition that omits these — see
+ * `core/provider-composer.ts`, which applies exactly these numbers when a
+ * user-defined model leaves them out. Reused rather than reinvented so a
+ * synthesized model is underspecified in the way pi already expects.
+ *
+ * `contextWindow` cannot simply be left at zero: pi compacts as soon as
+ * `contextTokens > contextWindow - reserveTokens`, so a zero window would
+ * compact the very first turn. `maxTokens` *can* — every consumer guards on
+ * `maxTokens > 0` and omits the request field otherwise, which is the honest
+ * "let the provider decide" — but pi's default is used here for symmetry with
+ * how it treats every other underspecified model.
+ */
+const PI_DEFAULT_CONTEXT_WINDOW = 128_000;
+const PI_DEFAULT_MAX_TOKENS = 16_384;
+
+/**
+ * Build a `Model` for an OpenRouter slug pi's bundled catalog does not carry.
+ *
+ * Necessary because {@link overlayOpenRouterModels} puts such slugs in the
+ * picker: pi's OpenRouter list is static (see that function), so *every*
+ * overlaid model is unknown to `ModelRegistry.find()`, and returning
+ * `undefined` for one would make `optionsAdapter.buildPiSessionOptions` drop
+ * the model entirely and run the turn on pi's default — a different model,
+ * silently, every time. A picker entry that runs something else is worse than
+ * no entry.
+ *
+ * The transport — `api`, `provider`, `baseUrl` — is read off a bundled
+ * OpenRouter model rather than written as literals, so a pi release that moves
+ * the base URL or switches API dialect carries synthesized models with it.
+ * Those three are the only fields all 303 bundled OpenRouter models agree on,
+ * which is what makes templating sound; the rest are set explicitly, and the
+ * fields are enumerated rather than spread so that a `Model` gaining a member
+ * in a pi upgrade fails the build instead of silently inheriting a value that
+ * describes a different model.
+ *
+ * Notably `compat` is left off: pi *derives* it per-slug from the provider and
+ * the id — `cacheControlFormat: "anthropic"` only for `anthropic/…`,
+ * `supportsDeveloperRole` only for `anthropic/…` and `openai/…`,
+ * `thinkingFormat: "openrouter"` throughout — and an explicit one only
+ * overrides that. Copying the template's would attach one arbitrary model's
+ * quirks to every synthesized slug.
+ *
+ * Metadata comes from callboard's OpenRouter catalog where the catalog has it:
+ * prices convert cleanly (pi's `cost` is USD per million tokens, OpenRouter's
+ * `pricing` is USD per token — verified equal for every model both carry), and
+ * `reasoning` is `supported_parameters` containing `"reasoning"`, which agreed
+ * with pi's own flag on 287 of 288 shared models.
+ *
+ * `input` is text-only regardless: OpenRouter's `/models` modality data is not
+ * in `OpenRouterModelInfo`, and claiming vision that isn't there fails a turn,
+ * while omitting vision that is there only declines to attach an image. A pi
+ * upgrade that bundles the model replaces all of this with the real definition.
+ */
+function synthesizeOpenRouterModel(runtime: ModelRuntime, modelId: string): ReturnType<ModelRegistry["find"]> {
+  const template = runtime.getModels("openrouter")[0];
+  if (!template) return undefined;
+
+  const info = getOpenRouterModelsSnapshot().find((m) => m.id === modelId);
+  const perMillion = (price: string | undefined): number => {
+    const n = Number(price);
+    return Number.isFinite(n) ? n * 1_000_000 : 0;
+  };
+
+  return {
+    id: modelId,
+    name: info?.name || modelId,
+    api: template.api,
+    provider: template.provider,
+    baseUrl: template.baseUrl,
+    reasoning: info?.supportedParameters.includes("reasoning") ?? false,
+    input: ["text"],
+    cost: { input: perMillion(info?.promptPrice), output: perMillion(info?.completionPrice), cacheRead: 0, cacheWrite: 0 },
+    contextWindow: info?.contextLength ?? PI_DEFAULT_CONTEXT_WINDOW,
+    maxTokens: PI_DEFAULT_MAX_TOKENS,
+  };
 }
 
 /**
@@ -327,17 +468,30 @@ export async function getPiModels(providerId: string): Promise<PiModelOption[]> 
  * `ModelRegistry.find()` returns the `Model` object pi's session options want,
  * and it must come from the same runtime the request will authenticate through.
  *
- * `undefined` when the id is unknown — the caller lets pi pick its own default
- * rather than failing the turn, so a model slug newer than the bundled catalog
- * degrades to "the provider's default" instead of a dead chat.
+ * For OpenRouter, an id the catalog doesn't carry is synthesized rather than
+ * refused — see {@link synthesizeOpenRouterModel}. For every other provider a
+ * slug pi does not know still returns `undefined`, and the caller lets pi pick
+ * its own default rather than failing the turn: there is no equivalent of
+ * OpenRouter's one-URL-routes-everything to synthesize against, so guessing a
+ * transport would trade a wrong model for a broken one.
  */
 export function findPiModel(runtime: ModelRuntime, providerId: string, modelId: string): ReturnType<ModelRegistry["find"]> {
   const provider = providerId.trim();
   const model = modelId.trim();
   if (!provider || !model) return undefined;
   const found = new ModelRegistry(runtime).find(provider, model);
-  if (!found) log.debug(`pi model "${provider}/${model}" is not in the catalog — deferring to pi's default`);
-  return found;
+  if (found) return found;
+
+  if (provider === "openrouter") {
+    const synthesized = synthesizeOpenRouterModel(runtime, model);
+    if (synthesized) {
+      log.debug(`pi model "openrouter/${model}" is newer than the bundled catalog — routing it through OpenRouter directly`);
+      return synthesized;
+    }
+  }
+
+  log.debug(`pi model "${provider}/${model}" is not in the catalog — deferring to pi's default`);
+  return undefined;
 }
 
 /**

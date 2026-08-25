@@ -122,6 +122,38 @@ describe("cache lifetime", () => {
   });
 });
 
+describe("context length", () => {
+  /** A /models response with explicit context lengths on one entry. */
+  function bodyWith(entry: Record<string, unknown>): Response {
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ data: [{ id: "a/b", name: "A B", supported_parameters: ["tools"], ...entry }] }),
+    } as unknown as Response;
+  }
+
+  it("prefers the routed provider's window over the model's nominal one", async () => {
+    // The nominal window is the model's maximum; `top_provider` is what the
+    // backend the request actually lands on will honour. Advertising the larger
+    // one would let pi fill a context the provider then rejects.
+    fetchMock.mockResolvedValue(bodyWith({ context_length: 1_000_000, top_provider: { context_length: 262_144 } }));
+    expect((await getOpenRouterModelsAsync())[0]?.contextLength).toBe(262_144);
+  });
+
+  it("falls back to the nominal window when the provider reports none", async () => {
+    fetchMock.mockResolvedValue(bodyWith({ context_length: 200_000, top_provider: { context_length: null } }));
+    expect((await getOpenRouterModelsAsync())[0]?.contextLength).toBe(200_000);
+  });
+
+  it("omits the field entirely when the entry carries no usable window", async () => {
+    // Absent rather than zero: consumers substitute their own default for an
+    // unknown window, and pi treats a zero one as "compact immediately".
+    fetchMock.mockResolvedValue(bodyWith({ context_length: 0 }));
+    expect((await getOpenRouterModelsAsync())[0]).not.toHaveProperty("contextLength");
+  });
+});
+
 describe("failure handling", () => {
   it("retries a failed fetch after the retry window, not the full TTL", async () => {
     fetchMock.mockRejectedValue(new Error("offline"));

@@ -73,6 +73,8 @@ interface RawOpenRouterModel {
   name?: string;
   supported_parameters?: string[];
   pricing?: { prompt?: string; completion?: string };
+  context_length?: number;
+  top_provider?: { context_length?: number };
 }
 
 let cache: OpenRouterModelsCache | null = null;
@@ -110,13 +112,21 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
       // Keep only models that advertise tool calling.
       .filter((m) => Array.isArray(m.supported_parameters) && m.supported_parameters.includes("tools"))
       .filter((m): m is RawOpenRouterModel & { id: string } => typeof m.id === "string" && m.id.length > 0)
-      .map((m) => ({
-        id: m.id,
-        name: m.name || m.id,
-        promptPrice: m.pricing?.prompt ?? "0",
-        completionPrice: m.pricing?.completion ?? "0",
-        supportedParameters: m.supported_parameters ?? [],
-      }))
+      .map((m) => {
+        // `top_provider.context_length` is the window the routed provider will
+        // actually honour; the top-level one is the model's nominal maximum.
+        // Prefer the former and fall back, so a model routed to a shorter
+        // backend does not advertise a window it will reject.
+        const contextLength = m.top_provider?.context_length ?? m.context_length;
+        return {
+          id: m.id,
+          name: m.name || m.id,
+          promptPrice: m.pricing?.prompt ?? "0",
+          completionPrice: m.pricing?.completion ?? "0",
+          supportedParameters: m.supported_parameters ?? [],
+          ...(typeof contextLength === "number" && contextLength > 0 ? { contextLength } : {}),
+        };
+      })
       .sort((a, b) => a.id.localeCompare(b.id));
 
     log.info(`OpenRouter models fetched: ${models.length} tool-calling models (of ${raw.length} total)`);

@@ -37,6 +37,7 @@
  * @see ../acp/modelCatalog.ts (the harvesting one, and why this isn't)
  */
 import { BUILT_IN_PROVIDER_IDS, getLocalProviderModels } from "@cline/sdk";
+import { getOpenRouterModelsSnapshot } from "../../../services/openrouter-models.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("cline-model-catalog");
@@ -75,18 +76,71 @@ export function listClineProviderIds(): string[] {
 }
 
 /**
+ * Merge Callboard's live OpenRouter catalog onto the SDK's provider models when
+ * the provider routes to OpenRouter.
+ *
+ * The SDK's `getLocalProviderModels` reads a local store that callboard never
+ * refreshes, so newly-released OpenRouter models are invisible until a Cline
+ * CLI or editor extension updates the same on-disk store. Callboard already
+ * warms an hourly-refreshed catalog of OpenRouter's tool-calling models
+ * (`getOpenRouterModelsAsync`), so overlaying its ids onto the SDK's list is
+ * the cheapest way to close the gap: fresh models appear in the picker within
+ * an hour of release, and the SDK-provided ones are never dropped.
+ *
+ * The overlay is applied *after* the cache lookup, not stored with the cached
+ * entry. This keeps the cache coherent with the SDK's own data (whose TTL is
+ * independent) while letting the overlay refresh at the OpenRouter cache's
+ * cadence.
+ *
+ * ## Snapshot, not `getOpenRouterModelsAsync`
+ *
+ * The async accessor *awaits* a re-fetch whenever the catalog is cold or past
+ * its TTL, bounded at 30s. Awaiting it here would put a network round trip on
+ * the model picker's path — and the OpenRouter catalog's periodic refresh is
+ * gated on `isOpenRouterInUse()`, which reads callboard's *own* OpenRouter
+ * settings and so is false for a user whose key lives in Cline's config. That
+ * user would pay the fetch on the first picker open after every TTL boundary.
+ *
+ * The snapshot answers from memory, never throws, and kicks the refresh in the
+ * background when the entry has aged out — so a stale-by-under-an-hour overlay
+ * is served now and the next open is current. That is the same
+ * stale-while-revalidate trade this module already makes for the SDK's own
+ * list, and it keeps "a picker read never touches the network" true.
+ */
+function overlayOpenRouterModels(options: ClineModelOption[]): ClineModelOption[] {
+  const orModels = getOpenRouterModelsSnapshot();
+  if (orModels.length === 0) return options;
+  const sdkIds = new Set(options.map((o) => o.value));
+  const extras = orModels
+    .filter((m) => !sdkIds.has(m.id))
+    .map((m) => ({
+      value: m.id,
+      displayName: m.name || m.id,
+      description: "",
+    }));
+  if (extras.length === 0) return options;
+  return [...options, ...extras].sort((a, b) => a.value.localeCompare(b.value));
+}
+
+/**
  * Models for one provider, cached for {@link CLINE_CATALOG_TTL_MS} after a
  * successful lookup.
  *
  * Only *successful* lookups are cached: caching an empty list would pin a
  * transient failure until the TTL elapsed, and the next call is cheap.
+ *
+ * When the provider is `"openrouter"`, the cached SDK list is overlaid with
+ * Callboard's live OpenRouter catalog so newly-released models appear in the
+ * picker without waiting for the SDK's local store to refresh.
  */
 export async function getClineModels(providerId: string): Promise<ClineModelOption[]> {
   const id = providerId.trim();
   if (!id) return [];
 
   const cached = _cache.get(id);
-  if (cached && Date.now() - cached.readAt < CLINE_CATALOG_TTL_MS) return cached.options;
+  if (cached && Date.now() - cached.readAt < CLINE_CATALOG_TTL_MS) {
+    return id === "openrouter" ? overlayOpenRouterModels(cached.options) : cached.options;
+  }
 
   const existing = _inFlight.get(id);
   if (existing) return existing;
@@ -102,17 +156,27 @@ export async function getClineModels(providerId: string): Promise<ClineModelOpti
     await Promise.resolve();
     try {
       const { models } = await getLocalProviderModels(id);
-      const options = (models ?? []).map((m) => ({
-        value: m.id,
-        displayName: m.name || m.id,
-        description: describeModel(m),
-      }));
+      // Sorted unconditionally, and that matters beyond tidiness: the overlay
+      // below re-sorts the merged list, so leaving the un-overlaid list in the
+      // SDK's own order would make the picker's ordering flip the moment the
+      // OpenRouter catalog happened to contain a model the SDK's store didn't.
+      // The frontend truncates to a fixed result count, so *which* models are
+      // reachable without typing depends on this order.
+      const options = (models ?? [])
+        .map((m) => ({
+          value: m.id,
+          displayName: m.name || m.id,
+          description: describeModel(m),
+        }))
+        .sort((a, b) => a.value.localeCompare(b.value));
       if (options.length > 0) _cache.set(id, { options, readAt: Date.now() });
-      return options;
+      return id === "openrouter" ? overlayOpenRouterModels(options) : options;
     } catch (err) {
       log.warn(`could not list models for Cline provider "${id}": ${err instanceof Error ? err.message : String(err)}`);
       // Serve the expired entry rather than nothing: a failed re-read should
-      // cost freshness, not the list itself.
+      // cost freshness, not the list itself. Apply the overlay for openrouter
+      // so users don't temporarily lose extras while the SDK store is stale.
+      if (id === "openrouter" && cached) return overlayOpenRouterModels(cached.options);
       return cached?.options ?? [];
     } finally {
       _inFlight.delete(id);
