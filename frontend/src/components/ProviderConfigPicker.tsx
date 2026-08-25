@@ -380,9 +380,10 @@ export default function ProviderConfigPicker({
             <button
               type="button"
               onClick={() => onProviderChange("claude-code")}
+              title="Use Claude for this chat"
               style={{
-                flex: "1 1 84px",
-                padding: inline ? "6px 10px" : "8px 12px",
+                flex: "1 1 64px",
+                padding: inline ? "4px 6px" : "6px 8px",
                 fontSize: inline ? 12 : 13,
                 fontWeight: 500,
                 borderRadius: 6,
@@ -393,7 +394,7 @@ export default function ProviderConfigPicker({
                 transition: "all 0.15s",
               }}
             >
-              Claude Code
+              Claude
             </button>
             <button
               type="button"
@@ -401,8 +402,8 @@ export default function ProviderConfigPicker({
               disabled={codexConfigured === false}
               title={codexConfigured === false ? "Configure Codex in Settings → API to enable this provider" : "Use OpenAI Codex for this chat"}
               style={{
-                flex: "1 1 84px",
-                padding: inline ? "6px 10px" : "8px 12px",
+                flex: "1 1 64px",
+                padding: inline ? "4px 6px" : "6px 8px",
                 fontSize: inline ? 12 : 13,
                 fontWeight: 500,
                 borderRadius: 6,
@@ -428,8 +429,8 @@ export default function ProviderConfigPicker({
               // greyed-out button could.
               title="Use the Cline agent runtime for this chat"
               style={{
-                flex: "1 1 84px",
-                padding: inline ? "6px 10px" : "8px 12px",
+                flex: "1 1 64px",
+                padding: inline ? "4px 6px" : "6px 8px",
                 fontSize: inline ? 12 : 13,
                 fontWeight: 500,
                 borderRadius: 6,
@@ -451,8 +452,8 @@ export default function ProviderConfigPicker({
               // provider's own error on the first turn.
               title="Use the pi agent runtime for this chat"
               style={{
-                flex: "1 1 84px",
-                padding: inline ? "6px 10px" : "8px 12px",
+                flex: "1 1 64px",
+                padding: inline ? "4px 6px" : "6px 8px",
                 fontSize: inline ? 12 : 13,
                 fontWeight: 500,
                 borderRadius: 6,
@@ -481,8 +482,8 @@ export default function ProviderConfigPicker({
                   disabled={!vendor.available}
                   title={vendor.available ? `Use ${vendor.label} for this chat` : `Install the \`${vendor.command}\` CLI to enable this provider`}
                   style={{
-                    flex: "1 1 84px",
-                    padding: inline ? "6px 10px" : "8px 12px",
+                    flex: "1 1 64px",
+                    padding: inline ? "4px 6px" : "6px 8px",
                     fontSize: inline ? 12 : 13,
                     fontWeight: 500,
                     borderRadius: 6,
