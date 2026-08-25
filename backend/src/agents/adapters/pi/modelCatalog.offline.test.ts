@@ -43,6 +43,12 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   },
 }));
 
+const getOpenRouterModelsAsync = vi.fn();
+
+vi.mock("../../../services/openrouter-models.js", () => ({
+  getOpenRouterModelsAsync: () => getOpenRouterModelsAsync(),
+}));
+
 const { getPiModels, clearPiModelCacheForTesting, getPiCatalogStatsForTesting, PI_CATALOG_TTL_MS, PI_CATALOG_RETRY_MS } =
   await import("./modelCatalog.js");
 
@@ -51,6 +57,8 @@ beforeEach(() => {
   refresh.mockReset();
   refresh.mockResolvedValue(ok());
   getModels.mockReturnValue([{ id: "vendor/model", name: "Model", provider: "openrouter" }]);
+  getOpenRouterModelsAsync.mockReset();
+  getOpenRouterModelsAsync.mockResolvedValue([]);
   delete process.env.PI_OFFLINE;
 });
 

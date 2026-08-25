@@ -49,6 +49,7 @@
  */
 import { join } from "node:path";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { getOpenRouterModelsAsync } from "../../../services/openrouter-models.js";
 import { resolvePiAgentDir } from "./optionsAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -274,6 +275,48 @@ export async function listPiProviderIds(): Promise<string[]> {
 }
 
 /**
+ * Merge Callboard's live OpenRouter catalog onto pi's bundled provider models
+ * when the provider is `"openrouter"`.
+ *
+ * pi's bundled catalog is loaded offline from the package and revalidated in
+ * the background, but the revalidation is flaky — it times out after 15s, and
+ * a single provider error marks the whole refresh as failed. Newly-released
+ * OpenRouter models can therefore be invisible for longer than expected.
+ * Callboard already warms an hourly-refreshed catalog of OpenRouter's
+ * tool-calling models (`getOpenRouterModelsAsync`), so overlaying its ids
+ * onto pi's list is the cheapest way to close the gap: fresh models appear in
+ * the picker within an hour of release, and the pi-provided ones are never
+ * dropped.
+ *
+ * The overlay is applied *after* the cache lookup, not stored with the cached
+ * entry. This keeps the cache coherent with pi's own data (whose TTL is
+ * independent) while letting the overlay refresh at the OpenRouter cache's
+ * cadence. The OpenRouter cache is an in-memory Map read, so the cost is
+ * negligible.
+ *
+ * Never rejects: a failure in `getOpenRouterModelsAsync` results in an empty
+ * overlay, preserving the pi-provided list unchanged.
+ */
+async function overlayOpenRouterModels(options: PiModelOption[]): Promise<PiModelOption[]> {
+  try {
+    const orModels = await getOpenRouterModelsAsync();
+    if (orModels.length === 0) return options;
+    const piIds = new Set(options.map((o) => o.value));
+    const extras = orModels
+      .filter((m) => !piIds.has(m.id))
+      .map((m) => ({
+        value: m.id,
+        displayName: m.name || m.id,
+        description: "",
+      }));
+    if (extras.length === 0) return options;
+    return [...options, ...extras];
+  } catch {
+    return options;
+  }
+}
+
+/**
  * Models for one provider, cached after the first successful lookup.
  *
  * Only *successful, non-empty* lookups are cached: caching an empty list would
@@ -281,6 +324,10 @@ export async function listPiProviderIds(): Promise<string[]> {
  * cheap. An empty list is the honest answer to "we could not read the catalog",
  * and every model field in callboard accepts free text anyway — exactly as the
  * Codex and ACP selectors already do for slugs newer than their catalog.
+ *
+ * When the provider is `"openrouter"`, the cached pi list is overlaid with
+ * Callboard's live OpenRouter catalog so newly-released models appear in the
+ * picker without waiting for pi's flaky background refresh.
  */
 export async function getPiModels(providerId: string): Promise<PiModelOption[]> {
   const id = providerId.trim();
@@ -301,7 +348,7 @@ export async function getPiModels(providerId: string): Promise<PiModelOption[]> 
     revalidateIfStale();
 
     const cached = _cache.get(id);
-    if (cached) return cached;
+    if (cached) return id === "openrouter" ? overlayOpenRouterModels(cached) : cached;
 
     const options = runtime
       .getModels(id)
@@ -312,7 +359,7 @@ export async function getPiModels(providerId: string): Promise<PiModelOption[]> 
       }))
       .sort((a, b) => a.value.localeCompare(b.value));
     if (options.length > 0) _cache.set(id, options);
-    return options;
+    return id === "openrouter" ? overlayOpenRouterModels(options) : options;
   } catch (err) {
     log.warn(`could not list models for pi provider "${id}": ${err instanceof Error ? err.message : String(err)}`);
     return [];

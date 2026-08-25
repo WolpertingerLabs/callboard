@@ -18,13 +18,23 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-catalog-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 process.env.PI_OFFLINE = "1";
 
+const getOpenRouterModelsAsync = vi.fn();
+
+vi.mock("../../../services/openrouter-models.js", () => ({
+  getOpenRouterModelsAsync: () => getOpenRouterModelsAsync(),
+}));
+
 const { getPiModels, listPiProviderIds, clearPiModelCacheForTesting, getPiCatalogStatsForTesting, PI_CATALOG_TTL_MS } = await import("./modelCatalog.js");
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
   delete process.env.PI_OFFLINE;
 });
-beforeEach(() => clearPiModelCacheForTesting());
+beforeEach(() => {
+  clearPiModelCacheForTesting();
+  getOpenRouterModelsAsync.mockReset();
+  getOpenRouterModelsAsync.mockResolvedValue([]);
+});
 
 describe("getPiModels", () => {
   it("answers offline for openrouter, with no key configured", async () => {

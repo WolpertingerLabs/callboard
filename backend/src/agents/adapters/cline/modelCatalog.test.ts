@@ -8,14 +8,25 @@
  * that callboard is not the only writer: Cline's own CLI and editor extension
  * update the same store, and a user who adds a model there should not have to
  * restart the daemon to pick it.
+ *
+ * When the provider is `"openrouter"`, the SDK's list is overlaid with
+ * Callboard's live OpenRouter catalog so newly-released models appear in the
+ * picker without waiting for the SDK's local store to refresh.
  */
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenRouterModelInfo } from "shared/types/index.js";
 
 const getLocalProviderModels = vi.fn<(id: string) => Promise<{ models: Array<{ id: string; name?: string }> }>>();
 
 vi.mock("@cline/sdk", () => ({
   BUILT_IN_PROVIDER_IDS: ["anthropic", "openrouter"],
   getLocalProviderModels: (id: string) => getLocalProviderModels(id),
+}));
+
+const getOpenRouterModelsAsync = vi.fn<() => Promise<OpenRouterModelInfo[]>>();
+
+vi.mock("../../../services/openrouter-models.js", () => ({
+  getOpenRouterModelsAsync: () => getOpenRouterModelsAsync(),
 }));
 
 import { CLINE_CATALOG_TTL_MS, getClineModels, clearClineModelCacheForTesting } from "./modelCatalog.js";
@@ -25,6 +36,8 @@ beforeEach(() => {
   clearClineModelCacheForTesting();
   getLocalProviderModels.mockReset();
   getLocalProviderModels.mockResolvedValue({ models: [{ id: "claude-opus-4.8", name: "Opus" }] });
+  getOpenRouterModelsAsync.mockReset();
+  getOpenRouterModelsAsync.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -94,4 +107,69 @@ it("collapses a concurrent burst onto one read", async () => {
 
   for (const list of await burst) expect(list.map((m) => m.value)).toEqual(["claude-opus-4.8"]);
   expect(getLocalProviderModels).toHaveBeenCalledTimes(1);
+});
+
+describe("OpenRouter overlay", () => {
+  it("adds OpenRouter models missing from the SDK's local store", async () => {
+    getOpenRouterModelsAsync.mockResolvedValue([
+      { id: "deepseek/deepseek-r1", name: "DeepSeek R1", promptPrice: "0", completionPrice: "0", supportedParameters: [] },
+      { id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick", promptPrice: "0", completionPrice: "0", supportedParameters: [] },
+    ]);
+
+    const models = await getClineModels("openrouter");
+    expect(models.map((m) => m.value)).toEqual(["claude-opus-4.8", "deepseek/deepseek-r1", "meta-llama/llama-4-maverick"]);
+  });
+
+  it("does not duplicate models already in the SDK's store", async () => {
+    getLocalProviderModels.mockResolvedValue({
+      models: [{ id: "claude-opus-4.8", name: "Opus" }, { id: "meta-llama/llama-4-maverick", name: "Llama" }],
+    });
+    getOpenRouterModelsAsync.mockResolvedValue([
+      { id: "claude-opus-4.8", name: "Opus", promptPrice: "0", completionPrice: "0", supportedParameters: [] },
+      { id: "meta-llama/llama-4-maverick", name: "Llama", promptPrice: "0", completionPrice: "0", supportedParameters: [] },
+    ]);
+
+    const models = await getClineModels("openrouter");
+    expect(models.map((m) => m.value)).toEqual(["claude-opus-4.8", "meta-llama/llama-4-maverick"]);
+  });
+
+  it("does not overlay for non-openrouter providers", async () => {
+    getOpenRouterModelsAsync.mockResolvedValue([
+      { id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick", promptPrice: "0", completionPrice: "0", supportedParameters: [] },
+    ]);
+
+    const models = await getClineModels("anthropic");
+    expect(models.map((m) => m.value)).toEqual(["claude-opus-4.8"]);
+  });
+
+  it("preserves the SDK-provided list when the OpenRouter cache fails", async () => {
+    getOpenRouterModelsAsync.mockRejectedValue(new Error("network down"));
+
+    const models = await getClineModels("openrouter");
+    expect(models.map((m) => m.value)).toEqual(["claude-opus-4.8"]);
+  });
+
+  it("preserves the SDK-provided list when the OpenRouter cache is empty", async () => {
+    getOpenRouterModelsAsync.mockResolvedValue([]);
+
+    const models = await getClineModels("openrouter");
+    expect(models.map((m) => m.value)).toEqual(["claude-opus-4.8"]);
+  });
+
+  it("applies the overlay on a warm cache hit, not just on fresh reads", async () => {
+    // Seed the cache with the SDK's list.
+    await getClineModels("openrouter");
+    expect(getLocalProviderModels).toHaveBeenCalledTimes(1);
+
+    // Now the overlay brings in a new model without re-reading the SDK store.
+    getOpenRouterModelsAsync.mockResolvedValue([
+      { id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick", promptPrice: "0", completionPrice: "0", supportedParameters: [] },
+    ]);
+
+    vi.advanceTimersByTime(CLINE_CATALOG_TTL_MS - 1);
+    const models = await getClineModels("openrouter");
+    expect(models.map((m) => m.value)).toEqual(["claude-opus-4.8", "meta-llama/llama-4-maverick"]);
+    // The SDK store was not re-read — still warm.
+    expect(getLocalProviderModels).toHaveBeenCalledTimes(1);
+  });
 });
