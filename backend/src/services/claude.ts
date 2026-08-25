@@ -51,6 +51,7 @@ import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
 import { createCard as createCardRecord, updateCard, getCard as getCardRecord, deleteCard as deleteCardRecord } from "./card-store.js";
+import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { resolveParentage } from "./chat-lineage.js";
 import { getGitInfo } from "../utils/git.js";
@@ -1081,6 +1082,23 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   } else {
     throw new Error("Either chatId or folder is required");
   }
+
+  // ── Reopen closed card on new message ─────────────────────
+  // When any chat (existing or newly created) on a closed card receives a
+  // message — whether from the UI, continue_chat, a job step, cron, or a
+  // spawned child — reopen the card automatically so the conversation returns
+  // to the board.
+  const cardId = initialMetadata.cardId;
+  if (typeof cardId === "string" && cardId) {
+    const card = getCardRecord(cardId);
+    if (card && card.lifecycle === "closed") {
+      updateCard(cardId, { lifecycle: "open" });
+      clearListCaches();
+      sessionRegistry.notifyMetadata(cardId, { cardEvent: "updated" });
+      log.info(`Reopened card ${cardId} ("${card.title}") because chat ${opts.chatId || "(new)"} received a new message`);
+    }
+  }
+  // ── End reopen logic ──────────────────────────────────────
 
   // Resolve which agent provider runs this chat. Existing chats with no
   // `provider` in metadata fall back to "claude-code" (preserves all current
