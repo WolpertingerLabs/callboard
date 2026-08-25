@@ -20,18 +20,21 @@
  * where returning without the result would hand the agent a confusing empty
  * response while the delegate kept running.
  *
- * `await_chat` currently has no producer: it was raised by `continue_chat`'s
- * blocking mode, which was removed in favour of the `onComplete` callback both
- * chat tools now share. The member stays because this type crosses REST, where
- * a stored activity or an older client may still carry the string, and because
- * the next tool that blocks on a child chat wants exactly this kind. Its
- * consumers are live code, not dead code — do not prune them either.
- *
  * `holding` is the background-task hold (`background-task-hold.ts`): the turn
  * is over but the session is deliberately kept alive so a Bash command started
  * with `run_in_background` can finish and report. It was the third way a chat
  * could legitimately be busy and the only one with nothing on screen — a chat
  * patiently holding a subprocess open rendered as idle and finished.
+ *
+ * `await_chat` has no producer, and it is not alone: `generating` and
+ * `scanning` have none either. It was last raised by `continue_chat`'s blocking
+ * mode, removed in favour of the `onComplete` callback both chat tools now
+ * share. Activities are in-memory only (`chat-activity.ts`), so nothing is
+ * still carrying the string — the member stays because deleting it buys
+ * nothing, while re-adding it later would be a *new kind*, which costs exactly
+ * what the section below describes. Keep its consumers (`ActivityDock`,
+ * `pendingLabels`) for the same reason, even though the `await_chat` arm of
+ * each is currently unreachable.
  *
  * ## Adding a kind
  *
