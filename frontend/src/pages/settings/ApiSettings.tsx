@@ -14,6 +14,7 @@ import {
 } from "../../api";
 import PiModelSelector from "../../components/PiModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
+import { mergeAcpProviderModel } from "./acpProviderModels";
 import EngineStatusCard, { EngineStatusDot, StatusRow } from "./EngineStatusCard";
 import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
@@ -1057,22 +1058,12 @@ export default function ApiSettings() {
         codexOpenRouterModel,
         acpUseOpenRouter,
         acpOpenRouterApiKey,
-        // Merge this tab's edited value into the existing per-vendor map rather
-        // than replacing it outright — every OTHER vendor's entry must survive a
-        // save made from this one's tab. An empty edit is sent through as an
-        // empty string rather than deleted client-side: the backend normalizer
-        // already drops a blank-value entry from the map (same rule it applies
-        // to every row of it), so there's no need to duplicate that here.
-        // The `activeAcpProviderId` guard exists so a save can never write a
-        // `""`-keyed entry into the map if it's still unresolved (e.g.
-        // `getSystemInfo()` hasn't returned yet, or failed) — in that case the
-        // map is passed through unchanged instead. Effectively unreachable
-        // today, since the ACP tab body (and this field within it) can't
-        // render without a resolved vendor id in the first place, but the
-        // guard is cheap insurance against that changing later.
-        acpProviderModels: activeAcpProviderId
-          ? { ...settings?.acpProviderModels, [activeAcpProviderId]: acpProviderModel.trim() }
-          : settings?.acpProviderModels,
+        // One tab is open but the stored value is a map, so this tab's edit is
+        // merged into the map rather than sent alone — see
+        // `mergeAcpProviderModel` for why every other vendor's entry survives,
+        // why a blank passes through instead of being deleted here, and why an
+        // unresolved vendor id is a no-op.
+        acpProviderModels: mergeAcpProviderModel(settings?.acpProviderModels, activeAcpProviderId, acpProviderModel),
         clineProviderId,
         clineModel,
         clineApiKey,
