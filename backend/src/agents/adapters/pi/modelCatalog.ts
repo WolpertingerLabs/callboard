@@ -310,7 +310,7 @@ async function overlayOpenRouterModels(options: PiModelOption[]): Promise<PiMode
         description: "",
       }));
     if (extras.length === 0) return options;
-    return [...options, ...extras];
+    return [...options, ...extras].sort((a, b) => a.value.localeCompare(b.value));
   } catch {
     return options;
   }

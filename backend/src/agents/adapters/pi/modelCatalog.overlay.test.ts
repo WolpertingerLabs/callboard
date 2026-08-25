@@ -132,7 +132,9 @@ describe("OpenRouter overlay", () => {
   });
 
   it("applies the overlay on a warm cache hit, not just on fresh reads", async () => {
-    // Seed the cache with pi's bundled list.
+    // Seed the cache with pi's bundled list. The first call's clock start is
+    // what makes the cache entry "warm" — the TTL is checked against that
+    // timestamp, and advancing time by less than the TTL keeps it fresh.
     await getPiModels("openrouter");
 
     // Now the overlay brings in a new model.

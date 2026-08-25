@@ -109,7 +109,7 @@ async function overlayOpenRouterModels(options: ClineModelOption[]): Promise<Cli
         description: "",
       }));
     if (extras.length === 0) return options;
-    return [...options, ...extras];
+    return [...options, ...extras].sort((a, b) => a.value.localeCompare(b.value));
   } catch {
     return options;
   }
@@ -159,7 +159,9 @@ export async function getClineModels(providerId: string): Promise<ClineModelOpti
     } catch (err) {
       log.warn(`could not list models for Cline provider "${id}": ${err instanceof Error ? err.message : String(err)}`);
       // Serve the expired entry rather than nothing: a failed re-read should
-      // cost freshness, not the list itself.
+      // cost freshness, not the list itself. Apply the overlay for openrouter
+      // so users don't temporarily lose extras while the SDK store is stale.
+      if (id === "openrouter" && cached) return overlayOpenRouterModels(cached.options);
       return cached?.options ?? [];
     } finally {
       _inFlight.delete(id);

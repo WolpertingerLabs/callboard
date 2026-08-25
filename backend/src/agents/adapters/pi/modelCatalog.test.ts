@@ -68,6 +68,8 @@ describe("getPiModels", () => {
   });
 
   it("caches, so a second lookup is the same array", async () => {
+    // This identity assertion holds because getOpenRouterModelsAsync is mocked
+    // to return [], so the overlay is a no-op and returns the original reference.
     const first = await getPiModels("openrouter");
     expect(await getPiModels("openrouter")).toBe(first);
   });

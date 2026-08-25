@@ -156,8 +156,28 @@ describe("OpenRouter overlay", () => {
     expect(models.map((m) => m.value)).toEqual(["claude-opus-4.8"]);
   });
 
-  it("applies the overlay on a warm cache hit, not just on fresh reads", async () => {
+  it("applies the overlay on a failed re-read so extras are not lost", async () => {
     // Seed the cache with the SDK's list.
+    await getClineModels("openrouter");
+    expect(getLocalProviderModels).toHaveBeenCalledTimes(1);
+
+    // Age the entry out, then make the SDK re-read fail.
+    vi.advanceTimersByTime(CLINE_CATALOG_TTL_MS);
+    getLocalProviderModels.mockRejectedValue(new Error("store unreadable"));
+
+    // The overlay still applies on the expired cache entry.
+    getOpenRouterModelsAsync.mockResolvedValue([
+      { id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick", promptPrice: "0", completionPrice: "0", supportedParameters: [] },
+    ]);
+
+    const models = await getClineModels("openrouter");
+    expect(models.map((m) => m.value)).toEqual(["claude-opus-4.8", "meta-llama/llama-4-maverick"]);
+  });
+
+  it("applies the overlay on a warm cache hit, not just on fresh reads", async () => {
+    // Seed the cache with the SDK's list. The first call's clock start is what
+    // makes the cache entry "warm" — the TTL is checked against that timestamp,
+    // and advancing time by less than the TTL keeps it fresh.
     await getClineModels("openrouter");
     expect(getLocalProviderModels).toHaveBeenCalledTimes(1);
 
