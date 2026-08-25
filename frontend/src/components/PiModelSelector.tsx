@@ -89,8 +89,10 @@ const rowLabelStyle: React.CSSProperties = {
  * pi's ids are all `vendor/model-version-variant`.
  *
  * Empty means "use the default from Settings → API". Anything typed is sent
- * as-is: a slug newer than the bundled catalog still works, because
- * `findPiModel` falls back to pi's own default rather than failing the turn.
+ * as-is, and for OpenRouter a slug newer than the bundled catalog genuinely
+ * runs: `findPiModel` synthesizes a definition for it. For other providers
+ * there is nothing to synthesize a transport from, so an unknown slug still
+ * degrades to pi's own default rather than failing the turn.
  */
 export default function PiModelSelector({ id, value, onChange, placeholder, providerId, compact = false }: Props) {
   const [models, setModels] = useState<PiModelOption[]>([]);

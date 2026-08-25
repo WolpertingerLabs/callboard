@@ -37,7 +37,7 @@
  * @see ../acp/modelCatalog.ts (the harvesting one, and why this isn't)
  */
 import { BUILT_IN_PROVIDER_IDS, getLocalProviderModels } from "@cline/sdk";
-import { getOpenRouterModelsAsync } from "../../../services/openrouter-models.js";
+import { getOpenRouterModelsSnapshot } from "../../../services/openrouter-models.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("cline-model-catalog");
@@ -90,29 +90,36 @@ export function listClineProviderIds(): string[] {
  * The overlay is applied *after* the cache lookup, not stored with the cached
  * entry. This keeps the cache coherent with the SDK's own data (whose TTL is
  * independent) while letting the overlay refresh at the OpenRouter cache's
- * cadence. The OpenRouter cache is an in-memory Map read, so the cost is
- * negligible.
+ * cadence.
  *
- * Never rejects: a failure in `getOpenRouterModelsAsync` results in an empty
- * overlay, preserving the SDK-provided list unchanged.
+ * ## Snapshot, not `getOpenRouterModelsAsync`
+ *
+ * The async accessor *awaits* a re-fetch whenever the catalog is cold or past
+ * its TTL, bounded at 30s. Awaiting it here would put a network round trip on
+ * the model picker's path — and the OpenRouter catalog's periodic refresh is
+ * gated on `isOpenRouterInUse()`, which reads callboard's *own* OpenRouter
+ * settings and so is false for a user whose key lives in Cline's config. That
+ * user would pay the fetch on the first picker open after every TTL boundary.
+ *
+ * The snapshot answers from memory, never throws, and kicks the refresh in the
+ * background when the entry has aged out — so a stale-by-under-an-hour overlay
+ * is served now and the next open is current. That is the same
+ * stale-while-revalidate trade this module already makes for the SDK's own
+ * list, and it keeps "a picker read never touches the network" true.
  */
-async function overlayOpenRouterModels(options: ClineModelOption[]): Promise<ClineModelOption[]> {
-  try {
-    const orModels = await getOpenRouterModelsAsync();
-    if (orModels.length === 0) return options;
-    const sdkIds = new Set(options.map((o) => o.value));
-    const extras = orModels
-      .filter((m) => !sdkIds.has(m.id))
-      .map((m) => ({
-        value: m.id,
-        displayName: m.name || m.id,
-        description: "",
-      }));
-    if (extras.length === 0) return options;
-    return [...options, ...extras].sort((a, b) => a.value.localeCompare(b.value));
-  } catch {
-    return options;
-  }
+function overlayOpenRouterModels(options: ClineModelOption[]): ClineModelOption[] {
+  const orModels = getOpenRouterModelsSnapshot();
+  if (orModels.length === 0) return options;
+  const sdkIds = new Set(options.map((o) => o.value));
+  const extras = orModels
+    .filter((m) => !sdkIds.has(m.id))
+    .map((m) => ({
+      value: m.id,
+      displayName: m.name || m.id,
+      description: "",
+    }));
+  if (extras.length === 0) return options;
+  return [...options, ...extras].sort((a, b) => a.value.localeCompare(b.value));
 }
 
 /**
@@ -149,11 +156,19 @@ export async function getClineModels(providerId: string): Promise<ClineModelOpti
     await Promise.resolve();
     try {
       const { models } = await getLocalProviderModels(id);
-      const options = (models ?? []).map((m) => ({
-        value: m.id,
-        displayName: m.name || m.id,
-        description: describeModel(m),
-      }));
+      // Sorted unconditionally, and that matters beyond tidiness: the overlay
+      // below re-sorts the merged list, so leaving the un-overlaid list in the
+      // SDK's own order would make the picker's ordering flip the moment the
+      // OpenRouter catalog happened to contain a model the SDK's store didn't.
+      // The frontend truncates to a fixed result count, so *which* models are
+      // reachable without typing depends on this order.
+      const options = (models ?? [])
+        .map((m) => ({
+          value: m.id,
+          displayName: m.name || m.id,
+          description: describeModel(m),
+        }))
+        .sort((a, b) => a.value.localeCompare(b.value));
       if (options.length > 0) _cache.set(id, { options, readAt: Date.now() });
       return id === "openrouter" ? overlayOpenRouterModels(options) : options;
     } catch (err) {

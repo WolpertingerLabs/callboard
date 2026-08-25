@@ -18,10 +18,10 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-catalog-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 process.env.PI_OFFLINE = "1";
 
-const getOpenRouterModelsAsync = vi.fn();
+const getOpenRouterModelsSnapshot = vi.fn();
 
 vi.mock("../../../services/openrouter-models.js", () => ({
-  getOpenRouterModelsAsync: () => getOpenRouterModelsAsync(),
+  getOpenRouterModelsSnapshot: () => getOpenRouterModelsSnapshot(),
 }));
 
 const { getPiModels, listPiProviderIds, clearPiModelCacheForTesting, getPiCatalogStatsForTesting, PI_CATALOG_TTL_MS } = await import("./modelCatalog.js");
@@ -32,8 +32,8 @@ afterAll(() => {
 });
 beforeEach(() => {
   clearPiModelCacheForTesting();
-  getOpenRouterModelsAsync.mockReset();
-  getOpenRouterModelsAsync.mockResolvedValue([]);
+  getOpenRouterModelsSnapshot.mockReset();
+  getOpenRouterModelsSnapshot.mockReturnValue([]);
 });
 
 describe("getPiModels", () => {
@@ -68,7 +68,7 @@ describe("getPiModels", () => {
   });
 
   it("caches, so a second lookup is the same array", async () => {
-    // This identity assertion holds because getOpenRouterModelsAsync is mocked
+    // This identity assertion holds because getOpenRouterModelsSnapshot is mocked
     // to return [], so the overlay is a no-op and returns the original reference.
     const first = await getPiModels("openrouter");
     expect(await getPiModels("openrouter")).toBe(first);
