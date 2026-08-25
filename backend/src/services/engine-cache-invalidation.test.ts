@@ -120,6 +120,7 @@ vi.mock("./sdk-info.js", () => ({
 const { getClaudeCodeExecutablePath, resetClaudeBinaryCache } = await import("./claude-binary.js");
 const { resolveAcpBinaryPath, acpProviderVersion, resetAcpAvailabilityCache } = await import("../agents/adapters/acp/availability.js");
 const { resetEngineProbeCaches, getEngineStatuses, resetEngineStatusCache } = await import("./engine-status.js");
+const { binaryVersionLine } = await import("../utils/binary-version.js");
 
 const A = "/fake/a/claude";
 const B = "/fake/b/claude";
@@ -243,6 +244,30 @@ describe("acp availability — the --version probe alongside the path", () => {
     // The cache must still hold the post-reset answer: the stale probe's write
     // was discarded rather than applied on top of it.
     expect(await acpProviderVersion("opencode")).toBe("2.0.0-new");
+  });
+});
+
+describe("binary-version — the `claude --version` behind the About page", () => {
+  /**
+   * The wiring, not the cache itself — `utils/binary-version.test.ts` owns the
+   * keying, the in-flight sharing and the reset-mid-probe hazard. What matters
+   * here is that `resetEngineProbeCaches` reaches it, because `/api/system-info`
+   * stopped spawning `claude --version` per request and now reads this cache.
+   * Without the reset, a user who upgrades their CLI and presses Recheck would
+   * be shown the old version until the daemon restarted — the exact failure
+   * this suite exists for, arriving through a new door.
+   */
+  it("is dropped by resetEngineProbeCaches, so a Recheck re-spawns", async () => {
+    // Spawns are counted through the deferred queue: one entry per child.
+    await binaryVersionLine(A);
+    expect(pendingVersionProbes).toHaveLength(1);
+
+    await binaryVersionLine(A);
+    expect(pendingVersionProbes).toHaveLength(1); // served from cache
+
+    resetEngineProbeCaches();
+    await binaryVersionLine(A);
+    expect(pendingVersionProbes).toHaveLength(2);
   });
 });
 

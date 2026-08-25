@@ -123,7 +123,14 @@ export default function AboutSettings() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([getSystemInfo(), getAgentSettings()])
+    // `refresh`, because reporting current daemon state is this page's entire
+    // job. On the cached default a tab that had been open a while — the cache
+    // warms from the composer, the model selector and the cron dashboard — would
+    // answer "did my upgrade land?" with the pre-upgrade version *and* an
+    // "Update available" banner for the release the user had just installed. The
+    // inverse too: no banner for an update that is genuinely available, if the
+    // cache happened to warm while the backend's 4-hour npm probe was cold.
+    Promise.all([getSystemInfo({ refresh: true }), getAgentSettings()])
       .then(([sys, settings]) => {
         setSystemInfo(sys);
         setAgentSettings(settings);

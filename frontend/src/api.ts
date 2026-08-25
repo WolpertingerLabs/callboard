@@ -1736,10 +1736,150 @@ export interface AcpProviderInfo {
   command: string;
 }
 
-export async function getSystemInfo(): Promise<SystemInfo> {
-  const res = await fetch(`${BASE}/system-info`, { credentials: "include" });
-  await assertOk(res, "Failed to get system info");
-  return res.json();
+/**
+ * The last `/api/system-info` payload this tab saw, or `null` before the first.
+ *
+ * Module-level rather than per-caller because the point is to share it across
+ * *mounts*: `NewChatPanel` is conditionally rendered, so it remounts on every
+ * popup open and would otherwise start from an empty ACP vendor list every
+ * single time. `ClaudeModelSelector` had already reached for a private
+ * `cachedModels` of its own for the same reason; this is that idea moved to
+ * where every caller can use it.
+ */
+let systemInfoCache: SystemInfo | null = null;
+
+/** One in-flight request, so N callers in one frame share a round trip rather than racing N. */
+let systemInfoInFlight: Promise<SystemInfo> | null = null;
+
+/**
+ * The cached payload **synchronously**, without touching the network.
+ *
+ * This is the accessor that actually kills the pop-in, and it exists because a
+ * promise cannot: `useEffect` runs *after* the browser has painted, so even a
+ * cache hit that resolves in a microtask is one frame too late — the row would
+ * still render without the OpenCode button and then reflow. A component seeds
+ * its initial state from this instead, and paints the button on frame one.
+ *
+ * `null` means "this tab has never had an answer", which is not the same as
+ * "there are no ACP vendors" — callers must keep their existing empty-state
+ * behaviour for it rather than treating it as data.
+ */
+export function cachedSystemInfo(): SystemInfo | null {
+  return systemInfoCache;
+}
+
+export interface SystemInfoOptions {
+  /**
+   * Skip the cache and resolve with a fresh response.
+   *
+   * For the callers that have just *changed* something the payload reports —
+   * Settings → API after a save, after a Recheck, after an install. Handing
+   * those the previous answer would show the user the state they just left, and
+   * the stale-while-revalidate default would do exactly that: it resolves with
+   * the old value and updates the cache for whoever comes next, which is the
+   * wrong trade when the point of the call is to observe a mutation.
+   */
+  refresh?: boolean;
+}
+
+/**
+ * System info, served stale-while-revalidate.
+ *
+ * A cache hit resolves immediately and kicks off a background refresh whose
+ * result lands in the cache for the next caller. That is the right default here
+ * because every field is a property of the *daemon* — versions, credentials,
+ * which CLIs are installed — none of which changes as a result of anything the
+ * page does, except on the pages that pass `refresh`.
+ *
+ * The revalidation is deliberately not surfaced to the caller: a call resolves
+ * once, with one payload. A caller handed a stale value and then a fresh one
+ * would have to survive its own state changing underneath it a few hundred
+ * milliseconds after mount, and `NewChatPanel` reacts to this payload by
+ * *downgrading the selected provider* — a decision that must be made once,
+ * against one list, or it can overrule a choice the user made in between.
+ *
+ * The consequence, and it is the trap: **a caller that needs a fresh answer must
+ * ask for one.** Serving stale is not "fresh, slightly late" — the revalidation
+ * lands in the cache, not in the caller, so a component that takes the default
+ * is pinned to whatever this tab last saw for its entire lifetime. That is right
+ * for a display of daemon facts and wrong for anything that *gates* on them, so
+ * {@link cachedSystemInfo} is what makes a first frame instant and `refresh` is
+ * what makes an answer current. They are separate tools and most seeding callers
+ * want both.
+ */
+export async function getSystemInfo(opts: SystemInfoOptions = {}): Promise<SystemInfo> {
+  if (systemInfoCache && !opts.refresh) {
+    // Fire-and-forget: the caller has its answer, and a revalidation that fails
+    // must not become an unhandled rejection or evict a good cached value.
+    void revalidateSystemInfo().catch(() => {});
+    return systemInfoCache;
+  }
+  // A `refresh` deliberately does **not** join an in-flight request. That
+  // request may have been issued before the save/install this call exists to
+  // observe, and a response is only as fresh as the moment it left — joining one
+  // would hand back pre-mutation data through the very parameter that asked not
+  // to get any.
+  return opts.refresh ? fetchSystemInfo() : revalidateSystemInfo();
+}
+
+function revalidateSystemInfo(): Promise<SystemInfo> {
+  return systemInfoInFlight ?? fetchSystemInfo();
+}
+
+/** Ticket dispenser: every request takes the next number, in start order. */
+let systemInfoRequestSeq = 0;
+
+/**
+ * The highest-numbered request whose response actually reached the cache.
+ *
+ * Because a `refresh` runs alongside an in-flight revalidation, two responses
+ * can be outstanding, and the network does not promise they land in order — so a
+ * response writes only if no *later*-started one has already written. Without
+ * that, a slow revalidation settling after a fast post-save refresh would put
+ * the pre-save payload back and hand it to every later caller.
+ *
+ * Gating on "did anyone newer already write" rather than on "am I the newest
+ * request that started" is the difference between dropping a stale answer and
+ * dropping a *good* one. Under the latter, a newer request that **failed** still
+ * held the gate shut: press Recheck twice, let the second 500 and the first
+ * succeed, and the fresh payload was discarded while the page itself displayed
+ * it — leaving the module cache holding the pre-install answer, so the next New
+ * Chat popup contradicted the engine card the user was looking at. A request
+ * that produced nothing must not out-rank one that produced an answer, and here
+ * it cannot: failing never advances this.
+ */
+let systemInfoLatestWritten = 0;
+
+function fetchSystemInfo(): Promise<SystemInfo> {
+  const seq = ++systemInfoRequestSeq;
+  const request = (async () => {
+    const res = await fetch(`${BASE}/system-info`, { credentials: "include" });
+    await assertOk(res, "Failed to get system info");
+    const info = (await res.json()) as SystemInfo;
+    if (seq > systemInfoLatestWritten) {
+      systemInfoLatestWritten = seq;
+      systemInfoCache = info;
+    }
+    return info;
+  })().finally(() => {
+    if (systemInfoInFlight === request) systemInfoInFlight = null;
+  });
+  systemInfoInFlight = request;
+  return request;
+}
+
+/**
+ * Test seam: forget the cached payload and any in-flight request.
+ *
+ * Deliberately does **not** reset the two counters. They are monotonic and only
+ * ever compared to each other, so leaving them alone costs nothing — while
+ * zeroing them would recreate the exact leak they exist to prevent: a request
+ * issued before the reset would find itself newer than the fresh watermark and
+ * write its pre-reset payload into the cache that just replaced it.
+ */
+export function resetSystemInfoCache(): void {
+  systemInfoCache = null;
+  systemInfoInFlight = null;
 }
 
 export async function getOpenRouterModels(): Promise<OpenRouterModelInfo[]> {
