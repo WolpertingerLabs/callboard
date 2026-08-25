@@ -86,7 +86,8 @@ describe("OpenRouter overlay", () => {
     expect(values).toContain("google/gemini-3.5-flash");
     expect(values).toContain("deepseek/deepseek-r1");
     expect(values).toContain("meta-llama/llama-4-maverick");
-    // Sorted: pi's models sorted first, then extras appended.
+    // Combined list is sorted alphabetically by value (pi's models and the
+    // extras merged into one sorted sequence, no priority either way).
     expect(values.indexOf("anthropic/claude-opus-4.8")).toBeLessThan(values.indexOf("deepseek/deepseek-r1"));
   });
 
