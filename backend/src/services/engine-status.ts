@@ -162,7 +162,10 @@ export function resetEngineStatusCache(): void {
  *   now answers for chats, the status card, the About page and the login prompt
  *   alike. It was two caches in two modules until those two resolvers were
  *   merged;
- * - this module — the cached `claude --version` and manifest reads;
+ * - this module — the cached `claude --version` (in `utils/binary-version.ts`,
+ *   which since the system-info parallelization is also what answers that
+ *   endpoint's `claudeCliVersion` — so a Recheck covers a CLI upgrade for the
+ *   About page too) and the manifest reads;
  * - `sdk-info.ts` — the **account info**, and this one is the reason the button
  *   was previously a lie. It is populated once at boot and invalidated from
  *   exactly one other place (the agent-settings save route), so the Credentials

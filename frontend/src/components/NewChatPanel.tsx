@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ChevronDown, ChevronRight, Bot } from "lucide-react";
-import { listAgents, getAgentIdentityPrompt, getSystemInfo, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
+import { listAgents, getAgentIdentityPrompt, getSystemInfo, cachedSystemInfo, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
 import PermissionSettings from "./PermissionSettings";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
@@ -69,6 +69,15 @@ function getPermissionsSummary(permissions: DefaultPermissions): string {
 
 export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const navigate = useNavigate();
+  /**
+   * Whatever `/api/system-info` last told this tab, read synchronously so the
+   * fields it feeds can be initial state rather than the result of an effect.
+   *
+   * Read once per mount and held, so the initializers below cannot disagree with
+   * each other — a revalidation landing between two `useState` calls would
+   * otherwise seed half the panel from one payload and half from the next.
+   */
+  const [seed] = useState(cachedSystemInfo);
   const [folder, setFolder] = useState("");
   const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
   const [recentDirs, setRecentDirs] = useState(() => getRecentDirectories().map((r) => r.path));
@@ -102,11 +111,20 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const [codexModel, setCodexModel] = useState<string>(getDefaultCodexModel);
   // `null` until /system-info returns — Codex treated as available until an
   // explicit false.
-  const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
+  const [codexConfigured, setCodexConfigured] = useState<boolean | null>(() => seed?.codexConfigured ?? null);
   // ACP vendors from /system-info. Empty until it returns, and empty is the
   // honest default — unlike the two tri-states above, an unknown ACP list means
   // there are no buttons to render at all, so there is no optimistic case.
-  const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>([]);
+  //
+  // Seeded from the tab's cached payload, and that seed is the entire fix for
+  // the OpenCode button arriving late. This panel is conditionally mounted, so
+  // every popup open remounted it with an empty list; the other four provider
+  // buttons are hardcoded JSX and painted on frame one while this one waited on
+  // a round trip, which showed up as a visible pop-in and a row reflow. The
+  // effect below cannot close that gap no matter how fast the fetch is —
+  // `useEffect` runs after the first paint by definition. `null` from the cache
+  // means "never fetched in this tab", which still yields the empty list.
+  const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>(() => seed?.acpProviders ?? []);
   const [acpProviderId, setAcpProviderId] = useState<string>(getDefaultAcpProviderId);
   // Per-chat ACP model, as the vendor names it. Empty = leave the vendor CLI's
   // own configured model alone; there is no callboard-side global ACP default,
@@ -119,12 +137,12 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const [clineModel, setClineModel] = useState<string>(getDefaultClineModel);
   // Which Cline provider scopes the model catalog. Surfaced by /system-info so
   // selecting `openrouter` there offers OpenRouter's models here.
-  const [clineProviderId, setClineProviderId] = useState<string>("");
+  const [clineProviderId, setClineProviderId] = useState<string>(() => seed?.clineProviderId ?? "");
   const [piModel, setPiModel] = useState<string>(getDefaultPiModel);
   // Whether each native harness is routed through OpenRouter — flips the model
   // pickers to OpenRouter's catalog. Sourced from /system-info.
-  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
-  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
+  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(() => Boolean(seed?.claudeCodeUseOpenRouter));
+  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(() => Boolean(seed?.codexUseOpenRouter));
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
   const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
@@ -295,12 +313,40 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     </div>
   );
 
+  // The provider the user has selected *right now*, for the effect below.
+  //
+  // That effect can downgrade the selection, and it must judge the selection as
+  // it stands when the answer arrives rather than as it stood at mount: it has
+  // `[]` deps, so its closure is frozen at the first render, and a user who
+  // picks a provider while the request is in flight would otherwise have that
+  // click overruled by a decision made about a provider they had already moved
+  // off. The window is short and — now that a cached payload resolves in a
+  // microtask — usually zero, but it is exactly the interval in which someone
+  // opening the popup and immediately clicking is acting.
+  // Written from an effect rather than during render — a ref mutated in the
+  // render body is a lint error and, under a re-render React discards, a lie.
+  // Both start at the mount value, which is the answer for the whole window in
+  // which nothing has been clicked yet.
+  const providerRef = useRef(provider);
+  const acpProviderIdRef = useRef(acpProviderId);
+  useEffect(() => {
+    providerRef.current = provider;
+    acpProviderIdRef.current = acpProviderId;
+  }, [provider, acpProviderId]);
+
   // Fetch system info once to learn which harnesses are configured. Until the
   // fetch resolves, codexConfigured stays `null` and the UI treats Codex as
   // available — the actual gate is in the button's disabled prop. If Codex was
   // selected from localStorage but turns out to be unconfigured, we silently
   // flip the in-memory state to claude-code without touching localStorage (the
   // user's saved preference survives for the next time they reconfigure it).
+  //
+  // `getSystemInfo()` is stale-while-revalidate, so on a re-open this resolves
+  // from cache and the work below is a confirmation of what the initializers
+  // already seeded. It still runs: the seed only fills state, and it is *these*
+  // branches that validate the saved provider against the live vendor list.
+  // Exactly one payload is delivered per mount — see the note on `getSystemInfo`
+  // — so there is no stale-then-fresh sequence here to flip a decision twice.
   useEffect(() => {
     let cancelled = false;
     getSystemInfo()
@@ -308,7 +354,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         if (cancelled) return;
         const codexOk = Boolean(info.codexConfigured);
         setCodexConfigured(codexOk);
-        if (!codexOk && provider === "codex") {
+        if (!codexOk && providerRef.current === "codex") {
           setProvider("claude-code");
         }
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
@@ -324,11 +370,12 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         // server-side data and can appear or disappear without a frontend build.
         const vendors = info.acpProviders ?? [];
         setAcpProviders(vendors);
-        const usable = vendors.find((v) => v.id === acpProviderId && v.available) ?? vendors.find((v) => v.available);
-        if (usable && usable.id !== acpProviderId) setAcpProviderId(usable.id);
+        const selectedAcpId = acpProviderIdRef.current;
+        const usable = vendors.find((v) => v.id === selectedAcpId && v.available) ?? vendors.find((v) => v.available);
+        if (usable && usable.id !== selectedAcpId) setAcpProviderId(usable.id);
         // Nothing installed (or the saved vendor was uninstalled) — fall back
         // rather than leaving a selected provider that cannot start a chat.
-        if (!usable && provider === "acp") setProvider("claude-code");
+        if (!usable && providerRef.current === "acp") setProvider("claude-code");
       })
       .catch(() => {
         // /system-info unreachable — assume unavailable and surface the
@@ -339,7 +386,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // No suppression needed any more: reading the two mutable selections through
+    // refs is what took `provider` and `acpProviderId` out of this closure, so
+    // the empty dependency list is now honest rather than asserted over a lint
+    // rule that disagreed with it.
   }, []);
 
   // Lazy fetch agents when agent mode is first selected

@@ -1,6 +1,5 @@
 import dotenv from "dotenv";
-import { execFile, spawn } from "child_process";
-import { promisify } from "node:util";
+import { spawn } from "child_process";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import express from "express";
 import path from "path";
@@ -93,9 +92,9 @@ import { initOpenRouterModelsCache, stopOpenRouterModelsRefresh } from "./servic
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { getCodexAuthSource, detectCodexOpenRouterEnv, isCodexRoutedThroughOpenRouter, type CodexAuthSource } from "./agents/adapters/codex/codexAuth.js";
 import { listAcpProviderAvailability } from "./agents/adapters/acp/availability.js";
+import { binaryVersionLine } from "./utils/binary-version.js";
 
 const log = createLogger("server");
-const execFileAsync = promisify(execFile);
 
 // Process-level guards: survive stray unhandled rejections (e.g. from
 // provider SDKs), log-and-exit on uncaught exceptions. Must be installed
@@ -379,77 +378,108 @@ app.get(
       // ignore
     }
 
+    // ── The four independent probes, started together ────────────────
+    //
+    // These used to be four sequential `await`s, so the response shipped at the
+    // *sum* of their latencies. Nothing below reads anything the probe above it
+    // produced, and the cost was not evenly spread: measured against a warm
+    // daemon, the whole endpoint was ~120ms and `claude --version` alone was
+    // ~108ms of it. The ACP vendor list is cheap — its PATH lookups are cached
+    // for the process lifetime — but it was computed last, so the New Chat
+    // picker's OpenCode button (the only provider button that comes from this
+    // payload rather than from hardcoded JSX) could not paint until a `claude`
+    // spawn it has nothing to do with had finished. Started together, the
+    // response costs the slowest probe instead of all of them.
+    //
+    // Each probe keeps its own try/catch rather than relying on a wrapper,
+    // because `Promise.all` rejects on the first rejection: a shared handler
+    // would discard three good answers to report one failure. That failure
+    // isolation is being *preserved* here, not added — every one of these
+    // already degraded to a fallback, and each still degrades to the same one.
+
     // Same resolver as chats and the login check. `"not installed"` rather than
     // `"unknown"` when nothing resolved: this used to run the bare name
     // `"claude"` through a shell and report `unknown` on the resulting
     // not-found, which reads as "Callboard could not tell" when in fact it
     // looked and there was nothing there.
     //
-    // `execFile`, not `execSync`, and for the reason the rest of this chain
-    // moved off the event loop: this is a *polled* endpoint, and a synchronous
-    // spawn on a single-threaded server stalls every open SSE stream and
-    // in-flight chat rather than just its caller. It also had a bare `timeout`,
-    // which is not a bound — Node sends SIGTERM at the deadline and then waits
-    // indefinitely, so a `claude` that ignores it held the daemon for as long as
-    // it liked. `killSignal: "SIGKILL"` is what makes five seconds mean five
-    // seconds.
-    const claudeCliBinary = (await resolveClaudeBinary()).path;
-    let claudeCliVersion = claudeCliBinary ? "unknown" : "not installed";
-    if (claudeCliBinary) {
-      try {
-        const { stdout } = await execFileAsync(claudeCliBinary, ["--version"], {
-          timeout: 5_000,
-          killSignal: "SIGKILL",
-          encoding: "utf-8",
-          maxBuffer: 1024 * 1024,
-        });
-        claudeCliVersion = stdout.trim();
-      } catch {
-        // ignore
-      }
-    }
+    // The spawn itself now lives in `utils/binary-version.ts`, which memoizes it
+    // per resolved path for the process lifetime. It is the same argument
+    // `adapters/acp/availability.ts` makes for its own probes: the binary does
+    // not change under a running daemon, and this is a *polled* endpoint, so an
+    // `execFile` per poll bought nothing. Keyed on the resolved path rather than
+    // the name `claude`, so a user who repoints the binary-override setting is
+    // not answered from the old binary's entry — and dropped by
+    // `POST /api/engines/refresh` (through `resetEngineProbeCaches`), so the
+    // existing Recheck button covers a CLI upgrade without a daemon restart.
+    //
+    // `binaryVersionLine`, not `binaryVersion`: this field is *displayed*, and
+    // `"2.0.1 (Claude Code)"` is what the About page has always rendered. The
+    // dotted-token accessor is for the callers that compare versions.
+    const claudeCliProbe = (async (): Promise<{ binary: string | undefined; version: string }> => {
+      const binary = (await resolveClaudeBinary()).path;
+      if (!binary) return { binary, version: "not installed" };
+      return { binary, version: (await binaryVersionLine(binary)) ?? "unknown" };
+    })();
 
     // Fetch latest version from npm (cached, best effort)
-    let latestVersion: string | undefined;
-    try {
-      const cacheFile = path.join(DATA_DIR, "version-check.json");
-      const cacheTtl = 4 * 60 * 60 * 1000; // 4 hours
-      let cached: { latestVersion: string; ts: number } | null = null;
+    const latestVersionProbe = (async (): Promise<string | undefined> => {
+      let latest: string | undefined;
       try {
-        if (existsSync(cacheFile)) {
-          cached = JSON.parse(readFileSync(cacheFile, "utf-8"));
+        const cacheFile = path.join(DATA_DIR, "version-check.json");
+        const cacheTtl = 4 * 60 * 60 * 1000; // 4 hours
+        let cached: { latestVersion: string; ts: number } | null = null;
+        try {
+          if (existsSync(cacheFile)) {
+            cached = JSON.parse(readFileSync(cacheFile, "utf-8"));
+          }
+        } catch {
+          // ignore corrupt cache
         }
-      } catch {
-        // ignore corrupt cache
-      }
-      if (cached && Date.now() - cached.ts < cacheTtl) {
-        latestVersion = cached.latestVersion;
-      } else {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-        const npmRes = await fetch(`https://registry.npmjs.org/${pkgName}/latest`, {
-          signal: controller.signal,
-          headers: { Accept: "application/json" },
-        });
-        clearTimeout(timeout);
-        if (npmRes.ok) {
-          const npmData = (await npmRes.json()) as { version?: string };
-          if (npmData.version) {
-            latestVersion = npmData.version;
-            try {
-              writeFileSync(cacheFile, JSON.stringify({ latestVersion, ts: Date.now() }) + "\n");
-            } catch {
-              // best effort
+        if (cached && Date.now() - cached.ts < cacheTtl) {
+          latest = cached.latestVersion;
+        } else {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const npmRes = await fetch(`https://registry.npmjs.org/${pkgName}/latest`, {
+            signal: controller.signal,
+            headers: { Accept: "application/json" },
+          });
+          clearTimeout(timeout);
+          if (npmRes.ok) {
+            const npmData = (await npmRes.json()) as { version?: string };
+            if (npmData.version) {
+              latest = npmData.version;
+              try {
+                writeFileSync(cacheFile, JSON.stringify({ latestVersion: latest, ts: Date.now() }) + "\n");
+              } catch {
+                // best effort
+              }
             }
           }
         }
+      } catch {
+        // best effort — don't fail the endpoint
       }
-    } catch {
-      // best effort — don't fail the endpoint
-    }
+      return latest;
+    })();
 
-    // Include cached SDK info (account + models) if available
-    const sdkInfo = await getSdkInfoAsync();
+    // Include cached SDK info (account + models) if available. Deliberately
+    // un-`catch`ed, because `fetchSdkInfo` already swallows its own failures and
+    // resolves with an empty cache — wrapping it here would claim a failure mode
+    // it does not have.
+    const sdkInfoProbe = getSdkInfoAsync();
+
+    // ACP vendors are one kind covering many CLIs, so there is no single
+    // "acpConfigured" flag — the picker needs the per-vendor list. Cached after
+    // the first PATH lookup, so this is cheap on every subsequent poll.
+    //
+    // A failed PATH probe must not take the whole system-info payload down; an
+    // empty list reads as "no ACP vendors", which is the safe answer.
+    const acpProvidersProbe: Promise<Awaited<ReturnType<typeof listAcpProviderAvailability>>> = listAcpProviderAvailability().catch(() => []);
+
+    const [claudeCli, latestVersion, sdkInfo, acpProviders] = await Promise.all([claudeCliProbe, latestVersionProbe, sdkInfoProbe, acpProvidersProbe]);
+    const { binary: claudeCliBinary, version: claudeCliVersion } = claudeCli;
 
     // Whether each native harness is EFFECTIVELY routed through OpenRouter —
     // toggle on and credentials available, from settings or from the ambient
@@ -493,17 +523,6 @@ app.get(
     if (codexUseOpenRouter) {
       codexConfigured = true;
       if (!codexAuthSource) codexAuthSource = "config.toml";
-    }
-
-    // ACP vendors are one kind covering many CLIs, so there is no single
-    // "acpConfigured" flag — the picker needs the per-vendor list. Cached after
-    // the first PATH lookup, so this is cheap on every subsequent poll.
-    let acpProviders: Awaited<ReturnType<typeof listAcpProviderAvailability>> = [];
-    try {
-      acpProviders = await listAcpProviderAvailability();
-    } catch {
-      // A failed PATH probe must not take the whole system-info payload down;
-      // an empty list reads as "no ACP vendors", which is the safe answer.
     }
 
     // Detect whether the ambient environment already routes each harness through

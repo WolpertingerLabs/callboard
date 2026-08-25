@@ -855,7 +855,12 @@ export default function ApiSettings() {
       });
 
     try {
-      const [s, sys] = await Promise.all([getAgentSettings(), getSystemInfo().catch(() => null)]);
+      // `refresh` on every one of this page's five system-info reads. It is the
+      // page where the things this payload reports get *changed* — keys, binary
+      // overrides, routing toggles, engine installs — so the stale-while-
+      // revalidate default would show a user the state they just left. `loadData`
+      // is also what a save re-runs, which is why the initial load takes it too.
+      const [s, sys] = await Promise.all([getAgentSettings(), getSystemInfo({ refresh: true }).catch(() => null)]);
       setSettings(s);
       setSystemInfo(sys);
       // Seed the ACP tab's vendor. The kind alone cannot say which one, so a
@@ -1039,7 +1044,7 @@ export default function ApiSettings() {
       // Re-fetch system info so the Account / Models display reflects new overrides.
       // The backend kicks off a refresh on save; give it a moment before polling.
       setTimeout(() => {
-        getSystemInfo()
+        getSystemInfo({ refresh: true })
           .then(setSystemInfo)
           .catch(() => {});
       }, 800);
@@ -1052,7 +1057,7 @@ export default function ApiSettings() {
 
   const handleRefresh = async () => {
     try {
-      const sys = await getSystemInfo();
+      const sys = await getSystemInfo({ refresh: true });
       setSystemInfo(sys);
     } catch {
       /* ignore */
@@ -1081,7 +1086,7 @@ export default function ApiSettings() {
     setEngines(fresh);
     setEnginesLoading(false);
     try {
-      const sys = await getSystemInfo();
+      const sys = await getSystemInfo({ refresh: true });
       if (enginesRequestId.current === requestId) setSystemInfo(sys);
     } catch {
       // The engine list is the answer the button promised; a stale tab strip is
@@ -1112,7 +1117,7 @@ export default function ApiSettings() {
     const requestId = ++enginesRequestId.current;
     setEngines(fresh);
     setEnginesLoading(false);
-    void getSystemInfo()
+    void getSystemInfo({ refresh: true })
       .then((sys) => {
         if (enginesRequestId.current === requestId) setSystemInfo(sys);
       })
