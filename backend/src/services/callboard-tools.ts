@@ -29,7 +29,7 @@ import { listCardMemberChats } from "./card-member-index.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { setChatCardMembership, getChatCardId } from "./card-membership.js";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
-import { startActivity, endActivity, withActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
+import { startActivity, endActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
 import type { ConditionWatch, UiAgentProviderKind } from "shared/types/index.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelAliasTools } from "./model-alias-tools.js";
@@ -1223,21 +1223,18 @@ export function buildCallboardToolsSpec(
       defineTool(
         "continue_chat",
         "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. " +
-          "Set waitForCompletion=true to block until the response is ready, or onComplete=true to be notified in a new turn of THIS chat when it finishes. Either beats polling. " +
-          "If you do poll with get_session_status, sleep between checks with the `wait` tool rather than a background `sleep` shell — `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes.",
+          "The continuation runs asynchronously. Prefer onComplete=true to be notified (a new turn in THIS chat) when it finishes — no polling at all. " +
+          "If you must poll, use get_session_status and sleep between checks with the `wait` tool. " +
+          "Do NOT sleep by running `sleep` as a background Bash command: `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes.",
         {
           chatId: z.string().describe("The chat/session ID to continue"),
           prompt: z.string().describe("The follow-up message to send"),
           maxTurns: z.number().optional().describe("Maximum agentic turns for this continuation (default: 200)"),
-          waitForCompletion: z
-            .boolean()
-            .optional()
-            .describe("If true, wait for the session to complete and return the response text. Default: false (returns immediately)"),
           onComplete: z
             .boolean()
             .optional()
             .describe(
-              "If true, automatically re-invoke THIS chat with a notification when the continued session finishes (success, error, or stop), so you can read its results without polling. Ignored when waitForCompletion is true, which already returns the response inline. Default: false.",
+              "If true, automatically re-invoke THIS chat with a notification when the continued session completes (success, error, or stop), so you can read its results and continue without polling. Default: false.",
             ),
           requireExplicitCompletion: z
             .boolean()
@@ -1278,21 +1275,14 @@ export function buildCallboardToolsSpec(
             let onComplete: { registered: boolean; note?: string } | undefined;
             let onCompleteId: string | undefined;
             if (args.onComplete) {
-              if (args.waitForCompletion) {
-                onComplete = {
-                  registered: false,
-                  note: "waitForCompletion is set — the response is returned inline, so no completion callback was registered.",
-                };
-              } else {
-                const { registered, id, note } = registerCompletionCallback({
-                  childChatId: args.chatId,
-                  parentChatId: getChatId?.(),
-                  parentAgentAlias: getAgentAlias?.(),
-                  kind: "continued",
-                });
-                onComplete = { registered, ...(note && { note }) };
-                onCompleteId = id;
-              }
+              const { registered, id, note } = registerCompletionCallback({
+                childChatId: args.chatId,
+                parentChatId: getChatId?.(),
+                parentAgentAlias: getAgentAlias?.(),
+                kind: "continued",
+              });
+              onComplete = { registered, ...(note && { note }) };
+              onCompleteId = id;
             }
 
             // 4. Build async generator prompt (required when MCP servers are present)
@@ -1304,9 +1294,8 @@ export function buildCallboardToolsSpec(
             })();
 
             // 5. Send the continuation message
-            let emitter;
             try {
-              emitter = await sendMessage({
+              await sendMessage({
                 chatId: args.chatId,
                 prompt: promptIterable,
                 maxTurns: args.maxTurns ?? 200,
@@ -1318,74 +1307,20 @@ export function buildCallboardToolsSpec(
               throw err;
             }
 
-            // 6. If not waiting, return immediately after session starts
-            if (!args.waitForCompletion) {
-              log.info(`Continued chat ${args.chatId} (async)`);
+            // 6. Return as soon as the session is running. Results come back
+            //    through the onComplete callback, or via get_session_status /
+            //    read_session_messages if the caller did not ask for one.
+            log.info(`Continued chat ${args.chatId} (async)`);
 
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: JSON.stringify({
-                      chatId: args.chatId,
-                      status: "continued",
-                      waitForCompletion: false,
-                      ...(onComplete && { onComplete }),
-                    }),
-                  },
-                ],
-              };
-            }
-
-            // 7. Wait for completion and collect response.
-            //    Registered as an activity so the caller's chat does not sit
-            //    silently for up to ten minutes. Not interruptible: the child
-            //    keeps running, so releasing would return an empty response
-            //    for work that is still in progress.
-            const responseTexts: string[] = [];
-            const callerChatId = getChatId?.();
-            const awaitChild = async () =>
-              new Promise<void>((resolve, reject) => {
-                const timeout = setTimeout(() => resolve(), 600_000); // 10 min safety
-
-                emitter.on("event", (event: any) => {
-                  if (event.type === "text" && event.content) {
-                    responseTexts.push(event.content);
-                  } else if (event.type === "done") {
-                    clearTimeout(timeout);
-                    resolve();
-                  } else if (event.type === "error") {
-                    clearTimeout(timeout);
-                    reject(new Error(event.content || "Session errored"));
-                  }
-                });
-              });
-
-            if (callerChatId) {
-              await withActivity(
-                callerChatId,
-                {
-                  kind: "await_chat",
-                  label: chat.title || args.chatId,
-                  detail: "waiting for the reply",
-                  expiresAt: Date.now() + 600_000,
-                  interruptible: false,
-                  childChatId: args.chatId,
-                },
-                awaitChild,
-              );
-            } else {
-              await awaitChild();
-            }
-
-            log.info(`Continued chat ${args.chatId} (sync, complete)`);
-
-            const response = responseTexts.join("") || "(No text response)";
             return {
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify({ chatId: args.chatId, status: "complete", response, ...(onComplete && { onComplete }) }),
+                  text: JSON.stringify({
+                    chatId: args.chatId,
+                    status: "continued",
+                    ...(onComplete && { onComplete }),
+                  }),
                 },
               ],
             };

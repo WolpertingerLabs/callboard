@@ -361,11 +361,10 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       { name: "chatId", type: "string", description: "The chat ID to continue", required: true },
       { name: "prompt", type: "string", description: "The follow-up message", required: true },
       { name: "maxTurns", type: "number", description: "Maximum agentic turns", required: false },
-      { name: "waitForCompletion", type: "boolean", description: "Block until the response is ready", required: false },
       {
         name: "onComplete",
         type: "boolean",
-        description: "Automatically re-invoke this chat when the continued session completes (no polling). Ignored with waitForCompletion",
+        description: "Automatically re-invoke this chat when the continued session completes (no polling)",
         required: false,
       },
       {

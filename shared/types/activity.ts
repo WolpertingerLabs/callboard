@@ -1,8 +1,8 @@
 /**
  * Chat activity — what a chat is currently doing that takes time.
  *
- * Callboard agents call tools that block the turn (`wait`, `talk_to_agent`,
- * `continue_chat` with `waitForCompletion`) or kick off work that outlives it.
+ * Callboard agents call tools that block the turn (`wait`, `talk_to_agent`) or
+ * kick off work that outlives it.
  * None of that was observable: a chat sitting inside a 300-second `wait`
  * rendered identically to a finished one. An activity is the server-side
  * record that makes the difference visible.
@@ -19,6 +19,13 @@
  * may end early — everything else is the agent waiting on work it delegated,
  * where returning without the result would hand the agent a confusing empty
  * response while the delegate kept running.
+ *
+ * `await_chat` currently has no producer: it was raised by `continue_chat`'s
+ * blocking mode, which was removed in favour of the `onComplete` callback both
+ * chat tools now share. The member stays because this type crosses REST, where
+ * a stored activity or an older client may still carry the string, and because
+ * the next tool that blocks on a child chat wants exactly this kind. Its
+ * consumers are live code, not dead code — do not prune them either.
  *
  * `holding` is the background-task hold (`background-task-hold.ts`): the turn
  * is over but the session is deliberately kept alive so a Bash command started
