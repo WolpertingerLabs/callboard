@@ -162,7 +162,7 @@ A zero exit from npm is not the same claim as "the engine is installed", so the 
 ### Around the work
 
 - **Workspaces** — a workspace is a `cwd` plus its git isolation. Start a chat in a worktree and Callboard records one; from the workspace manager you can rename it, archive it (with the worktree removed and quarantined in a trash you can restore from), or **adopt** worktrees Callboard didn't create. Several workspaces may share one checkout — that is a supported state, not a bug
-- **Cards and the board** — a card is a durable ticket that groups chats and job runs around a topic. The board files open cards under **Needs you**, **Running** and **Idle**, with a card's own category as a sub-heading inside each — the question it answers first is what is waiting on you. Agents can create cards, join them, and set a narrative status on them
+- **Cards and the board** — every conversation is a card: the card is the board view of a top-level chat and everything spawned from it (child chats, job runs), so a card exists the moment you send a prompt and disappears when that chat is deleted. The board files open cards under **Needs you**, **Running** and **Idle**, with a card's own category as a sub-heading inside each — the question it answers first is what is waiting on you. Agents can list, read, and amend cards — title, description, emoji, narrative status, category, cross-reference metadata
 - **Jobs** — deterministic multi-step workflows. A job definition is an ordered list of steps (`agent`, `approval`, `poll`, `wait_event`, `gate`, `notify`, `parallel`, and nested `job`); control flow is backend code, the work inside a step is a spawned agent session. Spawning one creates a run you can pause, resume, cancel, or retry a failed step of, and runs survive a daemon restart. Built under Settings → Jobs, and importable/exportable as JSON
 - **Custom skills** — write a skill under Settings → Skills and it lands at `~/.callboard/custom-skills/skills/<name>/SKILL.md`, invoked in chat as `callboard:<name>`
 - **Model aliases** — one name (`planner`, `worker`) that resolves to a different concrete model per harness, accepted anywhere a model is configured: new chats, per-chat overrides, provider defaults, cron actions, job steps
@@ -208,7 +208,7 @@ Agents have access to specialized tools beyond the standard coding-agent toolkit
 - Run jobs — spawn a run, approve a step, pause, resume, cancel, or retry a failed step
 - Manage their own cron jobs and event triggers, and query their own activity log
 - Discover and orchestrate other agents on the platform
-- Create and update cards, set a card's status or category, and file the current chat under one
+- List, read, and amend the card their conversation belongs to — title, description, emoji, status, category, and cross-reference metadata. Cards are created by the conversation itself; there is nothing to create or join
 - Create and update workspaces, and adopt worktrees Callboard didn't create
 - Read and write custom skills, and manage model aliases
 - Render media and canvases into the chat, and reach you outside it — `summon_user` raises a flag on the chat in the dashboard, `notify_user` hands back the handle for a contact channel you've enabled (Discord, Telegram or email) so the agent can deliver a message through the proxy
@@ -297,7 +297,7 @@ Callboard reads `~/.callboard/.env` (created automatically on first run), then a
 
 Passwords are stored as scrypt hashes — plaintext is never saved. Set them with `callboard set-password`, not by editing the file.
 
-`CALLBOARD_DATA_DIR` is read from the process environment, not from the `.env` — it decides *which* `.env` is read, so it has to be set before Callboard starts. Everything else lives under it: `chats/`, `jobs/`, `cards/`, `workspaces/`, `canvas/`, `images/`, `themes/`, `custom-skills/`, `keywords.json`, `agent-settings.json`, `api-keys.json`, `logs/`.
+`CALLBOARD_DATA_DIR` is read from the process environment, not from the `.env` — it decides *which* `.env` is read, so it has to be set before Callboard starts. Everything else lives under it: `chats/`, `jobs/`, `workspaces/`, `canvas/`, `images/`, `themes/`, `custom-skills/`, `keywords.json`, `agent-settings.json`, `api-keys.json`, `logs/`. (`cards/` and `cards-archive/` appear only on installs that predate cards-as-chat-metadata, or never — the one-time startup migration moves any legacy card entities into root chats' metadata and archives the rest.)
 
 ## Remote access (Cloudflare tunnel)
 
