@@ -15,9 +15,10 @@ import type { CardSummary, Chat } from "../api";
 import { isChatCardActive } from "./chatDimming";
 import { activeSectionPredicate, sectionByActive } from "./chatSections";
 
-const chat = (id: string, cardId?: string | null): Pick<Chat, "id" | "metadata"> => ({
+const chat = (id: string, rootChatId?: string | null): Pick<Chat, "id" | "metadata"> => ({
   id,
-  metadata: JSON.stringify(cardId === undefined ? {} : { cardId }),
+  // Membership is lineage: the root's id names the card.
+  metadata: JSON.stringify(rootChatId === undefined ? {} : { rootChatId }),
 });
 
 const CARDS: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
@@ -25,7 +26,7 @@ const CARDS: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
   ["closed-card", { lifecycle: "closed" }],
 ]);
 
-const byCard = (c: Pick<Chat, "metadata">) => isChatCardActive(c, CARDS);
+const byCard = (c: Pick<Chat, "id" | "metadata">) => isChatCardActive(c, CARDS);
 const ids = (sections: { items: Pick<Chat, "id">[] }[]) => sections.map((s) => s.items.map((i) => i.id));
 
 describe("sectionByActive", () => {
@@ -90,7 +91,7 @@ describe("sectionByActive", () => {
     ]);
   });
 
-  it("files a dangling card id — the card was deleted — as inactive", () => {
+  it("files a dangling root id — the root chat was deleted — as inactive", () => {
     const items = [chat("ghost", "deleted-card"), chat("open", "open-card")];
     expect(ids(sectionByActive(items, byCard, true)!)).toEqual([["open"], ["ghost"]]);
   });

@@ -8,9 +8,7 @@ import {
   getDrafts,
   deleteDraft,
   listCards,
-  createCard,
   updateCard,
-  assignChatToCard,
   type Chat,
   type QueueItem,
   type CardSummary,
@@ -23,7 +21,6 @@ import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
-import CardPicker from "../components/board/CardPicker";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { chatCardId, isChatDimmed } from "../utils/chatDimming";
 import { activeSectionPredicate } from "../utils/chatSections";
@@ -103,7 +100,6 @@ export default function ChatList({
     chatName: "",
   });
   // Card-picker modal state for the per-chat "Add to card…" action.
-  const [pickerChat, setPickerChat] = useState<Chat | null>(null);
   // Every card, kept loaded rather than fetched when the picker opens: the row
   // menu needs each filed chat's card lifecycle to label Close vs Reopen, and
   // the sidebar is the one place all card actions live now.
@@ -358,25 +354,9 @@ export default function ChatList({
     }
   };
 
-  /** Optimistically stamp a chat's card membership into local state; null unassigns. */
-  const applyCardId = (chatId: string, cardId: string | null) => {
-    setChats((prev) =>
-      prev.map((c) => {
-        if (c.id !== chatId) return c;
-        try {
-          const meta = JSON.parse(c.metadata || "{}");
-          meta.cardId = cardId;
-          return { ...c, metadata: JSON.stringify(meta) };
-        } catch {
-          return c;
-        }
-      }),
-    );
-  };
-
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
 
-  /** The card a chat is filed under, when it has one and we've loaded it. */
+  /** The card a chat's lineage root is, when it is one and we've loaded it. */
   const cardOf = (chat: Chat): CardSummary | undefined => {
     const id = chatCardId(chat);
     return id ? cardsById.get(id) : undefined;
@@ -396,45 +376,6 @@ export default function ChatList({
    */
   const isCardActive = activeSectionPredicate(cardsById, { sortByCardActive: viewOptions.sortByCardActive, cardsLoaded });
 
-  /** Title for a card promoted from a chat — same derivation as the board's old inbox promote. */
-  const chatCardTitle = (chat: Chat): string => {
-    try {
-      const meta = JSON.parse(chat.metadata || "{}");
-      return ((typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || "Untitled chat").slice(0, 120);
-    } catch {
-      return "Untitled chat";
-    }
-  };
-
-  const handleCreateCard = async (chat: Chat) => {
-    try {
-      const res = await createCard({ title: chatCardTitle(chat) }, chat.id);
-      applyCardId(chat.id, res.card.id);
-      // Seed the new card locally too — without it the row's menu knows the
-      // chat is filed but not the card's lifecycle, so "Close card" would be
-      // missing until the next poll.
-      setCards((prev) => [...prev, res.card]);
-    } catch (err) {
-      console.error("Failed to create card from chat:", err);
-    }
-  };
-
-  const handleAddToCard = (chat: Chat) => {
-    setPickerChat(chat);
-    // Cards are already loaded; refresh in the background so the picker can't
-    // offer a card that was closed elsewhere since the last poll.
-    loadCards();
-  };
-
-  const handleRemoveFromCard = async (chat: Chat) => {
-    try {
-      await assignChatToCard(chat.id, null);
-      applyCardId(chat.id, null);
-    } catch (err) {
-      console.error("Failed to remove chat from card:", err);
-    }
-  };
-
   const handleToggleCardLifecycle = async (chat: Chat) => {
     const card = cardOf(chat);
     if (!card) return;
@@ -446,14 +387,13 @@ export default function ChatList({
     }
   };
 
-  /** Every card action for one row's kebab menu. */
+  /** Every card action for one row's kebab menu. The only one left is the
+   * lifecycle toggle — membership is lineage now, so there is nothing to
+   * create, join, or leave: a top-level chat is a card the moment it exists. */
   const cardMenuFor = (chat: Chat): ChatCardMenu => {
     const card = cardOf(chat);
     return {
       ...(card && { card: { title: card.title, lifecycle: card.lifecycle } }),
-      onCreate: () => handleCreateCard(chat),
-      onAdd: () => handleAddToCard(chat),
-      onRemove: () => handleRemoveFromCard(chat),
       onToggleLifecycle: () => handleToggleCardLifecycle(chat),
     };
   };
@@ -795,33 +735,6 @@ export default function ChatList({
         confirmStyle="danger"
       />
 
-      {pickerChat && (
-        <CardPicker
-          cards={cards}
-          onSelect={async (cardId) => {
-            try {
-              await assignChatToCard(pickerChat.id, cardId);
-              applyCardId(pickerChat.id, cardId);
-              setPickerChat(null);
-            } catch (err) {
-              // Keep the picker open so the failure is visible and retryable.
-              console.error("Failed to assign chat to card:", err);
-            }
-          }}
-          onCreate={async (title) => {
-            try {
-              const res = await createCard({ title }, pickerChat.id);
-              applyCardId(pickerChat.id, res.card.id);
-              setCards((prev) => [...prev, res.card]);
-              setPickerChat(null);
-            } catch (err) {
-              // Keep the picker open so the failure is visible and retryable.
-              console.error("Failed to create card from chat:", err);
-            }
-          }}
-          onClose={() => setPickerChat(null)}
-        />
-      )}
     </div>
   );
 }

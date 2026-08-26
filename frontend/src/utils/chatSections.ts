@@ -69,7 +69,7 @@ export interface SectionContext {
 export function activeSectionPredicate(
   cardsById: ReadonlyMap<string, Pick<CardSummary, "lifecycle">>,
   { sortByCardActive, cardsLoaded }: SectionContext,
-): ((chat: Pick<Chat, "metadata">) => boolean) | undefined {
+): ((chat: Pick<Chat, "id" | "metadata">) => boolean) | undefined {
   if (!sortByCardActive || !cardsLoaded) return undefined;
   return (chat) => isChatCardActive(chat, cardsById);
 }

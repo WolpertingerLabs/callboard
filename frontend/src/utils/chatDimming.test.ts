@@ -13,7 +13,7 @@ import { chatCardId, isChatDimmed } from "./chatDimming";
 
 type Cards = ReadonlyMap<string, Pick<CardSummary, "lifecycle">>;
 
-const chat = (metadata: Record<string, unknown>): Pick<Chat, "metadata"> => ({ metadata: JSON.stringify(metadata) });
+const chat = (metadata: Record<string, unknown>, id = "chat-1"): Pick<Chat, "id" | "metadata"> => ({ id, metadata: JSON.stringify(metadata) });
 
 const ON = { dimCardless: true, cardsLoaded: true };
 const LOADING = { dimCardless: true, cardsLoaded: false };
@@ -24,12 +24,14 @@ const CARDS: Cards = new Map([
 ]);
 
 describe("chatCardId", () => {
-  it("reads a filed chat's card, and treats unassigned and malformed alike", () => {
-    expect(chatCardId(chat({ cardId: "open-card" }))).toBe("open-card");
-    // Unassign merges `cardId: null` rather than deleting the key.
-    expect(chatCardId(chat({ cardId: null }))).toBeUndefined();
-    expect(chatCardId(chat({}))).toBeUndefined();
-    expect(chatCardId({ metadata: "{not json" })).toBeUndefined();
+  it("resolves a chat's card as its lineage root", () => {
+    // Children are stamped with the root at creation.
+    expect(chatCardId(chat({ rootChatId: "open-card" }))).toBe("open-card");
+    // Pre-stamp records fall back to the parent pointer.
+    expect(chatCardId(chat({ parentChatId: "open-card" }))).toBe("open-card");
+    // A top-level chat is its own root — and therefore its own card.
+    expect(chatCardId(chat({}, "own-root"))).toBe("own-root");
+    expect(chatCardId({ id: "bad", metadata: "{not json" })).toBeUndefined();
   });
 });
 
@@ -39,26 +41,28 @@ describe("isChatDimmed", () => {
     // card map is indistinguishable from "nobody has a card", so the whole list
     // would flash faded on every mount.
     expect(isChatDimmed(chat({}), new Map(), LOADING)).toBe(false);
-    expect(isChatDimmed(chat({ cardId: "closed-card" }), new Map(), LOADING)).toBe(false);
+    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), new Map(), LOADING)).toBe(false);
     // Control: a chat on an open card is undimmed in this state too, so the
     // assertion above is not just reporting "everything is false".
-    expect(isChatDimmed(chat({ cardId: "open-card" }), CARDS, ON)).toBe(false);
+    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, ON)).toBe(false);
   });
 
   it("dims a card-less chat and a closed-card chat, but not an open-card one", () => {
-    expect(isChatDimmed(chat({}), CARDS, ON)).toBe(true);
-    expect(isChatDimmed(chat({ cardId: "closed-card" }), CARDS, ON)).toBe(true);
-    expect(isChatDimmed(chat({ cardId: "open-card" }), CARDS, ON)).toBe(false);
+    // Card-less here means a root the cards map does not know — e.g. a
+    // triggered chat, which is not a card at all.
+    expect(isChatDimmed(chat({ triggered: true }, "triggered-root"), CARDS, ON)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, ON)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, ON)).toBe(false);
   });
 
-  it("dims a chat whose card id dangles past a deleted card", () => {
-    expect(isChatDimmed(chat({ cardId: "deleted-card" }), CARDS, ON)).toBe(true);
-    expect(isChatDimmed(chat({ cardId: "open-card" }), CARDS, ON)).toBe(false);
+  it("dims a chat whose root was deleted (dangling lineage)", () => {
+    expect(isChatDimmed(chat({ rootChatId: "deleted-card" }), CARDS, ON)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, ON)).toBe(false);
   });
 
   it("dims nothing while the option is off", () => {
     const off = { dimCardless: false, cardsLoaded: true };
     expect(isChatDimmed(chat({}), CARDS, off)).toBe(false);
-    expect(isChatDimmed(chat({ cardId: "closed-card" }), CARDS, off)).toBe(false);
+    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, off)).toBe(false);
   });
 });

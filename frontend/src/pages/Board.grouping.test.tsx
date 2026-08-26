@@ -19,9 +19,7 @@ vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   listCards: vi.fn(),
   bulkSetCardLifecycle: vi.fn(),
-  createCard: vi.fn(),
   updateCard: vi.fn(),
-  deleteCard: vi.fn(),
 }));
 
 vi.mock("../contexts/SessionContext", () => ({ useMetadataVersion: () => 0 }));

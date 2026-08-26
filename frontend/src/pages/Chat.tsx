@@ -214,9 +214,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // the new-chat request so the backend stamps parentChatId/rootChatId.
   const newChatParentId = (location.state as any)?.parentChatId as string | undefined;
   const newChatRole = (location.state as any)?.chatRole as string | undefined;
-  // Card (ticket) membership for new chats started from the board's
-  // "New chat on card" action — the backend stamps metadata.cardId.
-  const newChatCardId = (location.state as any)?.cardId as string | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight messages are
   // passed via router state so they survive the component remount.
@@ -449,13 +446,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, chat?.metadata]);
 
-  // Card (ticket) this chat belongs to — drives the composer's card action.
-  // Unassign leaves `cardId: null` in metadata, hence the string check.
+  // Card (ticket) this chat belongs to — its lineage root — drives the
+  // composer's card action. Membership is the tree: rootChatId is stamped on
+  // every child at creation, parentChatId is the pre-stamp fallback, and a
+  // chat with neither is its own root.
   const chatCardId = useMemo((): string | undefined => {
     if (!id || !chat?.metadata) return undefined;
     try {
       const meta = JSON.parse(chat.metadata);
-      return typeof meta.cardId === "string" && meta.cardId ? meta.cardId : undefined;
+      if (typeof meta.rootChatId === "string" && meta.rootChatId) return meta.rootChatId;
+      if (typeof meta.parentChatId === "string" && meta.parentChatId) return meta.parentChatId;
+      return id;
     } catch {
       return undefined;
     }
@@ -1810,12 +1811,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               requestBody.chatRole = newChatRole;
             }
           }
-          // Board's "New chat on card" action — join that card instead of
-          // getting a fresh one. No `createCard` is sent either way: the server
-          // creates one for every top-level chat that names no card.
-          if (newChatCardId) {
-            requestBody.cardId = newChatCardId;
-          }
           res = await fetch("/api/chats/new/message", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...handshakeHeaders() },
@@ -1953,7 +1948,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       activePluginIds,
       chat,
       branchConfig,
-      newChatCardId,
       activeDraftId,
     ],
   );
