@@ -95,13 +95,6 @@ cardsRouter.get("/", (_req: Request, res: Response) => {
 });
 
 /**
- * Upper bound on one bulk lifecycle batch. Every id is a synchronous
- * read-merge-write against its own file on the event loop thread, so an
- * uncapped list is an unbounded stall for every other request.
- */
-export const BULK_LIFECYCLE_MAX = 200;
-
-/**
  * Bulk close/reopen for the board's multi-select.
  *
  * POST, not `PATCH /bulk`, and deliberately so: Express matches in
@@ -123,9 +116,6 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
   const { ids, lifecycle } = req.body ?? {};
   if (!Array.isArray(ids) || ids.length === 0 || ids.some((id: unknown) => typeof id !== "string")) {
     return res.status(400).json({ error: "ids must be a non-empty array of strings" });
-  }
-  if (ids.length > BULK_LIFECYCLE_MAX) {
-    return res.status(400).json({ error: `ids is limited to ${BULK_LIFECYCLE_MAX} entries` });
   }
   if (lifecycle !== "open" && lifecycle !== "closed") {
     return res.status(400).json({ error: "lifecycle must be 'open' or 'closed'" });
