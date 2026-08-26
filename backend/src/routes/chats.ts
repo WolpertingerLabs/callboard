@@ -9,10 +9,9 @@ import { getGitInfo } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows } from "../services/chat-lineage.js";
-import { getCard, listCards } from "../services/card-store.js";
+import { isCardRoot, cardLifecycleOf, rawCardFields } from "../services/card-fields.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
-import { setChatCardMembership } from "../services/card-membership.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
@@ -92,6 +91,11 @@ function getCachedGitInfo(folder: string): { isGitRepo: boolean; branch?: string
 
   gitInfoCache.set(folder, { ...gitInfo, cachedAt: now });
   return gitInfo;
+}
+
+/** Whether a chat's nested card opted out of the board (metadata.card.hidden). */
+function isCardHidden(chat: { metadata?: string | null }): boolean {
+  return rawCardFields(chat).hidden === true;
 }
 
 /** The `provider` a chat record names, or undefined when absent/unparseable. */
@@ -365,7 +369,7 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
-  /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'When true, return only chats that belong to an OPEN card, plus every descendant of those chats in the parentage tree. Chats on closed cards, card-less chats, and sessions with no stored record are excluded.' } */
+  /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'When true, return only chats whose lineage root is an OPEN card (a non-triggered, non-job-step top-level chat), plus every chat in those trees. Chats on closed cards, non-card chats, and sessions with no stored record are excluded.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields" } */
   try {
@@ -429,41 +433,28 @@ chatsRouter.get("/", (req, res) => {
     const lineageIndex = includeLineage || cardsOnly ? buildLineageIndex(fileChats) : null;
 
     /**
-     * Chat ids the cards-only filter admits: every chat on an OPEN card, plus
-     * every descendant of those chats. Descendants normally inherit
-     * `metadata.cardId` at creation, but not always — a child spawned before
-     * its parent was filed, or onto a different card, would otherwise drop out
-     * of the view its parent is in. Null when the filter is off.
+     * Chat ids the cards-only filter admits: every chat whose lineage root
+     * is an OPEN card. Membership is derived from the tree — rootKeyOf walks
+     * parent pointers (and job-step chats' stamped rootChatId) to the root,
+     * and the root's own record says whether its card is open or hidden.
+     * Hidden cards are omitted too: they opted out of the board, and this
+     * view is the board's chat-listing sibling. Null when the filter is off.
      */
     let cardScopedChatIds: Set<string> | null = null;
     if (cardsOnly && lineageIndex) {
-      const openCardIds = new Set(
-        listCards()
-          .filter((c) => c.lifecycle === "open")
-          .map((c) => c.id),
-      );
-      cardScopedChatIds = new Set<string>();
-      const stack: string[] = [];
+      const openRootIds = new Set<string>();
       for (const chat of fileChats) {
-        let meta: any = {};
-        try {
-          meta = JSON.parse(chat?.metadata || "{}");
-        } catch {
-          continue;
-        }
-        // Unassign merges `cardId: null`, so membership is a string check.
-        if (typeof meta.cardId === "string" && openCardIds.has(meta.cardId) && !cardScopedChatIds.has(chat.id)) {
-          cardScopedChatIds.add(chat.id);
-          stack.push(chat.id);
+        // Only a card root can be open: non-roots are filtered out by
+        // rootKeyOf below, and roots that fail isCardRoot (triggered, job
+        // steps) are not cards at all. Hidden roots are skipped — they opted
+        // out of the board, and this view is the board's chat-listing sibling.
+        if (lineageIndex.rootKeyOf(chat.id) === chat.id && isCardRoot(chat) && !isCardHidden(chat) && cardLifecycleOf(chat) === "open") {
+          openRootIds.add(chat.id);
         }
       }
-      while (stack.length > 0) {
-        const currentId = stack.pop()!;
-        for (const child of lineageIndex.childrenByParent.get(currentId) || []) {
-          if (cardScopedChatIds.has(child.id)) continue;
-          cardScopedChatIds.add(child.id);
-          stack.push(child.id);
-        }
+      cardScopedChatIds = new Set<string>();
+      for (const chat of fileChats) {
+        if (openRootIds.has(lineageIndex.rootKeyOf(chat.id))) cardScopedChatIds.add(chat.id);
       }
     }
 
@@ -1007,7 +998,7 @@ chatsRouter.post("/", (req, res) => {
 chatsRouter.post("/:id/fork", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Fork a chat'
-  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the card membership of the original chat. Pass `provider` to hand the conversation to a different harness: the history is translated into that harness native session format, with tool calls flattened to text summaries.'
+  // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the original chat's card membership through the parentage tree (its root). Pass `provider` to hand the conversation to a different harness: the history is translated into that harness native session format, with tool calls flattened to text summaries.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -1165,9 +1156,9 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // sendMessage's *new-chat* block guards which kinds may carry a model —
     // that guard doesn't apply here, since this route writes metadata itself.
     ...(model && { model }),
-    // A fork stays on the original's card. Unassign merges `cardId: null`,
-    // so a string check (not key presence) decides whether to inherit.
-    ...(typeof meta.cardId === "string" && meta.cardId && { cardId: meta.cardId }),
+    // No card field is inherited: the fork is a child in the parentage tree
+    // (parentChatId/rootChatId above), so its card membership — the root's
+    // card — is derived from the tree by every reader.
     ...(meta.defaultPermissions && { defaultPermissions: meta.defaultPermissions }),
     ...(meta.agentAlias && { agentAlias: meta.agentAlias }),
     ...(meta.lastBranch && { lastBranch: meta.lastBranch }),
@@ -1361,35 +1352,10 @@ chatsRouter.patch("/:id/read", (req, res) => {
   }
 });
 
-// Assign a chat to a card (or unassign with cardId: null)
-chatsRouter.patch("/:id/card", (req, res) => {
-  // #swagger.tags = ['Chats']
-  // #swagger.summary = 'Assign or unassign a chat to a card'
-  // #swagger.description = 'Sets metadata.cardId, making the chat a member of the card on the board view. Pass cardId: null to unassign.'
-  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
-  /* #swagger.responses[200] = { description: "Updated chat" } */
-  /* #swagger.responses[404] = { description: "Chat or card not found" } */
-  /* #swagger.responses[409] = { description: "Card is closed" } */
-  const { cardId } = req.body ?? {};
-  if (cardId !== null && (typeof cardId !== "string" || !cardId)) {
-    return res.status(400).json({ error: "cardId must be a non-empty string or null" });
-  }
-  try {
-    if (typeof cardId === "string") {
-      const card = getCard(cardId);
-      if (!card) return res.status(404).json({ error: "Card not found" });
-      if (card.lifecycle === "closed") return res.status(409).json({ error: "Card is closed — reopen it to add chats" });
-    }
-
-    // View-only write: preserves updated_at and clears the chat-list cache.
-    const ok = setChatCardMembership(req.params.id, cardId);
-    if (!ok) return res.status(404).json({ error: "Chat not found" });
-    res.json({ success: true, cardId });
-  } catch (err: any) {
-    log.error(`Error assigning chat to card: ${err}`);
-    res.status(500).json({ error: "Failed to assign chat to card", details: err.message });
-  }
-});
+// (The old PATCH /:id/card assign/unassign endpoint is gone: card
+// membership is lineage, derived from the parentage tree, so there is
+// nothing to assign. Board membership edits go through PATCH /api/cards/:id
+// — the id is the root chat.)
 
 // Dismiss a summon on a chat
 chatsRouter.patch("/:id/summon", (req, res) => {

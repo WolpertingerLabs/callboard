@@ -28,8 +28,6 @@ interface LineageMeta {
   parentChatId?: string;
   rootChatId?: string;
   chatRole?: string;
-  /** Card (ticket) the parent belongs to — children inherit membership. */
-  cardId?: string;
 }
 
 type ChatMeta = Record<string, unknown>;
@@ -67,9 +65,6 @@ export function resolveParentage(parentChatId: string): LineageMeta | null {
   return {
     parentChatId: parent.id,
     rootChatId,
-    // Unassign merges `cardId: null`, so a string check (not key presence)
-    // decides whether there is a card to inherit.
-    ...(typeof parentMeta.cardId === "string" && parentMeta.cardId && { cardId: parentMeta.cardId }),
   };
 }
 
@@ -77,17 +72,35 @@ export function resolveParentage(parentChatId: string): LineageMeta | null {
  * Walk parent pointers upward from `chatId` (inclusive) and return the
  * highest EXISTING ancestor's chat id. Dangling parent pointers (deleted
  * chats) degrade to "current node is the root".
+ *
+ * The terminal node's stamped `metadata.rootChatId` wins over its own id —
+ * but only when that root still exists — which is what ties a job-step chat
+ * (no parent pointer, stamped with its run's root) to the root's tree,
+ * mirroring buildLineageIndex's rootKeyOf. A stale stamp naming a deleted
+ * root degrades to the terminal node, matching the deleted-parent rule.
+ *
+ * Exported because card identity is lineage-root identity: the MCP card
+ * setters, `spawn_job`, and the reopen-on-message rule all need to answer
+ * "which root chat's metadata.card is this chat's card?" from a single chat
+ * id. Reads through chatFileService per step — fine for one-off calls, not
+ * for hot paths, which use buildLineageIndex over a snapshot instead.
  */
-function walkToRootId(chatId: string): string {
+export function walkToRootId(chatId: string): string {
   let currentId = chatId;
   const visited = new Set<string>([chatId]);
   for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
     const chat = chatFileService.getChat(currentId);
     if (!chat) return currentId;
-    const parentId = getParentChatId(parseMeta(chat));
-    if (!parentId || visited.has(parentId)) return chat.id;
+    const meta = parseMeta(chat);
+    const parentId = getParentChatId(meta);
+    // A root (or cycle/dead-end): the stamped rootChatId names the lineage
+    // this node was born into — present on job-step chats that never had a
+    // parent pointer, absent on true roots.
+    const stampedRoot = typeof meta.rootChatId === "string" && meta.rootChatId ? meta.rootChatId : undefined;
+    const stampedExists = stampedRoot !== undefined && chatFileService.getChat(stampedRoot) !== null;
+    if (!parentId || visited.has(parentId)) return stampedExists ? stampedRoot! : chat.id;
     const parent = chatFileService.getChat(parentId);
-    if (!parent) return chat.id;
+    if (!parent) return stampedExists ? stampedRoot! : chat.id;
     visited.add(parentId);
     currentId = parent.id;
   }

@@ -134,7 +134,6 @@ vi.mock("../utils/git.js", () => ({
   resolveBranch: () => ({ ok: true, folder: PROJECT_DIR }),
   resolveWorktreeToMainRepoCached: (folder: string) => ({ mainRepoPath: folder }),
 }));
-vi.mock("../services/card-store.js", () => ({ getCard: () => null, listCards: () => [] }));
 vi.mock("../agents/factory.js", () => ({ getSessionProviders: () => [{ kind: "claude-code", resolveSession: () => null }] }));
 
 const { chatsRouter } = await import("./chats.js");

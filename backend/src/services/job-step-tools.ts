@@ -11,9 +11,7 @@
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
-import { assignCardToRunTree, recordStepResult, setRunTitle } from "./job-store.js";
-import { getCard } from "./card-store.js";
-import { setChatCardMembership } from "./card-membership.js";
+import { recordStepResult, setRunTitle } from "./job-store.js";
 import type { JobContext } from "./job-runner.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -104,45 +102,6 @@ export function buildJobStepToolsSpec(getJobContext: () => JobContext | undefine
           }
           log.info(`Set title for run ${ctx.runId}: "${args.title}"`);
           return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, runId: ctx.runId, title: args.title }) }] };
-        },
-      ),
-      defineTool(
-        "assign_run_to_card",
-        "Attach the job run this session belongs to — and its entire workflow tree (parent runs up to the root plus every child run) — to a card (ticket). " +
-          "All future step sessions across the tree are stamped onto the card automatically, and step chats that already ran are attached retroactively. " +
-          "Call this right after creating a tracking card mid-workflow so the whole run shows up under it.",
-        {
-          card_id: z.string().describe("The card id to attach the run tree to"),
-        },
-        async (args) => {
-          const ctx = getJobContext();
-          if (!ctx) {
-            return { content: [{ type: "text" as const, text: JSON.stringify({ error: "No job context — this session is not a job step" }) }] };
-          }
-          const card = getCard(args.card_id);
-          if (!card) {
-            return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Card "${args.card_id}" not found` }) }] };
-          }
-          if (card.lifecycle === "closed") {
-            return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Card "${args.card_id}" is closed — the user can reopen it from the board` }) }] };
-          }
-          const result = assignCardToRunTree(ctx.runId, card.id);
-          if (!result) {
-            return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Run ${ctx.runId} not found` }) }] };
-          }
-          let chatsAttached = 0;
-          for (const chatId of result.chatIds) {
-            if (setChatCardMembership(chatId, card.id)) chatsAttached++;
-          }
-          log.info(`Assigned run tree of ${ctx.runId} to card ${card.id} (${result.runIds.length} run(s), ${chatsAttached} chat(s) attached)`);
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({ success: true, cardId: card.id, cardTitle: card.title, runsAssigned: result.runIds.length, chatsAttached }),
-              },
-            ],
-          };
         },
       ),
     ],

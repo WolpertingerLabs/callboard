@@ -48,7 +48,6 @@ vi.mock("../services/chat-file-service.js", () => ({
 vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false, getPendingRequest: () => null, getActiveSession: () => null }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: () => {} } }));
 vi.mock("../utils/git.js", () => ({ getGitInfo: () => ({ isGitRepo: false }), resolveBranch: () => ({ ok: true, folder: "/tmp/proj" }) }));
-vi.mock("../services/card-store.js", () => ({ getCard: () => null, listCards: () => [] }));
 // Only the storage read is stubbed — latestRunChatId is the real one, so the
 // election the route agrees with listRuns about is exercised, not restated.
 vi.mock("../services/job-store.js", async () => {

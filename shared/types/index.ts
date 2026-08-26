@@ -17,7 +17,6 @@ export type { Chat, ChatListResponse, FolderSummary, FolderListResponse, ChatTre
 
 export type {
   Card,
-  CardPayload,
   CardPatch,
   CardLifecycle,
   CardRollupState,

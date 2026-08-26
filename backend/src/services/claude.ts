@@ -50,10 +50,10 @@ import { isCodexRoutedThroughOpenRouter, detectCodexOpenRouterEnv } from "../age
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
-import { createCard as createCardRecord, updateCard, getCard as getCardRecord, deleteCard as deleteCardRecord } from "./card-store.js";
+import { patchCardFields, readCardFields } from "./card-fields.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
-import { resolveParentage } from "./chat-lineage.js";
+import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -871,29 +871,6 @@ interface SendMessageOptions {
    */
   chatRole?: string;
   /**
-   * Card (ticket) to attach the new chat to — stamps `cardId` into
-   * metadata so the chat shows as a member on the /board view. Only
-   * honored for new chats; wins over a parent's inherited cardId.
-   */
-  cardId?: string;
-  /**
-   * Create a new open card and attach this chat to it. Only honored for
-   * new chats, and only when no cardId resolves (an explicit or inherited
-   * cardId wins). The card is created alongside the chat record with a
-   * prompt-derived placeholder title, replaced by the LLM-generated chat
-   * title when that succeeds — one title call covers both.
-   *
-   * Ignored outright for `triggered` runs and for anything with a
-   * `parentChatId`: cards are per top-level chat, and a card per subagent
-   * would silently flood a board nothing drains automatically.
-   */
-  createCard?: boolean;
-  /**
-   * Optional category stamped on the auto-created card (only meaningful with
-   * createCard). The board groups open cards by category.
-   */
-  cardCategory?: string;
-  /**
    * Preset title stamped into the new chat's metadata. Used by spawners that
    * already know what the chat is (e.g. job-step sessions), where the
    * LLM title generation for manual chats is deliberately skipped —
@@ -951,6 +928,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   let folder: string; // Working directory for the SDK (may be a worktree) — also stored with the chat
   let resumeSessionId: string | undefined;
   let initialMetadata: Record<string, any>;
+  // Lineage root of a NEW chat being spawned under a parent — captured while
+  // resolveParentage runs because the child's own record does not exist yet
+  // (the reopen rule below needs to know which root's card to check).
+  let newChatRootId: string | undefined;
 
   if (opts.chatId) {
     // Existing chat flow — check file storage first, then fall back to filesystem.
@@ -992,8 +973,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(opts.triggered && { triggered: true }),
       ...(opts.triggeredBy && { triggeredBy: opts.triggeredBy }),
       // Tag job-step chats so the UI can badge them and link to the run.
-      // Runs spawned on a card pass their cardId through so step chats
-      // become card members (board rollup + inheritance for their children).
+      // The run's lineage root is stamped as rootChatId so the step chat
+      // folds under the root's card (and sidebar tree row) — membership is
+      // derived from the tree, never a separate pointer.
       ...(opts.jobContext && {
         jobRunId: opts.jobContext.runId,
         jobStepId: opts.jobContext.stepId,
@@ -1001,10 +983,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // same key onto the run before spawning, so a crash between chat
         // creation and the chatId hitting the run file is recoverable.
         ...(opts.jobContext.executionKey && { jobExecutionKey: opts.jobContext.executionKey }),
-        ...(opts.jobContext.cardId && { cardId: opts.jobContext.cardId }),
+        ...(opts.jobContext.rootChatId && { rootChatId: opts.jobContext.rootChatId }),
       }),
-      // Attach the chat to a card (ticket) when spawned on one.
-      ...(opts.cardId && { cardId: opts.cardId }),
       // Preset title from the spawner (e.g. "Repo Branch Prep — prep").
       // Triggered chats skip LLM title generation, so this is the only
       // title they get unless the session overwrites it.
@@ -1063,15 +1043,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // Link this chat into the parentage tree when spawned by another chat.
     // resolveParentage returns null when the parent has no stored record
     // (e.g. temp tracking id) — in that case the chat is simply unlinked.
+    // Card membership needs no stamp: the child's rootKeyOf resolves to the
+    // parent's root, so it is a member of that root's card by construction.
     if (opts.parentChatId) {
       const lineage = resolveParentage(opts.parentChatId);
       if (lineage) {
         initialMetadata.parentChatId = lineage.parentChatId;
         initialMetadata.rootChatId = lineage.rootChatId;
         if (opts.chatRole) initialMetadata.chatRole = opts.chatRole.slice(0, 40);
-        // Children work the same ticket as their parent unless the spawner
-        // said otherwise (explicit opts.cardId above wins).
-        if (lineage.cardId && !initialMetadata.cardId) initialMetadata.cardId = lineage.cardId;
+        // Remember which root the new child belongs to for the reopen rule
+        // below — the chat record does not exist yet, so the root cannot be
+        // walked to from the child's side.
+        newChatRootId = lineage.rootChatId;
       }
     }
     // Record initial branch for drift detection on subsequent messages
@@ -1084,18 +1067,20 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   }
 
   // ── Reopen closed card on new message ─────────────────────
-  // When any chat (existing or newly created) on a closed card receives a
-  // message — whether from the UI, continue_chat, a job step, cron, or a
-  // spawned child — reopen the card automatically so the conversation returns
-  // to the board.
-  const cardId = initialMetadata.cardId;
-  if (typeof cardId === "string" && cardId) {
-    const card = getCardRecord(cardId);
-    if (card && card.lifecycle === "closed") {
-      updateCard(cardId, { lifecycle: "open" });
+  // When any chat in a closed card's lineage tree receives a message —
+  // whether from the UI, continue_chat, a job step, cron, or a spawned child
+  // — reopen the card automatically so the conversation returns to the
+  // board. The card lives on the lineage root's metadata.card: resolve the
+  // root, read the lifecycle, flip it open. A brand-new top-level chat is its
+  // own root and has no card yet — nothing to reopen.
+  const reopenRootId = opts.chatId ? walkToRootId(opts.chatId) : newChatRootId;
+  if (reopenRootId) {
+    const rootCard = readCardFields(reopenRootId);
+    if (rootCard?.lifecycle === "closed") {
+      patchCardFields(reopenRootId, { lifecycle: "open" });
       clearListCaches();
-      sessionRegistry.notifyMetadata(cardId, { cardEvent: "updated" });
-      log.info(`Reopened card ${cardId} ("${card.title}") because chat ${opts.chatId || "(new)"} received a new message`);
+      sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
+      log.info(`Reopened card ${reopenRootId} ("${rootCard.title}") because chat ${opts.chatId || "(new)"} received a new message`);
     }
   }
   // ── End reopen logic ──────────────────────────────────────
@@ -2086,63 +2071,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               if (!chatRecordCreated) {
                 // New chat: create the chat record and migrate tracking from temp ID to real chat ID
                 chatRecordCreated = true;
-                // Auto-create a card for this chat. Done here — not at the route —
-                // so the card exists iff the chat record does (no orphan cards when
-                // branch resolution or session startup fails). An explicit or
-                // inherited cardId in metadata wins over auto-creation. The
-                // placeholder title is replaced by the generated chat title below.
-                //
-                // Only ever for a top-level, human-started chat. Triggered runs
-                // (cron, triggers, jobs) and agent-spawned children reach this
-                // line too, and a card each would flood a board that has no
-                // automatic drain — silently, since nothing errors. The route
-                // already declines to ask for one, but the rule belongs here as
-                // well: this is the path EVERY spawn takes, and `executeAgent`
-                // and the MCP tools bypass the route entirely.
-                //
-                // Parentage is checked on both `opts` and the metadata: the
-                // metadata field is only written when `resolveParentage`
-                // succeeds, so a child whose parent has no stored record (a temp
-                // tracking id) would otherwise read as top-level and get a card.
-                let autoCreatedCardId: string | undefined;
-                let autoCardPlaceholderTitle: string | undefined;
-                if (opts.createCard && !initialMetadata.cardId && !opts.triggered && !opts.parentChatId && !initialMetadata.parentChatId) {
-                  try {
-                    const promptText = typeof prompt === "string" ? prompt.replace(/\s+/g, " ").trim() : "";
-                    let placeholder = promptText.slice(0, 120);
-                    // Don't leave a dangling high surrogate when the cut lands
-                    // mid-astral-character (e.g. an emoji at the boundary).
-                    if (/[\uD800-\uDBFF]$/.test(placeholder)) placeholder = placeholder.slice(0, -1);
-                    const card = createCardRecord({
-                      title: placeholder || "New chat",
-                      ...(opts.cardCategory && { category: opts.cardCategory }),
-                    });
-                    initialMetadata.cardId = card.id;
-                    autoCreatedCardId = card.id;
-                    autoCardPlaceholderTitle = card.title;
-                    log.debug(`Auto-created card ${card.id} for new chat`);
-                  } catch (err: any) {
-                    log.warn(`Auto-create card failed: ${err.message} — chat proceeds without a card`);
-                  }
-                }
+                // No card is created here — or anywhere. A card in the
+                // cards-as-metadata model is the board's projection of a
+                // lineage root: it exists because this top-level chat exists,
+                // and its fields materialise lazily in metadata.card the
+                // first time someone edits them (see card-fields.ts). The
+                // old auto-card block lived here only to maintain the
+                // card-exists-iff-chat-exists invariant of the entity model.
                 initialMetadata.session_ids = [sessionId];
                 const meta = { ...initialMetadata };
                 log.debug(`Creating chat record — sessionId=${sessionId}, folder=${folder}`);
-                let chat;
-                try {
-                  chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
-                    metadata: JSON.stringify(meta),
-                    // Additive linkage — `folder` above stays the truth for
-                    // log paths (plans/workspace-object.md).
-                    ...(opts.workspaceId && { workspaceId: opts.workspaceId }),
-                  });
-                } catch (err) {
-                  // Keep the card-exists-iff-chat-exists invariant: the chat
-                  // record write failed, so remove the just-created card
-                  // rather than leaving a memberless orphan on the board.
-                  if (autoCreatedCardId) deleteCardRecord(autoCreatedCardId);
-                  throw err;
-                }
+                const chat = chatFileService.upsertChat(sessionId, folder, sessionId, {
+                  metadata: JSON.stringify(meta),
+                  // Additive linkage — `folder` above stays the truth for
+                  // log paths (plans/workspace-object.md).
+                  ...(opts.workspaceId && { workspaceId: opts.workspaceId }),
+                });
 
                 const oldTrackingId = trackingId;
                 trackingId = sessionId;
@@ -2187,13 +2131,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
                         if (title) {
                           chatFileService.updateChatMetadata(chatId, { title });
                           log.debug(`Generated title for chat ${chatId}: "${title}"`);
-                          // Same title for the auto-created card — one LLM call
-                          // covers both. Compare-and-set against the placeholder:
-                          // a rename that landed while the title was generating
-                          // wins, and pre-existing cards are never retitled.
-                          if (autoCreatedCardId && getCardRecord(autoCreatedCardId)?.title === autoCardPlaceholderTitle) {
-                            updateCard(autoCreatedCardId, { title });
-                          }
+                          // No card-side write: the card's title defaults to
+                          // the chat title, so this one call covers both —
+                          // only a card whose metadata.card.title was set
+                          // explicitly diverges, and that is the point of
+                          // setting it.
                         }
                       })
                       .catch(() => {}); // Title generation is non-critical

@@ -340,8 +340,14 @@ export interface JobRun {
   executionKey?: string;
   /** Sub-job nesting depth (0 for top-level runs). Bounded by MAX_JOB_DEPTH. */
   depth?: number;
-  /** Card (ticket) this run belongs to — step chats inherit it into metadata.cardId. */
-  cardId?: string;
+  /**
+   * Root chat id of the lineage tree this run belongs to — stamped at spawn
+   * from the spawning chat's lineage root, and inherited by child runs
+   * through run-tree parent links. The board rollup projects the run onto
+   * that root's card. Absent for runs spawned outside any chat (e.g. from
+   * the jobs page).
+   */
+  rootChatId?: string;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -376,8 +382,11 @@ export interface JobRunListItem {
   parentRunId?: string;
   /** Child run the active "job" step is waiting on. */
   activeChildRunId?: string;
-  /** Card (ticket) this run belongs to. */
-  cardId?: string;
+  /**
+   * Root chat id of the lineage tree this run belongs to — the card the
+   * board projects this run onto. See JobRun.rootChatId.
+   */
+  rootChatId?: string;
   nextWakeAt?: string;
   error?: string;
   createdAt: string;

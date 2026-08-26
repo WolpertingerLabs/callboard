@@ -106,15 +106,15 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     category: "platform",
   },
   {
-    name: "create_card",
-    qualifiedName: "mcp__callboard-tools__create_card",
-    description: "Create a card (ticket) grouping chats and job runs around a topic, shown on the board view.",
+    name: "update_card",
+    qualifiedName: "mcp__callboard-tools__update_card",
+    description:
+      "Amend the card (ticket) this conversation belongs to: title, description, emoji. Omitted fields are untouched. A card is the board view of the conversation's lineage root — it exists automatically, so there is no create.",
     parameters: [
-      { name: "title", type: "string", description: "Short card title (max 200 chars)", required: true },
+      { name: "title", type: "string", description: "New card title (max 200 chars)", required: false },
       { name: "description", type: "string", description: "Markdown description of the topic/goal", required: false },
       { name: "emoji", type: "string", description: "Single emoji shown on the card face", required: false },
-      { name: "category", type: "string", description: "Optional category label (max 64 chars) — the board groups open cards by category", required: false },
-      { name: "assign_current_chat", type: "boolean", description: "Assign the current chat to the new card (default: true)", required: false },
+      { name: "card_id", type: "string", description: "Target card id (default: the current chat's lineage root)", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -140,8 +140,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "get_card",
     qualifiedName: "mcp__callboard-tools__get_card",
-    description: "Get a card (ticket) with its full description and member chats.",
-    parameters: [{ name: "card_id", type: "string", description: "The card id", required: true }],
+    description: "Get a card (ticket) with its full description and member chats. card_id is the card's root chat id; any member chat id resolves to the same card.",
+    parameters: [{ name: "card_id", type: "string", description: "The card id (default: the current chat's lineage root)", required: false }],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
     category: "platform",
@@ -153,7 +153,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     parameters: [
       { name: "status", type: "string", description: "Short status line (max 160 chars). Empty string clears.", required: true },
       { name: "emoji", type: "string", description: "Single emoji prefix", required: false },
-      { name: "card_id", type: "string", description: "Target card id (default: the current chat's card)", required: false },
+      { name: "card_id", type: "string", description: "Target card id (default: the current chat's lineage root)", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -165,7 +165,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     description: "Set or clear the optional category label a card (ticket) is grouped under on the board view.",
     parameters: [
       { name: "category", type: "string", description: "Category label (max 64 chars). Empty string clears.", required: true },
-      { name: "card_id", type: "string", description: "Target card id (default: the current chat's card)", required: false },
+      { name: "card_id", type: "string", description: "Target card id (default: the current chat's lineage root)", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -178,17 +178,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     parameters: [
       { name: "set", type: "object", description: "Keys to write or overwrite", required: false },
       { name: "remove", type: "array", description: "Keys to delete from the card's metadata", required: false },
-      { name: "card_id", type: "string", description: "Target card id (default: the current chat's card)", required: false },
+      { name: "card_id", type: "string", description: "Target card id (default: the current chat's lineage root)", required: false },
     ],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "add_chat_to_card",
-    qualifiedName: "mcp__callboard-tools__add_chat_to_card",
-    description: "Assign the current chat to an existing open card (ticket).",
-    parameters: [{ name: "card_id", type: "string", description: "The card id to join", required: true }],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
     category: "platform",
@@ -477,11 +468,10 @@ function jobToolDefs(serverName: string, serverLabel: string, category: McpToolD
     },
     {
       name: "spawn_job",
-      description: "Spawn a run of a job — freezes the definition and starts the first step.",
+      description: "Spawn a run of a job — freezes the definition and starts the first step. Runs spawned from a chat are members of that chat's lineage root's card.",
       parameters: [
         { name: "jobId", type: "string", description: "The job id to spawn", required: true },
         { name: "inputs", type: "object", description: "Values for the job's declared inputs", required: false },
-        { name: "card_id", type: "string", description: "Card (ticket) to attach the run to (default: the calling chat's card)", required: false },
       ],
     },
     {

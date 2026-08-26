@@ -23,11 +23,13 @@ import { getUserContact } from "./user-contact.js";
 import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
-import { buildChatTree, getParentChatId } from "./chat-lineage.js";
-import { createCard, getCard, listCards, updateCard, CARD_METADATA_VALUE_MAX, CARD_CATEGORY_MAX } from "./card-store.js";
-import { listCardMemberChats } from "./card-member-index.js";
+import { buildChatTree, getParentChatId, walkToRootId } from "./chat-lineage.js";
+import { patchCardFields, isCardRoot, CardFieldError, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX } from "./card-fields.js";
+import { buildCardSummaries } from "./card-rollup.js";
+import { listChatsSnapshot } from "./chats-snapshot.js";
+import { listRuns } from "./job-store.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
-import { setChatCardMembership, getChatCardId } from "./card-membership.js";
+import { CARD_CATEGORY_MAX } from "shared";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { startActivity, endActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
 import type { ConditionWatch, UiAgentProviderKind } from "shared/types/index.js";
@@ -208,6 +210,27 @@ export function buildCallboardToolsSpec(
     getModel?: () => string | undefined;
   },
 ): ToolServerSpec {
+  /**
+   * Resolve the target card for a setter: an explicit card_id (any chat id
+   * in a tree resolves to that tree's card — agents know member chat ids
+   * far more often than root ids) or, by default, the calling chat's
+   * lineage root.
+   */
+  const resolveCardTarget = (cardId: string | undefined): { rootChatId?: string; error?: string } => {
+    const targetId = cardId ?? (getChatId ? getChatId() : undefined);
+    if (!targetId) return { error: "Chat context not available — pass card_id explicitly" };
+    if (!chatFileService.getChat(targetId)) return { error: `Card "${targetId}" not found` };
+    const rootChatId = walkToRootId(targetId);
+    const rootChat = chatFileService.getChat(rootChatId);
+    if (!rootChat || !isCardRoot(rootChat)) {
+      return { error: `Chat "${targetId}" has no card — its lineage root is not a card root (triggered or job-step chat)` };
+    }
+    return { rootChatId };
+  };
+
+  /** Full board rollup, shared by list_cards and get_card. */
+  const cardSummaries = () => buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }));
+
   return {
     name: "callboard-tools",
     version: "1.0.0",
@@ -473,43 +496,13 @@ export function buildCallboardToolsSpec(
       ),
 
       // ── Cards (tickets) ──────────────────────────────────────────────
-      // Cards group chats and job runs around a topic for the /board
-      // manager view. Membership lives in chat metadata (cardId); child
-      // chats and job-step chats inherit it automatically.
-
-      defineTool(
-        "create_card",
-        "Create a card (ticket) — a durable grouping of chats and job runs around a topic, shown on the user's board view. By default the current chat is assigned to the new card, and chats/jobs spawned from it inherit the membership.",
-        {
-          title: z.string().max(200).describe("Short card title"),
-          description: z.string().optional().describe("Markdown description of the topic/goal"),
-          emoji: z.string().optional().describe("Single emoji shown on the card face"),
-          category: z
-            .string()
-            .max(CARD_CATEGORY_MAX)
-            .optional()
-            .describe("Optional free-form category label — the board groups open cards by category. Reuse an existing category from list_cards when one fits."),
-          assign_current_chat: z.boolean().optional().describe("Assign the current chat to the new card (default: true)"),
-        },
-        async (args) => {
-          let card;
-          try {
-            card = createCard({ title: args.title, description: args.description, emoji: args.emoji, category: args.category });
-          } catch (err: any) {
-            return error(err.message);
-          }
-
-          let assigned = false;
-          if (args.assign_current_chat !== false && getChatId) {
-            assigned = setChatCardMembership(getChatId(), card.id);
-          }
-
-          sessionRegistry.notifyMetadata(card.id, { cardEvent: "created" });
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, title: card.title, assignedCurrentChat: assigned }) }],
-          };
-        },
-      ),
+      // A card IS the lineage root chat of this conversation: the root
+      // chat's metadata.card holds the fields, and every chat/job run in
+      // the tree is a member by construction. Nothing is created and
+      // nothing is joined — "this chat's card" is always the root of its
+      // own lineage tree, which is why every setter below resolves the
+      // target as the calling chat's lineage root unless an explicit
+      // card_id names another tree.
 
       defineTool(
         "list_cards",
@@ -518,7 +511,7 @@ export function buildCallboardToolsSpec(
           lifecycle: z.enum(["open", "closed"]).optional().describe("Only cards in this lifecycle (default: all)"),
         },
         async (args) => {
-          const cards = listCards()
+          const cards = cardSummaries()
             .filter((c) => !args.lifecycle || c.lifecycle === args.lifecycle)
             .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
             .map((c) => ({
@@ -540,37 +533,67 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "get_card",
-        "Get a card (ticket) with its full description and member chats (id, title, live status).",
+        "Get a card (ticket) with its full description and member chats (id, title, live status). card_id is the card's root chat id; any member chat id of the tree resolves to the same card. Defaults to the current chat's card.",
         {
-          card_id: z.string().describe("The card id"),
+          card_id: z.string().optional().describe("The card id (default: the current chat's lineage root)"),
         },
         async (args) => {
-          const card = getCard(args.card_id);
+          const target = resolveCardTarget(args.card_id);
+          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
+          const card = cardSummaries().find((c) => c.id === target.rootChatId);
           if (!card) return error(`Card "${args.card_id}" not found`);
-          // Same stat-gated index the board's rollup reads: the ~3% of records
-          // that are on a card, without re-reading the other ~97% to find out.
-          // It returns them in directory order, so the newest-first ordering
-          // this list has always had is applied here rather than inherited —
-          // an agent reads memberChats[0] as "the chat this card is on right
-          // now", and readdir order would make that an arbitrary member.
-          const members = listCardMemberChats()
-            .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-            .map((chat) => {
-              let meta: Record<string, unknown> = {};
-              try {
-                meta = JSON.parse(chat.metadata || "{}");
-              } catch {}
-              return { chat, meta };
-            })
-            .filter(({ meta }) => typeof meta.cardId === "string" && meta.cardId === card.id)
-            .map(({ chat, meta }) => ({
-              chatId: chat.id,
-              title: (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || null,
-              ...(typeof meta.chatStatus === "string" && meta.chatStatus && { chatStatus: meta.chatStatus }),
-              ...(typeof meta.jobRunId === "string" && meta.jobRunId && { jobRunId: meta.jobRunId }),
-              updatedAt: chat.updated_at,
-            }));
-          return { content: [{ type: "text" as const, text: JSON.stringify({ card, memberChats: members }) }] };
+          // memberChats come off the rollup, already newest-first — an agent
+          // reads memberChats[0] as "the chat this card is on right now",
+          // and any other ordering would make that an arbitrary member.
+          const memberChats = card.memberChats.map((m) => ({
+            chatId: m.chatId,
+            title: m.title,
+            ...(m.chatStatus && { chatStatus: m.chatStatus }),
+            ...(m.jobRunId && { jobRunId: m.jobRunId }),
+            updatedAt: m.updatedAt,
+          }));
+          const memberRuns = card.memberRuns.map((r) => ({
+            runId: r.runId,
+            jobId: r.jobId,
+            jobName: r.jobName,
+            status: r.status,
+            updatedAt: r.updatedAt,
+          }));
+          return { content: [{ type: "text" as const, text: JSON.stringify({ card, memberChats, memberRuns }) }] };
+        },
+      ),
+
+      defineTool(
+        "update_card",
+        "Amend the card (ticket) this conversation belongs to: its title, description, and emoji. Omitted fields are left untouched. The card is the board view of this conversation's lineage root — use set_card_status / set_card_category / set_card_metadata for those fields. Defaults to the current chat's card.",
+        {
+          title: z.string().max(CARD_TITLE_MAX).optional().describe("New card title (blank titles are rejected)"),
+          description: z.string().optional().describe("Markdown description of the topic/goal"),
+          emoji: z.string().optional().describe("Single emoji shown on the card face"),
+          card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
+        },
+        async (args) => {
+          if (args.title === undefined && args.description === undefined && args.emoji === undefined) {
+            return error("Pass at least one of title, description, emoji");
+          }
+          const target = resolveCardTarget(args.card_id);
+          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
+          let card;
+          try {
+            card = patchCardFields(target.rootChatId, {
+              ...(args.title !== undefined && { title: args.title }),
+              ...(args.description !== undefined && { description: args.description }),
+              ...(args.emoji !== undefined && { emoji: args.emoji }),
+            });
+          } catch (err) {
+            if (err instanceof CardFieldError) return error(err.message);
+            throw err;
+          }
+          if (!card) return error(`Card "${target.rootChatId}" not found`);
+          sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, title: card.title, emoji: card.emoji }) }],
+          };
         },
       ),
 
@@ -580,19 +603,19 @@ export function buildCallboardToolsSpec(
         {
           status: z.string().max(160).describe("Short status line (max 160 chars). Empty string clears the status."),
           emoji: z.string().optional().describe("Single emoji prefix (e.g. '⏳', '🧪')"),
-          card_id: z.string().optional().describe("Target card id (default: the card the current chat belongs to)"),
+          card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
         },
         async (args) => {
-          let cardId = args.card_id;
-          if (!cardId) {
-            if (!getChatId) return error("Chat context not available — pass card_id explicitly");
-            cardId = getChatCardId(getChatId());
-            if (!cardId) return error("This chat is not on a card — pass card_id explicitly or create_card first");
+          const target = resolveCardTarget(args.card_id);
+          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
+          let card;
+          try {
+            card = patchCardFields(target.rootChatId, { status: args.status || null, statusEmoji: args.emoji || null });
+          } catch (err) {
+            if (err instanceof CardFieldError) return error(err.message);
+            throw err;
           }
-
-          const card = updateCard(cardId, { status: args.status || null, statusEmoji: args.emoji || null });
-          if (!card) return error(`Card "${cardId}" not found`);
-
+          if (!card) return error(`Card "${target.rootChatId}" not found`);
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "status" });
           return {
             content: [
@@ -607,19 +630,19 @@ export function buildCallboardToolsSpec(
         "Set or clear the category on a card (ticket). Categories are optional free-form labels the board groups open cards under — reuse an existing category from list_cards when one fits. Defaults to the current chat's card. Pass an empty string to clear.",
         {
           category: z.string().max(CARD_CATEGORY_MAX).describe(`Category label (max ${CARD_CATEGORY_MAX} chars). Empty string clears the category.`),
-          card_id: z.string().optional().describe("Target card id (default: the card the current chat belongs to)"),
+          card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
         },
         async (args) => {
-          let cardId = args.card_id;
-          if (!cardId) {
-            if (!getChatId) return error("Chat context not available — pass card_id explicitly");
-            cardId = getChatCardId(getChatId());
-            if (!cardId) return error("This chat is not on a card — pass card_id explicitly or create_card first");
+          const target = resolveCardTarget(args.card_id);
+          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
+          let card;
+          try {
+            card = patchCardFields(target.rootChatId, { category: args.category || null });
+          } catch (err) {
+            if (err instanceof CardFieldError) return error(err.message);
+            throw err;
           }
-
-          const card = updateCard(cardId, { category: args.category || null });
-          if (!card) return error(`Card "${cardId}" not found`);
-
+          if (!card) return error(`Card "${target.rootChatId}" not found`);
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, category: card.category ?? null }) }],
@@ -636,51 +659,25 @@ export function buildCallboardToolsSpec(
             .optional()
             .describe('Keys to write or overwrite, e.g. { "github-pr": "https://github.com/org/repo/pull/42" }'),
           remove: z.array(z.string()).optional().describe("Keys to delete from the card's metadata"),
-          card_id: z.string().optional().describe("Target card id (default: the card the current chat belongs to)"),
+          card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
         },
         async (args) => {
           const patch = buildMetadataPatch(args.set, args.remove);
           if (!patch.ok) return error(patch.error);
-
-          let cardId = args.card_id;
-          if (!cardId) {
-            if (!getChatId) return error("Chat context not available — pass card_id explicitly");
-            cardId = getChatCardId(getChatId());
-            if (!cardId) return error("This chat is not on a card — pass card_id explicitly or create_card first");
-          }
-
+          const target = resolveCardTarget(args.card_id);
+          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
           let card;
           try {
-            card = updateCard(cardId, { metadata: patch.metadata });
-          } catch (err: any) {
-            return error(err.message);
+            card = patchCardFields(target.rootChatId, { metadata: patch.metadata });
+          } catch (err) {
+            if (err instanceof CardFieldError) return error(err.message);
+            throw err;
           }
-          if (!card) return error(`Card "${cardId}" not found`);
-
+          if (!card) return error(`Card "${target.rootChatId}" not found`);
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, metadata: card.metadata ?? {} }) }],
           };
-        },
-      ),
-
-      defineTool(
-        "add_chat_to_card",
-        "Assign the current chat to an existing open card (ticket). Future chats and jobs spawned from this chat inherit the membership.",
-        {
-          card_id: z.string().describe("The card id to join"),
-        },
-        async (args) => {
-          if (!getChatId) return error("Chat context not available");
-          const card = getCard(args.card_id);
-          if (!card) return error(`Card "${args.card_id}" not found`);
-          if (card.lifecycle === "closed") return error(`Card "${args.card_id}" is closed — the user can reopen it from the board`);
-
-          const chatId = getChatId();
-          const ok = setChatCardMembership(chatId, card.id);
-          if (!ok) return error("Chat not found — assignment may not be available until the session is fully initialized");
-
-          return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, chatId, cardId: card.id, cardTitle: card.title }) }] };
         },
       ),
 

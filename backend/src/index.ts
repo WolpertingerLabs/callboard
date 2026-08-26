@@ -70,6 +70,7 @@ import { installProcessGuards } from "./utils/process-guards.js";
 import { sweepTrash } from "./utils/worktree-trash.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initJobRunner, shutdownJobRunner } from "./services/job-runner.js";
+import { migrateCardsToMetadata } from "./services/card-migration.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { shutdownDebounce } from "./services/trigger-debounce.js";
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
@@ -421,6 +422,16 @@ app.use(express.static(frontendDist));
 app.get("*", (_req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
 });
+
+// One-time cards-as-entity → cards-as-metadata migration. Must run before the
+// server accepts requests and before initJobRunner resumes runs — both would
+// otherwise read half-migrated shapes. Synchronous by design: it is a few
+// hundred small file writes once, ever, and the daemon is not serving yet.
+try {
+  migrateCardsToMetadata();
+} catch (err: any) {
+  log.error(`Card migration failed: ${err.message} — the daemon continues on unmigrated data; the migration will retry on next boot`);
+}
 
 app.listen(PORT, () => {
   log.info(`Backend running on http://localhost:${PORT}`);

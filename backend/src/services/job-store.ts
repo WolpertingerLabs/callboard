@@ -280,16 +280,17 @@ export function latestRunChatId(run: JobRun): string | undefined {
   );
 }
 
-export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number; assignedToCard?: boolean }): JobRunListItem[] {
+export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number; withRoot?: boolean }): JobRunListItem[] {
   const items: JobRunListItem[] = [];
   for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
     try {
       const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
       if (filter?.jobId && run.jobId !== filter.jobId) continue;
       if (filter?.status && run.status !== filter.status) continue;
-      // Card rollups need every run on a card, so they filter here (before the
-      // limit slice below) rather than truncating the newest N runs.
-      if (filter?.assignedToCard && !run.cardId) continue;
+      // Card rollups need every run that belongs to a lineage root, so they
+      // filter here (before the limit slice below) rather than truncating
+      // the newest N runs.
+      if (filter?.withRoot && !run.rootChatId) continue;
       const stepIndex = run.currentStepId ? run.definition.steps.findIndex((s) => s.id === run.currentStepId) : -1;
       const currentStep = stepIndex >= 0 ? run.definition.steps[stepIndex] : undefined;
       const latestChatId = latestRunChatId(run);
@@ -315,7 +316,7 @@ export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit
         }),
         ...(run.parentRunId && { parentRunId: run.parentRunId }),
         ...(run.activeStep?.childRunId && { activeChildRunId: run.activeStep.childRunId }),
-        ...(run.cardId && { cardId: run.cardId }),
+        ...(run.rootChatId && { rootChatId: run.rootChatId }),
         ...(run.nextWakeAt && { nextWakeAt: run.nextWakeAt }),
         ...(run.error && { error: run.error }),
         createdAt: run.createdAt,
@@ -354,7 +355,13 @@ export interface RunParentLink {
   depth: number;
 }
 
-export function createRun(job: JobDefinition, inputs: Record<string, string>, parent?: RunParentLink, cardId?: string, executionKey?: ExecutionKey): JobRun {
+export function createRun(
+  job: JobDefinition,
+  inputs: Record<string, string>,
+  parent?: RunParentLink,
+  rootChatId?: string,
+  executionKey?: ExecutionKey,
+): JobRun {
   const now = new Date().toISOString();
   const run: JobRun = {
     runId: `run-${randomUUID().slice(0, 8)}-${Date.now().toString(36)}`,
@@ -374,7 +381,9 @@ export function createRun(job: JobDefinition, inputs: Record<string, string>, pa
     sessionsSpawned: 0,
     history: [],
     ...(parent && { parentRunId: parent.parentRunId, parentStepId: parent.parentStepId, depth: parent.depth }),
-    ...(cardId && { cardId }),
+    // The lineage root whose card this run is a member of — derived from
+    // the spawning chat's tree, never caller-chosen (membership is lineage).
+    ...(rootChatId && { rootChatId }),
     ...(executionKey && { executionKey }),
     createdAt: now,
     updatedAt: now,
@@ -458,65 +467,13 @@ export function findRunByExecutionKey(key: ExecutionKey): JobRun | null {
   return run;
 }
 
-/** Every step-chat id a run has spawned: active session(s) plus history. */
-function collectRunChatIds(run: JobRun): string[] {
-  const ids: string[] = [];
-  if (run.activeStep?.chatId) ids.push(run.activeStep.chatId);
-  for (const branch of Object.values(run.activeStep?.parallel?.branches ?? {})) {
-    if (branch.chatId) ids.push(branch.chatId);
-  }
-  for (const entry of run.history) {
-    if (entry.chatId) ids.push(entry.chatId);
-  }
-  return ids;
-}
-
 /**
- * Assign a card to a run's entire workflow tree: walk up to the root run,
- * then down through every descendant. Each run's `cardId` is set and saved,
- * so the runner's next fresh read propagates the card into newly spawned
- * child runs and step-session metadata. Returns the updated run ids and
- * every step-chat id seen across the tree (deduped) so the caller can stamp
- * chat-side card membership retroactively; null when `runId` doesn't exist.
+ * Runs inherit their card membership through the run tree: createRun stamps
+ * the spawning chat's lineage root as `rootChatId`, and the "job" step passes
+ * the parent run's rootChatId to its child (see job-runner.ts). There is no
+ * retroactive attach — membership is lineage, and a run belongs to the tree
+ * of the chat that spawned it.
  */
-export function assignCardToRunTree(runId: string, cardId: string): { runIds: string[]; chatIds: string[] } | null {
-  let root = getRun(runId);
-  if (!root) return null;
-  while (root.parentRunId) {
-    const parent = getRun(root.parentRunId);
-    if (!parent) break;
-    root = parent;
-  }
-
-  // Child links only point upward, so index every run's children in one scan.
-  const children = new Map<string, JobRun[]>();
-  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
-    try {
-      const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
-      if (!run.parentRunId) continue;
-      const siblings = children.get(run.parentRunId) ?? [];
-      siblings.push(run);
-      children.set(run.parentRunId, siblings);
-    } catch (err: any) {
-      log.error(`Failed to read job run ${file}: ${err.message}`);
-    }
-  }
-
-  const runIds: string[] = [];
-  const chatIds = new Set<string>();
-  const queue: JobRun[] = [root];
-  while (queue.length > 0) {
-    const run = queue.shift()!;
-    if (run.cardId !== cardId) {
-      run.cardId = cardId;
-      saveRun(run);
-    }
-    runIds.push(run.runId);
-    for (const chatId of collectRunChatIds(run)) chatIds.add(chatId);
-    queue.push(...(children.get(run.runId) ?? []));
-  }
-  return { runIds, chatIds: [...chatIds] };
-}
 
 export function deleteRun(runId: string): boolean {
   const filepath = join(runsDir, `${runId}.json`);

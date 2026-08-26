@@ -2,15 +2,26 @@
  * Card rollup — aggregates member chats and job runs into per-card
  * summaries for the /board view.
  *
- * Membership is discovered by scan: chats via metadata.cardId, runs via
- * run.cardId. The card file stores nothing about members, so deleted
- * chats/runs self-heal out of the group.
+ * In the cards-as-metadata model a card IS its lineage root chat.  The
+ * rollup derives the card list from the chat corpus: every lineage root
+ * that is not triggered and not a job-step chat is a card, with fields
+ * read from `metadata.card` (absent means all defaults).  Membership is
+ * discovered via the lineage tree — all chats whose `rootKeyOf` resolves
+ * to the same root are on the same card, and runs carry `rootChatId` to
+ * say which root they belong to.
  *
- * Pure over its inputs — session-registry lookups are injected so tests
- * can run without the registry (production deps in ROLLUP_DEPS).
+ * Pure over its inputs — the chats and runs are passed in (a stat-gated
+ * snapshot in production; see chats-snapshot.ts) and card fields are
+ * read off those same records.  Nothing here reaches back into
+ * chatFileService or the job store: a rollup is one consistent
+ * point-in-time, and mixing a second store read would let a card's fields
+ * disagree with the membership grouped underneath it.  Session-registry
+ * lookups are injected the same way so tests can run without the registry
+ * (production deps in ROLLUP_DEPS).
  */
 import type { Card, CardChatActivity, CardMemberChat, CardMemberRun, CardPendingKind, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
-import { metaCardId } from "./card-member-index.js";
+import { buildLineageIndex } from "./chat-lineage.js";
+import { cardFieldsFromChat, isCardRoot } from "./card-fields.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest } from "./claude.js";
 import { getSessionProviders } from "../agents/factory.js";
@@ -162,48 +173,69 @@ function rollupState(chats: CardMemberChat[], runs: CardMemberRun[]): CardRollup
 }
 
 /**
- * `chats` may be every chat record or only the ones carrying a `cardId` — the
- * loop below skips the rest anyway, so the two are interchangeable and the
- * caller is free to hand over the cheaper set (see card-member-index.ts).
+ * Build card summaries from a snapshot of chats and runs.
+ *
+ * Cards are derived, not passed in: every lineage root that passes
+ * `isCardRoot` becomes a card, its fields projected from the SAME snapshot
+ * record (`cardFieldsFromChat`) — never a second store read.  Chats are
+ * grouped by `rootKeyOf`; runs by `run.rootChatId`.  Hidden cards
+ * (`metadata.card.hidden === true`) are omitted from the board view.
  */
-export function buildCardSummaries(cards: Card[], chats: Chat[], allRuns: JobRunListItem[], deps: RollupDeps = ROLLUP_DEPS): CardSummary[] {
-  const chatsByCard = new Map<string, CardMemberChat[]>();
+export function buildCardSummaries(chats: Chat[], allRuns: JobRunListItem[], deps: RollupDeps = ROLLUP_DEPS): CardSummary[] {
+  const { rootKeyOf } = buildLineageIndex(chats);
+
+  // Find every lineage root that qualifies as a card, with its projected
+  // fields. Hidden cards are opted out of the board (replacement for the
+  // old createCard: false).
+  const cardsByRoot = new Map<string, Card>();
   for (const chat of chats) {
+    if (rootKeyOf(chat.id) !== chat.id) continue;
+    if (!isCardRoot(chat)) continue;
+    const card = cardFieldsFromChat(chat);
+    if (card.hidden) continue;
+    cardsByRoot.set(chat.id, card);
+  }
+
+  // Group chats by root.
+  const chatsByRoot = new Map<string, CardMemberChat[]>();
+  for (const chat of chats) {
+    const rootId = rootKeyOf(chat.id);
+    if (!cardsByRoot.has(rootId)) continue;
     const meta = parseMeta(chat);
-    const cardId = metaCardId(meta);
-    if (!cardId) continue;
-    // Membership comes off the file record, so this scan — unlike the sidebar,
-    // which is driven by filesystem discovery — sees chats whose harness was
-    // removed. Left in, they would count toward chatCount, could push a card to
-    // "needs_you" or unread, and would open to an empty transcript: a board that
-    // disagrees with the chat list about how many chats a card has. Discovery
-    // has already dropped them everywhere else; drop them here too.
     if (isRetiredProvider(meta.provider)) continue;
-    const members = chatsByCard.get(cardId) ?? [];
+    const members = chatsByRoot.get(rootId) ?? [];
     members.push(toMemberChat(chat, meta, deps));
-    chatsByCard.set(cardId, members);
+    chatsByRoot.set(rootId, members);
   }
 
-  const runsByCard = new Map<string, CardMemberRun[]>();
+  // Group runs by their lineage root.
+  const runsByRoot = new Map<string, CardMemberRun[]>();
   for (const run of allRuns) {
-    if (!run.cardId) continue;
-    const members = runsByCard.get(run.cardId) ?? [];
+    const rootId = run.rootChatId;
+    if (!rootId || !cardsByRoot.has(rootId)) continue;
+    const members = runsByRoot.get(rootId) ?? [];
     members.push(toMemberRun(run));
-    runsByCard.set(run.cardId, members);
+    runsByRoot.set(rootId, members);
   }
 
-  return cards.map((card) => {
-    const memberChats = (chatsByCard.get(card.id) ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const memberRuns = (runsByCard.get(card.id) ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const summaries: CardSummary[] = [];
+  for (const [rootId, card] of cardsByRoot) {
+    const memberChats = (chatsByRoot.get(rootId) ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const memberRuns = (runsByRoot.get(rootId) ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
+    // Card-data edits (updatedAt) count as activity too — a card whose chats
+    // are quiet but was just retitled should not sink to the bottom of the
+    // board's recency ordering.
     let lastActivityAt = card.updatedAt;
-    for (const chat of memberChats) if (chat.updatedAt > lastActivityAt) lastActivityAt = chat.updatedAt;
+    for (const chat of memberChats) {
+      if (chat.updatedAt > lastActivityAt) lastActivityAt = chat.updatedAt;
+    }
     for (const run of memberRuns) {
       const runActivity = run.endedAt && run.endedAt > run.updatedAt ? run.endedAt : run.updatedAt;
       if (runActivity > lastActivityAt) lastActivityAt = runActivity;
     }
 
-    return {
+    summaries.push({
       ...card,
       rollup: rollupState(memberChats, memberRuns),
       lastActivityAt,
@@ -211,6 +243,8 @@ export function buildCardSummaries(cards: Card[], chats: Chat[], allRuns: JobRun
       unread: memberChats.some((c) => c.unread),
       memberChats,
       memberRuns,
-    };
-  });
+    });
+  }
+
+  return summaries.sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
 }

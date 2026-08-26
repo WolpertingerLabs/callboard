@@ -1,12 +1,12 @@
 /**
  * Route-level tests for POST /api/cards/bulk-lifecycle — the board's
- * multi-select close/reopen.
+ * multi-select close/reopen. `ids` are root chat ids now.
  *
- * Same no-supertest style as cards.delete.test.ts / cards.metadata.test.ts:
- * the handler is pulled off the router stack and driven with a fake req/res.
- * `claude.js` is stubbed to break the pre-existing callboard-tools ↔ claude
- * import cycle. session-registry is stubbed with a `vi.fn()` rather than a
- * no-op because the notification COUNT is part of the contract under test.
+ * Same no-supertest style as cards.metadata.test.ts: the handler is pulled
+ * off the router stack and driven with a fake req/res. `claude.js` is
+ * stubbed to break the pre-existing callboard-tools ↔ claude import cycle.
+ * session-registry is stubbed with a `vi.fn()` rather than a no-op because
+ * the notification COUNT is part of the contract under test.
  *
  * The handler is resolved by path alone, not path+method, so the routing test
  * at the bottom stays the only thing that fails if the verb or the position of
@@ -24,10 +24,13 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 const notifyMetadata = vi.fn();
 
 vi.mock("../services/claude.js", () => ({ getActiveSession: () => null, getPendingRequest: () => null }));
-vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMetadata: (...args: unknown[]) => notifyMetadata(...args) } }));
+// sessionRegistry.has is the rollup's liveness probe; notifyMetadata is the
+// notification whose COUNT is under test.
+vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args) } }));
 
 const { cardsRouter, BULK_LIFECYCLE_MAX } = await import("./cards.js");
-const { createCard, getCard } = await import("../services/card-store.js");
+const { chatFileService } = await import("../services/chat-file-service.js");
+const { readCardFields } = await import("../services/card-fields.js");
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -78,21 +81,26 @@ function dispatch(method: string, url: string, body: unknown): Promise<{ matched
   });
 }
 
+/** A card root chat: top-level, not triggered, no job linkage. */
+function makeRoot(id: string): string {
+  return chatFileService.createChat("/tmp/proj", id, "{}").id;
+}
+
 beforeEach(() => {
   notifyMetadata.mockClear();
 });
 
 describe("POST /api/cards/bulk-lifecycle", () => {
   it("closes a batch and reopens it, maintaining closedAt both ways", async () => {
-    const ids = [createCard({ title: "A" }).id, createCard({ title: "B" }).id, createCard({ title: "C" }).id];
+    const ids = [makeRoot("bulk-a"), makeRoot("bulk-b"), makeRoot("bulk-c")];
 
     const closed = await bulkLifecycle({ ids, lifecycle: "closed" });
     expect(closed.code).toBe(200);
     expect(closed.body.failed).toEqual([]);
     expect(closed.body.updated.map((c: any) => c.id).sort()).toEqual([...ids].sort());
     for (const id of ids) {
-      expect(getCard(id)!.lifecycle).toBe("closed");
-      expect(getCard(id)!.closedAt).toBeTruthy();
+      expect(readCardFields(id)!.lifecycle).toBe("closed");
+      expect(readCardFields(id)!.closedAt).toBeTruthy();
     }
     // Same CardSummary projection as PATCH /:id — rollup fields, not raw Card.
     expect(closed.body.updated[0]).toHaveProperty("chatCount");
@@ -101,30 +109,44 @@ describe("POST /api/cards/bulk-lifecycle", () => {
     expect(reopened.code).toBe(200);
     expect(reopened.body.updated).toHaveLength(3);
     for (const id of ids) {
-      expect(getCard(id)!.lifecycle).toBe("open");
-      expect(getCard(id)!.closedAt).toBeUndefined();
+      expect(readCardFields(id)!.lifecycle).toBe("open");
+      expect(readCardFields(id)!.closedAt).toBeUndefined();
     }
   });
 
+  it("dedupes two member ids naming the same card into one update", async () => {
+    const rootId = makeRoot("bulk-dedupe");
+    const childId = chatFileService.createChat("/tmp/proj", "bulk-dedupe-child", JSON.stringify({ parentChatId: rootId, rootChatId: rootId })).id;
+
+    const res = await bulkLifecycle({ ids: [rootId, childId], lifecycle: "closed" });
+    expect(res.code).toBe(200);
+    expect(res.body.failed).toEqual([]);
+    // One card flipped, not two writes to the same root.
+    expect(res.body.updated).toHaveLength(1);
+    expect(res.body.updated[0].id).toBe(rootId);
+    expect(readCardFields(rootId)!.lifecycle).toBe("closed");
+  });
+
   it("returns 200 with BOTH arrays populated when the batch mixes valid and missing ids", async () => {
-    const good = createCard({ title: "Real" }).id;
-    const alsoGood = createCard({ title: "Also real" }).id;
-    // A missing-but-well-formed id and one CARD_ID_RE rejects — both are
-    // "not found" to the caller, and neither may strand the ids after them.
-    const res = await bulkLifecycle({ ids: [good, "card-nope", "not-a-card-id", alsoGood], lifecycle: "closed" });
+    const good = makeRoot("bulk-real-1");
+    const alsoGood = makeRoot("bulk-real-2");
+    // Two missing ids — a well-formed chat id that has no record, and junk.
+    // Both are "not found" to the caller, and neither may strand the ids
+    // after them.
+    const res = await bulkLifecycle({ ids: [good, "chat-nope", "not-an-id", alsoGood], lifecycle: "closed" });
 
     expect(res.code).toBe(200);
     expect(res.body.updated.map((c: any) => c.id).sort()).toEqual([alsoGood, good].sort());
     expect(res.body.failed).toEqual([
-      { id: "card-nope", error: "Card not found" },
-      { id: "not-a-card-id", error: "Card not found" },
+      { id: "chat-nope", error: "Card not found" },
+      { id: "not-an-id", error: "Card not found" },
     ]);
     // The failure sat between the two valid ids: the trailing one still flipped.
-    expect(getCard(alsoGood)!.lifecycle).toBe("closed");
+    expect(readCardFields(alsoGood)!.lifecycle).toBe("closed");
   });
 
   it("400s when ids is not an array, is empty, or holds a non-string", async () => {
-    for (const ids of [undefined, "card-1", 42, {}, [], ["card-1", 7], [null]]) {
+    for (const ids of [undefined, "chat-1", 42, {}, [], ["chat-1", 7], [null]]) {
       const res = await bulkLifecycle({ ids, lifecycle: "closed" });
       expect(res.code, `ids=${JSON.stringify(ids)}`).toBe(400);
       expect(res.body.error).toMatch(/non-empty array of strings/);
@@ -132,17 +154,17 @@ describe("POST /api/cards/bulk-lifecycle", () => {
   });
 
   it("400s when lifecycle is missing or not one of the two literals", async () => {
-    const id = createCard({ title: "Untouched" }).id;
+    const id = makeRoot("bulk-untouched");
     for (const lifecycle of [undefined, null, "", "OPEN", "archived", true, 1]) {
       const res = await bulkLifecycle({ ids: [id], lifecycle });
       expect(res.code, `lifecycle=${JSON.stringify(lifecycle)}`).toBe(400);
       expect(res.body.error).toMatch(/lifecycle must be 'open' or 'closed'/);
     }
-    expect(getCard(id)!.lifecycle).toBe("open");
+    expect(readCardFields(id)!.lifecycle).toBe("open");
   });
 
   it("400s over the batch cap and accepts a batch exactly at it", async () => {
-    const overCap = Array.from({ length: BULK_LIFECYCLE_MAX + 1 }, (_, i) => `card-bulk-${i}`);
+    const overCap = Array.from({ length: BULK_LIFECYCLE_MAX + 1 }, (_, i) => `chat-bulk-${i}`);
     const over = await bulkLifecycle({ ids: overCap, lifecycle: "closed" });
     expect(over.code).toBe(400);
     expect(over.body.error).toMatch(/limited to 200/);
@@ -153,7 +175,7 @@ describe("POST /api/cards/bulk-lifecycle", () => {
   });
 
   it("notifies metadata exactly ONCE for an N-card batch, not once per card", async () => {
-    const ids = Array.from({ length: 5 }, (_, i) => createCard({ title: `Batch ${i}` }).id);
+    const ids = Array.from({ length: 5 }, (_, i) => makeRoot(`bulk-batch-${i}`));
     const res = await bulkLifecycle({ ids, lifecycle: "closed" });
 
     expect(res.body.updated).toHaveLength(5);
@@ -164,7 +186,7 @@ describe("POST /api/cards/bulk-lifecycle", () => {
   });
 
   it("does not notify when nothing in the batch actually changed", async () => {
-    const res = await bulkLifecycle({ ids: ["card-ghost-1", "card-ghost-2"], lifecycle: "closed" });
+    const res = await bulkLifecycle({ ids: ["chat-ghost-1", "chat-ghost-2"], lifecycle: "closed" });
     expect(res.code).toBe(200);
     expect(res.body.updated).toEqual([]);
     expect(res.body.failed).toHaveLength(2);
@@ -172,7 +194,7 @@ describe("POST /api/cards/bulk-lifecycle", () => {
   });
 
   it("resolves POST /bulk-lifecycle to the bulk handler — never a 404 from the /:id route", async () => {
-    const id = createCard({ title: "Routed" }).id;
+    const id = makeRoot("bulk-routed");
     const res = await dispatch("POST", "/bulk-lifecycle", { ids: [id], lifecycle: "closed" });
 
     // The failure modes this pins: falling through to next() (no such route),

@@ -1,8 +1,17 @@
 /**
- * Cards — durable ticket entities that group chats and job runs around a
- * topic for the /board manager view. Membership lives on the chat side
- * (metadata.cardId) and is discovered by scan; the card file stores only
- * identity and lifecycle, so deleted chats self-heal out of the group.
+ * Cards — the board-facing projection of a lineage tree.
+ *
+ * A card IS its root chat. Its identity is the root chat's id; its data is a
+ * nested `card` object on that chat's metadata blob (see
+ * backend/src/services/card-fields.ts for the shape, defaults, and limits).
+ * There is no standalone card entity, nothing to create, and nothing to
+ * delete — a card exists because a top-level prompt exists and disappears
+ * when that chat is deleted. Membership is never stored: member chats are
+ * every chat in the root's parentage tree, member runs are job runs carrying
+ * `rootChatId` = the root's id.
+ *
+ * An absent `metadata.card` object means all defaults (open, unpinned, title
+ * = chat title) — the object only materialises when someone edits a field.
  */
 
 export type CardLifecycle = "open" | "closed";
@@ -14,6 +23,7 @@ export type CardLifecycle = "open" | "closed";
 export const CARD_CATEGORY_MAX = 64;
 
 export interface Card {
+  /** Root chat id — the identity of the card. */
   id: string;
   title: string;
   /** Markdown body describing the topic. */
@@ -27,6 +37,12 @@ export interface Card {
   category?: string;
   /** Set when lifecycle === "closed"; cleared on reopen. */
   closedAt?: string;
+  /**
+   * Board opt-out (replaces the old `createCard: false` stream flag). Hidden
+   * cards are omitted from GET /api/cards; absent means visible. Absent —
+   * never `false` — is the default.
+   */
+  hidden?: boolean;
   pinned: boolean;
   /** Agent-settable narrative status (set_card_status tool), max 160 chars. */
   status?: string;
@@ -38,19 +54,21 @@ export interface Card {
    * `card.metadata ?? {}`.
    */
   metadata?: Record<string, string>;
+  /**
+   * Card-data timestamp: when the nested `metadata.card` fields were last
+   * changed. Defaults to the chat's created_at when no edit has happened.
+   * Deliberately NOT the chat's updated_at — amending a card is a view-only
+   * write and must not resurface the chat as unread or reorder the sidebar.
+   */
   createdAt: string;
   updatedAt: string;
 }
 
-/** Create payload — server-managed fields stripped. */
-export interface CardPayload {
-  title: string;
-  description?: string;
-  emoji?: string;
-  category?: string;
-}
-
-/** Partial update; null clears the nullable narrative-status fields. */
+/**
+ * Partial update against the root chat's `metadata.card`. null clears the
+ * nullable narrative-status fields. Applied by card-fields.ts — REST
+ * (PATCH /api/cards/:id) and the MCP setters share that one implementation.
+ */
 export interface CardPatch {
   title?: string;
   description?: string;
@@ -60,6 +78,8 @@ export interface CardPatch {
   statusEmoji?: string | null;
   /** null (or blank) clears the category. */
   category?: string | null;
+  /** Toggle the board opt-out (replaces createCard: false). */
+  hidden?: boolean | null;
   lifecycle?: CardLifecycle;
   /**
    * Per-key merge, not whole-object replace: each key present is set to its
