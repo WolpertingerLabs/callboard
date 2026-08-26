@@ -234,6 +234,7 @@ export default function Board() {
   // Losing every selected card to that reconciliation also leaves selection
   // mode — an action bar over an empty selection has nothing to act on.
   const selectionMode = selectionLifecycle !== null && selectedIds.size > 0;
+  const selectionScopeCount = cards.filter((c) => c.lifecycle === selectionLifecycle).length;
 
   const exitSelection = useCallback(() => {
     setSelectedIds(new Set());
@@ -298,6 +299,11 @@ export default function Board() {
     };
   };
 
+  const selectAllInScope = useCallback(() => {
+    if (selectionLifecycle === null) return;
+    setSelectedIds(new Set(cards.filter((c) => c.lifecycle === selectionLifecycle).map((c) => c.id)));
+  }, [cards, selectionLifecycle]);
+
   useEffect(() => {
     if (!selectionMode) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -309,12 +315,12 @@ export default function Board() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        setSelectedIds(new Set(cards.filter((c) => c.lifecycle === selectionLifecycle).map((c) => c.id)));
+        selectAllInScope();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [selectionMode, selectionLifecycle, cards, exitSelection]);
+  }, [selectionMode, exitSelection, selectAllInScope]);
 
   /**
    * No confirmation and no undo, by decision: close is reversible, its inverse
@@ -518,6 +524,8 @@ export default function Board() {
       {selectionMode && (
         <BoardSelectionBar
           count={selectedIds.size}
+          onSelectAll={isMobile ? selectAllInScope : undefined}
+          allSelected={selectedIds.size === selectionScopeCount}
           actions={[
             {
               key: "lifecycle",
