@@ -23,7 +23,7 @@ const cardsDir = join(tmpRoot, "cards");
 const archiveDir = join(tmpRoot, "cards-archive");
 const runsDir = join(tmpRoot, "jobs", "runs");
 
-const { migrateCardsToMetadata } = await import("./card-migration.js");
+const { migrateCardsToMetadata, repairStrandedCardFields } = await import("./card-migration.js");
 const { chatFileService } = await import("./chat-file-service.js");
 
 afterAll(() => {
@@ -284,6 +284,45 @@ describe("migrateCardsToMetadata", () => {
     expect(metaOf("tree-b-root").cardId).toBeNull();
   });
 
+  it("writes onto the tree's ROOT even when no member of the legacy card is one", () => {
+    // The defect: every member of this card is a child chat (the root itself
+    // was never filed onto the card), so the old code degraded to `members`
+    // and wrote metadata.card onto a non-root. card-rollup only projects a
+    // card from a chat that is its own lineage root, so those fields were
+    // written where nothing reads them — the user's title and status silently
+    // did not appear, and the card would not reopen.
+    chat("orphan-root", { title: "The real root" }, "2026-07-01T00:00:00.000Z");
+    chat("orphan-child", { parentChatId: "orphan-root", rootChatId: "orphan-root", cardId: "card-strand" }, "2026-07-02T00:00:00.000Z");
+    legacyCard({
+      id: "card-strand",
+      title: "Reachable at last",
+      description: "",
+      emoji: "🗂️",
+      lifecycle: "closed",
+      pinned: false,
+      closedAt: "2026-07-08T00:00:00.000Z",
+      status: "phase 1",
+      createdAt: "2026-07-02T00:00:00.000Z",
+      updatedAt: "2026-07-02T00:00:00.000Z",
+    });
+
+    expect(migrateCardsToMetadata().migrated).toBe(1);
+
+    expect(metaOf("orphan-root").card).toMatchObject({ title: "Reachable at last", status: "phase 1", lifecycle: "closed", closedAt: "2026-07-08T00:00:00.000Z" });
+    expect(metaOf("orphan-child").card).toBeUndefined();
+  });
+
+  it("keeps the fields on the member when the tree's root is not card-eligible", () => {
+    // A triggered root cannot anchor a card, so redirecting there would hide
+    // the fields for good. Better invisible-where-they-were than deleted.
+    chat("triggered-root", { triggered: true }, "2026-07-01T00:00:00.000Z");
+    chat("triggered-child", { parentChatId: "triggered-root", rootChatId: "triggered-root", cardId: "card-trig" }, "2026-07-02T00:00:00.000Z");
+    legacyCard({ id: "card-trig", title: "Nowhere to go", description: "", emoji: "🗂️", lifecycle: "open", pinned: false, createdAt: "2026-07-02T00:00:00.000Z", updatedAt: "2026-07-02T00:00:00.000Z" });
+
+    expect(migrateCardsToMetadata().migrated).toBe(1);
+    expect(metaOf("triggered-child").card).toMatchObject({ title: "Nowhere to go" });
+  });
+
   it("strips cardIds that point at cards which never existed", () => {
     chat("stale", { cardId: "card-never-existed" });
     migrateCardsToMetadata();
@@ -300,5 +339,100 @@ describe("migrateCardsToMetadata", () => {
     expect(existsSync(join(archiveDir, "card-broken.json"))).toBe(true);
     // The chat's stale pointer is still stripped by the sweep.
     expect(metaOf("root-6").cardId).toBeNull();
+  });
+});
+
+/**
+ * The repair pass for installs whose migration marker already ran with the
+ * stranding bug above. Deliberately NOT gated on the marker: on a real install
+ * the marker exists, so a fix inside migrateCardsToMetadata alone would never
+ * reach the two chats that were measured carrying stranded fields.
+ */
+describe("repairStrandedCardFields", () => {
+  it("merges a stranded card onto its lineage root and clears the stranded copy", () => {
+    chat("real-root", { title: "Root" });
+    chat("strandee", {
+      parentChatId: "real-root",
+      rootChatId: "real-root",
+      card: { title: "Refactor: cards as metadata", status: "Starting Phase 1", lifecycle: "closed", closedAt: "2026-08-26T16:36:50.791Z" },
+    });
+
+    const result = repairStrandedCardFields();
+
+    expect(result).toEqual({ repaired: 1, cleared: 1 });
+    expect(metaOf("real-root").card).toEqual({
+      title: "Refactor: cards as metadata",
+      status: "Starting Phase 1",
+      lifecycle: "closed",
+      closedAt: "2026-08-26T16:36:50.791Z",
+    });
+    expect(metaOf("strandee").card).toBeNull();
+  });
+
+  it("lets the root's own values win on conflict, filling in only what it lacks", () => {
+    // The root is what the board has been showing and what every editor has
+    // written to since the migration, so a stranded value is the older of the
+    // two by construction.
+    chat("conflict-root", { card: { title: "Edited since", lifecycle: "open" } });
+    chat("conflict-child", {
+      parentChatId: "conflict-root",
+      rootChatId: "conflict-root",
+      card: { title: "Stale title", lifecycle: "closed", description: "only the stranded copy has this" },
+    });
+
+    repairStrandedCardFields();
+
+    expect(metaOf("conflict-root").card).toEqual({
+      title: "Edited since",
+      lifecycle: "open",
+      description: "only the stranded copy has this",
+    });
+  });
+
+  it("is a view-only write: neither chat's updated_at moves", () => {
+    chat("quiet-root", {}, "2026-07-01T00:00:00.000Z");
+    chat("quiet-child", { parentChatId: "quiet-root", rootChatId: "quiet-root", card: { title: "Merged" } }, "2026-07-01T00:00:00.000Z");
+
+    repairStrandedCardFields();
+
+    expect(chatFileService.getChat("quiet-root")!.updated_at).toBe("2026-07-01T00:00:00.000Z");
+    expect(chatFileService.getChat("quiet-child")!.updated_at).toBe("2026-07-01T00:00:00.000Z");
+  });
+
+  it("clears fields whose root cannot hold a card, rather than leaving a member claiming a lifecycle", () => {
+    // A member chat still saying `lifecycle: "closed"` is exactly what makes
+    // reopen look broken to anything reading that record.
+    chat("job-root", { triggered: true });
+    chat("job-child", { parentChatId: "job-root", rootChatId: "job-root", card: { lifecycle: "closed" } });
+
+    expect(repairStrandedCardFields()).toEqual({ repaired: 0, cleared: 1 });
+    expect(metaOf("job-child").card).toBeNull();
+  });
+
+  it("leaves a card that is already on its own root completely alone", () => {
+    chat("proper-root", { card: { title: "Fine where it is", lifecycle: "closed" } });
+    chat("proper-child", { parentChatId: "proper-root", rootChatId: "proper-root" });
+
+    expect(repairStrandedCardFields()).toEqual({ repaired: 0, cleared: 0 });
+    expect(metaOf("proper-root").card).toEqual({ title: "Fine where it is", lifecycle: "closed" });
+  });
+
+  it("is idempotent — a second pass finds nothing left to repair", () => {
+    chat("idem-root", {});
+    chat("idem-child", { parentChatId: "idem-root", rootChatId: "idem-root", card: { title: "Once" } });
+
+    expect(repairStrandedCardFields()).toEqual({ repaired: 1, cleared: 1 });
+    expect(repairStrandedCardFields()).toEqual({ repaired: 0, cleared: 0 });
+    expect(metaOf("idem-root").card).toEqual({ title: "Once" });
+  });
+
+  it("runs regardless of the migration marker — the state every real install is in", () => {
+    writeFileSync(join(tmpRoot, ".cards-as-metadata-migrated"), new Date().toISOString());
+    chat("marked-root", {});
+    chat("marked-child", { parentChatId: "marked-root", rootChatId: "marked-root", card: { title: "Post-marker" } });
+
+    expect(migrateCardsToMetadata().skipped).toBe(true);
+    expect(repairStrandedCardFields()).toEqual({ repaired: 1, cleared: 1 });
+    expect(metaOf("marked-root").card).toEqual({ title: "Post-marker" });
   });
 });

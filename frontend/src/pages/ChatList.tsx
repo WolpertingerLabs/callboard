@@ -36,8 +36,8 @@ import {
   initializeSuggestedDirectories,
   getShowTriggeredChats,
   saveShowTriggeredChats,
-  getChatsCardsOnly,
-  saveChatsCardsOnly,
+  getChatsCardLifecycle,
+  saveChatsCardLifecycle,
   getChatsDimCardless,
   saveChatsDimCardless,
   getChatsSortByCardActive,
@@ -86,7 +86,11 @@ export default function ChatList({
   const [viewOptions, setViewOptions] = useState<ChatViewOptions>(() => ({
     ...DEFAULT_CHAT_VIEW_OPTIONS,
     showTriggered: getShowTriggeredChats(),
-    cardsOnly: getChatsCardsOnly(),
+    cardLifecycle: getChatsCardLifecycle(),
+    // The deprecated alias, kept consistent with the scope above so nothing
+    // reading the pair (a downgraded bundle, a stale persisted store) sees
+    // them disagree.
+    cardsOnly: getChatsCardLifecycle() === "active",
     dimCardless: getChatsDimCardless(),
     sortByCardActive: getChatsSortByCardActive(),
   }));
@@ -176,7 +180,7 @@ export default function ChatList({
   const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
 
   const load = useCallback(async () => {
-    const { bookmarked, showTriggered, cardsOnly } = viewOptions;
+    const { bookmarked, showTriggered, cardLifecycle } = viewOptions;
     // When advanced filters or content search are active, fetch all chats
     // to avoid missing matches due to pagination
     const shouldFetchAll = anyFilterActive || bookmarked;
@@ -186,7 +190,7 @@ export default function ChatList({
     const excludeTriggered = !showTriggered;
     // includeLineage is always on: the list needs every member of a parentage
     // tree the page touches, even those outside the pagination window
-    const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, true, cardsOnly || undefined);
+    const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, true, undefined, cardLifecycle);
     loadGenRef.current += 1;
     setListVersion((v) => v + 1);
     setChats(response.chats);
@@ -195,7 +199,7 @@ export default function ChatList({
 
     // If the response was stale (cached), immediately fetch fresh data
     if (response.stale) {
-      const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, true, cardsOnly || undefined);
+      const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, true, undefined, cardLifecycle);
       loadGenRef.current += 1;
       setListVersion((v) => v + 1);
       setChats(freshResponse.chats);
@@ -228,7 +232,8 @@ export default function ChatList({
         excludeTriggered || undefined,
         undefined,
         true,
-        viewOptions.cardsOnly || undefined,
+        undefined,
+        viewOptions.cardLifecycle,
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
       // this page was in flight — its offset no longer lines up, so drop the
@@ -421,7 +426,7 @@ export default function ChatList({
     setFilters(nextFilters);
     setViewOptions(nextView);
     saveShowTriggeredChats(nextView.showTriggered);
-    saveChatsCardsOnly(nextView.cardsOnly);
+    saveChatsCardLifecycle(nextView.cardLifecycle);
     saveChatsDimCardless(nextView.dimCardless);
     saveChatsSortByCardActive(nextView.sortByCardActive);
   };

@@ -114,16 +114,19 @@ describe("POST /api/cards/bulk-lifecycle", () => {
     }
   });
 
-  it("dedupes two member ids naming the same card into one update", async () => {
+  it("dedupes the WRITE for two member ids naming one card, while answering both ids", async () => {
     const rootId = makeRoot("bulk-dedupe");
     const childId = chatFileService.createChat("/tmp/proj", "bulk-dedupe-child", JSON.stringify({ parentChatId: rootId, rootChatId: rootId })).id;
 
     const res = await bulkLifecycle({ ids: [rootId, childId], lifecycle: "closed" });
     expect(res.code).toBe(200);
     expect(res.body.failed).toEqual([]);
-    // One card flipped, not two writes to the same root.
-    expect(res.body.updated).toHaveLength(1);
-    expect(res.body.updated[0].id).toBe(rootId);
+    // One card flipped — pinned by the single notification and the single
+    // distinct id, not by a short `updated` array. Dropping the deduped id
+    // from the response is what left Board.tsx's tile stale; the accounting
+    // identity lives in cards.reopen-accounting.test.ts.
+    expect(res.body.updated.map((c: any) => c.id)).toEqual([rootId, rootId]);
+    expect(notifyMetadata).toHaveBeenCalledTimes(1);
     expect(readCardFields(rootId)!.lifecycle).toBe("closed");
   });
 

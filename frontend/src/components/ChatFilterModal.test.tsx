@@ -24,7 +24,7 @@ function renderModal(viewOptions: Partial<ChatViewOptions> = {}) {
 describe("ChatFilterModal view options", () => {
   it("renders every scope option", () => {
     renderModal();
-    for (const label of ["Cards only", "Dim inactive chats", "Active cards first", "Bookmarked only", "Show triggered chats"]) {
+    for (const label of ["Card lifecycle", "Dim inactive chats", "Active cards first", "Bookmarked only", "Show triggered chats"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
   });
@@ -42,14 +42,44 @@ describe("ChatFilterModal view options", () => {
   it("stages a toggle and commits it on Apply", () => {
     const { onApply, onClose } = renderModal();
 
-    fireEvent.click(screen.getByText("Cards only"));
+    fireEvent.click(screen.getByText("Bookmarked only"));
     // Still staged — nothing committed until Apply.
     expect(onApply).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText("Apply"));
     expect(onApply).toHaveBeenCalledTimes(1);
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardsOnly: true });
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, bookmarked: true });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  /**
+   * The gap this filter closes: before it, the sidebar could only ask for OPEN
+   * cards ("Cards only"), and with 804 of 805 cards closed on a real data dir
+   * that collapsed 8,319 chats to 1 with no way to ask for the other side. So
+   * the assertion that matters is that "Inactive" is reachable at all.
+   */
+  it("stages each of the three lifecycle scopes", () => {
+    const { onApply } = renderModal();
+
+    fireEvent.click(screen.getByText("Inactive"));
+    fireEvent.click(screen.getByText("Apply"));
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardLifecycle: "inactive" });
+  });
+
+  it("keeps the deprecated cardsOnly alias in lock-step with the scope", () => {
+    // Written so a downgrade to a bundle that only knows the boolean lands on
+    // the same scope instead of silently widening the sidebar to everything.
+    const { onApply } = renderModal();
+
+    fireEvent.click(screen.getByText("Active"));
+    fireEvent.click(screen.getByText("Apply"));
+    expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle: "active", cardsOnly: true });
+
+    cleanup();
+    const second = renderModal({ cardLifecycle: "active", cardsOnly: true });
+    fireEvent.click(screen.getByText("Inactive"));
+    fireEvent.click(screen.getByText("Apply"));
+    expect(second.onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle: "inactive", cardsOnly: false });
   });
 
   it("discards staged toggles on Cancel", () => {
@@ -63,20 +93,20 @@ describe("ChatFilterModal view options", () => {
   });
 
   it("seeds the switches from the live values", () => {
-    const { onApply } = renderModal({ cardsOnly: true, bookmarked: true });
+    const { onApply } = renderModal({ cardLifecycle: "inactive", bookmarked: true });
 
     // Applying without touching anything hands back exactly what came in.
     fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardsOnly: true, bookmarked: true });
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardLifecycle: "inactive", bookmarked: true });
   });
 
   /**
-   * "Cards only" already narrows the list to open cards, so there is nothing
-   * left for "Dim inactive chats" to fade. A switch that silently does nothing
-   * reads as a bug, so it goes inert and says why.
+   * Either non-default scope already narrows the list to one side of the
+   * split, so there is nothing left for "Dim inactive chats" to fade. A switch
+   * that silently does nothing reads as a bug, so it goes inert and says why.
    */
-  it("makes the dim switch inert while Cards only is on, and says why", () => {
-    const { onApply } = renderModal({ cardsOnly: true });
+  it.each(["active", "inactive"] as const)("makes the dim switch inert while the scope is %s, and says why", (cardLifecycle) => {
+    const { onApply } = renderModal({ cardLifecycle });
 
     const dimSwitch = screen.getByText("Dim inactive chats").closest("button")!;
     expect(dimSwitch.disabled).toBe(true);
@@ -84,10 +114,10 @@ describe("ChatFilterModal view options", () => {
 
     fireEvent.click(dimSwitch);
     fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardsOnly: true });
+    expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle, dimCardless: false });
   });
 
-  it("leaves the dim switch live while Cards only is off", () => {
+  it("leaves the dim switch live while the scope is All", () => {
     const { onApply } = renderModal();
 
     const dimSwitch = screen.getByText("Dim inactive chats").closest("button")!;
@@ -100,11 +130,11 @@ describe("ChatFilterModal view options", () => {
 
   /**
    * Same reasoning as the dim switch, and the reason the two sit next to each
-   * other: "Cards only" has already narrowed the list to open cards, so there
-   * is no second bucket for "Active cards first" to make a header over.
+   * other: a scoped list is entirely on one side of the split, so there is no
+   * second bucket for "Active cards first" to make a header over.
    */
-  it("makes the active-first switch inert while Cards only is on, and says why", () => {
-    const { onApply } = renderModal({ cardsOnly: true });
+  it("makes the active-first switch inert while the scope is not All, and says why", () => {
+    const { onApply } = renderModal({ cardLifecycle: "active", cardsOnly: true });
 
     const sortSwitch = screen.getByText("Active cards first").closest("button")!;
     expect(sortSwitch.disabled).toBe(true);
@@ -112,7 +142,7 @@ describe("ChatFilterModal view options", () => {
 
     fireEvent.click(sortSwitch);
     fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardsOnly: true });
+    expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle: "active", sortByCardActive: false });
   });
 
   it("round-trips the active-first switch through Apply", () => {
@@ -129,7 +159,7 @@ describe("ChatFilterModal view options", () => {
   });
 
   it("Reset All clears the view options too, not just the field filters", () => {
-    const { onApply } = renderModal({ cardsOnly: true, showTriggered: true, bookmarked: true, sortByCardActive: true });
+    const { onApply } = renderModal({ cardLifecycle: "inactive", showTriggered: true, bookmarked: true, sortByCardActive: true });
 
     fireEvent.click(screen.getByText("Reset All"));
     fireEvent.click(screen.getByText("Apply"));

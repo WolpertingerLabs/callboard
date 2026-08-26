@@ -26,6 +26,11 @@
  * deliberately grouped onto one card from DIFFERENT lineages (via the old
  * add_chat_to_card) collapse to each lineage's own root — the other chats
  * become cards of their own trees.
+ *
+ * {@link repairStrandedCardFields} is exported alongside and runs on every
+ * boot, marker or not: the first shipped migration could write card fields to
+ * a chat that is not a lineage root, where nothing reads them, and the marker
+ * means the migration itself will never revisit those installs.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -142,6 +147,95 @@ function legacyCardToPatch(card: Record<string, unknown>, rootChat: Chat): Recor
 }
 
 /**
+ * The chat a card's fields must be written to: the lineage root of the chat
+ * we were about to write to. Returns null when that root is not in the corpus
+ * or does not qualify as a card root, in which case the caller keeps its own
+ * candidate — a card whose fields sit on a non-root chat is invisible, but a
+ * card whose fields are dropped on the floor is gone.
+ */
+function resolveWriteTarget(candidate: Chat, existingRootIdOf: (id: string) => string, allChats: Chat[]): Chat | null {
+  const rootId = existingRootIdOf(candidate.id);
+  if (rootId === candidate.id) return candidate;
+  const root = allChats.find((c) => c.id === rootId);
+  return root && isCardEligible(root) ? root : null;
+}
+
+/**
+ * Move card fields that are sitting on a non-root chat onto that chat's actual
+ * lineage root, and clear the stranded copy.
+ *
+ * Separate from the migration and NOT gated on its marker, because the marker
+ * has already been written on every real install: the bug fixed above (writing
+ * `metadata.card` onto a non-root when no member of a legacy card was a
+ * lineage root) left data behind that no later run of the migration will ever
+ * revisit. `card-rollup.ts` only projects a card from a chat that is its own
+ * lineage root, so those fields are not lost on disk — they are invisible,
+ * which presents to the user as a card that silently shows the wrong title and
+ * no status, and (with defect 2) as a card that will not reopen no matter how
+ * many times they click it. Two such chats existed on the data dir this was
+ * diagnosed against, one carrying a title, a narrative status and
+ * `lifecycle: "closed"`.
+ *
+ * Merge rule: the root's own values win on conflict. The root is the record
+ * the board has been showing and the one every editor has been writing to
+ * since the migration, so a stranded value is by definition the older of the
+ * two; only keys the root does not have are filled in.
+ *
+ * Idempotent: after a pass the stranded chats no longer carry `metadata.card`,
+ * so a second call finds nothing. Runs on every boot for that reason — the
+ * cost when there is nothing to repair is one lineage index over the corpus
+ * the migration already builds.
+ */
+export function repairStrandedCardFields(): { repaired: number; cleared: number } {
+  const result = { repaired: 0, cleared: 0 };
+  const allChats = chatFileService.getAllChats();
+  if (allChats.length === 0) return result;
+  const { existingRootIdOf } = buildLineageIndex(allChats);
+  const byId = new Map(allChats.map((chat) => [chat.id, chat]));
+
+  for (const chat of allChats) {
+    const rawStranded = parseMeta(chat).card;
+    if (!rawStranded || typeof rawStranded !== "object" || Array.isArray(rawStranded)) continue;
+    const rootId = existingRootIdOf(chat.id);
+    if (rootId === chat.id) continue; // on its root already — the normal case
+
+    const stranded = rawStranded as Record<string, unknown>;
+    const root = byId.get(rootId);
+    if (root && isCardEligible(root)) {
+      const rawExisting = parseMeta(root).card;
+      const existing = rawExisting && typeof rawExisting === "object" && !Array.isArray(rawExisting) ? (rawExisting as Record<string, unknown>) : {};
+      const merged = { ...stranded, ...existing };
+      // View-only write, like every other card write: merging fields must not
+      // bump updated_at and resurface the chat as unread.
+      if (!chatFileService.updateChatMetadata(root.id, { card: merged }, { touch: false })) {
+        log.error(`Could not merge stranded card fields from chat ${chat.id} onto root ${root.id} — leaving both in place for the next boot`);
+        continue;
+      }
+      result.repaired++;
+      log.info(`Repaired stranded card fields: merged ${Object.keys(stranded).join(", ")} from chat ${chat.id} onto root chat ${root.id}`);
+    } else {
+      // No eligible root to merge into (the root is a triggered/job chat, or
+      // is missing from the corpus). Clearing regardless is still right: these
+      // fields were never readable, and leaving them makes a member chat's own
+      // record disagree with its card — the state that makes reopen look
+      // broken. Logged in full so the values are recoverable from the log.
+      log.warn(`Clearing unreachable card fields on chat ${chat.id} (root ${rootId} is not a card root): ${JSON.stringify(stranded)}`);
+    }
+
+    if (!chatFileService.updateChatMetadata(chat.id, { card: null }, { touch: false })) {
+      log.error(`Could not clear stranded card fields from chat ${chat.id}`);
+      continue;
+    }
+    result.cleared++;
+  }
+
+  if (result.cleared > 0) {
+    log.info(`Stranded card repair: ${result.repaired} card(s) merged onto their root chat, ${result.cleared} stranded copy/copies cleared`);
+  }
+  return result;
+}
+
+/**
  * Run the migration. Returns a summary for the startup log. Safe to call on
  * every boot: the marker (and the per-card archive moves) make repeats free.
  */
@@ -212,7 +306,14 @@ export function migrateCardsToMetadata(): { skipped: boolean; migrated: number; 
     // member qualifies (cross-tree groupings, all-triggered memberships...).
     const rootMembers = members.filter((m) => existingRootIdOf(m.id) === m.id && isCardEligible(m));
     const candidates = rootMembers.length > 0 ? rootMembers : members;
-    const root = candidates.reduce((oldest, m) => (m.created_at < oldest.created_at ? m : oldest));
+    const oldest = candidates.reduce((prev, m) => (m.created_at < prev.created_at ? m : prev));
+    // The degraded branch above can pick a chat that is NOT a lineage root,
+    // and card-rollup.ts only ever projects a card from a chat where
+    // existingRootIdOf(chat.id) === chat.id. Writing there put the user's
+    // title/status/description somewhere nothing reads — not lost on disk,
+    // but invisible, which is worse. Resolve to the tree's actual root so the
+    // fields land where the board looks for them.
+    const root = resolveWriteTarget(oldest, existingRootIdOf, allChats) ?? oldest;
 
     const patch = legacyCardToPatch(card, root);
     if (patch) {

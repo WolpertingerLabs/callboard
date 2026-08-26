@@ -27,7 +27,7 @@ import type { Request, Response } from "express";
 import type { CardPatch, CardSummary } from "shared";
 import { buildCardSummaries } from "../services/card-rollup.js";
 import { listChatsSnapshot } from "../services/chats-snapshot.js";
-import { patchCardFields, isCardEligible, CardFieldError } from "../services/card-fields.js";
+import { patchCardFields, isCardEligible, clearCardFieldsOn, CardFieldError } from "../services/card-fields.js";
 import { CARD_CATEGORY_MAX } from "shared";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
 import { chatFileService } from "../services/chat-file-service.js";
@@ -108,6 +108,33 @@ cardsRouter.get("/", (_req: Request, res: Response) => {
  * a missing id in the middle of a batch must not strand the rest, and the
  * client still needs `updated` to merge into its state.
  */
+/**
+ * Drop a `metadata.card` object left on a member chat that this request just
+ * redirected to its root.
+ *
+ * The redirect is why it matters: `PATCH /api/cards/<memberId>` patches the
+ * root and answers with the root's summary, while the member's own
+ * `metadata.card.lifecycle: "closed"` stays on disk untouched. Measured before
+ * this fix — `PATCH child -> 200, returned lifecycle: open, child's own
+ * card.lifecycle STILL: closed`. That stale copy is unreachable through any
+ * card edit, so nothing ever clears it, and every reader of that chat record
+ * keeps seeing a closed card the board says is open.
+ *
+ * Best-effort by design: the card write has already succeeded and the response
+ * is correct without this, so a failure here is logged rather than turned into
+ * an error the client must handle.
+ */
+function clearRedirectedMemberCard(requestedId: string, rootChatId: string): void {
+  if (requestedId === rootChatId) return;
+  try {
+    if (clearCardFieldsOn(requestedId)) {
+      log.info(`Cleared stranded card fields from member chat ${requestedId} (card lives on root ${rootChatId})`);
+    }
+  } catch (err: any) {
+    log.error(`Could not clear stranded card fields from member chat ${requestedId}: ${err?.message ?? err}`);
+  }
+}
+
 cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Close or reopen many cards in one call; per-id failures are reported, not fatal'
@@ -123,7 +150,18 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
   try {
     // Resolve every root BEFORE writing any, so a typo in the middle of the
     // batch cannot half-apply: resolution is pure, writes are not.
-    const resolved: { id: string; rootChatId: string }[] = [];
+    //
+    // Two structures, because dedupe and reporting are different questions.
+    // `writeOrder` is the flip-once list; `rootByRequestedId` remembers what
+    // every requested id resolved to, including the ones deduped away. The
+    // previous version `continue`d on a duplicate root, so that id appeared in
+    // neither `updated[]` nor `failed[]` — and Board.tsx merges by
+    // `updatedById.get(c.id) ?? c`, so the tile silently kept its old
+    // lifecycle and the card visibly did not reopen. Measured with 10 real
+    // closed ids: requested 10, updated 9, failed 0. Since #394 removed the id
+    // cap, "Select all" over 804 cards makes it routine.
+    const writeOrder: { id: string; rootChatId: string }[] = [];
+    const rootByRequestedId = new Map<string, string>();
     const failed: { id: string; error: string }[] = [];
     const seenRoots = new Set<string>();
     for (const id of ids as string[]) {
@@ -132,25 +170,51 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
         failed.push({ id, error: "Card not found" });
         continue;
       }
-      // Two member ids of one tree name the same card — dedupe rather than
-      // double-write the lifecycle flip (which would also double-notify).
+      rootByRequestedId.set(id, root.rootChatId);
+      // Two member ids of one tree name the same card — flip it once rather
+      // than double-write (which would also double-notify). Reporting still
+      // covers both ids, via rootByRequestedId below.
       if (seenRoots.has(root.rootChatId)) continue;
       seenRoots.add(root.rootChatId);
-      resolved.push({ id, rootChatId: root.rootChatId });
+      writeOrder.push({ id, rootChatId: root.rootChatId });
     }
 
     const successfulRootIds = new Set<string>();
-    for (const { id, rootChatId } of resolved) {
+    const failedRootIds = new Map<string, string>();
+    for (const { id, rootChatId } of writeOrder) {
       try {
         patchCardFields(rootChatId, { lifecycle });
         successfulRootIds.add(rootChatId);
       } catch (err: any) {
         log.error(`Error updating card ${rootChatId} in bulk lifecycle: ${err}`);
+        failedRootIds.set(rootChatId, err?.message ?? "Failed to update card");
         failed.push({ id, error: err?.message ?? "Failed to update card" });
       }
     }
 
-    const updated = summarizeAll(true).filter((c) => successfulRootIds.has(c.id));
+    // Every requested id is now accounted for exactly once: a deduped id is
+    // reported with the summary of the root it named, and an id whose root's
+    // write threw is reported as failed even though a different id did the
+    // failing write. `updated.length + failed.length === ids.length` for any
+    // batch of distinct ids — the invariant Board.tsx's merge depends on.
+    const summaryByRootId = new Map(summarizeAll(true).map((c) => [c.id, c]));
+    const updated: CardSummary[] = [];
+    for (const [id, rootChatId] of rootByRequestedId) {
+      if (failedRootIds.has(rootChatId)) {
+        if (!failed.some((f) => f.id === id)) failed.push({ id, error: failedRootIds.get(rootChatId)! });
+        continue;
+      }
+      const summary = summaryByRootId.get(rootChatId);
+      if (!summary) {
+        // The root vanished between the write and the rollup (deleted
+        // concurrently). Reporting it as failed keeps the accounting total and
+        // leaves the id selected for a retry, which is the honest state.
+        failed.push({ id, error: "Card not found" });
+        continue;
+      }
+      updated.push(summary);
+      clearRedirectedMemberCard(id, rootChatId);
+    }
     if (updated.length > 0) {
       // Once for the batch, same reason as the single-card patch: a lifecycle
       // flip moves which chats the sidebar's cards-only filter admits.
@@ -239,6 +303,7 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     if (!root) return res.status(404).json({ error: "Card not found" });
     const card = patchCardFields(root.rootChatId, patch as CardPatch);
     if (!card) return res.status(404).json({ error: "Card not found" });
+    clearRedirectedMemberCard(req.params.id, root.rootChatId);
     // A lifecycle flip changes which chats the sidebar's cards-only filter
     // admits, and that list is cached by query string — drop it so the next
     // poll reflects the close/reopen instead of serving the old membership.

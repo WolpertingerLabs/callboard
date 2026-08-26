@@ -1,4 +1,5 @@
 import type { DefaultPermissions } from "../api";
+import { resolveCardLifecycle, type CardLifecycleFilter } from "../types/chatFilters";
 import type { EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
 
 export type { EffortLevel };
@@ -25,8 +26,16 @@ interface LocalStorageData {
   useWorktree?: boolean;
   autoCreateBranch?: boolean;
   showTriggeredChats?: boolean;
-  /** Sidebar scoped to chats on an open card (and their descendants). */
+  /**
+   * Sidebar scoped to chats on an open card (and their descendants).
+   *
+   * @deprecated Superseded by {@link chatsCardLifecycle}. Still written, so
+   * downgrading to an older bundle keeps the user's scope; still read, so a
+   * store written by one keeps it on upgrade.
+   */
   chatsCardsOnly?: boolean;
+  /** Sidebar's card-lifecycle scope: "all" | "active" | "inactive". */
+  chatsCardLifecycle?: CardLifecycleFilter;
   /** Sidebar fades chats whose card is closed or absent, rather than hiding them. */
   chatsDimCardless?: boolean;
   /** Sidebar splits into Active/Inactive sections, chats on an open card first. */
@@ -383,14 +392,27 @@ export function saveShowTriggeredChats(value: boolean): void {
   setStorageData(data);
 }
 
-export function getChatsCardsOnly(): boolean {
+/**
+ * The persisted lifecycle scope, falling back to the deprecated `cardsOnly`
+ * boolean so a pref set before this filter existed still means "active".
+ * Validated on read rather than trusted: this comes out of JSON a hand edit or
+ * another bundle version could have written anything into, and the value is
+ * sent straight to the server as a query param.
+ */
+export function getChatsCardLifecycle(): CardLifecycleFilter {
   const data = getStorageData();
-  return data.chatsCardsOnly ?? false;
+  return resolveCardLifecycle({ cardLifecycle: data.chatsCardLifecycle, cardsOnly: data.chatsCardsOnly });
 }
 
-export function saveChatsCardsOnly(value: boolean): void {
+/**
+ * Write both halves. `chatsCardsOnly` is kept in lock-step so a downgrade to a
+ * bundle that only knows the boolean still lands the user on "active" rather
+ * than silently widening their sidebar to everything.
+ */
+export function saveChatsCardLifecycle(value: CardLifecycleFilter): void {
   const data = getStorageData();
-  data.chatsCardsOnly = value;
+  data.chatsCardLifecycle = value;
+  data.chatsCardsOnly = value === "active";
   setStorageData(data);
 }
 

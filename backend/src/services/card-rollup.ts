@@ -19,7 +19,9 @@
  * lookups are injected the same way so tests can run without the registry
  * (production deps in ROLLUP_DEPS).
  */
+import { statSync } from "fs";
 import type { Card, CardChatActivity, CardMemberChat, CardMemberRun, CardPendingKind, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
+import { isMtimeSettled } from "../utils/mtime-freshness.js";
 import { buildLineageIndex } from "./chat-lineage.js";
 import { cardFieldsFromChat, isCardEligible } from "./card-fields.js";
 import { sessionRegistry } from "./session-registry.js";
@@ -56,11 +58,143 @@ const PENDING_KIND_BY_EVENT: Record<string, CardPendingKind> = {
 };
 
 /**
- * Previews by session ID. A session's first user message is immutable once
- * written, so hits never go stale; misses (log not found / no user message
- * yet) are not cached so they can resolve on a later rollup.
+ * Previews by session ID — hits AND misses.
+ *
+ * Caching only the hits is what made `GET /api/cards` a ~1.6 s freeze of the
+ * whole daemon. Measured on an 8,322-record data dir: the rollup calls
+ * `previewOf` 1,015 times (630 distinct sessions), of which only 171 resolve.
+ * The other 459 name a session no provider can find — a chat whose harness
+ * was removed, or whose log was deleted out from under its record — and each
+ * of those costs a walk of all five providers, which for claude-code means an
+ * `existsSync` per project directory. Uncached that is 823 ms of the 1,566 ms
+ * rollup, re-paid on every request, and the board polls every 15 s per open
+ * tab and refetches on every metadata change.
+ *
+ * A hit never goes stale (a session's first user message is immutable once
+ * written), so the only question is how a *miss* is allowed to become a hit
+ * again. Two shapes of miss, invalidated differently, because only one of
+ * them has a file to stat:
+ *
+ *   - "empty": the log was found but holds no user message yet. Gated on the
+ *     log's `(mtimeNs, size)` exactly the way chats-snapshot.ts gates its
+ *     entries — one stat instead of a provider walk, and the first message
+ *     written to that log invalidates the entry by moving both halves.
+ *   - "unresolved": no provider resolves the session at all, so there is no
+ *     path to stat and no file whose change could invalidate anything. Bounded
+ *     by {@link UNRESOLVED_RECHECK_MS} instead: a log that appears later is
+ *     picked up within one window rather than never, and the 459 dead lookups
+ *     are paid once per window rather than once per request — and never all in
+ *     one request, see {@link UNRESOLVED_RECHECK_BUDGET_PER_SEC}.
+ *
+ * Bounded by the chat corpus, like the snapshot's own index: keys are session
+ * ids that appear in it, and nothing else is ever inserted.
  */
-const previewCache = new Map<string, string>();
+type PreviewEntry =
+  | { kind: "hit"; preview: string }
+  | { kind: "empty"; logPath: string; mtimeNs: bigint; size: bigint }
+  | { kind: "unresolved"; checkedAt: number };
+
+const previewCache = new Map<string, PreviewEntry>();
+
+/**
+ * How long a "this session resolves to no log at all" verdict stands before
+ * the provider walk is repeated.
+ *
+ * Long enough that neither the board's 15 s poll nor a burst of metadata-driven
+ * refetches re-pays the walk, and short enough that a session whose log shows
+ * up late (a chat spawned against a provider that writes its log on first turn)
+ * gets its preview without waiting for a daemon restart.
+ */
+export const UNRESOLVED_RECHECK_MS = 5 * 60_000;
+
+/**
+ * How many unresolved sessions may be re-walked per second, across all callers.
+ *
+ * The window above bounds how *often* the dead lookups are paid; this bounds
+ * how many land in any one synchronous rollup, which is the thing the user
+ * actually feels. Without it, 459 entries falling due together would put the
+ * whole ~823 ms walk back into a single request — the freeze this cache exists
+ * to remove, merely made periodic. At ~1.8 ms per walk on the measured corpus,
+ * 25 is about 45 ms: invisible next to the ~38 ms warm rollup, while still
+ * revisiting every entry of a 459-strong backlog inside a couple of polls.
+ *
+ * An entry passed over keeps its old `checkedAt`, so it stays due and is simply
+ * picked up by the next request rather than skipped for a whole window.
+ */
+export const UNRESOLVED_RECHECK_BUDGET_PER_SEC = 25;
+
+let recheckWindowStart = 0;
+let recheckWindowUsed = 0;
+
+/** Claim one of this second's unresolved re-walks, or decline. */
+function claimRecheckBudget(now: number): boolean {
+  if (now - recheckWindowStart >= 1_000) {
+    recheckWindowStart = now;
+    recheckWindowUsed = 0;
+  }
+  if (recheckWindowUsed >= UNRESOLVED_RECHECK_BUDGET_PER_SEC) return false;
+  recheckWindowUsed++;
+  return true;
+}
+
+/**
+ * Resolve a session's preview through the cache above. Returns null for both
+ * shapes of miss; the caller cannot tell them apart and does not need to.
+ */
+function cachedPreviewOf(sessionId: string, now: number = Date.now()): string | null {
+  const cached = previewCache.get(sessionId);
+  if (cached) {
+    if (cached.kind === "hit") return cached.preview;
+    if (cached.kind === "unresolved") {
+      if (now - cached.checkedAt < UNRESOLVED_RECHECK_MS) return null;
+      if (!claimRecheckBudget(now)) return null;
+    } else {
+      try {
+        const stats = statSync(cached.logPath, { bigint: true });
+        if (stats.mtimeNs === cached.mtimeNs && stats.size === cached.size) return null;
+      } catch {
+        // Log deleted since: fall through to the walk, which will land on
+        // "unresolved" and stop stat-ing a path that no longer exists.
+      }
+    }
+  }
+
+  for (const provider of getSessionProviders()) {
+    const resolved = provider.resolveSession(sessionId);
+    if (!resolved) continue;
+    const preview = provider.getSessionPreview(resolved.logPath);
+    if (preview) {
+      previewCache.set(sessionId, { kind: "hit", preview });
+      return preview;
+    }
+    // Same caching rule as chats-snapshot.ts: an entry whose mtime tick has
+    // not closed yet is not cacheable, because a later write could still land
+    // inside it and present an unchanged (mtimeNs, size). Statting AFTER the
+    // read would let a slow read talk us into trusting a stale timestamp, so
+    // a stat failure here simply declines to cache.
+    try {
+      const stats = statSync(resolved.logPath, { bigint: true });
+      if (isMtimeSettled(stats.mtimeNs, now)) {
+        previewCache.set(sessionId, { kind: "empty", logPath: resolved.logPath, mtimeNs: stats.mtimeNs, size: stats.size });
+      } else {
+        previewCache.delete(sessionId);
+      }
+    } catch {
+      previewCache.delete(sessionId);
+    }
+    return null;
+  }
+
+  previewCache.set(sessionId, { kind: "unresolved", checkedAt: now });
+  return null;
+}
+
+/** Drop every cached preview verdict. For tests; production never needs it. */
+export function resetPreviewCache(): void {
+  previewCache.clear();
+  recheckWindowStart = 0;
+  recheckWindowUsed = 0;
+}
 
 /** Production deps — same double-keyed lookups as chatStatus() in chat-lineage.ts. */
 export const ROLLUP_DEPS: RollupDeps = {
@@ -81,18 +215,7 @@ export const ROLLUP_DEPS: RollupDeps = {
     };
   },
   awaitingChildrenOf: (chatId) => listPendingForParent(chatId).length,
-  previewOf: (sessionId) => {
-    const cached = previewCache.get(sessionId);
-    if (cached !== undefined) return cached;
-    for (const provider of getSessionProviders()) {
-      const resolved = provider.resolveSession(sessionId);
-      if (!resolved) continue;
-      const preview = provider.getSessionPreview(resolved.logPath);
-      if (preview) previewCache.set(sessionId, preview);
-      return preview;
-    }
-    return null;
-  },
+  previewOf: (sessionId) => cachedPreviewOf(sessionId),
 };
 
 /** Run statuses that count as "the job is still going" for the rollup. */

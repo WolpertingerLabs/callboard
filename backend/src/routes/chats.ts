@@ -369,13 +369,14 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
-  /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'When true, return only chats whose lineage root is an OPEN card (a non-triggered, non-job-step top-level chat), plus every chat in those trees. Chats on closed cards, non-card chats, and sessions with no stored record are excluded.' } */
+  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of each chat's card: 'all' (default, no scoping), 'active' (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or 'inactive' (the complement: chats on a CLOSED card's tree, plus chats that are on no card at all). Sessions with no stored record carry no membership and are excluded by either non-default value." } */
+  /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'Back-compatible alias for cardLifecycle=active, kept for persisted prefs and older client bundles. Ignored when cardLifecycle is given.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields" } */
   try {
     // Check cache (stale-while-revalidate)
     const bypassCache = req.query.cached === "false";
-    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}`;
+    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}:${req.query.cardLifecycle || ""}`;
     const now = Date.now();
 
     if (!bypassCache) {
@@ -424,25 +425,47 @@ chatsRouter.get("/", (req, res) => {
     const bookmarkedFilter = req.query.bookmarked === "true";
     const excludeTriggered = req.query.excludeTriggered === "true";
     const includeLineage = req.query.includeLineage === "true";
-    const cardsOnly = req.query.cardsOnly === "true";
+    /**
+     * The lifecycle scope this request asks for.
+     *
+     * `cardsOnly=true` is the same question in the old vocabulary and stays a
+     * pure alias for `active`, because it is persisted in browser localStorage
+     * and sent by client bundles older than this daemon — dropping it would
+     * silently widen those sidebars from "open cards" to everything. An
+     * explicit `cardLifecycle` wins when both are present.
+     *
+     * Anything unrecognised degrades to `all` rather than 400: this is a view
+     * scope, and answering an unknown scope with an error would break a
+     * sidebar over a typo where showing everything merely ignores it.
+     */
+    const rawLifecycle = typeof req.query.cardLifecycle === "string" ? req.query.cardLifecycle : undefined;
+    const cardLifecycleFilter: "all" | "active" | "inactive" =
+      rawLifecycle === "active" || rawLifecycle === "inactive" ? rawLifecycle : rawLifecycle === "all" ? "all" : req.query.cardsOnly === "true" ? "active" : "all";
+    const scopedByCardLifecycle = cardLifecycleFilter !== "all";
 
     // Lineage index over file-storage chats — built for the tree view (row
-    // pagination + the lineage-append pass below) and for the cards-only
+    // pagination + the lineage-append pass below) and for the card-lifecycle
     // filter, which walks it to pull in the descendants of card members.
     // One metadata parse per chat, memoized root resolution.
-    const lineageIndex = includeLineage || cardsOnly ? buildLineageIndex(fileChats) : null;
+    const lineageIndex = includeLineage || scopedByCardLifecycle ? buildLineageIndex(fileChats) : null;
 
     /**
-     * Chat ids the cards-only filter admits: every chat whose lineage root
-     * is an OPEN card. Membership is derived from the tree —
-     * existingRootIdOf walks parent pointers (and job-step chats' stamped
-     * rootChatId) to the highest surviving root, whose own record says whether
-     * its card is open or hidden.
-     * Hidden cards are omitted too: they opted out of the board, and this
-     * view is the board's chat-listing sibling. Null when the filter is off.
+     * Chat ids the card-lifecycle filter admits. Membership is derived from
+     * the tree — existingRootIdOf walks parent pointers (and job-step chats'
+     * stamped rootChatId) to the highest surviving root, whose own record says
+     * whether its card is open, closed or hidden. Null when the filter is off.
+     *
+     * `active` is the old `cardsOnly` set exactly: chats whose root is an
+     * open, visible card. `inactive` is its complement over chats that HAVE a
+     * record — a closed card's tree, a hidden card's tree, and chats whose
+     * root is not a card at all (triggered or job-step roots). That last group
+     * belongs in "inactive" rather than nowhere: with 804 of 805 cards closed
+     * on the data dir this was diagnosed against, a filter that also hid every
+     * card-less chat would answer "show me the inactive ones" with a list that
+     * omits most of what the user is looking at.
      */
     let cardScopedChatIds: Set<string> | null = null;
-    if (cardsOnly && lineageIndex) {
+    if (scopedByCardLifecycle && lineageIndex) {
       const openRootIds = new Set<string>();
       for (const chat of fileChats) {
         // Only the highest existing eligible ancestor can be a card. Using
@@ -454,7 +477,8 @@ chatsRouter.get("/", (req, res) => {
       }
       cardScopedChatIds = new Set<string>();
       for (const chat of fileChats) {
-        if (openRootIds.has(lineageIndex.existingRootIdOf(chat.id))) cardScopedChatIds.add(chat.id);
+        const onActiveCard = openRootIds.has(lineageIndex.existingRootIdOf(chat.id));
+        if (onActiveCard === (cardLifecycleFilter === "active")) cardScopedChatIds.add(chat.id);
       }
     }
 
@@ -486,13 +510,13 @@ chatsRouter.get("/", (req, res) => {
     // flag lives in chat file metadata). For bookmarks, fetch all. For excludeTriggered,
     // over-fetch to ensure we get enough non-triggered results. includeLineage also
     // needs the full session list so out-of-window tree relatives can be augmented.
-    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || cardsOnly;
+    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle;
     const fetchLimit = needsPostFilter ? 9999 : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
 
     // Card membership is decided from the file record alone, so the
-    // cards-only filter runs BEFORE augmentation — augmentSession reads the
+    // lifecycle filter runs BEFORE augmentation — augmentSession reads the
     // session log for a preview, which is the expensive part. A session with
     // no stored record can't carry membership and is dropped here.
     const paginatedSessions = cardScopedChatIds
@@ -730,7 +754,7 @@ chatsRouter.get("/", (req, res) => {
      * parentage root fold into one row, so a page always contributes
      * `limit` visible rows no matter how many chats fold together.
      *
-     * Gated on includeLineage, not on the index existing: the cards-only
+     * Gated on includeLineage, not on the index existing: the card-lifecycle
      * filter builds the same index for its descendant walk, and folding rows
      * for a request that did not ask for lineage would silently drop chats
      * from the page. The sidebar always asks; other API clients need not.
@@ -771,8 +795,8 @@ chatsRouter.get("/", (req, res) => {
       // so the window is filled from what's left.
       const augmented = dropTriggered(paginatedSessions.map(augmentSession));
       ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
-    } else if (includeLineage || cardsOnly) {
-      // Sessions were over-fetched (for lineage lookup, or so the cards-only
+    } else if (includeLineage || scopedByCardLifecycle) {
+      // Sessions were over-fetched (for lineage lookup, or so the lifecycle
       // filter could run across the whole list) — paginate manually, by row
       // for the tree view, augmenting only the windowed sessions.
       const window = paginateWindow(paginatedSessions, (s) => fileChatsBySessionId.get(s.sessionId)?.id ?? s.sessionId);
@@ -822,8 +846,8 @@ chatsRouter.get("/", (req, res) => {
       const appended: any[] = [];
       for (const id of relatedIds) {
         if (pageIds.has(id)) continue;
-        // An ancestor on a closed card (or no card) is outside the cards-only
-        // view — appending it would smuggle back exactly what the filter drops.
+        // A relative outside the requested lifecycle scope must not be
+        // appended — that would smuggle back exactly what the filter drops.
         if (cardScopedChatIds && !cardScopedChatIds.has(id)) continue;
         const fc = fileById.get(id);
         if (!fc) continue;
