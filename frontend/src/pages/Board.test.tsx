@@ -122,6 +122,7 @@ function selectedTitles() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
 });
 afterEach(cleanup);
 
@@ -290,6 +291,28 @@ describe("Ctrl+A", () => {
     fireEvent.keyDown(document, { key: "a", metaKey: true });
 
     expect(count()).toBeNull();
+  });
+});
+
+describe("mobile Select all", () => {
+  it("selects every card in the active lifecycle scope", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
+    await mount();
+    fireEvent.contextMenu(tile("Alpha one"));
+
+    const selectAll = screen.getByRole("button", { name: "Select all" }) as HTMLButtonElement;
+    expect(selectAll.disabled).toBe(false);
+    fireEvent.click(selectAll);
+
+    expect(selectedTitles()).toEqual(["Alpha one", "Alpha two", "Beta one", "Beta two"]);
+    expect(selectAll.disabled).toBe(true);
+  });
+
+  it("does not show the button on desktop, where Ctrl/Cmd+A is available", async () => {
+    await mount();
+    fireEvent.click(tile("Alpha one"), { metaKey: true });
+
+    expect(screen.queryByRole("button", { name: "Select all" })).toBeNull();
   });
 });
 
