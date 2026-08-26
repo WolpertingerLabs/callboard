@@ -28,7 +28,7 @@ vi.mock("../services/claude.js", () => ({ getActiveSession: () => null, getPendi
 // notification whose COUNT is under test.
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args) } }));
 
-const { cardsRouter, BULK_LIFECYCLE_MAX } = await import("./cards.js");
+const { cardsRouter } = await import("./cards.js");
 const { chatFileService } = await import("../services/chat-file-service.js");
 const { readCardFields } = await import("../services/card-fields.js");
 
@@ -163,15 +163,13 @@ describe("POST /api/cards/bulk-lifecycle", () => {
     expect(readCardFields(id)!.lifecycle).toBe("open");
   });
 
-  it("400s over the batch cap and accepts a batch exactly at it", async () => {
-    const overCap = Array.from({ length: BULK_LIFECYCLE_MAX + 1 }, (_, i) => `chat-bulk-${i}`);
-    const over = await bulkLifecycle({ ids: overCap, lifecycle: "closed" });
-    expect(over.code).toBe(400);
-    expect(over.body.error).toMatch(/limited to 200/);
+  it("accepts batches larger than the former 200-id cap", async () => {
+    const ids = Array.from({ length: 201 }, (_, i) => `chat-bulk-${i}`);
+    const res = await bulkLifecycle({ ids, lifecycle: "closed" });
 
-    const atCap = await bulkLifecycle({ ids: overCap.slice(0, BULK_LIFECYCLE_MAX), lifecycle: "closed" });
-    expect(atCap.code).toBe(200);
-    expect(atCap.body.failed).toHaveLength(BULK_LIFECYCLE_MAX);
+    expect(res.code).toBe(200);
+    expect(res.body.updated).toEqual([]);
+    expect(res.body.failed).toHaveLength(ids.length);
   });
 
   it("notifies metadata exactly ONCE for an N-card batch, not once per card", async () => {
