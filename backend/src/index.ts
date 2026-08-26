@@ -70,7 +70,7 @@ import { installProcessGuards } from "./utils/process-guards.js";
 import { sweepTrash } from "./utils/worktree-trash.js";
 import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initJobRunner, shutdownJobRunner } from "./services/job-runner.js";
-import { migrateCardsToMetadata } from "./services/card-migration.js";
+import { migrateCardsToMetadata, repairStrandedCardFields } from "./services/card-migration.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { shutdownDebounce } from "./services/trigger-debounce.js";
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
@@ -431,6 +431,18 @@ try {
   migrateCardsToMetadata();
 } catch (err: any) {
   log.error(`Card migration failed: ${err.message} — the daemon continues on unmigrated data; the migration will retry on next boot`);
+}
+
+// Card fields stranded on a non-root chat by the first shipped migration are
+// invisible to the board (card-rollup only projects from lineage roots), and
+// the migration's marker means it will never revisit those installs. Runs on
+// every boot, separately from the marker, and is idempotent — same placement
+// rationale as the migration: before any request or run can read the half-
+// repaired shape.
+try {
+  repairStrandedCardFields();
+} catch (err: any) {
+  log.error(`Stranded card repair failed: ${err.message} — affected cards keep showing stale fields; the repair retries on next boot`);
 }
 
 app.listen(PORT, () => {
