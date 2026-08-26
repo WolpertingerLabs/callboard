@@ -276,6 +276,29 @@ export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
 }
 
 /**
+ * Remove a `metadata.card` object from a chat that is NOT the card's root.
+ * Returns true when something was actually cleared.
+ *
+ * Call this from every write path that redirects a member chat id to its
+ * tree's root. Card fields on a member are unreadable by design (the rollup
+ * only projects from lineage roots), so a stale `lifecycle: "closed"` sitting
+ * there cannot be edited through the card and never goes away: a reopen
+ * patches the root, returns the root's now-open summary, and leaves the member
+ * still saying "closed" on disk. Anything reading that record — or a later
+ * repair pass — then disagrees with the board about the same card, which is
+ * the shape the "reopen does nothing" report took.
+ *
+ * View-only, like every other card write: no `updated_at` bump.
+ */
+export function clearCardFieldsOn(chatId: string): boolean {
+  const chat = chatFileService.getChat(chatId);
+  if (!chat) return false;
+  const meta = parseMeta(chat);
+  if (meta.card === undefined || meta.card === null) return false;
+  return chatFileService.updateChatMetadata(chatId, { card: null }, { touch: false });
+}
+
+/**
  * Whether a chat qualifies as a card root: it is a lineage root (no parent),
  * not triggered, and not a job-step chat. This is the exact set the old
  * auto-card logic created cards for, so board membership is unchanged. Pure
