@@ -17,6 +17,18 @@ let parentChat: any;
 vi.mock("../utils/chat-lookup.js", () => ({ findChat: () => parentChat }));
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
+    // walkToRootId validates the parent's stored root before stamping the
+    // fork. Return the parent itself and, when its fixture names one, a
+    // minimal existing ancestor.
+    getChat: (id: string) => {
+      if (!parentChat) return null;
+      if (id === parentChat.id || id === parentChat.session_id) return parentChat;
+      const meta = JSON.parse(parentChat.metadata || "{}");
+      if (id === meta.parentChatId || id === meta.forkedFrom || id === meta.rootChatId) {
+        return { ...parentChat, id, session_id: id, metadata: "{}" };
+      }
+      return null;
+    },
     // Echoes the composed metadata back so the test can assert on it, plus the
     // top-level workspaceId argument (which is a Chat field, not metadata).
     createChat: (folder: string, sessionId: string, metadata: string, workspaceId?: string) => ({

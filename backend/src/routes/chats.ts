@@ -8,8 +8,8 @@ import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
-import { buildChatTree, buildLineageIndex, paginateTreeRows } from "../services/chat-lineage.js";
-import { isCardRoot, cardLifecycleOf, rawCardFields } from "../services/card-fields.js";
+import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
+import { isCardEligible, cardLifecycleOf, rawCardFields } from "../services/card-fields.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -434,9 +434,10 @@ chatsRouter.get("/", (req, res) => {
 
     /**
      * Chat ids the cards-only filter admits: every chat whose lineage root
-     * is an OPEN card. Membership is derived from the tree — rootKeyOf walks
-     * parent pointers (and job-step chats' stamped rootChatId) to the root,
-     * and the root's own record says whether its card is open or hidden.
+     * is an OPEN card. Membership is derived from the tree —
+     * existingRootIdOf walks parent pointers (and job-step chats' stamped
+     * rootChatId) to the highest surviving root, whose own record says whether
+     * its card is open or hidden.
      * Hidden cards are omitted too: they opted out of the board, and this
      * view is the board's chat-listing sibling. Null when the filter is off.
      */
@@ -444,17 +445,16 @@ chatsRouter.get("/", (req, res) => {
     if (cardsOnly && lineageIndex) {
       const openRootIds = new Set<string>();
       for (const chat of fileChats) {
-        // Only a card root can be open: non-roots are filtered out by
-        // rootKeyOf below, and roots that fail isCardRoot (triggered, job
-        // steps) are not cards at all. Hidden roots are skipped — they opted
-        // out of the board, and this view is the board's chat-listing sibling.
-        if (lineageIndex.rootKeyOf(chat.id) === chat.id && isCardRoot(chat) && !isCardHidden(chat) && cardLifecycleOf(chat) === "open") {
+        // Only the highest existing eligible ancestor can be a card. Using
+        // existingRootIdOf (rather than the sidebar's synthetic dangling row
+        // key) promotes surviving descendants after a parent is deleted.
+        if (lineageIndex.existingRootIdOf(chat.id) === chat.id && isCardEligible(chat) && !isCardHidden(chat) && cardLifecycleOf(chat) === "open") {
           openRootIds.add(chat.id);
         }
       }
       cardScopedChatIds = new Set<string>();
       for (const chat of fileChats) {
-        if (openRootIds.has(lineageIndex.rootKeyOf(chat.id))) cardScopedChatIds.add(chat.id);
+        if (openRootIds.has(lineageIndex.existingRootIdOf(chat.id))) cardScopedChatIds.add(chat.id);
       }
     }
 
@@ -1141,7 +1141,10 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // fields — the fork becomes a child of the original in the chat tree.
     forkedFrom: chat.id,
     parentChatId: chat.id,
-    rootChatId: meta.rootChatId || chat.id,
+    // Resolve rather than trusting a possibly stale/legacy stamp: deleting an
+    // ancestor promotes the highest surviving chat, and old forkedFrom-only
+    // chains may never have carried rootChatId at all.
+    rootChatId: walkToRootId(chat.id),
     chatRole: isHandoff ? "engine-switch" : "fork",
     // Pin the target harness for the new chat's lifetime, mirroring
     // sendMessage's convention of omitting the "claude-code" default rather
@@ -1417,6 +1420,10 @@ chatsRouter.delete("/:id", (req, res) => {
     }
 
     clearListCaches();
+    // A chat is now also board state: deleting a root removes a card, and
+    // deleting any member changes its rollup. Wake board/sidebar clients now
+    // rather than leaving them stale until the 15-second safety poll.
+    sessionRegistry.notifyMetadata(fileChat?.id ?? req.params.id, { cardEvent: "updated" });
     res.json({ ok: true });
   } catch (err: any) {
     log.error(`Error deleting chat: ${err}`);

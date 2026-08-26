@@ -6,7 +6,7 @@
  * rollup derives the card list from the chat corpus: every lineage root
  * that is not triggered and not a job-step chat is a card, with fields
  * read from `metadata.card` (absent means all defaults).  Membership is
- * discovered via the lineage tree — all chats whose `rootKeyOf` resolves
+ * discovered via the lineage tree — all chats whose `existingRootIdOf` resolves
  * to the same root are on the same card, and runs carry `rootChatId` to
  * say which root they belong to.
  *
@@ -21,7 +21,7 @@
  */
 import type { Card, CardChatActivity, CardMemberChat, CardMemberRun, CardPendingKind, CardRollupState, CardSummary, Chat, JobRunListItem } from "shared";
 import { buildLineageIndex } from "./chat-lineage.js";
-import { cardFieldsFromChat, isCardRoot } from "./card-fields.js";
+import { cardFieldsFromChat, isCardEligible } from "./card-fields.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest } from "./claude.js";
 import { getSessionProviders } from "../agents/factory.js";
@@ -102,7 +102,8 @@ type ChatMeta = Record<string, unknown>;
 
 function parseMeta(chat: Chat): ChatMeta {
   try {
-    return JSON.parse(chat.metadata || "{}");
+    const parsed: unknown = JSON.parse(chat.metadata || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ChatMeta) : {};
   } catch {
     return {};
   }
@@ -176,30 +177,39 @@ function rollupState(chats: CardMemberChat[], runs: CardMemberRun[]): CardRollup
  * Build card summaries from a snapshot of chats and runs.
  *
  * Cards are derived, not passed in: every lineage root that passes
- * `isCardRoot` becomes a card, its fields projected from the SAME snapshot
- * record (`cardFieldsFromChat`) — never a second store read.  Chats are
- * grouped by `rootKeyOf`; runs by `run.rootChatId`.  Hidden cards
+ * `isCardEligible` becomes a card, its fields projected from the SAME snapshot
+ * record (`cardFieldsFromChat`) — never a second store read. Chats are grouped
+ * by their highest existing root; runs by `run.rootChatId` (falling back to a
+ * surviving latest chat after root deletion). Hidden cards
  * (`metadata.card.hidden === true`) are omitted from the board view.
  */
-export function buildCardSummaries(chats: Chat[], allRuns: JobRunListItem[], deps: RollupDeps = ROLLUP_DEPS): CardSummary[] {
-  const { rootKeyOf } = buildLineageIndex(chats);
+export function buildCardSummaries(
+  chats: Chat[],
+  allRuns: JobRunListItem[],
+  deps: RollupDeps = ROLLUP_DEPS,
+  opts: { includeHidden?: boolean } = {},
+): CardSummary[] {
+  const { existingRootIdOf } = buildLineageIndex(chats);
 
   // Find every lineage root that qualifies as a card, with its projected
   // fields. Hidden cards are opted out of the board (replacement for the
   // old createCard: false).
   const cardsByRoot = new Map<string, Card>();
   for (const chat of chats) {
-    if (rootKeyOf(chat.id) !== chat.id) continue;
-    if (!isCardRoot(chat)) continue;
-    const card = cardFieldsFromChat(chat);
-    if (card.hidden) continue;
+    if (existingRootIdOf(chat.id) !== chat.id) continue;
+    if (!isCardEligible(chat)) continue;
+    // Raw file records do not carry metadata.preview. Use the same immutable
+    // first-user-message fallback as the member row so a CLI-created or
+    // otherwise untitled root does not produce an "Untitled" card face.
+    const card = cardFieldsFromChat(chat, () => deps.previewOf(chat.session_id));
+    if (card.hidden && !opts.includeHidden) continue;
     cardsByRoot.set(chat.id, card);
   }
 
   // Group chats by root.
   const chatsByRoot = new Map<string, CardMemberChat[]>();
   for (const chat of chats) {
-    const rootId = rootKeyOf(chat.id);
+    const rootId = existingRootIdOf(chat.id);
     if (!cardsByRoot.has(rootId)) continue;
     const meta = parseMeta(chat);
     if (isRetiredProvider(meta.provider)) continue;
@@ -211,7 +221,12 @@ export function buildCardSummaries(chats: Chat[], allRuns: JobRunListItem[], dep
   // Group runs by their lineage root.
   const runsByRoot = new Map<string, CardMemberRun[]>();
   for (const run of allRuns) {
-    const rootId = run.rootChatId;
+    // A deleted root promotes the run's latest surviving step chat along with
+    // the rest of that tree. Old runs retain their historical rootChatId, so
+    // fall back through latestChatId when that root no longer names a card.
+    const rootId =
+      (run.rootChatId && cardsByRoot.has(run.rootChatId) ? run.rootChatId : undefined) ??
+      (run.latestChatId ? existingRootIdOf(run.latestChatId) : undefined);
     if (!rootId || !cardsByRoot.has(rootId)) continue;
     const members = runsByRoot.get(rootId) ?? [];
     members.push(toMemberRun(run));

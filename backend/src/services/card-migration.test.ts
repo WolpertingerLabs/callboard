@@ -10,7 +10,7 @@
  * must be a no-op, and the per-card archive moves + persisted mapping are
  * what make a crash-then-retry consistent.
  */
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -191,6 +191,65 @@ describe("migrateCardsToMetadata", () => {
 
     const second = migrateCardsToMetadata();
     expect(second).toMatchObject({ skipped: true, migrated: 0, runsRewritten: 0 });
+  });
+
+  it("finishes an archive move after a crash persisted the map first", () => {
+    chat("root-retry", { cardId: "card-retry", card: { title: "Already merged" } });
+    legacyCard({
+      id: "card-retry",
+      title: "Already merged",
+      description: "",
+      emoji: "🗂️",
+      lifecycle: "open",
+      pinned: false,
+      createdAt: "2026-07-02T00:00:00.000Z",
+      updatedAt: "2026-07-02T00:00:00.000Z",
+    });
+    legacyRun("run-retry", "card-retry");
+    // State left by a crash between saveMap() and renameSync().
+    mkdirSync(archiveDir, { recursive: true });
+    writeFileSync(join(archiveDir, "migration-map.json"), JSON.stringify({ "card-retry": "root-retry" }));
+
+    migrateCardsToMetadata();
+
+    expect(existsSync(join(cardsDir, "card-retry.json"))).toBe(false);
+    expect(existsSync(join(archiveDir, "card-retry.json"))).toBe(true);
+    expect(readRun("run-retry")).toMatchObject({ rootChatId: "root-retry" });
+    expect(readRun("run-retry").cardId).toBeUndefined();
+  });
+
+  it("keeps the legacy card live when its fields cannot be persisted", () => {
+    chat("root-write-fail", { cardId: "card-write-fail" });
+    legacyCard({
+      id: "card-write-fail",
+      title: "Do not lose me",
+      description: "important",
+      emoji: "🚨",
+      lifecycle: "open",
+      pinned: false,
+      createdAt: "2026-07-02T00:00:00.000Z",
+      updatedAt: "2026-07-02T00:00:00.000Z",
+    });
+    const update = vi.spyOn(chatFileService, "updateChatMetadata").mockReturnValueOnce(false);
+
+    expect(() => migrateCardsToMetadata()).toThrow(/Could not persist migrated card/);
+
+    update.mockRestore();
+    expect(existsSync(join(cardsDir, "card-write-fail.json"))).toBe(true);
+    expect(existsSync(join(archiveDir, "card-write-fail.json"))).toBe(false);
+    expect(existsSync(join(tmpRoot, ".cards-as-metadata-migrated"))).toBe(false);
+  });
+
+  it("does not create legacy card directories on a fresh data dir", () => {
+    rmSync(cardsDir, { recursive: true, force: true });
+    rmSync(archiveDir, { recursive: true, force: true });
+
+    const first = migrateCardsToMetadata();
+    expect(first.skipped).toBe(false);
+    expect(existsSync(cardsDir)).toBe(false);
+    expect(existsSync(archiveDir)).toBe(false);
+    expect(existsSync(join(tmpRoot, ".cards-as-metadata-migrated"))).toBe(true);
+    expect(migrateCardsToMetadata().skipped).toBe(true);
   });
 
   it("archives memberless cards untouched and leaves their runs cardless", () => {

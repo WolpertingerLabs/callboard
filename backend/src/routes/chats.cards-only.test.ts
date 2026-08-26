@@ -166,6 +166,17 @@ describe("GET /api/chats?cardsOnly=true", () => {
     expect(JSON.parse(child.metadata).card).toBeUndefined();
   });
 
+  it("promotes a surviving descendant when its stored parent was deleted", async () => {
+    fileChats.push(
+      chat("promoted-root", { parentChatId: "deleted-root", rootChatId: "deleted-root" }),
+      chat("promoted-child", { parentChatId: "promoted-root", rootChatId: "deleted-root" }),
+    );
+    sessionIds.push("promoted-root", "promoted-child");
+
+    const body = await listChats({ cardsOnly: "true", limit: "50" });
+    expect(idsOf(body)).toEqual(expect.arrayContaining(["promoted-root", "promoted-child"]));
+  });
+
   it("composes with excludeTriggered", async () => {
     const body = await listChats({ cardsOnly: "true", excludeTriggered: "true", limit: "50" });
     expect(idsOf(body)).toEqual(["member", "member-child", "member-grandchild", "plain-child", "plain-root"]);

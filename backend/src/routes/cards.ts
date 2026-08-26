@@ -27,7 +27,7 @@ import type { Request, Response } from "express";
 import type { CardPatch, CardSummary } from "shared";
 import { buildCardSummaries } from "../services/card-rollup.js";
 import { listChatsSnapshot } from "../services/chats-snapshot.js";
-import { patchCardFields, isCardRoot, CardFieldError } from "../services/card-fields.js";
+import { patchCardFields, isCardEligible, CardFieldError } from "../services/card-fields.js";
 import { CARD_CATEGORY_MAX } from "shared";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
 import { chatFileService } from "../services/chat-file-service.js";
@@ -47,8 +47,8 @@ export const cardsRouter = Router();
  * lineage root. The rollup itself derives which roots are cards, so there is
  * no card list to pre-filter here.
  */
-function summarizeAll(): CardSummary[] {
-  return buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }));
+function summarizeAll(includeHidden = false): CardSummary[] {
+  return buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }), undefined, { includeHidden });
 }
 
 /**
@@ -60,6 +60,11 @@ function summarizeAll(): CardSummary[] {
  * chat is never a card).
  */
 function resolveCardRootChat(id: string): { rootChatId: string } | null {
+  // Chat records are filenames. The old card store guarded route ids before
+  // joining them to its directory; keep that boundary now that card ids flow
+  // through chatFileService instead, whose generic lookup also serves trusted
+  // internal callers and therefore does not impose a route-level policy.
+  if (!id || id.includes("/") || id.includes("\\") || id.includes("\0") || id === "." || id === "..") return null;
   const chat = chatFileService.getChat(id);
   if (!chat) return null;
   const rootChatId = walkToRootId(id);
@@ -67,7 +72,10 @@ function resolveCardRootChat(id: string): { rootChatId: string } | null {
   // can name a chat that has since been deleted, in which case getChat below
   // fails and this degrades to "not found", which is the honest answer.
   const rootChat = chatFileService.getChat(rootChatId);
-  if (!rootChat || !isCardRoot(rootChat)) return null;
+  // walkToRootId may promote an orphan whose parent was deleted. Such a
+  // record still carries a dangling parent pointer, so eligibility (manual,
+  // non-job chat) — not raw "has no parent field" — is the right guard.
+  if (!rootChat || !isCardEligible(rootChat)) return null;
   return { rootChatId };
 }
 
@@ -141,17 +149,18 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
       resolved.push({ id, rootChatId: root.rootChatId });
     }
 
-    for (const { rootChatId } of resolved) {
+    const successfulRootIds = new Set<string>();
+    for (const { id, rootChatId } of resolved) {
       try {
         patchCardFields(rootChatId, { lifecycle });
+        successfulRootIds.add(rootChatId);
       } catch (err: any) {
         log.error(`Error updating card ${rootChatId} in bulk lifecycle: ${err}`);
-        failed.push({ id: rootChatId, error: err?.message ?? "Failed to update card" });
+        failed.push({ id, error: err?.message ?? "Failed to update card" });
       }
     }
 
-    const updatedRootIds = new Set(resolved.map((r) => r.rootChatId));
-    const updated = summarizeAll().filter((c) => updatedRootIds.has(c.id));
+    const updated = summarizeAll(true).filter((c) => successfulRootIds.has(c.id));
     if (updated.length > 0) {
       // Once for the batch, same reason as the single-card patch: a lifecycle
       // flip moves which chats the sidebar's cards-only filter admits.
@@ -173,11 +182,18 @@ cardsRouter.get("/:id", (req: Request, res: Response) => {
   // #swagger.summary = 'Get a card with live rollup'
   // #swagger.description = 'id is the card\'s root chat id; any member chat id of the tree resolves to the same card.'
   /* #swagger.responses[404] = { description: "Card not found" } */
-  const root = resolveCardRootChat(req.params.id);
-  if (!root) return res.status(404).json({ error: "Card not found" });
-  const card = summarizeAll().find((c) => c.id === root.rootChatId);
-  if (!card) return res.status(404).json({ error: "Card not found" });
-  res.json({ card });
+  try {
+    const root = resolveCardRootChat(req.params.id);
+    if (!root) return res.status(404).json({ error: "Card not found" });
+    // Hidden is a board-listing concern, not deletion. A direct id remains
+    // readable/editable so callers can inspect or unhide an opted-out card.
+    const card = summarizeAll(true).find((c) => c.id === root.rootChatId);
+    if (!card) return res.status(404).json({ error: "Card not found" });
+    res.json({ card });
+  } catch (err: any) {
+    log.error(`Error getting card ${req.params.id}: ${err}`);
+    res.status(500).json({ error: "Failed to get card", details: err.message });
+  }
 });
 
 const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "statusEmoji", "category", "lifecycle", "metadata", "hidden"] as const;
@@ -236,9 +252,14 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     // A lifecycle flip changes which chats the sidebar's cards-only filter
     // admits, and that list is cached by query string — drop it so the next
     // poll reflects the close/reopen instead of serving the old membership.
-    if (patch.lifecycle !== undefined) clearListCaches();
+    if (patch.lifecycle !== undefined || patch.hidden !== undefined) clearListCaches();
     sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
-    res.json({ card: summarizeAll().find((c) => c.id === card.id) ?? card });
+    // includeHidden keeps the CardResponse shape stable when this very patch
+    // opts the card out of the list. Returning raw Card fields here would drop
+    // rollup/member fields from an endpoint typed as CardSummary.
+    const summary = summarizeAll(true).find((c) => c.id === card.id);
+    if (!summary) throw new Error(`Updated card "${card.id}" was missing from the chat snapshot`);
+    res.json({ card: summary });
   } catch (err: any) {
     if (err instanceof CardFieldError) return res.status(400).json({ error: err.message });
     if (/title/i.test(err.message ?? "")) return res.status(400).json({ error: err.message });

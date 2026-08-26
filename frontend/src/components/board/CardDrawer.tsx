@@ -9,7 +9,7 @@ import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
 import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag } from "lucide-react";
 
-/** Mirrors the store-side limits in backend/src/services/card-store.ts. */
+/** Mirrors the limits in backend/src/services/card-fields.ts. */
 const METADATA_KEY_MAX = 64;
 const METADATA_VALUE_MAX = 2048;
 
@@ -19,7 +19,7 @@ interface CardDrawerProps {
   categories: string[];
   /** Resolves false when the patch was rejected — editors stay open so input isn't lost. */
   onPatch: (patch: CardPatch) => Promise<boolean>;
-  /** Permanently delete the card — only invoked on closed cards, after an in-drawer confirm. */
+  /** Close the drawer (card deletion is root-chat deletion in the chat UI). */
   onClose: () => void;
 }
 
@@ -44,10 +44,6 @@ export default function CardDrawer({ card, categories, onPatch, onClose }: CardD
   const navigate = useNavigate();
   const [editingDescription, setEditingDescription] = useState(false);
   const closed = card.lifecycle === "closed";
-
-  // Disarm the delete confirmation after a few seconds rather than on blur:
-  // the board re-renders on every metadata poll, and a blur-triggered reset
-  // between the two clicks would silently swallow the confirming click.
 
   // Start a chat in the card's working context: the most recently active
   // member chat's folder, and — when that chat runs a configured agent —

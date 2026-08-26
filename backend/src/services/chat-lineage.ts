@@ -11,7 +11,7 @@ const log = createLogger("chat-lineage");
  *
  * Parentage is stamped ONLY at chat creation (sendMessage initialMetadata,
  * fork endpoint), never retroactively, so:
- *   - `rootChatId` in metadata can never go stale
+ *   - `rootChatId` is stable while its root exists (deletion can stale it)
  *   - creation-time links cannot form cycles (a child is always created
  *     after its parent)
  * Tree walks still carry visited-sets so hand-edited/corrupt chat files
@@ -34,14 +34,16 @@ type ChatMeta = Record<string, unknown>;
 
 function parseMeta(chat: Chat): ChatMeta {
   try {
-    return JSON.parse(chat.metadata || "{}");
+    const parsed: unknown = JSON.parse(chat.metadata || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ChatMeta) : {};
   } catch {
     return {};
   }
 }
 
 /** Parent pointer for a chat's metadata, aliasing legacy `forkedFrom`. */
-export function getParentChatId(meta: ChatMeta): string | undefined {
+export function getParentChatId(meta: ChatMeta | null | undefined): string | undefined {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return undefined;
   const parent = meta.parentChatId ?? meta.forkedFrom;
   return typeof parent === "string" && parent.length > 0 ? parent : undefined;
 }
@@ -58,10 +60,10 @@ export function resolveParentage(parentChatId: string): LineageMeta | null {
     log.debug(`resolveParentage: parent chat ${parentChatId} not found — skipping lineage stamp`);
     return null;
   }
-  const parentMeta = parseMeta(parent);
-  // Trust the parent's denormalized root when present (creation-time-only
-  // stamping means it cannot be stale); otherwise walk up.
-  const rootChatId = typeof parentMeta.rootChatId === "string" && parentMeta.rootChatId ? parentMeta.rootChatId : walkToRootId(parent.id);
+  // A root stamp is creation-time-only, but its target can still be deleted.
+  // walkToRootId validates it and promotes the highest surviving ancestor
+  // when it dangles, so newly spawned descendants never inherit a dead root.
+  const rootChatId = walkToRootId(parent.id);
   return {
     parentChatId: parent.id,
     rootChatId,
@@ -149,6 +151,8 @@ export interface LineageIndex<T> {
   parentIdOf: (chatId: string) => string | undefined;
   /** Memoized row/group key — see buildLineageIndex. */
   rootKeyOf: (chatId: string) => string;
+  /** Highest existing ancestor, mirroring {@link walkToRootId}. */
+  existingRootIdOf: (chatId: string) => string;
 }
 
 /**
@@ -174,7 +178,8 @@ export function buildLineageIndex<T extends { id: string; metadata?: string | nu
     byId.set(chat.id, chat);
     let meta: ChatMeta = {};
     try {
-      meta = JSON.parse(chat.metadata || "{}");
+      const parsed: unknown = JSON.parse(chat.metadata || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) meta = parsed as ChatMeta;
     } catch {}
     const rawParentId = getParentChatId(meta);
     const parentId = rawParentId !== chat.id ? rawParentId : undefined;
@@ -222,11 +227,64 @@ export function buildLineageIndex<T extends { id: string; metadata?: string | nu
     return key;
   };
 
+  // Card identity cannot use rootKeyOf's deliberately synthetic dangling
+  // keys: a card id must name a chat record that can actually hold
+  // metadata.card. This mirrors walkToRootId over the already-parsed snapshot.
+  // In particular, deleting a root promotes its highest surviving descendants
+  // to roots rather than making their whole trees disappear from the board.
+  const existingRootById = new Map<string, string>();
+  const existingRootIdOf = (chatId: string): string => {
+    const memoized = existingRootById.get(chatId);
+    if (memoized !== undefined) return memoized;
+    const path: string[] = [];
+    const visited = new Set<string>();
+    let currentId = chatId;
+    let rootId = chatId;
+    let resolved = false;
+
+    for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
+      const memo = existingRootById.get(currentId);
+      if (memo !== undefined) {
+        rootId = memo;
+        resolved = true;
+        break;
+      }
+      const lineage = lineageById.get(currentId);
+      if (!lineage) {
+        rootId = currentId;
+        resolved = true;
+        break;
+      }
+      path.push(currentId);
+      visited.add(currentId);
+
+      const stampedExists = lineage.rootChatId !== undefined && lineageById.has(lineage.rootChatId);
+      if (!lineage.parentId || visited.has(lineage.parentId)) {
+        rootId = stampedExists ? lineage.rootChatId! : currentId;
+        resolved = true;
+        break;
+      }
+      if (!lineageById.has(lineage.parentId)) {
+        rootId = stampedExists ? lineage.rootChatId! : currentId;
+        resolved = true;
+        break;
+      }
+      currentId = lineage.parentId;
+    }
+    // Match walkToRootId's defensive depth cap: a corrupt/deep chain falls
+    // back to the highest node reached within the bounded walk.
+    if (!resolved) rootId = currentId;
+
+    for (const id of path) existingRootById.set(id, rootId);
+    return rootId;
+  };
+
   return {
     byId,
     childrenByParent,
     parentIdOf: (chatId) => lineageById.get(chatId)?.parentId,
     rootKeyOf,
+    existingRootIdOf,
   };
 }
 

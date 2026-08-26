@@ -21,6 +21,9 @@ const LOADING = { dimCardless: true, cardsLoaded: false };
 const CARDS: Cards = new Map([
   ["open-card", { lifecycle: "open" as const }],
   ["closed-card", { lifecycle: "closed" as const }],
+  // Callers also index CardSummary.memberChats by chat id, which is the
+  // authoritative answer for legacy multi-level trees.
+  ["legacy-leaf", { lifecycle: "open" as const }],
 ]);
 
 describe("chatCardId", () => {
@@ -29,6 +32,7 @@ describe("chatCardId", () => {
     expect(chatCardId(chat({ rootChatId: "open-card" }))).toBe("open-card");
     // Pre-stamp records fall back to the parent pointer.
     expect(chatCardId(chat({ parentChatId: "open-card" }))).toBe("open-card");
+    expect(chatCardId(chat({ forkedFrom: "open-card" }))).toBe("open-card");
     // A top-level chat is its own root — and therefore its own card.
     expect(chatCardId(chat({}, "own-root"))).toBe("own-root");
     expect(chatCardId({ id: "bad", metadata: "{not json" })).toBeUndefined();
@@ -53,6 +57,7 @@ describe("isChatDimmed", () => {
     expect(isChatDimmed(chat({ triggered: true }, "triggered-root"), CARDS, ON)).toBe(true);
     expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, ON)).toBe(true);
     expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, ON)).toBe(false);
+    expect(isChatDimmed(chat({ forkedFrom: "intermediate" }, "legacy-leaf"), CARDS, ON)).toBe(false);
   });
 
   it("dims a chat whose root was deleted (dangling lineage)", () => {

@@ -123,13 +123,30 @@ describe("card derivation", () => {
     expect(summaries.map((s) => s.id)).toEqual(["chat-2"]);
   });
 
+  it("can include a hidden card for direct detail/update responses", () => {
+    const summaries = buildCardSummaries([root({ card: { hidden: true } })], [], IDLE_DEPS, { includeHidden: true });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ id: "chat-1", hidden: true, chatCount: 1 });
+  });
+
+  it("uses the session preview as an untitled root card's default title", () => {
+    const deps: RollupDeps = { ...IDLE_DEPS, previewOf: () => "  First   user message  " };
+    expect(rollupOf([root()], [], deps).title).toBe("First user message");
+  });
+
   it.each([
     ["triggered root", { triggered: true }],
     ["job-step root", { jobRunId: "run-9" }],
-    ["child chat", { parentChatId: "chat-9", rootChatId: "chat-9" }],
   ])("a %s is not a card", (_name, meta) => {
     const summaries = buildCardSummaries([root({ meta })], [], IDLE_DEPS);
     expect(summaries).toEqual([]);
+  });
+
+  it("does not make a child a separate card while its parent exists", () => {
+    const parent = root({ id: "chat-9", session_id: "sess-9" });
+    const child = root({ meta: { parentChatId: "chat-9", rootChatId: "chat-9" } });
+    const summaries = buildCardSummaries([parent, child], [], IDLE_DEPS);
+    expect(summaries.map((summary) => summary.id)).toEqual(["chat-9"]);
   });
 
   it("a job-step chat folds under its stamped root and counts as that card's member", () => {
@@ -225,6 +242,32 @@ describe("membership", () => {
     const summaries = buildCardSummaries([root(), chat(), corrupt], [], IDLE_DEPS);
     expect(summaries.map((s) => s.id).sort()).toEqual(["chat-1", "corrupt"]);
     expect(summaries.find((s) => s.id === "corrupt")!.memberChats[0].title).toBeNull();
+  });
+
+  it("treats valid non-object metadata as empty rather than crashing the board", () => {
+    const odd = root({ id: "odd", session_id: "odd-session", metadata: "null" });
+    const summaries = buildCardSummaries([odd], [], IDLE_DEPS);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ id: "odd", title: "Untitled", chatCount: 1 });
+  });
+
+  it("promotes the highest surviving descendant after its root is deleted", () => {
+    const orphan = root({ id: "orphan", session_id: "orphan-session", meta: { parentChatId: "deleted", rootChatId: "deleted" } });
+    const descendant = chat({ id: "orphan-child", session_id: "orphan-child-session", meta: { parentChatId: "orphan", rootChatId: "deleted" } });
+    const summaries = buildCardSummaries([orphan, descendant], [], IDLE_DEPS);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].id).toBe("orphan");
+    expect(summaries[0].memberChats.map((member) => member.chatId).sort()).toEqual(["orphan", "orphan-child"]);
+  });
+
+  it("keeps a run with a promoted orphan via its latest surviving chat", () => {
+    const orphan = root({ id: "orphan-run", session_id: "orphan-run-session", meta: { parentChatId: "deleted", rootChatId: "deleted" } });
+    const summaries = buildCardSummaries(
+      [orphan],
+      [run({ rootChatId: "deleted", latestChatId: "orphan-run" })],
+      IDLE_DEPS,
+    );
+    expect(summaries[0].memberRuns.map((member) => member.runId)).toEqual(["run-1"]);
   });
 
   it("a root-only card is idle with the card's timestamps", () => {

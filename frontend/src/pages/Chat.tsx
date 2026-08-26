@@ -446,21 +446,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, chat?.metadata]);
 
-  // Card (ticket) this chat belongs to — its lineage root — drives the
-  // composer's card action. Membership is the tree: rootChatId is stamped on
-  // every child at creation, parentChatId is the pre-stamp fallback, and a
-  // chat with neither is its own root.
-  const chatCardId = useMemo((): string | undefined => {
-    if (!id || !chat?.metadata) return undefined;
-    try {
-      const meta = JSON.parse(chat.metadata);
-      if (typeof meta.rootChatId === "string" && meta.rootChatId) return meta.rootChatId;
-      if (typeof meta.parentChatId === "string" && meta.parentChatId) return meta.parentChatId;
-      return id;
-    } catch {
-      return undefined;
-    }
-  }, [id, chat?.metadata]);
+  // GET /cards/:id accepts any member chat id and resolves the full lineage
+  // server-side. Pass the current id rather than reimplementing that walk from
+  // one metadata record — legacy multi-level forkedFrom trees cannot be
+  // resolved correctly without the other records.
+  const chatCardId = id && chat ? id : undefined;
 
   // The card record itself — needed for its lifecycle (the chat's metadata
   // only stores the id). Refetched on every metadata event so a close/reopen
@@ -2461,7 +2451,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {/* Card pill — which ticket this chat sits on, and whether it's
                 still open. Closing/reopening lives in the composer menu; this
                 is what makes that state visible without opening it. */}
-            {id && chatCard && (
+            {id && chatCard && !chatCard.hidden && (
               <div
                 onClick={() => navigate("/board")}
                 style={{

@@ -41,9 +41,9 @@ This plan removes the entity. A card becomes **metadata associated with the prom
 
 Rules:
 
-- **Which chats are cards:** a chat is a card iff it is a **lineage root** (`rootKeyOf(chat) === chat.id` — no `parentChatId`/`forkedFrom`) AND not `triggered` AND not a job step chat (`metadata.jobRunId`). This is exactly the set that gets an auto-card today, so board membership is unchanged for users.
+- **Which chats are cards:** a chat is a card iff it is the **highest existing lineage root** (`existingRootIdOf(chat) === chat.id`) AND not `triggered` AND not a job step chat (`metadata.jobRunId`). Ordinarily that means no `parentChatId`/`forkedFrom`; after an ancestor is deleted, the highest surviving descendant is promoted even though its stored parent pointer dangles. This is exactly the set that gets an auto-card today, so board membership is unchanged for users.
 - **Nothing is stamped at creation.** The `card` object is *absent* until someone sets a field; an absent object reads as all-defaults (open, unpinned, title = chat title). A prompt creating a card writes nothing.
-- **Membership is derived, never stored.** Member chats = every chat in the root's parentage tree (the same grouping `buildLineageIndex`/`rootKeyOf` already computes for the sidebar). Member runs = job runs spawned from chats in that tree (runs keep a `rootChatId`, replacing `cardId` — see Jobs below).
+- **Membership is derived, never stored.** Member chats = every chat in the root's surviving parentage tree (`buildLineageIndex`/`existingRootIdOf`). Member runs = job runs spawned from chats in that tree (runs keep a `rootChatId`, replacing `cardId` — see Jobs below).
 - **Deletion is chat deletion.** Deleting the root chat deletes the card; descendants that survive (if any) become their own roots and thus their own cards. No `unassignAllChatsFromCard`, no closed-only guard, no orphan sweep.
 - **Creation is prompt-sending.** There is no create surface anywhere. A user "creates a card" by starting a chat.
 
@@ -102,10 +102,10 @@ This is the largest single piece of new engineering in the plan and should be bu
 
 ## Migration
 
-One-time, at daemon startup, idempotent (a marker in the data dir, e.g. `cards/.migrated`):
+One-time, at daemon startup, idempotent (a `.cards-as-metadata-migrated` marker in the data dir):
 
 1. Load all card files; load all chat records; build a lineage index.
-2. For each card: resolve its **root member chat** — the member whose `rootKeyOf` is itself and is oldest; ties/absent-parent cases degrade to the oldest member. Memberless cards (created from the Board modal with no chat, or whose chats were all deleted) are **archived, not migrated**: move the file to `cards-archive/` untouched and log it. The user can read them there; nothing silently evaporates.
+2. For each card: resolve its **root member chat** — the member whose `existingRootIdOf` is itself and is oldest; ties/absent-parent cases degrade to the oldest member. Memberless cards (created from the Board modal with no chat, or whose chats were all deleted) are **archived, not migrated**: move the file to `cards-archive/` untouched and log it. The user can read them there; nothing silently evaporates.
 3. Merge the card's non-default fields into that root chat's `metadata.card` (only writing fields that differ from the defaults, keeping the absent-means-default invariant). Record `cardId → rootChatId` in the map.
 4. Strip `cardId` from every member chat's metadata (write `null` once for the string-check readers during a rolling window, or delete the key outright — see rollout).
 5. Rewrite every job run's `cardId` → `rootChatId` through the map; runs pointing at archived/memberless cards get none.

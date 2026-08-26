@@ -24,7 +24,7 @@ import { customSkillsService, slugifySkillName } from "./custom-skills-service.j
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId, walkToRootId } from "./chat-lineage.js";
-import { patchCardFields, isCardRoot, CardFieldError, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX } from "./card-fields.js";
+import { patchCardFields, isCardEligible, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX } from "./card-fields.js";
 import { buildCardSummaries } from "./card-rollup.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { listRuns } from "./job-store.js";
@@ -219,17 +219,21 @@ export function buildCallboardToolsSpec(
   const resolveCardTarget = (cardId: string | undefined): { rootChatId?: string; error?: string } => {
     const targetId = cardId ?? (getChatId ? getChatId() : undefined);
     if (!targetId) return { error: "Chat context not available — pass card_id explicitly" };
+    if (targetId.includes("/") || targetId.includes("\\") || targetId.includes("\0") || targetId === "." || targetId === "..") {
+      return { error: `Card "${targetId}" not found` };
+    }
     if (!chatFileService.getChat(targetId)) return { error: `Card "${targetId}" not found` };
     const rootChatId = walkToRootId(targetId);
     const rootChat = chatFileService.getChat(rootChatId);
-    if (!rootChat || !isCardRoot(rootChat)) {
+    if (!rootChat || !isCardEligible(rootChat)) {
       return { error: `Chat "${targetId}" has no card — its lineage root is not a card root (triggered or job-step chat)` };
     }
     return { rootChatId };
   };
 
   /** Full board rollup, shared by list_cards and get_card. */
-  const cardSummaries = () => buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }));
+  const cardSummaries = (includeHidden = false) =>
+    buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }), undefined, { includeHidden });
 
   return {
     name: "callboard-tools",
@@ -540,8 +544,8 @@ export function buildCallboardToolsSpec(
         async (args) => {
           const target = resolveCardTarget(args.card_id);
           if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
-          const card = cardSummaries().find((c) => c.id === target.rootChatId);
-          if (!card) return error(`Card "${args.card_id}" not found`);
+          const card = cardSummaries(true).find((c) => c.id === target.rootChatId);
+          if (!card) return error(`Card "${target.rootChatId}" not found`);
           // memberChats come off the rollup, already newest-first — an agent
           // reads memberChats[0] as "the chat this card is on right now",
           // and any other ordering would make that an arbitrary member.
@@ -586,8 +590,7 @@ export function buildCallboardToolsSpec(
               ...(args.emoji !== undefined && { emoji: args.emoji }),
             });
           } catch (err) {
-            if (err instanceof CardFieldError) return error(err.message);
-            throw err;
+            return error(err instanceof Error ? err.message : "Failed to update card");
           }
           if (!card) return error(`Card "${target.rootChatId}" not found`);
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
@@ -612,8 +615,7 @@ export function buildCallboardToolsSpec(
           try {
             card = patchCardFields(target.rootChatId, { status: args.status || null, statusEmoji: args.emoji || null });
           } catch (err) {
-            if (err instanceof CardFieldError) return error(err.message);
-            throw err;
+            return error(err instanceof Error ? err.message : "Failed to update card status");
           }
           if (!card) return error(`Card "${target.rootChatId}" not found`);
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "status" });
@@ -639,8 +641,7 @@ export function buildCallboardToolsSpec(
           try {
             card = patchCardFields(target.rootChatId, { category: args.category || null });
           } catch (err) {
-            if (err instanceof CardFieldError) return error(err.message);
-            throw err;
+            return error(err instanceof Error ? err.message : "Failed to update card category");
           }
           if (!card) return error(`Card "${target.rootChatId}" not found`);
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
@@ -670,8 +671,7 @@ export function buildCallboardToolsSpec(
           try {
             card = patchCardFields(target.rootChatId, { metadata: patch.metadata });
           } catch (err) {
-            if (err instanceof CardFieldError) return error(err.message);
-            throw err;
+            return error(err instanceof Error ? err.message : "Failed to update card metadata");
           }
           if (!card) return error(`Card "${target.rootChatId}" not found`);
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });

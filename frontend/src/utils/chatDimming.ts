@@ -12,13 +12,15 @@ import type { Chat, CardSummary } from "../api";
  * id, and membership is the tree — `metadata.rootChatId` is stamped on every
  * child at creation, `metadata.parentChatId` is the fallback for records that
  * predate the stamp, and a chat with neither is its own root (top-level
- * chats ARE cards). Unreadable metadata resolves to no card.
+ * chats ARE cards). Legacy `forkedFrom` is the final pointer fallback.
+ * Unreadable metadata resolves to no card.
  */
 export function chatCardId(chat: Pick<Chat, "id" | "metadata">): string | undefined {
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     if (typeof meta.rootChatId === "string" && meta.rootChatId) return meta.rootChatId;
     if (typeof meta.parentChatId === "string" && meta.parentChatId) return meta.parentChatId;
+    if (typeof meta.forkedFrom === "string" && meta.forkedFrom) return meta.forkedFrom;
     return chat.id;
   } catch {
     return undefined;
@@ -41,6 +43,11 @@ export function isChatCardActive(
   chat: Pick<Chat, "id" | "metadata">,
   cardsById: ReadonlyMap<string, Pick<CardSummary, "lifecycle">>,
 ): boolean {
+  // Callers can index CardSummary.memberChats into this map. Prefer that
+  // authoritative membership: legacy multi-level trees may have neither a
+  // rootChatId stamp nor a direct parent pointer to the actual root.
+  const direct = cardsById.get(chat.id);
+  if (direct) return direct.lifecycle === "open";
   const id = chatCardId(chat);
   if (!id) return false;
   return cardsById.get(id)?.lifecycle === "open";

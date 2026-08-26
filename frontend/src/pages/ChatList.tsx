@@ -355,9 +355,23 @@ export default function ChatList({
   };
 
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
+  // Authoritative chat→card lookup from the server rollup. Root stamps were
+  // added after forkedFrom, so deriving from one chat's metadata alone cannot
+  // resolve every multi-level legacy tree. Indexing memberChats handles both
+  // those records and descendants promoted after a deleted ancestor.
+  const cardsByChatId = useMemo(() => {
+    const byChat = new Map<string, CardSummary>();
+    for (const card of cards) {
+      byChat.set(card.id, card);
+      for (const member of card.memberChats) byChat.set(member.chatId, card);
+    }
+    return byChat;
+  }, [cards]);
 
   /** The card a chat's lineage root is, when it is one and we've loaded it. */
   const cardOf = (chat: Chat): CardSummary | undefined => {
+    const direct = cardsByChatId.get(chat.id);
+    if (direct) return direct;
     const id = chatCardId(chat);
     return id ? cardsById.get(id) : undefined;
   };
@@ -367,14 +381,14 @@ export default function ChatList({
    * render decision over cards already on the page — no request changes, which
    * is why it is a view option and not a filter.
    */
-  const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsById, { dimCardless: viewOptions.dimCardless, cardsLoaded });
+  const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsByChatId, { dimCardless: viewOptions.dimCardless, cardsLoaded });
 
   /**
    * "Active cards first": the per-chat verdict the Active/Inactive split reads,
    * or `undefined` for "render as if the option were off" — which `cardsLoaded`
    * makes load-bearing, for the reason spelled out at the predicate itself.
    */
-  const isCardActive = activeSectionPredicate(cardsById, { sortByCardActive: viewOptions.sortByCardActive, cardsLoaded });
+  const isCardActive = activeSectionPredicate(cardsByChatId, { sortByCardActive: viewOptions.sortByCardActive, cardsLoaded });
 
   const handleToggleCardLifecycle = async (chat: Chat) => {
     const card = cardOf(chat);

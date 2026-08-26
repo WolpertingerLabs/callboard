@@ -19,7 +19,7 @@
  *   - All limits (title length, metadata entry count, etc.) are enforced here
  *     so REST routes and MCP tools share one implementation.
  *
- * Purity split: the *read* half (`cardFieldsFromChat`, `isCardRoot`,
+ * Purity split: the *read* half (`cardFieldsFromChat`, `isCardEligible`,
  * `cardLifecycleOf`) is pure over a chat record — the board rollup works over
  * an injected snapshot of chats and must never reach back into
  * chatFileService, or its results could mix two points-in-time (see
@@ -38,6 +38,7 @@ export const CARD_METADATA_VALUE_MAX = 2048;
 export const CARD_METADATA_MAX_ENTRIES = 50;
 
 export class CardFieldError extends Error {}
+export class CardFieldWriteError extends Error {}
 
 /**
  * The raw nested shape on `metadata.card`. Everything optional: absent means
@@ -63,7 +64,8 @@ export type ChatLike = Pick<Chat, "id" | "created_at" | "metadata">;
 
 function parseMeta(chat: { metadata?: string | null }): Record<string, unknown> {
   try {
-    return JSON.parse(chat.metadata || "{}");
+    const parsed: unknown = JSON.parse(chat.metadata || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
   } catch {
     return {};
   }
@@ -98,12 +100,16 @@ function defaultEmoji(id: string): string {
  * `updatedAt` is the card data's own timestamp (defaults to the chat's
  * creation — no edit has ever happened).
  */
-export function cardFieldsFromChat(chat: ChatLike): Card {
+export function cardFieldsFromChat(chat: ChatLike, fallbackTitle?: string | null | (() => string | null)): Card {
   const fields = rawCardFields(chat);
+  const storedTitle = (typeof fields.title === "string" && fields.title) || chatTitle(chat);
+  const resolvedFallback = storedTitle ? null : typeof fallbackTitle === "function" ? fallbackTitle() : fallbackTitle;
+  const normalizedFallback =
+    typeof resolvedFallback === "string" ? resolvedFallback.replace(/\s+/g, " ").trim().slice(0, 120) : "";
 
   return {
     id: chat.id,
-    title: (typeof fields.title === "string" && fields.title) || chatTitle(chat) || "Untitled",
+    title: storedTitle || normalizedFallback || "Untitled",
     description: typeof fields.description === "string" ? fields.description : "",
     emoji: (typeof fields.emoji === "string" && fields.emoji) || defaultEmoji(chat.id),
     lifecycle: fields.lifecycle === "closed" ? "closed" : "open",
@@ -188,7 +194,9 @@ export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
   }
 
   if (patch.emoji !== undefined) {
-    existing.emoji = patch.emoji;
+    const trimmed = patch.emoji.trim();
+    if (trimmed) existing.emoji = trimmed;
+    else delete existing.emoji;
   }
 
   if (patch.pinned !== undefined) {
@@ -202,7 +210,7 @@ export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
   }
 
   if (patch.status !== undefined) {
-    if (patch.status === null || patch.status === "") {
+    if (patch.status === null || !patch.status.trim()) {
       delete existing.status;
       delete existing.statusEmoji;
     } else {
@@ -211,7 +219,7 @@ export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
   }
 
   if (patch.statusEmoji !== undefined) {
-    if (patch.statusEmoji === null || patch.statusEmoji === "") {
+    if (patch.statusEmoji === null || !patch.statusEmoji.trim()) {
       delete existing.statusEmoji;
     } else {
       existing.statusEmoji = patch.statusEmoji;
@@ -231,11 +239,17 @@ export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
   }
 
   if (patch.lifecycle !== undefined) {
-    existing.lifecycle = patch.lifecycle;
-    if (patch.lifecycle === "closed") {
-      existing.closedAt = new Date().toISOString();
-    } else {
-      delete existing.closedAt;
+    const currentLifecycle: CardLifecycle = existing.lifecycle === "closed" ? "closed" : "open";
+    // `closedAt` describes the transition, not the most recent idempotent
+    // PATCH. Re-sending { lifecycle: "closed" } must not make an old card look
+    // newly closed (or reorder the Closed strip).
+    if (patch.lifecycle !== currentLifecycle) {
+      existing.lifecycle = patch.lifecycle;
+      if (patch.lifecycle === "closed") {
+        existing.closedAt = new Date().toISOString();
+      } else {
+        delete existing.closedAt;
+      }
     }
   }
 
@@ -254,8 +268,11 @@ export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
 
   existing.updatedAt = new Date().toISOString();
 
-  chatFileService.updateChatMetadata(chatId, { card: existing }, { touch: false });
-  return readCardFields(chatId);
+  const written = chatFileService.updateChatMetadata(chatId, { card: existing }, { touch: false });
+  if (!written) throw new CardFieldWriteError(`Failed to persist card fields for chat "${chatId}"`);
+  const updated = readCardFields(chatId);
+  if (!updated) throw new CardFieldWriteError(`Card root chat "${chatId}" disappeared while it was being updated`);
+  return updated;
 }
 
 /**
@@ -269,7 +286,17 @@ export function isCardRoot(chat: { metadata?: string | null }): boolean {
   const hasParent =
     (typeof meta.parentChatId === "string" && meta.parentChatId) ||
     (typeof meta.forkedFrom === "string" && meta.forkedFrom);
-  if (hasParent) return false;
+  return !hasParent && isCardEligible(chat);
+}
+
+/**
+ * Whether a record is allowed to anchor a card, independent of whether its
+ * parent pointer still resolves. This distinction matters after an ancestor
+ * is deleted: `walkToRootId` promotes the highest surviving descendant to the
+ * root, even though that record still carries its now-dangling parent id.
+ */
+export function isCardEligible(chat: { metadata?: string | null }): boolean {
+  const meta = parseMeta(chat);
   if (meta.triggered === true) return false;
   if (typeof meta.jobRunId === "string" && meta.jobRunId) return false;
   return true;

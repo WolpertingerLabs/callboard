@@ -21,7 +21,9 @@ import { CARD_CATEGORY_MAX } from "shared";
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-cards-route-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
+const clearListCaches = vi.fn();
 vi.mock("../services/claude.js", () => ({ getActiveSession: () => null, getPendingRequest: () => null }));
+vi.mock("../services/list-caches.js", () => ({ clearListCaches: () => clearListCaches() }));
 // sessionRegistry.has is the rollup's liveness probe; notifyMetadata is a
 // no-op here (the bulk-lifecycle suite owns the notification-count contract).
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: () => {} } }));
@@ -62,6 +64,7 @@ function makeRoot(id: string, meta: Record<string, unknown> = {}) {
 
 let cardId: string;
 beforeEach(() => {
+  clearListCaches.mockClear();
   cardId = makeRoot(`root-${Math.random().toString(36).slice(2, 8)}`).id;
 });
 
@@ -131,6 +134,11 @@ describe("PATCH /api/cards/:id metadata", () => {
     expect(res.code).toBe(404);
   });
 
+  it("rejects path-like ids at the card route boundary", async () => {
+    const res = await patchCard("../../outside-chats", { title: "Nope" });
+    expect(res.code).toBe(404);
+  });
+
   it("resolves a MEMBER chat id to its root's card", async () => {
     // Agents and the UI know member chat ids far more often than root ids —
     // any chat in the tree names the tree's card.
@@ -161,10 +169,32 @@ describe("PATCH /api/cards/:id metadata", () => {
   });
 
   it("flips hidden — the board opt-out that replaced createCard: false", async () => {
-    expect((await patchCard(cardId, { hidden: true })).body.card.hidden).toBe(true);
+    const hidden = await patchCard(cardId, { hidden: true });
+    expect(hidden.body.card.hidden).toBe(true);
+    // PATCH always returns CardSummary, even though hidden cards are omitted
+    // from the board's list endpoint.
+    expect(hidden.body.card).toHaveProperty("memberChats");
+    expect(hidden.body.card).toHaveProperty("chatCount");
+    expect(clearListCaches).toHaveBeenCalledTimes(1);
     expect(readCardFields(cardId)!.hidden).toBe(true);
     // null reads as "visible" (absent-means-default invariant).
     expect((await patchCard(cardId, { hidden: null })).body.card.hidden).toBeUndefined();
     expect(readCardFields(cardId)!.hidden).toBeUndefined();
+    expect(clearListCaches).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not refresh closedAt when an already-closed card is patched closed again", async () => {
+    await patchCard(cardId, { lifecycle: "closed" });
+    const firstClosedAt = readCardFields(cardId)!.closedAt;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await patchCard(cardId, { lifecycle: "closed" });
+    expect(readCardFields(cardId)!.closedAt).toBe(firstClosedAt);
+  });
+
+  it("reports a persistence failure instead of returning a false success", async () => {
+    const corrupt = chatFileService.createChat("/tmp/proj", `corrupt-${Math.random().toString(36).slice(2, 8)}`, "{not json");
+    const res = await patchCard(corrupt.id, { title: "This cannot be persisted" });
+    expect(res.code).toBe(500);
+    expect(res.body.error).toBe("Failed to update card");
   });
 });

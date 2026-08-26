@@ -211,6 +211,24 @@ describe("buildLineageIndex", () => {
     const index = buildLineageIndex([rec("b", { parentChatId: "p", rootChatId: "p" }), rec("c", { parentChatId: "p", rootChatId: "p" })]);
     expect(index.rootKeyOf("b")).toBe("p");
     expect(index.rootKeyOf("c")).toBe("p");
+    // Card identity cannot use the synthetic missing key: each highest
+    // surviving descendant becomes an actual root that can hold card fields.
+    expect(index.existingRootIdOf("b")).toBe("b");
+    expect(index.existingRootIdOf("c")).toBe("c");
+  });
+
+  it("resolves the highest existing root for cards, including stamped job-step chats", () => {
+    const index = buildLineageIndex([
+      rec("root"),
+      rec("child", { parentChatId: "root", rootChatId: "root" }),
+      rec("step", { rootChatId: "root", jobRunId: "run-1" }),
+      rec("orphan", { parentChatId: "gone", rootChatId: "gone" }),
+      rec("orphan-child", { parentChatId: "orphan", rootChatId: "gone" }),
+    ]);
+    expect(index.existingRootIdOf("child")).toBe("root");
+    expect(index.existingRootIdOf("step")).toBe("root");
+    expect(index.existingRootIdOf("orphan")).toBe("orphan");
+    expect(index.existingRootIdOf("orphan-child")).toBe("orphan");
   });
 
   it("keys legacy forkedFrom orphans (no rootChatId stamp) on the dangling parent id", () => {
