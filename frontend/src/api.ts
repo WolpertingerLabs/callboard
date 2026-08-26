@@ -254,8 +254,18 @@ export async function listChats(
   excludeTriggered?: boolean,
   cached?: boolean,
   includeLineage?: boolean,
-  /** Only chats on an OPEN card, plus every descendant of those chats. */
+  /**
+   * @deprecated Alias of `cardLifecycle: "active"`. Still sent by nothing in
+   * this bundle; the parameter stays so an older caller keeps compiling.
+   */
   cardsOnly?: boolean,
+  /**
+   * Scope by the lifecycle of each chat's card: "active" is the open-card
+   * trees (what `cardsOnly` meant), "inactive" their complement, "all" no
+   * scoping. Omitted when "all", so the default request is byte-identical to
+   * what it was.
+   */
+  cardLifecycle?: "all" | "active" | "inactive",
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -265,6 +275,7 @@ export async function listChats(
   if (cached === false) params.append("cached", "false");
   if (includeLineage) params.append("includeLineage", "true");
   if (cardsOnly) params.append("cardsOnly", "true");
+  if (cardLifecycle && cardLifecycle !== "all") params.append("cardLifecycle", cardLifecycle);
 
   const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list chats");

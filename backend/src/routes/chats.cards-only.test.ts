@@ -234,3 +234,83 @@ describe("GET /api/chats?cardsOnly=true", () => {
     expect(idsOf(body)).toContain("orphan-session");
   });
 });
+
+/**
+ * The three-way lifecycle scope that subsumes `cardsOnly`.
+ *
+ * The gap it closes: after #392 the sidebar had no way to ask for the INVERSE
+ * of `cardsOnly`. With 804 of 805 cards closed on the data dir this was
+ * diagnosed against, `cardsOnly` collapsed 8,319 chats to 1 and there was no
+ * "show me the inactive ones" at all — `dimCardless` only fades and
+ * `sortByCardActive` suppresses its own headers when either bucket is empty,
+ * which that board state guarantees.
+ */
+describe("GET /api/chats?cardLifecycle", () => {
+  it("active is exactly the old cardsOnly set", async () => {
+    const viaAlias = idsOf(await listChats({ cardsOnly: "true", limit: "50" }));
+    const viaParam = idsOf(await listChats({ cardLifecycle: "active", limit: "50" }));
+    expect(viaParam).toEqual(viaAlias);
+  });
+
+  it("inactive is the complement over chats that have a record", async () => {
+    const body = await listChats({ cardLifecycle: "inactive", limit: "50" });
+    // A closed card's whole tree, the hidden card, and roots that are not
+    // cards at all (triggered, job-step). Not "orphan-session": it has no
+    // stored record, so it can carry no membership either way.
+    expect(idsOf(body)).toEqual(["closed-child", "closed-root", "hidden-root", "job-root", "triggered-root"]);
+    expect(idsOf(body)).not.toContain("orphan-session");
+  });
+
+  it("active and inactive partition the recorded chats — every one lands in exactly one", async () => {
+    const active = idsOf(await listChats({ cardLifecycle: "active", limit: "50" }));
+    const inactive = idsOf(await listChats({ cardLifecycle: "inactive", limit: "50" }));
+
+    expect(active.filter((id: string) => inactive.includes(id))).toEqual([]);
+    expect([...active, ...inactive].sort()).toEqual(fileChats.map((c) => c.id).sort());
+  });
+
+  it("follows a close and a reopen, in both directions", async () => {
+    patchCardFields("member", { lifecycle: "closed" });
+    expect(idsOf(await listChats({ cardLifecycle: "active", limit: "50" }))).toEqual(["plain-child", "plain-root"]);
+    expect(idsOf(await listChats({ cardLifecycle: "inactive", limit: "50" }))).toContain("member");
+
+    patchCardFields("member", { lifecycle: "open" });
+    expect(idsOf(await listChats({ cardLifecycle: "active", limit: "50" }))).toContain("member");
+    expect(idsOf(await listChats({ cardLifecycle: "inactive", limit: "50" }))).not.toContain("member");
+  });
+
+  it("all returns everything, including sessions with no stored record", async () => {
+    const body = await listChats({ cardLifecycle: "all", limit: "50" });
+    expect(body.chats.length).toBe(sessionIds.length);
+    expect(idsOf(body)).toContain("orphan-session");
+  });
+
+  it("wins over the cardsOnly alias when both are sent", async () => {
+    // An older persisted pref plus a new explicit scope: the explicit one is
+    // the user's current answer.
+    const body = await listChats({ cardsOnly: "true", cardLifecycle: "inactive", limit: "50" });
+    expect(idsOf(body)).toEqual(["closed-child", "closed-root", "hidden-root", "job-root", "triggered-root"]);
+  });
+
+  it("degrades an unrecognised value to all rather than erroring", async () => {
+    // A view scope is not worth 400ing over: showing everything ignores a
+    // typo, while an error blanks the sidebar.
+    const body = await listChats({ cardLifecycle: "archived", limit: "50" });
+    expect(body.chats.length).toBe(sessionIds.length);
+  });
+
+  it("composes with excludeTriggered and paginates in tree rows", async () => {
+    const body = await listChats({ cardLifecycle: "inactive", excludeTriggered: "true", limit: "50" });
+    expect(idsOf(body)).toEqual(["closed-child", "closed-root", "hidden-root", "job-root"]);
+
+    const rows = await listChats({ cardLifecycle: "inactive", includeLineage: "true", limit: "1", offset: "0" });
+    // closed-root + closed-child fold into one row, so a one-row page is two chats.
+    expect(idsOf(rows)).toEqual(["closed-child", "closed-root"]);
+    expect(rows).toMatchObject({ windowRows: 1, hasMore: true });
+  });
+
+  it("does not append a lineage relative from outside the requested scope", async () => {
+    const body = await listChats({ cardLifecycle: "inactive", includeLineage: "true", limit: "50" });
+    expect(idsOf(body)).toEqual(["closed-child", "closed-root", "hidden-root", "job-root", "triggered-root"]);
+  });
+});
