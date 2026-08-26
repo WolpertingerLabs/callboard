@@ -182,8 +182,8 @@ describe("ChatTreeList dimming", () => {
   const MIXED = [
     makeChat("root"),
     makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
-    makeChat("solo-open", { cardId: "open-card" }),
-    makeChat("solo-closed", { cardId: "closed-card" }),
+    makeChat("solo-open", { rootChatId: "open-card" }),
+    makeChat("solo-closed", { rootChatId: "closed-card" }),
     makeChat("solo-none"),
   ];
 
@@ -240,7 +240,12 @@ describe("ChatTreeList dimming", () => {
  * sections its own rows — by the header row's chat, the one on screen.
  */
 describe("ChatTreeList active-first sections", () => {
-  const CARDS: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([["open-card", { lifecycle: "open" }]]);
+  // Cards are keyed by the lineage ROOT's chat id — in these fixtures the
+  // roots are their own cards, so the keys are the root chat ids themselves.
+  const CARDS: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
+    ["root", { lifecycle: "open" }],
+    ["solo-open", { lifecycle: "open" }],
+  ]);
 
   /**
    * Section headers and row previews in DOM order. Order is the whole
@@ -251,7 +256,7 @@ describe("ChatTreeList active-first sections", () => {
   // into its timestamp ("chat solo-noneJul 28…") with no separator.
   const outline = (container: HTMLElement) => container.textContent?.match(/Inactive|Active|chat [a-z0-9-]+/g) ?? [];
 
-  function renderSectioned(chats: Chat[], sectioned = true) {
+  function renderSectioned(chats: Chat[], sectioned = true, cards: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = CARDS) {
     return render(
       <MemoryRouter>
         <ChatTreeList
@@ -262,20 +267,19 @@ describe("ChatTreeList active-first sections", () => {
           onToggleBookmark={() => {}}
           cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
-          isCardActive={sectioned ? (chat) => isChatCardActive(chat, CARDS) : undefined}
+          isCardActive={sectioned ? (chat) => isChatCardActive(chat, cards) : undefined}
         />
       </MemoryRouter>,
     );
   }
 
-  // A group whose header row is on an open card but whose child is filed
-  // nowhere — the straddle — plus a lone row on each side of the split. Listed
-  // inactive-first so any reordering is visible.
+  // A group whose root's card is open, plus a lone row on each side of the
+  // split. Listed inactive-first so any reordering is visible.
   const STRADDLING = [
     makeChat("solo-none"),
-    makeChat("root", { cardId: "open-card" }),
+    makeChat("root"),
     makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
-    makeChat("solo-open", { cardId: "open-card" }),
+    makeChat("solo-open"),
   ];
 
   it("files a group that straddles both buckets once, in its header row's section", () => {
@@ -287,14 +291,19 @@ describe("ChatTreeList active-first sections", () => {
   });
 
   it("follows the header row when the straddle points the other way", () => {
-    // Same group, card membership swapped: the header row is now card-less and
-    // the child is on the open card. The group goes wherever its header row
-    // goes, so the whole group is Inactive.
-    const { container } = renderSectioned([
-      makeChat("solo-open", { cardId: "open-card" }),
-      makeChat("root"),
-      makeChat("child-1", { parentChatId: "root", rootChatId: "root", cardId: "open-card" }),
-    ]);
+    // Same group with the root's card not loaded (a closed or dangling card
+    // reads the same here): the group goes wherever its header row goes, so
+    // the whole group is Inactive even though solo-open is Active.
+    const soloOpenOnly = new Map([["solo-open", { lifecycle: "open" as const }]]);
+    const { container } = renderSectioned(
+      [
+        makeChat("solo-open"),
+        makeChat("root"),
+        makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
+      ],
+      true,
+      soloOpenOnly,
+    );
     expect(outline(container)).toEqual(["Active", "chat solo-open", "Inactive", "chat root"]);
   });
 
@@ -308,7 +317,13 @@ describe("ChatTreeList active-first sections", () => {
   });
 
   it("renders no headers when every row falls in one bucket", () => {
-    const { container } = renderSectioned([makeChat("solo-none"), makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" })]);
+    // No cards loaded at all: every row is Inactive, and a one-bucket list
+    // must not grow a section header for it.
+    const { container } = renderSectioned(
+      [makeChat("solo-none"), makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" })],
+      true,
+      new Map(),
+    );
     expect(outline(container)).toEqual(["chat solo-none", "chat root"]);
   });
 

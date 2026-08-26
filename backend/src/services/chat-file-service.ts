@@ -31,7 +31,7 @@ if (!existsSync(chatsDir)) {
  * profiled dir — so this trades GC churn for a flat footprint that grows only
  * with the number of chats, not with request rate.
  *
- * Freshness is the `(mtimeNs, size)` rule `card-member-index.ts` states in full,
+ * Freshness is the `(mtimeNs, size)` rule `chats-snapshot.ts` states in full,
  * including why an entry inside its own mtime tick is not cacheable — see
  * {@link isMtimeSettled}. Nanoseconds rather than `mtimeMs`, because on a
  * whole-second filesystem a millisecond field cannot distinguish two writes the

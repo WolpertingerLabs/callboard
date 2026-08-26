@@ -214,9 +214,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // the new-chat request so the backend stamps parentChatId/rootChatId.
   const newChatParentId = (location.state as any)?.parentChatId as string | undefined;
   const newChatRole = (location.state as any)?.chatRole as string | undefined;
-  // Card (ticket) membership for new chats started from the board's
-  // "New chat on card" action — the backend stamps metadata.cardId.
-  const newChatCardId = (location.state as any)?.cardId as string | undefined;
 
   // When navigating from /chat/new → /chat/:id, the in-flight messages are
   // passed via router state so they survive the component remount.
@@ -449,17 +446,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [id, chat?.metadata]);
 
-  // Card (ticket) this chat belongs to — drives the composer's card action.
-  // Unassign leaves `cardId: null` in metadata, hence the string check.
-  const chatCardId = useMemo((): string | undefined => {
-    if (!id || !chat?.metadata) return undefined;
-    try {
-      const meta = JSON.parse(chat.metadata);
-      return typeof meta.cardId === "string" && meta.cardId ? meta.cardId : undefined;
-    } catch {
-      return undefined;
-    }
-  }, [id, chat?.metadata]);
+  // GET /cards/:id accepts any member chat id and resolves the full lineage
+  // server-side. Pass the current id rather than reimplementing that walk from
+  // one metadata record — legacy multi-level forkedFrom trees cannot be
+  // resolved correctly without the other records.
+  const chatCardId = id && chat ? id : undefined;
 
   // The card record itself — needed for its lifecycle (the chat's metadata
   // only stores the id). Refetched on every metadata event so a close/reopen
@@ -1810,12 +1801,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               requestBody.chatRole = newChatRole;
             }
           }
-          // Board's "New chat on card" action — join that card instead of
-          // getting a fresh one. No `createCard` is sent either way: the server
-          // creates one for every top-level chat that names no card.
-          if (newChatCardId) {
-            requestBody.cardId = newChatCardId;
-          }
           res = await fetch("/api/chats/new/message", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...handshakeHeaders() },
@@ -1953,7 +1938,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       activePluginIds,
       chat,
       branchConfig,
-      newChatCardId,
       activeDraftId,
     ],
   );
@@ -2467,7 +2451,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {/* Card pill — which ticket this chat sits on, and whether it's
                 still open. Closing/reopening lives in the composer menu; this
                 is what makes that state visible without opening it. */}
-            {id && chatCard && (
+            {id && chatCard && !chatCard.hidden && (
               <div
                 onClick={() => navigate("/board")}
                 style={{

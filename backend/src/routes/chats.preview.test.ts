@@ -46,12 +46,6 @@ vi.mock("../services/chat-file-service.js", () => ({
 vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false, getPendingRequest: () => null, getActiveSession: () => null }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: () => {} } }));
 vi.mock("../utils/git.js", () => ({ getGitInfo: () => ({ isGitRepo: false }), resolveBranch: () => ({ ok: true, folder: "/tmp/proj" }) }));
-/** Cards the stubbed store hands back, set per test. */
-let cards: any[] = [];
-vi.mock("../services/card-store.js", () => ({
-  getCard: (id: string) => cards.find((c) => c.id === id) ?? null,
-  listCards: () => cards,
-}));
 
 /**
  * Three providers, each owning its own session-id prefix. Only the owner can
@@ -132,7 +126,6 @@ const BULK_IDS = Array.from({ length: 60 }, (_, i) => `claude-code-${String(i).p
 
 beforeEach(() => {
   previewCalls = {};
-  cards = [];
   sessionsByProvider = { "claude-code": [...BULK_IDS], codex: [], cline: [] };
   fileChats = BULK_IDS.map((id, i) => chat(id, i % 2 === 1 ? { triggered: true } : {}));
 });
@@ -235,24 +228,24 @@ describe("GET /api/chats preview reads", () => {
 
 describe("GET /api/chats?cardsOnly=true preview reads", () => {
   beforeEach(() => {
-    cards = [
-      { id: "card-open", lifecycle: "open" },
-      { id: "card-done", lifecycle: "closed" },
-    ];
     sessionsByProvider = {
       "claude-code": ["claude-code-member", "claude-code-child", "claude-code-closed", ...BULK_IDS],
       codex: ["codex-member"],
       cline: [],
     };
     fileChats = [
-      chat("claude-code-member", { cardId: "card-open" }),
-      // Admitted by descent, not membership — it carries no cardId of its own.
+      // An open card root; the child is admitted by descent, not by any card
+      // fields of its own.
+      chat("claude-code-member", { card: { lifecycle: "open" } }),
       chat("claude-code-child", { parentChatId: "claude-code-member" }),
-      chat("claude-code-closed", { cardId: "card-done" }),
-      // No provider hint, so the read has to resolve its owner from the map of
-      // which provider discovered which log.
-      chat("codex-member", { cardId: "card-open" }),
-      ...BULK_IDS.map((id) => chat(id)),
+      // A closed card root — the whole tree is out of the view.
+      chat("claude-code-closed", { card: { lifecycle: "closed" } }),
+      // A plain open-card root with no provider hint, so the read has to
+      // resolve its owner from the map of which provider discovered which log.
+      chat("codex-member", {}),
+      // Triggered top-level chats are not cards; they keep the bulk filler
+      // out of the filtered set so the margins below stay measurable.
+      ...BULK_IDS.map((id) => chat(id, { triggered: true })),
     ];
   });
 

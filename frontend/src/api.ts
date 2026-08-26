@@ -65,7 +65,6 @@ import type {
   JobRunStatus,
   JobRunHistoryEntry,
   Card,
-  CardPayload,
   CardPatch,
   CardSummary,
   CardRollupState,
@@ -180,7 +179,6 @@ export type {
   JobRunStatus,
   JobRunHistoryEntry,
   Card,
-  CardPayload,
   CardPatch,
   CardSummary,
   CardRollupState,
@@ -359,17 +357,6 @@ export async function getCard(id: string): Promise<CardResponse> {
   return res.json();
 }
 
-/** Create a card; when chatId is given the chat is assigned as its first member. */
-export async function createCard(payload: CardPayload, chatId?: string): Promise<CardResponse> {
-  const res = await fetch(`${BASE}/cards`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...payload, ...(chatId && { chatId }) }),
-  });
-  await assertOk(res, "Failed to create card");
-  return res.json();
-}
-
 export async function updateCard(id: string, patch: CardPatch): Promise<CardResponse> {
   const res = await fetch(`${BASE}/cards/${id}`, {
     method: "PATCH",
@@ -406,23 +393,10 @@ export async function bulkSetCardLifecycle(ids: string[], lifecycle: "open" | "c
   return res.json();
 }
 
-/** Permanently delete a CLOSED card. Member chats are unassigned, not deleted. */
-export async function deleteCard(id: string): Promise<{ success: boolean }> {
-  const res = await fetch(`${BASE}/cards/${id}`, { method: "DELETE" });
-  await assertOk(res, "Failed to delete card");
-  return res.json();
-}
-
-/** Assign a chat to a card, or unassign with cardId: null. */
-export async function assignChatToCard(chatId: string, cardId: string | null): Promise<{ success: boolean; cardId: string | null }> {
-  const res = await fetch(`${BASE}/chats/${chatId}/card`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cardId }),
-  });
-  await assertOk(res, "Failed to assign chat to card");
-  return res.json();
-}
+// No createCard / deleteCard / assignChatToCard: a card IS a lineage root
+// chat. It is created by starting a top-level chat, deleted by deleting that
+// chat, and joined by being spawned from the tree. Edit card fields with
+// updateCard (id = root chat id).
 
 export interface NewChatInfo {
   folder: string;

@@ -71,40 +71,24 @@ function openRowMenu(container: HTMLElement) {
 
 describe("ChatListItem card menu", () => {
   const CARD_MENU = {
-    onCreate: vi.fn(),
-    onAdd: vi.fn(),
-    onRemove: vi.fn(),
     onToggleLifecycle: vi.fn(),
   };
 
-  it("offers create/add for a card-less chat and nothing else", () => {
-    const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} cardMenu={CARD_MENU} />);
-    openRowMenu(container);
-
-    expect(screen.getByText("Create card")).toBeTruthy();
-    expect(screen.getByText("Add to card…")).toBeTruthy();
-    expect(screen.queryByText("Remove from card")).toBeNull();
-    expect(screen.queryByText("Close card")).toBeNull();
-  });
-
-  it("offers close + remove for a chat on an open card", () => {
-    const chat = makeChat({ metadata: JSON.stringify({ title: "My Chat", cardId: "card-1" }) });
+  it("offers close for a chat on an open card", () => {
+    const chat = makeChat({ metadata: JSON.stringify({ title: "My Chat", rootChatId: "card-1" }) });
     const { container } = render(
       <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open" } }} />,
     );
     openRowMenu(container);
 
     expect(screen.getByText("Close card")).toBeTruthy();
-    expect(screen.getByText("Remove from card")).toBeTruthy();
-    expect(screen.queryByText("Create card")).toBeNull();
-    expect(screen.queryByText("Add to card…")).toBeNull();
 
     fireEvent.click(screen.getByText("Close card"));
     expect(CARD_MENU.onToggleLifecycle).toHaveBeenCalledTimes(1);
   });
 
   it("flips the label to Reopen for a chat on a closed card", () => {
-    const chat = makeChat({ metadata: JSON.stringify({ cardId: "card-1" }) });
+    const chat = makeChat({ metadata: JSON.stringify({ rootChatId: "card-1" }) });
     const { container } = render(
       <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Shipped", lifecycle: "closed" } }} />,
     );
@@ -115,32 +99,22 @@ describe("ChatListItem card menu", () => {
   });
 
   it("omits the lifecycle entry when the card record has not loaded", () => {
-    // A dangling cardId (deleted card) or a still-in-flight fetch must never
-    // render a guessed direction — remove stays available.
-    const chat = makeChat({ metadata: JSON.stringify({ cardId: "card-gone" }) });
+    // A root whose card has not been fetched (or a triggered chat, which is
+    // no card at all) must never render a guessed direction.
+    const chat = makeChat({ metadata: JSON.stringify({ rootChatId: "card-gone" }) });
     const { container } = render(<ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={CARD_MENU} />);
     openRowMenu(container);
 
     expect(screen.queryByText("Close card")).toBeNull();
     expect(screen.queryByText("Reopen card")).toBeNull();
-    expect(screen.getByText("Remove from card")).toBeTruthy();
-  });
-
-  it("treats an unassigned `cardId: null` as card-less", () => {
-    const chat = makeChat({ metadata: JSON.stringify({ cardId: null }) });
-    const { container } = render(<ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={CARD_MENU} />);
-    openRowMenu(container);
-
-    expect(screen.getByText("Create card")).toBeTruthy();
-    expect(screen.queryByText("Remove from card")).toBeNull();
   });
 
   it("renders no card entries at all without a cardMenu", () => {
     const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
     openRowMenu(container);
 
-    expect(screen.queryByText("Create card")).toBeNull();
-    expect(screen.queryByText("Add to card…")).toBeNull();
+    expect(screen.queryByText("Close card")).toBeNull();
+    expect(screen.queryByText("Reopen card")).toBeNull();
     expect(screen.getByText("Delete")).toBeTruthy();
   });
 });

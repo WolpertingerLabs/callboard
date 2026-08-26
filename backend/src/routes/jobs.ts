@@ -15,7 +15,6 @@ import {
   JobImportConflictError,
 } from "../services/job-store.js";
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "../services/job-runner.js";
-import { getCard } from "../services/card-store.js";
 
 export const jobsRouter = Router();
 
@@ -205,10 +204,13 @@ jobsRouter.post("/:id/spawn", (req: Request, res: Response): void => {
   // #swagger.summary = 'Spawn a run of a job'
   try {
     const inputs = req.body?.inputs && typeof req.body.inputs === "object" ? req.body.inputs : {};
-    // Attach the run to a card when an OPEN one is named; unknown or closed
-    // ids are dropped silently, matching the route's lenient body handling.
-    const cardId = typeof req.body?.cardId === "string" && getCard(req.body.cardId)?.lifecycle === "open" ? req.body.cardId : undefined;
-    const run = spawnJobRun(req.params.id, inputs, undefined, { cardId });
+    // A run spawned here has no chat context (the jobs page is not a
+    // conversation), so it carries no rootChatId — matching the old model,
+    // where it only had a cardId when one was explicitly attached. The old
+    // `cardId` body param is ignored: run membership is now derived from the
+    // spawning chat's lineage root, which this route does not have. Spawn
+    // from a chat (spawn_job tool) to put the run on that chat's card.
+    const run = spawnJobRun(req.params.id, inputs, undefined);
     res.status(201).json({ run });
   } catch (err: any) {
     sendError(res, err);

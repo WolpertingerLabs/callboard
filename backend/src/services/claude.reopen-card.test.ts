@@ -1,16 +1,19 @@
 /**
  * Auto-reopen behaviour in `sendMessage`.
  *
- * When any chat (existing or newly created) on a closed card receives a
- * message — whether from the UI, continue_chat, a job step, cron, or a
- * spawned child — the card is automatically reopened so the conversation
- * returns to the board.
+ * When any chat in a closed card's lineage tree receives a message — whether
+ * from the UI, continue_chat, a job step, cron, or a spawned child — the card
+ * is automatically reopened so the conversation returns to the board.
+ *
+ * The card lives on the lineage ROOT's `metadata.card` now: sendMessage
+ * resolves the chat's root (parent pointers for existing chats, the parent's
+ * stamped root for new children) and flips the root's card lifecycle.
  *
  * Placed in `sendMessage` rather than the HTTP route because programmatic
  * callers (MCP tools, job runner, queue execute-now) bypass the route
  * entirely and reach `sendMessage` directly.
  */
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -32,7 +35,7 @@ const { sendMessage } = await import("./claude.js");
 const { setAgentProviderForTesting } = await import("../agents/factory.js");
 const { MockAgentProvider } = await import("../agents/adapters/mock/MockAgentProvider.js");
 const { chatFileService } = await import("./chat-file-service.js");
-const { createCard, getCard, deleteCard, listCards } = await import("./card-store.js");
+const { readCardFields } = await import("./card-fields.js");
 
 /** Minimal healthy script: establish a session, say something, finish. */
 const HEALTHY = (sessionId: string): AgentEvent[] => [
@@ -76,10 +79,6 @@ async function runNewChat(opts: Record<string, unknown>): Promise<string> {
   return sessionId;
 }
 
-beforeEach(() => {
-  for (const card of listCards()) deleteCard(card.id);
-});
-
 afterEach(() => {
   setAgentProviderForTesting(null);
 });
@@ -90,59 +89,81 @@ afterAll(() => {
 });
 
 describe("sendMessage — reopen closed card on new message", () => {
-  it("reopens a closed card when an existing chat receives a new message", async () => {
-    const card = createCard({ title: "Closed card" });
-    // Close the card
-    const closed = getCard(card.id);
-    expect(closed).not.toBeNull();
-    // Manually mutate lifecycle since the store API doesn't expose a close helper
-    const { updateCard } = await import("./card-store.js");
-    updateCard(card.id, { lifecycle: "closed" });
-    expect(getCard(card.id)!.lifecycle).toBe("closed");
+  it("reopens a closed card when the root chat itself receives a new message", async () => {
+    const root = chatFileService.createChat(workDir, "chat-1", JSON.stringify({ card: { lifecycle: "closed" } }));
+    expect(readCardFields(root.id)!.lifecycle).toBe("closed");
 
-    const chat = chatFileService.createChat(workDir, "chat-1", JSON.stringify({ cardId: card.id }));
+    await messageChat(root.id);
 
-    await messageChat(chat.id);
+    expect(readCardFields(root.id)!.lifecycle).toBe("open");
+  });
 
-    expect(getCard(card.id)!.lifecycle).toBe("open");
+  it("reopens a closed card when a DESCENDANT chat receives a new message", async () => {
+    // The whole point of the lineage model: the card belongs to the tree, so
+    // a message to any member — not just the root — brings the card back.
+    const root = chatFileService.createChat(workDir, "chat-2", JSON.stringify({ card: { lifecycle: "closed" } }));
+    const child = chatFileService.createChat(workDir, "chat-2-child", JSON.stringify({ parentChatId: root.id, rootChatId: root.id }));
+
+    await messageChat(child.id);
+
+    expect(readCardFields(root.id)!.lifecycle).toBe("open");
   });
 
   it("does nothing when the chat's card is already open", async () => {
-    const card = createCard({ title: "Open card" });
-    expect(getCard(card.id)!.lifecycle).toBe("open");
-
-    const chat = chatFileService.createChat(workDir, "chat-2", JSON.stringify({ cardId: card.id }));
-    await messageChat(chat.id);
-
-    expect(getCard(card.id)!.lifecycle).toBe("open");
+    const root = chatFileService.createChat(workDir, "chat-3", JSON.stringify({ card: { lifecycle: "open" } }));
+    // No card object written at all beyond the explicit open flag.
+    await messageChat(root.id);
+    expect(readCardFields(root.id)!.lifecycle).toBe("open");
+    // ...and the open flag is not duplicated or rewritten.
+    expect(JSON.parse(chatFileService.getChat(root.id)!.metadata).card).toEqual({ lifecycle: "open" });
   });
 
-  it("does nothing when the chat has no card", async () => {
-    const chat = chatFileService.createChat(workDir, "chat-3", "{}");
-    await messageChat(chat.id);
-    // No cards exist at all
-    expect(listCards()).toEqual([]);
+  it("does nothing when the chat's root has no card fields", async () => {
+    // Absent metadata.card means open — nothing to reopen, and no card object
+    // is materialized by the reopen check itself.
+    const root = chatFileService.createChat(workDir, "chat-4", "{}");
+    await messageChat(root.id);
+    const meta = JSON.parse(chatFileService.getChat(root.id)!.metadata);
+    expect(meta.card).toBeUndefined();
+    // session_ids are appended as usual — that is not a card write.
+    expect(meta.session_ids).toBeDefined();
   });
 
-  it("does nothing when the chat's card no longer exists", async () => {
-    const staleCardId = "card-gone-1";
-    const chat = chatFileService.createChat(workDir, "chat-4", JSON.stringify({ cardId: staleCardId }));
-    await messageChat(chat.id);
-    expect(getCard(staleCardId)).toBeNull();
+  it("does nothing when the chat's root no longer exists (dangling parent)", async () => {
+    const orphan = chatFileService.createChat(workDir, "chat-5", JSON.stringify({ parentChatId: "deleted-root", rootChatId: "deleted-root" }));
+    await messageChat(orphan.id);
+    // The orphan itself becomes its own root — still no card, no write.
+    expect(JSON.parse(chatFileService.getChat(orphan.id)!.metadata).card).toBeUndefined();
   });
 
-  it("reopens a closed card when a child chat inheriting the card receives its first message", async () => {
-    const card = createCard({ title: "Parent card" });
-    const { updateCard } = await import("./card-store.js");
-    updateCard(card.id, { lifecycle: "closed" });
-
-    const parent = chatFileService.createChat(workDir, "parent-1", JSON.stringify({ cardId: card.id }));
+  it("reopens a closed card when a child chat of the tree receives its first message", async () => {
+    const parent = chatFileService.createChat(workDir, "parent-1", JSON.stringify({ card: { lifecycle: "closed" } }));
 
     const childSessionId = await runNewChat({ parentChatId: parent.id });
 
     const childChat = chatFileService.getChat(childSessionId);
     expect(childChat).not.toBeNull();
-    expect(JSON.parse(childChat!.metadata || "{}").cardId).toBe(card.id);
-    expect(getCard(card.id)!.lifecycle).toBe("open");
+    // The child is linked into the tree — that linkage IS its card membership.
+    expect(JSON.parse(childChat!.metadata || "{}")).toMatchObject({ parentChatId: parent.id, rootChatId: parent.id });
+    expect(readCardFields(parent.id)!.lifecycle).toBe("open");
+  });
+
+  it("reopens the run's root card when a job-step chat receives a message", async () => {
+    // Job-step chats carry the run's root as a stamped rootChatId with no
+    // parent pointer — walkToRootId must honor the stamp to find the card.
+    const root = chatFileService.createChat(workDir, "chat-6", JSON.stringify({ card: { lifecycle: "closed" } }));
+    const stepChat = chatFileService.createChat(workDir, "chat-6-step", JSON.stringify({ triggered: true, jobRunId: "run-1", rootChatId: root.id }));
+
+    await messageChat(stepChat.id);
+
+    expect(readCardFields(root.id)!.lifecycle).toBe("open");
+  });
+
+  it("leaves a hidden closed card hidden — hidden is the visibility opt-out, not the lifecycle", async () => {
+    const root = chatFileService.createChat(workDir, "chat-7", JSON.stringify({ card: { lifecycle: "closed", hidden: true } }));
+    await messageChat(root.id);
+    const card = readCardFields(root.id)!;
+    expect(card.lifecycle).toBe("open");
+    expect(card.hidden).toBe(true);
   });
 });

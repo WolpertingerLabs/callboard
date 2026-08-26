@@ -2,7 +2,7 @@
  * When a file's mtime is allowed to stand in for its contents.
  *
  * Two caches in this codebase avoid re-reading the chat corpus by reusing an
- * entry whose `(mtime, size)` still match — `card-member-index.ts` (the board's
+ * entry whose `(mtime, size)` still match — `chats-snapshot.ts` (the board's
  * membership scan) and `chat-file-service.ts` (`getAllChats`). Both depend on
  * the same non-obvious property, so the rule lives here rather than being
  * stated twice: a second copy is one edit away from disagreeing, and the way it

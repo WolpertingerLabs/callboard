@@ -1,8 +1,8 @@
 /**
  * Route-level tests for the metadata stamped on POST /api/chats/:id/fork —
- * specifically that a fork inherits its parent's card membership, so the fork
- * still shows up in the card rollup (which discovers members by scanning
- * `metadata.cardId`).
+ * specifically the parentage fields (parentChatId/rootChatId) that make the
+ * fork a member of its root's card: card membership is derived from the tree,
+ * so the fork carrying the tree links IS the card inheritance.
  *
  * The handler is pulled off the router stack and driven with a fake req/res
  * rather than a live HTTP server, matching the no-supertest style in
@@ -17,6 +17,18 @@ let parentChat: any;
 vi.mock("../utils/chat-lookup.js", () => ({ findChat: () => parentChat }));
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
+    // walkToRootId validates the parent's stored root before stamping the
+    // fork. Return the parent itself and, when its fixture names one, a
+    // minimal existing ancestor.
+    getChat: (id: string) => {
+      if (!parentChat) return null;
+      if (id === parentChat.id || id === parentChat.session_id) return parentChat;
+      const meta = JSON.parse(parentChat.metadata || "{}");
+      if (id === meta.parentChatId || id === meta.forkedFrom || id === meta.rootChatId) {
+        return { ...parentChat, id, session_id: id, metadata: "{}" };
+      }
+      return null;
+    },
     // Echoes the composed metadata back so the test can assert on it, plus the
     // top-level workspaceId argument (which is a Chat field, not metadata).
     createChat: (folder: string, sessionId: string, metadata: string, workspaceId?: string) => ({
@@ -160,27 +172,24 @@ function setParent(meta: Record<string, unknown>, fields: Record<string, unknown
 }
 
 describe("POST /api/chats/:id/fork metadata", () => {
-  it("carries the parent's card id onto the fork", async () => {
+  it("links the fork into the parent's tree — which is the card membership", async () => {
+    // Cards are lineage: the fork becomes a member of the root's card through
+    // parentChatId/rootChatId, with no membership pointer of its own. A stale
+    // legacy `cardId` on the parent must NOT be copied — it is inert data.
     setParent({ cardId: "card-42" });
     const res = await fork();
     expect(res.code).toBe(201);
-    expect(res.meta.cardId).toBe("card-42");
     expect(res.meta.parentChatId).toBe("parent-chat");
+    expect(res.meta.rootChatId).toBe("parent-chat");
     expect(res.meta.chatRole).toBe("fork");
-  });
-
-  it("omits cardId when the parent has none", async () => {
-    setParent({});
-    const res = await fork();
     expect(res.meta).not.toHaveProperty("cardId");
   });
 
-  it("omits cardId when the parent was unassigned from its card", async () => {
-    // Unassign merges `cardId: null` rather than deleting the key, so key
-    // presence alone would wrongly stamp a null card onto the fork.
-    setParent({ cardId: null });
+  it("carries the grandparent's stamped root onto a fork of a child", async () => {
+    setParent({ parentChatId: "grandparent", rootChatId: "grandparent" });
     const res = await fork();
-    expect(res.meta).not.toHaveProperty("cardId");
+    expect(res.meta.parentChatId).toBe("parent-chat");
+    expect(res.meta.rootChatId).toBe("grandparent");
   });
 
   it("carries the parent's workspace onto the fork", async () => {

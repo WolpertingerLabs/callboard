@@ -25,7 +25,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
-import type { Card, Chat } from "shared";
+import type { Chat } from "shared";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-retired-provider-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
@@ -68,7 +68,6 @@ vi.mock("../agents/factory.js", () => ({
 }));
 
 const { chatsRouter } = await import("./chats.js");
-const { createCard } = await import("../services/card-store.js");
 const { buildCardSummaries } = await import("../services/card-rollup.js");
 const { buildChatTree, buildLineageIndex } = await import("../services/chat-lineage.js");
 type RollupDeps = import("../services/card-rollup.js").RollupDeps;
@@ -118,15 +117,17 @@ const IDLE_DEPS: RollupDeps = {
   previewOf: () => null,
 };
 
-const openCard = createCard({ title: "Ticket with a legacy member" });
-
 beforeEach(() => {
   fileChats = [
-    // On the card, still runnable — the control.
-    chat("live-member", { cardId: openCard.id, provider: "codex" }),
-    // On the same card, harness removed, no session file anywhere.
-    chat("or-member", { cardId: openCard.id, provider: "openrouter", title: "Legacy OR chat" }),
-    // A tree: an OR parent whose claude-code child outlived the harness.
+    // The card: an open root whose tree holds one runnable member and one on
+    // the removed harness. The OR member is on the card by lineage — the
+    // retired-provider rule is what keeps it off the rollup, not membership.
+    chat("card-root", { title: "Ticket with a legacy member" }),
+    chat("live-member", { parentChatId: "card-root", rootChatId: "card-root", provider: "codex" }),
+    chat("or-member", { parentChatId: "card-root", rootChatId: "card-root", provider: "openrouter", title: "Legacy OR chat" }),
+    // A tree: an OR parent whose claude-code child outlived the harness. The
+    // OR parent is itself a card root now (top-level, not triggered) — its
+    // card is a tree the user can only reach through the surviving child.
     chat("or-parent", { provider: "openrouter", title: "Legacy OR parent" }),
     chat("cc-child", { parentChatId: "or-parent", rootChatId: "or-parent" }),
   ];
@@ -155,44 +156,48 @@ describe("the chat list drops chats on a removed harness", () => {
     expect(child._lineage_appended).toBeUndefined();
   });
 
-  it("excludes an OR chat from the cards-only view even though it holds a cardId", async () => {
+  it("excludes an OR chat from the cards-only view — no discovered session, no row", async () => {
+    // or-member is on an open card's tree, but the view lists DISCOVERED
+    // sessions: an OR chat has no session file, so it cannot appear as a live
+    // row. cc-child's own root (or-parent) is a card too, so the child stays.
     const body = await listChats({ cardsOnly: "true", limit: "50" });
-    expect(idsOf(body)).toEqual(["live-member"]);
+    expect(idsOf(body)).toEqual(["cc-child", "live-member"]);
   });
 });
 
 describe("card rollups agree with the chat list", () => {
-  const cardFixture: Card = {
-    id: openCard.id,
-    title: openCard.title,
-    description: "",
-    emoji: "🗂️",
-    lifecycle: "open",
-    pinned: false,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-  };
-
-  it("counts only the members that still exist, and does not crash on the one that does not", () => {
-    // Rollups scan chat RECORDS (routes/cards.ts passes the card-member
-    // index, which reads the same files), never discovery — so without an
-    // explicit rule the board would report a member count the sidebar cannot
-    // reproduce.
-    const summary = buildCardSummaries([cardFixture], fileChats as unknown as Chat[], [], IDLE_DEPS)[0];
-    expect(summary.chatCount).toBe(1);
-    expect(summary.memberChats.map((c) => c.chatId)).toEqual(["live-member"]);
+  it("drops the OR member from the card's chats and does not crash on it", () => {
+    // Rollups scan chat RECORDS (routes/cards.ts passes the stat-gated
+    // snapshot, which reads the same files), never discovery — so without the
+    // retired-provider rule the board would report a member the sidebar cannot
+    // reproduce. The root and the live member stay.
+    const summaries = buildCardSummaries(fileChats as unknown as Chat[], [], IDLE_DEPS);
+    const summary = summaries.find((s) => s.id === "card-root")!;
+    expect(summary.chatCount).toBe(2);
+    expect(summary.memberChats.map((c) => c.chatId).sort()).toEqual(["card-root", "live-member"]);
     expect(summary.rollup).toBe("idle");
   });
 
-  it("renders an empty card rather than a card of ghosts when every member was OR-backed", () => {
-    const orOnly = fileChats.filter((c) => c.id === "or-member");
-    const summary = buildCardSummaries([cardFixture], orOnly as unknown as Chat[], [], IDLE_DEPS)[0];
-    expect(summary.chatCount).toBe(0);
-    expect(summary.memberChats).toEqual([]);
+  it("renders a card of the root alone rather than a card of ghosts when every other member was OR-backed", () => {
+    // In the new model the card IS the root chat, so a card can never lose
+    // its last member — the ghost state degrades to "root only".
+    const orOnly = [
+      chat("ghost-root", { title: "Ghost card" }),
+      chat("or-member", { parentChatId: "ghost-root", rootChatId: "ghost-root", provider: "openrouter", title: "Legacy OR chat" }),
+    ];
+    const summary = buildCardSummaries(orOnly as unknown as Chat[], [], IDLE_DEPS).find((s) => s.id === "ghost-root")!;
+    expect(summary.chatCount).toBe(1);
+    expect(summary.memberChats.map((c) => c.chatId)).toEqual(["ghost-root"]);
     expect(summary.rollup).toBe("idle");
-    // The card itself survives with its own timestamp — an empty card is a
-    // rendering state the board already has, not a missing one.
-    expect(summary.lastActivityAt).toBe(cardFixture.updatedAt);
+  });
+
+  it("still surfaces the OR parent's own card, with the surviving child as its member", () => {
+    // or-parent is a card root; its provider being retired does not delete
+    // the card, and cc-child folds under it. The board shows the card, with
+    // the OR root itself dropped from the member list.
+    const summaries = buildCardSummaries(fileChats as unknown as Chat[], [], IDLE_DEPS);
+    const summary = summaries.find((s) => s.id === "or-parent")!;
+    expect(summary.memberChats.map((c) => c.chatId)).toEqual(["cc-child"]);
   });
 });
 

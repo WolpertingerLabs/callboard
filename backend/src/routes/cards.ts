@@ -1,14 +1,19 @@
 /**
- * Cards REST API — CRUD for cards (tickets) plus per-card rollups for the
- * /board view.
+ * Cards REST API — the board's read/edit surface over cards-as-metadata.
+ *
+ * A card IS a lineage root chat: `:id` params are root chat ids, and the
+ * card's fields live in that chat's `metadata.card` (see card-fields.ts).
+ * There is no create (sending a top-level prompt creates the card) and no
+ * delete (deleting the chat deletes the card) — which is why this module is
+ * read + patch only.
  *
  * A rollup is recomputed per request, and deliberately so: the board and the
  * sidebar both refetch ~300 ms after a mutation bumps metadataVersion, which
  * is exactly when a response cache would serve stale data. That leaves the
  * cost of a recompute as the thing to hold down, and it is *blocked event
  * loop* — the handler is one synchronous block, so while it runs nothing else
- * in the daemon does. Membership comes from the stat-gated index in
- * card-member-index.ts for that reason; the ~8k-record scan it replaced was
+ * in the daemon does. The chat corpus comes from the stat-gated snapshot in
+ * chats-snapshot.ts for that reason; the ~8k-record scan it replaced was
  * measured at up to 1.9 s of frozen daemon per request.
  *
  * The sibling listings (`GET /api/chats`, `GET /api/chats/folders`) took the
@@ -19,14 +24,15 @@
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type { Card, CardPatch, CardSummary } from "shared";
-import { listCards, getCard, createCard, updateCard, deleteCard, CardValidationError, CARD_CATEGORY_MAX } from "../services/card-store.js";
+import type { CardPatch, CardSummary } from "shared";
 import { buildCardSummaries } from "../services/card-rollup.js";
-import { listCardMemberChats } from "../services/card-member-index.js";
+import { listChatsSnapshot } from "../services/chats-snapshot.js";
+import { patchCardFields, isCardEligible, CardFieldError } from "../services/card-fields.js";
+import { CARD_CATEGORY_MAX } from "shared";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
-import { findChat } from "../utils/chat-lookup.js";
-import { setChatCardMembership, unassignAllChatsFromCard } from "../services/card-membership.js";
+import { chatFileService } from "../services/chat-file-service.js";
 import { listRuns } from "../services/job-store.js";
+import { walkToRootId } from "../services/chat-lineage.js";
 import { clearListCaches } from "../services/list-caches.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { createLogger } from "../utils/logger.js";
@@ -35,71 +41,56 @@ const log = createLogger("cards");
 
 export const cardsRouter = Router();
 
-function summarize(cards: Card[]): CardSummary[] {
-  // Only card-bearing chats and runs matter to a rollup; filtering both here
-  // (not slicing the newest N) keeps a long-dormant member from silently
-  // dropping out. The chats come from the stat-gated index rather than a fresh
-  // read of all ~8k records: the same set for a fifth of the blocked event
-  // loop, which on this route is the cost that matters (see the module header
-  // of card-member-index.ts).
-  return buildCardSummaries(cards, listCardMemberChats(), listRuns({ assignedToCard: true }));
+/**
+ * Roll up the whole board from one snapshot: every chat record (stat-gated
+ * read, not a fresh parse of all ~8k files) plus every run that belongs to a
+ * lineage root. The rollup itself derives which roots are cards, so there is
+ * no card list to pre-filter here.
+ */
+function summarizeAll(includeHidden = false): CardSummary[] {
+  return buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }), undefined, { includeHidden });
+}
+
+/**
+ * Resolve an `:id` param to the root chat whose card it names. Any chat id in
+ * a lineage tree names that tree's card — the same resolution the MCP setters
+ * use — because agents and the UI both know member chat ids far more often
+ * than root ids. Returns null when the chat does not exist, or when the
+ * resolved root does not qualify as a card root (a job-step or triggered
+ * chat is never a card).
+ */
+function resolveCardRootChat(id: string): { rootChatId: string } | null {
+  // Chat records are filenames. The old card store guarded route ids before
+  // joining them to its directory; keep that boundary now that card ids flow
+  // through chatFileService instead, whose generic lookup also serves trusted
+  // internal callers and therefore does not impose a route-level policy.
+  if (!id || id.includes("/") || id.includes("\\") || id.includes("\0") || id === "." || id === "..") return null;
+  const chat = chatFileService.getChat(id);
+  if (!chat) return null;
+  const rootChatId = walkToRootId(id);
+  // The root itself must be a card root — a step chat's stamped rootChatId
+  // can name a chat that has since been deleted, in which case getChat below
+  // fails and this degrades to "not found", which is the honest answer.
+  const rootChat = chatFileService.getChat(rootChatId);
+  // walkToRootId may promote an orphan whose parent was deleted. Such a
+  // record still carries a dangling parent pointer, so eligibility (manual,
+  // non-job chat) — not raw "has no parent field" — is the right guard.
+  if (!rootChat || !isCardEligible(rootChat)) return null;
+  return { rootChatId };
 }
 
 cardsRouter.get("/", (_req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
-  // #swagger.summary = 'List all cards with live rollups'
+  // #swagger.summary = 'List all cards (lineage roots) with live rollups'
+  // #swagger.description = 'Every non-triggered top-level chat is a card; its fields live on that chat\'s metadata. Hidden cards are omitted.'
   try {
-    const cards = summarize(listCards());
+    const cards = summarizeAll();
     // Pinned first, then most recent activity.
     cards.sort((a, b) => (a.pinned === b.pinned ? b.lastActivityAt.localeCompare(a.lastActivityAt) : a.pinned ? -1 : 1));
     res.json({ cards });
   } catch (err: any) {
     log.error(`Error listing cards: ${err}`);
     res.status(500).json({ error: "Failed to list cards", details: err.message });
-  }
-});
-
-cardsRouter.post("/", (req: Request, res: Response) => {
-  // #swagger.tags = ['Cards']
-  // #swagger.summary = 'Create a card, optionally assigning an existing chat'
-  /* #swagger.responses[201] = { description: "Created card with rollup" } */
-  const { title, description, emoji, category, chatId } = req.body ?? {};
-  if (typeof title !== "string" || !title.trim()) {
-    return res.status(400).json({ error: "title is required" });
-  }
-  if (category !== undefined && typeof category !== "string") {
-    return res.status(400).json({ error: "category must be a string" });
-  }
-  // Reject rather than let the store truncate: a silently clipped label would
-  // group the card somewhere the caller never asked for. Matches the MCP
-  // tool's zod .max().
-  if (typeof category === "string" && category.trim().length > CARD_CATEGORY_MAX) {
-    return res.status(400).json({ error: `category exceeds ${CARD_CATEGORY_MAX} characters` });
-  }
-  try {
-    // Resolve the founding chat before creating the card so a bad chatId
-    // can't leave an orphan card behind. findChat also covers chats that
-    // only exist as filesystem sessions (no file-storage record yet).
-    if (typeof chatId === "string" && chatId && !findChat(chatId, false)) {
-      return res.status(404).json({ error: "Chat not found" });
-    }
-
-    const card = createCard({
-      title,
-      ...(typeof description === "string" && { description }),
-      ...(typeof emoji === "string" && emoji && { emoji }),
-      ...(typeof category === "string" && category.trim() && { category }),
-    });
-
-    // View-only assignment: doesn't bump the chat's updated_at, clears the
-    // chat-list cache, handles filesystem-only chats.
-    if (typeof chatId === "string" && chatId) setChatCardMembership(chatId, card.id);
-
-    sessionRegistry.notifyMetadata(card.id, { cardEvent: "created" });
-    res.status(201).json({ card: summarize([card])[0] });
-  } catch (err: any) {
-    log.error(`Error creating card: ${err}`);
-    res.status(500).json({ error: "Failed to create card", details: err.message });
   }
 });
 
@@ -115,10 +106,10 @@ export const BULK_LIFECYCLE_MAX = 200;
  *
  * POST, not `PATCH /bulk`, and deliberately so: Express matches in
  * registration order, so a `patch("/bulk")` sitting below `patch("/:id")`
- * resolves to the single-card handler with `id="bulk"`, fails CARD_ID_RE in
- * card-store, and answers 404 "Card not found" — a routing bug wearing a data
- * bug's clothes. There is no `post("/:id")`, so this path cannot be shadowed
- * no matter where it is registered or how the file is later reordered.
+ * resolves to the single-card handler with `id="bulk"` and answers 404
+ * "Card not found" — a routing bug wearing a data bug's clothes. There is no
+ * `post("/:id")`, so this path cannot be shadowed no matter where it is
+ * registered or how the file is later reordered.
  *
  * Partial success is a 200 with a populated `failed[]`, not an error status:
  * a missing id in the middle of a batch must not strand the rest, and the
@@ -127,6 +118,7 @@ export const BULK_LIFECYCLE_MAX = 200;
 cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Close or reopen many cards in one call; per-id failures are reported, not fatal'
+  // #swagger.description = 'ids are root chat ids. Per-id failures are reported in failed[], not fatal.'
   /* #swagger.responses[200] = { description: "Updated card summaries plus per-id failures" } */
   const { ids, lifecycle } = req.body ?? {};
   if (!Array.isArray(ids) || ids.length === 0 || ids.some((id: unknown) => typeof id !== "string")) {
@@ -139,18 +131,36 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     return res.status(400).json({ error: "lifecycle must be 'open' or 'closed'" });
   }
   try {
-    const updated: Card[] = [];
+    // Resolve every root BEFORE writing any, so a typo in the middle of the
+    // batch cannot half-apply: resolution is pure, writes are not.
+    const resolved: { id: string; rootChatId: string }[] = [];
     const failed: { id: string; error: string }[] = [];
+    const seenRoots = new Set<string>();
     for (const id of ids as string[]) {
+      const root = resolveCardRootChat(id);
+      if (!root) {
+        failed.push({ id, error: "Card not found" });
+        continue;
+      }
+      // Two member ids of one tree name the same card — dedupe rather than
+      // double-write the lifecycle flip (which would also double-notify).
+      if (seenRoots.has(root.rootChatId)) continue;
+      seenRoots.add(root.rootChatId);
+      resolved.push({ id, rootChatId: root.rootChatId });
+    }
+
+    const successfulRootIds = new Set<string>();
+    for (const { id, rootChatId } of resolved) {
       try {
-        const card = updateCard(id, { lifecycle });
-        if (card) updated.push(card);
-        else failed.push({ id, error: "Card not found" });
+        patchCardFields(rootChatId, { lifecycle });
+        successfulRootIds.add(rootChatId);
       } catch (err: any) {
-        log.error(`Error updating card ${id} in bulk lifecycle: ${err}`);
+        log.error(`Error updating card ${rootChatId} in bulk lifecycle: ${err}`);
         failed.push({ id, error: err?.message ?? "Failed to update card" });
       }
     }
+
+    const updated = summarizeAll(true).filter((c) => successfulRootIds.has(c.id));
     if (updated.length > 0) {
       // Once for the batch, same reason as the single-card patch: a lifecycle
       // flip moves which chats the sidebar's cards-only filter admits.
@@ -160,7 +170,7 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
       // notifications would be N SSE frames driving one identical refetch.
       sessionRegistry.notifyMetadata(updated[0].id, { cardEvent: "updated" });
     }
-    res.json({ updated: summarize(updated), failed });
+    res.json({ updated, failed });
   } catch (err: any) {
     log.error(`Error in bulk lifecycle update: ${err}`);
     res.status(500).json({ error: "Failed to update cards", details: err.message });
@@ -170,22 +180,33 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
 cardsRouter.get("/:id", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Get a card with live rollup'
+  // #swagger.description = 'id is the card\'s root chat id; any member chat id of the tree resolves to the same card.'
   /* #swagger.responses[404] = { description: "Card not found" } */
-  const card = getCard(req.params.id);
-  if (!card) return res.status(404).json({ error: "Card not found" });
-  res.json({ card: summarize([card])[0] });
+  try {
+    const root = resolveCardRootChat(req.params.id);
+    if (!root) return res.status(404).json({ error: "Card not found" });
+    // Hidden is a board-listing concern, not deletion. A direct id remains
+    // readable/editable so callers can inspect or unhide an opted-out card.
+    const card = summarizeAll(true).find((c) => c.id === root.rootChatId);
+    if (!card) return res.status(404).json({ error: "Card not found" });
+    res.json({ card });
+  } catch (err: any) {
+    log.error(`Error getting card ${req.params.id}: ${err}`);
+    res.status(500).json({ error: "Failed to get card", details: err.message });
+  }
 });
 
-const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "statusEmoji", "category", "lifecycle", "metadata"] as const;
+const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "statusEmoji", "category", "lifecycle", "metadata", "hidden"] as const;
 
 cardsRouter.patch("/:id", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
-  // #swagger.summary = 'Update a card (title, description, pin, narrative status, lifecycle, metadata)'
+  // #swagger.summary = 'Update a card (title, description, pin, narrative status, lifecycle, hidden, metadata)'
+  // #swagger.description = 'id is the card\'s root chat id (any member chat id resolves to the same card). The patch merges into the root chat\'s metadata.card as a view-only write (no updated_at bump).'
   /* #swagger.responses[404] = { description: "Card not found" } */
   const body = req.body ?? {};
-  const patch: CardPatch = {};
+  const patch: Record<string, unknown> = {};
   for (const field of PATCHABLE_FIELDS) {
-    if (field in body) (patch as Record<string, unknown>)[field] = body[field];
+    if (field in body) patch[field] = body[field];
   }
   // Validate types up front so a malformed body is a 400, not a 500 from a
   // downstream `.trim()` on null etc.
@@ -200,6 +221,9 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
   }
   if (patch.pinned !== undefined && typeof patch.pinned !== "boolean") {
     return res.status(400).json({ error: "pinned must be a boolean" });
+  }
+  if (patch.hidden !== undefined && patch.hidden !== null && typeof patch.hidden !== "boolean") {
+    return res.status(400).json({ error: "hidden must be a boolean or null" });
   }
   if (patch.status !== undefined && patch.status !== null && typeof patch.status !== "string") {
     return res.status(400).json({ error: "status must be a string or null" });
@@ -221,47 +245,25 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     if (metadataError) return res.status(400).json({ error: metadataError });
   }
   try {
-    const card = updateCard(req.params.id, patch);
+    const root = resolveCardRootChat(req.params.id);
+    if (!root) return res.status(404).json({ error: "Card not found" });
+    const card = patchCardFields(root.rootChatId, patch as CardPatch);
     if (!card) return res.status(404).json({ error: "Card not found" });
     // A lifecycle flip changes which chats the sidebar's cards-only filter
     // admits, and that list is cached by query string — drop it so the next
     // poll reflects the close/reopen instead of serving the old membership.
-    if (patch.lifecycle !== undefined) clearListCaches();
+    if (patch.lifecycle !== undefined || patch.hidden !== undefined) clearListCaches();
     sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
-    res.json({ card: summarize([card])[0] });
+    // includeHidden keeps the CardResponse shape stable when this very patch
+    // opts the card out of the list. Returning raw Card fields here would drop
+    // rollup/member fields from an endpoint typed as CardSummary.
+    const summary = summarizeAll(true).find((c) => c.id === card.id);
+    if (!summary) throw new Error(`Updated card "${card.id}" was missing from the chat snapshot`);
+    res.json({ card: summary });
   } catch (err: any) {
-    if (err instanceof CardValidationError) return res.status(400).json({ error: err.message });
+    if (err instanceof CardFieldError) return res.status(400).json({ error: err.message });
     if (/title/i.test(err.message ?? "")) return res.status(400).json({ error: err.message });
     log.error(`Error updating card: ${err}`);
     res.status(500).json({ error: "Failed to update card", details: err.message });
-  }
-});
-
-cardsRouter.delete("/:id", (req: Request, res: Response) => {
-  // #swagger.tags = ['Cards']
-  // #swagger.summary = 'Permanently delete a CLOSED card; member chats are unassigned, not deleted'
-  /* #swagger.responses[404] = { description: "Card not found" } */
-  /* #swagger.responses[409] = { description: "Card is still open — close it first" } */
-  const card = getCard(req.params.id);
-  if (!card) return res.status(404).json({ error: "Card not found" });
-  if (card.lifecycle !== "closed") {
-    return res.status(409).json({ error: "Only closed cards can be deleted — close the card first" });
-  }
-  try {
-    // Remove the card file FIRST: if the unlink fails we still have a
-    // consistent board (card present, members intact) rather than a card whose
-    // chats were already detached. Job runs keep their historical `cardId` —
-    // rollups only ever project runs onto cards that still exist, so a stale
-    // run reference is inert, unlike a chat's (which feeds default-card
-    // resolution in the MCP tools).
-    if (!deleteCard(card.id)) {
-      return res.status(500).json({ error: "Failed to delete card" });
-    }
-    unassignAllChatsFromCard(card.id);
-    sessionRegistry.notifyMetadata(card.id, { cardEvent: "deleted" });
-    res.json({ success: true });
-  } catch (err: any) {
-    log.error(`Error deleting card: ${err}`);
-    res.status(500).json({ error: "Failed to delete card", details: err.message });
   }
 });

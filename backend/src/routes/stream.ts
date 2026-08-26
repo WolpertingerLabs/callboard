@@ -16,7 +16,6 @@ import { findChatForStatus } from "../utils/chat-lookup.js";
 import { beginSSE, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
-import { getCard } from "../services/card-store.js";
 import { captureWorktreeWorkspace } from "../services/workspace-store.js";
 import { listActivities, getWatch, releaseActivity } from "../services/chat-activity.js";
 import { listPendingForParent } from "../services/session-callbacks.js";
@@ -58,9 +57,9 @@ streamRouter.post("/new/message", async (req, res) => {
             requireExplicitCompletion: { type: "boolean", description: "Require the session to call the objective_complete tool before it is considered done; if the stream ends without it, the session is re-prompted to continue (up to a cap). Persisted for the chat. Default: false." },
             parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
             chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the tree node of the new chat, e.g. subagent, monitor, engine-switch. Only used with parentChatId." },
-            cardId: { type: "string", description: "Card (ticket) to attach the new chat to — shows as a member on the board view. Ignored when the card does not exist." },
-            createCard: { type: "boolean", description: "Whether to create a new open card and attach the chat to it. Defaults to TRUE: a chat that names no cardId and no parentChatId gets its own card. Pass false to opt out. Ignored when cardId or parentChatId is supplied (an explicit card wins; children inherit their card of the parent). The card title follows the auto-generated title of the chat." },
-            cardCategory: { type: "string", description: "Optional category for the auto-created card (used with createCard; max 64 chars). The board groups open cards by category." },
+            cardId: { type: "string", description: "Deprecated no-op. Cards are derived from the chat lineage tree — a top-level chat is a card automatically and every child joins its root. Accepted (and ignored) so older clients keep working." },
+            createCard: { type: "boolean", description: "Deprecated no-op. A top-level chat is a card automatically; use PATCH /api/cards/{rootChatId} with hidden:true to opt a card out of the board. Accepted (and ignored) so older clients keep working." },
+            cardCategory: { type: "string", description: "Deprecated no-op (was used with createCard). Use PATCH /api/cards/{rootChatId} to set the category. Accepted and ignored." },
             acpProviderId: { type: "string", description: "Which ACP vendor runs the chat. Required when provider is \'acp\', ignored otherwise. Must name a configured preset (see GET /api/system-info acpProviders)." },
             clientTrackingId: { type: "string", description: "Client-generated temporary session id (must match new-<alphanumeric/_/->, max 80 chars) used as the session key until the real chat id exists, so POST /api/chats/{clientTrackingId}/stop can cancel the run during startup. Ignored when malformed or already in use." },
             branchConfig: {
@@ -203,7 +202,14 @@ streamRouter.post("/new/message", async (req, res) => {
     // opt-in and the harness is gone. Ignoring beats a 400 for a field nothing
     // can act on either way.
 
-    const safeCardId: string | undefined = typeof cardId === "string" && cardId && getCard(cardId)?.lifecycle === "open" ? cardId : undefined;
+    // `cardId` / `createCard` / `cardCategory` are deprecated no-ops: cards
+    // are now derived from the lineage tree, so there is nothing to attach
+    // and nothing to create. They stay in the destructuring (and the swagger
+    // schema above) so an older client bundle still sending them gets today's
+    // behavior rather than a 4xx on a field nothing can act on either way.
+    void cardId;
+    void createCard;
+    void cardCategory;
 
     // Temp session key the client can address /stop with before chat_created
     // arrives. Namespaced to "new-" so a caller can't claim (and then stop) the
@@ -230,36 +236,13 @@ streamRouter.post("/new/message", async (req, res) => {
       // (same outcome as omitting — the default behavior).
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),
       // Parentage-tree linkage — sendMessage skips it silently when the
-      // parent chat has no stored record.
+      // parent has no stored record. This is also what makes the new chat a
+      // member of its root's card: membership is lineage, so nothing else
+      // is passed for cards.
       ...(typeof parentChatId === "string" &&
         parentChatId && {
           parentChatId,
           ...(typeof chatRole === "string" && chatRole && { chatRole }),
-        }),
-      // Card membership — attach only to an existing OPEN card. Unknown or
-      // closed ids are dropped silently (the chat stays card-less and the
-      // user can file it from the sidebar's chat menu) rather than failing
-      // the send or stamping a chat onto a card hidden in the Closed strip.
-      ...(safeCardId && { cardId: safeCardId }),
-      // Auto-create a card for every top-level chat. The policy lives here
-      // rather than in the client: the composer no longer sends the flag at
-      // all, and a tab running an older bundle that still sends it must not
-      // get different behavior (see the wire rules in shared/types/stream.ts).
-      //
-      // Three ways out, each of them something the caller said explicitly:
-      //   - `createCard: false` — the API-client opt-out, and the only one.
-      //   - any `cardId` in the body, including a stale (closed/deleted) one:
-      //     that drops the association entirely rather than surprising the
-      //     caller with a brand-new card, which is why this tests the raw
-      //     field and not `safeCardId`.
-      //   - a `parentChatId` — children inherit their parent's card and must
-      //     never mint their own. sendMessage enforces the same rule on the
-      //     path every spawn takes; this is the HTTP-facing half of it.
-      ...(createCard !== false &&
-        !cardId &&
-        !(typeof parentChatId === "string" && parentChatId) && {
-          createCard: true,
-          ...(typeof cardCategory === "string" && cardCategory.trim() && { cardCategory: cardCategory.trim() }),
         }),
     });
 

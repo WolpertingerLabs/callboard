@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { CardSummary, CardPatch } from "../../api";
 import { getAgentIdentityPrompt, CARD_CATEGORY_MAX } from "../../api";
@@ -7,9 +7,9 @@ import InlineEdit from "./InlineEdit";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
-import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag, Trash2 } from "lucide-react";
+import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag } from "lucide-react";
 
-/** Mirrors the store-side limits in backend/src/services/card-store.ts. */
+/** Mirrors the limits in backend/src/services/card-fields.ts. */
 const METADATA_KEY_MAX = 64;
 const METADATA_VALUE_MAX = 2048;
 
@@ -19,8 +19,7 @@ interface CardDrawerProps {
   categories: string[];
   /** Resolves false when the patch was rejected — editors stay open so input isn't lost. */
   onPatch: (patch: CardPatch) => Promise<boolean>;
-  /** Permanently delete the card — only invoked on closed cards, after an in-drawer confirm. */
-  onDelete: () => void | Promise<void>;
+  /** Close the drawer (card deletion is root-chat deletion in the chat UI). */
   onClose: () => void;
 }
 
@@ -41,20 +40,10 @@ const ICON_BUTTON: React.CSSProperties = {
 };
 
 /** Right-hand drawer with the card's editable identity, members, and actions. */
-export default function CardDrawer({ card, categories, onPatch, onDelete, onClose }: CardDrawerProps) {
+export default function CardDrawer({ card, categories, onPatch, onClose }: CardDrawerProps) {
   const navigate = useNavigate();
   const [editingDescription, setEditingDescription] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const closed = card.lifecycle === "closed";
-
-  // Disarm the delete confirmation after a few seconds rather than on blur:
-  // the board re-renders on every metadata poll, and a blur-triggered reset
-  // between the two clicks would silently swallow the confirming click.
-  useEffect(() => {
-    if (!confirmingDelete) return;
-    const timer = setTimeout(() => setConfirmingDelete(false), 5000);
-    return () => clearTimeout(timer);
-  }, [confirmingDelete]);
 
   // Start a chat in the card's working context: the most recently active
   // member chat's folder, and — when that chat runs a configured agent —
@@ -65,7 +54,9 @@ export default function CardDrawer({ card, categories, onPatch, onDelete, onClos
     const folder = recent?.folder ?? getRecentDirectories()[0]?.path;
     if (!folder) {
       // No known folder anywhere — land on the picker message rather than guessing.
-      navigate("/chat/new", { state: { cardId: card.id } });
+      // parentChatId = the card's root chat: the new chat joins the card by
+      // joining the tree (membership is lineage).
+      navigate("/chat/new", { state: { parentChatId: card.id } });
       return;
     }
 
@@ -84,7 +75,7 @@ export default function CardDrawer({ card, categories, onPatch, onDelete, onClos
       };
     }
 
-    navigate(`/chat/new?folder=${encodeURIComponent(folder)}`, { state: { cardId: card.id, ...agentState } });
+    navigate(`/chat/new?folder=${encodeURIComponent(folder)}`, { state: { parentChatId: card.id, ...agentState } });
   };
 
   return (
@@ -336,37 +327,7 @@ export default function CardDrawer({ card, categories, onPatch, onDelete, onClos
             {closed ? <ArchiveRestore size={14} /> : <Archive size={14} />}
             {closed ? "Reopen" : "Close card"}
           </button>
-          {closed && (
-            <button
-              onClick={() => {
-                if (!confirmingDelete) {
-                  setConfirmingDelete(true);
-                  return;
-                }
-                void onDelete();
-              }}
-              title={
-                confirmingDelete
-                  ? "Click again to permanently delete this card — chats are unassigned, not deleted"
-                  : "Delete this card permanently (chats are unassigned, not deleted)"
-              }
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "8px 12px",
-                borderRadius: 6,
-                border: "1px solid var(--danger)",
-                background: confirmingDelete ? "var(--danger-solid)" : "var(--danger-bg)",
-                color: confirmingDelete ? "var(--text-on-danger)" : "var(--danger)",
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-            >
-              <Trash2 size={14} />
-              {confirmingDelete ? "Confirm delete" : "Delete"}
-            </button>
-          )}
+
         </div>
       </div>
     </>

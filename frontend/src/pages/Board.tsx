@@ -1,15 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import type { CardSummary, CardPatch, CardPayload } from "../api";
-import { listCards, createCard, updateCard, deleteCard, bulkSetCardLifecycle } from "../api";
+import type { CardSummary, CardPatch } from "../api";
+import { listCards, updateCard, bulkSetCardLifecycle } from "../api";
 import { useMetadataVersion } from "../contexts/SessionContext";
 import { getBoardClosedExpanded, saveBoardClosedExpanded } from "../utils/localStorage";
 import { uniqueCategories } from "../utils/cardCategories";
 import CardTile from "../components/board/CardTile";
 import BoardSelectionBar from "../components/board/BoardSelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
-import NewCardModal from "../components/board/NewCardModal";
-import { Plus, ChevronRight, ChevronDown, ChevronLeft, LayoutGrid } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronLeft, LayoutGrid } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /** A category's cards inside one status section. `label: null` is uncategorized. */
@@ -135,7 +134,6 @@ export default function Board() {
   const [error, setError] = useState<string | null>(null);
   const [openCardId, setOpenCardId] = useState<string | null>(null);
   const [closedExpanded, setClosedExpanded] = useState(() => getBoardClosedExpanded());
-  const [showNewCard, setShowNewCard] = useState(false);
 
   // Multi-select. Deliberately NOT persisted: a stale selection restored
   // across a reload is a way to act on the wrong cards.
@@ -362,30 +360,6 @@ export default function Board() {
     }
   };
 
-  /** Permanent removal — only offered on closed cards (the server enforces it too). */
-  const removeCard = async (cardId: string) => {
-    try {
-      await deleteCard(cardId);
-      setCards((prev) => prev.filter((c) => c.id !== cardId));
-      setOpenCardId(null);
-    } catch (err: any) {
-      setError(err.message || "Failed to delete card");
-    }
-  };
-
-  // "New card" drafts locally in a modal; the card is only created on save.
-  const createFromModal = async (payload: CardPayload) => {
-    try {
-      const res = await createCard(payload);
-      setShowNewCard(false);
-      await loadCards();
-      setOpenCardId(res.card.id);
-    } catch (err: any) {
-      setError(err.message || "Failed to create card");
-      setShowNewCard(false);
-    }
-  };
-
   // Real headings, not styled spans: status and category are a two-level
   // hierarchy now, and h2/h3 under the page's h1 is what lets a screen reader
   // walk it. It doubles as the handle the grouping tests read the outline
@@ -447,23 +421,6 @@ export default function Board() {
           )}
           <LayoutGrid size={20} style={{ color: "var(--accent-text)" }} />
           <h1 style={{ fontSize: 20, fontWeight: 600, color: "var(--text)", flex: 1 }}>Board</h1>
-          <button
-            onClick={() => setShowNewCard(true)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              background: "var(--accent)",
-              color: "var(--text-on-accent)",
-              padding: "8px 14px",
-              borderRadius: 6,
-              fontSize: 13,
-              cursor: "pointer",
-            }}
-          >
-            <Plus size={14} />
-            New card
-          </button>
         </div>
 
         {error && (
@@ -487,7 +444,7 @@ export default function Board() {
           <>
             {open.length === 0 && (
               <div style={{ color: "var(--text-muted)", fontSize: 14, marginBottom: 28 }}>
-                No open cards. Create one, or use a chat&rsquo;s ⋮ menu in the sidebar to promote it to a card.
+                No open cards. Start a chat — every top-level conversation is a card.
               </div>
             )}
 
@@ -553,12 +510,10 @@ export default function Board() {
           card={openCard}
           categories={knownCategories}
           onPatch={(patch) => patchCard(openCard.id, patch)}
-          onDelete={() => removeCard(openCard.id)}
           onClose={() => setOpenCardId(null)}
         />
       )}
 
-      {showNewCard && <NewCardModal categories={knownCategories} onCreate={createFromModal} onClose={() => setShowNewCard(false)} />}
 
       {selectionMode && (
         <BoardSelectionBar

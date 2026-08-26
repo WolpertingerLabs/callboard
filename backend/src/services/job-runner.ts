@@ -77,8 +77,12 @@ export interface JobContext {
   executionKey?: string;
   /** Advisory sessions (approval notifiers) never advance the run. */
   advisory?: boolean;
-  /** Card (ticket) the run belongs to — stamped into step-chat metadata.cardId. */
-  cardId?: string;
+  /**
+   * Root chat id of the lineage tree this run belongs to — stamped into
+   * step-chat metadata.rootChatId so step chats fold under the root's card
+   * (and its sidebar tree row) without a parent pointer.
+   */
+  rootChatId?: string;
 }
 
 type MessageSender = (opts: {
@@ -331,7 +335,7 @@ function resumeRunAfterRestart(run: JobRun): void {
  * that already landed under that key resolves to the run it created rather
  * than a second one, which is what makes retrying a spawn safe.
  */
-export function spawnJobRun(jobId: string, inputs: Record<string, string>, parent?: RunParentLink, opts?: { cardId?: string; executionKey?: string }): JobRun {
+export function spawnJobRun(jobId: string, inputs: Record<string, string>, parent?: RunParentLink, opts?: { rootChatId?: string; executionKey?: string }): JobRun {
   if (opts?.executionKey) {
     // The terminal check is deliberate, and deliberately NOT shared with
     // findRunByExecutionKey, which returns terminal runs. The two callers want
@@ -365,7 +369,7 @@ export function spawnJobRun(jobId: string, inputs: Record<string, string>, paren
     if (value !== undefined) resolved[def.key] = value;
   }
 
-  const run = createRun(job, resolved, parent, opts?.cardId, opts?.executionKey);
+  const run = createRun(job, resolved, parent, opts?.rootChatId, opts?.executionKey);
   log.info(`Spawned run ${run.runId} of job "${jobId}" (version ${job.version})${parent ? ` as child of ${parent.parentRunId}` : ""}`);
   enterStep(run, job.steps[0].id, 0);
   return getRun(run.runId) ?? run;
@@ -744,7 +748,7 @@ function startSubJobStep(run: JobRun, step: SubJobStep, syncDepth: number): void
       step.jobId,
       childInputs,
       { parentRunId: run.runId, parentStepId: step.id, depth: depth + 1 },
-      { cardId: run.cardId, executionKey: key },
+      { rootChatId: run.rootChatId, executionKey: key },
     );
   } catch (err: any) {
     failSubJobStep(run, step, `Job step "${step.id}" failed to spawn child job "${step.jobId}": ${err.message}`, syncDepth);
@@ -1117,7 +1121,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
       ...(stepExecutionKey && { executionKey: stepExecutionKey }),
       ...(opts.branchId && { branchId: opts.branchId }),
       ...(opts.advisory && { advisory: true }),
-      ...(run.cardId && { cardId: run.cardId }),
+      ...(run.rootChatId && { rootChatId: run.rootChatId }),
     },
     // Nudge the step session to keep going until it reports via
     // complete_job_step (advisory sessions have no step result to report).

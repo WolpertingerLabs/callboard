@@ -10,9 +10,6 @@ import {
   Bell,
   Workflow,
   EllipsisVertical,
-  SquarePlus,
-  FolderInput,
-  FolderMinus,
   CircleCheck,
   RotateCcw,
 } from "lucide-react";
@@ -28,17 +25,14 @@ import MenuRow from "./MenuRow";
  * home for these — the chat view's composer menu is about sending messages,
  * not filing tickets.
  *
- * Which entries render is decided by the chat's own `metadata.cardId`, so a
- * card-less chat offers create/add and a filed chat offers close-reopen/remove.
- * `card` is the resolved record, needed only for the lifecycle label; when it
- * hasn't loaded (or the id dangles past a deleted card) that one entry is
- * omitted rather than guessed.
+ * The only entry is the lifecycle toggle. `card` is the resolved record of
+ * the chat's lineage root; when it hasn't loaded (or the root is not a card —
+ * e.g. a triggered chat) the entry is omitted rather than guessed. There is
+ * no create/join/leave: membership is lineage, so a top-level chat is a card
+ * the moment it exists.
  */
 export interface ChatCardMenu {
   card?: { title: string; lifecycle: "open" | "closed" };
-  onCreate?: () => void;
-  onAdd?: () => void;
-  onRemove?: () => void;
   onToggleLifecycle?: () => void;
 }
 
@@ -114,13 +108,11 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
   let jobRunId: string | undefined;
   let jobStepId: string | undefined;
   let jobNeedsYou = false;
-  let hasCard = false;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
     title = meta.title;
     preview = meta.preview;
     isBookmarked = meta.bookmarked === true;
-    hasCard = typeof meta.cardId === "string" && !!meta.cardId;
     agentAlias = meta.agentAlias;
     isTriggered = meta.triggered === true;
     lastReadAt = meta.lastReadAt;
@@ -460,29 +452,7 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                     }}
                   />
                 )}
-                {!hasCard && cardMenu?.onCreate && (
-                  <MenuRow
-                    icon={<SquarePlus size={16} />}
-                    label="Create card"
-                    title="Promote this chat to a new card"
-                    onClick={() => {
-                      setMenuPos(null);
-                      cardMenu.onCreate!();
-                    }}
-                  />
-                )}
-                {!hasCard && cardMenu?.onAdd && (
-                  <MenuRow
-                    icon={<FolderInput size={16} />}
-                    label="Add to card…"
-                    title="Add this chat to an existing card"
-                    onClick={() => {
-                      setMenuPos(null);
-                      cardMenu.onAdd!();
-                    }}
-                  />
-                )}
-                {hasCard && cardMenu?.card && cardMenu.onToggleLifecycle && (
+                {cardMenu?.card && cardMenu.onToggleLifecycle && (
                   <MenuRow
                     icon={cardMenu.card.lifecycle === "open" ? <CircleCheck size={16} /> : <RotateCcw size={16} />}
                     label={cardMenu.card.lifecycle === "open" ? "Close card" : "Reopen card"}
@@ -494,17 +464,6 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
                     onClick={() => {
                       setMenuPos(null);
                       cardMenu.onToggleLifecycle!();
-                    }}
-                  />
-                )}
-                {hasCard && cardMenu?.onRemove && (
-                  <MenuRow
-                    icon={<FolderMinus size={16} />}
-                    label="Remove from card"
-                    title="Take this chat off its card (the card itself is kept)"
-                    onClick={() => {
-                      setMenuPos(null);
-                      cardMenu.onRemove!();
                     }}
                   />
                 )}

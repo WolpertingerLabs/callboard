@@ -3,8 +3,8 @@
  * (`PATCH /api/cards/:id`) and the `set_card_metadata` MCP tool.
  *
  * These only translate and shape-check caller input. The authoritative limits
- * (key/value length, entry count) live in `card-store.ts` and surface as
- * `CardValidationError`, so there is exactly one place to change them.
+ * (key/value length, entry count) live in `card-fields.ts` and surface as
+ * `CardFieldError`, so there is exactly one place to change them.
  */
 
 /**
