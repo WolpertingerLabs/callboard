@@ -114,6 +114,18 @@ describe("start_chat_session model inheritance", () => {
     expect(result).toMatchObject({ model: "gpt-5.2", modelSource: "explicit" });
   });
 
+  it("does not leak a raw model id across engines and reports why", async () => {
+    writeCallerChat({ model: "gpt-5.5" });
+    const sender = stubSender();
+
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", provider: "claude-code" }));
+
+    expect(sender.calls[0]).toMatchObject({ provider: "claude-code" });
+    expect("model" in sender.calls[0]).toBe(false);
+    expect(result).toMatchObject({ modelSource: "default", inheritanceNote: expect.stringContaining("gpt-5.5") });
+    expect(result.model).toBeUndefined();
+  });
+
   it("reads the model live: a record written after the spec was built is seen", async () => {
     // The getter is built once at spec time but must consult the record at
     // tool-call time — a model switch mid-session changes what the next

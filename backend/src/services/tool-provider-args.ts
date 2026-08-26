@@ -184,7 +184,14 @@ function resolveSessionModelArg(
   // Same engine ⇒ same model vocabulary (for ACP, provider inheritance carries
   // the vendor id, so the vendor — and therefore the vocabulary — matches too).
   // Passed verbatim: the child re-resolves it through its own resolveSessionModel.
-  if (provider === current?.provider) return { model: callerModel, modelSource: "inherited" };
+  // A missing provider in the calling context has always meant the legacy
+  // Claude Code default (the same fallback used to choose `provider` above).
+  // Apply that fallback on both sides of the comparison. Otherwise a context
+  // that supplies only `getModel` resolves the child to Claude Code, but then
+  // incorrectly treats the caller as a different engine and drops a perfectly
+  // valid Claude model.
+  const callerProvider = current?.provider ?? "claude-code";
+  if (provider === callerProvider) return { model: callerModel, modelSource: "inherited" };
 
   const target = findModelAlias(callerModel)?.targets[provider];
   if (target) return { model: target, modelSource: "inherited" };

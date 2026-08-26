@@ -8,8 +8,7 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 const aliasRegistry = vi.hoisted(() => ({ aliases: [] as Array<{ name: string; targets: Record<string, string> }> }));
 vi.mock("./agent-settings.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./agent-settings.js")>()),
-  findModelAlias: (value: string) =>
-    aliasRegistry.aliases.find((a) => a.name.trim().toLowerCase() === value.trim().toLowerCase()),
+  findModelAlias: (value: string) => aliasRegistry.aliases.find((a) => a.name.trim().toLowerCase() === value.trim().toLowerCase()),
 }));
 
 beforeEach(() => {
@@ -101,14 +100,16 @@ describe("resolveProviderModelArgs", () => {
         modelSource: "default",
       });
     });
-
   });
 
   describe("model inheritance from the calling session", () => {
     it("lets an explicit model win over the caller's model", () => {
-      expect(
-        resolveProviderModelArgs({ model: " sonnet " }, { provider: "claude-code", getModel: () => "opus" }),
-      ).toEqual({ ok: true, provider: "claude-code", model: "sonnet", modelSource: "explicit" });
+      expect(resolveProviderModelArgs({ model: " sonnet " }, { provider: "claude-code", getModel: () => "opus" })).toEqual({
+        ok: true,
+        provider: "claude-code",
+        model: "sonnet",
+        modelSource: "explicit",
+      });
     });
 
     it("inherits the caller's model verbatim on the same engine", () => {
@@ -138,6 +139,16 @@ describe("resolveProviderModelArgs", () => {
         ok: true,
         provider: "codex",
         model: "gpt-5.5",
+        modelSource: "inherited",
+      });
+
+      // The resolver's legacy fallback makes an omitted calling provider mean
+      // Claude Code. The same fallback must be used for the engine comparison,
+      // not just for selecting the child provider.
+      expect(resolveProviderModelArgs({}, { getModel: () => "opus" })).toEqual({
+        ok: true,
+        provider: "claude-code",
+        model: "opus",
         modelSource: "inherited",
       });
     });
@@ -211,12 +222,15 @@ describe("resolveProviderModelArgs", () => {
 
     it("treats a getter that throws as no caller model", () => {
       expect(
-        resolveProviderModelArgs({}, {
-          provider: "codex",
-          getModel: () => {
-            throw new Error("record unreadable");
+        resolveProviderModelArgs(
+          {},
+          {
+            provider: "codex",
+            getModel: () => {
+              throw new Error("record unreadable");
+            },
           },
-        }),
+        ),
       ).toEqual({ ok: true, provider: "codex", modelSource: "default" });
     });
 
