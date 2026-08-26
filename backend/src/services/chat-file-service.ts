@@ -383,6 +383,23 @@ export class ChatFileService {
     }
   }
 
+  // The chat's current per-chat model override, if any — a live read of
+  // metadata.model, the field the model switcher rewrites mid-chat (and the
+  // session-starting tools read to default a child onto the calling chat's
+  // model). Blank or unreadable metadata is simply "no override": the chat
+  // is running on the provider's configured default.
+  getModelOverride(id: string): string | undefined {
+    const chat = this.getChat(id);
+    if (!chat) return undefined;
+    try {
+      const meta = JSON.parse(chat.metadata || "{}");
+      const model = meta?.model;
+      return typeof model === "string" && model.trim() ? model.trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   // Delete a chat
   deleteChat(sessionId: string): boolean {
     log.debug(`deleteChat — sessionId=${sessionId}`);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ROUTABLE_PROVIDER_KINDS } from "../agents/ports/AgentProvider.js";
 import type { UiAgentProviderKind } from "shared/types/providers.js";
+import { findModelAlias } from "./agent-settings.js";
 
 /**
  * The provider values these tools offer, taken from the backend's own list of
@@ -37,8 +38,10 @@ export const providerModelSchema = {
         'full model ID (e.g. "claude-sonnet-4-6"). With provider="codex": a Codex model slug (e.g. "gpt-5.5") — use search_codex_models to ' +
         'discover. With any other provider: that harness\'s own model id. A cross-harness model alias (e.g. "planner") works with ANY provider ' +
         "and resolves to that provider's configured target — use list_model_aliases to discover; it is the safe choice when you are not certain " +
-        "which engine the new session will run on. Omit to use the provider's configured default. A model is never inherited from the calling " +
-        "session even when the provider is: a model id is only meaningful to the harness it belongs to.",
+        "which engine the new session will run on. Omit `model` to inherit THIS session's current model when the child runs on this session's " +
+        "engine. On a different engine, only a cross-harness model alias is inherited (its per-provider target is applied); any other value is " +
+        "not carried across — the child runs on that provider's configured default, and the result says so. Explicit values are still subject " +
+        "to the vocabulary rules above: a model id is only meaningful to the harness it belongs to.",
     ),
 };
 
@@ -49,15 +52,34 @@ export interface ProviderModelArgs {
 
 /**
  * The engine the *calling* session is running on, threaded in by whoever built
- * the tool spec. Both values are fixed for a session's lifetime.
+ * the tool spec. `provider` and `acpProviderId` are fixed for a session's
+ * lifetime. `getModel` is deliberately a getter: unlike the provider, a chat's
+ * model is mutable — the user can switch it mid-chat, and the switch lands in
+ * the chat record's metadata before the next turn — so a plain value captured
+ * at spec-build time would go stale for the rest of the session.
  */
 export interface CallingSessionEngine {
   provider?: UiAgentProviderKind;
   /** Which ACP vendor, when `provider` is `"acp"`. Meaningless otherwise. */
   acpProviderId?: string;
+  /** Live per-chat model override of the calling session, read at tool-call time. */
+  getModel?: () => string | undefined;
 }
 
-export type ResolvedProviderModel = { ok: true; provider: UiAgentProviderKind; acpProviderId?: string; model?: string } | { ok: false; error: string };
+/** How the resolved `model` (when present) came to be set. */
+export type ResolvedModelSource = "explicit" | "inherited" | "default";
+
+export type ResolvedProviderModel =
+  | {
+      ok: true;
+      provider: UiAgentProviderKind;
+      acpProviderId?: string;
+      model?: string;
+      modelSource: ResolvedModelSource;
+      /** Set when the caller's model was considered for inheritance and skipped. */
+      inheritanceNote?: string;
+    }
+  | { ok: false; error: string };
 
 /**
  * Normalize and validate the provider/model args.
@@ -68,25 +90,40 @@ export type ResolvedProviderModel = { ok: true; provider: UiAgentProviderKind; a
  * and the old flat `?? "claude-code"` default meant a Pi or Codex session
  * silently handed every child to Claude Code with no way to say otherwise.
  *
- * `model` deliberately does NOT inherit, even when the provider does. Model ids
- * are per-harness namespaces, not a shared vocabulary — "claude-opus-5" means
- * nothing to Codex and "gpt-5.5" means nothing to Claude Code — so a model
- * carried across would either error or, worse, be silently ignored. An omitted
- * model falls through to the target provider's configured default, which is the
- * only value guaranteed to be valid there. See plans/cross-harness-handoff.md.
+ * `model` inherits too, but only as far as the string stays meaningful:
  *
- * What that costs, and why it is not guarded: `model` without `provider` used to
- * mean "a Claude Code model", because the provider was always claude-code. It now
- * means "a model of whatever engine the caller is running", and a stored prompt
- * that names an Anthropic alias with no provider fails at startup when a Codex or
- * pi session runs it. That is not checkable here — a cross-harness alias resolves
- * per-provider, so "is this a Claude alias" and "is this valid for this harness"
- * are not distinguishable from a bare string. Rejecting an inherited-provider
- * `model` outright would trade this rare failure for breaking the common one: a
- * Codex session spawning a Codex child with a Codex model and no explicit
- * `provider` is a correct call. It is left loud instead of guarded, and the
- * coupling is spelled out in the `model` description above, which is the only
- * place the caller actually reads.
+ *   - explicit arg always wins, verbatim (trimmed);
+ *   - same engine as the caller (inherited or explicitly matched) → the
+ *     caller's current model passes through verbatim — same engine means same
+ *     model namespace by construction, and the child's own startup re-resolves
+ *     the string through `resolveSessionModel`, so an alias with no target
+ *     degrades to the provider default exactly as it would for the caller;
+ *   - different engine → inherit only when the caller's string is a registered
+ *     cross-harness alias with a target for the child provider; the *target* is
+ *     passed. A raw per-harness id ("claude-opus-5" to Codex, "gpt-5.5" to
+ *     Claude Code) is meaningless — or worse, valid but wrong — on another
+ *     engine, and that is the one case the old "never inherit" rule was
+ *     protecting. It is skipped with an `inheritanceNote` rather than guessed;
+ *   - no caller model (no per-chat override, or a still-registering caller with
+ *     no record yet) → nothing is passed and the child stays dynamic on the
+ *     provider's configured default — which is exactly what the caller itself
+ *     runs in the no-override case.
+ *
+ * See plans/callboard-chat-default-current-model.md for the full reasoning.
+ *
+ * What the narrowed rule still costs, and why it is not guarded: `model`
+ * without `provider` used to mean "a Claude Code model", because the provider
+ * was always claude-code. It now means "a model of whatever engine the caller
+ * is running", and a stored prompt that names an Anthropic alias with no
+ * provider fails at startup when a Codex or pi session runs it. That is not
+ * checkable here — a cross-harness alias resolves per-provider, so "is this a
+ * Claude alias" and "is this valid for this harness" are not distinguishable
+ * from a bare string. Rejecting an inherited-provider `model` outright would
+ * trade this rare failure for breaking the common one: a Codex session
+ * spawning a Codex child with a Codex model and no explicit `provider` is a
+ * correct call. It is left loud instead of guarded, and the coupling is spelled
+ * out in the `model` description above, which is the only place the caller
+ * actually reads.
  *
  * The `modelRouting` / `modelRoutingRankId` params lived here too until the
  * OpenRouter harness was withdrawn. Routing only ever applied to that provider,
@@ -95,15 +132,15 @@ export type ResolvedProviderModel = { ok: true; provider: UiAgentProviderKind; a
  */
 export function resolveProviderModelArgs(args: ProviderModelArgs, current?: CallingSessionEngine): ResolvedProviderModel {
   const provider = args.provider ?? current?.provider ?? "claude-code";
-  const model = args.model?.trim();
 
   // "acp" is one kind covering many CLIs, so the kind alone does not identify a
   // harness — the vendor id has to travel with it, and inheritance from an ACP
   // caller is the only place it comes from. Refuse here rather than letting an
   // id-less "acp" fail somewhere deep inside session startup, where whatever
   // surfaces will not name the actual problem.
+  let acpProviderId: string | undefined;
   if (provider === "acp") {
-    const acpProviderId = current?.provider === "acp" ? current.acpProviderId : undefined;
+    acpProviderId = current?.provider === "acp" ? current.acpProviderId : undefined;
     if (!acpProviderId) {
       return {
         ok: false,
@@ -115,8 +152,48 @@ export function resolveProviderModelArgs(args: ProviderModelArgs, current?: Call
             .join(", ")}.`,
       };
     }
-    return { ok: true, provider, acpProviderId, ...(model && { model }) };
   }
 
-  return { ok: true, provider, ...(model && { model }) };
+  return { ok: true, provider, ...(acpProviderId && { acpProviderId }), ...resolveSessionModelArg(args, provider, current) };
+}
+
+/**
+ * The model half of the resolution — everything after the provider is known.
+ * Returns the fields to spread into the success result. See the parent
+ * function's doc-comment for the case-by-case reasoning.
+ */
+function resolveSessionModelArg(
+  args: ProviderModelArgs,
+  provider: UiAgentProviderKind,
+  current?: CallingSessionEngine,
+): { model?: string; modelSource: ResolvedModelSource; inheritanceNote?: string } {
+  const explicit = args.model?.trim();
+  if (explicit) return { model: explicit, modelSource: "explicit" };
+
+  // Live read at tool-call time. A getter that throws (unreadable record, say)
+  // is "no caller model", not a failed tool call — the child simply stays on
+  // the provider default.
+  let callerModel: string | undefined;
+  try {
+    callerModel = current?.getModel?.()?.trim() || undefined;
+  } catch {
+    callerModel = undefined;
+  }
+  if (!callerModel) return { modelSource: "default" };
+
+  // Same engine ⇒ same model vocabulary (for ACP, provider inheritance carries
+  // the vendor id, so the vendor — and therefore the vocabulary — matches too).
+  // Passed verbatim: the child re-resolves it through its own resolveSessionModel.
+  if (provider === current?.provider) return { model: callerModel, modelSource: "inherited" };
+
+  const target = findModelAlias(callerModel)?.targets[provider];
+  if (target) return { model: target, modelSource: "inherited" };
+
+  return {
+    modelSource: "default",
+    inheritanceNote:
+      `caller model "${callerModel}" is not a cross-harness model alias with a "${provider}" target, so it was not inherited — the child ` +
+      "runs on that provider's configured default. Pass an explicit `model` (a model of the child provider, or a cross-harness alias) to " +
+      "choose one.",
+  };
 }
