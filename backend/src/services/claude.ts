@@ -1309,6 +1309,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // onto it by default instead of always handing them to Claude Code.
         provider: providerKind,
         ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
+        // Live read of this chat's current model override, so a child started
+        // without an explicit `model` inherits it. A getter, not a value: the
+        // model can change mid-session, and a still-registering chat (temp
+        // tracking id, no record yet) simply reads as undefined.
+        getModel: () => chatFileService.getModelOverride(trackingId),
       },
     );
     const server = agentProvider.buildToolServer(spec);
@@ -1419,6 +1424,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       const spec = buildAgentToolsSpec(opts.agentAlias, () => trackingId, {
         provider: providerKind,
         ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
+        // Same live model-override read as the callboard-tools spec above.
+        getModel: () => chatFileService.getModelOverride(trackingId),
       });
       const server = agentProvider.buildToolServer(spec);
       if (server) {

@@ -191,12 +191,21 @@ export function buildCallboardToolsSpec(
      * so a Pi session spawns Pi children rather than silently handing them to
      * Claude Code.
      *
-     * Plain values, not getters: a chat's provider is immutable by design (see
-     * plans/openrouter-adapter.md), so these are fixed for the session's whole
-     * lifetime and there is nothing to re-read.
+     * `provider`/`acpProviderId` are plain values, not getters: a chat's
+     * provider is immutable by design (see plans/openrouter-adapter.md), so
+     * they are fixed for the session's whole lifetime and there is nothing to
+     * re-read. `getModel` is the exception — a getter — because a chat's model
+     * IS mutable (the user can switch it mid-chat, and the switch lands in the
+     * chat record's metadata before the next turn), so a value captured here
+     * would go stale for the rest of the session.
      */
     provider?: UiAgentProviderKind;
     acpProviderId?: string;
+    /**
+     * Live read of the calling chat's current model override. Drives `model`
+     * inheritance in the session-starting tools when the caller omits `model`.
+     */
+    getModel?: () => string | undefined;
   },
 ): ToolServerSpec {
   return {
@@ -840,7 +849,11 @@ export function buildCallboardToolsSpec(
           try {
             const sendMessage = getSendMessage();
 
-            const providerModel = resolveProviderModelArgs(args, { provider: opts?.provider, acpProviderId: opts?.acpProviderId });
+            const providerModel = resolveProviderModelArgs(args, {
+              provider: opts?.provider,
+              acpProviderId: opts?.acpProviderId,
+              getModel: opts?.getModel,
+            });
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
@@ -944,6 +957,13 @@ export function buildCallboardToolsSpec(
                     chatId,
                     status: "started",
                     folder: effectiveFolder,
+                    // What the child will run, and how the model was chosen — so
+                    // a caller that expected "same model as me" can see when
+                    // that did NOT hold (cross-engine, non-alias) and pass an
+                    // explicit model if it cares.
+                    ...(providerModel.model && { model: providerModel.model }),
+                    modelSource: providerModel.modelSource,
+                    ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
                     ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),
                     ...(onComplete && { onComplete }),
                   }),

@@ -254,6 +254,26 @@ export function isClaudeCodeRoutedThroughOpenRouter(settings?: AgentSettings): b
 }
 
 /**
+ * Find the cross-harness model alias registered under `value`, if there is
+ * one. Lookup is case-insensitive; an alias shadows a real model id of the
+ * same name (custom overrides the provider namespace).
+ *
+ * This is the lookup `resolveModelAlias` is built on, extracted so callers
+ * can distinguish "value IS an alias" (returns the alias) from "value is a
+ * raw model id" (returns `undefined`) — `resolveModelAlias` cannot express
+ * that distinction, because a raw id passes through it unchanged.
+ *
+ * The given `settings` is migrated defensively so callers holding a
+ * legacy-shaped object (only `openRouterModelAliases`) still resolve correctly.
+ */
+export function findModelAlias(value: string, settings?: AgentSettings): ModelAlias | undefined {
+  const aliases = migrateModelAliases(settings ?? loadSettings()).modelAliases;
+  if (!aliases || aliases.length === 0) return undefined;
+  const needle = value.trim().toLowerCase();
+  return aliases.find((a) => a.name.trim().toLowerCase() === needle);
+}
+
+/**
  * Resolve a cross-harness model alias to the concrete model for `provider`.
  *
  * Lookup is case-insensitive on the alias name. An alias shadows a real model
@@ -274,10 +294,7 @@ export function isClaudeCodeRoutedThroughOpenRouter(settings?: AgentSettings): b
  */
 export function resolveModelAlias(value: string | undefined, provider: HarnessProvider, settings?: AgentSettings): string | undefined {
   if (!value) return value;
-  const aliases = migrateModelAliases(settings ?? loadSettings()).modelAliases;
-  if (!aliases || aliases.length === 0) return value;
-  const needle = value.trim().toLowerCase();
-  const alias = aliases.find((a) => a.name.trim().toLowerCase() === needle);
+  const alias = findModelAlias(value, settings);
   if (!alias) return value;
   const target = alias.targets[provider];
   if (target) return target;

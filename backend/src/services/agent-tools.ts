@@ -86,11 +86,14 @@ function getSendMessage(): MessageSender {
  * running on — what talk_to_agent and deploy_agent start the target agent on
  * when the caller does not name a provider. Plain values, not getters: a chat's
  * provider is immutable by design, so they are fixed for the session's lifetime.
+ * `opts.getModel` is the exception — a getter — because a chat's model is
+ * mutable (the user can switch it mid-chat); it drives `model` inheritance
+ * when the caller omits `model`.
  */
 export function buildAgentToolsSpec(
   agentAlias: string,
   getChatId?: () => string,
-  opts?: { provider?: UiAgentProviderKind; acpProviderId?: string },
+  opts?: { provider?: UiAgentProviderKind; acpProviderId?: string; getModel?: () => string | undefined },
 ): ToolServerSpec {
   const agentConfig = getAgent(agentAlias);
   const agentTimezone = agentConfig?.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -123,7 +126,11 @@ export function buildAgentToolsSpec(
               return { content: [{ type: "text" as const, text: "Error: An agent cannot talk to itself" }] };
             }
 
-            const providerModel = resolveProviderModelArgs(args, { provider: opts?.provider, acpProviderId: opts?.acpProviderId });
+            const providerModel = resolveProviderModelArgs(args, {
+              provider: opts?.provider,
+              acpProviderId: opts?.acpProviderId,
+              getModel: opts?.getModel,
+            });
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
@@ -228,7 +235,21 @@ export function buildAgentToolsSpec(
             // 10. Return the collected response
             const response = responseTexts.join("") || "(No text response from target agent)";
             return {
-              content: [{ type: "text" as const, text: JSON.stringify({ chatId, targetAlias: args.targetAlias, response }) }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    chatId,
+                    targetAlias: args.targetAlias,
+                    // What the target agent ran on, and how the model was
+                    // chosen — see start_chat_session for the rationale.
+                    ...(providerModel.model && { model: providerModel.model }),
+                    modelSource: providerModel.modelSource,
+                    ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
+                    response,
+                  }),
+                },
+              ],
             };
           } catch (err: any) {
             log.error(`talk_to_agent failed: ${err.message}`);
@@ -254,7 +275,11 @@ export function buildAgentToolsSpec(
               return { content: [{ type: "text" as const, text: `Agent "${args.targetAlias}" not found` }] };
             }
 
-            const providerModel = resolveProviderModelArgs(args, { provider: opts?.provider, acpProviderId: opts?.acpProviderId });
+            const providerModel = resolveProviderModelArgs(args, {
+              provider: opts?.provider,
+              acpProviderId: opts?.acpProviderId,
+              getModel: opts?.getModel,
+            });
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
@@ -288,7 +313,16 @@ export function buildAgentToolsSpec(
               content: [
                 {
                   type: "text" as const,
-                  text: JSON.stringify({ chatId: result.chatId, status: "started", targetAlias: args.targetAlias }),
+                  text: JSON.stringify({
+                    chatId: result.chatId,
+                    status: "started",
+                    targetAlias: args.targetAlias,
+                    // What the spawned agent session will run, and how the
+                    // model was chosen — see start_chat_session for the rationale.
+                    ...(providerModel.model && { model: providerModel.model }),
+                    modelSource: providerModel.modelSource,
+                    ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
+                  }),
                 },
               ],
             };
