@@ -116,13 +116,19 @@ export async function getUserContactAvailability(opts?: { refresh?: boolean }): 
     })),
   );
 
-  // A caller whose client won't build reports `configured: false` from
-  // fetchProxyRoutes — that is "couldn't ask this caller", not "this caller
-  // has nothing", so it joins the error bucket rather than the answer.
-  const errors = listings.filter((l) => !l.configured || (l.error && l.routes.length === 0));
   const usable = listings.filter((l) => l.configured && !(l.error && l.routes.length === 0));
+  // A caller whose client won't build (`configured: false` — missing or
+  // unusable key files) and one whose fetch failed are both "couldn't ask",
+  // but they differ in duration, and that difference decides whether the
+  // answer is incomplete. Unusable keys are a PERMANENT state that no session
+  // can use either, so once another caller has answered, excluding it leaves a
+  // complete answer. Counting it would set `error` forever, and consumers fail
+  // open on `error` — silently turning the gate off for good.
+  const unreachable = listings.filter((l) => !l.configured);
+  const failed = listings.filter((l) => l.configured && l.error && l.routes.length === 0);
 
   if (usable.length === 0) {
+    const errors = [...failed, ...unreachable];
     const error = errors.map((e) => e.error).find(Boolean) || `No usable drawlatch caller (${errors.map((e) => e.caller.alias).join(", ")})`;
     return {
       configured: true,
@@ -139,10 +145,12 @@ export async function getUserContactAvailability(opts?: { refresh?: boolean }): 
     configured: true,
     channelsKnown: true,
     ...(defaultCaller && { callerAlias: defaultCaller.alias }),
-    // Stale or partly-failed answers still gate, but say so: a listing served
-    // from cache after a failed refresh must not look like a fresh one.
+    // Say when the answer might be behind reality. Consumers hedge rather than
+    // lock on either flag: a listing cached before the user added the very
+    // connection they are looking for is the likeliest way this feature tells
+    // someone a connection they just created doesn't exist.
     ...(usable.some((l) => l.stale) && { stale: true }),
-    ...(errors.length > 0 && { error: errors.map((e) => e.error).find(Boolean) || `Could not read ${errors.map((e) => e.caller.alias).join(", ")}` }),
+    ...(failed.length > 0 && { error: failed.map((e) => e.error).find(Boolean) || `Could not read ${failed.map((e) => e.caller.alias).join(", ")}` }),
     channels: buildChannels((connection) => present.filter((p) => p.ids.has(connection.toLowerCase())).map((p) => p.alias)),
   };
 }

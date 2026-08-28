@@ -88,6 +88,15 @@ describe("contactFieldState", () => {
     expect(s.note).toMatch(/couldn't be checked just now/);
   });
 
+  it("does not lock a channel on a stale listing", () => {
+    // The core workflow: add telegram in drawlatch, come back, hit refresh,
+    // the daemon 429s and the pre-add listing is served. Locking here tells
+    // the user the connection they just created doesn't exist.
+    const s = contactFieldState(field("telegram"), availability({ stale: true }));
+    expect(s).toMatchObject({ editable: true, canEnable: true });
+    expect(s.note).toMatch(/cached listing/);
+  });
+
   it("fails open when the check itself failed", () => {
     const s = contactFieldState(field("discord"), availability({ channelsKnown: false, error: "daemon unreachable" }));
     expect(s).toMatchObject({ editable: true, canEnable: true, warn: false });

@@ -222,15 +222,31 @@ export interface ProxyRoutesResult {
  * started afterwards to "the connection listing could not be retrieved".
  * Keeping the entry means a failed forced refresh falls back to stale, which
  * is the same failure mode every other caller already has.
+ *
+ * A force denied by the cooldown is refused outright rather than quietly
+ * downgraded to an ordinary fetch. That distinction is the whole throttle: the
+ * TTL guard below can only return when a listing is cached, so on a caller
+ * whose fetches keep failing — the exact state that makes someone click
+ * Refresh repeatedly — falling through would issue one live handshake per
+ * click against an already-failing daemon.
  */
 export async function fetchProxyRoutes(alias: string, opts?: { force?: boolean }): Promise<ProxyRoutesResult> {
   const cached = routeCache.get(alias);
 
   const lastForced = lastForcedFetchAt.get(alias) ?? 0;
-  const force = !!opts?.force && Date.now() - lastForced >= FORCE_COOLDOWN_MS;
+  const forceRequested = !!opts?.force;
+  const force = forceRequested && Date.now() - lastForced >= FORCE_COOLDOWN_MS;
 
   if (cached && !force && Date.now() - cached.fetchedAt < ROUTE_CACHE_TTL_MS) {
     return { routes: cached.routes, configured: true, stale: false };
+  }
+
+  if (forceRequested && !force) {
+    // Cooldown-denied. With a cached listing the TTL guard above already
+    // answered; reaching here means there is none, so the honest answer is
+    // "ask again shortly" — which consumers treat as indeterminate and fail
+    // open on, rather than as "this caller has nothing".
+    return { routes: [], configured: true, stale: false, error: "Re-checked moments ago — try again in a few seconds." };
   }
 
   if (force) {

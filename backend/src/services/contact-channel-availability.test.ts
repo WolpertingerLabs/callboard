@@ -155,6 +155,23 @@ describe("getUserContactAvailability", () => {
     expect(result.channels.discord.available).toBe(true);
   });
 
+  it("does not report a permanently-unusable caller as an incomplete answer", async () => {
+    // Unusable key files are a determinate no about THAT caller — no session
+    // under it reaches anything either. Reporting it as `error` would pin the
+    // consumer's hedge on forever, turning the gate off for good.
+    resolveDefaultCaller.mockReturnValue("default");
+    listEnrolledCallers.mockReturnValue([{ alias: "broken", agents: [{ alias: "scout", enabled: true }] }]);
+    fetchProxyRoutes.mockImplementation(async (alias: string) =>
+      alias === "default" ? listing("discord-bot") : { routes: [], configured: false, stale: false },
+    );
+
+    const result = await getUserContactAvailability();
+
+    expect(result.channelsKnown).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(result.channels.discord.available).toBe(true);
+  });
+
   it("still answers from a stale listing, flagged as stale", async () => {
     resolveDefaultCaller.mockReturnValue("default");
     fetchProxyRoutes.mockResolvedValue({ routes: [{ alias: "telegram" }], configured: true, stale: true, error: "429 rate limited" });

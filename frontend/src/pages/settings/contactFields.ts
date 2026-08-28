@@ -115,15 +115,19 @@ export function contactFieldState(field: ContactField, availability: UserContact
 
   const entry = availability.channels[field.channel];
   if (!entry?.available) {
-    // Rule 1 again, at per-credential granularity: when some credential
-    // couldn't be reached, "not in the listing" might only mean "not in the
-    // listing we got". A determinate lock needs a complete answer, or one
-    // flaky credential among several locks every channel only it provides.
-    if (availability.error) {
+    // Rule 1 again, at per-credential granularity: when a credential couldn't
+    // be reached, or the listing predates the question being asked, "not in
+    // the listing" might only mean "not in the listing we got". A determinate
+    // lock needs a complete, current answer — otherwise one flaky credential
+    // locks every channel only it provides, and a cached listing tells someone
+    // the connection they just added doesn't exist.
+    if (availability.error || availability.stale) {
       return {
         editable: true,
         canEnable: true,
-        note: `Needs the "${entry?.connection ?? field.channel}" connection. One of your credentials couldn't be checked just now, so this isn't certain.`,
+        note: `Needs the "${entry?.connection ?? field.channel}" connection. ${
+          availability.stale ? "This was checked against a cached listing" : "One of your credentials couldn't be checked just now"
+        }, so it isn't certain.`,
         warn: false,
       };
     }
