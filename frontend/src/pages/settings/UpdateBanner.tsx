@@ -746,7 +746,11 @@ export default function UpdateBanner({
       // with, so the banner never loses the reason it exists while that request
       // is in flight.
       installedVersion={status?.installedVersion ?? installedVersion}
-      restartPending={status?.restartPending ?? restartPending}
+      // Not `??`: the daemon omits `restartPending` rather than sending `false`,
+      // so a `??` chain reads "no restart pending" as "no answer" and falls back
+      // to the prop — able to set the flag from the fresher answer but never to
+      // clear it. Once `status` has arrived it is the answer, absent field and all.
+      restartPending={status ? status.restartPending === true : restartPending}
       // Until the capability call answers, the command is still known: it is the
       // same one this banner has printed since long before there was a button.
       command={status?.command ?? FALLBACK_COMMAND}

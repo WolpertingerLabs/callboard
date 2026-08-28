@@ -134,7 +134,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { SelfUpdateCapability, SelfUpdateEvent, SelfUpdateRefusalCode } from "shared/types/index.js";
+import type { EngineInstallRefusalCode, SelfUpdateCapability, SelfUpdateEvent, SelfUpdateRefusalCode } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import {
   BOOT_MANIFEST,
@@ -543,6 +543,28 @@ export function describeWorkInFlight(): { busy: boolean; summary: string } {
 // ── Capability ──────────────────────────────────────────────────────
 
 /**
+ * The refusals the shared preflight can produce, as this feature's own codes.
+ *
+ * Every one of them is in both unions, so the translation is the identity — but
+ * the two unions are not the same type and are not required to stay in step.
+ * `EngineInstallRefusalCode` already has a member this one does not (`no-recipe`,
+ * which the preflight cannot reach), and the cast this replaces would have gone
+ * on compiling if the *preflight* grew such a code tomorrow, publishing a value
+ * outside the union `SelfUpdateCapability.code` declares.
+ *
+ * Listing them instead makes both directions a compile error: a code the
+ * preflight adds is not here, so it falls back to `disabled` rather than being
+ * asserted into the union, and a code this feature drops stops type-checking
+ * against the array's element type.
+ */
+const SHARED_REFUSAL_CODES: readonly SelfUpdateRefusalCode[] = ["not-local", "disabled", "unsupported-platform", "npm-unresolvable", "prefix-not-writable"];
+
+/** `disabled` is the conservative default: refuse, and say so with the preflight's own sentence. */
+function asSelfUpdateRefusalCode(code: EngineInstallRefusalCode | undefined): SelfUpdateRefusalCode {
+  return SHARED_REFUSAL_CODES.find((known) => known === code) ?? "disabled";
+}
+
+/**
  * May this client press "Download latest & restart", and if not, why not?
  *
  * The shared install preflight first — LAN-only, `allowEngineInstalls`, the
@@ -559,9 +581,7 @@ export async function getSelfUpdateCapability(opts: { local: boolean }): Promise
   if (!base.oneClick) {
     return {
       oneClick: false,
-      // Every code the shared preflight can produce is in this feature's union
-      // too; `disabled` is the conservative default for one that is not.
-      code: (base.code as SelfUpdateRefusalCode) ?? "disabled",
+      code: asSelfUpdateRefusalCode(base.code),
       refusal: base.refusal ?? "Callboard will not run installs on this machine.",
     };
   }

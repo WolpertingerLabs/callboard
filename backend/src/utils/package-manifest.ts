@@ -105,6 +105,3 @@ export const BOOT_MANIFEST: Readonly<PackageManifest> | null = Object.freeze(rea
 
 /** The version of the code this process is executing. `null` when the manifest was unreadable at boot. */
 export const BOOT_VERSION: string | null = BOOT_MANIFEST?.version ?? null;
-
-/** The package this process is, by name. Never read from a request; never re-read from disk. */
-export const BOOT_PACKAGE_NAME: string | null = BOOT_MANIFEST?.name ?? null;
