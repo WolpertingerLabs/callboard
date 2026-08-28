@@ -338,3 +338,126 @@ describe("parseMessages — background task ids", () => {
     expect(msg.backgroundTaskIds).toEqual(["budijlgzl"]);
   });
 });
+
+describe("parseMessages — slash-command envelopes", () => {
+  // Shaped as they appear on disk. Skills write message-first, harness
+  // built-ins write name-first with the tags indented; both are real.
+  const skill =
+    "<command-message>callboard:begin-development</command-message>\n" +
+    "<command-name>/callboard:begin-development</command-name>\n" +
+    "<command-args>Active-first is all that is needed.</command-args>";
+  const builtin = "<command-name>/login</command-name>\n            <command-message>login</command-message>\n            <command-args></command-args>";
+
+  it("projects a skill invocation back to the line the user typed", () => {
+    // This exact string is what the composer sent, and what the frontend's
+    // optimistic bubble is matched against — see inFlightMessages.ts.
+    const [msg] = parseMessages([userLine(skill)]);
+    expect(msg).toMatchObject({
+      role: "user",
+      type: "text",
+      content: "/callboard:begin-development Active-first is all that is needed.",
+      isBuiltInCommand: true,
+    });
+  });
+
+  it("drops the expanded body the CLI writes after the envelope", () => {
+    // The skill's prompt text arrives as a separate isMeta entry. Rendering
+    // both would show the command twice, once as prose nobody wrote.
+    const parsed = parseMessages([
+      userLine(skill),
+      userLine([{ type: "text", text: "Base directory for this skill: /home/u/.callboard/…\n\nGo ahead and…" }], { isMeta: true }),
+      assistantLine([{ type: "text", text: "On it." }]),
+    ]);
+    expect(parsed.map((m) => m.content)).toEqual(["/callboard:begin-development Active-first is all that is needed.", "On it."]);
+  });
+
+  it("omits the argument separator when the command took no arguments", () => {
+    expect(parseMessages([userLine(builtin)])[0].content).toBe("/login");
+  });
+
+  it("reads the envelope out of a text block, not just a bare string", () => {
+    expect(parseMessages([userLine([{ type: "text", text: skill }])])[0].content).toBe("/callboard:begin-development Active-first is all that is needed.");
+  });
+
+  it("supplies the leading slash when the envelope omits it", () => {
+    expect(parseMessages([userLine("<command-name>review</command-name>")])[0].content).toBe("/review");
+  });
+
+  it("leaves prose that merely mentions the tags alone", () => {
+    // Whole-content match only: a user asking about the markup is a real
+    // message and must render as written.
+    const prose = "why does <command-name>/foo</command-name> show up in my transcript?";
+    const [msg] = parseMessages([userLine(prose)]);
+    expect(msg.content).toBe(prose);
+    expect(msg.isBuiltInCommand).toBeUndefined();
+  });
+
+  it("leaves an envelope with no command name alone", () => {
+    const nameless = "<command-message>something</command-message>";
+    expect(parseMessages([userLine(nameless)])[0].content).toBe(nameless);
+  });
+
+  it("does not project an assistant turn that echoes the envelope", () => {
+    const [msg] = parseMessages([assistantLine([{ type: "text", text: skill }])]);
+    expect(msg.content).toBe(skill);
+  });
+
+  it("keeps an image sent alongside a command", () => {
+    // The projection `continue`s past the block loop, which is the only thing
+    // that interns images — so it must not claim an entry that carries one.
+    // `buildFormattedPrompt` emits exactly this shape when the composer has an
+    // attachment.
+    const [msg] = parseMessages([
+      userLine([
+        { type: "text", text: "<command-name>/skill</command-name><command-args>look at this</command-args>" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } },
+      ]),
+    ]);
+    expect(msg.imageIds).toEqual(["img-png-12"]);
+    expect(msg.isBuiltInCommand).toBeUndefined();
+  });
+
+  it("projects a command whose arguments quote a tag name", () => {
+    // Four openers, so a bound set to the three tags an envelope really has
+    // would reject this and put the raw envelope back in the bubble — for
+    // exactly the input this projection exists to handle. The lazy
+    // `<command-args>` match runs to the real closer, so the quoted tag is
+    // just text.
+    const quoting = "<command-name>/ask</command-name>\n<command-message>ask</command-message>\n<command-args>what does <command-name> mean?</command-args>";
+    expect(parseMessages([userLine(quoting)])[0].content).toBe("/ask what does <command-name> mean?");
+  });
+});
+
+describe("parseMessages — command recognition is bounded work", () => {
+  // Recognition runs on every transcript read and, via getFirstUserMessage, on
+  // every sidebar row of every `GET /api/chats`. Both shapes below are strings
+  // a user could paste; neither may cost more than a linear pass.
+  const budgetMs = 1000;
+
+  function parseWithin(text: string): number {
+    const started = performance.now();
+    parseMessages([userLine(text)]);
+    return performance.now() - started;
+  }
+
+  it("rejects repeated unclosed openers without rescanning per opener", () => {
+    // The expensive shape: `COMMAND_TAG` is lazy, so an opener with no closer
+    // scans to end-of-string before failing. Unbounded, 20k openers took ~4.8s.
+    expect(parseWithin("<command-name>".repeat(20_000))).toBeLessThan(budgetMs);
+  });
+
+  it("rejects well-formed pairs followed by a stray character", () => {
+    // The shape that made the anchored `(...)+` pattern this replaced explore
+    // every split — it ran past 60s on 30 repetitions.
+    expect(parseWithin(`${"<command-name>x</command-name>".repeat(2_000)}!`)).toBeLessThan(budgetMs);
+  });
+
+  it("does not treat a pile of openers as one enormous command name", () => {
+    // Unbounded, the lazy match swallowed every opener into the name and
+    // rendered kilobytes of markup as a monospace "command".
+    const degenerate = `${"<command-name>".repeat(500)}<command-name>/x</command-name>`;
+    const [msg] = parseMessages([userLine(degenerate)]);
+    expect(msg.content).toBe(degenerate);
+    expect(msg.isBuiltInCommand).toBeUndefined();
+  });
+});

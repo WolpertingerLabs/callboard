@@ -40,9 +40,54 @@ export function toInFlightList(value: unknown): InFlightMessage[] {
   return value.filter((v): v is string => typeof v === "string" && v.length > 0).map((text) => ({ key: nextInFlightKey(), text, imageUrls: [] }));
 }
 
-/** Trimmed text of every user message in `messages`, newest last. */
-function userTexts(messages: ParsedMessage[]): string[] {
-  return messages.filter((m) => m.role === "user" && m.type === "text").map((m) => (m.content ?? "").trim());
+/**
+ * Whitespace-collapsed form, used *only* to compare slash commands.
+ *
+ * Prose round-trips byte-exactly: nothing between the composer and the
+ * transcript touches internal whitespace, so a trimmed literal comparison
+ * already matches it. A slash command does not round-trip — the harness
+ * records it as a name and arguments and the backend reassembles `/name args`
+ * with single spaces — so a command typed with wider spacing needs this to
+ * match at all.
+ *
+ * Do not widen this to every message. It cannot repair a miss that literal
+ * comparison would not already have caught; it can only manufacture false
+ * ones, and a false match here does not flicker — {@link settleInFlight}'s
+ * caller drops the entry and revokes its image URLs, taking a message the user
+ * just sent off screen for the rest of the running turn. Two sends differing
+ * only by a line break are the case that used to break.
+ */
+function collapsed(text: string): string {
+  return text.replace(/\s+/g, " ");
+}
+
+/** A user message of a transcript, keyed for reconciliation. */
+interface UserEntry {
+  /** Trimmed text, compared literally. Every message has one. */
+  text: string;
+  /** Collapsed text, set only for the commands that need the looser compare. */
+  command: string | null;
+}
+
+/** The user messages in `messages`, newest last. */
+function userEntries(messages: ParsedMessage[]): UserEntry[] {
+  return messages
+    .filter((m) => m.role === "user" && m.type === "text")
+    .map((m) => {
+      const text = (m.content ?? "").trim();
+      return { text, command: m.isBuiltInCommand ? collapsed(text) : null };
+    });
+}
+
+/** True when `entries` already account for an optimistic message's text. */
+function accountedFor(text: string, entries: UserEntry[]): boolean {
+  const trimmed = text.trim();
+  if (entries.some((e) => e.text === trimmed)) return true;
+  // Only a command can come back re-spelled, and only against a transcript
+  // entry that is itself a command.
+  if (!trimmed.startsWith("/")) return false;
+  const key = collapsed(trimmed);
+  return entries.some((e) => e.command === key);
 }
 
 /**
@@ -57,8 +102,8 @@ function userTexts(messages: ParsedMessage[]): string[] {
  */
 export function visibleInFlight(pending: InFlightMessage[], messages: ParsedMessage[]): InFlightMessage[] {
   if (pending.length === 0) return pending;
-  const tail = new Set(userTexts(messages).slice(-pending.length));
-  return pending.filter((m) => !tail.has(m.text.trim()));
+  const tail = userEntries(messages).slice(-pending.length);
+  return pending.filter((m) => !accountedFor(m.text, tail));
 }
 
 /**
@@ -72,9 +117,9 @@ export function visibleInFlight(pending: InFlightMessage[], messages: ParsedMess
  */
 export function settleInFlight(pending: InFlightMessage[], fetched: ParsedMessage[]): InFlightMessage[] {
   if (pending.length === 0) return pending;
-  const persisted = new Set(userTexts(fetched));
-  if (persisted.size === 0) return pending;
-  const keep = pending.filter((m) => !persisted.has(m.text.trim()));
+  const persisted = userEntries(fetched);
+  if (persisted.length === 0) return pending;
+  const keep = pending.filter((m) => !accountedFor(m.text, persisted));
   return keep.length === pending.length ? pending : keep;
 }
 

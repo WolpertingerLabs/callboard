@@ -12,6 +12,8 @@ import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightLis
 
 const pending = (...texts: string[]): InFlightMessage[] => texts.map((text) => ({ key: nextInFlightKey(), text, imageUrls: [] }));
 const user = (content: string): ParsedMessage => ({ role: "user", type: "text", content });
+/** A user turn the parser projected from a slash-command envelope. */
+const command = (content: string): ParsedMessage => ({ role: "user", type: "text", content, isBuiltInCommand: true });
 const assistant = (content: string): ParsedMessage => ({ role: "assistant", type: "text", content });
 const system = (content: string, subtype?: string): ParsedMessage => ({ role: "system", type: "system", content, ...(subtype && { subtype }) });
 
@@ -46,6 +48,36 @@ describe("visibleInFlight", () => {
     expect(visibleInFlight(pending("  hello  "), [user("hello")])).toEqual([]);
   });
 
+  it("hides a slash command the transcript reassembled with different spacing", () => {
+    // The harness records a command as name + arguments, so the transcript
+    // spells it with single spaces however the user typed it. Matching
+    // strictly stranded the bubble under a transcript already answering it.
+    expect(visibleInFlight(pending("/skill   some   stuff"), [command("/skill some stuff")])).toEqual([]);
+  });
+
+  it("keeps a message that differs from the transcript's only by internal whitespace", () => {
+    // The command leniency must not reach ordinary prose. Two sends differing
+    // by a line break are two messages, and reading them as one takes the
+    // second off screen for the rest of the running turn.
+    const visible = visibleInFlight(pending("fix the bug in parser.ts"), [user("fix the bug\nin parser.ts")]);
+    expect(visible.map((m) => m.text)).toEqual(["fix the bug in parser.ts"]);
+  });
+
+  it("keeps a superseding send that only resembles the persisted one", () => {
+    // Both hazards at once: a second send is in flight while the first has
+    // persisted, and the two differ only by a line break. The tail window is
+    // wide enough to hold both, so a loose compare hides the message the user
+    // sent most recently — for the rest of the running turn.
+    const visible = visibleInFlight(pending("fix the bug\nin parser.ts", "fix the bug in parser.ts"), [user("earlier"), user("fix the bug\nin parser.ts")]);
+    expect(visible.map((m) => m.text)).toEqual(["fix the bug in parser.ts"]);
+  });
+
+  it("does not stretch a command's spelling onto a non-command transcript entry", () => {
+    // `isBuiltInCommand` is what says "the harness re-spelled this". Prose that
+    // merely starts with a slash is compared literally, both ways.
+    expect(visibleInFlight(pending("/not   a   command"), [user("/not a command")]).map((m) => m.text)).toEqual(["/not   a   command"]);
+  });
+
   it("does not match against assistant or system text", () => {
     expect(visibleInFlight(pending("hello"), [assistant("hello"), system("hello")]).map((m) => m.text)).toEqual(["hello"]);
   });
@@ -72,6 +104,26 @@ describe("settleInFlight", () => {
   it("is a no-op on an empty pending list", () => {
     const list: InFlightMessage[] = [];
     expect(settleInFlight(list, [user("x")])).toBe(list);
+  });
+
+  it("retires a slash command the transcript reassembled with different spacing", () => {
+    // The new-chat path's only reconciliation point: `handleSend`'s cleanup is
+    // deliberately detached at `chat_created`, so a command that fails to
+    // settle here keeps its bubble for the life of the chat.
+    expect(settleInFlight(pending("/skill  some stuff"), [command("/skill some stuff")])).toEqual([]);
+  });
+
+  it("keeps prose that differs from the transcript's only by internal whitespace", () => {
+    // settleInFlight scans the whole transcript, not a tail window, so a
+    // false match here is the widest-reaching one available: any older
+    // message can swallow a send that only resembles it.
+    const list = pending("fix the bug in parser.ts");
+    expect(settleInFlight(list, [user("fix the bug\nin parser.ts")])).toBe(list);
+  });
+
+  it("keeps a re-sent code block whose indentation changed", () => {
+    const list = pending("```\nif (x) {\n    go();\n}\n```");
+    expect(settleInFlight(list, [user("```\nif (x) {\n  go();\n}\n```")])).toBe(list);
   });
 });
 

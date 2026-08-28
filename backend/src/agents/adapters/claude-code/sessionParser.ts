@@ -125,6 +125,91 @@ function parseTaskNotification(raw: unknown): TaskNotification | null {
   };
 }
 
+// ── Slash-command envelopes ─────────────────────────────────────────
+
+/**
+ * A slash command — a harness built-in, a plugin command, a Callboard custom
+ * skill — is not recorded as the text the user typed. The CLI writes an
+ * envelope of up to three tags as a plain (non-`isMeta`) user turn, and then a
+ * *separate* `isMeta` entry holding the expanded prompt body, which the meta
+ * filter above drops. Tag order varies by command source — built-ins write
+ * name-first, skills message-first — so this parses by tag, not by position:
+ *
+ *   <command-message>callboard:begin-development</command-message>
+ *   <command-name>/callboard:begin-development</command-name>
+ *   <command-args>the words the user typed after the command</command-args>
+ *
+ * Rendered as-is that is a user bubble full of markup nobody wrote. The reason
+ * it matters beyond looks: it never equals the `/name args` string the composer
+ * sent, and the frontend retires its optimistic "Sent" bubble by matching the
+ * transcript's user text against exactly that string
+ * (`frontend/src/utils/inFlightMessages.ts`). With nothing to match, a chat
+ * started with `/skill …` kept the bubble on screen — pinned below a
+ * transcript that was already answering it — until the chat was switched away
+ * from. Reconstructing the typed command settles the bubble and shows the user
+ * what they actually wrote.
+ */
+const COMMAND_TAG = /<command-(name|message|args)>[\s\S]*?<\/command-\1>/g;
+
+/** The opening tags alone — a fixed alternation, so counting them is one pass. */
+const COMMAND_OPEN_TAG = /<command-(?:name|message|args)>/g;
+
+/**
+ * Ceiling on opening tags before recognition gives up. Deliberately loose: its
+ * job is to make the scanning below a bounded constant, and any small constant
+ * does that. Three — the number of tags an envelope actually has — is *too*
+ * tight, because a command's arguments may quote a tag name (`/ask what does
+ * <command-name> mean?`), and rejecting that puts the raw envelope back in the
+ * bubble for exactly the input this file exists to project.
+ */
+const MAX_COMMAND_TAGS = 16;
+
+/**
+ * The `/name args` line behind a command envelope, or null for anything that
+ * isn't one. Whole-content match only, like the task-notification probe above:
+ * prose that merely mentions `<command-name>` is a real message.
+ *
+ * Recognition strips the known tags and checks the remainder rather than
+ * matching one anchored pattern for the whole envelope. A single regex needs
+ * the tag group under a `+`, and that nested quantifier backtracks
+ * exponentially: 30 well-formed pairs plus one stray character ran past 60s.
+ *
+ * Stripping is not free either, and the cost is in the *unclosed* opener, not
+ * the well-formed pair. `COMMAND_TAG` is lazy, so an opener with no closer
+ * scans to the end of the string before failing, and a message that is nothing
+ * but repeated openers pays that once per opener — quadratic, on the event
+ * loop, on every transcript read *and* every sidebar preview via
+ * {@link getFirstUserMessage}. So the opener count is bounded first, which is
+ * a single linear pass and caps the stripping at {@link MAX_COMMAND_TAGS}.
+ */
+function parseCommandEnvelope(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("<command-")) return null;
+  const opens = trimmed.match(COMMAND_OPEN_TAG);
+  if (!opens || opens.length > MAX_COMMAND_TAGS) return null;
+  if (trimmed.replace(COMMAND_TAG, "").trim() !== "") return null;
+
+  // `<command-message>` is the CLI's own label for the command, not anything
+  // the user typed, so only name and args are reconstructed from.
+  const name = tagValues(trimmed, "command-name")[0];
+  if (!name) return null;
+  const args = tagValues(trimmed, "command-args")[0];
+  const slashed = name.startsWith("/") ? name : `/${name}`;
+  return args ? `${slashed} ${args}` : slashed;
+}
+
+/**
+ * The command line behind an *entry*, or null. Wraps
+ * {@link parseCommandEnvelope} with the all-text guard both call sites need: an
+ * entry carrying an image block alongside the envelope is not a bare command,
+ * and projecting it would `continue` past the block loop that interns the
+ * image, losing it entirely.
+ */
+function projectCommandEntry(content: unknown): string | null {
+  if (!isTextOnly(content)) return null;
+  return parseCommandEnvelope(contentText(content));
+}
+
 /** Flatten JSONL message content (string or block array) to its plain text. */
 function contentText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -132,9 +217,19 @@ function contentText(content: unknown): string {
   return content.map((b: any) => (b?.type === "text" ? (b.text ?? "") : "")).join("");
 }
 
+/**
+ * True when the entry carries nothing but text — a bare string, or blocks that
+ * are all `text`. Anything else (an image riding along with the prompt) has to
+ * go through the block loop in {@link parseMessages}, which is the only thing
+ * that interns images.
+ */
+function isTextOnly(content: unknown): boolean {
+  return !Array.isArray(content) || content.every((b: any) => b?.type === "text");
+}
+
 /** True when the entry is a text-only turn whose whole text is `expected`. */
 function isTextOnlySaying(content: unknown, expected: string): boolean {
-  if (Array.isArray(content) && !content.every((b: any) => b?.type === "text")) return false;
+  if (!isTextOnly(content)) return false;
   return contentText(content).trim() === expected;
 }
 
@@ -190,11 +285,29 @@ export function getFirstUserMessage(filePath: string, maxLength: number = 200): 
   const hit = scanJsonlLines<string>(filePath, (msg) => {
     try {
       if (msg?.type !== "user" || msg.message?.role !== "user") return undefined;
+      // CLI plumbing is not the preview, for the same reason it is not
+      // conversation in `parseMessages`. The one that bites: the CLI writes an
+      // `isMeta` `<local-command-caveat>…` line immediately before every
+      // built-in command envelope, so without this a chat opened with `/login`
+      // previewed that caveat — a paragraph of XML the user never wrote. Across
+      // 2178 local main-session transcripts that chat is the only one with an
+      // `isMeta` first user turn, so this skips almost nothing else. Subagent
+      // transcripts are the exception — theirs is the task prompt, and every
+      // later user turn is a text-less `tool_result` — but nothing previews
+      // those (`stream.ts` routes them to `parseSubagentMessages`). Anyone
+      // adding a subagent preview needs to revisit this line.
+      if (msg.isMeta) return undefined;
       const content = msg.message.content;
+      // A chat opened with `/skill …` has a command envelope as its first user
+      // turn, so the preview every chat-list row is built from was a line of
+      // XML. Projected exactly as the transcript projects it, off the same
+      // whole-entry text, so the two cannot disagree about what is a command.
+      const command = projectCommandEntry(content);
+      if (command) return command.substring(0, maxLength);
       // `""` is deliberately returned rather than skipped: it is a hit, and the
       // whole-file loop this replaced stopped on it too. Every caller treats an
-      // empty preview and a null one identically, so the only thing preserving
-      // this buys is that the scan cannot run further than it used to.
+      // empty preview and a null one identically, so preserving it keeps the
+      // scan from running past the entry the old loop would have stopped at.
       if (typeof content === "string") return content.substring(0, maxLength);
       if (Array.isArray(content)) {
         const textBlock = content.find((b: any) => b?.type === "text");
@@ -459,6 +572,19 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
       ...(serverToolUse && { serverToolUse }),
       ...(cacheCreation && { cacheCreation }),
     };
+
+    // Shape 3: a slash command, recorded as its envelope rather than as the
+    // line the user typed. Projected back to `/name args` — see
+    // {@link parseCommandEnvelope} for why this is a correctness fix and not
+    // just a cosmetic one. Flagged as a command so it renders as the literal
+    // it is, rather than being run through the markdown renderer.
+    if (role === "user") {
+      const typed = projectCommandEntry(content);
+      if (typed) {
+        result.push({ role, type: "text", content: typed, isBuiltInCommand: true, timestamp, ...(teamName && { teamName }), ...meta });
+        continue;
+      }
+    }
 
     if (typeof content === "string") {
       result.push({ role, type: "text", content, timestamp, ...(teamName && { teamName }), ...meta });
