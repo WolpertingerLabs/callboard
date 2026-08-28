@@ -367,7 +367,7 @@ app.get(
   "/api/system-info",
   // #swagger.tags = ['System']
   // #swagger.summary = 'Get system information'
-  // #swagger.description = 'Returns Callboard version, Node.js version, platform, Claude Agent SDK version, account info, and supported models.'
+  // #swagger.description = 'Returns Callboard version, Node.js version, platform, Claude Agent SDK version, account info, and supported models. `version` is the version this daemon is *running* - the manifest as read at boot - and not whatever is in its package directory now, because `npm install -g` rewrites that directory in place underneath a live process. When the two differ, `installedVersion` carries what is on disk and `restartPending` is true: new files are installed and this daemon has not restarted into them. Both are omitted when there is nothing to say - `installedVersion` when the manifest cannot be read, `restartPending` when no restart is pending - so an absent `restartPending` means the same as false. Only when the boot read itself failed does `version` fall back to what is on disk, which is then the same guess.'
   /* #swagger.responses[200] = { description: "System information" } */
   async (_req, res) => {
     // Assembly lives in `services/system-info.ts` — see that module for why the

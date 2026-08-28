@@ -116,7 +116,7 @@ runs it — the install would succeed against a copy somewhere else, the restart
 would reload the same unchanged source, and the observable result is a button
 that does nothing.
 
-Three conditions, all required, all checked per request:
+Two conditions, both required, both checked per request:
 
 1. **`<npm root -g>/<package>` resolves to this daemon's own package root**,
    symlinks resolved on both sides (a global prefix is very often reached
@@ -131,6 +131,7 @@ Three conditions, all required, all checked per request:
    entry is `lstat`ed, and a link is refused with a sentence that says which of
    those two things happened, rather than the "you are running from a checkout"
    one, which would be describing a comparison that passed.
+
 Failing either of them, there is no button — and the refusal names the directory
 Callboard is actually running from, because "no button" without that sentence is
 indistinguishable from a bug.
@@ -295,15 +296,16 @@ newer restart's.
 falls inside the restart window is silently skipped rather than run late.
 `describeWorkInFlight` does not look ahead at the schedule, and deliberately.
 
-It is pre-existing — `callboard restart`, and `POST /api/restart`, which is
-already a button in this UI, have always had it — and the obvious mitigation is
-worse than the gap. Callboard writes a default heartbeat cron per agent
-(`ensureDefaultCronJobs`), so on a daemon with several agents "does anything fire
-in the next minute?" is true a large fraction of the time; making that refuse the
-restart would convert a silently-skipped job run into an update button that never
-works, which is the failure mode the PID-file section above is about. Making it
-merely *warn* would need a third field on `describeWorkInFlight` and a caller
-that could act on it, and the honest action is still "restart anyway".
+It is pre-existing and it is recoverable, which together are the whole argument.
+`callboard restart` and `POST /api/restart` — already a button in this UI — have
+always had it, so the update path is not introducing a hazard, only inheriting
+one; and what is lost is a single firing of a *recurring* schedule, which comes
+round again. Weighed against that, the mitigations both cost more than the gap.
+Refusing the restart because something fires soon converts a skipped job run into
+an update button that sometimes will not work, with no way for the user to tell
+which — the failure mode the PID-file section above is about. Merely *warning*
+would need a third field on `describeWorkInFlight` and a caller that could act on
+it, and the honest action on that warning is still "restart anyway".
 
 The real fix is catch-up in the scheduler — a job that missed its window running
 on the next boot, the way `initJobRunner` already resumes non-terminal job runs —
