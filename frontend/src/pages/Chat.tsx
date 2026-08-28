@@ -746,6 +746,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const onChatListRefreshRef = useRef(onChatListRefresh);
   onChatListRefreshRef.current = onChatListRefresh;
 
+  // Where the user actually is, and whether this view is still on screen at
+  // all. Both live in refs for the same reason `navigate` does: the new-chat
+  // SSE reader outlives the render that started it, and can outlive the mount
+  // entirely — going back to the list on mobile unmounts this component while
+  // the POST /api/chats/new/message stream keeps running to completion.
+  const routeRef = useRef("");
+  routeRef.current = location.pathname + location.search;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // The compose route a new-chat send was fired from. `chat_created` redirects
+  // only while the user is still sitting on it — see the handler in readSSE.
+  const newChatOriginRouteRef = useRef<string | null>(null);
+
   // Safety timeout: if streaming is true but no SSE events arrive for 5 minutes,
   // assume the stream is dead and reset the indicator.
   const STREAMING_INACTIVITY_TIMEOUT_MS = 300_000; // 5 minutes
@@ -813,6 +832,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
               // Handle chat_created - fires during new chat creation
               if (event.type === "chat_created" && event.chatId) {
+                // Only pull the user into the new chat if they are still
+                // waiting on the compose screen that started it. Sending a
+                // prompt and then walking off — back to the chat list on mobile
+                // (this component unmounts), or to another chat/board/settings
+                // on desktop (it stays mounted at a different location) — used
+                // to yank them into the new chat seconds later, on top of
+                // whatever they had moved on to. Creation is server-side and
+                // unaffected; the chat-list refresh is how the new chat shows
+                // up when we stay put, and the stream is dropped because the
+                // component that would have rendered it is gone. Reopening the
+                // chat re-attaches through the usual globalSessionActive path.
+                if (!mountedRef.current || routeRef.current !== newChatOriginRouteRef.current) {
+                  onChatListRefreshRef.current?.();
+                  reader.cancel();
+                  return;
+                }
                 tempChatIdRef.current = event.chatId;
                 // Update currentIdRef so the finally blocks in readSSE and
                 // handleSend skip their state resets (streaming/in-flight).
@@ -1745,6 +1780,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // expose at all.
           const clientTrackingId = newChatTrackingId();
           tempChatIdRef.current = clientTrackingId;
+          // Remember the compose screen this send came from, so the redirect on
+          // `chat_created` can tell "still waiting here" from "moved on".
+          newChatOriginRouteRef.current = routeRef.current;
 
           const requestBody: any = {
             folder,
