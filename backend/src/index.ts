@@ -60,6 +60,7 @@ import { acpRouter } from "./routes/acp.js";
 import { clineRouter } from "./routes/cline.js";
 import { piRouter } from "./routes/pi.js";
 import { enginesRouter } from "./routes/engines.js";
+import { selfUpdateRouter } from "./routes/self-update.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
@@ -232,6 +233,9 @@ app.use("/api/pi", piRouter);
 // Per-engine runtime/version/credential status. Deliberately not part of
 // /api/system-info — see routes/engines.ts.
 app.use("/api/engines", enginesRouter);
+// Callboard installing its own newer version, and restarting into it. A sibling
+// of the engine installs above rather than one of them — see routes/self-update.ts.
+app.use("/api/self-update", selfUpdateRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/cards", cardsRouter);
 app.use("/api/api-keys", apiKeysRouter);
