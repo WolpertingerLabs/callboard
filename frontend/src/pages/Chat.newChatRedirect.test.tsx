@@ -9,15 +9,28 @@
  * that dead closure. The frame used to redirect unconditionally, dropping the
  * user into the new chat on top of whatever they had moved on to.
  *
- * The two reachable ways to walk off need different signals, so there is a test
- * for each: leaving the Chat pane (only `mountedRef` sees it) and opening a
- * second compose screen for the same folder (identical URL — only
- * `location.key` sees it).
+ * There is a test per reachable way to walk off — leaving the Chat pane, and
+ * opening a second compose screen for the same folder (identical URL, so only
+ * the history entry tells them apart) — and one for the thing that must not
+ * read as walking off: a layout remount at the same entry, which is what every
+ * phone rotation does.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
 import Chat from "./Chat";
+import SplitLayout from "../components/SplitLayout";
+
+// The rotation test drives the real SplitLayout, for the real remount. Its
+// sidebar and sibling pages are stubs: what matters is that the mobile and
+// desktop branches return different root elements, not what they contain.
+vi.mock("./ChatList", () => ({ default: () => <div>chat list</div> }));
+vi.mock("./FolderList", () => ({ default: () => <div>folder list</div> }));
+vi.mock("./Board", () => ({ default: () => <div>board</div> }));
+vi.mock("./Settings", () => ({ default: () => <div>settings</div> }));
+vi.mock("./agents/AgentList", () => ({ default: () => <div>agents</div> }));
+vi.mock("./agents/CreateAgent", () => ({ default: () => <div>new agent</div> }));
+vi.mock("./agents/AgentDashboard", () => ({ default: () => <div>agent dashboard</div> }));
 
 // The composer is a rich contenteditable with its own suspense of behaviour;
 // none of it is what these tests are about. A button that fires `onSend` is —
@@ -110,6 +123,7 @@ function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
   if (url.includes("/pending")) return Promise.resolve(jsonResponse({ pending: null }));
   if (url.includes("/activity")) return Promise.resolve(jsonResponse({ activities: [], conditionWatch: null, awaitingChildren: 0 }));
   if (url.includes("/read") && method === "PATCH") return Promise.resolve(jsonResponse({}));
+  if (url.includes("/slash-commands")) return Promise.resolve(jsonResponse({ slashCommands: [], plugins: [] }));
   if (method === "GET" && /\/chats\/[^/]+$/.test(url)) return Promise.resolve(jsonResponse({ id: NEW_CHAT_ID, folder: FOLDER, metadata: "{}" }));
 
   return Promise.reject(new Error(`unmocked request: ${method} ${url}`));
@@ -197,6 +211,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // The rotation test moves the viewport; jsdom's default is the desktop side
+  // of the breakpoint and the other tests assume it.
+  window.innerWidth = 1024;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -251,7 +268,7 @@ describe("chat_created only redirects the user who is waiting for it", () => {
     expect(refresh).toHaveBeenCalled();
     // The fresh composer is usable rather than stuck behind the previous
     // send's streaming state.
-    expect(screen.getByText("send prompt")).not.toHaveProperty("disabled", true);
+    expect(screen.getByText("send prompt")).toHaveProperty("disabled", false);
   });
 
   it("leaves the user alone when they walked off during an image upload", async () => {
@@ -279,6 +296,43 @@ describe("chat_created only redirects the user who is waiting for it", () => {
 
     expect(path()).toBe("/chat/new");
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("still redirects across a layout remount — a phone rotating is not walking away", async () => {
+    // The real SplitLayout, because the remount is its doing: `useIsMobile`
+    // crosses 768px and the two branches return different root elements
+    // (<ErrorBoundary> vs <div className="split-layout">), so React tears the
+    // subtree down and builds a new one. The user has not moved — same URL,
+    // same history entry — and their prompt must not evaporate.
+    window.innerWidth = 400;
+    render(
+      <MemoryRouter initialEntries={[`/chat/new?folder=${encodeURIComponent(FOLDER)}`]}>
+        <Routes>
+          <Route path="/chat/new" element={<SplitLayout onLogout={() => {}} />} />
+          <Route path="/chat/:id" element={<SplitLayout onLogout={() => {}} />} />
+        </Routes>
+        <Probe />
+      </MemoryRouter>,
+    );
+    await sendFirstPrompt();
+    const composerBeforeRotation = screen.getByText("send prompt");
+
+    await act(async () => {
+      window.innerWidth = 900;
+      fireEvent(window, new Event("resize"));
+    });
+    // Prove the remount actually happened, so this test can't quietly decay
+    // into asserting nothing.
+    expect(screen.getByText("send prompt")).not.toBe(composerBeforeRotation);
+
+    await emitChatCreated();
+
+    // Only the landing is asserted, not the in-flight bubble: the post-rotation
+    // instance mounted at /chat/new, and `transitionInFlightMessagesRef` reads
+    // router state once at mount, so state arriving with a later navigation is
+    // never read. Pre-existing and unrelated to this guard — test 1 pins the
+    // handoff for the path where the destination does mount fresh.
+    expect(path()).toBe(`/chat/${NEW_CHAT_ID}`);
   });
 
   it("leaves the user alone when they opened a different chat", async () => {
