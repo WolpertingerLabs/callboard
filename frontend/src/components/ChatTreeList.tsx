@@ -36,6 +36,10 @@ interface Props {
   onChatClick: (chat: Chat) => void;
   onDelete: (chat: Chat) => void;
   onToggleBookmark: (chat: Chat, bookmarked: boolean) => void;
+  /** Ask the list to confirm, then regenerate this chat's title. */
+  onRegenerateTitle?: (chat: Chat) => void;
+  /** Chats with a title regeneration in flight — the set is owned by the list. */
+  regeneratingTitleIds?: Set<string>;
   /** Card (ticket) actions for a row's kebab menu. */
   cardMenuFor: (chat: Chat) => ChatCardMenu;
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
@@ -229,6 +233,8 @@ export default function ChatTreeList({
   onChatClick,
   onDelete,
   onToggleBookmark,
+  onRegenerateTitle,
+  regeneratingTitleIds,
   cardMenuFor,
   sessionStatusFor,
   isDimmed,
@@ -371,6 +377,8 @@ export default function ChatTreeList({
           onClick={() => onChatClick(chat)}
           onDelete={() => onDelete(chat)}
           onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
+          onRegenerateTitle={onRegenerateTitle && (() => onRegenerateTitle(chat))}
+          regeneratingTitle={regeneratingTitleIds?.has(chat.id)}
           cardMenu={cardMenuFor(chat)}
           sessionStatus={sessionStatusFor(chat.id)}
           dimmed={isDimmed?.(chat)}
@@ -417,6 +425,8 @@ export default function ChatTreeList({
               onClick={() => onChatClick(chat)}
               onDelete={() => onDelete(chat)}
               onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
+              onRegenerateTitle={onRegenerateTitle && (() => onRegenerateTitle(chat))}
+              regeneratingTitle={regeneratingTitleIds?.has(chat.id)}
               cardMenu={cardMenuFor(chat)}
               sessionStatus={sessionStatusFor(chat.id)}
               dimmed={isDimmed?.(chat)}
