@@ -168,7 +168,14 @@ export type {
 export type { HarnessProvider, ModelAlias, ModelAliasInfo } from "./modelAlias.js";
 export { HARNESS_PROVIDERS, validateModelAliases } from "./modelAlias.js";
 
-export type { ContactChannel, UserContactInfo, NotifiableChannel } from "./userContact.js";
+export type {
+  ContactChannel,
+  UserContactInfo,
+  NotifiableChannel,
+  ContactChannelAvailability,
+  UserContactAvailability,
+} from "./userContact.js";
+export { CONTACT_CHANNEL_CONNECTIONS } from "./userContact.js";
 
 export type {
   JobStepType,

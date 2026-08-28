@@ -306,12 +306,21 @@ app.put("/api/ignored-project-dirs", (req, res) => {
 
 // User contact info endpoints (requires auth)
 import { getUserContact, saveUserContact } from "./services/user-contact.js";
+import { getUserContactAvailability } from "./services/contact-channel-availability.js";
 
 app.get("/api/user-contact", (_req, res) => {
   // #swagger.tags = ['Settings']
   // #swagger.summary = 'Get the user contact info'
   // #swagger.description = 'Returns the user contact channels (Discord, Telegram, phone, email), each with a handle and an on/off toggle.'
   res.json(getUserContact());
+});
+
+app.get("/api/user-contact/availability", async (req, res) => {
+  // #swagger.tags = ['Settings']
+  // #swagger.summary = 'Which contact channels the default drawlatch caller can deliver on'
+  // #swagger.description = 'Reports, per notifiable channel (Discord, Telegram, email), whether the connection notify_user needs is present on the default caller. `configured: false` means no default caller exists; a set `error` means the check itself failed and availability is unknown. Pass `refresh=1` to bypass the cached route listing — a live daemon call, so reserve it for an explicit user gesture.'
+  const refresh = req.query.refresh === "1" || req.query.refresh === "true";
+  res.json(await getUserContactAvailability({ refresh }));
 });
 
 app.put("/api/user-contact", (req, res) => {
