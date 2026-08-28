@@ -189,6 +189,14 @@ const routeCache = new Map<string, RouteCacheEntry>();
 const routeFetches = new Map<string, Promise<unknown[]>>();
 const ROUTE_CACHE_TTL_MS = 5 * 60 * 1000;
 
+// Forced (user-initiated) fetches bypass the TTL, so they need their own floor
+// or a held-down refresh button becomes a live-call amplifier against the very
+// rate limiter the cache exists to stay under. Tracked on every forced ATTEMPT,
+// not just successes — otherwise a caller whose fetches all fail is throttled
+// by nothing at all.
+const lastForcedFetchAt = new Map<string, number>();
+const FORCE_COOLDOWN_MS = 10 * 1000;
+
 export interface ProxyRoutesResult {
   routes: unknown[];
   /** False when no ProxyClient exists for the alias (missing/unusable keys). */
@@ -205,11 +213,34 @@ export interface ProxyRoutesResult {
  * On a failed refresh this falls back to the last known-good listing rather
  * than reporting zero connections — a transient daemon hiccup should never be
  * indistinguishable from "this caller has no services".
+ *
+ * `force` serves an explicit user gesture ("re-check my connections"): it
+ * skips the TTL and clears a poisoned client so the caller is rebuilt. What it
+ * deliberately does NOT do is drop the cached listing first. That listing is
+ * shared with the agent system prompt, and evicting it before a fetch that
+ * then 429s would replace a good answer with none — degrading every session
+ * started afterwards to "the connection listing could not be retrieved".
+ * Keeping the entry means a failed forced refresh falls back to stale, which
+ * is the same failure mode every other caller already has.
  */
-export async function fetchProxyRoutes(alias: string): Promise<ProxyRoutesResult> {
+export async function fetchProxyRoutes(alias: string, opts?: { force?: boolean }): Promise<ProxyRoutesResult> {
   const cached = routeCache.get(alias);
-  if (cached && Date.now() - cached.fetchedAt < ROUTE_CACHE_TTL_MS) {
+
+  const lastForced = lastForcedFetchAt.get(alias) ?? 0;
+  const force = !!opts?.force && Date.now() - lastForced >= FORCE_COOLDOWN_MS;
+
+  if (cached && !force && Date.now() - cached.fetchedAt < ROUTE_CACHE_TTL_MS) {
     return { routes: cached.routes, configured: true, stale: false };
+  }
+
+  if (force) {
+    lastForcedFetchAt.set(alias, Date.now());
+    // A client that threw once is memoized in failedAliases for the process
+    // lifetime; without this a re-check can never recover from it, which is
+    // precisely the state a user reaches for the refresh button in. Note this
+    // drops the client, NOT the route cache — see the doc comment.
+    clientCache.delete(alias);
+    failedAliases.delete(alias);
   }
 
   const client = getProxy(alias);

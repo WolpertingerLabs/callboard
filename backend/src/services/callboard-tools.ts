@@ -770,7 +770,8 @@ export function buildCallboardToolsSpec(
                   success: true,
                   guidance:
                     "Use the drawlatch mcp__mcp-proxy__* tools with the connection named below to reach the user. " +
-                    "If a connection isn't configured, tell the user it needs to be set up under Settings → Connections.",
+                    "If a connection isn't configured, tell the user it needs to be added in the drawlatch dashboard " +
+                    "(linked from Settings → Proxy) — callboard itself cannot add one.",
                   channels,
                 }),
               },

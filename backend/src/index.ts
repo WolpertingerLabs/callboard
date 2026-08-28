@@ -318,9 +318,17 @@ app.get("/api/user-contact", (_req, res) => {
 app.get("/api/user-contact/availability", async (req, res) => {
   // #swagger.tags = ['Settings']
   // #swagger.summary = 'Which contact channels the default drawlatch caller can deliver on'
-  // #swagger.description = 'Reports, per notifiable channel (Discord, Telegram, email), whether the connection notify_user needs is present on the default caller. `configured: false` means no default caller exists; a set `error` means the check itself failed and availability is unknown. Pass `refresh=1` to bypass the cached route listing — a live daemon call, so reserve it for an explicit user gesture.'
+  // #swagger.description = 'Reports, per notifiable channel (Discord, Telegram, email), whether the connection notify_user needs is present on a usable drawlatch caller — the default caller or any agent-bound one. `configured: false` means no usable caller exists; `channelsKnown: false` means the check itself failed and availability is unknown (fail open). Pass `refresh=1` to bypass the cached route listing — a throttled live daemon call, so reserve it for an explicit user gesture.'
   const refresh = req.query.refresh === "1" || req.query.refresh === "true";
-  res.json(await getUserContactAvailability({ refresh }));
+  try {
+    res.json(await getUserContactAvailability({ refresh }));
+  } catch (err: any) {
+    // Every dependency catches internally, so this is defensive — but an
+    // unhandled rejection in an inline async handler hangs the request rather
+    // than answering, and the settings page waits on this to render.
+    log.warn(`Contact channel availability check failed: ${err?.message || err}`);
+    res.status(502).json({ error: "Failed to check contact channel availability" });
+  }
 });
 
 app.put("/api/user-contact", (req, res) => {

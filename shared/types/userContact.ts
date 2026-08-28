@@ -36,34 +36,47 @@ export const CONTACT_CHANNEL_CONNECTIONS: Record<NotifiableChannel, string> = {
   email: "agentmail",
 };
 
-/** Whether one channel's connection is present on the default caller. */
+/** Whether one channel's connection is present on some usable caller. */
 export interface ContactChannelAvailability {
   /** The drawlatch connection this channel needs. */
   connection: string;
-  /** Whether that connection appears in the default caller's route listing. */
+  /** Whether that connection appears in any usable caller's route listing. */
   available: boolean;
+  /**
+   * Caller aliases carrying the connection, default caller first. Absent when
+   * unavailable. A channel present only on an agent-bound caller is usable by
+   * that agent's sessions but not by regular ones — the UI says which.
+   */
+  providedBy?: string[];
 }
 
 /**
- * Which contact channels the default drawlatch caller can actually deliver on.
+ * Which contact channels this instance's drawlatch callers can deliver on.
  *
- * Read by Settings → General to enable or disable each contact field. The two
- * negative answers are not the same and must not be collapsed:
+ * Read by Settings → General to decide which contact channels may be switched
+ * on. Three flags carry three genuinely different answers, and collapsing any
+ * two of them produces a wrong UI:
  *
- *   - `configured: false` — determinate. There is no default caller (or its
- *     keys are unusable), so no channel can be delivered on, full stop.
- *   - `error` set — indeterminate. The daemon couldn't be asked, so nothing is
- *     known. Consumers fail OPEN here; a daemon hiccup must not lock the user
- *     out of editing their own contact info.
+ *   - `configured: false` — determinate. No usable caller exists at all, so
+ *     nothing can be delivered.
+ *   - `channelsKnown: false` — INDETERMINATE. No caller's listing could be
+ *     read, so `channels` is not an answer. Consumers must fail OPEN; "not
+ *     connected" and "couldn't ask" are different, and only the first
+ *     justifies taking the user's controls away.
+ *   - `error` set with `channelsKnown: true` — partial. At least one listing
+ *     was read and `channels` is trustworthy, but another caller failed. Gate
+ *     on it, and tell the user the picture may be incomplete.
  */
 export interface UserContactAvailability {
-  /** True when a default caller is configured and its routes could be read. */
+  /** True when at least one usable caller is configured. */
   configured: boolean;
-  /** The default caller alias the listing came from, when there is one. */
+  /** True when `channels` reflects a real listing rather than a failed check. */
+  channelsKnown: boolean;
+  /** The default caller's alias, when one is configured. */
   callerAlias?: string;
-  /** True when the listing is a cached one served after a failed refresh. */
+  /** True when a listing was served from cache after a failed live fetch. */
   stale?: boolean;
-  /** Set when the routes could not be read — availability is unknown. */
+  /** Set when any caller's listing could not be read. */
   error?: string;
   /** Per-channel availability. Phone is excluded — it has no connection. */
   channels: Record<NotifiableChannel, ContactChannelAvailability>;

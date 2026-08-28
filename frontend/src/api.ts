@@ -1,4 +1,7 @@
 import type {
+  NotifiableChannel,
+  ContactChannelAvailability,
+  UserContactAvailability,
   ActivityKind,
   ActivityCondition,
   ChatActivity,
@@ -113,6 +116,9 @@ import type {
 } from "shared/types/index.js";
 
 export type {
+  NotifiableChannel,
+  ContactChannelAvailability,
+  UserContactAvailability,
   ActivityKind,
   ActivityCondition,
   ChatActivity,
@@ -1973,29 +1979,6 @@ export async function fetchUserContact(): Promise<UserContactInfo> {
   const res = await fetch(`${BASE}/user-contact`, { credentials: "include" });
   await assertOk(res, "Failed to fetch contact info");
   return res.json();
-}
-
-/** Channel keys notify_user can dispatch to — phone is excluded. */
-export type NotifiableChannel = "discord" | "telegram" | "email";
-
-export interface ContactChannelAvailability {
-  connection: string;
-  available: boolean;
-}
-
-/**
- * Which contact channels the default drawlatch caller can deliver on.
- *
- * `configured: false` or a set `error` means availability is UNKNOWN — the
- * daemon couldn't be asked — not that no channel is available. Callers must
- * fail open on both rather than disabling the user's own contact fields.
- */
-export interface UserContactAvailability {
-  configured: boolean;
-  callerAlias?: string;
-  stale?: boolean;
-  error?: string;
-  channels: Record<NotifiableChannel, ContactChannelAvailability>;
 }
 
 /**

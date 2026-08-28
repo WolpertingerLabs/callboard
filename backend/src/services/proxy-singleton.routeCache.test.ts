@@ -105,6 +105,46 @@ describe("fetchProxyRoutes", () => {
     expect(result.error).toMatch(/429/);
   });
 
+  it("bypasses the TTL when forced", async () => {
+    callTool.mockResolvedValueOnce([{ alias: "github" }]);
+    await fetchProxyRoutes("a");
+
+    callTool.mockResolvedValueOnce([{ alias: "github" }, { alias: "telegram" }]);
+    const forced = await fetchProxyRoutes("a", { force: true });
+
+    expect(forced.routes).toHaveLength(2);
+    expect(callTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("throttles repeated forced fetches to protect the daemon's rate limiter", async () => {
+    callTool.mockResolvedValue([{ alias: "github" }]);
+    await fetchProxyRoutes("a", { force: true });
+
+    // A held-down refresh button must not become a live-call amplifier.
+    await fetchProxyRoutes("a", { force: true });
+    await fetchProxyRoutes("a", { force: true });
+    expect(callTool).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(10_000);
+    await fetchProxyRoutes("a", { force: true });
+    expect(callTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the cached listing as a fallback when a forced fetch fails", async () => {
+    // The listing is shared with the agent system prompt. Evicting it before a
+    // fetch that then 429s would replace a good answer with none, degrading
+    // every session started afterwards.
+    callTool.mockResolvedValueOnce([{ alias: "github" }, { alias: "telegram" }]);
+    await fetchProxyRoutes("a");
+
+    callTool.mockRejectedValueOnce(new Error("Proxy request failed: 429"));
+    const forced = await fetchProxyRoutes("a", { force: true });
+
+    expect(forced.routes).toHaveLength(2);
+    expect(forced.stale).toBe(true);
+    expect(forced.error).toMatch(/429/);
+  });
+
   it("recovers to a fresh listing once the daemon comes back", async () => {
     callTool.mockResolvedValueOnce([{ name: "GitHub API" }]);
     await fetchProxyRoutes("a");
