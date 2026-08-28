@@ -97,6 +97,25 @@ describe("contactFieldState", () => {
     expect(s.note).toMatch(/cached listing/);
   });
 
+  it("softens the agent-only claim when the answer is incomplete", () => {
+    // If the DEFAULT caller is the one that failed, providedBy can't contain
+    // it — so "ordinary chats can't" is a flat negative the data doesn't
+    // support. Incompleteness has to reach this branch too, or two rows make
+    // claims of different confidence from the same answer.
+    const s = contactFieldState(
+      field("discord"),
+      availability({ error: "429 rate limited", channels: { ...availability().channels, discord: { connection: "discord-bot", available: true, providedBy: ["notifier"] } } }),
+    );
+    expect(s).toMatchObject({ editable: true, canEnable: true });
+    expect(s.note).not.toMatch(/ordinary chats can't/);
+    expect(s.note).toMatch(/isn't certain/);
+  });
+
+  it("describes an agent-only channel with no named credential", () => {
+    const s = contactFieldState(field("discord"), availability({ channels: { ...availability().channels, discord: { connection: "discord-bot", available: true } } }));
+    expect(s.note).toBe("Only agent sessions can deliver this — ordinary chats can't.");
+  });
+
   it("fails open when the check itself failed", () => {
     const s = contactFieldState(field("discord"), availability({ channelsKnown: false, error: "daemon unreachable" }));
     expect(s).toMatchObject({ editable: true, canEnable: true, warn: false });

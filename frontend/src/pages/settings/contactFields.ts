@@ -77,6 +77,11 @@ export interface ContactFieldState {
   missingConnection?: boolean;
 }
 
+/** Why an answer may be behind reality, phrased to open a sentence. */
+function hedge(availability: UserContactAvailability): string {
+  return availability.stale ? "This was checked against a cached listing" : "One of your credentials couldn't be checked just now";
+}
+
 /**
  * Resolve one contact field against the availability answer.
  *
@@ -113,21 +118,19 @@ export function contactFieldState(field: ContactField, availability: UserContact
     return { editable: false, canEnable: false, note: "Unavailable until a drawlatch credential is set up.", warn: true };
   }
 
+  // Incompleteness is a property of the ANSWER, not of one branch: a
+  // credential we couldn't read, or a listing taken before the user's question
+  // was asked, undermines every negative claim below equally. Handling it once
+  // here is what keeps the two branches from disagreeing about the same facts.
+  const incomplete = !!availability.error || !!availability.stale;
+
   const entry = availability.channels[field.channel];
   if (!entry?.available) {
-    // Rule 1 again, at per-credential granularity: when a credential couldn't
-    // be reached, or the listing predates the question being asked, "not in
-    // the listing" might only mean "not in the listing we got". A determinate
-    // lock needs a complete, current answer — otherwise one flaky credential
-    // locks every channel only it provides, and a cached listing tells someone
-    // the connection they just added doesn't exist.
-    if (availability.error || availability.stale) {
+    if (incomplete) {
       return {
         editable: true,
         canEnable: true,
-        note: `Needs the "${entry?.connection ?? field.channel}" connection. ${
-          availability.stale ? "This was checked against a cached listing" : "One of your credentials couldn't be checked just now"
-        }, so it isn't certain.`,
+        note: `Needs the "${entry?.connection ?? field.channel}" connection. ${hedge(availability)}, so it isn't certain.`,
         warn: false,
       };
     }
@@ -148,12 +151,26 @@ export function contactFieldState(field: ContactField, availability: UserContact
   if (!onDefault) {
     const credentials = entry.providedBy ?? [];
     const named = credentials.map((a) => `"${a}"`).join(", ");
+    const noun = credentials.length === 1 ? "credential" : "credentials";
+    // "Ordinary chats can't" is a flat negative, and it rests on the default
+    // caller's listing NOT containing the connection — which an incomplete
+    // answer cannot establish. Positive evidence survives (a connection seen
+    // in a listing we did get can't be un-seen by one we didn't); this
+    // negative does not.
+    if (incomplete) {
+      return {
+        editable: true,
+        canEnable: true,
+        note: named
+          ? `Carried by the ${named} ${noun}. ${hedge(availability)}, so whether ordinary chats can use it isn't certain.`
+          : `${hedge(availability)}, so whether ordinary chats can use this isn't certain.`,
+        warn: false,
+      };
+    }
     return {
       editable: true,
       canEnable: true,
-      note: named
-        ? `Only agents using the ${named} ${credentials.length === 1 ? "credential" : "credentials"} can deliver this — ordinary chats can't.`
-        : "Only agent sessions can deliver this — ordinary chats can't.",
+      note: named ? `Only agents using the ${named} ${noun} can deliver this — ordinary chats can't.` : "Only agent sessions can deliver this — ordinary chats can't.",
       warn: false,
     };
   }

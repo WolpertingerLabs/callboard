@@ -413,6 +413,7 @@ export default function GeneralSettings() {
             // focus to <body> mid-request, losing the user's place on the page.
             // handleAvailabilityRefresh no-ops while a refresh is in flight.
             aria-disabled={availabilityRefreshing}
+            aria-busy={availabilityRefreshing}
             title="Re-check which connections your drawlatch credentials have"
             aria-label="Refresh connection availability"
             style={{
@@ -462,10 +463,10 @@ export default function GeneralSettings() {
           </div>
         )}
 
-        {/* Connections live in drawlatch's dashboard — callboard can only link
-            there — so a missing one is only actionable with this pointer. */}
         {(availabilityError || contactAvailability?.error || contactAvailability?.stale) && (
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
+          // The result of pressing Refresh appears here and nowhere else, so
+          // without a live region a screen-reader user hears nothing back.
+          <div role="status" style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
             {availabilityError
               ? contactAvailability
                 ? `${availabilityError} — showing the last answer.`
@@ -519,7 +520,11 @@ export default function GeneralSettings() {
                       flex: 1,
                       padding: "9px 12px",
                       borderRadius: 8,
-                      border: "1px solid var(--border)",
+                      // Dashed, not just recessed: the fill difference between
+                      // an editable and a locked field is 1.05:1, so without a
+                      // second cue the row's state is carried by the note's
+                      // colour alone — which colour-blind users don't get.
+                      border: editable ? "1px solid var(--border)" : "1px dashed var(--border)",
                       // Recessed rather than faded: --text-muted on --bg clears
                       // AA in both themes, where --text at 0.55 does not.
                       background: editable ? "var(--surface)" : "var(--bg)",
