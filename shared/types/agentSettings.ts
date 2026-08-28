@@ -590,6 +590,12 @@ export interface EnrolledCallerAgent {
   alias: string;
   name: string;
   emoji?: string;
+  /**
+   * Mirrors `AgentConfig.enabled` — absent means enabled, matching that field.
+   * A disabled agent runs no sessions at all, so a caller reachable only
+   * through one is a credential nothing can actually use.
+   */
+  enabled?: boolean;
 }
 
 /**

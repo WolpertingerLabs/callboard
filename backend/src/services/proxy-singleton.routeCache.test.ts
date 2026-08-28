@@ -105,6 +105,100 @@ describe("fetchProxyRoutes", () => {
     expect(result.error).toMatch(/429/);
   });
 
+  it("bypasses the TTL when forced", async () => {
+    callTool.mockResolvedValueOnce([{ alias: "github" }]);
+    await fetchProxyRoutes("a");
+
+    callTool.mockResolvedValueOnce([{ alias: "github" }, { alias: "telegram" }]);
+    const forced = await fetchProxyRoutes("a", { force: true });
+
+    expect(forced.routes).toHaveLength(2);
+    expect(callTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("throttles repeated forced fetches to protect the daemon's rate limiter", async () => {
+    callTool.mockResolvedValue([{ alias: "github" }]);
+    await fetchProxyRoutes("a", { force: true });
+
+    // A held-down refresh button must not become a live-call amplifier.
+    await fetchProxyRoutes("a", { force: true });
+    await fetchProxyRoutes("a", { force: true });
+    expect(callTool).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(10_000);
+    await fetchProxyRoutes("a", { force: true });
+    expect(callTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a cooldown-denied force instead of falling through to a live call", async () => {
+    // The failing case is the one that matters: with no cached listing the TTL
+    // guard can't return, so an un-gated fall-through would issue one live call
+    // per click against a daemon that is, by construction, already failing.
+    callTool.mockRejectedValue(new Error("Proxy request failed: 429"));
+
+    const first = await fetchProxyRoutes("a", { force: true });
+    expect(first.error).toMatch(/429/);
+    expect(callTool).toHaveBeenCalledTimes(1);
+
+    const denied = await fetchProxyRoutes("a", { force: true });
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(denied.error).toMatch(/try again/i);
+    // Indeterminate, not "this caller has nothing" — consumers fail open.
+    expect(denied.configured).toBe(true);
+    expect(denied.routes).toEqual([]);
+
+    vi.advanceTimersByTime(10_000);
+    await fetchProxyRoutes("a", { force: true });
+    expect(callTool).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves an ordinary uncached fetch alone while a force is on cooldown", async () => {
+    callTool.mockResolvedValue([{ alias: "github" }]);
+    await fetchProxyRoutes("a", { force: true });
+    resetAllClients();
+    callTool.mockResolvedValue([{ alias: "github" }]);
+
+    // No force requested ⇒ the cooldown must not refuse it.
+    const plain = await fetchProxyRoutes("a");
+    expect(plain.routes).toHaveLength(1);
+    expect(plain.error).toBeUndefined();
+  });
+
+  it("does not spend the cooldown on a forced fetch that piggybacked on one in flight", async () => {
+    // The piggybacked result comes from the client the force just replaced, so
+    // charging it would make the user wait out the cooldown before the
+    // re-check they asked for could happen at all.
+    let release: (v: unknown[]) => void = () => {};
+    callTool.mockReturnValueOnce(new Promise((r) => (release = r)));
+
+    const first = fetchProxyRoutes("a"); // ordinary fetch, now in flight
+    const forced = fetchProxyRoutes("a", { force: true }); // joins it
+    release([{ alias: "github" }]);
+    await Promise.all([first, forced]);
+    expect(callTool).toHaveBeenCalledTimes(1);
+
+    // Immediately retrying must still reach the daemon.
+    callTool.mockResolvedValueOnce([{ alias: "github" }, { alias: "telegram" }]);
+    const retry = await fetchProxyRoutes("a", { force: true });
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(retry.routes).toHaveLength(2);
+  });
+
+  it("keeps the cached listing as a fallback when a forced fetch fails", async () => {
+    // The listing is shared with the agent system prompt. Evicting it before a
+    // fetch that then 429s would replace a good answer with none, degrading
+    // every session started afterwards.
+    callTool.mockResolvedValueOnce([{ alias: "github" }, { alias: "telegram" }]);
+    await fetchProxyRoutes("a");
+
+    callTool.mockRejectedValueOnce(new Error("Proxy request failed: 429"));
+    const forced = await fetchProxyRoutes("a", { force: true });
+
+    expect(forced.routes).toHaveLength(2);
+    expect(forced.stale).toBe(true);
+    expect(forced.error).toMatch(/429/);
+  });
+
   it("recovers to a fresh listing once the daemon comes back", async () => {
     callTool.mockResolvedValueOnce([{ name: "GitHub API" }]);
     await fetchProxyRoutes("a");

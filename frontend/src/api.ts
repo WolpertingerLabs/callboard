@@ -1,4 +1,7 @@
 import type {
+  NotifiableChannel,
+  ContactChannelAvailability,
+  UserContactAvailability,
   ActivityKind,
   ActivityCondition,
   ChatActivity,
@@ -113,6 +116,9 @@ import type {
 } from "shared/types/index.js";
 
 export type {
+  NotifiableChannel,
+  ContactChannelAvailability,
+  UserContactAvailability,
   ActivityKind,
   ActivityCondition,
   ChatActivity,
@@ -1972,6 +1978,16 @@ export interface UserContactInfo {
 export async function fetchUserContact(): Promise<UserContactInfo> {
   const res = await fetch(`${BASE}/user-contact`, { credentials: "include" });
   await assertOk(res, "Failed to fetch contact info");
+  return res.json();
+}
+
+/**
+ * Read contact-channel availability. `refresh` bypasses the backend's cached
+ * route listing (a live daemon call) — for an explicit user gesture only.
+ */
+export async function fetchUserContactAvailability(opts?: { refresh?: boolean }): Promise<UserContactAvailability> {
+  const res = await fetch(`${BASE}/user-contact/availability${opts?.refresh ? "?refresh=1" : ""}`, { credentials: "include" });
+  await assertOk(res, "Failed to fetch contact channel availability");
   return res.json();
 }
 

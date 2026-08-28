@@ -29,7 +29,8 @@ import { buildCardSummaries } from "./card-rollup.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { listRuns } from "./job-store.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
-import { CARD_CATEGORY_MAX } from "shared";
+import { CARD_CATEGORY_MAX, CONTACT_CHANNEL_CONNECTIONS } from "shared";
+import type { NotifiableChannel } from "shared";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { startActivity, endActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
 import type { ConditionWatch, UiAgentProviderKind } from "shared/types/index.js";
@@ -150,12 +151,16 @@ function buildWaitNote(opts: { endedEarly: boolean; hasCondition: boolean }): st
 // Maps a notifiable contact channel to the drawlatch connection the agent
 // should use and how to reach the user through it. Phone is intentionally
 // excluded — it is a future feature and never offered to the agent.
-type NotifyChannelKey = "discord" | "telegram" | "email";
+//
+// The connection per channel comes from CONTACT_CHANNEL_CONNECTIONS in shared/
+// because Settings → General gates each contact field on the same connection
+// being present; the two must not drift.
+type NotifyChannelKey = NotifiableChannel;
 
 const NOTIFY_CHANNELS: Record<NotifyChannelKey, { label: string; connection: string; instructions: (handle: string) => string }> = {
   discord: {
     label: "Discord",
-    connection: "discord-bot",
+    connection: CONTACT_CHANNEL_CONNECTIONS.discord,
     instructions: (handle) =>
       `Reach the user on Discord (username "${handle}") via the drawlatch "discord-bot" connection. ` +
       `Use mcp__mcp-proxy__list_routes to find the discord-bot endpoints, then mcp__mcp-proxy__secure_request to ` +
@@ -163,14 +168,14 @@ const NOTIFY_CHANNELS: Record<NotifyChannelKey, { label: string; connection: str
   },
   telegram: {
     label: "Telegram",
-    connection: "telegram",
+    connection: CONTACT_CHANNEL_CONNECTIONS.telegram,
     instructions: (handle) =>
       `Reach the user on Telegram (account "${handle}") via the drawlatch "telegram" connection. ` +
       `Use mcp__mcp-proxy__list_routes to find the telegram endpoints, then mcp__mcp-proxy__secure_request to send the message (sendMessage with the user's chat id).`,
   },
   email: {
     label: "Email",
-    connection: "agentmail",
+    connection: CONTACT_CHANNEL_CONNECTIONS.email,
     instructions: (handle) =>
       `Reach the user by email (${handle}) via the drawlatch "agentmail" connection. ` +
       `Use mcp__mcp-proxy__list_routes to find the agentmail endpoints, then mcp__mcp-proxy__secure_request to send the email.`,
@@ -765,7 +770,8 @@ export function buildCallboardToolsSpec(
                   success: true,
                   guidance:
                     "Use the drawlatch mcp__mcp-proxy__* tools with the connection named below to reach the user. " +
-                    "If a connection isn't configured, tell the user it needs to be set up under Settings → Connections.",
+                    "If a connection isn't configured, tell the user it needs to be added in the drawlatch dashboard " +
+                    "(linked from Settings → Proxy) — callboard itself cannot add one.",
                   channels,
                 }),
               },

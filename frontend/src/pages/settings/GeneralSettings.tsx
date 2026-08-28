@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact, PhoneOutgoing } from "lucide-react";
 import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode, getCustomThemeName, saveCustomThemeName } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
@@ -13,6 +14,8 @@ import {
   updateIgnoredProjectDirs,
   fetchUserContact,
   updateUserContact,
+  fetchUserContactAvailability,
+  getDaemonStatus,
   getAgentSettings,
   updateAgentSettings,
 } from "../../api";
@@ -20,42 +23,10 @@ import {
 const DEFAULT_MAX_CALLBACK_CHAIN_DEPTH = 10;
 const DEFAULT_MAX_PENDING_CALLBACKS = 25;
 import { reloadCustomTheme } from "../../App";
-import type { ThemeListItem, UserContactInfo } from "../../api";
+import type { ThemeListItem, UserContactInfo, UserContactAvailability } from "../../api";
 import ThemeAuditPanel from "./ThemeAuditPanel";
-
-type ContactKey = keyof UserContactInfo;
-
-const CONTACT_FIELDS: {
-  key: ContactKey;
-  label: string;
-  placeholder: string;
-  help: string;
-  disabled?: boolean;
-}[] = [
-  {
-    key: "discord",
-    label: "Discord username",
-    placeholder: "username",
-    help: "Requires a working Discord integration (configure under Settings → Connections).",
-  },
-  {
-    key: "telegram",
-    label: "Telegram account",
-    placeholder: "@handle",
-    help: "Requires a working Telegram integration (configure under Settings → Connections).",
-  },
-  { key: "phone", label: "Phone number", placeholder: "+1 555 123 4567", help: "Coming soon.", disabled: true },
-  { key: "email", label: "Email address", placeholder: "you@example.com", help: "Requires the AgentMail connection (configure under Settings → Connections)." },
-];
-
-function emptyContact(): UserContactInfo {
-  return {
-    discord: { value: "", enabled: false },
-    telegram: { value: "", enabled: false },
-    phone: { value: "", enabled: false },
-    email: { value: "", enabled: false },
-  };
-}
+import { CONTACT_FIELDS, contactFieldState, emptyContact } from "./contactFields";
+import type { ContactKey } from "./contactFields";
 
 export default function GeneralSettings() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getThemeMode());
@@ -88,6 +59,11 @@ export default function GeneralSettings() {
   const [contactSaving, setContactSaving] = useState(false);
   const [contactSaved, setContactSaved] = useState(false);
   const [contactError, setContactError] = useState<string | null>(null);
+  // null ⇒ not answered (yet, or at all) — every field stays editable.
+  const [contactAvailability, setContactAvailability] = useState<UserContactAvailability | null>(null);
+  const [availabilityRefreshing, setAvailabilityRefreshing] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+  const [drawlatchDashboardUrl, setDrawlatchDashboardUrl] = useState<string | null>(null);
 
   // Session completion callback ("phone home") loop-safety state
   const [maxChainDepth, setMaxChainDepth] = useState<number>(DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
@@ -113,6 +89,17 @@ export default function GeneralSettings() {
     fetchUserContact()
       .then(setContact)
       .catch(() => {});
+    fetchUserContactAvailability()
+      .then(setContactAvailability)
+      // A failed check leaves every field usable, which is the right default —
+      // but it must not be silent, or the page looks like it verified the
+      // channels and found them fine.
+      .catch((err) => setAvailabilityError(err.message || "Couldn't check which connections your credentials have"));
+    // Connections themselves are managed in drawlatch's own dashboard, so the
+    // only actionable pointer this page can give is a link to it.
+    getDaemonStatus()
+      .then((s) => setDrawlatchDashboardUrl(s.dashboardUrl))
+      .catch(() => setDrawlatchDashboardUrl(null));
     getAgentSettings()
       .then((s) => {
         setMaxChainDepth(s.maxCallbackChainDepth ?? DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
@@ -136,6 +123,24 @@ export default function GeneralSettings() {
       setCallbackError(err.message || "Failed to save callback limits");
     } finally {
       setCallbackSaving(false);
+    }
+  };
+
+  // Re-asks the daemon rather than reading its five-minute route cache, so a
+  // connection just added in drawlatch unlocks its field without a wait.
+  const handleAvailabilityRefresh = async () => {
+    if (availabilityRefreshing) return;
+    setAvailabilityRefreshing(true);
+    setAvailabilityError(null);
+    try {
+      setContactAvailability(await fetchUserContactAvailability({ refresh: true }));
+    } catch (err: any) {
+      // Keep the answer we already had. Clearing it would silently convert a
+      // known "nothing is connected" into "everything's fine" — the failure
+      // this whole section is built to avoid — so report and hold instead.
+      setAvailabilityError(err.message || "Couldn't re-check your connections");
+    } finally {
+      setAvailabilityRefreshing(false);
     }
   };
 
@@ -402,6 +407,30 @@ export default function GeneralSettings() {
         <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
           <Contact size={16} style={{ color: "var(--accent-text)" }} />
           <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Contact Info</span>
+          <button
+            onClick={handleAvailabilityRefresh}
+            // aria-disabled, not disabled: a disabled button drops keyboard
+            // focus to <body> mid-request, losing the user's place on the page.
+            // handleAvailabilityRefresh no-ops while a refresh is in flight.
+            aria-disabled={availabilityRefreshing}
+            aria-busy={availabilityRefreshing}
+            title="Re-check which connections your drawlatch credentials have"
+            aria-label="Refresh connection availability"
+            style={{
+              marginLeft: "auto",
+              background: "var(--surface)",
+              color: "var(--text-muted)",
+              padding: 6,
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              cursor: availabilityRefreshing ? "wait" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <RefreshCw size={14} style={availabilityRefreshing ? { animation: "spin 1s linear infinite" } : undefined} />
+          </button>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
           Provide ways for agents to reach you when you&apos;re away. When you enable a channel, the{" "}
@@ -409,33 +438,100 @@ export default function GeneralSettings() {
           there through your connections.
         </div>
 
+        {contactAvailability?.channelsKnown && !contactAvailability.configured && (
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--warning)",
+              background: "var(--warning-bg)",
+              border: "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
+              borderRadius: 8,
+              padding: "10px 12px",
+              marginBottom: 14,
+              lineHeight: 1.5,
+            }}
+          >
+            No drawlatch credential is available, so no contact channel can be delivered. Mark one as the default under{" "}
+            <Link to="/settings/proxy" style={{ color: "var(--warning)", fontWeight: 600, textDecoration: "underline" }}>
+              Settings → Proxy
+            </Link>{" "}
+            (Enrolled callers → Set default), or bind one to an agent under{" "}
+            <Link to="/agents" style={{ color: "var(--warning)", fontWeight: 600, textDecoration: "underline" }}>
+              Agents
+            </Link>{" "}
+            → your agent → Overview.
+          </div>
+        )}
+
+        {(availabilityError || contactAvailability?.error || contactAvailability?.stale) && (
+          // The result of pressing Refresh appears here and nowhere else, so
+          // without a live region a screen-reader user hears nothing back.
+          <div role="status" style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
+            {availabilityError
+              ? contactAvailability
+                ? `${availabilityError} — showing the last answer.`
+                : `${availabilityError} — channels aren't being verified right now.`
+              : contactAvailability?.error && !contactAvailability.channelsKnown
+                ? `Couldn't check your connections (${contactAvailability.error}) — channels aren't being verified right now.`
+                : // Partial failure outranks staleness: "we couldn't ask one of
+                  // your credentials" is the fact that makes this list wrong,
+                  // and it was being swallowed whenever both were set.
+                  contactAvailability?.error
+                  ? `A credential couldn't be checked (${contactAvailability.error}), so this list may be incomplete.`
+                  : "Showing a cached connection listing — the last live check didn't get through."}
+          </div>
+        )}
+
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {CONTACT_FIELDS.map(({ key, label, placeholder, help, disabled }) => {
+          {CONTACT_FIELDS.map((field) => {
+            const { key, label, placeholder } = field;
             const channel = contact[key];
+            const { editable, canEnable, note, warn, missingConnection } = contactFieldState(field, contactAvailability);
+            // A handle saved while the connection existed stays saved, and
+            // notify_user will still dispatch on it — so switching OFF stays
+            // available even when switching on doesn't.
+            const enabledButUndeliverable = !canEnable && !field.comingSoon && channel.enabled;
+            // Never gate switching OFF — including the coming-soon row, which
+            // can hold an enabled value from an older build or a hand-edited
+            // user-contact.json.
+            const toggleLocked = (field.comingSoon || !canEnable) && !channel.enabled;
             return (
-              <div key={key} style={{ display: "flex", flexDirection: "column", gap: 4, opacity: disabled ? 0.55 : 1 }}>
+              <div key={key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {/* No opacity fade anywhere in this row. A blanket fade drags
+                    every layer under it below AA (the label and the user's own
+                    stored handle measured 3.51:1 and 3.42:1 in light mode), and
+                    it greys out the one toggle an undeliverable-but-enabled
+                    channel needs the user to click. Unavailability is carried
+                    by the recessed input, the cursor, and the note instead. */}
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <label htmlFor={`contact-${key}`} style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: 130, flexShrink: 0 }}>
                     {label}
-                    {disabled && <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 11 }}> (soon)</span>}
+                    {field.comingSoon && <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 11 }}> (soon)</span>}
                   </label>
                   <input
                     id={`contact-${key}`}
                     type="text"
                     value={channel.value}
                     placeholder={placeholder}
-                    disabled={disabled}
+                    disabled={!editable}
+                    aria-describedby={`contact-${key}-note`}
                     onChange={(e) => handleContactValueChange(key, e.target.value)}
                     style={{
                       flex: 1,
                       padding: "9px 12px",
                       borderRadius: 8,
-                      border: "1px solid var(--border)",
-                      background: "var(--surface)",
-                      color: "var(--text)",
+                      // Dashed, not just recessed: the fill difference between
+                      // an editable and a locked field is 1.05:1, so without a
+                      // second cue the row's state is carried by the note's
+                      // colour alone — which colour-blind users don't get.
+                      border: editable ? "1px solid var(--border)" : "1px dashed var(--border)",
+                      // Recessed rather than faded: --text-muted on --bg clears
+                      // AA in both themes, where --text at 0.55 does not.
+                      background: editable ? "var(--surface)" : "var(--bg)",
+                      color: editable ? "var(--text)" : "var(--text-muted)",
                       fontSize: 14,
                       boxSizing: "border-box",
-                      cursor: disabled ? "not-allowed" : "text",
+                      cursor: editable ? "text" : "not-allowed",
                     }}
                   />
                   <button
@@ -443,7 +539,8 @@ export default function GeneralSettings() {
                     role="switch"
                     aria-checked={channel.enabled}
                     aria-label={`Toggle ${label}`}
-                    disabled={disabled}
+                    aria-describedby={`contact-${key}-note`}
+                    disabled={toggleLocked}
                     onClick={() => handleContactToggle(key)}
                     style={{
                       flexShrink: 0,
@@ -453,7 +550,7 @@ export default function GeneralSettings() {
                       border: "none",
                       padding: 2,
                       background: channel.enabled ? "var(--accent)" : "var(--border)",
-                      cursor: disabled ? "not-allowed" : "pointer",
+                      cursor: toggleLocked ? "not-allowed" : "pointer",
                       display: "flex",
                       justifyContent: channel.enabled ? "flex-end" : "flex-start",
                       alignItems: "center",
@@ -471,7 +568,32 @@ export default function GeneralSettings() {
                     />
                   </button>
                 </div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", paddingLeft: 140 }}>{help}</div>
+                <div id={`contact-${key}-note`} style={{ fontSize: 11, color: warn ? "var(--warning)" : "var(--text-muted)", paddingLeft: 140 }}>
+                  {enabledButUndeliverable ? `Enabled, but not deliverable right now — ${note.charAt(0).toLowerCase()}${note.slice(1)}` : note}
+                  {/* Connections are added in drawlatch's own dashboard, never
+                      here — so the note is only actionable with a pointer to
+                      it. When the daemon URL is unknown, Settings → Proxy is
+                      the destination that always exists and links onward. */}
+                  {missingConnection &&
+                    (drawlatchDashboardUrl ? (
+                      <>
+                        {" "}
+                        <a href={drawlatchDashboardUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--warning)", fontWeight: 600, textDecoration: "underline" }}>
+                          Add it in the drawlatch dashboard
+                        </a>
+                        .
+                      </>
+                    ) : (
+                      <>
+                        {" "}
+                        Add it in the drawlatch dashboard, which you can open from{" "}
+                        <Link to="/settings/proxy" style={{ color: "var(--warning)", fontWeight: 600, textDecoration: "underline" }}>
+                          Settings → Proxy
+                        </Link>
+                        .
+                      </>
+                    ))}
+                </div>
               </div>
             );
           })}
