@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Folder } from "lucide-react";
 
 interface Props {
@@ -45,6 +46,11 @@ export default function FolderPathPill({ path }: Props) {
 
   useEffect(() => {
     if (!open) return;
+    // Native, so it tests real DOM containment — which no longer includes the
+    // portaled bubble. It does not need to: the bubble's own onClick stops the
+    // event at the portal container, which is below `document`, so a click on
+    // the path never reaches here. Covered by a test, because that reasoning is
+    // the only thing keeping the bubble from dismissing itself.
     const onDocClick = (e: MouseEvent) => {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
         setOpen(false);
@@ -92,32 +98,44 @@ export default function FolderPathPill({ path }: Props) {
         <Folder size={10} style={{ flexShrink: 0 }} />
         {folderName}
       </span>
-      {open && coords && (
-        <span
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-          }}
-          style={{
-            position: "fixed",
-            top: coords.top,
-            left: coords.left,
-            zIndex: 1000,
-            background: "var(--surface)",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            padding: "6px 8px",
-            fontSize: 11,
-            color: "var(--text)",
-            width: "max-content",
-            maxWidth: BUBBLE_MAX_WIDTH,
-            wordBreak: "break-all",
-            boxShadow: "0 2px 8px rgba(0, 0, 0, 0.3)",
-          }}
-        >
-          {path}
-        </span>
-      )}
+      {/*
+       * Portaled to the body for the same reason it is `fixed`: to be governed
+       * by nothing but the viewport. A dimmed chat row carries `opacity` (see
+       * `faded` in ChatListItem), which fades every descendant — `fixed` does
+       * not opt a child out of its parent's alpha — and makes that row a
+       * stacking context this z-index cannot escape. The click handlers below
+       * still see events through the React tree, so `stopPropagation` keeps
+       * working from here.
+       */}
+      {open &&
+        coords &&
+        createPortal(
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+            }}
+            style={{
+              position: "fixed",
+              top: coords.top,
+              left: coords.left,
+              zIndex: 1000,
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "6px 8px",
+              fontSize: 11,
+              color: "var(--text)",
+              width: "max-content",
+              maxWidth: BUBBLE_MAX_WIDTH,
+              wordBreak: "break-all",
+              boxShadow: "var(--shadow-md)",
+            }}
+          >
+            {path}
+          </span>,
+          document.body,
+        )}
     </span>
   );
 }

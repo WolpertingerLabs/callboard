@@ -192,9 +192,12 @@ describe("ChatListItem dimming", () => {
     const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} dimmed />);
     openRowMenu(container);
 
-    const menuEntry = screen.getByText("Delete");
     expect(row(container).className).toContain(DIM_CLASS);
-    expect(row(container).contains(menuEntry)).toBe(false);
+    // The title is this case's control: it proves row() still resolves to the
+    // node carrying the fade, so the menu's absence below means "portaled out"
+    // rather than "asserted against the wrong element".
+    expect(row(container).contains(screen.getByText("My Chat"))).toBe(true);
+    expect(row(container).contains(screen.getByText("Delete"))).toBe(false);
   });
 });
 
@@ -251,5 +254,35 @@ describe("ChatListItem folder pill", () => {
     expect(screen.getByText(FULL_PATH)).toBeTruthy();
     // ...and the parent card's onClick was NOT called.
     expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("opens the path bubble outside a faded row", () => {
+    // Same trap as the kebab menu: the bubble is `fixed`, but a dimmed row's
+    // `opacity` fades every descendant regardless of positioning, so a bubble
+    // left inside the row renders see-through.
+    const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} dimmed />);
+    const rowEl = container.firstElementChild!;
+
+    fireEvent.click(screen.getByText("my-cool-repo"));
+
+    expect(rowEl.className).toContain("chatlist-item-dimmed");
+    // Control: the pill itself stays in the faded row, so the bubble's absence
+    // is the portal and not a mis-targeted assertion.
+    expect(rowEl.contains(screen.getByText("my-cool-repo"))).toBe(true);
+    expect(rowEl.contains(screen.getByText(FULL_PATH))).toBe(false);
+  });
+
+  it("keeps the bubble open when the path itself is clicked", () => {
+    // The click-away listener is native, so it tests real DOM containment —
+    // which the portal breaks. Selecting the path must not dismiss it.
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
+    fireEvent.click(screen.getByText("my-cool-repo"));
+
+    fireEvent.click(screen.getByText(FULL_PATH));
+    expect(screen.queryByText(FULL_PATH)).toBeTruthy();
+
+    // Control: a click genuinely outside still closes it.
+    fireEvent.click(document.body);
+    expect(screen.queryByText(FULL_PATH)).toBeNull();
   });
 });
