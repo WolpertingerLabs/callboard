@@ -746,24 +746,36 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const onChatListRefreshRef = useRef(onChatListRefresh);
   onChatListRefreshRef.current = onChatListRefresh;
 
-  // Where the user actually is, and whether this view is still on screen at
+  // Which screen the user is on, and whether this view is still on screen at
   // all. Both live in refs for the same reason `navigate` does: the new-chat
   // SSE reader outlives the render that started it, and can outlive the mount
   // entirely — going back to the list on mobile unmounts this component while
   // the POST /api/chats/new/message stream keeps running to completion.
-  const routeRef = useRef("");
-  routeRef.current = location.pathname + location.search;
+  //
+  // `location.key` rather than the path, for the reason already given above
+  // `setPendingModel`: /chat/new → /chat/new via the New Chat panel is a new
+  // compose context at an identical URL, and the key is the only thing that
+  // distinguishes it. Nothing rotates the key underneath a waiting user — the
+  // two state-stripping `navigate(samePath, { replace: true })` calls are both
+  // outside the window (one lives in an effect that returns early when there is
+  // no `id`, the other consumes `routerDraftRef` once at mount, before any
+  // send).
+  const locationKeyRef = useRef(location.key);
+  locationKeyRef.current = location.key;
   const mountedRef = useRef(true);
   useEffect(() => {
+    // Assigned in the body, not just the cleanup: StrictMode's double-invoke
+    // runs cleanup between the two mounts, and the second body call is what
+    // puts this back to true.
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
     };
   }, []);
 
-  // The compose route a new-chat send was fired from. `chat_created` redirects
+  // The compose screen a new-chat send was fired from. `chat_created` redirects
   // only while the user is still sitting on it — see the handler in readSSE.
-  const newChatOriginRouteRef = useRef<string | null>(null);
+  const newChatOriginKeyRef = useRef<string | null>(null);
 
   // Safety timeout: if streaming is true but no SSE events arrive for 5 minutes,
   // assume the stream is dead and reset the indicator.
@@ -834,16 +846,29 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               if (event.type === "chat_created" && event.chatId) {
                 // Only pull the user into the new chat if they are still
                 // waiting on the compose screen that started it. Sending a
-                // prompt and then walking off — back to the chat list on mobile
-                // (this component unmounts), or to another chat/board/settings
-                // on desktop (it stays mounted at a different location) — used
-                // to yank them into the new chat seconds later, on top of
-                // whatever they had moved on to. Creation is server-side and
-                // unaffected; the chat-list refresh is how the new chat shows
-                // up when we stay put, and the stream is dropped because the
-                // component that would have rendered it is gone. Reopening the
-                // chat re-attaches through the usual globalSessionActive path.
-                if (!mountedRef.current || routeRef.current !== newChatOriginRouteRef.current) {
+                // prompt and then walking off used to yank them into the new
+                // chat seconds later, on top of whatever they had moved on to.
+                //
+                // Two reachable ways to have walked off, and they need
+                // different signals:
+                //   - Left the Chat pane entirely — the chat list on mobile,
+                //     the board/settings/agents anywhere. SplitLayout swaps
+                //     this component out, so only `mountedRef` can see it: the
+                //     reader holds refs from a dead render and `navigate` still
+                //     works from that closure.
+                //   - Opened a second compose screen (New Chat panel) for the
+                //     same folder. Still mounted, still `/chat/new`, same URL —
+                //     `location.key` is the only thing that differs.
+                // Moving to another /chat/:id is caught earlier and more
+                // cheaply by the staleness check at the top of the read loop,
+                // which cancels before this frame is ever parsed.
+                //
+                // Creation is server-side and unaffected: the chat-list refresh
+                // is how the new chat surfaces when we stay put, and dropping
+                // the stream costs nothing because the component that would
+                // have rendered it is gone. Reopening the chat re-attaches
+                // through the usual globalSessionActive path.
+                if (!mountedRef.current || locationKeyRef.current !== newChatOriginKeyRef.current) {
                   onChatListRefreshRef.current?.();
                   reader.cancel();
                   return;
@@ -1757,6 +1782,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // NEW CHAT MODE: POST to /api/chats/new/message
           addRecentDirectory(folder);
 
+          // Stamp the compose screen this send came from before the first
+          // await, so `chat_created` can tell "still waiting here" from "moved
+          // on". Read after the image upload it would record wherever the user
+          // had wandered to during a slow upload — i.e. it would compare the
+          // destination against itself, exactly in the window the check exists
+          // to cover.
+          newChatOriginKeyRef.current = locationKeyRef.current;
+
           // Upload images before creating the chat (no chatId yet)
           let imageIds: string[] = [];
           if (images && images.length > 0) {
@@ -1780,9 +1813,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // expose at all.
           const clientTrackingId = newChatTrackingId();
           tempChatIdRef.current = clientTrackingId;
-          // Remember the compose screen this send came from, so the redirect on
-          // `chat_created` can tell "still waiting here" from "moved on".
-          newChatOriginRouteRef.current = routeRef.current;
 
           const requestBody: any = {
             folder,
