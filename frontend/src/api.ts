@@ -334,6 +334,17 @@ export async function toggleBookmark(id: string, bookmarked: boolean): Promise<C
   return res.json();
 }
 
+/**
+ * Re-derive the chat's title from its current contents and persist it. Slow by
+ * nature — it runs a model call server-side — so callers are expected to hold
+ * a lock while it is in flight rather than let it be fired twice.
+ */
+export async function regenerateChatTitle(id: string): Promise<{ title: string }> {
+  const res = await fetch(`${BASE}/chats/${id}/regenerate-title`, { method: "POST" });
+  await assertOk(res, "Failed to regenerate chat title");
+  return res.json();
+}
+
 export async function updateChatPermissions(id: string, permissions: DefaultPermissions): Promise<Chat> {
   const res = await fetch(`${BASE}/chats/${id}/permissions`, {
     method: "PATCH",

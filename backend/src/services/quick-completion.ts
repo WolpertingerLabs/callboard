@@ -296,6 +296,43 @@ export async function generateChatTitle(firstMessage: string): Promise<string | 
 }
 
 /**
+ * Generate a brief, descriptive title for a chat from the conversation as a
+ * whole, rather than from the message it opened with.
+ *
+ * Same contract as {@link generateChatTitle} in every respect that a caller can
+ * observe — haiku tier, low effort, trimmed, null on anything unusable — so the
+ * two are interchangeable at the call site and only the framing differs. This
+ * one is what the "Regenerate title" action runs; `generateChatTitle` stays the
+ * new-chat path, where the first message is all there is.
+ *
+ * The transcript arrives already condensed and capped (see `chats.ts`), and
+ * this function deliberately does not re-truncate it: *which* few thousand
+ * characters of a long chat carry its subject is a decision about the
+ * conversation, not about what the model will accept, and it belongs with the
+ * code that can see the message boundaries.
+ */
+export async function generateChatTitleFromTranscript(transcript: string): Promise<string | null> {
+  try {
+    const result = await quickCompletion({
+      prompt: transcript,
+      systemPrompt:
+        "Generate a brief title (3-8 words) for the conversation below, which may have been abridged in the middle. " +
+        "Title what the conversation is actually about by the end of it, not merely what it opened with — a long chat often moves on from its first request. " +
+        "Return ONLY the title text — no quotes, no punctuation at the end, no prefix like 'Title:'.",
+      model: "haiku",
+      effort: "low",
+    });
+
+    const title = result.text.trim();
+    if (!title || title.length > 100) return null;
+    return title;
+  } catch (err: any) {
+    log.warn(`generateChatTitleFromTranscript failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Generate a git-safe branch name from a natural language request.
  *
  * Output format: <type>/<kebab-case-description>

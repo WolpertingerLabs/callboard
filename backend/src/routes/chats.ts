@@ -16,6 +16,8 @@ import { sessionRegistry } from "../services/session-registry.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
+import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
+import type { ParsedMessage } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
@@ -1275,6 +1277,133 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
   } catch (err: any) {
     log.error(`Error toggling bookmark: ${err}`);
     res.status(500).json({ error: "Failed to toggle bookmark", details: err.message });
+  }
+});
+
+/**
+ * How much of a conversation the titler is shown.
+ *
+ * Generous for a 3-8 word title and nowhere near a working chat's real size,
+ * so the number is not really a budget question — it is the premise of
+ * {@link condenseTranscript}, which has to decide *which* few thousand
+ * characters those are.
+ */
+const TITLE_TRANSCRIPT_BUDGET = 6000;
+
+/** Stands in for the dropped middle, so the model can see that there was one. */
+const TRANSCRIPT_ELISION = "\n\n[... middle of the conversation omitted ...]\n\n";
+
+/**
+ * Flatten parsed messages into the plain text a title can be derived from.
+ *
+ * User and assistant TEXT blocks only. Thinking, tool_use and tool_result are
+ * dropped rather than summarised: on a working chat they are the overwhelming
+ * majority of the bytes and almost none of the subject, so keeping them would
+ * spend the budget above on file paths and diff hunks instead of on what was
+ * being discussed.
+ *
+ * Subagent messages (`teamName` set) go too, for the reason `flattenForHandoff`
+ * drops them in `agents/handoff.ts`: the session parsers splice nested detail
+ * into the timeline in timestamp order, so a brief to an agent is a plain
+ * `[user]` turn and its report a plain `[assistant]` one, indistinguishable
+ * from the conversation. Left in, they routinely dwarf the parent thread and
+ * both ends of {@link condenseTranscript}'s split land in agent chatter.
+ */
+function transcriptForTitle(messages: ParsedMessage[]): string {
+  return messages
+    .filter((m) => !m.teamName && m.type === "text" && (m.role === "user" || m.role === "assistant") && m.content?.trim())
+    .map((m) => `[${m.role}] ${m.content.trim()}`)
+    .join("\n\n")
+    .trim();
+}
+
+/**
+ * Cap the transcript by keeping BOTH ends of it.
+ *
+ * Cutting the tail off would reproduce the very title this action exists to
+ * replace: the opening of a chat is exactly what the new-chat auto-title was
+ * already derived from, so a head-only excerpt of a long chat would re-derive
+ * roughly the same words and the button would look broken. The end is where
+ * the work actually got to and the beginning is what it was asked for, so the
+ * budget is split evenly between them and the middle goes.
+ */
+function condenseTranscript(transcript: string): string {
+  if (transcript.length <= TITLE_TRANSCRIPT_BUDGET) return transcript;
+  const half = Math.floor(TITLE_TRANSCRIPT_BUDGET / 2);
+  return transcript.slice(0, half) + TRANSCRIPT_ELISION + transcript.slice(-half);
+}
+
+// Re-derive a chat's title from its current contents
+chatsRouter.post("/:id/regenerate-title", async (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Regenerate a chat title from its current contents'
+  // #swagger.description = 'Re-derives the title from the whole conversation (not just its first message, which is what the new-chat auto-title used), persists it to chat metadata, and notifies open clients. Creates a file storage record if the chat only exists on the filesystem.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.responses[200] = { description: "{ title }: the newly generated title" } */
+  /* #swagger.responses[400] = { description: "The chat ran on a removed harness and cannot be titled" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  /* #swagger.responses[422] = { description: "The chat has no readable conversation to title" } */
+  /* #swagger.responses[502] = { description: "The model produced no usable title" } */
+  const chat = findChat(req.params.id, false) as any;
+  if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+  try {
+    let meta: Record<string, any> = {};
+    try {
+      meta = JSON.parse(chat.metadata || "{}");
+    } catch {}
+
+    // Refused by name, exactly as the fork route above does it: the provider
+    // lookup below falls back to claude-code, which would go looking for these
+    // session ids under ~/.claude/projects, find nothing, and answer 422 "no
+    // readable conversation" — false of a chat that has a conversation no
+    // surviving provider can read.
+    if (isRetiredProvider(meta.provider)) {
+      return res.status(400).json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. Its title cannot be regenerated." });
+    }
+
+    // Same session set and provider resolution as GET /:id/messages: a chat's
+    // contents are every session it has ever resumed under, not only the
+    // current one.
+    const sessionIds: string[] = Array.isArray(meta.session_ids) ? [...meta.session_ids] : [];
+    if (chat.session_id && !sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
+
+    const providerKind = meta.provider || "claude-code";
+    const provider = getSessionProviders().find((p) => p.kind === providerKind) || getSessionProviders()[0];
+    const messages = sessionIds.length > 0 && provider ? provider.parseSessionMessages(sessionIds) : [];
+
+    const transcript = condenseTranscript(transcriptForTitle(messages));
+    if (!transcript) {
+      return res.status(422).json({ error: "This chat has no readable conversation to title" });
+    }
+
+    const title = await generateChatTitleFromTranscript(transcript);
+    if (!title) {
+      return res.status(502).json({ error: "Could not generate a title for this chat — try again" });
+    }
+
+    // Re-read the record rather than reusing the metadata parsed above: a
+    // model call sits between the two, and upsertChat replaces the metadata
+    // blob wholesale, so writing the pre-generation copy would silently drop
+    // any field (lastReadAt, cardId, chatStatus, ...) written while we waited.
+    const fresh = (findChat(req.params.id, false) as any) ?? chat;
+    let freshMeta: Record<string, any> = {};
+    try {
+      freshMeta = JSON.parse(fresh.metadata || "{}");
+    } catch {}
+
+    // Upsert rather than updateChatMetadata: the latter is a read-merge-write
+    // over an existing record and returns false for a chat that has only ever
+    // existed as a session log — the exact chats whose auto-title is most
+    // likely to be stale. Upsert creates the record so the title lands.
+    chatFileService.upsertChat(fresh.id, fresh.folder, fresh.session_id, { metadata: JSON.stringify({ ...freshMeta, title }) });
+
+    sessionRegistry.notifyMetadata(fresh.id, { title });
+    clearListCaches();
+    res.json({ title });
+  } catch (err: any) {
+    log.error(`Error regenerating chat title: ${err}`);
+    res.status(500).json({ error: "Failed to regenerate chat title", details: err.message });
   }
 });
 
