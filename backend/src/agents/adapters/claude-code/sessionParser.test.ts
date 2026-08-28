@@ -338,3 +338,79 @@ describe("parseMessages — background task ids", () => {
     expect(msg.backgroundTaskIds).toEqual(["budijlgzl"]);
   });
 });
+
+describe("parseMessages — slash-command envelopes", () => {
+  // Shaped as they appear on disk. Skills write message-first, harness
+  // built-ins write name-first with the tags indented; both are real.
+  const skill =
+    "<command-message>callboard:begin-development</command-message>\n" +
+    "<command-name>/callboard:begin-development</command-name>\n" +
+    "<command-args>Active-first is all that is needed.</command-args>";
+  const builtin = "<command-name>/login</command-name>\n            <command-message>login</command-message>\n            <command-args></command-args>";
+
+  it("projects a skill invocation back to the line the user typed", () => {
+    // This exact string is what the composer sent, and what the frontend's
+    // optimistic bubble is matched against — see inFlightMessages.ts.
+    const [msg] = parseMessages([userLine(skill)]);
+    expect(msg).toMatchObject({
+      role: "user",
+      type: "text",
+      content: "/callboard:begin-development Active-first is all that is needed.",
+      isBuiltInCommand: true,
+    });
+  });
+
+  it("drops the expanded body the CLI writes after the envelope", () => {
+    // The skill's prompt text arrives as a separate isMeta entry. Rendering
+    // both would show the command twice, once as prose nobody wrote.
+    const parsed = parseMessages([
+      userLine(skill),
+      userLine([{ type: "text", text: "Base directory for this skill: /home/u/.callboard/…\n\nGo ahead and…" }], { isMeta: true }),
+      assistantLine([{ type: "text", text: "On it." }]),
+    ]);
+    expect(parsed.map((m) => m.content)).toEqual(["/callboard:begin-development Active-first is all that is needed.", "On it."]);
+  });
+
+  it("omits the argument separator when the command took no arguments", () => {
+    expect(parseMessages([userLine(builtin)])[0].content).toBe("/login");
+  });
+
+  it("reads the envelope out of a text block, not just a bare string", () => {
+    expect(parseMessages([userLine([{ type: "text", text: skill }])])[0].content).toBe("/callboard:begin-development Active-first is all that is needed.");
+  });
+
+  it("supplies the leading slash when the envelope omits it", () => {
+    expect(parseMessages([userLine("<command-name>review</command-name>")])[0].content).toBe("/review");
+  });
+
+  it("leaves prose that merely mentions the tags alone", () => {
+    // Whole-content match only: a user asking about the markup is a real
+    // message and must render as written.
+    const prose = "why does <command-name>/foo</command-name> show up in my transcript?";
+    const [msg] = parseMessages([userLine(prose)]);
+    expect(msg.content).toBe(prose);
+    expect(msg.isBuiltInCommand).toBeUndefined();
+  });
+
+  it("leaves an envelope with no command name alone", () => {
+    const nameless = "<command-message>something</command-message>";
+    expect(parseMessages([userLine(nameless)])[0].content).toBe(nameless);
+  });
+
+  it("rejects a near-envelope in linear time rather than backtracking on it", () => {
+    // Many well-formed tag pairs followed by one character that cannot belong
+    // to an envelope is the shape that makes an anchored `(...)+` pattern
+    // explore every split. A user could type this; the parse runs on every
+    // transcript read, on the event loop.
+    const bomb = `${"<command-name>x</command-name>".repeat(400)}!`;
+    const started = performance.now();
+    const [msg] = parseMessages([userLine(bomb)]);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(msg.content).toBe(bomb);
+  });
+
+  it("does not project an assistant turn that echoes the envelope", () => {
+    const [msg] = parseMessages([assistantLine([{ type: "text", text: skill }])]);
+    expect(msg.content).toBe(skill);
+  });
+});

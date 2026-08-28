@@ -40,9 +40,28 @@ export function toInFlightList(value: unknown): InFlightMessage[] {
   return value.filter((v): v is string => typeof v === "string" && v.length > 0).map((text) => ({ key: nextInFlightKey(), text, imageUrls: [] }));
 }
 
-/** Trimmed text of every user message in `messages`, newest last. */
+/**
+ * Compare key for "has the transcript rendered this message yet".
+ *
+ * Trimmed *and* whitespace-collapsed, because what the composer sent and what
+ * the transcript reports are two spellings of one message rather than one
+ * string round-tripped. A slash command is the case that bites: the harness
+ * records it as name and arguments and the backend reassembles `/name args`
+ * with single spaces, so a prompt typed as `/skill   some stuff` comes back
+ * separated by one space. Matching that strictly leaves the optimistic bubble
+ * stranded below a transcript that already shows the message — the failure
+ * this whole module exists to prevent.
+ *
+ * The leniency only ever retires a bubble marginally early, and only when the
+ * transcript already displays something the user cannot tell apart from it.
+ */
+function compareKey(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+/** Compare key of every user message in `messages`, newest last. */
 function userTexts(messages: ParsedMessage[]): string[] {
-  return messages.filter((m) => m.role === "user" && m.type === "text").map((m) => (m.content ?? "").trim());
+  return messages.filter((m) => m.role === "user" && m.type === "text").map((m) => compareKey(m.content ?? ""));
 }
 
 /**
@@ -58,7 +77,7 @@ function userTexts(messages: ParsedMessage[]): string[] {
 export function visibleInFlight(pending: InFlightMessage[], messages: ParsedMessage[]): InFlightMessage[] {
   if (pending.length === 0) return pending;
   const tail = new Set(userTexts(messages).slice(-pending.length));
-  return pending.filter((m) => !tail.has(m.text.trim()));
+  return pending.filter((m) => !tail.has(compareKey(m.text)));
 }
 
 /**
@@ -74,7 +93,7 @@ export function settleInFlight(pending: InFlightMessage[], fetched: ParsedMessag
   if (pending.length === 0) return pending;
   const persisted = new Set(userTexts(fetched));
   if (persisted.size === 0) return pending;
-  const keep = pending.filter((m) => !persisted.has(m.text.trim()));
+  const keep = pending.filter((m) => !persisted.has(compareKey(m.text)));
   return keep.length === pending.length ? pending : keep;
 }
 

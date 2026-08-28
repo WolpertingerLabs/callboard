@@ -46,6 +46,13 @@ describe("visibleInFlight", () => {
     expect(visibleInFlight(pending("  hello  "), [user("hello")])).toEqual([]);
   });
 
+  it("hides a slash command the transcript reassembled with different spacing", () => {
+    // The harness records a command as name + arguments, so the transcript
+    // spells it with single spaces however the user typed it. Matching
+    // strictly stranded the bubble under a transcript already answering it.
+    expect(visibleInFlight(pending("/skill   some   stuff"), [user("/skill some stuff")])).toEqual([]);
+  });
+
   it("does not match against assistant or system text", () => {
     expect(visibleInFlight(pending("hello"), [assistant("hello"), system("hello")]).map((m) => m.text)).toEqual(["hello"]);
   });
@@ -72,6 +79,13 @@ describe("settleInFlight", () => {
   it("is a no-op on an empty pending list", () => {
     const list: InFlightMessage[] = [];
     expect(settleInFlight(list, [user("x")])).toBe(list);
+  });
+
+  it("retires a slash command the transcript reassembled with different spacing", () => {
+    // The new-chat path's only reconciliation point: `handleSend`'s cleanup is
+    // deliberately detached at `chat_created`, so a command that fails to
+    // settle here keeps its bubble for the life of the chat.
+    expect(settleInFlight(pending("/skill  some stuff"), [user("/skill some stuff")])).toEqual([]);
   });
 });
 

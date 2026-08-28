@@ -114,3 +114,25 @@ describe("getFirstUserMessage", () => {
     expect(getFirstUserMessage(path)).toBe("the answer");
   });
 });
+
+describe("getFirstUserMessage — slash-command envelopes", () => {
+  const skill =
+    "<command-message>callboard:begin-development</command-message>\n" +
+    "<command-name>/callboard:begin-development</command-name>\n" +
+    "<command-args>ship it</command-args>";
+
+  it("previews the command the user typed, not the envelope around it", () => {
+    // A chat opened with `/skill …` has the envelope as its first user turn,
+    // so every sidebar row for one of these was a line of raw XML.
+    expect(getFirstUserMessage(transcript([userLine(skill)]))).toBe("/callboard:begin-development ship it");
+  });
+
+  it("projects an envelope arriving as a text block too", () => {
+    expect(getFirstUserMessage(transcript([userLine([{ type: "text", text: skill }])]))).toBe("/callboard:begin-development ship it");
+  });
+
+  it("truncates the projected command like any other preview", () => {
+    const long = `<command-name>/skill</command-name><command-args>${"x".repeat(300)}</command-args>`;
+    expect(getFirstUserMessage(transcript([userLine(long)]), 20)).toBe("/skill xxxxxxxxxxxxx");
+  });
+});
