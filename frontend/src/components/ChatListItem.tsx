@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Globe,
   Monitor,
@@ -409,77 +410,87 @@ export default function ChatListItem({ chat, isActive, onClick, onDelete, onTogg
           >
             <EllipsisVertical size={14} />
           </button>
-          {menuOpen && (
-            <>
-              {/* Click-away overlay — also blocks the row's onClick. */}
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMenuPos(null);
-                }}
-                style={{ position: "fixed", inset: 0, zIndex: 50 }}
-              />
-              <div
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  position: "fixed",
-                  top: menuPos.top,
-                  bottom: menuPos.bottom,
-                  right: menuPos.right,
-                  minWidth: 180,
-                  zIndex: 51,
-                  padding: 6,
-                  borderRadius: 10,
-                  background: "var(--surface)",
-                  border: "1px solid var(--border)",
-                  boxShadow: "var(--shadow-md)",
-                }}
-              >
-                {onToggleBookmark && (
-                  <MenuRow
-                    icon={
-                      <Bookmark
-                        size={16}
-                        style={{ color: isBookmarked ? "var(--chatlist-bookmark-icon)" : undefined }}
-                        fill={isBookmarked ? "var(--chatlist-bookmark-icon)" : "none"}
-                      />
-                    }
-                    label={isBookmarked ? "Remove bookmark" : "Bookmark"}
-                    title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
-                    onClick={() => {
-                      setMenuPos(null);
-                      onToggleBookmark(!isBookmarked);
-                    }}
-                  />
-                )}
-                {cardMenu?.card && cardMenu.onToggleLifecycle && (
-                  <MenuRow
-                    icon={cardMenu.card.lifecycle === "open" ? <CircleCheck size={16} /> : <RotateCcw size={16} />}
-                    label={cardMenu.card.lifecycle === "open" ? "Close card" : "Reopen card"}
-                    title={
-                      cardMenu.card.lifecycle === "open"
-                        ? `Close "${cardMenu.card.title}" — it moves to the board's Closed strip`
-                        : `Reopen "${cardMenu.card.title}" — it returns to the board`
-                    }
-                    onClick={() => {
-                      setMenuPos(null);
-                      cardMenu.onToggleLifecycle!();
-                    }}
-                  />
-                )}
-                <MenuRow
-                  icon={<X size={16} />}
-                  label="Delete"
-                  title="Delete this chat"
-                  danger
-                  onClick={() => {
+          {/*
+           * Portaled to the body, not rendered in place. A dimmed row carries
+           * `opacity` (see `faded` above), which both fades every descendant —
+           * `position: fixed` does not opt a child out of its parent's alpha —
+           * and makes the row a stacking context the popup's z-index cannot
+           * escape. React events still bubble through the React tree, so the
+           * stopPropagation calls below keep blocking the row's onClick.
+           */}
+          {menuOpen &&
+            createPortal(
+              <>
+                {/* Click-away overlay — also blocks the row's onClick. */}
+                <div
+                  onClick={(e) => {
+                    e.stopPropagation();
                     setMenuPos(null);
-                    onDelete();
                   }}
+                  style={{ position: "fixed", inset: 0, zIndex: 50 }}
                 />
-              </div>
-            </>
-          )}
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    position: "fixed",
+                    top: menuPos.top,
+                    bottom: menuPos.bottom,
+                    right: menuPos.right,
+                    minWidth: 180,
+                    zIndex: 51,
+                    padding: 6,
+                    borderRadius: 10,
+                    background: "var(--surface)",
+                    border: "1px solid var(--border)",
+                    boxShadow: "var(--shadow-md)",
+                  }}
+                >
+                  {onToggleBookmark && (
+                    <MenuRow
+                      icon={
+                        <Bookmark
+                          size={16}
+                          style={{ color: isBookmarked ? "var(--chatlist-bookmark-icon)" : undefined }}
+                          fill={isBookmarked ? "var(--chatlist-bookmark-icon)" : "none"}
+                        />
+                      }
+                      label={isBookmarked ? "Remove bookmark" : "Bookmark"}
+                      title={isBookmarked ? "Remove bookmark" : "Bookmark this chat"}
+                      onClick={() => {
+                        setMenuPos(null);
+                        onToggleBookmark(!isBookmarked);
+                      }}
+                    />
+                  )}
+                  {cardMenu?.card && cardMenu.onToggleLifecycle && (
+                    <MenuRow
+                      icon={cardMenu.card.lifecycle === "open" ? <CircleCheck size={16} /> : <RotateCcw size={16} />}
+                      label={cardMenu.card.lifecycle === "open" ? "Close card" : "Reopen card"}
+                      title={
+                        cardMenu.card.lifecycle === "open"
+                          ? `Close "${cardMenu.card.title}" — it moves to the board's Closed strip`
+                          : `Reopen "${cardMenu.card.title}" — it returns to the board`
+                      }
+                      onClick={() => {
+                        setMenuPos(null);
+                        cardMenu.onToggleLifecycle!();
+                      }}
+                    />
+                  )}
+                  <MenuRow
+                    icon={<X size={16} />}
+                    label="Delete"
+                    title="Delete this chat"
+                    danger
+                    onClick={() => {
+                      setMenuPos(null);
+                      onDelete();
+                    }}
+                  />
+                </div>
+              </>,
+              document.body,
+            )}
         </div>
       )}
     </div>

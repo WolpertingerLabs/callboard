@@ -183,6 +183,19 @@ describe("ChatListItem dimming", () => {
     expect(row(parked).className).not.toContain(DIM_CLASS);
     expect(row(control).className).toContain(DIM_CLASS);
   });
+
+  it("opens the kebab menu outside the faded row", () => {
+    // `opacity` applies to every descendant and `position: fixed` does not opt
+    // out of it, so a menu rendered inside the row would inherit the fade and
+    // be see-through. Containment, not a style assertion: jsdom computes no
+    // inherited alpha, so only the DOM position can catch the regression.
+    const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} dimmed />);
+    openRowMenu(container);
+
+    const menuEntry = screen.getByText("Delete");
+    expect(row(container).className).toContain(DIM_CLASS);
+    expect(row(container).contains(menuEntry)).toBe(false);
+  });
 });
 
 /**
