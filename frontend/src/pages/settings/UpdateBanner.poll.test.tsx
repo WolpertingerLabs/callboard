@@ -36,7 +36,7 @@ vi.mock("../../api", () => ({
   probeDaemonVersion: mocks.probeDaemonVersion,
 }));
 
-const { useSelfUpdate, RESTART_POLL_INTERVAL_MS, RESTART_POLL_TIMEOUT_MS } = await import("./UpdateBanner");
+const { useSelfUpdate, RESTART_POLL_INTERVAL_MS, RESTART_POLL_TIMEOUT_MS, RUN_DEADLINE_MS } = await import("./UpdateBanner");
 
 const COMMAND = "npm install -g @wolpertingerlabs/callboard";
 
@@ -188,5 +188,160 @@ describe("the poll that replaces the stream", () => {
 
     expect(hook.result.current.run).toMatchObject({ phase: "done", verdict: { tone: "warn" } });
     expect(mocks.probeDaemonVersion).not.toHaveBeenCalled();
+  });
+});
+
+// ── Streams that end somewhere they should not ──────────────────────
+
+describe("a stream that ends before Callboard reported anything", () => {
+  /** npm started, and then the connection went — no exit, no verdict. */
+  const HALFWAY = [RESTART_SEQUENCE[0], { type: "update_output", stream: "stdout", line: "reify:lodash" } as SelfUpdateEvent];
+
+  it("says the connection ended, as a warning, when the read rejects mid-install", async () => {
+    // A Wi-Fi drop, a laptop waking up, a SIGKILLed daemon. This used to
+    // rethrow — the guard let anything but `restarting` through — and the
+    // outer catch rendered `err.message`, so the entire account of a global
+    // npm install running on the user's machine was "Failed to fetch".
+    mocks.readSelfUpdateStream.mockImplementation(streamThat(HALFWAY, "reject"));
+    const hook = render();
+    await startAndSettle(hook);
+
+    expect(hook.result.current.run?.phase).toBe("done");
+    expect(hook.result.current.run?.verdict?.tone).toBe("warn");
+    expect(hook.result.current.run?.verdict?.text).toContain("ended before Callboard reported a result");
+    expect(hook.result.current.run?.verdict?.text).not.toContain("network error");
+    expect(mocks.probeDaemonVersion).not.toHaveBeenCalled();
+  });
+
+  it("says the same thing when the read resolves cleanly at a non-terminal phase", async () => {
+    mocks.readSelfUpdateStream.mockImplementation(streamThat(HALFWAY));
+    const hook = render();
+    await startAndSettle(hook);
+    expect(hook.result.current.run).toMatchObject({ phase: "done", verdict: { tone: "warn" } });
+  });
+
+  it("does not overwrite a terminal verdict with a socket error that arrives after it", async () => {
+    // npm refused, the daemon said so, *then* the connection dropped. The
+    // accurate sentence is the one npm's exit carried, and the vaguer one
+    // must not replace it.
+    mocks.readSelfUpdateStream.mockImplementation(
+      streamThat(
+        [RESTART_SEQUENCE[0], { type: "update_exit", updateId: "u1", ok: false, code: 1, signal: null, durationMs: 10, refusal: "npm exited 1: EACCES on /usr/lib." }],
+        "reject",
+      ),
+    );
+    const hook = render();
+    await startAndSettle(hook);
+
+    expect(hook.result.current.run).toMatchObject({ phase: "done", verdict: { tone: "error" } });
+    expect(hook.result.current.run?.verdict?.text).toBe("npm exited 1: EACCES on /usr/lib.");
+  });
+});
+
+describe("a stream that never ends at all", () => {
+  it("gives up on its own deadline rather than sitting in `installing` forever", async () => {
+    // A reverse proxy that buffers, a half-open TCP connection, a lost FIN.
+    // Nothing rejects and nothing resolves, so without a bound the phase stays
+    // where it is with the button disabled and no way out but a reload — which
+    // discards the run.
+    mocks.readSelfUpdateStream.mockImplementation(
+      async (_id: string, onEvent: (e: SelfUpdateEvent) => void, signal?: AbortSignal) =>
+        new Promise<void>((_resolve, reject) => {
+          onEvent(RESTART_SEQUENCE[0]);
+          signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        }),
+    );
+    const hook = render();
+    await startAndSettle(hook);
+    expect(hook.result.current.run?.phase).toBe("installing");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RUN_DEADLINE_MS + 1_000);
+    });
+
+    expect(hook.result.current.run?.phase).toBe("done");
+    expect(hook.result.current.run?.verdict?.tone).toBe("warn");
+    expect(hook.result.current.run?.verdict?.text).toContain("stopped reporting");
+  });
+});
+
+// ── Re-entrancy, unmount, and picking a run back up ─────────────────
+
+describe("the hook's own guards", () => {
+  it("ignores a second `start()` while one is running, without touching the network", async () => {
+    // The view disables the button, which is tested next door — this is the
+    // guard underneath it, which is what stops a caller that has its own idea
+    // of when to press.
+    let release: (() => void) | undefined;
+    mocks.readSelfUpdateStream.mockImplementation(async () => new Promise<void>((resolve) => (release = resolve)));
+    const hook = render();
+    await startAndSettle(hook);
+    expect(mocks.startSelfUpdate).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      hook.result.current.start();
+      hook.result.current.start();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mocks.startSelfUpdate).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release?.();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  });
+
+  it("stops polling when the component goes away mid-restart", async () => {
+    const hook = render();
+    await startAndSettle(hook);
+    expect(hook.result.current.run?.phase).toBe("restarting");
+
+    hook.unmount();
+    const callsAtUnmount = mocks.probeDaemonVersion.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RESTART_POLL_INTERVAL_MS * 5);
+    });
+    expect(mocks.probeDaemonVersion.mock.calls.length).toBe(callsAtUnmount);
+  });
+});
+
+describe("attaching to an update this page did not start", () => {
+  it("picks up the run named by activeUpdateId on mount", async () => {
+    // `Settings.tsx` unmounts the About tab on a tab change, so a remount
+    // during a live update is one click away. Coming back to an idle banner
+    // with an enabled button meant a 409 on a page showing no update, and a
+    // daemon that might restart with nothing on screen.
+    mocks.getSelfUpdateStatus.mockResolvedValue({
+      capability: { oneClick: true },
+      version: "1.0.0",
+      package: "@wolpertingerlabs/callboard",
+      command: COMMAND,
+      activeUpdateId: "u1",
+    });
+    const hook = render();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(mocks.startSelfUpdate).not.toHaveBeenCalled();
+    expect(mocks.readSelfUpdateStream).toHaveBeenCalledWith("u1", expect.any(Function), expect.anything());
+    // The replayed transcript drives it the rest of the way, exactly as if
+    // this page had started it.
+    expect(hook.result.current.run?.phase).toBe("restarting");
+
+    mocks.probeDaemonVersion.mockResolvedValue("1.1.0");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RESTART_POLL_INTERVAL_MS * 2);
+    });
+    expect(hook.result.current.run?.verdict).toMatchObject({ tone: "ok" });
+  });
+
+  it("does nothing when there is no update in flight", async () => {
+    const hook = render();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(mocks.readSelfUpdateStream).not.toHaveBeenCalled();
+    expect(hook.result.current.run).toBeNull();
   });
 });

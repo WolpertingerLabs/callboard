@@ -25,13 +25,23 @@ import type { SelfUpdateEvent, SelfUpdateStatusResponse } from "../../api";
  * ## The success signal does not come from the stream
  *
  * The stream dies with the daemon. `update_restarting` is the last frame this
- * page can receive, so the phases run
+ * page can receive *when the restart works*, so the phases run
  * *installing → verifying → restarting → done*, and the transition into `done`
  * comes from **polling** a daemon that has come back on a new connection and
  * reports the version that was installed. A stream that simply ends after
  * `update_restarting` is therefore success in progress, not an error — and a
  * stream that ends *before* it is the failure case, which is why the two are
  * distinguished rather than both treated as "finished".
+ *
+ * One frame can still arrive after it, and only one: `update_restart_failed`.
+ * It exists precisely because the helper did *not* start, which means this
+ * daemon is still alive to say so — so the route keeps the response open past
+ * `update_restarting` rather than closing on it.
+ *
+ * What *how the read ended* never tells this page is whether anything went
+ * wrong. The read rejecting is the ordinary shape of success; the read
+ * resolving cleanly happens on a refusal. Every classification below is made
+ * from the phase.
  *
  * The page is never reloaded from here. `StaleBundleBanner` already watches the
  * daemon's build id and offers a reload the user chooses to take; reloading
@@ -73,6 +83,29 @@ export interface SelfUpdateRunState {
 
 /** Lines kept in the browser. The daemon caps its own buffer too; this is the render bound. */
 const MAX_CONSOLE_LINES = 500;
+
+/**
+ * The command, before the daemon has said which package it is.
+ *
+ * The same string in both places it is needed — the banner's copy block and a
+ * run that started before `GET /api/self-update` answered — so that a run in
+ * `starting` never renders an empty `<code>` beside "Update output".
+ */
+const FALLBACK_COMMAND = "npm install -g @wolpertingerlabs/callboard";
+
+/**
+ * The longest an update may sit in `installing`/`verifying` before this page
+ * stops believing in it.
+ *
+ * The daemon kills npm at ten minutes, so a stream that has said nothing
+ * conclusive past that is not waiting on npm any more — it is a socket that
+ * stopped delivering. Without a bound, a reverse proxy that buffers, a
+ * half-open TCP connection or a lost FIN leaves the phase where it is forever,
+ * with the button disabled and no way out but a reload that discards the run.
+ * The restart phase is not covered by this: it has its own, tighter
+ * {@link RESTART_POLL_TIMEOUT_MS}.
+ */
+export const RUN_DEADLINE_MS = 11 * 60_000;
 
 /** How long to wait for the restarted daemon before saying so. Generous: stop, start and a health check. */
 export const RESTART_POLL_TIMEOUT_MS = 90_000;
@@ -145,11 +178,23 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * computes with a cached `npm root -g`, not something to poll — and the run is
  * driven from the POST through the stream and on into the poll that follows it.
  *
- * Nothing here is persisted across a reload, deliberately, and it is the one
- * place this feature is *less* capable than the engine installer next door:
- * reattaching would mean holding an id whose daemon is expected to be replaced,
- * and the honest recovery for "I reloaded during an update" is the version
- * printed at the top of this very page.
+ * ## Reattaching, and the one case it does not cover
+ *
+ * `Settings.tsx` unmounts the About tab when the user switches tabs, so a
+ * component remount during a live update is not exotic — it is one click. The
+ * old behaviour was to come back to an idle banner with an enabled button, over
+ * a daemon that was still installing and might restart with nothing on screen;
+ * pressing that button 409'd with "already updating" on a page showing no
+ * update. So `GET /api/self-update` reports `activeUpdateId`, the stream route
+ * replays the whole transcript on connect, and mounting with one in hand
+ * attaches to it.
+ *
+ * That is *not* the page-reload case `plans/self-update.md` declines to
+ * support, and the distinction is which process is expected to survive. Here it
+ * is the same daemon and the same page, and the id is one the daemon just
+ * handed over. There it is a new bundle asking a daemon that has been replaced
+ * about a run its predecessor was serving, and the honest answer really is the
+ * version printed at the top of this page.
  */
 export function useSelfUpdate(currentVersion: string): {
   status: SelfUpdateStatusResponse | null;
@@ -177,7 +222,13 @@ export function useSelfUpdate(currentVersion: string): {
    */
   const apply = useCallback((next: SelfUpdateRunState | ((prev: SelfUpdateRunState) => SelfUpdateRunState)) => {
     const prev = stateRef.current;
-    const resolvedNext = typeof next === "function" ? (prev ? next(prev) : prev) : next;
+    // A functional update with nothing to update is dropped, not applied to
+    // `null` and written back — which is what this used to do, quietly turning
+    // a live run into no run at all. It should be unreachable (the functional
+    // form is only used once a run exists), and keeping the old state is the
+    // failure that loses nothing if it ever becomes reachable.
+    if (typeof next === "function" && !prev) return;
+    const resolvedNext = typeof next === "function" ? next(prev as SelfUpdateRunState) : next;
     stateRef.current = resolvedNext;
     setRun(resolvedNext);
   }, []);
@@ -200,6 +251,75 @@ export function useSelfUpdate(currentVersion: string): {
   // which is why this aborts the read rather than trying to cancel anything.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  /**
+   * Follow an update that is already running: its stream, then whatever the
+   * stream's ending turns out to have meant.
+   *
+   * Shared by the button and by the reattach below, because "watch this
+   * updateId" is the same job whether this page started it or found it.
+   */
+  const follow = useCallback(
+    async (updateId: string, controller: AbortController, fallbackPackage: string | undefined) => {
+      // See {@link RUN_DEADLINE_MS}. Aborting the read is the only way to get
+      // out of a socket that has stopped delivering without also stopping the
+      // update, which is server-side and carries on either way.
+      let expired = false;
+      const deadline = setTimeout(() => {
+        expired = true;
+        controller.abort();
+      }, RUN_DEADLINE_MS);
+
+      try {
+        await readSelfUpdateStream(updateId, (event) => apply((prev) => reduceSelfUpdateEvent(prev, event)), controller.signal);
+      } catch {
+        // Swallowed on purpose, and this is the correction that matters most in
+        // this file: *how the read ended* is not evidence of anything, because
+        // a successful update kills the connection without closing the
+        // response. The phase below is the evidence. Rethrowing here — which is
+        // what this did unless the phase was exactly `restarting` — put a raw
+        // "Failed to fetch" on screen as the entire account of a global npm
+        // install running on the user's machine, for every Wi-Fi drop, laptop
+        // sleep and SIGKILLed daemon.
+      } finally {
+        clearTimeout(deadline);
+      }
+
+      if (expired) {
+        apply((prev) => ({
+          ...prev,
+          phase: "done",
+          verdict: {
+            tone: "warn",
+            text: `Callboard stopped reporting on this update ${Math.round(RUN_DEADLINE_MS / 60_000)} minutes ago, so this page has given up following it. The install may still have finished — check the version at the top of this page, and \`callboard logs\` on the machine running Callboard.`,
+          },
+        }));
+        return;
+      }
+      if (controller.signal.aborted) return;
+
+      // The stream is over. Which of the ways it ended is the whole question:
+      // after `update_restarting` the daemon is *supposed* to have stopped
+      // answering, and anywhere else means the connection went first.
+      const state = stateRef.current;
+      if (state?.phase === "restarting") {
+        await waitForDaemon(state, apply, controller.signal, fallbackPackage);
+      } else if (state && state.phase !== "done") {
+        // Not `done`, deliberately. A socket error arriving after a terminal
+        // frame — an `update_exit` carrying npm's own refusal, say — must not
+        // overwrite that account with this vaguer one.
+        apply((prev) => ({
+          ...prev,
+          phase: "done",
+          verdict: {
+            tone: "warn",
+            text: "The connection to the update stream ended before Callboard reported a result. The install may still have finished — check the version at the top of this page.",
+          },
+        }));
+      }
+    },
+    [apply],
+  );
+
   const start = useCallback(() => {
     if (runningRef.current) return;
     runningRef.current = true;
@@ -207,56 +327,58 @@ export function useSelfUpdate(currentVersion: string): {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    apply({ phase: "starting", command: status?.command ?? "", fromVersion: currentVersion, lines: [], progress: "Asking the daemon to start it…" });
+    apply({ phase: "starting", command: status?.command ?? FALLBACK_COMMAND, fromVersion: currentVersion, lines: [], progress: "Asking the daemon to start it…" });
 
     void (async () => {
       try {
         const started = await startSelfUpdate();
+        if (controller.signal.aborted) return;
         apply((prev) => ({ ...prev, phase: "installing", command: started.command, fromVersion: started.fromVersion }));
-
-        try {
-          await readSelfUpdateStream(started.updateId, (event) => apply((prev) => reduceSelfUpdateEvent(prev, event)), controller.signal);
-        } catch (streamErr) {
-          if (controller.signal.aborted) return;
-          // A *successful* update kills this connection. The daemon is stopped
-          // by the helper without closing the response, so the read here can
-          // reject with a network error rather than resolving — which is why
-          // this catch checks the phase before believing it. Reporting it as a
-          // failure would put "the update could not be started" on screen at
-          // the exact moment the update was working.
-          if (stateRef.current?.phase !== "restarting") throw streamErr;
-        }
-
-        // The stream is over. Which of the two ways it ended is the whole
-        // question: after `update_restarting` the daemon is *supposed* to have
-        // stopped answering, and anywhere else means the connection went first.
-        const state = stateRef.current;
-        if (state?.phase === "restarting") {
-          await waitForDaemon(state, apply, controller.signal);
-        } else if (state && state.phase !== "done") {
-          apply((prev) => ({
-            ...prev,
-            phase: "done",
-            verdict: {
-              tone: "warn",
-              text: "The connection to the update stream ended before Callboard reported a result. The install may still have finished — check the version at the top of this page.",
-            },
-          }));
-        }
+        await follow(started.updateId, controller, started.package);
       } catch (err) {
         if (controller.signal.aborted) return;
+        // Reached only by the POST failing, now that the stream read is
+        // classified by phase rather than by exception. Here `err.message`
+        // really is the server's one-line refusal — `assertOk` puts the
+        // `error` field in it — which is why this one is rendered raw.
         apply((prev) => ({
           ...prev,
           phase: "done",
-          // The server puts its one-line refusal in `error`, which is what
-          // `assertOk` surfaces, so this is the sentence it wrote for the user.
           verdict: { tone: "error", text: err instanceof Error ? err.message : "The update could not be started." },
         }));
       } finally {
         runningRef.current = false;
       }
     })();
-  }, [apply, currentVersion, status?.command]);
+  }, [apply, currentVersion, follow, status?.command]);
+
+  // Attach to an update this page did not start. See the hook's header for why
+  // this is the tab-switch case and not the page-reload one.
+  const activeUpdateId = status?.activeUpdateId;
+  const statusCommand = status?.command;
+  const statusPackage = status?.package;
+  useEffect(() => {
+    if (!activeUpdateId || runningRef.current || stateRef.current) return;
+    runningRef.current = true;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // Seeded at `installing` rather than `starting`: there is nothing to ask
+    // for. The transcript the stream replays on connect immediately overwrites
+    // the command and the version with what the run actually holds.
+    apply({
+      phase: "installing",
+      command: statusCommand ?? FALLBACK_COMMAND,
+      fromVersion: currentVersion,
+      lines: [],
+      progress: "Attaching to an update that was already running…",
+    });
+
+    void follow(activeUpdateId, controller, statusPackage).finally(() => {
+      runningRef.current = false;
+    });
+  }, [activeUpdateId, apply, currentVersion, follow, statusCommand, statusPackage]);
 
   return { status, run, start };
 }
@@ -270,7 +392,13 @@ export function useSelfUpdate(currentVersion: string): {
  * probe proves nothing. When the daemon could not name the installed version,
  * "anything but the version we started from" is the weaker check that remains.
  */
-async function waitForDaemon(state: SelfUpdateRunState, apply: (fn: (prev: SelfUpdateRunState) => SelfUpdateRunState) => void, signal: AbortSignal): Promise<void> {
+async function waitForDaemon(
+  state: SelfUpdateRunState,
+  apply: (fn: (prev: SelfUpdateRunState) => SelfUpdateRunState) => void,
+  signal: AbortSignal,
+  /** The package the daemon named, for the one message that has to compose a rollback command itself. */
+  fallbackPackage: string | undefined,
+): Promise<void> {
   const deadline = Date.now() + RESTART_POLL_TIMEOUT_MS;
   while (Date.now() < deadline && !signal.aborted) {
     await sleep(RESTART_POLL_INTERVAL_MS);
@@ -294,7 +422,11 @@ async function waitForDaemon(state: SelfUpdateRunState, apply: (fn: (prev: SelfU
       tone: "error",
       // The one place a user genuinely needs the way back, so it is spelled out
       // rather than linked: whatever is happening, this daemon is not answering.
-      text: `Callboard did not come back within ${Math.round(RESTART_POLL_TIMEOUT_MS / 1000)} seconds. It may still be starting — check \`callboard status\` and \`callboard logs\`. To return to the version you were running: \`${prev.rollbackCommand ?? `npm install -g @wolpertingerlabs/callboard@${prev.fromVersion}`}\`.`,
+      //
+      // The package name in the fallback comes from the daemon's own manifest
+      // via `GET /api/self-update`, not from a literal here — a fork or a
+      // rename would otherwise be told to reinstall the upstream package.
+      text: `Callboard did not come back within ${Math.round(RESTART_POLL_TIMEOUT_MS / 1000)} seconds. It may still be starting — check \`callboard status\` and \`callboard logs\`. To return to the version you were running: \`${prev.rollbackCommand ?? `npm install -g ${fallbackPackage ?? "@wolpertingerlabs/callboard"}@${prev.fromVersion}`}\`.`,
     },
   }));
 }
@@ -398,7 +530,9 @@ export function UpdateBannerView({
         <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>Update output</span>
-            <code style={{ ...inlineCodeStyle, color: "var(--text-muted)" }}>{run.command}</code>
+            {/* Conditional only for the tick before the POST answers: an empty
+                `<code>` is a stray grey box beside the heading. */}
+            {run.command && <code style={{ ...inlineCodeStyle, color: "var(--text-muted)" }}>{run.command}</code>}
             {run.lines.length > 0 && (
               <button type="button" onClick={() => setShowOutput((v) => !v)} style={toggleStyle}>
                 {showOutput ? "Hide" : `Show (${run.lines.length} lines)`}
@@ -520,7 +654,7 @@ export default function UpdateBanner({ currentVersion, latestVersion }: { curren
       latestVersion={latestVersion}
       // Until the capability call answers, the command is still known: it is the
       // same one this banner has printed since long before there was a button.
-      command={status?.command ?? "npm install -g @wolpertingerlabs/callboard"}
+      command={status?.command ?? FALLBACK_COMMAND}
       capability={status?.capability}
       run={run}
       onUpdate={start}
