@@ -117,6 +117,41 @@ describe("ChatListItem card menu", () => {
     expect(screen.queryByText("Reopen card")).toBeNull();
     expect(screen.getByText("Delete")).toBeTruthy();
   });
+
+  /**
+   * The menu is portaled to the body, so its two stopPropagation calls look
+   * vestigial — the popup is visibly outside the row. They are not: React
+   * bubbles synthetic events through the fiber tree, which the portal leaves
+   * intact, so without them every menu click would also open the chat. These
+   * two cases are what makes deleting either guard fail.
+   */
+  it("does not open the chat when a menu entry is clicked", () => {
+    const onClick = vi.fn();
+    const { container } = render(
+      <ChatListItem chat={makeChat()} onClick={onClick} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open" } }} />,
+    );
+    openRowMenu(container);
+
+    fireEvent.click(screen.getByText("Close card"));
+
+    expect(CARD_MENU.onToggleLifecycle).toHaveBeenCalledTimes(1);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("closes on a click-away without opening the chat", () => {
+    const onClick = vi.fn();
+    const { container } = render(<ChatListItem chat={makeChat()} onClick={onClick} onDelete={() => {}} />);
+    openRowMenu(container);
+
+    // The click-away overlay covers the viewport and carries no text; z-index
+    // 50 is what distinguishes it from the menu shell above it at 51.
+    const overlay = Array.from(document.body.querySelectorAll("div")).find((d) => d.style.zIndex === "50");
+    expect(overlay).toBeTruthy();
+    fireEvent.click(overlay!);
+
+    expect(screen.queryByText("Delete")).toBeNull();
+    expect(onClick).not.toHaveBeenCalled();
+  });
 });
 
 /**
@@ -183,6 +218,22 @@ describe("ChatListItem dimming", () => {
     expect(row(parked).className).not.toContain(DIM_CLASS);
     expect(row(control).className).toContain(DIM_CLASS);
   });
+
+  it("opens the kebab menu outside the faded row", () => {
+    // `opacity` applies to every descendant and `position: fixed` does not opt
+    // out of it, so a menu rendered inside the row would inherit the fade and
+    // be see-through. Containment, not a style assertion: jsdom computes no
+    // inherited alpha, so only the DOM position can catch the regression.
+    const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} dimmed />);
+    openRowMenu(container);
+
+    expect(row(container).className).toContain(DIM_CLASS);
+    // The title is this case's control: it proves row() still resolves to the
+    // node carrying the fade, so the menu's absence below means "portaled out"
+    // rather than "asserted against the wrong element".
+    expect(row(container).contains(screen.getByText("My Chat"))).toBe(true);
+    expect(row(container).contains(screen.getByText("Delete"))).toBe(false);
+  });
 });
 
 /**
@@ -238,5 +289,35 @@ describe("ChatListItem folder pill", () => {
     expect(screen.getByText(FULL_PATH)).toBeTruthy();
     // ...and the parent card's onClick was NOT called.
     expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("opens the path bubble outside a faded row", () => {
+    // Same trap as the kebab menu: the bubble is `fixed`, but a dimmed row's
+    // `opacity` fades every descendant regardless of positioning, so a bubble
+    // left inside the row renders see-through.
+    const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} dimmed />);
+    const rowEl = container.firstElementChild!;
+
+    fireEvent.click(screen.getByText("my-cool-repo"));
+
+    expect(rowEl.className).toContain("chatlist-item-dimmed");
+    // Control: the pill itself stays in the faded row, so the bubble's absence
+    // is the portal and not a mis-targeted assertion.
+    expect(rowEl.contains(screen.getByText("my-cool-repo"))).toBe(true);
+    expect(rowEl.contains(screen.getByText(FULL_PATH))).toBe(false);
+  });
+
+  it("keeps the bubble open when the path itself is clicked", () => {
+    // The click-away listener is native, so it tests real DOM containment —
+    // which the portal breaks. Selecting the path must not dismiss it.
+    render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
+    fireEvent.click(screen.getByText("my-cool-repo"));
+
+    fireEvent.click(screen.getByText(FULL_PATH));
+    expect(screen.queryByText(FULL_PATH)).toBeTruthy();
+
+    // Control: a click genuinely outside still closes it.
+    fireEvent.click(document.body);
+    expect(screen.queryByText(FULL_PATH)).toBeNull();
   });
 });
