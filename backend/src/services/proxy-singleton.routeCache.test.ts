@@ -130,6 +130,26 @@ describe("fetchProxyRoutes", () => {
     expect(callTool).toHaveBeenCalledTimes(2);
   });
 
+  it("does not spend the cooldown on a forced fetch that piggybacked on one in flight", async () => {
+    // The piggybacked result comes from the client the force just replaced, so
+    // charging it would make the user wait out the cooldown before the
+    // re-check they asked for could happen at all.
+    let release: (v: unknown[]) => void = () => {};
+    callTool.mockReturnValueOnce(new Promise((r) => (release = r)));
+
+    const first = fetchProxyRoutes("a"); // ordinary fetch, now in flight
+    const forced = fetchProxyRoutes("a", { force: true }); // joins it
+    release([{ alias: "github" }]);
+    await Promise.all([first, forced]);
+    expect(callTool).toHaveBeenCalledTimes(1);
+
+    // Immediately retrying must still reach the daemon.
+    callTool.mockResolvedValueOnce([{ alias: "github" }, { alias: "telegram" }]);
+    const retry = await fetchProxyRoutes("a", { force: true });
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(retry.routes).toHaveLength(2);
+  });
+
   it("keeps the cached listing as a fallback when a forced fetch fails", async () => {
     // The listing is shared with the agent system prompt. Evicting it before a
     // fetch that then 429s would replace a good answer with none, degrading

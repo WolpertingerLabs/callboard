@@ -78,6 +78,16 @@ describe("contactFieldState", () => {
     expect(s.missingConnection).toBeUndefined();
   });
 
+  it("does not lock a channel when a credential couldn't be checked", () => {
+    // Partial failure: one credential answered, another 429'd. A channel
+    // missing from the listings we DID get might live on the one we didn't —
+    // locking it asserts something this answer cannot support.
+    const s = contactFieldState(field("telegram"), availability({ error: "429 rate limited" }));
+    expect(s).toMatchObject({ editable: true, canEnable: true });
+    expect(s.missingConnection).toBeUndefined();
+    expect(s.note).toMatch(/couldn't be checked just now/);
+  });
+
   it("fails open when the check itself failed", () => {
     const s = contactFieldState(field("discord"), availability({ channelsKnown: false, error: "daemon unreachable" }));
     expect(s).toMatchObject({ editable: true, canEnable: true, warn: false });

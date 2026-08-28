@@ -892,7 +892,7 @@ export function listEnrolledCallers(overrideMode?: "local" | "remote"): Enrolled
   return aliases.map(({ alias }) => {
     const boundAgents = agents
       .filter((a) => resolveAgentKeyAliasForMode(a, mode) === alias)
-      .map((a) => ({ alias: a.alias, name: a.name, ...(a.emoji ? { emoji: a.emoji } : {}) }));
+      .map((a) => ({ alias: a.alias, name: a.name, ...(a.emoji ? { emoji: a.emoji } : {}), enabled: a.enabled !== false }));
     return {
       alias,
       mode,

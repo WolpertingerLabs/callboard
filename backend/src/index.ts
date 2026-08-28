@@ -317,7 +317,7 @@ app.get("/api/user-contact", (_req, res) => {
 
 app.get("/api/user-contact/availability", async (req, res) => {
   // #swagger.tags = ['Settings']
-  // #swagger.summary = 'Which contact channels the default drawlatch caller can deliver on'
+  // #swagger.summary = "Which contact channels this instance's drawlatch credentials can deliver on"
   // #swagger.description = 'Reports, per notifiable channel (Discord, Telegram, email), whether the connection notify_user needs is present on a usable drawlatch caller — the default caller or any agent-bound one. `configured: false` means no usable caller exists; `channelsKnown: false` means the check itself failed and availability is unknown (fail open). Pass `refresh=1` to bypass the cached route listing — a throttled live daemon call, so reserve it for an explicit user gesture.'
   const refresh = req.query.refresh === "1" || req.query.refresh === "true";
   try {

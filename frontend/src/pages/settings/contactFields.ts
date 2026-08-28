@@ -30,14 +30,14 @@ export const CONTACT_FIELDS: ContactField[] = [
     key: "discord",
     label: "Discord username",
     placeholder: "username",
-    help: "Delivered through a Discord connection on your drawlatch credential.",
+    help: "Needs a Discord connection on your drawlatch credential.",
     channel: "discord",
   },
   {
     key: "telegram",
     label: "Telegram account",
     placeholder: "@handle",
-    help: "Delivered through a Telegram connection on your drawlatch credential.",
+    help: "Needs a Telegram connection on your drawlatch credential.",
     channel: "telegram",
   },
   { key: "phone", label: "Phone number", placeholder: "+1 555 123 4567", help: "Coming soon.", comingSoon: true },
@@ -45,7 +45,7 @@ export const CONTACT_FIELDS: ContactField[] = [
     key: "email",
     label: "Email address",
     placeholder: "you@example.com",
-    help: "Delivered through the AgentMail connection on your drawlatch credential.",
+    help: "Needs the AgentMail connection on your drawlatch credential.",
     channel: "email",
   },
 ];
@@ -115,6 +115,18 @@ export function contactFieldState(field: ContactField, availability: UserContact
 
   const entry = availability.channels[field.channel];
   if (!entry?.available) {
+    // Rule 1 again, at per-credential granularity: when some credential
+    // couldn't be reached, "not in the listing" might only mean "not in the
+    // listing we got". A determinate lock needs a complete answer, or one
+    // flaky credential among several locks every channel only it provides.
+    if (availability.error) {
+      return {
+        editable: true,
+        canEnable: true,
+        note: `Needs the "${entry?.connection ?? field.channel}" connection. One of your credentials couldn't be checked just now, so this isn't certain.`,
+        warn: false,
+      };
+    }
     return {
       editable: false,
       canEnable: false,

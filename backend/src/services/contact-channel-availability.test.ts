@@ -69,6 +69,33 @@ describe("getUserContactAvailability", () => {
     expect(fetchProxyRoutes).not.toHaveBeenCalledWith("unused", expect.anything());
   });
 
+  it("ignores a caller reachable only through a disabled agent", async () => {
+    // A disabled agent runs no sessions, so its credential reaches nothing —
+    // offering its channels would promise delivery nothing can perform.
+    resolveDefaultCaller.mockReturnValue("default");
+    listEnrolledCallers.mockReturnValue([
+      { alias: "dormant", agents: [{ alias: "retired", enabled: false }] },
+      { alias: "notifier", agents: [{ alias: "off", enabled: false }, { alias: "scout", enabled: true }] },
+    ]);
+    fetchProxyRoutes.mockImplementation(async (alias: string) => listing(alias === "notifier" ? "telegram" : "discord-bot"));
+
+    const result = await getUserContactAvailability();
+
+    expect(fetchProxyRoutes).not.toHaveBeenCalledWith("dormant", expect.anything());
+    // A caller with at least one enabled agent still counts.
+    expect(result.channels.telegram.providedBy).toEqual(["notifier"]);
+  });
+
+  it("treats an agent with no explicit enabled flag as enabled", async () => {
+    resolveDefaultCaller.mockReturnValue(undefined);
+    listEnrolledCallers.mockReturnValue([{ alias: "notifier", agents: [{ alias: "scout" }] }]);
+    fetchProxyRoutes.mockResolvedValue(listing("telegram"));
+
+    const result = await getUserContactAvailability();
+
+    expect(result.channels.telegram.available).toBe(true);
+  });
+
   it("still answers from agent-bound callers when no default is configured", async () => {
     // `defaultCallerLocal: ""` is a supported install, not a broken one.
     resolveDefaultCaller.mockReturnValue(undefined);

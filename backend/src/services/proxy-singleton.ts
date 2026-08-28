@@ -234,7 +234,6 @@ export async function fetchProxyRoutes(alias: string, opts?: { force?: boolean }
   }
 
   if (force) {
-    lastForcedFetchAt.set(alias, Date.now());
     // A client that threw once is memoized in failedAliases for the process
     // lifetime; without this a re-check can never recover from it, which is
     // precisely the state a user reaches for the refresh button in. Note this
@@ -259,6 +258,12 @@ export async function fetchProxyRoutes(alias: string, opts?: { force?: boolean }
       }
     })();
     routeFetches.set(alias, inflight);
+    // Spend the cooldown only on a call this one actually issued. A force that
+    // piggybacks on an in-flight fetch gets that call's result — from the
+    // client it was created with, not the fresh one above — so charging it
+    // would make the user wait out 10s before the re-check they asked for can
+    // happen at all.
+    if (force) lastForcedFetchAt.set(alias, Date.now());
   }
 
   try {
@@ -276,11 +281,12 @@ export async function fetchProxyRoutes(alias: string, opts?: { force?: boolean }
   }
 }
 
-/** Drop cached route listings (all aliases, or just one). */
-export function invalidateRouteCache(alias?: string): void {
-  if (alias) routeCache.delete(alias);
-  else routeCache.clear();
-}
+// `invalidateRouteCache` used to live here and had no production caller. It is
+// deliberately gone rather than left for convenience: dropping this cache
+// before a fetch is a trap — the listing backs the agent system prompt, so an
+// eviction followed by a 429 replaces a good answer with none. Callers that
+// want a live read pass `{ force: true }` above, which keeps the fallback.
+// `resetClient`/`resetAllClients` still clear it when the client itself changes.
 
 /**
  * Handle proxy mode switching at runtime.

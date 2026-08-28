@@ -91,7 +91,10 @@ export default function GeneralSettings() {
       .catch(() => {});
     fetchUserContactAvailability()
       .then(setContactAvailability)
-      .catch(() => setContactAvailability(null));
+      // A failed check leaves every field usable, which is the right default —
+      // but it must not be silent, or the page looks like it verified the
+      // channels and found them fine.
+      .catch((err) => setAvailabilityError(err.message || "Couldn't check which connections your credentials have"));
     // Connections themselves are managed in drawlatch's own dashboard, so the
     // only actionable pointer this page can give is a link to it.
     getDaemonStatus()
@@ -448,11 +451,11 @@ export default function GeneralSettings() {
             }}
           >
             No drawlatch credential is available, so no contact channel can be delivered. Mark one as the default under{" "}
-            <Link to="/settings/proxy" style={{ color: "var(--warning)", fontWeight: 600 }}>
+            <Link to="/settings/proxy" style={{ color: "var(--warning)", fontWeight: 600, textDecoration: "underline" }}>
               Settings → Proxy
             </Link>{" "}
             (Enrolled callers → Set default), or bind one to an agent under{" "}
-            <Link to="/agents" style={{ color: "var(--warning)", fontWeight: 600 }}>
+            <Link to="/agents" style={{ color: "var(--warning)", fontWeight: 600, textDecoration: "underline" }}>
               Agents
             </Link>{" "}
             → your agent → Overview.
@@ -464,12 +467,17 @@ export default function GeneralSettings() {
         {(availabilityError || contactAvailability?.error || contactAvailability?.stale) && (
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
             {availabilityError
-              ? `${availabilityError} — showing the last answer.`
+              ? contactAvailability
+                ? `${availabilityError} — showing the last answer.`
+                : `${availabilityError} — channels aren't being verified right now.`
               : contactAvailability?.error && !contactAvailability.channelsKnown
                 ? `Couldn't check your connections (${contactAvailability.error}) — channels aren't being verified right now.`
-                : contactAvailability?.stale
-                  ? "Showing a cached connection listing — the last live check didn't get through."
-                  : `Some credentials couldn't be checked (${contactAvailability?.error}), so this list may be incomplete.`}
+                : // Partial failure outranks staleness: "we couldn't ask one of
+                  // your credentials" is the fact that makes this list wrong,
+                  // and it was being swallowed whenever both were set.
+                  contactAvailability?.error
+                  ? `A credential couldn't be checked (${contactAvailability.error}), so this list may be incomplete.`
+                  : "Showing a cached connection listing — the last live check didn't get through."}
           </div>
         )}
 
@@ -482,13 +490,19 @@ export default function GeneralSettings() {
             // notify_user will still dispatch on it — so switching OFF stays
             // available even when switching on doesn't.
             const enabledButUndeliverable = !canEnable && !field.comingSoon && channel.enabled;
-            const toggleLocked = field.comingSoon || (!canEnable && !channel.enabled);
+            // Never gate switching OFF — including the coming-soon row, which
+            // can hold an enabled value from an older build or a hand-edited
+            // user-contact.json.
+            const toggleLocked = (field.comingSoon || !canEnable) && !channel.enabled;
             return (
               <div key={key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {/* The fade is applied per-control, not to the row: it must not
-                    composite onto the note, whose whole job is to explain the
-                    lockout and which drops below AA contrast if it does. */}
-                <div style={{ display: "flex", alignItems: "center", gap: 10, opacity: editable ? 1 : 0.55 }}>
+                {/* No opacity fade anywhere in this row. A blanket fade drags
+                    every layer under it below AA (the label and the user's own
+                    stored handle measured 3.51:1 and 3.42:1 in light mode), and
+                    it greys out the one toggle an undeliverable-but-enabled
+                    channel needs the user to click. Unavailability is carried
+                    by the recessed input, the cursor, and the note instead. */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <label htmlFor={`contact-${key}`} style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", width: 130, flexShrink: 0 }}>
                     {label}
                     {field.comingSoon && <span style={{ fontWeight: 400, color: "var(--text-muted)", fontSize: 11 }}> (soon)</span>}
@@ -506,8 +520,10 @@ export default function GeneralSettings() {
                       padding: "9px 12px",
                       borderRadius: 8,
                       border: "1px solid var(--border)",
-                      background: "var(--surface)",
-                      color: "var(--text)",
+                      // Recessed rather than faded: --text-muted on --bg clears
+                      // AA in both themes, where --text at 0.55 does not.
+                      background: editable ? "var(--surface)" : "var(--bg)",
+                      color: editable ? "var(--text)" : "var(--text-muted)",
                       fontSize: 14,
                       boxSizing: "border-box",
                       cursor: editable ? "text" : "not-allowed",
@@ -557,7 +573,7 @@ export default function GeneralSettings() {
                     (drawlatchDashboardUrl ? (
                       <>
                         {" "}
-                        <a href={drawlatchDashboardUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--warning)", fontWeight: 600 }}>
+                        <a href={drawlatchDashboardUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--warning)", fontWeight: 600, textDecoration: "underline" }}>
                           Add it in the drawlatch dashboard
                         </a>
                         .
@@ -566,7 +582,7 @@ export default function GeneralSettings() {
                       <>
                         {" "}
                         Add it in the drawlatch dashboard, which you can open from{" "}
-                        <Link to="/settings/proxy" style={{ color: "var(--warning)", fontWeight: 600 }}>
+                        <Link to="/settings/proxy" style={{ color: "var(--warning)", fontWeight: 600, textDecoration: "underline" }}>
                           Settings → Proxy
                         </Link>
                         .

@@ -27,8 +27,9 @@ export type NotifiableChannel = "discord" | "telegram" | "email";
  *
  * Single-sourced because two places have to agree: `notify_user` tells the
  * agent which connection to reach for, and Settings → General offers the
- * channel only when that same connection exists on the default caller. If they
- * drift, the settings page offers a channel the tool then cannot deliver on.
+ * channel only when that same connection exists on a credential some session
+ * can use. If they drift, the settings page offers a channel the tool then
+ * cannot deliver on.
  */
 export const CONTACT_CHANNEL_CONNECTIONS: Record<NotifiableChannel, string> = {
   discord: "discord-bot",

@@ -76,9 +76,12 @@ function candidateCallers(): { alias: string; isDefault: boolean }[] {
 
   try {
     // Agent sessions use only their own caller, so a caller with an agent bound
-    // to it is reachable even when it is not the default.
+    // to it is reachable even when it is not the default — but only if that
+    // agent can run. A disabled agent suppresses all its sessions, so its
+    // credential reaches nothing and must not make a channel look deliverable.
     for (const caller of listEnrolledCallers()) {
-      if (caller.alias === defaultAlias || caller.agents.length === 0) continue;
+      if (caller.alias === defaultAlias) continue;
+      if (!caller.agents.some((a) => a.enabled !== false)) continue;
       callers.push({ alias: caller.alias, isDefault: false });
     }
   } catch (err: unknown) {
