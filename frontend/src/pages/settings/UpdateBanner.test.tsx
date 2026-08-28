@@ -83,6 +83,56 @@ describe("the refused banner", () => {
   });
 });
 
+describe("a daemon that can install but cannot restart itself", () => {
+  // systemd, pm2, Docker, `callboard start --foreground`: no PID file names this
+  // process, so `callboard restart` would find nothing to stop. This used to be
+  // a flat refusal whose own sentence began "It can install the new version,
+  // but" — withholding a capability in the same breath as claiming it.
+  const capability = {
+    oneClick: true as const,
+    restart: "unavailable" as const,
+    note: "Callboard has no PID file naming this process (`/home/u/.callboard/callboard.pid`), so it was not started by `callboard start`.",
+  };
+
+  it("offers the button, and does not promise a restart in its label", () => {
+    renderBanner({ capability });
+    expect(screen.getByRole("button", { name: /^Download latest$/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Download latest & restart/ })).toBeNull();
+  });
+
+  it("says up front whose job the restart is", () => {
+    renderBanner({ capability });
+    expect(screen.getByText(/Restarting Callboard is yours to do/)).toBeTruthy();
+    expect(screen.getByText(/no PID file naming this process/)).toBeTruthy();
+  });
+});
+
+describe("new code on disk that this daemon is not running", () => {
+  it("leads with the restart rather than with a release the user already has", () => {
+    renderBanner({ currentVersion: "1.0.0", latestVersion: "1.1.0", installedVersion: "1.1.0", restartPending: true });
+    expect(screen.getByText("Restart pending")).toBeTruthy();
+    expect(screen.getByText(/Running v1\.0\.0, but v1\.1\.0 is installed on disk/)).toBeTruthy();
+    // And the button is still there — pressing it is the retry that restarts.
+    expect(screen.getByRole("button", { name: /Download latest & restart/ })).toBeTruthy();
+  });
+
+  it("renders at all with no newer release to point at", () => {
+    // The second-daemon case in full: one global install, two data directories.
+    // Its sibling updated to npm's `latest`, so there is nothing newer to offer
+    // and `hasUpdate` is false — this banner is the entire UI for the state.
+    renderBanner({ currentVersion: "1.0.0", latestVersion: undefined, installedVersion: "1.1.0", restartPending: true });
+    expect(screen.getByText("Restart pending")).toBeTruthy();
+    expect(screen.getByText(/second Callboard sharing this same global install/)).toBeTruthy();
+    expect(screen.getByText(COMMAND)).toBeTruthy();
+  });
+
+  it("hands the headline back to the run once one is on screen", () => {
+    renderBanner({ restartPending: true, installedVersion: "1.1.0", run: { ...idle, phase: "installing" } });
+    expect(screen.queryByText("Restart pending")).toBeNull();
+    expect(screen.getByText("Update available")).toBeTruthy();
+  });
+});
+
 describe("the state machine", () => {
   const apply = (state: SelfUpdateRunState, ...events: SelfUpdateEvent[]) => events.reduce(reduceSelfUpdateEvent, state);
 

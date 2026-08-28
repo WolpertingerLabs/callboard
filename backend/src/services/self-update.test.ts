@@ -26,6 +26,28 @@
  * so that a regression cannot install a package onto the machine running the
  * suite. The restart helper is the same stub, which is what lets the "did it
  * spawn a detached helper, from the *new* path" assertion exist at all.
+ *
+ * ## What this harness gets wrong if it is not careful
+ *
+ * `npm install -g` rewrites the package directory **this daemon is running out
+ * of**, in place. Production therefore cannot hold two independent versions:
+ * before an install, "what this process is running" and "what is in the package
+ * directory" are one file with one value, and after it they diverge in exactly
+ * one way — disk moves, the process does not.
+ *
+ * The first version of this suite modelled neither. It passed `fromVersion:
+ * SELF_VERSION` into `startSelfUpdate` while the global manifest said `9.9.9`
+ * from the very first line, so the two were decoupled by construction and
+ * *always* unequal. Every assertion about `changed` therefore passed for the
+ * wrong reason, and the bug that lived in that decoupling — a second press
+ * reading the same overwritten file on both sides and reporting "nothing to
+ * restart into" — was structurally unreachable from here.
+ *
+ * Two things fix it, and the first is not in this file: `startSelfUpdate` has no
+ * `fromVersion` parameter any more, so no test can supply one. The second is
+ * {@link seedInstalled} — the global manifest starts at the version this process
+ * is running, and only {@link npmInstalls} moves it, which is the one event that
+ * moves it in production.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
@@ -83,6 +105,7 @@ vi.mock("./job-store.js", () => ({ listRuns: mocks.listRuns }));
 const {
   activeSelfUpdateId,
   assertSelfUpdateArgv,
+  describeRestartPending,
   describeWorkInFlight,
   getSelfUpdateCapability,
   getSelfUpdateRun,
@@ -130,6 +153,33 @@ function writeGlobalPackage(version: string, extra: Record<string, unknown> = {}
 }
 
 /**
+ * The state every daemon starts in: the package directory holds the version the
+ * process is running out of it.
+ *
+ * Not a detail. This is a *constraint* production cannot violate — it is one
+ * file — and a suite that seeds a different version there has quietly arranged
+ * a state no daemon can boot into, and is asserting against it.
+ */
+function seedInstalled(): void {
+  writeGlobalPackage(SELF_VERSION);
+}
+
+/**
+ * npm exits 0, having written `version` into the global package directory.
+ *
+ * The only thing in this suite that may move that version, because it is the
+ * only thing in production that moves it. `extra` is for the manifest-shape
+ * cases (a `bin` that points outside the package, and so on).
+ */
+async function npmInstalls(version: string, extra: Record<string, unknown> = {}): Promise<void> {
+  writeGlobalPackage(version, extra);
+  await exitNpm(0);
+}
+
+/** A plausible next release. Newer than anything this repo has been tagged. */
+const NEXT_VERSION = "9.9.9";
+
+/**
  * Make the global package directory resolve to this checkout — i.e. "Callboard
  * *is* the global install".
  *
@@ -142,7 +192,7 @@ function pretendGloballyInstalled(yes: boolean): void {
 }
 
 beforeAll(() => {
-  writeGlobalPackage("9.9.9");
+  seedInstalled();
 });
 
 afterAll(() => {
@@ -160,7 +210,7 @@ beforeEach(() => {
   mocks.isInstallRunning.mockReturnValue(false);
   mocks.listRuns.mockReturnValue([]);
   pretendGloballyInstalled(true);
-  writeGlobalPackage("9.9.9");
+  seedInstalled();
   writeFileSync(PID_FILE, `${process.pid}\n`);
 });
 
@@ -169,12 +219,18 @@ afterEach(() => {
   for (const chatId of Object.keys(sessionRegistry.getAll())) sessionRegistry.unregister(chatId);
 });
 
-/** Start an update and collect every event it emits, including the replay buffer. */
+/**
+ * Start an update and collect every event it emits, including the replay buffer.
+ *
+ * Note what is *not* here: a `fromVersion`. The service has no parameter for it
+ * — the version being replaced is the one this process booted on, and a test
+ * that could state a different one would be testing a machine that cannot exist.
+ */
 async function runUpdate(): Promise<{ events: SelfUpdateEvent[]; started: ReturnType<typeof startSelfUpdate> }> {
   const events: SelfUpdateEvent[] = [];
   const started = startSelfUpdate({
     capability: { oneClick: true },
-    source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+    source: { packageName: PACKAGE_NAME, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
     clientKey: "127.0.0.1",
   });
   if (started.ok) {
@@ -276,27 +332,86 @@ describe("the install-source gate — is this daemon the copy npm would replace?
   });
 });
 
-describe("the restart gate — is there anything to restart?", () => {
-  it("refuses when no PID file exists", async () => {
+/**
+ * A missing PID file is a **restart** gate, not a capability gate.
+ *
+ * It used to refuse the button outright, with a sentence that said "it can
+ * install the new version, but" and then offered no way to do that — to
+ * systemd, pm2, Docker and every `--foreground` run. Callboard already has a
+ * first-class "installed, did not restart" outcome, and this is that situation
+ * known in advance, so it is now declared up front and honoured at the end.
+ */
+describe("the restart gate — a daemon that cannot restart itself can still install", () => {
+  it("still offers the button when no PID file exists, and says the restart is not included", async () => {
     rmSync(PID_FILE, { force: true });
     const capability = await getSelfUpdateCapability({ local: true });
-    expect(capability).toMatchObject({ oneClick: false, code: "no-pid-file" });
-    expect(capability.refusal).toContain(PID_FILE);
+    expect(capability.oneClick).toBe(true);
+    expect(capability.restart).toBe("unavailable");
+    expect(capability.refusal).toBeUndefined();
+    // The note names the file it looked for, so "why is it saying this" is
+    // answerable without reading the source.
+    expect(capability.note).toContain(PID_FILE);
+    expect(capability.note).toContain("callboard restart");
   });
 
-  it("refuses when the PID file names some other process", async () => {
+  it("declares it for a PID file naming some other process", async () => {
     // A stale file from a previous daemon, or a second Callboard sharing this
     // data directory. `callboard stop` would SIGTERM that pid, and this process
     // would carry on running the old code.
     writeFileSync(PID_FILE, `${process.pid + 1}\n`);
-    const capability = await getSelfUpdateCapability({ local: true });
-    expect(capability).toMatchObject({ oneClick: false, code: "no-pid-file" });
+    expect(await getSelfUpdateCapability({ local: true })).toMatchObject({ oneClick: true, restart: "unavailable" });
   });
 
-  it("refuses on an unparseable PID file rather than assuming it is ours", async () => {
+  it("declares it on an unparseable PID file rather than assuming it is ours", async () => {
     writeFileSync(PID_FILE, "not-a-pid\n");
+    expect(await getSelfUpdateCapability({ local: true })).toMatchObject({ oneClick: true, restart: "unavailable" });
+  });
+
+  it("says nothing about the restart when the PID file does name this process", async () => {
     const capability = await getSelfUpdateCapability({ local: true });
-    expect(capability).toMatchObject({ oneClick: false, code: "no-pid-file" });
+    expect(capability.restart).toBeUndefined();
+    // The shared preflight's own PATH note is still here — this fixture's prefix
+    // is a temp directory that is not on PATH — and that is the point of the
+    // assertion below: only the *restart* half is absent.
+    expect(capability.note ?? "").not.toContain(PID_FILE);
+  });
+
+  it("keeps the shared preflight's note as well as its own", async () => {
+    // Two true-but-survivable things at once. They are joined rather than one
+    // overwriting the other: the banner renders this as a sentence, and the nvm
+    // or PATH warning is not less true because the restart is also unavailable.
+    rmSync(PID_FILE, { force: true });
+    const note = (await getSelfUpdateCapability({ local: true })).note ?? "";
+    expect(note).toContain("not on the PATH this Callboard daemon inherited");
+    expect(note).toContain(PID_FILE);
+  });
+
+  it("installs, then refuses the restart with the sentence it promised", async () => {
+    rmSync(PID_FILE, { force: true });
+    const { events } = await runUpdate();
+    await npmInstalls(NEXT_VERSION);
+    await sleep(700);
+
+    const verified = lastEventOfType(events, "update_verified")!;
+    expect(verified).toMatchObject({ restart: "refused", changed: true, installedVersion: NEXT_VERSION });
+    // The install is real and is worth having — leading with the failure would
+    // read as "the update did not work".
+    expect(verified.restartRefusal).toContain(`v${NEXT_VERSION} is installed`);
+    expect(verified.restartRefusal).toContain(PID_FILE);
+    // And nothing was signalled: no helper spawn, so npm's is the only one.
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    expect(eventOfType(events, "update_restarting")).toBeUndefined();
+  });
+
+  it("re-checks at the end rather than trusting the declaration it made at the start", async () => {
+    // The pid file was there when the button rendered and is gone by the time
+    // npm finishes. A promise made up front is not a licence for the code that
+    // follows it to skip the check.
+    await runUpdate();
+    rmSync(PID_FILE, { force: true });
+    await npmInstalls(NEXT_VERSION);
+    await sleep(700);
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -339,6 +454,21 @@ describe("what actually reaches spawn", () => {
     expect(assertSelfUpdateArgv(["npm", "install", "-g", "; rm -rf /"], "; rm -rf /")).toBe(false);
   });
 
+  it("refuses a package name that would read as a flag", () => {
+    // The check's own comment says the name "is checked rather than trusted",
+    // and the pattern used to admit a leading `-` — npm's grammar does, but an
+    // argv does not care about npm's grammar. Not a live vulnerability (the
+    // value comes from this daemon's own manifest), and exactly the kind of hole
+    // that makes the sentence above false.
+    for (const name of ["--force", "-g", "--registry=http://example.invalid", "@scope/-x", "-x"]) {
+      expect(assertSelfUpdateArgv(["npm", "install", "-g", name], name)).toBe(false);
+    }
+    // And the grammar it must keep: hyphens anywhere but the front, scopes, dots.
+    for (const name of ["@wolpertingerlabs/callboard", "my-fork", "a.b-c_d", "@scope/pkg-name"]) {
+      expect(assertSelfUpdateArgv(["npm", "install", "-g", name], name)).toBe(true);
+    }
+  });
+
   it("spawns npm with the frozen argv and no shell", async () => {
     await runUpdate();
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
@@ -361,7 +491,7 @@ describe("startSelfUpdate refusals", () => {
   it("passes a capability refusal straight through, with a permission code as 403", () => {
     const result = startSelfUpdate({
       capability: { oneClick: false, code: "not-local", refusal: "You are on the tunnel." },
-      source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+      source: { packageName: PACKAGE_NAME, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
     });
     expect(result).toMatchObject({ ok: false, code: "not-local", refusal: "You are on the tunnel.", status: 403 });
     expect(mocks.spawn).not.toHaveBeenCalled();
@@ -370,7 +500,7 @@ describe("startSelfUpdate refusals", () => {
   it("answers a machine-state refusal with 422 rather than 403", () => {
     const result = startSelfUpdate({
       capability: { oneClick: false, code: "not-global-install", refusal: "running from a checkout" },
-      source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+      source: { packageName: PACKAGE_NAME, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
     });
     expect(result).toMatchObject({ ok: false, status: 422 });
   });
@@ -380,7 +510,7 @@ describe("startSelfUpdate refusals", () => {
     expect(isSelfUpdateRunning()).toBe(true);
     const second = startSelfUpdate({
       capability: { oneClick: true },
-      source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+      source: { packageName: PACKAGE_NAME, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
     });
     expect(second).toMatchObject({ ok: false, code: "busy", status: 409 });
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
@@ -390,7 +520,7 @@ describe("startSelfUpdate refusals", () => {
     mocks.isInstallRunning.mockReturnValue(true);
     const result = startSelfUpdate({
       capability: { oneClick: true },
-      source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+      source: { packageName: PACKAGE_NAME, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
     });
     expect(result).toMatchObject({ ok: false, code: "busy", status: 409 });
     expect(mocks.spawn).not.toHaveBeenCalled();
@@ -439,16 +569,18 @@ describe("the run", () => {
 
   it("claims nothing from a zero exit — the version is read off disk", async () => {
     const { events } = await runUpdate();
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
     const exit = eventOfType(events, "update_exit")!;
     expect(exit).toMatchObject({ ok: true, code: 0 });
     expect(exit.refusal).toBeUndefined();
     // The claim lives in the *next* event, and it names the version npm wrote.
-    expect(eventOfType(events, "update_verified")).toMatchObject({ installedVersion: "9.9.9", changed: true, restart: "pending" });
+    expect(eventOfType(events, "update_verified")).toMatchObject({ installedVersion: NEXT_VERSION, changed: true, restart: "pending" });
   });
 
   it("does not restart when npm had nothing newer to install", async () => {
-    writeGlobalPackage(SELF_VERSION);
+    // npm exits 0 having changed nothing, which is the ordinary shape of "you
+    // are already on latest": the manifest still says what this process booted
+    // on.
     const { events } = await runUpdate();
     await exitNpm(0);
     const verified = eventOfType(events, "update_verified")!;
@@ -484,15 +616,15 @@ describe("the restart waits for work to finish", () => {
   it("refuses the restart while a chat is streaming, and names it", async () => {
     sessionRegistry.register("chat-abc", { type: "web" });
     const { events } = await runUpdate();
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
     await sleep(700);
 
     const verified = lastEventOfType(events, "update_verified")!;
-    expect(verified).toMatchObject({ restart: "refused", changed: true, installedVersion: "9.9.9" });
+    expect(verified).toMatchObject({ restart: "refused", changed: true, installedVersion: NEXT_VERSION });
     expect(verified.restartRefusal).toContain("chat-abc");
     // The install still happened and is still worth having — the sentence says
     // so, because the alternative reads as "the update failed".
-    expect(verified.restartRefusal).toContain("v9.9.9 is installed");
+    expect(verified.restartRefusal).toContain(`v${NEXT_VERSION} is installed`);
     expect(verified.restartRefusal).toContain("callboard restart");
     // And the thing that is easy to leave out of that sentence: npm replaced
     // `frontend/dist` in place, so this daemon is already serving the new
@@ -509,7 +641,7 @@ describe("the restart waits for work to finish", () => {
     // so in which a chat could start and be killed mid-turn. Nothing is busy
     // when npm exits here; something is by the time the timer fires.
     const { events } = await runUpdate();
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
 
     expect(eventOfType(events, "update_verified")).toMatchObject({ restart: "pending" });
     sessionRegistry.register("chat-late", { type: "web" });
@@ -523,7 +655,7 @@ describe("the restart waits for work to finish", () => {
   it("counts a running job run with no web session behind it", async () => {
     mocks.listRuns.mockReturnValue([{ runId: "run-1", jobName: "nightly-sweep", status: "running" }]);
     const { events } = await runUpdate();
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
     await sleep(700);
     const verified = lastEventOfType(events, "update_verified")!;
     expect(verified).toMatchObject({ restart: "refused" });
@@ -582,7 +714,7 @@ describe("handing the machine to a detached helper", () => {
   });
 
   it("refuses a bin that points outside its own package", () => {
-    writeGlobalPackage("9.9.9", { bin: { callboard: "../../../../etc/passwd" } });
+    writeGlobalPackage(NEXT_VERSION, { bin: { callboard: "../../../../etc/passwd" } });
     expect(resolveRestartHelper(GLOBAL_PACKAGE_ROOT)).toBeNull();
   });
 
@@ -592,14 +724,14 @@ describe("handing the machine to a detached helper", () => {
     // is a second Callboard server, in the foreground, holding the port the
     // restart was meant to free. Strictly inside the root, or nothing.
     for (const bin of [".", "./", ""]) {
-      writeGlobalPackage("9.9.9", { bin: { callboard: bin } });
+      writeGlobalPackage(NEXT_VERSION, { bin: { callboard: bin } });
       expect(resolveRestartHelper(GLOBAL_PACKAGE_ROOT)).toBeNull();
     }
   });
 
   it("refuses a package with no bin at all", () => {
     mkdirSync(GLOBAL_PACKAGE_ROOT, { recursive: true });
-    writeFileSync(join(GLOBAL_PACKAGE_ROOT, "package.json"), JSON.stringify({ name: PACKAGE_NAME, version: "9.9.9" }));
+    writeFileSync(join(GLOBAL_PACKAGE_ROOT, "package.json"), JSON.stringify({ name: PACKAGE_NAME, version: NEXT_VERSION }));
     expect(resolveRestartHelper(GLOBAL_PACKAGE_ROOT)).toBeNull();
   });
 
@@ -619,7 +751,7 @@ describe("handing the machine to a detached helper", () => {
         return child;
       });
 
-      await exitNpm(0);
+      await npmInstalls(NEXT_VERSION);
       // Nothing announced yet: the restart is not committed to until the beat
       // below has re-checked for work in flight.
       expect(eventOfType(events, "update_restarting")).toBeUndefined();
@@ -629,7 +761,7 @@ describe("handing the machine to a detached helper", () => {
       expect(typesAtSpawn).toContain("update_restarting");
 
       const restarting = eventOfType(events, "update_restarting")!;
-      expect(restarting).toMatchObject({ helper: HELPER, installedVersion: "9.9.9", fromVersion: SELF_VERSION });
+      expect(restarting).toMatchObject({ helper: HELPER, installedVersion: NEXT_VERSION, fromVersion: SELF_VERSION });
       expect(restarting.rollbackCommand).toBe(`npm install -g ${PACKAGE_NAME}@${SELF_VERSION}`);
 
       expect(mocks.spawn).toHaveBeenCalledTimes(2);
@@ -650,19 +782,19 @@ describe("handing the machine to a detached helper", () => {
   it("leaves the port to the CLI's own config when this daemon has none in its environment", async () => {
     delete process.env.PORT;
     await runUpdate();
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
     await sleep(700);
     expect(mocks.spawn.mock.calls[1][1]).toEqual([HELPER, "restart"]);
   });
 
   it("records the version it is replacing, for a daemon that does not come back", async () => {
     await runUpdate();
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
     const state = JSON.parse(readFileSync(join(DATA_DIR, "self-update.json"), "utf-8"));
     expect(state).toMatchObject({
       package: PACKAGE_NAME,
       previousVersion: SELF_VERSION,
-      installedVersion: "9.9.9",
+      installedVersion: NEXT_VERSION,
       rollbackCommand: `npm install -g ${PACKAGE_NAME}@${SELF_VERSION}`,
     });
   });
@@ -673,7 +805,7 @@ describe("handing the machine to a detached helper", () => {
     mocks.spawn.mockImplementation(() => {
       throw new Error("EPERM");
     });
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
     await sleep(700);
     const failed = eventOfType(events, "update_restart_failed")!;
     expect(failed).toBeTruthy();
@@ -692,7 +824,7 @@ describe("handing the machine to a detached helper", () => {
     const { events } = await runUpdate();
     const helperChild = new FakeChild();
     mocks.spawn.mockReturnValue(helperChild);
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
     await sleep(700);
 
     expect(eventOfType(events, "update_restart_failed")).toBeUndefined();
@@ -714,7 +846,7 @@ describe("handing the machine to a detached helper", () => {
 describe("the 500ms between npm finishing and the daemon being stopped", () => {
   it("is still busy, so a second POST cannot spawn npm underneath the pending restart", async () => {
     await runUpdate();
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
 
     // npm is over — `run.done` is set — but the restart timer is armed. A
     // second update accepted here would spawn its own npm while the first
@@ -722,7 +854,7 @@ describe("the 500ms between npm finishing and the daemon being stopped", () => {
     expect(isSelfUpdateRunning()).toBe(true);
     const second = startSelfUpdate({
       capability: { oneClick: true },
-      source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+      source: { packageName: PACKAGE_NAME, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
     });
     expect(second).toMatchObject({ ok: false, code: "busy", status: 409 });
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
@@ -734,7 +866,7 @@ describe("the 500ms between npm finishing and the daemon being stopped", () => {
 
   it("still names the run in flight, so a second tab attaches to it", async () => {
     const { started } = await runUpdate();
-    await exitNpm(0);
+    await npmInstalls(NEXT_VERSION);
     expect(activeSelfUpdateId()).toBe(started.ok ? started.updateId : undefined);
   });
 
@@ -743,11 +875,171 @@ describe("the 500ms between npm finishing and the daemon being stopped", () => {
     await exitNpm(1);
     const second = startSelfUpdate({
       capability: { oneClick: true },
-      source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+      source: { packageName: PACKAGE_NAME, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
     });
     expect(second).toMatchObject({ ok: false, code: "cooling-down", status: 429 });
     expect(second.ok === false && second.refusal).toContain("second");
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── The retry ───────────────────────────────────────────────────────
+
+/**
+ * "Press this again when things are idle" — the escape hatch the deferred
+ * restart tells every user about, and which could not work.
+ *
+ * `changed` compared a freshly-read `fromVersion` against a freshly-read
+ * `installedVersion`. On the second press both reads hit the same file, which
+ * npm had already rewritten on the *first* press, so they agreed, `changed` came
+ * out false, and the run reported `restart: "skipped"` — "there is nothing to
+ * restart into" — after a thirty-second npm run, while the daemon carried on
+ * executing the old code. The only way out was `callboard restart` in a
+ * terminal, which is the thing this feature exists to remove.
+ *
+ * The old suite could not have caught it: `runUpdate()` passed `fromVersion:
+ * SELF_VERSION` while the global manifest said `9.9.9`, so the two sides were
+ * decoupled in a way production cannot be. They are one value here.
+ */
+describe("pressing the button again after a deferred restart", () => {
+  it("restarts, rather than reporting there is nothing to restart into", async () => {
+    // First press: a chat is streaming, so the install lands and the restart is
+    // declined by name.
+    sessionRegistry.register("chat-busy", { type: "web" });
+    const first = await runUpdate();
+    await npmInstalls(NEXT_VERSION);
+    await sleep(700);
+    expect(lastEventOfType(first.events, "update_verified")).toMatchObject({ restart: "refused", changed: true });
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+
+    // The chat ends. The user takes the advice in the sentence they were given.
+    sessionRegistry.unregister("chat-busy");
+    // Past the cooldown, which exists for loops and not for this retry.
+    resetSelfUpdateState();
+    child = new FakeChild();
+    mocks.spawn.mockReturnValue(child);
+
+    // Second press. npm has nothing left to do — the new version is already on
+    // disk — and that is precisely the state the bug lived in.
+    const second = await runUpdate();
+    await exitNpm(0);
+
+    const verified = lastEventOfType(second.events, "update_verified")!;
+    expect(verified).toMatchObject({ installedVersion: NEXT_VERSION, changed: true, restart: "pending" });
+    expect(verified.summary).not.toContain("nothing to restart into");
+
+    await sleep(700);
+    // The helper actually ran. This is the assertion the whole finding is about.
+    expect(eventOfType(second.events, "update_restarting")).toMatchObject({ installedVersion: NEXT_VERSION, helper: HELPER });
+    const helperCall = mocks.spawn.mock.calls.find((c) => c[0] === process.execPath);
+    expect(helperCall?.[1]).toEqual([HELPER, "restart"]);
+  });
+
+  it("still says nothing changed when nothing has, on disk or in this process", async () => {
+    // The other half of the same comparison, and the reason it cannot simply be
+    // deleted: an install that genuinely fetched nothing must not restart.
+    const { events } = await runUpdate();
+    await exitNpm(0);
+    await sleep(700);
+    expect(lastEventOfType(events, "update_verified")).toMatchObject({ changed: false, restart: "skipped" });
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── New code on disk that this process is not running ───────────────
+
+describe("describeRestartPending", () => {
+  it("is quiet when the package directory holds the version this process booted on", () => {
+    expect(describeRestartPending()).toMatchObject({ pending: false, runningVersion: SELF_VERSION, installedVersion: SELF_VERSION });
+  });
+
+  it("notices files replaced underneath a daemon that never asked for them", () => {
+    // The second-daemon case: one global install, two `CALLBOARD_DATA_DIR`s,
+    // two ports. Its sibling updates, npm rewrites the tree under both, and
+    // nothing restarts this one. Every other gate in the module is about *this*
+    // process and passes; this is the only check that can see it at all.
+    //
+    // `__pkgRoot` is this checkout, so the manifest npm "replaced" is the
+    // repository's own — restored in the `finally`.
+    const manifestPath = join(SELF_ROOT, "package.json");
+    const original = readFileSync(manifestPath, "utf-8");
+    try {
+      writeFileSync(manifestPath, JSON.stringify({ ...JSON.parse(original), version: NEXT_VERSION }));
+      expect(describeRestartPending()).toMatchObject({ pending: true, runningVersion: SELF_VERSION, installedVersion: NEXT_VERSION });
+    } finally {
+      writeFileSync(manifestPath, original);
+    }
+  });
+
+  it("claims nothing when the manifest cannot be read at all", () => {
+    const manifestPath = join(SELF_ROOT, "package.json");
+    const original = readFileSync(manifestPath, "utf-8");
+    try {
+      writeFileSync(manifestPath, "{ not json");
+      // Not `pending: true`. "Could not read it" is not evidence that it moved.
+      expect(describeRestartPending()).toMatchObject({ pending: false });
+    } finally {
+      writeFileSync(manifestPath, original);
+    }
+  });
+});
+
+// ── Sentences that are rendered, not just logged ────────────────────
+
+describe("titles interpolated into a refusal", () => {
+  it("strips backticks, which the banner splits on to render code spans", async () => {
+    // `UpdateBanner.tsx` splits the sentence on backticks and wraps the odd
+    // segments in `<code>`. One stray backtick from a chat title — routine in a
+    // coding tool — flips the parity of everything after it, so the rest of the
+    // refusal renders as a single code span.
+    const chatId = "22222222-3333-4444-5555-666666666666";
+    mkdirSync(join(DATA_DIR, "chats"), { recursive: true });
+    writeFileSync(
+      join(DATA_DIR, "chats", `${chatId}.json`),
+      JSON.stringify({ id: chatId, session_id: chatId, folder: "/tmp", metadata: JSON.stringify({ title: "fix the `useEffect deps" }) }),
+    );
+    try {
+      sessionRegistry.register(chatId, { type: "web" });
+      const summary = describeWorkInFlight().summary;
+      expect(summary).toContain("fix the useEffect deps");
+      // The invariant, stated as the renderer sees it: an even number of
+      // backticks, so every code span the sentence opens is one it closed.
+      expect(summary.split("`").length % 2).toBe(1);
+    } finally {
+      rmSync(join(DATA_DIR, "chats", `${chatId}.json`), { force: true });
+    }
+  });
+
+  it("collapses a multi-line preview into one line before clipping it", async () => {
+    // The fallback for a chat with no title is `preview`, which is a whole first
+    // user message. `card-rollup.ts` normalises the same reading; this took the
+    // reading and not the normalisation.
+    const chatId = "33333333-4444-5555-6666-777777777777";
+    mkdirSync(join(DATA_DIR, "chats"), { recursive: true });
+    writeFileSync(
+      join(DATA_DIR, "chats", `${chatId}.json`),
+      JSON.stringify({ id: chatId, session_id: chatId, folder: "/tmp", metadata: JSON.stringify({ preview: "please fix\n\n  the build\n" }) }),
+    );
+    try {
+      sessionRegistry.register(chatId, { type: "web" });
+      const summary = describeWorkInFlight().summary;
+      expect(summary).toContain("please fix the build");
+      expect(summary).not.toContain("\n");
+    } finally {
+      rmSync(join(DATA_DIR, "chats", `${chatId}.json`), { force: true });
+    }
+  });
+
+  it("normalises a job run's title too — same sentence, same renderer", () => {
+    mocks.listRuns.mockReturnValue([{ runId: "run-1", title: "rebuild `frontend", status: "running" }]);
+    const summary = describeWorkInFlight().summary;
+    expect(summary).toContain("rebuild frontend");
+    expect(summary.split("`").length % 2).toBe(1);
+  });
+
+  it("falls back to the id when a title normalises away to nothing", () => {
+    mocks.listRuns.mockReturnValue([{ runId: "run-blank", title: "  ``  ", status: "running" }]);
+    expect(describeWorkInFlight().summary).toContain("run-blank");
   });
 });
 

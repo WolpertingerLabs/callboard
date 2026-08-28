@@ -263,6 +263,71 @@ describe("a stream that never ends at all", () => {
     expect(hook.result.current.run?.verdict?.tone).toBe("warn");
     expect(hook.result.current.run?.verdict?.text).toContain("stopped reporting");
   });
+
+  it("runs the restart poll when the deadline fires during the restart, rather than giving up", async () => {
+    // The deadline spans the restart phase — the route deliberately keeps the
+    // response open past `update_restarting` so `update_restart_failed` can
+    // still arrive — so it *can* fire there, and firing there used to report
+    // "Callboard stopped reporting on this update 11 minutes ago" for a daemon
+    // that was restarting exactly as designed. The poll is the only instrument
+    // that can tell the difference, and it was the one thing being skipped.
+    mocks.readSelfUpdateStream.mockImplementation(
+      async (_id: string, onEvent: (e: SelfUpdateEvent) => void, signal?: AbortSignal) =>
+        new Promise<void>((_resolve, reject) => {
+          for (const event of RESTART_SEQUENCE) onEvent(event);
+          signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        }),
+    );
+    const hook = render();
+    await startAndSettle(hook);
+    expect(hook.result.current.run?.phase).toBe("restarting");
+
+    mocks.probeDaemonVersion.mockResolvedValue("1.1.0");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RUN_DEADLINE_MS + RESTART_POLL_INTERVAL_MS * 2);
+    });
+
+    expect(hook.result.current.run?.verdict).toMatchObject({ tone: "ok" });
+    expect(hook.result.current.run?.verdict?.text).toContain("v1.1.0");
+    expect(hook.result.current.run?.verdict?.text).not.toContain("stopped reporting");
+  });
+
+  it("still gives up when the deadline fires and the daemon is not restarting", async () => {
+    // The other half. Aborting the read must not be mistaken for the component
+    // unmounting, and expiry in a non-restart phase is still a dead socket.
+    mocks.readSelfUpdateStream.mockImplementation(
+      async (_id: string, onEvent: (e: SelfUpdateEvent) => void, signal?: AbortSignal) =>
+        new Promise<void>((_resolve, reject) => {
+          onEvent(RESTART_SEQUENCE[0]);
+          signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        }),
+    );
+    const hook = render();
+    await startAndSettle(hook);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RUN_DEADLINE_MS + 1_000);
+    });
+    expect(hook.result.current.run?.verdict?.text).toContain("stopped reporting");
+    expect(mocks.probeDaemonVersion).not.toHaveBeenCalled();
+  });
+
+  it("closes the server's own restart deadline out as an ordinary stream ending", async () => {
+    // `GET .../stream` now closes the response itself a few seconds after
+    // `update_restarting`, so a hung restart does not hold a listener forever.
+    // From here that is indistinguishable from the socket dying with the
+    // daemon, which is the point: this page classifies on the phase, and the
+    // phase is `restarting` either way.
+    mocks.readSelfUpdateStream.mockImplementation(streamThat(RESTART_SEQUENCE));
+    const hook = render();
+    await startAndSettle(hook);
+    expect(hook.result.current.run?.phase).toBe("restarting");
+
+    mocks.probeDaemonVersion.mockResolvedValue("1.1.0");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(RESTART_POLL_INTERVAL_MS * 2);
+    });
+    expect(hook.result.current.run?.verdict).toMatchObject({ tone: "ok" });
+  });
 });
 
 // ── Re-entrancy, unmount, and picking a run back up ─────────────────

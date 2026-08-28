@@ -84,6 +84,7 @@ import { getClaudeAuthStatus } from "./services/claude-auth-status.js";
 import { initOpenRouterModelsCache, stopOpenRouterModelsRefresh } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { buildSystemInfo } from "./services/system-info.js";
+import { BOOT_VERSION } from "./utils/package-manifest.js";
 
 const log = createLogger("server");
 
@@ -371,8 +372,11 @@ app.get(
   async (_req, res) => {
     // Assembly lives in `services/system-info.ts` — see that module for why the
     // probes run concurrently and why not one of them is allowed to reject.
-    // `__pkgRoot` is passed in because it is derived from *this* file's depth.
-    res.json(await buildSystemInfo({ pkgRoot: __pkgRoot }));
+    // `__pkgRoot` is passed in because it is derived from *this* file's depth;
+    // `runningVersion` because it has to have been read before an `npm install
+    // -g` could rewrite the manifest under this process, and this handler first
+    // runs on a request.
+    res.json(await buildSystemInfo({ pkgRoot: __pkgRoot, runningVersion: BOOT_VERSION }));
   },
 );
 

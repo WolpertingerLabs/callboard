@@ -92,15 +92,38 @@ export default function AboutSettings() {
   }
 
   const account = systemInfo?.account;
-  const hasUpdate = systemInfo?.version && systemInfo?.latestVersion && isNewerVersion(systemInfo.version, systemInfo.latestVersion);
+  const hasUpdate = Boolean(systemInfo?.version && systemInfo?.latestVersion && isNewerVersion(systemInfo.version, systemInfo.latestVersion));
+
+  /**
+   * New code is on disk and this daemon is not running it.
+   *
+   * Rendered as a second reason to show the banner, because `hasUpdate` alone
+   * cannot cover it. `version` is the *running* version, so on the ordinary
+   * deferred-restart path `hasUpdate` does stay true across the install — but it
+   * goes false the moment npm's `latest` is what the daemon booted on, which is
+   * the state a second daemon sharing one global install sits in permanently
+   * after its sibling upgraded it. Without this, that daemon reports "up to
+   * date" while executing code that was replaced underneath it, with no UI path
+   * to the restart that would fix it.
+   */
+  const restartPending = Boolean(systemInfo?.restartPending);
 
   return (
     <>
       {/* Update notice, and — where Callboard is the globally installed copy it
           would be replacing — the button that installs it here. The
           copy-and-paste command is rendered in every one of those states; see
-          UpdateBanner.tsx. */}
-      {hasUpdate && <UpdateBanner currentVersion={systemInfo!.version!} latestVersion={systemInfo!.latestVersion!} />}
+          UpdateBanner.tsx.
+
+          Gated on the *running* version, which is the whole reason this survives
+          an install: it used to be gated on a version the daemon re-read from a
+          package directory npm had just rewritten, so the instant npm exited the
+          banner decided there was no update and unmounted itself — taking the
+          verdict, the retry button and the reattach path with it, in exactly the
+          window they were written for. */}
+      {(hasUpdate || restartPending) && (
+        <UpdateBanner currentVersion={systemInfo!.version!} latestVersion={systemInfo!.latestVersion} installedVersion={systemInfo!.installedVersion} restartPending={restartPending} />
+      )}
 
       {/* Application Info */}
       <div style={sectionStyle}>
@@ -110,7 +133,14 @@ export default function AboutSettings() {
         </div>
         <div style={subtitleStyle}>Callboard version and build information.</div>
         <div>
+          {/* The version this daemon is *running*. It used to be a per-request
+              read of a package.json npm replaces in place during an upgrade, so
+              between the install and the restart this row named a version
+              nothing was executing. */}
           <InfoRow label="Version" value={systemInfo?.version} />
+          {restartPending && systemInfo?.installedVersion && (
+            <InfoRow label="Installed (pending restart)" value={`v${systemInfo.installedVersion}`} />
+          )}
           {systemInfo?.latestVersion && <InfoRow label="Latest Version" value={`v${systemInfo.latestVersion}`} />}
           <InfoRow label="Environment" value={systemInfo?.environment} />
           <InfoRow label="Claude CLI" value={systemInfo?.claudeCliVersion} />

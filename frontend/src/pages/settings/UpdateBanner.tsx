@@ -102,8 +102,17 @@ const FALLBACK_COMMAND = "npm install -g @wolpertingerlabs/callboard";
  * stopped delivering. Without a bound, a reverse proxy that buffers, a
  * half-open TCP connection or a lost FIN leaves the phase where it is forever,
  * with the button disabled and no way out but a reload that discards the run.
- * The restart phase is not covered by this: it has its own, tighter
- * {@link RESTART_POLL_TIMEOUT_MS}.
+ *
+ * It *does* span the restart phase — the response is deliberately kept open past
+ * `update_restarting` so that `update_restart_failed` can still be delivered, so
+ * this timer is still armed there. What used to say otherwise was a comment, not
+ * a mechanism, and the mechanism did the wrong thing: firing during `restarting`
+ * reported "Callboard stopped reporting on this update 11 minutes ago" for a
+ * daemon that was restarting exactly as designed, instead of running the poll
+ * that is the only way this page can learn the restart worked. So expiry no
+ * longer decides anything on its own — the phase does, as everywhere else in
+ * this file, and expiring in `restarting` hands over to
+ * {@link RESTART_POLL_TIMEOUT_MS} like an ordinary stream ending would.
  */
 export const RUN_DEADLINE_MS = 11 * 60_000;
 
@@ -263,14 +272,27 @@ export function useSelfUpdate(currentVersion: string): {
       // See {@link RUN_DEADLINE_MS}. Aborting the read is the only way to get
       // out of a socket that has stopped delivering without also stopping the
       // update, which is server-side and carries on either way.
+      //
+      // The deadline aborts a controller of its own rather than the caller's.
+      // They mean different things — "stop reading this socket" and "this
+      // component is gone" — and collapsing them cost the restart poll: the
+      // deadline firing left `controller.signal.aborted` true, so the poll below
+      // returned instantly on a signal that was never about unmounting. The
+      // caller's abort still propagates inward, which is the direction that has
+      // to work.
+      const readController = new AbortController();
+      const relayAbort = () => readController.abort();
+      if (controller.signal.aborted) readController.abort();
+      else controller.signal.addEventListener("abort", relayAbort, { once: true });
+
       let expired = false;
       const deadline = setTimeout(() => {
         expired = true;
-        controller.abort();
+        readController.abort();
       }, RUN_DEADLINE_MS);
 
       try {
-        await readSelfUpdateStream(updateId, (event) => apply((prev) => reduceSelfUpdateEvent(prev, event)), controller.signal);
+        await readSelfUpdateStream(updateId, (event) => apply((prev) => reduceSelfUpdateEvent(prev, event)), readController.signal);
       } catch {
         // Swallowed on purpose, and this is the correction that matters most in
         // this file: *how the read ended* is not evidence of anything, because
@@ -282,9 +304,26 @@ export function useSelfUpdate(currentVersion: string): {
         // sleep and SIGKILLed daemon.
       } finally {
         clearTimeout(deadline);
+        controller.signal.removeEventListener("abort", relayAbort);
       }
 
-      if (expired) {
+      if (controller.signal.aborted) return;
+
+      // The stream is over. Which of the ways it ended is the whole question:
+      // after `update_restarting` the daemon is *supposed* to have stopped
+      // answering, and anywhere else means the connection went first.
+      //
+      // The phase is asked *before* `expired`, deliberately. A run that reached
+      // `restarting` and then sat on a socket for eleven minutes is a restart
+      // this page has not witnessed the end of, not an update that went missing
+      // — and the only instrument that can tell the difference is the poll.
+      // Answering it with "Callboard stopped reporting 11 minutes ago" reported
+      // a failure while skipping the one check that could have found the
+      // success.
+      const state = stateRef.current;
+      if (state?.phase === "restarting") {
+        await waitForDaemon(state, apply, controller.signal, fallbackPackage);
+      } else if (expired) {
         apply((prev) => ({
           ...prev,
           phase: "done",
@@ -293,16 +332,6 @@ export function useSelfUpdate(currentVersion: string): {
             text: `Callboard stopped reporting on this update ${Math.round(RUN_DEADLINE_MS / 60_000)} minutes ago, so this page has given up following it. The install may still have finished — check the version at the top of this page, and \`callboard logs\` on the machine running Callboard.`,
           },
         }));
-        return;
-      }
-      if (controller.signal.aborted) return;
-
-      // The stream is over. Which of the ways it ended is the whole question:
-      // after `update_restarting` the daemon is *supposed* to have stopped
-      // answering, and anywhere else means the connection went first.
-      const state = stateRef.current;
-      if (state?.phase === "restarting") {
-        await waitForDaemon(state, apply, controller.signal, fallbackPackage);
       } else if (state && state.phase !== "done") {
         // Not `done`, deliberately. A socket error arriving after a terminal
         // frame — an `update_exit` carrying npm's own refusal, say — must not
@@ -391,6 +420,17 @@ export function useSelfUpdate(currentVersion: string): {
  * between the helper spawning and the SIGTERM landing, so an early successful
  * probe proves nothing. When the daemon could not name the installed version,
  * "anything but the version we started from" is the weaker check that remains.
+ *
+ * That first paragraph was a false claim about a real hazard until the daemon
+ * had a boot version. `probeDaemonVersion` reads `system-info.version`, and that
+ * used to be a per-request read of a `package.json` npm had *already* replaced —
+ * so the old daemon answered with the new version, and this comparison matched
+ * on the very first tick, before the restart had begun. The guard is the field's
+ * meaning, not the choice of comparison: `version` is now the version the
+ * answering process booted on, so an early probe of the old daemon returns the
+ * old version and this correctly keeps waiting. Comparing against
+ * `installedVersion` is still the stronger of the two checks and is still worth
+ * preferring — it just is not what was holding the line.
  */
 async function waitForDaemon(
   state: SelfUpdateRunState,
@@ -456,13 +496,28 @@ function withInlineCode(text: string): React.ReactNode {
 export function UpdateBannerView({
   currentVersion,
   latestVersion,
+  installedVersion,
+  restartPending,
   command,
   capability,
   run,
   onUpdate,
 }: {
+  /** The version the daemon is **running** — its boot manifest, not what is on disk. */
   currentVersion: string;
-  latestVersion: string;
+  /** npm's `latest`, when the registry answered. Absent is a normal state: a restart can be pending with no newer release. */
+  latestVersion?: string;
+  /** What is in the daemon's package directory now, when that differs from what it is running. */
+  installedVersion?: string;
+  /**
+   * New code is on disk and the daemon has not restarted into it.
+   *
+   * A headline rather than a footnote, because it is the *only* thing on screen
+   * for a daemon whose files a sibling replaced: same global install, different
+   * data directory and port, upgraded without being asked and with nothing to
+   * restart it.
+   */
+  restartPending?: boolean;
   /** The copy-and-paste command. Rendered in every state; see this file's header. */
   command: string;
   capability?: SelfUpdateStatusResponse["capability"];
@@ -472,16 +527,32 @@ export function UpdateBannerView({
   const [showOutput, setShowOutput] = useState(true);
   const busy = run !== null && run.phase !== "done";
   const canUpdate = capability?.oneClick === true;
+  // A restart that is already owed takes the headline: telling someone about a
+  // release they could download is less useful than telling them the download
+  // already happened and is not what is running. Not while a run is on screen —
+  // that has its own progress line and its own verdict.
+  const leadWithRestart = restartPending === true && !busy;
 
   return (
     <div role="status" aria-live="polite" data-testid="update-banner" style={bannerStyle}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
         <ArrowUpCircle size={20} style={{ color: "var(--accent-text)", flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>Update available</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>{leadWithRestart ? "Restart pending" : "Update available"}</div>
           <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            v{currentVersion} → v{latestVersion}
+            {leadWithRestart
+              ? `Running v${currentVersion}${installedVersion ? `, but v${installedVersion} is installed on disk` : ", and newer files are installed on disk"}. Callboard picks it up on the next restart.`
+              : `v${currentVersion}${latestVersion ? ` → v${latestVersion}` : ""}`}
           </div>
+          {leadWithRestart && (
+            // Said outright rather than left to be worked out, because the way
+            // to reach this state that nobody expects is the one a single
+            // process cannot see from the inside.
+            <div style={noteStyle}>
+              A restart may have been deferred — or a second Callboard sharing this same global install updated itself. npm replaces the package files in place, so both daemons got the new
+              files and only the one that pressed the button was restarted.
+            </div>
+          )}
 
           {/* Never conditional. Whatever else this banner is doing, this line is
               the action a user can always take themselves. */}
@@ -512,9 +583,16 @@ export function UpdateBannerView({
                 }}
               >
                 {busy ? <Loader2 size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Download size={12} />}
-                {busyLabel(run) ?? "Download latest & restart"}
+                {/* The label states what will happen, so a daemon that has
+                    already said it cannot restart itself does not offer a
+                    button promising one. */}
+                {busyLabel(run) ?? (capability?.restart === "unavailable" ? "Download latest" : "Download latest & restart")}
               </button>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Installs it here and restarts the daemon. Chats and jobs must be idle for the restart.</span>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {capability?.restart === "unavailable"
+                  ? "Installs it here. Restarting Callboard is yours to do — see below."
+                  : "Installs it here and restarts the daemon. Chats and jobs must be idle for the restart."}
+              </span>
             </div>
           ) : (
             // The refusal sits directly under the command it is explaining,
@@ -646,12 +724,29 @@ function Verdict({ run }: { run: SelfUpdateRunState }) {
  * exists, so this component never has to answer "is there an update" — only
  * "can Callboard install it here".
  */
-export default function UpdateBanner({ currentVersion, latestVersion }: { currentVersion: string; latestVersion: string }) {
+export default function UpdateBanner({
+  currentVersion,
+  latestVersion,
+  installedVersion,
+  restartPending,
+}: {
+  currentVersion: string;
+  latestVersion?: string;
+  installedVersion?: string;
+  restartPending?: boolean;
+}) {
   const { status, run, start } = useSelfUpdate(currentVersion);
   return (
     <UpdateBannerView
       currentVersion={currentVersion}
       latestVersion={latestVersion}
+      // `GET /api/self-update` is the fresher of the two answers — About's
+      // system-info call happens once on mount, and an install started since
+      // then would have moved these. Falls back to what the page was rendered
+      // with, so the banner never loses the reason it exists while that request
+      // is in flight.
+      installedVersion={status?.installedVersion ?? installedVersion}
+      restartPending={status?.restartPending ?? restartPending}
       // Until the capability call answers, the command is still known: it is the
       // same one this banner has printed since long before there was a button.
       command={status?.command ?? FALLBACK_COMMAND}

@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   isSelfUpdateRunDone: vi.fn(),
   subscribeToSelfUpdateRun: vi.fn(),
   activeSelfUpdateId: vi.fn(),
+  describeRestartPending: vi.fn(),
 }));
 
 vi.mock("../services/self-update.js", () => ({
@@ -35,9 +36,10 @@ vi.mock("../services/self-update.js", () => ({
   isSelfUpdateRunDone: mocks.isSelfUpdateRunDone,
   subscribeToSelfUpdateRun: mocks.subscribeToSelfUpdateRun,
   activeSelfUpdateId: mocks.activeSelfUpdateId,
+  describeRestartPending: mocks.describeRestartPending,
 }));
 
-const { selfUpdateRouter } = await import("./self-update.js");
+const { RESTART_STREAM_GRACE_MS, selfUpdateRouter } = await import("./self-update.js");
 
 type Handler = (req: Request, res: Response) => Promise<void> | void;
 const routeHandler = (path: string, method: "get" | "post"): Handler =>
@@ -103,6 +105,7 @@ beforeEach(() => {
   mocks.subscribeToSelfUpdateRun.mockReturnValue(() => undefined);
   mocks.getSelfUpdateRun.mockReturnValue({ updateId: "upd-1" });
   mocks.activeSelfUpdateId.mockReturnValue(undefined);
+  mocks.describeRestartPending.mockReturnValue({ pending: false, runningVersion: "1.2.3", installedVersion: "1.2.3" });
 });
 
 describe("GET /api/self-update", () => {
@@ -134,6 +137,24 @@ describe("GET /api/self-update", () => {
     expect(body.activeUpdateId).toBe("upd-7");
   });
 
+  it("reports new code sitting on disk that this process is not running", async () => {
+    // The state a daemon cannot otherwise detect: a *second* Callboard sharing
+    // one global install, upgraded by its sibling and never restarted. Its own
+    // About page used to read the rewritten manifest and report the new version,
+    // which made the whole condition invisible in the one place a user looks.
+    mocks.describeRestartPending.mockReturnValue({ pending: true, runningVersion: "1.2.3", installedVersion: "1.3.0" });
+    const { body } = await call(statusHandler, LOCAL_REQ);
+    expect(body.version).toBe("1.2.3");
+    expect(body.installedVersion).toBe("1.3.0");
+    expect(body.restartPending).toBe(true);
+  });
+
+  it("omits restartPending rather than sending false when nothing is pending", async () => {
+    const { body } = await call(statusHandler, LOCAL_REQ);
+    expect(body.restartPending).toBeUndefined();
+    expect(body.installedVersion).toBe("1.2.3");
+  });
+
   it("degrades to a refusal when the preflight itself throws", async () => {
     mocks.getSelfUpdateCapability.mockRejectedValue(new Error("boom"));
     const { status, body } = await call(statusHandler, LOCAL_REQ);
@@ -150,7 +171,7 @@ describe("POST /api/self-update", () => {
     expect(mocks.startSelfUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         capability: { oneClick: true },
-        source: { packageName: PACKAGE, fromVersion: "1.2.3", globalPackageRoot: "/usr/lib/node_modules/@wolpertingerlabs/callboard" },
+        source: { packageName: PACKAGE, globalPackageRoot: "/usr/lib/node_modules/@wolpertingerlabs/callboard" },
       }),
     );
   });
@@ -193,6 +214,9 @@ describe("GET /api/self-update/runs/:updateId/stream", () => {
     const { status, body } = await call(streamHandler, { ...LOCAL_REQ, params: { updateId: "gone" } });
     expect(status).toBe(404);
     expect(body.refusal).toMatch(/restarted/);
+    // Renamed from `update-failed`, which was documented as "npm could not be
+    // started, or exited non-zero" and described nothing that ever emitted it.
+    expect(body.code).toBe("run-not-found");
   });
 
   it("replays the transcript and then follows the run", async () => {
@@ -298,5 +322,50 @@ describe("GET /api/self-update/runs/:updateId/stream", () => {
     });
     expect(sse.join("")).toContain("still streaming");
     expect(isEnded()).toBe(true);
+  });
+
+  it("closes the stream itself if the restart never lands", async () => {
+    // The bound the ordinary path never needed, because on it the process dies
+    // and takes the socket with it. A restart that hangs — the helper spawned
+    // and nothing ever signalled — leaves this response open on a heartbeat
+    // with a `RunLog` listener attached, indefinitely, for any client that is
+    // not a browser tab someone eventually closes.
+    //
+    // Only reachable while this daemon is alive, which is why closing is safe:
+    // the client is already in its `restarting` phase, where a stream ending is
+    // the expected shape of success, and it moves straight to polling.
+    vi.useFakeTimers();
+    try {
+      mocks.isSelfUpdateRunDone.mockReturnValue(true);
+      mocks.selfUpdateRunEvents.mockReturnValue([
+        { type: "update_restarting", updateId: "upd-1", fromVersion: "1.2.3", installedVersion: "1.3.0", helper: "/g/bin/callboard.js", rollbackCommand: "npm install -g x@1.2.3" },
+      ]);
+
+      const { ended, isEnded } = await call(streamHandler, { ...LOCAL_REQ, params: { updateId: "upd-1" } });
+      expect(ended).toBe(false);
+
+      // Comfortably past the window in which `update_restart_failed` can still
+      // arrive — that comes from a spawn throw or an `error` event, both within
+      // milliseconds — and past the ordinary one to two seconds of helper boot
+      // plus SIGTERM.
+      vi.advanceTimersByTime(RESTART_STREAM_GRACE_MS + 1);
+      expect(isEnded()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not arm that deadline for a run that has not announced a restart", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.selfUpdateRunEvents.mockReturnValue([{ type: "update_output", stream: "stdout", line: "added 1 package" }]);
+      const { isEnded } = await call(streamHandler, { ...LOCAL_REQ, params: { updateId: "upd-1" } });
+      // Ten minutes of npm is a normal install, and this deadline is not the
+      // one that bounds it — the client's own is.
+      vi.advanceTimersByTime(RESTART_STREAM_GRACE_MS * 40);
+      expect(isEnded()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

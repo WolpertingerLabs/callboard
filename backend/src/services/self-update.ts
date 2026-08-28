@@ -48,6 +48,39 @@
  * pid file exists": it must name **this** process. A stale or foreign pid file
  * would otherwise aim a SIGTERM at something else entirely.
  *
+ * That one is a *restart* gate, not a capability gate, and it did not used to
+ * be. It refused the button outright with a sentence that said, in as many
+ * words, "it can install the new version, but" — and then offered no way to do
+ * that, to a population (systemd, pm2, Docker, `--foreground`) which is not
+ * small. The feature already has a first-class "installed, did not restart"
+ * outcome, and a missing PID file is that situation known in advance, so it is
+ * now a **pre-declared restart disposition**: the button appears, carries a note
+ * saying the restart will be the user's to run, installs, and lands on
+ * `restart: "refused"`. Strictly more useful than a refusal, and one fewer
+ * refusal code.
+ *
+ * ## The value that had to exist first: {@link BOOT_VERSION}
+ *
+ * `npm install -g` replaces the package tree **in place**, so from the moment
+ * npm exits every read of `<pkgRoot>/package.json` describes the code on disk
+ * rather than the code executing. Nothing in this system used to mean "the
+ * version this process is running", and this module's two central comparisons
+ * both needed it:
+ *
+ * - `changed` — "did the version move?" is a question about *this process*
+ *   against disk. Read fresh on both sides it compares the new file with
+ *   itself, so a second press of the button (the retry this feature explicitly
+ *   tells people to make when the first restart was deferred) concluded there
+ *   was "nothing to restart into" while the daemon carried on running the old
+ *   code. The only escape was `callboard restart` in a terminal — the thing this
+ *   feature exists to remove.
+ * - `restartPending` — the same comparison, asked of a daemon that has not
+ *   pressed anything. See {@link describeRestartPending}.
+ *
+ * So both sides now read from `utils/package-manifest.ts`: the running side from
+ * the boot snapshot, the disk side from a fresh read of the *global* package
+ * root. Different questions, different readers.
+ *
  * ## Why the restart is a detached grandchild
  *
  * A process cannot restart itself, and a child of a dying parent is not
@@ -101,9 +134,16 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { SelfUpdateCapability, SelfUpdateEvent, SelfUpdateRefusalCode } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
+import {
+  BOOT_MANIFEST,
+  BOOT_PACKAGE_ROOT,
+  BOOT_VERSION,
+  PACKAGE_NAME_PATTERN,
+  readPackageManifest,
+  type PackageManifest,
+} from "../utils/package-manifest.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { chatFileService } from "./chat-file-service.js";
 import { isInstallRunning } from "./engine-install.js";
@@ -125,14 +165,16 @@ import { sessionRegistry } from "./session-registry.js";
 const log = createLogger("self-update");
 
 /**
- * This daemon's package root — `backend/dist/services/self-update.js` up three.
+ * This daemon's package root, and the manifest it had at boot.
  *
- * Derived here rather than passed in, unlike `buildSystemInfo`'s, because it is
- * *the* fact under test: the whole feature turns on whether this directory is
- * the one npm would overwrite, so it has to be this module's own location and
- * not a value a caller supplied.
+ * Both come from `utils/package-manifest.ts` rather than being derived here, so
+ * that "the directory npm would overwrite" and "the version this process is
+ * running" are one fact read in one place. The root is still derived from a
+ * module's own location rather than passed in — it is *the* fact the
+ * install-source gate turns on, so a caller-supplied value would be checking
+ * something other than where this code came from.
  */
-const __pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const __pkgRoot = BOOT_PACKAGE_ROOT;
 
 /** How long a finished update stays fetchable, so a stream that reconnects still gets the transcript. */
 const RETENTION_MS = RUN_RETENTION_MS;
@@ -181,49 +223,35 @@ const COOLDOWN_MS = 10_000;
  * which action makes the pair consistent again. Recorded as a known limitation
  * in `plans/self-update.md`, along with the two other things this daemon reads
  * from its own package root at runtime.
+ *
+ * The second sentence is about a case this daemon cannot see and must therefore
+ * name rather than check. Two Callboards can run from one global install with
+ * different `CALLBOARD_DATA_DIR`s and different ports; each passes every gate
+ * here independently, because every gate is about *this* process. When one of
+ * them updates, npm rewrites the tree under both — and the other is neither
+ * restarted nor told. It goes on serving the new `frontend/dist` from its old
+ * backend for as long as it lives. It does now *notice*
+ * ({@link describeRestartPending} compares its boot version against disk, and
+ * its own banner says "restart pending"), which is the most a process with no
+ * knowledge of its siblings can honestly do.
  */
 const NEW_BUNDLE_IS_LIVE =
-  "One thing to know while you wait: the new version's web interface is already being served from this daemon, because npm replaced those files in place. Nothing breaks if you keep the page you have open, but avoid reloading until after `callboard restart` — a reloaded tab would be the new interface talking to the old server.";
-
-/**
- * npm's own package-name grammar, near enough.
- *
- * The name comes from this daemon's `package.json` — never from a request — but
- * it still reaches an argv, so it is checked rather than trusted. A fork that
- * renames the package keeps working; a `package.json` carrying something that is
- * not a package name at all is refused rather than spawned.
- */
-const PACKAGE_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+  "One thing to know while you wait: the new version's web interface is already being served from this daemon, because npm replaced those files in place. Nothing breaks if you keep the page you have open, but avoid reloading until after `callboard restart` — a reloaded tab would be the new interface talking to the old server. If you run a second Callboard from this same global install (a different data directory and port), npm replaced its files too — it is still running the old code and nothing has restarted it, so restart that one as well.";
 
 // ── What Callboard is, according to Callboard ───────────────────────
 
-interface SelfPackage {
-  name: string;
-  version: string;
-  /** The CLI entry, relative to the package root, as its own `bin` field declares it. */
-  bin?: string;
-}
-
-/** Read a `package.json` and keep only the three fields this feature has any business with. */
-function readPackageJson(root: string): SelfPackage | null {
-  try {
-    const parsed = JSON.parse(readFileSync(path.join(root, "package.json"), "utf-8"));
-    const name = typeof parsed?.name === "string" ? parsed.name : "";
-    const version = typeof parsed?.version === "string" ? parsed.version : "";
-    if (!PACKAGE_NAME.test(name) || !version) return null;
-    // `bin` is either a string or a map; both forms are npm's, and Callboard's
-    // own is the map. Any entry will do — the package publishes one.
-    const bin = parsed?.bin;
-    const rel = typeof bin === "string" ? bin : bin && typeof bin === "object" ? Object.values(bin).find((v): v is string => typeof v === "string") : undefined;
-    return { name, version, ...(rel ? { bin: rel } : {}) };
-  } catch {
-    return null;
-  }
-}
-
-/** This daemon's own identity. Read per call rather than memoized — it is cheap, and it changes under us during an upgrade. */
-export function selfPackage(): SelfPackage | null {
-  return readPackageJson(__pkgRoot);
+/**
+ * This daemon's own identity — the boot snapshot, never a fresh read.
+ *
+ * It used to be read per call, with a comment saying that was fine because "it
+ * is cheap, and it changes under us during an upgrade". The second clause was
+ * the bug: a value that changes under us during an upgrade is precisely the one
+ * thing this feature must not use to describe itself. `version` here is the
+ * version this process is *executing*; what npm wrote is a different question
+ * with a different reader ({@link readPackageManifest} against the global root).
+ */
+export function selfPackage(): Readonly<PackageManifest> | null {
+  return BOOT_MANIFEST;
 }
 
 /** The command a user would type. The button runs this same argv; the copy block never disappears. */
@@ -318,6 +346,41 @@ export function pidFileNamesThisProcess(): boolean {
   }
 }
 
+// ── Has this daemon's own code been replaced underneath it? ─────────
+
+/**
+ * Compare the version this process is running against the one in its own
+ * package directory, right now.
+ *
+ * Cheap — one `readFileSync` of a small JSON file, on an endpoint the banner
+ * asks once per mount — and it answers a question no other check here can, which
+ * is why it reads `__pkgRoot` rather than `<npm root -g>/<package>`: those are
+ * the same directory for the daemon that pressed the button, and the interesting
+ * case is the daemon that did *not*.
+ *
+ * Two Callboards can share one global install with different
+ * `CALLBOARD_DATA_DIR`s and ports. Every other gate in this module is about
+ * *this* process, so both pass independently; when one updates, npm rewrites the
+ * tree under both, and the other is neither restarted nor notified. It carries
+ * on executing old backend code while serving the new `frontend/dist`, and
+ * before this it had no way to say so — its About page read the same rewritten
+ * manifest and reported the new version, which made the state invisible in the
+ * one place a user would look.
+ *
+ * There is no way for this process to restart its sibling, and it does not try:
+ * the PID file it would need names the other daemon and lives in the other data
+ * directory. What it can do is notice and say so, which is what this is for.
+ *
+ * Also true, benignly, on the update path itself — between npm exiting and the
+ * restart landing — which is the same fact and the same sentence.
+ */
+export function describeRestartPending(): { pending: boolean; runningVersion?: string; installedVersion?: string } {
+  const runningVersion = BOOT_VERSION ?? undefined;
+  const installedVersion = readPackageManifest(__pkgRoot)?.version;
+  if (!runningVersion || !installedVersion) return { pending: false, ...(runningVersion ? { runningVersion } : {}), ...(installedVersion ? { installedVersion } : {}) };
+  return { pending: installedVersion !== runningVersion, runningVersion, installedVersion };
+}
+
 // ── Is anything in flight? ──────────────────────────────────────────
 
 /**
@@ -336,6 +399,34 @@ export function pidFileNamesThisProcess(): boolean {
  * leaves a terminal open.
  */
 /**
+ * Make a user-authored string safe to drop into a refusal sentence.
+ *
+ * The sentences this builds are rendered by `UpdateBanner.tsx`, which splits on
+ * backticks to turn `` `like this` `` into a `<code>` span — so an *odd* number
+ * of backticks anywhere in an interpolated title flips the parity of everything
+ * after it, and the rest of the refusal renders as one long code span. A chat
+ * titled ``fix the useEffect deps`` is not exotic in a coding tool, and the
+ * fallback source for a title is `preview`, which is a whole first user message
+ * and may contain a fenced block. So backticks are removed rather than escaped:
+ * there is no escape the splitter understands, and the title is being quoted for
+ * recognition, not for reproduction.
+ *
+ * Whitespace is collapsed for the same reason `card-rollup.ts` collapses it —
+ * a multi-line preview inlined into a sentence is a paragraph break in the
+ * middle of a clause. This code took that file's *reading* of the metadata blob
+ * and not its normalisation; this is the missing half.
+ *
+ * Clipped after normalising, so the 60-character budget is spent on characters
+ * that will actually be shown.
+ */
+function forSentence(raw: string): string {
+  const flat = raw.replace(/`/g, "").replace(/\s+/g, " ").trim();
+  // Titles run to 240 characters and previews are a whole first message.
+  // Three of either, inline in a refusal sentence, is a wall.
+  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+}
+
+/**
  * What a user would call this chat, or its id.
  *
  * The title lives in the record's `metadata` blob rather than on the record, so
@@ -350,10 +441,10 @@ function chatTitle(chatId: string): string {
     if (!chat) return chatId;
     const meta = JSON.parse(chat.metadata || "{}");
     const title: string = (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || "";
-    // Titles run to 240 characters and previews are a whole first message.
-    // Three of either, inline in a refusal sentence, is a wall.
     if (!title) return chatId;
-    return title.length > 60 ? `${title.slice(0, 60)}…` : title;
+    // A title that normalises away to nothing (all whitespace, or nothing but
+    // backticks) is no better than no title at all.
+    return forSentence(title) || chatId;
   } catch (err) {
     log.warn(`could not name chat ${chatId} for the restart summary: ${err instanceof Error ? err.message : String(err)}`);
     return chatId;
@@ -383,7 +474,9 @@ export function describeWorkInFlight(): { busy: boolean; summary: string } {
 
   let runs: string[] = [];
   try {
-    runs = listRuns({ status: "running" }).map((r) => r.title || r.jobName || r.runId);
+    // Job titles are as user-authored as chat titles, and land in the same
+    // backtick-split sentence.
+    runs = listRuns({ status: "running" }).map((r) => forSentence(r.title || r.jobName || "") || r.runId);
   } catch (err) {
     // A job store that cannot be listed is not permission to restart into it.
     log.warn(`could not list job runs: ${err instanceof Error ? err.message : String(err)}`);
@@ -463,15 +556,32 @@ export async function getSelfUpdateCapability(opts: { local: boolean }): Promise
     };
   }
 
-  if (!pidFileNamesThisProcess()) {
-    return {
-      oneClick: false,
-      code: "no-pid-file",
-      refusal: `Callboard has no PID file naming this process (\`${PID_FILE}\`), which means it was not started by \`callboard start\` — a foreground run, or a process manager of your own. It can install the new version, but \`callboard restart\` would find nothing to stop, so the restart is yours to do. Run the command in a terminal and restart Callboard however you started it.`,
-    };
-  }
+  // Not a refusal. See the module header: this is the one "installed, did not
+  // restart" outcome that is knowable *before* the install, so it is declared up
+  // front instead of withholding a capability the very next sentence claims to
+  // have. `restart: "unavailable"` on the capability is what the banner renders
+  // beside the button, and {@link finishInstalled} lands the run on
+  // `restart: "refused"` with the same reason.
+  const noRestart = restartUnavailableReason();
+  const notes = [base.note, noRestart].filter((n): n is string => Boolean(n));
+  return {
+    oneClick: true,
+    ...(noRestart ? { restart: "unavailable" as const } : {}),
+    ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
+  };
+}
 
-  return { oneClick: true, ...(base.note ? { note: base.note } : {}) };
+/**
+ * Why a restart could not be run from here, or nothing.
+ *
+ * One sentence, used twice and deliberately identical in both: once as a note
+ * beside the button (before the install, so nobody presses it expecting a
+ * restart) and once as the `restartRefusal` on the verdict (after it, because a
+ * promise made up front still has to be kept up front *and* at the end).
+ */
+function restartUnavailableReason(): string | null {
+  if (pidFileNamesThisProcess()) return null;
+  return `Callboard has no PID file naming this process (\`${PID_FILE}\`), so it was not started by \`callboard start\` — a foreground run, or systemd, pm2, Docker or a process manager of your own. It can install the new version here, but \`callboard restart\` would find nothing to stop, so the restart itself is yours to do however you started it.`;
 }
 
 // ── The run ─────────────────────────────────────────────────────────
@@ -582,7 +692,10 @@ export function assertSelfUpdateArgv(argv: readonly string[], packageName: strin
   if (!Array.isArray(argv) || argv.length !== 4) return false;
   if (argv[0] !== "npm" || argv[1] !== "install" || argv[2] !== "-g") return false;
   if (argv[3] !== packageName) return false;
-  if (!PACKAGE_NAME.test(packageName)) return false;
+  // The pattern excludes a leading `-` as well as the obvious shapes, so a
+  // manifest naming itself `--force` cannot slip a flag past a check whose
+  // comment claims the name is verified rather than trusted.
+  if (!PACKAGE_NAME_PATTERN.test(packageName)) return false;
   return argv.every((part) => typeof part === "string" && part.length > 0);
 }
 
@@ -596,8 +709,19 @@ export function assertSelfUpdateArgv(argv: readonly string[], packageName: strin
  */
 export function startSelfUpdate(opts: {
   capability: SelfUpdateCapability;
-  /** The package and paths the capability check already resolved. Re-resolving here would be a second, possibly different, answer. */
-  source: { packageName: string; fromVersion: string; globalPackageRoot: string };
+  /**
+   * The package and paths the capability check already resolved. Re-resolving
+   * here would be a second, possibly different, answer.
+   *
+   * There is deliberately **no `fromVersion`** here. It used to be one, supplied
+   * by the route from a fresh `package.json` read, and that was the shape of the
+   * bug: after one install that read returns the *new* version, so a retry
+   * compared the new file against itself and concluded nothing had changed. The
+   * version being replaced is not a caller's to state — it is {@link
+   * BOOT_VERSION}, and a parameter no caller can pass is a parameter no test can
+   * decouple from production either.
+   */
+  source: { packageName: string; globalPackageRoot: string };
   /** For the log line. Never reaches argv, a path, or a command. */
   clientKey?: string;
 }): StartSelfUpdateResult {
@@ -658,7 +782,11 @@ export function startSelfUpdate(opts: {
     package: source.packageName,
     command,
     argv,
-    fromVersion: source.fromVersion,
+    // The version this process is *executing*, not whatever is in the package
+    // directory at this instant — which after one install is already the new
+    // one. `"unknown"` only when the manifest was unreadable at boot, in which
+    // case the capability refused with `package-unreadable` long before here.
+    fromVersion: BOOT_VERSION ?? "unknown",
     globalPackageRoot: source.globalPackageRoot,
     startedAt: Date.now(),
     finishedAt: null,
@@ -750,6 +878,16 @@ function finishFailed(run: SelfUpdateRun, code: number | null, signal: NodeJS.Si
  * "a newer Callboard is installed" are different statements — the same split
  * engine installs make. Then the version is *read from the package.json npm has
  * just rewritten*, and only that reading is allowed to name a version.
+ *
+ * `changed` compares that reading against `run.fromVersion`, which is {@link
+ * BOOT_VERSION} — the code this process is executing — and the whole of one bug
+ * lived in that being a fresh read instead. On a *second* press both sides read
+ * the same already-overwritten file, `changed` came out false, and the run
+ * reported `restart: "skipped"` with the words "there is nothing to restart
+ * into" while the daemon went on running the old code. That second press is
+ * exactly the retry the deferred-restart branch below tells the user to make, so
+ * the documented way out of "a chat was streaming, try again when idle" could
+ * never restart anything.
  */
 function finishInstalled(run: SelfUpdateRun): void {
   run.done = true;
@@ -767,7 +905,7 @@ function finishInstalled(run: SelfUpdateRun): void {
   });
 
   const rollbackCommand = rollbackCommandFor(run);
-  const installed = readPackageJson(run.globalPackageRoot);
+  const installed = readPackageManifest(run.globalPackageRoot);
   const installedVersion = installed?.version;
   const changed = installedVersion !== undefined && installedVersion !== run.fromVersion;
 
@@ -788,11 +926,17 @@ function finishInstalled(run: SelfUpdateRun): void {
   }
 
   if (!changed) {
-    // npm found nothing newer. Restarting would kill every in-flight turn to
-    // load exactly the same code, which is a cost with no benefit — and the
-    // honest reading of it is that the "update available" the banner showed came
-    // from a version check that has since been overtaken.
-    const summary = `\`${run.command}\` finished and the installed version is still v${installedVersion} — npm had nothing newer to fetch. Callboard has not restarted, because there is nothing to restart into.`;
+    // npm found nothing newer *and* it is the same version this process is
+    // running — so restarting would kill every in-flight turn to load exactly
+    // the same code, a cost with no benefit. The honest reading is that the
+    // "update available" the banner showed came from a version check that has
+    // since been overtaken.
+    //
+    // Both halves matter. Against a fresh read of the manifest this branch also
+    // swallowed the case where the version had moved and this process had simply
+    // not restarted into it yet, and told the user there was nothing to restart
+    // into while there very much was.
+    const summary = `\`${run.command}\` finished and the installed version is still v${installedVersion} — npm had nothing newer to fetch, and it is the version Callboard is already running. Callboard has not restarted, because there is nothing to restart into.`;
     log.info(`self-update ${run.updateId}: already on v${installedVersion}; no restart`);
     run.log.emit({
       type: "update_verified",
@@ -812,6 +956,31 @@ function finishInstalled(run: SelfUpdateRun): void {
   // deprecated out from under a cached "update available". It is worth saying,
   // because the banner promised an upgrade.
   const direction = isNewerVersion(run.fromVersion, installedVersion) ? "" : " (which is not newer than what was running — npm's `latest` has moved)";
+
+  // The disposition the capability already declared. Checked again here rather
+  // than trusted from the capability object, because a pid file can appear or
+  // vanish between the button rendering and npm finishing — and because a
+  // promise made before the install is worth nothing if the code after it
+  // reaches `spawnRestartHelper` regardless. The sentence is the same one the
+  // note carried, so a user who read it before pressing sees it confirmed rather
+  // than contradicted.
+  const noRestart = restartUnavailableReason();
+  if (noRestart) {
+    const refusal = `v${installedVersion} is installed${direction}. ${noRestart} The new version takes effect the moment you do. ${NEW_BUNDLE_IS_LIVE}`;
+    log.warn(`self-update ${run.updateId}: installed v${installedVersion} but cannot restart — no pid file naming this process`);
+    run.log.emit({
+      type: "update_verified",
+      updateId: run.updateId,
+      fromVersion: run.fromVersion,
+      installedVersion,
+      changed: true,
+      summary: refusal,
+      restart: "refused",
+      restartRefusal: refusal,
+      rollbackCommand,
+    });
+    return;
+  }
 
   // Resolved before the beat below, unlike the work-in-flight check, because it
   // is a question about disk rather than about timing: the helper either exists
@@ -916,7 +1085,10 @@ function finishInstalled(run: SelfUpdateRun): void {
  * helper's process, holding the port the restart was meant to free.
  */
 export function resolveRestartHelper(globalPackageRoot: string): string | null {
-  const pkg = readPackageJson(globalPackageRoot);
+  // A fresh read, deliberately, and one of the two places in this module where
+  // that is the right question: this is the package npm has *just written*, not
+  // the one this process is running.
+  const pkg = readPackageManifest(globalPackageRoot);
   if (!pkg?.bin) return null;
   const helper = path.resolve(globalPackageRoot, pkg.bin);
   if (!helper.startsWith(globalPackageRoot + path.sep)) return null;

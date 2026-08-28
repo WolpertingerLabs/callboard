@@ -22,6 +22,7 @@ import type { Request } from "express";
 import type { SelfUpdateCapability } from "shared/types/index.js";
 import {
   activeSelfUpdateId,
+  describeRestartPending,
   getSelfUpdateCapability,
   getSelfUpdateRun,
   isSelfUpdateRunDone,
@@ -42,6 +43,26 @@ export const selfUpdateRouter = Router();
 
 /** The package name to fall back on when this daemon cannot read its own manifest — for the copy block, which must never be empty. */
 const FALLBACK_PACKAGE = "@wolpertingerlabs/callboard";
+
+/**
+ * How long the response stays open after `update_restarting` before the server
+ * closes it itself.
+ *
+ * Sized by what can still legitimately arrive: `update_restart_failed`, which
+ * comes from either a synchronous `spawn` throw or an `error` event on the
+ * child, both of which land within milliseconds of the frame that precedes them.
+ * Fifteen seconds is far past that and comfortably past the ordinary case too —
+ * the helper's Node boot plus `cmdStop`'s SIGTERM is one to two seconds, and the
+ * socket dies with the process long before this fires.
+ *
+ * So this only ever fires when the restart did not happen and did not report
+ * itself either. Closing is the whole action: the client is already in its
+ * `restarting` phase, where a stream ending is the *expected* shape of success,
+ * and it moves straight to polling for the daemon to come back. There is no
+ * frame to invent, and inventing one would be a claim about a restart nothing
+ * here has observed.
+ */
+export const RESTART_STREAM_GRACE_MS = 15_000;
 
 /**
  * This request's capability, evaluated per request and never cached.
@@ -69,22 +90,35 @@ async function capabilityFor(req: Request): Promise<SelfUpdateCapability> {
 /**
  * `GET /api/self-update` — may this client update Callboard, and what would run?
  *
- * Read by Settings → About when it has already decided a newer version exists.
- * It is a GET with a side effect of at most one cached `npm root -g` spawn, so
- * it is not on any polling path — the banner asks once, when it renders.
+ * Read by Settings → About when it has already decided a newer version exists,
+ * or when this daemon reports a restart pending. It is a GET with a side effect
+ * of at most one cached `npm root -g` spawn, so it is not on any polling path —
+ * the banner asks once, when it renders.
+ *
+ * Two versions come back, and they are two different questions.
+ * {@link SelfUpdateStatusResponse.version} is what this process is *executing*
+ * — the manifest as read at boot — and `installedVersion` is what is in the
+ * package directory right now. They differ for as long as new files are on disk
+ * and this daemon has not restarted into them, which includes the case a daemon
+ * cannot otherwise detect at all: a *second* Callboard sharing one global
+ * install, upgraded by its sibling without being asked and without anything
+ * restarting it.
  */
 selfUpdateRouter.get("/", async (req, res) => {
   // #swagger.tags = ['System']
   // #swagger.summary = 'Can Callboard install its own update here, and what would it run?'
-  // #swagger.description = 'Reports whether this client may ask the daemon to run `npm install -g` on itself and restart, plus the version it is running and the equivalent shell command. Refused - with a one-line reason for the UI to render next to the copy-and-paste command - for clients outside the LAN, when allowEngineInstalls is off, on Windows, when npm global prefix is missing or not writable, when the daemon is running from a git checkout rather than the global install npm would replace, and when no PID file names this process (so `callboard restart` would find nothing to stop). The command is present in every response, including every refusal.'
-  /* #swagger.responses[200] = { description: 'Capability, version and command' } */
+  // #swagger.description = 'Reports whether this client may ask the daemon to run `npm install -g` on itself and restart, plus the version it is running, the version currently on disk, whether a restart is pending because those differ, and the equivalent shell command. Refused - with a one-line reason for the UI to render next to the copy-and-paste command - for clients outside the LAN, when allowEngineInstalls is off, on Windows, when npm global prefix is missing or not writable, and when the daemon is running from a git checkout rather than the global install npm would replace. A daemon with no PID file naming it is NOT refused: it can install, and the capability declares restart: unavailable so the button says up front that the restart is the user own. The command is present in every response, including every refusal.'
+  /* #swagger.responses[200] = { description: 'Capability, running and installed versions, and the command' } */
   const pkg = selfPackage();
   const capability = await capabilityFor(req);
   const packageName = pkg?.name ?? FALLBACK_PACKAGE;
   const activeUpdateId = activeSelfUpdateId();
+  const { pending, installedVersion } = describeRestartPending();
   return res.json({
     capability,
     version: pkg?.version ?? "unknown",
+    ...(installedVersion ? { installedVersion } : {}),
+    ...(pending ? { restartPending: true } : {}),
     package: packageName,
     command: selfUpdateCommand(packageName),
     ...(activeUpdateId ? { activeUpdateId } : {}),
@@ -128,9 +162,13 @@ selfUpdateRouter.post("/", async (req, res) => {
     return res.status(code === "not-local" || code === "disabled" ? 403 : 422).json({ error: refusal, refusal, code });
   }
 
+  // No `fromVersion`: the version being replaced is the one this process is
+  // running, which the service holds as a boot snapshot. Passing a freshly-read
+  // one from here is what made a retry compare the post-install manifest against
+  // itself and conclude there was nothing to restart into.
   const result = startSelfUpdate({
     capability,
-    source: { packageName: pkg.name, fromVersion: pkg.version, globalPackageRoot: source.globalPackageRoot },
+    source: { packageName: pkg.name, globalPackageRoot: source.globalPackageRoot },
     clientKey: getClientKey(req),
   });
 
@@ -165,6 +203,17 @@ selfUpdateRouter.post("/", async (req, res) => {
  * left the one case where the daemon is alive and needs to explain itself
  * looking identical to the case where it is gone. The client then waited out its
  * 90-second poll and advised a downgrade of a daemon that had never restarted.
+ *
+ * It does not end the response, and it does not leave it open forever either.
+ * On the ordinary path the process dies and takes the socket with it, which is
+ * why there was no server-side bound at all — but that is a bound provided by
+ * something *not happening here*, and a restart that hangs (the helper spawned
+ * and never signalled, `cmdStop` waiting out its own timeout) leaves the
+ * response open on a heartbeat with a `RunLog` listener attached to it. A
+ * browser is fine; a `curl` or a script is a listener held for the lifetime of
+ * the daemon. So {@link RESTART_STREAM_GRACE_MS} after `update_restarting` the
+ * response closes — reachable only when this process is still alive, which is
+ * exactly the case where it can afford to say something.
  */
 selfUpdateRouter.get("/runs/:updateId/stream", (req, res) => {
   // #swagger.tags = ['System']
@@ -189,7 +238,7 @@ selfUpdateRouter.get("/runs/:updateId/stream", (req, res) => {
       // heard of is that the update *worked*: this is a different process now,
       // and it has no memory of the run its predecessor was serving.
       refusal: "Callboard is no longer holding that update's output. If Callboard restarted, this is the new daemon — check the version on this page.",
-      code: "update-failed",
+      code: "run-not-found",
     });
   }
 
@@ -200,26 +249,45 @@ selfUpdateRouter.get("/runs/:updateId/stream", (req, res) => {
   // subscribed — a run that is already done replays and closes immediately.
   let unsubscribe: (() => void) | null = null;
   let closed = false;
+  let restartGrace: NodeJS.Timeout | null = null;
   const finish = () => {
     if (closed) return;
     closed = true;
+    if (restartGrace) clearTimeout(restartGrace);
     stopHeartbeat();
     unsubscribe?.();
     res.end();
   };
 
+  // See {@link RESTART_STREAM_GRACE_MS}. Armed once, on the first
+  // `update_restarting` — whether it arrives live or in the replay, because a
+  // client attaching to a run that is already restarting needs the same bound.
+  // `unref()` so a pending close never holds the process open; nothing here is
+  // worth delaying a shutdown for.
+  const armRestartGrace = () => {
+    if (restartGrace || closed) return;
+    restartGrace = setTimeout(() => {
+      log.warn(`self-update stream ${run.updateId}: no restart ${RESTART_STREAM_GRACE_MS}ms after update_restarting, and this daemon is still here — closing the stream`);
+      finish();
+    }, RESTART_STREAM_GRACE_MS);
+    restartGrace.unref?.();
+  };
+
   // Replay, then subscribe — synchronously, with nothing awaited in between, so
   // an event emitted by the child process cannot slip through the gap.
-  for (const event of selfUpdateRunEvents(run)) sendSSE(res, { ...event });
-  if (isSelfUpdateRunDone(run) && isTerminal(selfUpdateRunEvents(run))) {
+  const replayed = selfUpdateRunEvents(run);
+  for (const event of replayed) sendSSE(res, { ...event });
+  if (isSelfUpdateRunDone(run) && isTerminal(replayed)) {
     finish();
     return;
   }
+  if (replayed.some((e) => e.type === "update_restarting")) armRestartGrace();
 
   unsubscribe = subscribeToSelfUpdateRun(run, (event) => {
     if (closed) return;
     sendSSE(res, { ...event });
     if (isTerminalEvent(event)) finish();
+    else if (event.type === "update_restarting") armRestartGrace();
   });
 
   req.on("close", finish);

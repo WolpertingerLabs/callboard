@@ -42,7 +42,7 @@
  * The first five are inherited verbatim from the shared install preflight (see
  * `backend/src/services/npm-global-install.ts`) — a client that may not install
  * an engine on this machine may not upgrade Callboard on it either. The rest are
- * this feature's own, and two of them are the interesting ones:
+ * this feature's own, and the interesting one is:
  *
  * - **`not-global-install`** — the daemon is running from somewhere other than
  *   npm's global directory: a git checkout, `npm run dev`, a `node
@@ -54,14 +54,29 @@
  *   checkout, so the paths compare equal, but an install would replace the link
  *   with a real package and restart from a different directory than the one the
  *   daemon reported running from.
- * - **`no-pid-file`** — nothing wrote `<DATA_DIR>/callboard.pid`, so this daemon
- *   was not started by `callboard start` and there is no process the CLI's
- *   `restart` would know to stop. A `--foreground` daemon lands here.
+ *
+ * ## What the client does with a code, and what it does not
+ *
+ * The banner reads `oneClick` and renders `refusal`. It never switches on
+ * `code`, and it is not expected to: a refusal's whole job is to be a sentence a
+ * user can act on, and a client branching on the classification would end up
+ * composing a second, worse sentence from it. The server does use the code —
+ * `not-local` and `disabled` answer 403 while the machine-state ones answer 422,
+ * and every one of them is logged.
+ *
+ * That is why the codes below are not pruned down to the two that change the
+ * status line. They are a published classification with a live consumer (the
+ * status mapping) and a real diagnostic one (the log), and collapsing five
+ * distinct machine states into one placeholder would delete information this
+ * daemon itself uses. The standard the note below applies is narrower and
+ * different: a code **nothing can ever emit** is a false claim about a response
+ * shape. A code that is emitted, logged, and not branched on by today's one
+ * client is documentation doing its job.
  */
 export type SelfUpdateRefusalCode =
-  /** The request came from outside the LAN, or through a proxy. */
+  /** The request came from outside the LAN, or through a proxy. Answered 403. */
   | "not-local"
-  /** `AgentSettings.allowEngineInstalls` is off — the same switch, deliberately, rather than a second one. */
+  /** `AgentSettings.allowEngineInstalls` is off — the same switch, deliberately, rather than a second one. Answered 403. */
   | "disabled"
   /** Callboard cannot spawn `npm` without a shell here (Windows). */
   | "unsupported-platform"
@@ -71,20 +86,28 @@ export type SelfUpdateRefusalCode =
   | "prefix-not-writable"
   /** This daemon is not the copy `npm install -g` would replace. */
   | "not-global-install"
-  /** No PID file, so there is nothing for `callboard restart` to stop. */
-  | "no-pid-file"
   /** Callboard could not read its own `package.json`, so it cannot name the package to install. */
   | "package-unreadable"
-  /** An update is already running. One at a time. */
+  /** An update or an engine install is already holding npm's global tree. One at a time. Answered 409. */
   | "busy"
   /**
    * An update finished moments ago. The same shape the engine installer uses —
    * the lock alone does not stop an authenticated LAN client driving a
-   * back-to-back `npm install -g` loop.
+   * back-to-back `npm install -g` loop. Answered 429.
    */
   | "cooling-down"
-  /** npm could not be started, or exited non-zero. */
-  | "update-failed";
+  /**
+   * The stream was asked for an update this daemon is not holding — it aged out
+   * of the retention window, or (much more likely, and the reason the sentence
+   * says so) the update worked and this is a different process that never heard
+   * of it. Answered 404.
+   *
+   * This was called `update-failed` and documented as "npm could not be started,
+   * or exited non-zero", which described nothing that ever emitted it: a failed
+   * install is an `update_exit` frame carrying npm's own account, on a stream
+   * that is by definition still connected, and never a refusal code at all.
+   */
+  | "run-not-found";
 
 /*
  * Deliberately absent: a `work-in-flight` code. A restart declined because a
@@ -93,6 +116,15 @@ export type SelfUpdateRefusalCode =
  * `restart: "refused"` and a `restartRefusal` naming what is busy. A code here
  * that nothing emits would be a published claim about a response shape that
  * does not exist.
+ *
+ * `no-pid-file` was here and has gone for the same reason, from the other
+ * direction: it is no longer emitted. A daemon with no PID file naming it can
+ * still *install* perfectly well, and refusing the button told that population
+ * — systemd, pm2, Docker, `--foreground` — "it can install the new version,
+ * but" and then offered no way to. It is now a pre-declared restart
+ * disposition: `SelfUpdateCapability.restart === "unavailable"`, the button
+ * appears with a note, and the run lands on `restart: "refused"` carrying the
+ * same sentence.
  */
 
 /**
@@ -110,8 +142,30 @@ export interface SelfUpdateCapability {
   refusal?: string;
   /** Which gate said no. Always present when `oneClick` is false. It classifies the sentence; it never builds it. */
   code?: SelfUpdateRefusalCode;
-  /** True-but-survivable condition to render beside the button — the nvm prefix note, and nothing else so far. */
+  /**
+   * True-but-survivable conditions to render beside the button — the nvm prefix
+   * note, and the "the restart will be yours to run" one. Several are joined
+   * into one string rather than sent as a list, because the banner renders this
+   * as a sentence.
+   */
   note?: string;
+  /**
+   * What will happen to the restart, said **before** the install rather than
+   * discovered after it.
+   *
+   * Absent means the ordinary path: install, then restart. `"unavailable"` means
+   * Callboard can install here but cannot restart itself — no PID file names
+   * this process, so it was not started by `callboard start` and the CLI's
+   * `restart` would find nothing to stop. That used to be a refusal
+   * (`no-pid-file`), which withheld a capability in the same breath as claiming
+   * it: the sentence said "it can install the new version, but" and then there
+   * was no button. The run lands on `restart: "refused"` carrying the same
+   * reason, so the promise made here is the one kept at the end.
+   *
+   * Optional and additive: a bundle that does not know this field renders the
+   * note, which says the same thing in words.
+   */
+  restart?: "unavailable";
 }
 
 /**
@@ -123,8 +177,39 @@ export interface SelfUpdateCapability {
  */
 export interface SelfUpdateStatusResponse {
   capability: SelfUpdateCapability;
-  /** The version this daemon is running, from its own `package.json`. */
+  /**
+   * The version this daemon is **running** — its manifest as read at boot, not
+   * as it stands on disk now.
+   *
+   * The distinction is the whole of one bug. `npm install -g` replaces the
+   * package tree in place, so a read taken after npm exits describes code that
+   * is not executing yet; this field reported that read, so the daemon claimed
+   * to be running a version it was not, and everything computed from it — "is
+   * there an update?" first among them — went wrong in the one window that
+   * mattered.
+   */
   version: string;
+  /**
+   * The version in that same package directory **right now**, when it could be
+   * read.
+   *
+   * Normally identical to {@link version}. It differs for exactly as long as new
+   * files are on disk and this process has not restarted into them: between npm
+   * exiting and the restart landing, after a restart that was deferred or
+   * refused, and indefinitely for a *second* daemon sharing one global install,
+   * which npm upgraded without ever being asked to and which nothing will
+   * restart.
+   */
+  installedVersion?: string;
+  /**
+   * `installedVersion` differs from `version` — new code is on disk and this
+   * process is not running it.
+   *
+   * Derivable from the two fields above and sent anyway, because the daemon is
+   * the one that knows both readings are trustworthy: a client comparing them
+   * cannot tell "they differ" from "one of them could not be read".
+   */
+  restartPending?: boolean;
   /** The package name, from that same file. Never from the request. */
   package: string;
   /** The equivalent shell command — what the copy button copies, and what the button runs. */

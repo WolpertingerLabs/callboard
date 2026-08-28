@@ -1459,7 +1459,28 @@ export interface SystemInfoModel {
 }
 
 export interface SystemInfo {
+  /**
+   * The version the daemon is **running** — its manifest as read at boot.
+   *
+   * Not what is in its package directory now. `npm install -g` replaces that
+   * tree in place, so the two differ for as long as new code is on disk and the
+   * daemon has not restarted into it. Everything that asks "is there an update"
+   * or "has the restart landed" wants this one.
+   */
   version: string;
+  /**
+   * The version in the daemon's package directory right now, when it could be
+   * read. Equal to {@link version} except while a restart is outstanding.
+   * Absent on servers older than this field.
+   */
+  installedVersion?: string;
+  /**
+   * New code is on disk and the daemon is not running it — it has not restarted
+   * since the install. True on the update path between npm finishing and the
+   * restart landing, and indefinitely for a daemon whose files were replaced by
+   * a *sibling* daemon sharing the same global install.
+   */
+  restartPending?: boolean;
   latestVersion?: string;
   nodeVersion: string;
   platform: string;
@@ -1729,6 +1750,13 @@ export async function readSelfUpdateStream(updateId: string, onEvent: (event: Se
  * instantly and forever. This bypasses the cache entirely and returns undefined
  * for every way a restarting daemon can fail to answer — connection refused
  * mid-restart is the *expected* case here, not an error to report.
+ *
+ * `version` is the field to read, and it now means what the poll needs it to.
+ * It is the daemon's boot manifest, so the *old* daemon — still answering
+ * between the helper spawning and the SIGTERM landing — reports the old version
+ * and this correctly says "not yet". It used to be a per-request read of a file
+ * npm had already rewritten, so the old daemon answered with the new version and
+ * the poll could declare the restart done before it had started.
  */
 export async function probeDaemonVersion(signal?: AbortSignal): Promise<string | undefined> {
   try {
