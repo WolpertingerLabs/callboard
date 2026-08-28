@@ -48,9 +48,13 @@ export default function FolderPathPill({ path }: Props) {
     if (!open) return;
     // Native, so it tests real DOM containment — which no longer includes the
     // portaled bubble. It does not need to: the bubble's own onClick stops the
-    // event at the portal container, which is below `document`, so a click on
-    // the path never reaches here. Covered by a test, because that reasoning is
-    // the only thing keeping the bubble from dismissing itself.
+    // event at the portal container, and `document.body` is below `document`,
+    // so a click on the path never reaches this *bubble-phase* listener. Note
+    // what that rests on — the click does still reach `document` in capture, so
+    // moving this to `{ capture: true }`, or to mousedown/pointerdown as
+    // "close on outside press" refactors tend to, would fire before the
+    // bubble's handler and make it dismiss itself on its own clicks. Pinned by
+    // a test, because that reasoning is all that keeps it open.
     const onDocClick = (e: MouseEvent) => {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
         setOpen(false);
