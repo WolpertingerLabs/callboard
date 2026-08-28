@@ -94,7 +94,16 @@ import type {
 import { createLogger } from "../utils/logger.js";
 import { INSTALLABLE_PACKAGES, oneClickRecipeFor } from "./engine-install-recipes.js";
 import { MIN_REFRESH_INTERVAL_MS, refreshEngineStatuses } from "./engine-status.js";
-import { clearNpmInstallInFlight, INSTALL_TIMEOUT_MS, npmSpawnRefusal, resetNpmRootCache, RunLog, RUN_RETENTION_MS, spawnNpmInstall } from "./npm-global-install.js";
+import {
+  clearNpmInstallInFlight,
+  INSTALL_TIMEOUT_MS,
+  npmInstallInFlight,
+  npmSpawnRefusal,
+  resetNpmRootCache,
+  RunLog,
+  RUN_RETENTION_MS,
+  spawnNpmInstall,
+} from "./npm-global-install.js";
 
 const log = createLogger("engine-install");
 
@@ -268,6 +277,22 @@ export function startEngineInstall(opts: {
       ok: false,
       code: "busy",
       refusal: `Callboard is already installing ${current?.package ?? "another engine"} and runs one install at a time. Wait for it to finish, or copy the command into a terminal.`,
+      status: 409,
+    };
+  }
+
+  // The other direction of the same lock, and it is not symmetric by accident:
+  // `isInstallRunning` only knows about *this* module's runs, so without this
+  // an engine install would start while a self-update's npm is part-way through
+  // rewriting the global tree — including this daemon's own package directory,
+  // which `resolveRestartHelper` then reads out of. Two `npm install -g` runs
+  // against one prefix have no cross-process lock to fall back on.
+  const other = npmInstallInFlight();
+  if (other) {
+    return {
+      ok: false,
+      code: "busy",
+      refusal: `Callboard is already running ${other} and runs one global install at a time. Wait for it to finish, or copy the command into a terminal.`,
       status: 409,
     };
   }

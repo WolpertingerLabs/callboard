@@ -459,11 +459,19 @@ export function cleanLine(raw: string): string {
  *
  * Set on a successful spawn and cleared on the outcome, both inside
  * {@link spawnNpmInstall}, so there is no release for a caller to forget.
+ *
+ * The **token** is what makes that release safe rather than merely automatic.
+ * The marker is a single slot and `finish()` used to clear it unconditionally,
+ * so two overlapping runs — which the `busy` gates are supposed to prevent, and
+ * did not until both features asked this question — meant whichever npm exited
+ * first erased the other's marker and the second half of that overlap ran with
+ * the tree apparently free. Each spawn now stamps its own token and clears the
+ * slot only while it still holds it.
  */
-let inFlight: string | null = null;
+let inFlight: { token: symbol; what: string } | null = null;
 
 export function npmInstallInFlight(): string | null {
-  return inFlight;
+  return inFlight?.what ?? null;
 }
 
 /**
@@ -512,8 +520,12 @@ export function spawnNpmInstall(opts: {
 }): ChildProcess | null {
   const [command, ...args] = opts.argv;
   const timeoutMs = opts.timeoutMs ?? INSTALL_TIMEOUT_MS;
+  // This run's claim on the marker. Compared rather than assumed on release —
+  // see {@link npmInstallInFlight} — so a run that never got the slot (the
+  // synchronous spawn failure below) cannot free someone else's.
+  const token = Symbol(opts.label);
   const finish = (outcome: NpmRunOutcome) => {
-    inFlight = null;
+    if (inFlight?.token === token) inFlight = null;
     opts.onDone(outcome);
   };
 
@@ -542,7 +554,7 @@ export function spawnNpmInstall(opts: {
     return null;
   }
 
-  inFlight = opts.what;
+  inFlight = { token, what: opts.what };
 
   const timer = setTimeout(() => {
     if (opts.isDone()) return;

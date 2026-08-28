@@ -56,6 +56,7 @@ vi.mock("./engine-status.js", async (importOriginal) => ({
 }));
 
 const { MIN_REFRESH_INTERVAL_MS } = await import("./engine-status.js");
+const { npmInstallInFlight, spawnNpmInstall } = await import("./npm-global-install.js");
 const {
   assertSpawnable,
   getInstallCapability,
@@ -409,6 +410,67 @@ describe("startEngineInstall — refusing without spawning", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("defers to a self-update already holding npm's global tree", () => {
+    // The other half of a lock that used to be one-sided. `isInstallRunning`
+    // only knows about *this* module's runs, so without the shared marker an
+    // engine install started while a self-update's npm was part-way through
+    // rewriting the global tree — including the daemon's own package
+    // directory, which the restart helper is then read out of. Two
+    // `npm install -g` runs against one prefix have no cross-process lock.
+    spawnNpmInstall({
+      argv: ["npm", "install", "-g", "@wolpertingerlabs/callboard"],
+      label: "self-update test",
+      what: "a Callboard self-update",
+      isDone: () => false,
+      onLine: () => undefined,
+      onDone: () => undefined,
+    });
+    expect(npmInstallInFlight()).toBe("a Callboard self-update");
+    mocks.spawn.mockClear();
+
+    const result = startEngineInstall({ engineId: "opencode", capability: { oneClick: true } });
+    expect(result).toMatchObject({ ok: false, code: "busy", status: 409 });
+    expect(result.ok === false && result.refusal).toContain("a Callboard self-update");
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("does not let one run's completion clear another's marker", () => {
+    // The marker is a single slot, and `finish()` used to empty it whoever was
+    // holding it. Two overlapping runs therefore meant whichever npm exited
+    // first declared the tree free while the other was still writing to it.
+    let firstDone: (() => void) | undefined;
+    const first = new FakeChild();
+    mocks.spawn.mockReturnValue(first);
+    spawnNpmInstall({
+      argv: ["npm", "install", "-g", "first"],
+      label: "first",
+      what: "the first install",
+      isDone: () => false,
+      onLine: () => undefined,
+      onDone: () => (firstDone = () => undefined),
+    });
+
+    const second = new FakeChild();
+    mocks.spawn.mockReturnValue(second);
+    spawnNpmInstall({
+      argv: ["npm", "install", "-g", "second"],
+      label: "second",
+      what: "the second install",
+      isDone: () => false,
+      onLine: () => undefined,
+      onDone: () => undefined,
+    });
+    expect(npmInstallInFlight()).toBe("the second install");
+
+    first.emit("close", 0, null);
+    expect(firstDone).toBeTruthy();
+    // The second run is still going, and still says so.
+    expect(npmInstallInFlight()).toBe("the second install");
+
+    second.emit("close", 0, null);
+    expect(npmInstallInFlight()).toBeNull();
   });
 
   it("does not cool down after a REFUSED install — nothing was probed", async () => {
