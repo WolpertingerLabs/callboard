@@ -117,6 +117,41 @@ describe("ChatListItem card menu", () => {
     expect(screen.queryByText("Reopen card")).toBeNull();
     expect(screen.getByText("Delete")).toBeTruthy();
   });
+
+  /**
+   * The menu is portaled to the body, so its two stopPropagation calls look
+   * vestigial — the popup is visibly outside the row. They are not: React
+   * bubbles synthetic events through the fiber tree, which the portal leaves
+   * intact, so without them every menu click would also open the chat. These
+   * two cases are what makes deleting either guard fail.
+   */
+  it("does not open the chat when a menu entry is clicked", () => {
+    const onClick = vi.fn();
+    const { container } = render(
+      <ChatListItem chat={makeChat()} onClick={onClick} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open" } }} />,
+    );
+    openRowMenu(container);
+
+    fireEvent.click(screen.getByText("Close card"));
+
+    expect(CARD_MENU.onToggleLifecycle).toHaveBeenCalledTimes(1);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("closes on a click-away without opening the chat", () => {
+    const onClick = vi.fn();
+    const { container } = render(<ChatListItem chat={makeChat()} onClick={onClick} onDelete={() => {}} />);
+    openRowMenu(container);
+
+    // The click-away overlay covers the viewport and carries no text; z-index
+    // 50 is what distinguishes it from the menu shell above it at 51.
+    const overlay = Array.from(document.body.querySelectorAll("div")).find((d) => d.style.zIndex === "50");
+    expect(overlay).toBeTruthy();
+    fireEvent.click(overlay!);
+
+    expect(screen.queryByText("Delete")).toBeNull();
+    expect(onClick).not.toHaveBeenCalled();
+  });
 });
 
 /**
