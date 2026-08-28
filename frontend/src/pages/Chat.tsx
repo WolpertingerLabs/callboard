@@ -115,6 +115,30 @@ interface ChatProps {
   onChatListRefresh?: () => void;
 }
 
+/**
+ * The history entry the Chat view is currently showing, plus a token for the
+ * instance that published it. Read by the `chat_created` handler in `readSSE`:
+ * a send stamps the entry it was fired from in `newChatOriginKeyRef`, and the
+ * redirect only fires while the two still agree.
+ *
+ * Module scope, not a ref, because the question is "is that screen still in
+ * front of the user" and a ref can only answer "is my own instance still
+ * alive" — a different question the moment the layout swaps under a user who
+ * has not moved. `useIsMobile` crossing 768px is exactly that: SplitLayout
+ * returns a different root element on each side of the breakpoint, so every
+ * phone rotation unmounts and remounts this component at the same entry, and
+ * the redirect has to survive it.
+ *
+ * Not compose-specific: a /chat/:id view publishes here too. That is harmless
+ * — its entry can never equal a stamped new-chat origin — and cheaper than a
+ * second condition to get wrong.
+ *
+ * The token defends the one case where clearing on unmount would drop a claim
+ * that is still good: two mounted Chats, the second publishing over the first,
+ * the first then unmounting. Only the publisher may clear the slot.
+ */
+let activeChatViewEntry: { key: string; token: object } | null = null;
+
 // How close (in px) to the bottom of the chat the user must scroll before
 // auto-scroll re-latches and follows new messages again.
 const AUTO_SCROLL_LATCH_PX = 100;
@@ -746,6 +770,50 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const onChatListRefreshRef = useRef(onChatListRefresh);
   onChatListRefreshRef.current = onChatListRefresh;
 
+  // Which history entry this view is showing, in a ref for the same reason
+  // `navigate` is: the new-chat SSE reader outlives the render that started it,
+  // and can outlive the mount entirely — nothing aborts the POST when the user
+  // walks off, so the stream runs to completion either way.
+  //
+  // `location.key` rather than the path, for the reason already given above
+  // `setPendingModel`: /chat/new → /chat/new via the New Chat panel is a new
+  // compose context at an identical URL, and the key is the only thing that
+  // tells them apart. Nothing rotates the key underneath a waiting user — the
+  // two state-stripping `navigate(samePath, { replace: true })` calls are both
+  // outside the window, one in an effect that returns early when there is no
+  // `id`, the other consuming `routerDraftRef`, which is a mount-time ref, on
+  // the first commit. That second one is only safe *because* the ref is
+  // mount-scoped: re-reading `location.state.draft` from an effect would put a
+  // key rotation inside the compose window.
+  const locationKeyRef = useRef(location.key);
+  locationKeyRef.current = location.key;
+
+  // Publish this view as the compose screen on screen; see the module-level
+  // declaration for why the slot is not a ref. Re-runs on every navigation, so
+  // the slot names where the user is now rather than where they came in.
+  useEffect(() => {
+    // The seat is always empty by the time we take it: SplitLayout mounts Chat
+    // in exactly one place, and both orderings that reach this line — a
+    // same-instance navigation, and a remount — run the outgoing cleanup
+    // first. A seat still taken here means one of those premises has broken (a
+    // second Chat somewhere, or create-before-destroy), and the symptom would
+    // otherwise be silent: a redirect skipped, someone's prompt vanishing off
+    // a screen they never left. That is the failure mode this whole guard
+    // exists to remove, so it says so out loud rather than degrading quietly.
+    if (activeChatViewEntry) {
+      console.error("Chat: a chat view was already published to the slot; a new-chat redirect may skip for one of them", activeChatViewEntry);
+    }
+    const token = {};
+    activeChatViewEntry = { key: location.key, token };
+    return () => {
+      if (activeChatViewEntry?.token === token) activeChatViewEntry = null;
+    };
+  }, [location.key]);
+
+  // The compose screen a new-chat send was fired from. `chat_created` redirects
+  // only while the user is still sitting on it — see the handler in readSSE.
+  const newChatOriginKeyRef = useRef<string | null>(null);
+
   // Safety timeout: if streaming is true but no SSE events arrive for 5 minutes,
   // assume the stream is dead and reset the indicator.
   const STREAMING_INACTIVITY_TIMEOUT_MS = 300_000; // 5 minutes
@@ -813,6 +881,36 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
               // Handle chat_created - fires during new chat creation
               if (event.type === "chat_created" && event.chatId) {
+                // Only pull the user into the new chat if the compose screen
+                // they sent from is still the one in front of them. Sending a
+                // prompt and then walking off used to yank them into the new
+                // chat seconds later, on top of whatever they had moved on to.
+                //
+                // The reachable ways to have walked off:
+                //   - Left the Chat pane entirely — the chat list on mobile,
+                //     the board/settings/agents anywhere. SplitLayout swaps
+                //     this component out, and the slot empties with it.
+                //   - Opened a second compose screen (New Chat panel) for the
+                //     same folder. Still mounted, still /chat/new, same URL —
+                //     the history entry is the only thing that differs.
+                // Moving to another /chat/:id is caught earlier and more
+                // cheaply by the staleness check at the top of the read loop,
+                // which cancels before this frame is ever parsed.
+                //
+                // What this must NOT read as walking off is a remount at the
+                // same entry — a phone rotating across the 768px breakpoint —
+                // which is why the slot outlives any one instance.
+                //
+                // Creation is server-side and unaffected: the chat-list refresh
+                // is how the new chat surfaces when we stay put, and dropping
+                // the stream costs nothing because the screen that would have
+                // rendered it is gone. Reopening the chat re-attaches through
+                // the usual globalSessionActive path.
+                if (activeChatViewEntry?.key !== newChatOriginKeyRef.current) {
+                  onChatListRefreshRef.current?.();
+                  reader.cancel();
+                  return;
+                }
                 tempChatIdRef.current = event.chatId;
                 // Update currentIdRef so the finally blocks in readSSE and
                 // handleSend skip their state resets (streaming/in-flight).
@@ -1721,6 +1819,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (!id) {
           // NEW CHAT MODE: POST to /api/chats/new/message
           addRecentDirectory(folder);
+
+          // Stamp the compose screen this send came from before the first
+          // await, so `chat_created` can tell "still waiting here" from "moved
+          // on". Read after the image upload it would record wherever the user
+          // had wandered to during a slow upload — i.e. it would compare the
+          // destination against itself, exactly in the window the check exists
+          // to cover.
+          newChatOriginKeyRef.current = locationKeyRef.current;
 
           // Upload images before creating the chat (no chatId yet)
           let imageIds: string[] = [];

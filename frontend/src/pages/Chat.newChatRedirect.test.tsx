@@ -1,0 +1,424 @@
+// @vitest-environment jsdom
+/**
+ * `chat_created` is a redirect, and a redirect is only welcome if the user is
+ * still standing where they asked for it.
+ *
+ * Sending the first prompt of a new chat opens an SSE stream that outlives the
+ * screen that opened it: nothing aborts the POST when the user leaves, so the
+ * reader keeps running after `Chat` unmounts and `navigate` still works from
+ * that dead closure. The frame used to redirect unconditionally, dropping the
+ * user into the new chat on top of whatever they had moved on to.
+ *
+ * There is a test per reachable way to walk off — leaving the Chat pane, and
+ * opening a second compose screen for the same folder (identical URL, so only
+ * the history entry tells them apart) — and one for the thing that must not
+ * read as walking off: a layout remount at the same entry, which is what every
+ * phone rotation does.
+ */
+import { useEffect } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
+import Chat from "./Chat";
+import SplitLayout from "../components/SplitLayout";
+
+// The rotation test drives the real SplitLayout, for the real remount. Its
+// sidebar and sibling pages are stubs: what matters is that the mobile and
+// desktop branches return different root elements, not what they contain.
+vi.mock("./ChatList", () => ({ default: () => <div>chat list</div> }));
+vi.mock("./FolderList", () => ({ default: () => <div>folder list</div> }));
+vi.mock("./Board", () => ({ default: () => <div>board</div> }));
+vi.mock("./Settings", () => ({ default: () => <div>settings</div> }));
+vi.mock("./agents/AgentList", () => ({ default: () => <div>agents</div> }));
+vi.mock("./agents/CreateAgent", () => ({ default: () => <div>new agent</div> }));
+vi.mock("./agents/AgentDashboard", () => ({ default: () => <div>agent dashboard</div> }));
+
+// The composer is a rich contenteditable with its own suspense of behaviour;
+// none of it is what these tests are about. A button that fires `onSend` is —
+// plus its `disabled` state, which is how the page says "a send is in flight".
+//
+// It does keep one piece of the real component's shape: handing its setter
+// back through `onSetValue` from a mount effect, the way PromptInput does. The
+// draft-strip navigate is gated on that registration, and that navigate is the
+// one thing in the app that can rotate `location.key` without the user moving
+// — so a mock that never registers would leave the whole compose window
+// untested.
+vi.mock("../components/PromptInput", () => {
+  // Named, and returned below rather than declared inline: an anonymous arrow
+  // under the `default` key is not a component as far as rules-of-hooks is
+  // concerned, and this stub uses a hook.
+  function PromptInputStub({
+    onSend,
+    disabled,
+    onSetValue,
+  }: {
+    onSend: (prompt: string, images?: File[]) => void;
+    disabled?: boolean;
+    onSetValue?: (setter: (value: string) => void) => void;
+  }) {
+    useEffect(() => {
+      // Arrow-wrapped for the same reason the real one is: setState reads a
+      // bare function as an updater.
+      onSetValue?.(() => (_value: string) => {});
+    }, [onSetValue]);
+    return (
+      <>
+        <button type="button" disabled={disabled} onClick={() => onSend("do the thing")}>
+          send prompt
+        </button>
+        <button type="button" disabled={disabled} onClick={() => onSend("do the thing", [new File(["x"], "shot.png", { type: "image/png" })])}>
+          send prompt with image
+        </button>
+      </>
+    );
+  }
+  return { default: PromptInputStub };
+});
+
+const FOLDER = "/tmp/project";
+const NEW_CHAT_ID = "chat-created-123";
+
+// All of the handles below are module state, so these tests must stay serial:
+// `describe.concurrent` would have two of them writing the same slots.
+
+/** Pushes SSE frames into the in-flight new-chat stream. */
+let emit: (frame: unknown) => void;
+/** Resolves when the client's POST has been answered with a stream body. */
+let streamOpened: Promise<void>;
+let openStream: () => void;
+/** Set by the one test that needs to navigate mid-upload; resolves the POST. */
+let slowImageUpload = false;
+let finishImageUpload: (() => void) | null = null;
+
+function jsonResponse(body: unknown) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
+}
+
+/**
+ * Enough of the server to get a compose screen on screen and a new-chat stream
+ * open. Unmocked routes throw rather than resolving to `{}`: a silent empty
+ * body is how a stale path (or a real endpoint nobody noticed the page calls)
+ * turns into a passing test that exercises the wrong thing.
+ *
+ * Rejecting is loud, not fatal — `Chat` swallows several of these fetches. Any
+ * `unmocked request:` on stderr from this file is a failure even when the run
+ * is green: it means a test took a path whose data it never actually supplied.
+ */
+function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+  const method = (init?.method ?? "GET").toUpperCase();
+
+  if (method === "POST" && url.includes("/images/upload")) {
+    const result = jsonResponse({ success: true, images: [{ id: "img-1" }] });
+    // Slow uploads are the point of one test: a multi-megabyte screenshot over
+    // a tunnel takes long enough to walk away during.
+    if (!slowImageUpload) return Promise.resolve(result);
+    return new Promise<Response>((resolve) => {
+      finishImageUpload = () => resolve(result);
+    });
+  }
+
+  if (method === "POST" && url.includes("/chats/new/message")) {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        emit = (frame: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
+        // A real fetch tears the body down when its signal fires, and abort is
+        // load-bearing on this path (switching folders mid-send aborts the
+        // stream). Without this the tests would be kinder to the component
+        // than the browser is.
+        init?.signal?.addEventListener("abort", () => {
+          try {
+            controller.error(new DOMException("aborted", "AbortError"));
+          } catch {
+            // Already closed — the reader got there first.
+          }
+        });
+      },
+    });
+    openStream();
+    return Promise.resolve({ ok: true, status: 200, body } as unknown as Response);
+  }
+
+  // Compose screen.
+  if (url.includes("/chats/new/info")) return Promise.resolve(jsonResponse({ folder: FOLDER, slash_commands: [], plugins: [] }));
+  if (url.includes("/system-info")) return Promise.resolve(jsonResponse({}));
+  if (url.includes("/keywords")) return Promise.resolve(jsonResponse({ keywords: [] }));
+  if (url.includes("/mcp-tools")) return Promise.resolve(jsonResponse({ tools: [], servers: [] }));
+
+  // What the page loads once it lands on a chat.
+  if (url.includes("/tree")) return Promise.resolve(jsonResponse({ tree: { chatId: NEW_CHAT_ID, children: [] }, ancestors: [] }));
+  if (url.includes("/messages")) return Promise.resolve(jsonResponse([]));
+  if (url.includes("/pending")) return Promise.resolve(jsonResponse({ pending: null }));
+  if (url.includes("/activity")) return Promise.resolve(jsonResponse({ activities: [], conditionWatch: null, awaitingChildren: 0 }));
+  if (url.includes("/read") && method === "PATCH") return Promise.resolve(jsonResponse({}));
+  if (url.includes("/slash-commands")) return Promise.resolve(jsonResponse({ slashCommands: [], plugins: [] }));
+  if (url.includes("/queue/") && method === "DELETE") return Promise.resolve(jsonResponse({}));
+  if (method === "GET" && /\/chats\/[^/]+$/.test(url)) return Promise.resolve(jsonResponse({ id: NEW_CHAT_ID, folder: FOLDER, metadata: "{}" }));
+
+  return Promise.reject(new Error(`unmocked request: ${method} ${url}`));
+}
+
+/** Reads the current path out of the router, and offers ways to leave. */
+function Probe() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <div data-testid="path">{location.pathname}</div>
+      <div data-testid="state">{JSON.stringify(location.state ?? null)}</div>
+      <button type="button" onClick={() => navigate("/")}>
+        back to list
+      </button>
+      <button type="button" onClick={() => navigate("/chat/some-other-chat")}>
+        open another chat
+      </button>
+      {/* What the New Chat panel does: same folder, same URL, fresh compose. */}
+      <button type="button" onClick={() => navigate(`/chat/new?folder=${encodeURIComponent(FOLDER)}`, { state: { provider: "codex" } })}>
+        start another new chat
+      </button>
+    </>
+  );
+}
+
+function renderNewChat(onChatListRefresh?: () => void, state?: unknown) {
+  return render(
+    <MemoryRouter initialEntries={[{ pathname: "/chat/new", search: `?folder=${encodeURIComponent(FOLDER)}`, state }]}>
+      <Routes>
+        <Route path="/chat/new" element={<Chat onChatListRefresh={onChatListRefresh} />} />
+        <Route path="/chat/:id" element={<Chat onChatListRefresh={onChatListRefresh} />} />
+        <Route path="/" element={<div>chat list</div>} />
+      </Routes>
+      <Probe />
+    </MemoryRouter>,
+  );
+}
+
+/** Fail with what went missing rather than a bare vitest timeout. */
+function withTimeout<T>(promise: Promise<T>, what: string): Promise<T> {
+  return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(what)), 2000))]);
+}
+
+/** Send the first prompt and wait until the stream is actually open. */
+async function sendFirstPrompt() {
+  await act(async () => {
+    fireEvent.click(screen.getByText("send prompt"));
+  });
+  await act(async () => {
+    await withTimeout(streamOpened, "the new-chat POST was never issued");
+  });
+}
+
+/** Push `chat_created` and let the reader drain it. */
+async function emitChatCreated() {
+  await act(async () => {
+    emit({ type: "chat_created", chatId: NEW_CHAT_ID });
+    // One macrotask turn, which drains every microtask the reader queues on
+    // the way through — the whole chain from `reader.read()` to the navigate
+    // is microtask-bound.
+    await new Promise((r) => setTimeout(r, 0));
+  });
+}
+
+const path = () => screen.getByTestId("path").textContent;
+
+beforeEach(() => {
+  streamOpened = new Promise<void>((resolve) => {
+    openStream = resolve;
+  });
+  emit = () => {
+    throw new Error("no new-chat stream is open");
+  };
+  slowImageUpload = false;
+  finishImageUpload = null;
+  vi.stubGlobal("fetch", vi.fn(fakeServer));
+  // jsdom ships neither, and the transcript view sets both up the moment a
+  // chat id exists — i.e. exactly in the case these tests want to reach.
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
+afterEach(() => {
+  cleanup();
+  // The rotation test moves the viewport; jsdom's default is the desktop side
+  // of the breakpoint and the other tests assume it.
+  window.innerWidth = 1024;
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("chat_created only redirects the user who is waiting for it", () => {
+  it("navigates to the new chat, carrying the sent message, when the user stayed put", async () => {
+    renderNewChat();
+    await sendFirstPrompt();
+
+    await emitChatCreated();
+
+    expect(path()).toBe(`/chat/${NEW_CHAT_ID}`);
+    // The optimistic bubble survives the landing. Not via the router-state
+    // handoff, despite appearances: the instance is preserved across
+    // /chat/new → /chat/:id, so what saves the bubble is `isNewChatTransition`
+    // stopping the id-effect from clearing it. That is what this pins.
+    expect(screen.getByText("do the thing")).toBeTruthy();
+  });
+
+  it("leaves the user alone when they went back to the chat list", async () => {
+    const refresh = vi.fn();
+    renderNewChat(refresh);
+    await sendFirstPrompt();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("back to list"));
+    });
+    expect(path()).toBe("/");
+
+    await emitChatCreated();
+
+    // Still on the list, and the new chat is announced by refreshing it rather
+    // than by hijacking the page.
+    expect(path()).toBe("/");
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("leaves the user alone in a second compose screen for the same folder", async () => {
+    const refresh = vi.fn();
+    renderNewChat(refresh);
+    await sendFirstPrompt();
+
+    // The New Chat panel's own navigate: identical URL, new compose context.
+    // `Chat` stays mounted and `folder` never changes, so nothing else in the
+    // page notices — only `location.key` distinguishes this from standing
+    // still, which is why the redirect is keyed on it.
+    await act(async () => {
+      fireEvent.click(screen.getByText("start another new chat"));
+    });
+
+    await emitChatCreated();
+
+    expect(path()).toBe("/chat/new");
+    expect(refresh).toHaveBeenCalled();
+    // The fresh composer is usable rather than stuck behind the previous
+    // send's streaming state.
+    expect((screen.getByText("send prompt") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("leaves the user alone when they walked off during an image upload", async () => {
+    slowImageUpload = true;
+    const refresh = vi.fn();
+    renderNewChat(refresh);
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("send prompt with image"));
+    });
+
+    // Still uploading — the POST that creates the chat has not been sent yet.
+    // Asserted, not assumed: `Chat` swallows upload failures, so if this mock
+    // ever stops matching the upload URL the chat gets created immediately and
+    // this test quietly becomes a duplicate of the one above, still green and
+    // covering nothing.
+    expect(finishImageUpload, "the image upload was never requested").toBeTypeOf("function");
+    // The compose screen the send was fired from must have been recorded
+    // before that await, or the user's move gets folded into the origin and
+    // the check compares the destination against itself.
+    await act(async () => {
+      fireEvent.click(screen.getByText("start another new chat"));
+    });
+
+    await act(async () => {
+      finishImageUpload!();
+      await withTimeout(streamOpened, "the new-chat POST was never issued");
+    });
+    await emitChatCreated();
+
+    expect(path()).toBe("/chat/new");
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("still redirects across a layout remount — a phone rotating is not walking away", async () => {
+    // The real SplitLayout, because the remount is its doing: `useIsMobile`
+    // crosses 768px and the two branches return different root elements
+    // (<ErrorBoundary> vs <div className="split-layout">), so React tears the
+    // subtree down and builds a new one. The user has not moved — same URL,
+    // same history entry — and their prompt must not evaporate.
+    window.innerWidth = 400;
+    render(
+      <MemoryRouter initialEntries={[`/chat/new?folder=${encodeURIComponent(FOLDER)}`]}>
+        <Routes>
+          <Route path="/chat/new" element={<SplitLayout onLogout={() => {}} />} />
+          <Route path="/chat/:id" element={<SplitLayout onLogout={() => {}} />} />
+        </Routes>
+        <Probe />
+      </MemoryRouter>,
+    );
+    await sendFirstPrompt();
+    const composerBeforeRotation = screen.getByText("send prompt");
+
+    await act(async () => {
+      window.innerWidth = 900;
+      fireEvent(window, new Event("resize"));
+    });
+    // Prove the remount actually happened, so this test can't quietly decay
+    // into asserting nothing.
+    expect(screen.getByText("send prompt")).not.toBe(composerBeforeRotation);
+
+    await emitChatCreated();
+
+    // The landing is the whole claim. A remount discards `inFlightMessages`,
+    // and `transitionInFlightMessagesRef` reads router state once at mount —
+    // the post-rotation instance mounted at /chat/new, so the redirect's state
+    // is never read. So for the seconds creation takes, a rotating user does
+    // see an empty composer with their prompt gone; what this fixes is that
+    // they used to stay there. Both pre-existing, neither restored here.
+    expect(path()).toBe(`/chat/${NEW_CHAT_ID}`);
+  });
+
+  it("still redirects when the send came from a staged draft", async () => {
+    // The whole guard rests on one invariant: nothing rotates `location.key`
+    // between the send and `chat_created`. The only thing in the app that
+    // could is the draft-strip `navigate(samePath, { replace: true })`, which
+    // fires once the composer registers its setter — before anything is
+    // clickable, so it lands ahead of any send. That ordering lives in
+    // PromptInput, not here, and without this test no test executes the strip
+    // at all: the guard would be resting on a comment.
+    renderNewChat(undefined, { draft: { id: "draft-1", user_message: "staged text" } });
+    // Proof the strip actually fired — and therefore that the key rotated —
+    // before the send, rather than this test passing because the path was
+    // never taken.
+    expect(screen.getByTestId("state").textContent).not.toContain("draft-1");
+
+    await sendFirstPrompt();
+
+    await emitChatCreated();
+
+    expect(path()).toBe(`/chat/${NEW_CHAT_ID}`);
+  });
+
+  it("leaves the user alone when they opened a different chat", async () => {
+    renderNewChat();
+    await sendFirstPrompt();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("open another chat"));
+    });
+
+    await emitChatCreated();
+
+    // Note: this one passes without the redirect guard too — the read loop's
+    // pre-existing staleness check (`currentIdRef.current !== streamChatId`)
+    // cancels the reader before the frame is parsed. Kept as a regression
+    // guard for that check, not as coverage of this fix.
+    expect(path()).toBe("/chat/some-other-chat");
+  });
+});
