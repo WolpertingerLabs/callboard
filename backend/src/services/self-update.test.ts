@@ -119,6 +119,7 @@ const {
   startSelfUpdate,
   subscribeToSelfUpdateRun,
 } = await import("./self-update.js");
+const { npmInstallInFlight, selfRestartPending } = await import("./npm-global-install.js");
 const { sessionRegistry } = await import("./session-registry.js");
 
 /**
@@ -981,6 +982,55 @@ describe("describeRestartPending", () => {
     } finally {
       writeFileSync(manifestPath, original);
     }
+  });
+});
+
+// ── The lock, in the window where npm is not running ────────────────
+
+describe("an engine install must not start inside the hand-over", () => {
+  it("is refused between npm finishing and the SIGTERM landing", async () => {
+    await runUpdate();
+    await npmInstalls(NEXT_VERSION);
+
+    // npm has exited, so the marker it held is clear and `isInstallRunning()`
+    // is false — the two questions `startEngineInstall` used to ask. The
+    // restart is still coming, and `gracefulShutdown` would orphan an install
+    // accepted here mid-write of the global tree.
+    expect(npmInstallInFlight()).toBeNull();
+    expect(selfRestartPending()).toContain("self-update");
+
+    await sleep(700);
+    // And it stays set through the spawn: the correct answer for the seconds
+    // before this process is killed is still "do not start writing".
+    expect(selfRestartPending()).not.toBeNull();
+  });
+
+  it("is released when the restart is declined, because the tree is free again", async () => {
+    sessionRegistry.register("chat-busy", { type: "web" });
+    await runUpdate();
+    await npmInstalls(NEXT_VERSION);
+    expect(selfRestartPending()).not.toBeNull();
+    await sleep(700);
+    expect(selfRestartPending()).toBeNull();
+  });
+
+  it("is released when the helper could not be spawned", async () => {
+    await runUpdate();
+    mocks.spawn.mockImplementation(() => {
+      throw new Error("EPERM");
+    });
+    await npmInstalls(NEXT_VERSION);
+    await sleep(700);
+    expect(selfRestartPending()).toBeNull();
+  });
+
+  it("counts a running engine install as work a restart would destroy", () => {
+    // The other direction of the same hazard: a restart kills an engine install
+    // as surely as it kills a chat turn, so `describeWorkInFlight` has to say so.
+    mocks.isInstallRunning.mockReturnValue(true);
+    const work = describeWorkInFlight();
+    expect(work.busy).toBe(true);
+    expect(work.summary).toContain("engine install");
   });
 });
 

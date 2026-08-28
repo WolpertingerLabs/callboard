@@ -21,6 +21,11 @@
  * - **The replay buffer** ({@link RunLog}). Bounded, and bounded in a way that
  *   never drops the first frame — a transcript that does not say what was run
  *   is not a transcript.
+ * - **The lock on npm's global tree** ({@link npmInstallInFlight} and
+ *   {@link selfRestartPending}). Two states, not one: npm is writing, and a
+ *   restart has been decided on but has not landed. Both features have to see
+ *   both, and `engine-install.ts` cannot import `self-update.ts` without a
+ *   cycle — so the state lives here, where both spawns already pass through.
  *
  * What is deliberately *not* here: the sentences. Each caller composes its own
  * refusal text, because "Callboard has not changed anything about this engine"
@@ -485,6 +490,45 @@ export function npmInstallInFlight(): string | null {
  */
 export function clearNpmInstallInFlight(): void {
   inFlight = null;
+}
+
+/**
+ * A restart that has been decided on but has not happened yet.
+ *
+ * {@link inFlight} answers "is npm writing the global tree right now", and that
+ * is not the same question as "is it safe to start writing it". Between a
+ * self-update's npm exiting and its detached helper's SIGTERM landing — the
+ * hand-over beat plus the helper's own Node boot, one to two seconds — npm is
+ * not running, so `inFlight` is clear and `isInstallRunning()` is false, and an
+ * engine install starting there is accepted by every gate. The restart then
+ * proceeds, `gracefulShutdown` calls `process.exit(0)`, and an `npm install -g`
+ * is orphaned part-way through writing the same prefix.
+ *
+ * Round 1 made the lock symmetric for *npm-is-running* and stopped there. This
+ * is the other state, and it lives here for the same reason `inFlight` does:
+ * `engine-install.ts` cannot import `self-update.ts` without a cycle, and this
+ * module is where both features already meet. Holds a noun phrase, because its
+ * only consumer is a refusal sentence.
+ *
+ * Set where the restart timer is scheduled and cleared wherever that timer is
+ * cleared — including the work-in-flight refusal inside it and a helper spawn
+ * that fails. It is deliberately *not* cleared on a successful spawn: the
+ * correct state for the seconds before this process is killed is "no, do not
+ * start writing".
+ */
+let restartPending: { what: string } | null = null;
+
+/** What restart is pending, as a noun phrase, or `null`. */
+export function selfRestartPending(): string | null {
+  return restartPending?.what ?? null;
+}
+
+export function setSelfRestartPending(what: string): void {
+  restartPending = { what };
+}
+
+export function clearSelfRestartPending(): void {
+  restartPending = null;
 }
 
 /** How a run of npm ended. The *sentence* is the caller's to write — see this module's header. */

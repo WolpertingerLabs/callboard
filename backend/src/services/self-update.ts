@@ -151,6 +151,7 @@ import { listRuns } from "./job-store.js";
 import { isNewerVersion } from "./npm-registry.js";
 import {
   clearNpmInstallInFlight,
+  clearSelfRestartPending,
   getInstallCapability,
   npmInstallInFlight,
   npmSpawnRefusal,
@@ -158,6 +159,7 @@ import {
   resolveNpmGlobalRoot,
   RunLog,
   RUN_RETENTION_MS,
+  setSelfRestartPending,
   spawnNpmInstall,
 } from "./npm-global-install.js";
 import { sessionRegistry } from "./session-registry.js";
@@ -483,7 +485,21 @@ export function describeWorkInFlight(): { busy: boolean; summary: string } {
     return { busy: true, summary: "Callboard could not check whether any job runs are active, and it will not restart without knowing" };
   }
 
-  if (chats.length === 0 && runs.length === 0) return { busy: false, summary: "" };
+  // An engine install is a global `npm install -g` this daemon started and is
+  // waiting on. A restart is `process.exit(0)` out of `gracefulShutdown`, which
+  // orphans that npm mid-write of the very tree this feature runs out of — so it
+  // destroys work exactly as surely as a chat turn does, and belongs in the same
+  // list rather than only in the *start* gate. `isInstallRunning`, not
+  // `npmInstallInFlight`: the latter is also true of this update's own npm.
+  let engineInstall = false;
+  try {
+    engineInstall = isInstallRunning();
+  } catch (err) {
+    log.warn(`could not check for a running engine install: ${err instanceof Error ? err.message : String(err)}`);
+    return { busy: true, summary: "Callboard could not check whether an engine install is running, and it will not restart without knowing" };
+  }
+
+  if (chats.length === 0 && runs.length === 0 && !engineInstall) return { busy: false, summary: "" };
 
   const parts: string[] = [];
   if (chats.length > 0)
@@ -494,6 +510,7 @@ export function describeWorkInFlight(): { busy: boolean; summary: string } {
     parts.push(
       `${runs.length} job run${runs.length === 1 ? " is" : "s are"} mid-step (${runs.slice(0, NAMED_IN_SUMMARY).join(", ")}${runs.length > NAMED_IN_SUMMARY ? ", …" : ""})`,
     );
+  if (engineInstall) parts.push("an engine install is part-way through writing npm's global tree");
   return { busy: true, summary: parts.join(" and ") };
 }
 
@@ -662,6 +679,7 @@ export function resetSelfUpdateState(): void {
   // cancel it — otherwise a run nobody is watching any more still stops the
   // daemon half a second later.
   if (current?.restartTimer) clearTimeout(current.restartTimer);
+  clearSelfRestartPending();
   if (current?.child && !current.done) {
     try {
       current.child.kill("SIGKILL");
@@ -803,6 +821,7 @@ export function startSelfUpdate(opts: {
   if (current?.restartTimer) {
     clearTimeout(current.restartTimer);
     current.restartTimer = null;
+    clearSelfRestartPending();
     log.warn(`self-update ${current.updateId}: cancelled its pending restart — update ${run.updateId} replaced it`);
   }
   current = run;
@@ -1017,6 +1036,22 @@ function finishInstalled(run: SelfUpdateRun): void {
 
   recordUpdate(run, installedVersion);
 
+  // The other half of the global-install lock, and the half round 1 left open.
+  //
+  // `inFlight` covers *npm is running*. It does not cover the hand-over: from
+  // `finishInstalled` clearing it to the helper's SIGTERM landing — the beat
+  // below plus the helper's own Node boot, so one to two seconds — both
+  // `isInstallRunning()` and `npmInstallInFlight()` are false, and
+  // `startEngineInstall` had no third question to ask. An engine install
+  // accepted in that window is not counted by `describeWorkInFlight`, the
+  // restart proceeds, and `gracefulShutdown`'s `process.exit(0)` orphans an `npm
+  // install -g` part-way through writing the global tree.
+  //
+  // It is parked in `npm-global-install.ts` rather than exported from here
+  // because `engine-install.ts` cannot import this module — the two would form a
+  // cycle. That file is where both features already meet.
+  setSelfRestartPending(`a Callboard self-update (restarting into v${installedVersion})`);
+
   // A beat, so the frame above reaches the browser before this daemon commits
   // to dying. Everything that decides *whether* to restart happens on the far
   // side of it — see the module header: the check has to be the last thing
@@ -1026,6 +1061,8 @@ function finishInstalled(run: SelfUpdateRun): void {
 
     const work = describeWorkInFlight();
     if (work.busy) {
+      // The restart is off, so the tree is free again.
+      clearSelfRestartPending();
       const refusal = `v${installedVersion} is installed, but Callboard did not restart: ${work.summary}, and a restart stops those mid-turn. The new version takes effect the next time Callboard restarts — press this again when things are idle, or run \`callboard restart\` yourself. ${NEW_BUNDLE_IS_LIVE}`;
       log.warn(`self-update ${run.updateId}: installed v${installedVersion} but did not restart — ${work.summary}`);
       run.log.emit({
@@ -1061,6 +1098,10 @@ function finishInstalled(run: SelfUpdateRun): void {
     });
 
     const failed = (detail: string) => {
+      // No restart is coming, so nothing is holding npm's tree on its behalf.
+      // Only reachable while this process is alive, which is the whole reason
+      // there is a frame to emit here at all.
+      clearSelfRestartPending();
       const refusal = `v${installedVersion} is installed, but Callboard could not start the helper that restarts it (${detail}). Callboard is still running v${run.fromVersion}; run \`callboard restart\` in a terminal to pick up the new version. ${NEW_BUNDLE_IS_LIVE}`;
       log.error(`self-update ${run.updateId}: ${refusal}`);
       run.log.emit({ type: "update_restart_failed", updateId: run.updateId, refusal, rollbackCommand });

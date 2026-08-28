@@ -56,7 +56,7 @@ vi.mock("./engine-status.js", async (importOriginal) => ({
 }));
 
 const { MIN_REFRESH_INTERVAL_MS } = await import("./engine-status.js");
-const { npmInstallInFlight, spawnNpmInstall } = await import("./npm-global-install.js");
+const { clearSelfRestartPending, npmInstallInFlight, setSelfRestartPending, spawnNpmInstall } = await import("./npm-global-install.js");
 const {
   assertSpawnable,
   getInstallCapability,
@@ -434,6 +434,29 @@ describe("startEngineInstall — refusing without spawning", () => {
     expect(result).toMatchObject({ ok: false, code: "busy", status: 409 });
     expect(result.ok === false && result.refusal).toContain("a Callboard self-update");
     expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("defers to a self-update whose npm has finished but whose restart has not", () => {
+    // The window round 1 left open. Between `finishInstalled` clearing the
+    // in-flight marker and the detached helper's SIGTERM landing — the hand-over
+    // beat plus the helper's own Node boot, one to two seconds — npm is not
+    // running, so both questions above answer "free". An install accepted here
+    // is invisible to `describeWorkInFlight`, so the restart is not deferred for
+    // it either: the daemon exits, and `npm install -g` is orphaned part-way
+    // through writing the global tree.
+    expect(npmInstallInFlight()).toBeNull();
+    setSelfRestartPending("a Callboard self-update (restarting into v9.9.9)");
+
+    const result = startEngineInstall({ engineId: "opencode", capability: { oneClick: true } });
+    expect(result).toMatchObject({ ok: false, code: "busy", status: 409 });
+    expect(result.ok === false && result.refusal).toContain("a Callboard self-update");
+    expect(result.ok === false && result.refusal).toContain("copy the command into a terminal");
+    expect(mocks.spawn).not.toHaveBeenCalled();
+
+    // And it is not a permanent lock: clearing it (a refused restart, a failed
+    // helper spawn) makes the tree available again.
+    clearSelfRestartPending();
+    expect(startEngineInstall({ engineId: "opencode", capability: { oneClick: true } }).ok).toBe(true);
   });
 
   it("does not let one run's completion clear another's marker", () => {

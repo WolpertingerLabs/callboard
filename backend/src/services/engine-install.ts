@@ -96,12 +96,14 @@ import { INSTALLABLE_PACKAGES, oneClickRecipeFor } from "./engine-install-recipe
 import { MIN_REFRESH_INTERVAL_MS, refreshEngineStatuses } from "./engine-status.js";
 import {
   clearNpmInstallInFlight,
+  clearSelfRestartPending,
   INSTALL_TIMEOUT_MS,
   npmInstallInFlight,
   npmSpawnRefusal,
   resetNpmRootCache,
   RunLog,
   RUN_RETENTION_MS,
+  selfRestartPending,
   spawnNpmInstall,
 } from "./npm-global-install.js";
 
@@ -192,6 +194,7 @@ export function resetEngineInstallState(): void {
   }
   current = null;
   clearNpmInstallInFlight();
+  clearSelfRestartPending();
   resetNpmRootCache();
 }
 
@@ -293,6 +296,28 @@ export function startEngineInstall(opts: {
       ok: false,
       code: "busy",
       refusal: `Callboard is already running ${other} and runs one global install at a time. Wait for it to finish, or copy the command into a terminal.`,
+      status: 409,
+    };
+  }
+
+  // And the state neither of the two questions above covers: a self-update whose
+  // npm has finished but whose restart has not happened yet.
+  //
+  // For the second or two between those — the hand-over beat plus the helper's
+  // Node boot before `cmdStop` signals — `isInstallRunning()` and
+  // `npmInstallInFlight()` are both false, so an install starting here used to
+  // be accepted by every gate. It is also invisible to `describeWorkInFlight`,
+  // so the restart it raced would not be deferred for it: the daemon exits,
+  // `gracefulShutdown` takes this process with it, and an `npm install -g` is
+  // orphaned mid-write of the global tree. A restart destroys an engine install
+  // as surely as it destroys a chat turn, and this is the half of that the
+  // *starting* side has to refuse.
+  const pendingRestart = selfRestartPending();
+  if (pendingRestart) {
+    return {
+      ok: false,
+      code: "busy",
+      refusal: `Callboard is about to restart for ${pendingRestart}, which will stop this process — so it will not start an install that a restart would kill part-way through. Try again once Callboard has come back, or copy the command into a terminal.`,
       status: 409,
     };
   }
