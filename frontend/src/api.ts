@@ -113,6 +113,12 @@ import type {
   EngineInstallEvent,
   EngineInstallExitEvent,
   EngineInstallVerifiedEvent,
+  SelfUpdateCapability,
+  SelfUpdateStatusResponse,
+  SelfUpdateStartResponse,
+  SelfUpdateEvent,
+  SelfUpdateVerifiedEvent,
+  SelfUpdateRestartingEvent,
 } from "shared/types/index.js";
 
 export type {
@@ -230,6 +236,12 @@ export type {
   EngineInstallEvent,
   EngineInstallExitEvent,
   EngineInstallVerifiedEvent,
+  SelfUpdateCapability,
+  SelfUpdateStatusResponse,
+  SelfUpdateStartResponse,
+  SelfUpdateEvent,
+  SelfUpdateVerifiedEvent,
+  SelfUpdateRestartingEvent,
 };
 
 export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
@@ -1626,6 +1638,106 @@ export async function readEngineInstallStream(installId: string, onEvent: (event
     }
   } finally {
     reader.releaseLock();
+  }
+}
+
+// ── Self-update ─────────────────────────────────────────────────────
+
+/**
+ * May this daemon install its own update here, and what would it run?
+ *
+ * Asked once by Settings → About, and only when it has already decided a newer
+ * version exists — this is not on a polling path. The response carries the
+ * copy-and-paste command in *every* case, refusals included, because that
+ * command is what the feature degrades to and a UI that hid it would have taken
+ * away the only remaining action.
+ */
+export async function getSelfUpdateStatus(): Promise<SelfUpdateStatusResponse> {
+  const res = await fetch(`${BASE}/self-update`, { credentials: "include" });
+  await assertOk(res, "Failed to check whether Callboard can update itself");
+  return (await res.json()) as SelfUpdateStatusResponse;
+}
+
+/**
+ * Ask the daemon to install its own latest version and restart into it.
+ *
+ * Nothing sent from here reaches a command line: the package name comes from the
+ * daemon's own manifest, there is no body, and there is no argv parameter to
+ * supply. A refusal is a normal outcome — outside the LAN, the capability
+ * switched off, a git checkout rather than the global install — and it still
+ * *throws*, because `assertOk`'s contract is that a non-2xx is an error; the
+ * message is the server's one-line sentence.
+ */
+export async function startSelfUpdate(): Promise<SelfUpdateStartResponse> {
+  const res = await fetch(`${BASE}/self-update`, { method: "POST", credentials: "include" });
+  await assertOk(res, "Failed to start the update");
+  return (await res.json()) as SelfUpdateStartResponse;
+}
+
+/**
+ * Follow one update's output up to the point where the daemon stops answering.
+ *
+ * Reads the SSE stream with `fetch` for the same reason
+ * {@link readEngineInstallStream} does. The difference is what "finished" means:
+ * a *successful* update ends with the server being killed, so this promise
+ * resolving — or rejecting with a network error — after an `update_restarting`
+ * event is the expected path, not a failure. The caller stops here and starts
+ * polling for the daemon to come back; there is no frame that can tell it the
+ * new process is up, because the process that would send it is gone.
+ */
+export async function readSelfUpdateStream(updateId: string, onEvent: (event: SelfUpdateEvent) => void, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(`${BASE}/self-update/runs/${encodeURIComponent(updateId)}/stream`, { credentials: "include", signal });
+  if (res.status === 404) {
+    // Tagged like the install stream's, and with an extra reading available
+    // here: a 404 for an update this tab just started most likely means the
+    // update worked and this is a *different daemon* that never heard of it.
+    throw Object.assign(new Error("That update is no longer available."), { updateGone: true });
+  }
+  await assertOk(res, "Failed to follow the update");
+  if (!res.body) throw new Error("The update stream returned no body");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue; // heartbeats are `:` comments
+        try {
+          onEvent(JSON.parse(line.slice(6)) as SelfUpdateEvent);
+        } catch {
+          // A frame this bundle cannot parse is skipped rather than fatal.
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/**
+ * Is the daemon answering again, and on which version?
+ *
+ * The success signal for an update, and it has to be a *fresh* request rather
+ * than {@link getSystemInfo}: that one is served stale-while-revalidate from a
+ * module-level cache, so it would answer "yes, still running the old version"
+ * instantly and forever. This bypasses the cache entirely and returns undefined
+ * for every way a restarting daemon can fail to answer — connection refused
+ * mid-restart is the *expected* case here, not an error to report.
+ */
+export async function probeDaemonVersion(signal?: AbortSignal): Promise<string | undefined> {
+  try {
+    const res = await fetch(`${BASE}/system-info`, { credentials: "include", signal });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as { version?: string };
+    return typeof data.version === "string" && data.version.length > 0 ? data.version : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -1,64 +1,10 @@
 import { useEffect, useState } from "react";
-import { Info, Server, Cpu, Shield, ExternalLink, Layers, ArrowUpCircle } from "lucide-react";
+import { Info, Server, Cpu, Shield, ExternalLink, Layers } from "lucide-react";
 import { getSystemInfo, getAgentSettings } from "../../api";
 import type { SystemInfo } from "../../api";
 import type { AgentSettings } from "shared/types/index.js";
-
-/** Compare two semver strings. Returns > 0 if a > b, < 0 if a < b, 0 if equal.
- *  Handles pre-release segments: 1.0.0 > 1.0.0-alpha.1, alpha.10 > alpha.9. */
-function compareVersions(a: string, b: string): number {
-  const parseVer = (v: string) => {
-    const [core, pre] = v.split("-", 2);
-    const parts = core.split(".").map(Number);
-    return { parts, pre: pre || null };
-  };
-  const va = parseVer(a);
-  const vb = parseVer(b);
-
-  const maxLen = Math.max(va.parts.length, vb.parts.length);
-  for (let i = 0; i < maxLen; i++) {
-    const pa = va.parts[i] || 0;
-    const pb = vb.parts[i] || 0;
-    if (pa !== pb) return pa - pb;
-  }
-
-  // Same core: no pre-release > pre-release
-  if (!va.pre && vb.pre) return 1;
-  if (va.pre && !vb.pre) return -1;
-  if (!va.pre && !vb.pre) return 0;
-
-  // Both have pre-release: compare segments
-  const aParts = va.pre!.split(".");
-  const bParts = vb.pre!.split(".");
-  const preLen = Math.max(aParts.length, bParts.length);
-  for (let i = 0; i < preLen; i++) {
-    const sa = aParts[i];
-    const sb = bParts[i];
-    if (sa === undefined) return -1;
-    if (sb === undefined) return 1;
-    const na = Number(sa);
-    const nb = Number(sb);
-    const aIsNum = !isNaN(na);
-    const bIsNum = !isNaN(nb);
-    if (aIsNum && bIsNum) {
-      if (na !== nb) return na - nb;
-    } else if (aIsNum) {
-      return -1; // numbers sort before strings
-    } else if (bIsNum) {
-      return 1;
-    } else {
-      if (sa < sb) return -1;
-      if (sa > sb) return 1;
-    }
-  }
-  return 0;
-}
-
-/** Returns true if remote version is newer than local. */
-function isNewerVersion(local: string, remote: string): boolean {
-  if (!local || !remote || local === remote) return false;
-  return compareVersions(remote, local) > 0;
-}
+import UpdateBanner from "./UpdateBanner";
+import { isNewerVersion } from "../../utils/versions";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -150,35 +96,11 @@ export default function AboutSettings() {
 
   return (
     <>
-      {/* Update Notice */}
-      {hasUpdate && (
-        <div
-          style={{
-            border: "1px solid var(--accent)",
-            borderRadius: 8,
-            padding: "14px 20px",
-            background: "var(--tint-info)",
-            marginBottom: 16,
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          <ArrowUpCircle size={20} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>Update available</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              v{systemInfo!.version} → v{systemInfo!.latestVersion}
-              <span style={{ marginLeft: 8 }}>
-                Run:{" "}
-                <code style={{ fontSize: 11, background: "var(--surface)", padding: "2px 6px", borderRadius: 4 }}>
-                  npm install -g @wolpertingerlabs/callboard
-                </code>
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Update notice, and — where Callboard is the globally installed copy it
+          would be replacing — the button that installs it here. The
+          copy-and-paste command is rendered in every one of those states; see
+          UpdateBanner.tsx. */}
+      {hasUpdate && <UpdateBanner currentVersion={systemInfo!.version!} latestVersion={systemInfo!.latestVersion!} />}
 
       {/* Application Info */}
       <div style={sectionStyle}>
