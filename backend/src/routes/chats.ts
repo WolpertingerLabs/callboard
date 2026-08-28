@@ -1301,10 +1301,17 @@ const TRANSCRIPT_ELISION = "\n\n[... middle of the conversation omitted ...]\n\n
  * majority of the bytes and almost none of the subject, so keeping them would
  * spend the budget above on file paths and diff hunks instead of on what was
  * being discussed.
+ *
+ * Subagent messages (`teamName` set) go too, for the reason `flattenForHandoff`
+ * drops them in `agents/handoff.ts`: the session parsers splice nested detail
+ * into the timeline in timestamp order, so a brief to an agent is a plain
+ * `[user]` turn and its report a plain `[assistant]` one, indistinguishable
+ * from the conversation. Left in, they routinely dwarf the parent thread and
+ * both ends of {@link condenseTranscript}'s split land in agent chatter.
  */
 function transcriptForTitle(messages: ParsedMessage[]): string {
   return messages
-    .filter((m) => m.type === "text" && (m.role === "user" || m.role === "assistant") && m.content?.trim())
+    .filter((m) => !m.teamName && m.type === "text" && (m.role === "user" || m.role === "assistant") && m.content?.trim())
     .map((m) => `[${m.role}] ${m.content.trim()}`)
     .join("\n\n")
     .trim();
@@ -1333,6 +1340,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
   // #swagger.description = 'Re-derives the title from the whole conversation (not just its first message, which is what the new-chat auto-title used), persists it to chat metadata, and notifies open clients. Creates a file storage record if the chat only exists on the filesystem.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "{ title }: the newly generated title" } */
+  /* #swagger.responses[400] = { description: "The chat ran on a removed harness and cannot be titled" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[422] = { description: "The chat has no readable conversation to title" } */
   /* #swagger.responses[502] = { description: "The model produced no usable title" } */
@@ -1344,6 +1352,15 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
     try {
       meta = JSON.parse(chat.metadata || "{}");
     } catch {}
+
+    // Refused by name, exactly as the fork route above does it: the provider
+    // lookup below falls back to claude-code, which would go looking for these
+    // session ids under ~/.claude/projects, find nothing, and answer 422 "no
+    // readable conversation" — false of a chat that has a conversation no
+    // surviving provider can read.
+    if (isRetiredProvider(meta.provider)) {
+      return res.status(400).json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. Its title cannot be regenerated." });
+    }
 
     // Same session set and provider resolution as GET /:id/messages: a chat's
     // contents are every session it has ever resumed under, not only the

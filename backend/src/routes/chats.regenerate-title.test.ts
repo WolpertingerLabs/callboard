@@ -7,8 +7,9 @@
  * titler is handed, and the write+notify pair that makes the new title visible
  * without a refetch:
  *
- *  - only user/assistant TEXT survives the condense (tool traffic is most of a
- *    working chat's bytes and none of its subject);
+ *  - only the parent conversation's user/assistant TEXT survives the condense
+ *    (tool traffic and subagent chatter are most of a working chat's bytes and
+ *    none of its subject);
  *  - a transcript over budget keeps BOTH ends, because a head-only excerpt of a
  *    long chat would re-derive approximately the title being replaced;
  *  - the title is persisted through `upsertChat`, so a chat that only exists as
@@ -20,13 +21,14 @@
  * router stack and driven with a fake req/res.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
 import type { ParsedMessage } from "shared/types/index.js";
 
-process.env.CALLBOARD_DATA_DIR = mkdtempSync(join(tmpdir(), "callboard-regen-title-"));
+const DATA_DIR = mkdtempSync(join(tmpdir(), "callboard-regen-title-"));
+process.env.CALLBOARD_DATA_DIR = DATA_DIR;
 
 /** The chat findChat resolves, or null for "no such chat". */
 let chat: any;
@@ -69,6 +71,18 @@ vi.mock("../services/quick-completion.js", () => ({
     return Promise.resolve(generatedTitle);
   },
 }));
+
+/**
+ * The real record store, alongside the spy above rather than instead of it.
+ *
+ * Most of these tests only care *what* the route asked to be written, and the
+ * spy answers that without touching a disk. But "a chat that only exists as a
+ * session log gets a record" is a claim about the store itself — the spy cannot
+ * tell an upsert that created from one that updated — so that one test swaps
+ * the real service in for a call and looks for the file. It writes under
+ * `DATA_DIR` above, which is this run's temp dir.
+ */
+const { chatFileService: realChatFileService } = await vi.importActual<typeof import("../services/chat-file-service.js")>("../services/chat-file-service.js");
 
 const { chatsRouter } = await import("./chats.js");
 
@@ -150,15 +164,29 @@ describe("POST /api/chats/:id/regenerate-title", () => {
     expect(parsedSessionIds).toEqual([["session-1", "session-2"]]);
   });
 
-  it("creates a record for a chat that only exists on the filesystem", async () => {
-    // updateChatMetadata would return false here and drop the write on the
-    // floor — these are the chats most likely to be carrying a stale title.
-    setChat({ session_ids: ["session-2"] }, { _from_filesystem: true });
+  it("creates a record on disk for a chat that only exists on the filesystem", async () => {
+    // The real store for this one call: `updateChatMetadata` returns false for
+    // a chat with no record and drops the write on the floor — and those are
+    // exactly the chats most likely to be carrying a stale title. Asserting
+    // that against the spy would prove nothing, since it cannot distinguish an
+    // upsert that created from one that updated. So the file has to be there
+    // afterwards, in a data dir where it provably was not before.
+    upsertChat.mockImplementationOnce((...args: any[]) => (realChatFileService.upsertChat as any)(...args));
+    setChat({ session_ids: ["session-2"] });
+
+    const record = join(DATA_DIR, "chats", "session-2.json");
+    expect(existsSync(record)).toBe(false);
+
     const res = await regenerate();
 
     expect(res.code).toBe(200);
-    expect(upsertChat).toHaveBeenCalledTimes(1);
-    expect(writtenMeta().title).toBe("A Regenerated Title");
+    // Filed under the session id, which is how every other reader finds it.
+    const written = JSON.parse(readFileSync(record, "utf8"));
+    expect(written.id).toBe("chat-1");
+    expect(written.folder).toBe("/repo");
+    expect(JSON.parse(written.metadata).title).toBe("A Regenerated Title");
+    // And reachable through the store's own lookup, not just as bytes.
+    expect(JSON.parse(realChatFileService.getChat("chat-1")!.metadata).title).toBe("A Regenerated Title");
   });
 
   it("sends the model conversation text and nothing else", async () => {
@@ -174,6 +202,40 @@ describe("POST /api/chats/:id/regenerate-title", () => {
 
     expect(transcripts).toHaveLength(1);
     expect(transcripts[0]).toBe("[user] why is the build failing\n\n[assistant] a missing peer dependency");
+  });
+
+  it("leaves subagent traffic out of the transcript", async () => {
+    // The session parsers splice subagent messages into the timeline in
+    // timestamp order, stamped only with a teamName, so a brief reads as a
+    // plain [user] turn and a report as a plain [assistant] one. On a chat that
+    // fanned out they are most of the bytes, and a transcript carrying them
+    // titles the agents' errand instead of the conversation.
+    messages = [
+      text("user", "add a dark mode toggle"),
+      { role: "user", type: "text", content: "SUBAGENT_BRIEF", teamName: "explorer" },
+      { role: "assistant", type: "text", content: "SUBAGENT_REPORT", teamName: "explorer" },
+      text("assistant", "done — it lives in the settings page"),
+    ];
+    await regenerate();
+
+    expect(transcripts[0]).toBe("[user] add a dark mode toggle\n\n[assistant] done — it lives in the settings page");
+  });
+
+  it("refuses a chat from a removed harness by name instead of calling it unreadable", async () => {
+    // The provider lookup falls back to claude-code for an unknown kind, which
+    // would go looking for these session ids under ~/.claude/projects, find
+    // nothing, and answer "no readable conversation" — false of a chat that has
+    // one. ~155 records name this harness. Same refusal as the fork route.
+    setChat({ provider: "openrouter" });
+    const res = await regenerate();
+
+    expect(res.code).toBe(400);
+    expect(res.body.error).toMatch(/OpenRouter/);
+    expect(res.body.error).not.toMatch(/no readable conversation/i);
+    expect(parsedSessionIds).toEqual([]);
+    expect(transcripts).toEqual([]);
+    expect(upsertChat).not.toHaveBeenCalled();
+    expect(notifyMetadata).not.toHaveBeenCalled();
   });
 
   it("keeps both ends of a conversation too long to send whole", async () => {
