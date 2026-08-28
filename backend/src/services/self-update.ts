@@ -394,10 +394,17 @@ export function pidFileNamesThisProcess(): boolean {
  *
  * Also true, benignly, on the update path itself — between npm exiting and the
  * restart landing — which is the same fact and the same sentence.
+ *
+ * `root` exists for the suite and has exactly one production value. The state
+ * being described is "the manifest under this daemon changed", and the only way
+ * to arrange that against the real `__pkgRoot` is to write to the repository's
+ * own `package.json` — which every other test file in this backend reads at
+ * module load through {@link BOOT_MANIFEST}, concurrently, from a suite that may
+ * be interrupted mid-write. A parameter is cheaper than that.
  */
-export function describeRestartPending(): { pending: boolean; runningVersion?: string; installedVersion?: string } {
+export function describeRestartPending(root: string = __pkgRoot): { pending: boolean; runningVersion?: string; installedVersion?: string } {
   const runningVersion = BOOT_VERSION ?? undefined;
-  const installedVersion = readPackageManifest(__pkgRoot)?.version;
+  const installedVersion = readPackageManifest(root)?.version;
   if (!runningVersion || !installedVersion) return { pending: false, ...(runningVersion ? { runningVersion } : {}), ...(installedVersion ? { installedVersion } : {}) };
   return { pending: installedVersion !== runningVersion, runningVersion, installedVersion };
 }

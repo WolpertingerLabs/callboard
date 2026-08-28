@@ -130,6 +130,21 @@ const { sessionRegistry } = await import("./session-registry.js");
 const SELF_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const SELF_VERSION = JSON.parse(readFileSync(join(SELF_ROOT, "package.json"), "utf-8")).version as string;
 
+/**
+ * A package directory to play "npm rewrote this underneath us" against.
+ *
+ * `describeRestartPending` defaults to the real `__pkgRoot`, and the state it
+ * detects is a *changed manifest* there — so the obvious test writes to this
+ * repository's own `package.json` and restores it. That is a trap twice over:
+ * vitest runs files concurrently and `BOOT_MANIFEST` is read at module load by
+ * everything that imports `self-update.ts` or `index.ts`, so a sibling suite
+ * starting inside the write window boots with an unreadable manifest and refuses
+ * with `package-unreadable` for no visible reason; and a run interrupted between
+ * the write and the `finally` leaves `{ not json` in the checkout. The parameter
+ * exists so neither can happen.
+ */
+const REPLACED_ROOT = mkdtempSync(join(tmpdir(), "callboard-self-update-replaced-"));
+
 // ── Child process double ────────────────────────────────────────────
 
 class FakeChild extends EventEmitter {
@@ -199,6 +214,7 @@ beforeAll(() => {
 afterAll(() => {
   rmSync(PREFIX, { recursive: true, force: true });
   rmSync(DATA_DIR, { recursive: true, force: true });
+  rmSync(REPLACED_ROOT, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -960,28 +976,16 @@ describe("describeRestartPending", () => {
     // nothing restarts this one. Every other gate in the module is about *this*
     // process and passes; this is the only check that can see it at all.
     //
-    // `__pkgRoot` is this checkout, so the manifest npm "replaced" is the
-    // repository's own — restored in the `finally`.
-    const manifestPath = join(SELF_ROOT, "package.json");
-    const original = readFileSync(manifestPath, "utf-8");
-    try {
-      writeFileSync(manifestPath, JSON.stringify({ ...JSON.parse(original), version: NEXT_VERSION }));
-      expect(describeRestartPending()).toMatchObject({ pending: true, runningVersion: SELF_VERSION, installedVersion: NEXT_VERSION });
-    } finally {
-      writeFileSync(manifestPath, original);
-    }
+    // Driven against {@link REPLACED_ROOT} rather than the real `__pkgRoot` —
+    // see that constant. The running side is still genuinely this process's.
+    writeFileSync(join(REPLACED_ROOT, "package.json"), JSON.stringify({ name: PACKAGE_NAME, version: NEXT_VERSION }));
+    expect(describeRestartPending(REPLACED_ROOT)).toMatchObject({ pending: true, runningVersion: SELF_VERSION, installedVersion: NEXT_VERSION });
   });
 
   it("claims nothing when the manifest cannot be read at all", () => {
-    const manifestPath = join(SELF_ROOT, "package.json");
-    const original = readFileSync(manifestPath, "utf-8");
-    try {
-      writeFileSync(manifestPath, "{ not json");
-      // Not `pending: true`. "Could not read it" is not evidence that it moved.
-      expect(describeRestartPending()).toMatchObject({ pending: false });
-    } finally {
-      writeFileSync(manifestPath, original);
-    }
+    writeFileSync(join(REPLACED_ROOT, "package.json"), "{ not json");
+    // Not `pending: true`. "Could not read it" is not evidence that it moved.
+    expect(describeRestartPending(REPLACED_ROOT)).toMatchObject({ pending: false });
   });
 });
 
