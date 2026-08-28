@@ -347,8 +347,6 @@ export default function ChatList({
   };
 
   const confirmRegenerateTitle = async () => {
-    // Read before the awaits: ConfirmModal closes itself on confirm, which
-    // blanks the modal state this id lives in.
     const chatId = regenerateTitleModal.chatId;
     if (!chatId) return;
     setRegeneratingTitleIds((prev) => new Set(prev).add(chatId));
@@ -371,6 +369,13 @@ export default function ChatList({
       );
     } catch (err) {
       console.error("Failed to regenerate chat title:", err);
+      // The route answers each failure with its own prose (no readable
+      // conversation, a retired harness, a model that produced nothing), and
+      // `assertOk` carries it through as the Error message. Without this the
+      // 422 is pixel-identical to a successful regeneration that happened to
+      // pick the same title. Same alert the fork action uses in Chat.tsx —
+      // there is no toast infrastructure in this app.
+      window.alert(err instanceof Error ? err.message : "Failed to regenerate chat title");
     } finally {
       // In a finally so a failed request releases the row instead of wedging
       // its menu entry disabled for the life of the page.

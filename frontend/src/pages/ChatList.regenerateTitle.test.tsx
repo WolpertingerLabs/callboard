@@ -131,7 +131,7 @@ describe("ChatList regenerate title", () => {
     expect(mockRegenerate).not.toHaveBeenCalled();
   });
 
-  it("regenerates on confirm and shows the new title without a refetch", async () => {
+  it("regenerates on confirm and reflects the new title locally", async () => {
     await renderList();
     openRowMenu("Old Title");
     fireEvent.click(screen.getByText("Regenerate title"));
@@ -142,7 +142,11 @@ describe("ChatList regenerate title", () => {
 
     expect(mockRegenerate).toHaveBeenCalledWith("chat-1");
     await screen.findByText("A Much Better Title");
-    // One list fetch — the mount's. The new title is reflected locally.
+    // One list fetch — the mount's: the handler does not call `load()` itself,
+    // it patches the row in place. It does NOT follow that no refetch happens
+    // in production; the route's `notifyMetadata` bumps `metadataVersion`,
+    // which this page turns into a `load()` ~300ms later. The SessionContext
+    // mock above freezes that version at 0, so this assertion cannot see it.
     expect(mockListChats).toHaveBeenCalledTimes(1);
   });
 
@@ -216,6 +220,7 @@ describe("ChatList regenerate title", () => {
     const failed = new Error("boom");
     mockRegenerate.mockRejectedValue(failed);
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
 
     await renderList();
     openRowMenu("Old Title");
@@ -231,5 +236,29 @@ describe("ChatList regenerate title", () => {
     openRowMenu("Old Title");
     expect(screen.getByText("Regenerate title").closest("button")!.hasAttribute("disabled")).toBe(false);
     logged.mockRestore();
+    alerted.mockRestore();
+  });
+
+  it("tells the user why the regeneration failed", async () => {
+    // The route distinguishes its failures in prose (422 no readable
+    // conversation, 400 retired harness, 502 nothing generated) and `assertOk`
+    // carries that through as the Error message. Swallowed, a 422 is
+    // indistinguishable from a regeneration that picked the same title: the
+    // user confirms, waits, and the row never changes.
+    mockRegenerate.mockRejectedValue(new Error("This chat has no readable conversation to title"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+
+    await renderList();
+    openRowMenu("Old Title");
+    fireEvent.click(screen.getByText("Regenerate title"));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Regenerate"));
+    });
+
+    await waitFor(() => expect(alerted).toHaveBeenCalledWith("This chat has no readable conversation to title"));
+
+    logged.mockRestore();
+    alerted.mockRestore();
   });
 });
