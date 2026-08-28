@@ -104,11 +104,13 @@ selfUpdateRouter.get("/", async (req, res) => {
 selfUpdateRouter.post("/", async (req, res) => {
   // #swagger.tags = ['System']
   // #swagger.summary = 'Install the latest Callboard on this machine and restart the daemon'
-  // #swagger.description = 'Runs `npm install -g <this package>` on the machine hosting Callboard and returns an updateId to stream. The package name comes from the daemon own package.json; nothing from the request reaches the command line and no shell is used. A zero exit is followed by reading the version npm actually wrote, and only then by a restart - which is skipped when the version did not move and refused when a chat is streaming or a job run is mid-step, because a restart kills in-flight agent turns. The SSE stream ends at update_restarting: the daemon dies, so the client polls for it to come back.'
+  // #swagger.description = 'Runs `npm install -g <this package>` on the machine hosting Callboard and returns an updateId to stream. The package name comes from the daemon own package.json; nothing from the request reaches the command line and no shell is used. A zero exit is followed by reading the version npm actually wrote, and only then by a restart - which is skipped when the version did not move and refused when a chat is streaming or a job run is mid-step, because a restart kills in-flight agent turns. After update_restarting the daemon dies and the stream simply stops, so the client polls for it to come back.'
   /* #swagger.responses[200] = { description: 'Update started' } */
   /* #swagger.responses[403] = { description: 'Refused: not a local client, or the capability is switched off' } */
   /* #swagger.responses[409] = { description: 'Refused: an update or an engine install is already running' } */
   /* #swagger.responses[422] = { description: 'Refused: npm preflight failed, the daemon is not the global install, or there is no PID file to restart' } */
+  /* #swagger.responses[429] = { description: 'Refused: an update finished moments ago and the endpoint is cooling down' } */
+  /* #swagger.responses[500] = { description: 'Refused: the assembled npm argv failed the service own assertions, so nothing was spawned' } */
   const capability = await capabilityFor(req);
   const pkg = selfPackage();
   // The capability is what decides; these are only the values it already
@@ -148,16 +150,26 @@ selfUpdateRouter.post("/", async (req, res) => {
  * whole transcript rather than the tail.
  *
  * **This stream cannot deliver the outcome of a successful update**, and that is
- * by construction rather than by omission: the last frame is `update_restarting`,
- * after which the process serving this response is stopped. A client that sees
- * that frame stops reading and starts polling for the daemon to come back. Every
- * other terminal frame — a failed install, a refused restart — is delivered
- * normally, because in those cases the daemon is still here.
+ * by construction rather than by omission: the last frame a *successful* update
+ * produces is `update_restarting`, after which the process serving this response
+ * is stopped. A client that sees that frame stops reading and starts polling for
+ * the daemon to come back. Every other terminal frame — a failed install, a
+ * refused restart — is delivered normally, because in those cases the daemon is
+ * still here.
+ *
+ * Which is exactly why `update_restarting` does **not** end the response. It is
+ * the last frame of the path that works, not the last frame there is: the spawn
+ * it announces can still fail asynchronously, and the frame that says so —
+ * `update_restart_failed` — arrives a moment later. Ending here to save a socket
+ * the dying process is about to close anyway made that frame undeliverable, and
+ * left the one case where the daemon is alive and needs to explain itself
+ * looking identical to the case where it is gone. The client then waited out its
+ * 90-second poll and advised a downgrade of a daemon that had never restarted.
  */
 selfUpdateRouter.get("/runs/:updateId/stream", (req, res) => {
   // #swagger.tags = ['System']
   // #swagger.summary = 'Stream one self-update: npm output, the installed version, and the restart decision'
-  // #swagger.description = 'Server-sent events for an update started by POST /api/self-update. Emits update_started, then update_output per line of stdout/stderr, then update_exit. A zero exit is followed by update_verified carrying the version read from the newly installed package and what will happen to the restart (pending, skipped when the version did not move, or refused when work is in flight). When a restart is pending the last frame is update_restarting and the connection then dies with the daemon - that is the expected shape of success, and the client polls from there. Replays the transcript from the start on connect. LAN clients only.'
+  // #swagger.description = 'Server-sent events for an update started by POST /api/self-update. Emits update_started, then update_output per line of stdout/stderr, then update_exit. A zero exit is followed by update_verified carrying the version read from the newly installed package and what will happen to the restart (pending, skipped when the version did not move, or refused when work is in flight). When a restart is pending, update_restarting is emitted as the helper is spawned and the connection then dies with the daemon - that is the expected shape of success, and the client polls from there. The response is deliberately left open at that point so that update_restart_failed, which is only reachable when the spawn failed and the daemon is therefore still alive, can still be delivered. Replays the transcript from the start on connect. LAN clients only.'
   /* #swagger.responses[200] = { description: 'SSE stream' } */
   /* #swagger.responses[403] = { description: 'Not a local client' } */
   /* #swagger.responses[404] = { description: 'No such update, or it has aged out' } */
@@ -220,11 +232,18 @@ selfUpdateRouter.get("/runs/:updateId/stream", (req, res) => {
  * is over: the verdict, the restart decision and the restarting notice all
  * follow it. So "done" alone must not close the stream — the terminal frame is
  * the one that says what happened.
+ *
+ * `update_restarting` is not one of them, despite being the last frame of a
+ * successful update. It is a statement about a spawn that has *just been
+ * attempted*, and the failure of that spawn is reported on this same
+ * connection. Keeping the response open costs nothing in the ordinary case —
+ * the process is about to die and take the socket with it — and is the only way
+ * `update_restart_failed` ever reaches anybody.
  */
 function isTerminalEvent(event: { type: string; ok?: boolean; restart?: string }): boolean {
   if (event.type === "update_exit") return event.ok === false;
   if (event.type === "update_verified") return event.restart !== "pending";
-  return event.type === "update_restarting" || event.type === "update_restart_failed";
+  return event.type === "update_restart_failed";
 }
 
 function isTerminal(events: Array<{ type: string; ok?: boolean; restart?: string }>): boolean {

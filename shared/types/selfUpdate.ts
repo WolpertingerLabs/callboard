@@ -49,7 +49,11 @@
  *   backend/dist/index.js` in a clone. `npm install -g` would then upgrade a
  *   *different* copy of Callboard and the restart would appear to change
  *   nothing, which is the most confusing outcome this feature can produce. It is
- *   also the common case for anyone working on Callboard itself.
+ *   also the common case for anyone working on Callboard itself. An `npm
+ *   link`ed checkout lands here too: the global entry is a symlink *to* the
+ *   checkout, so the paths compare equal, but an install would replace the link
+ *   with a real package and restart from a different directory than the one the
+ *   daemon reported running from.
  * - **`no-pid-file`** — nothing wrote `<DATA_DIR>/callboard.pid`, so this daemon
  *   was not started by `callboard start` and there is no process the CLI's
  *   `restart` would know to stop. A `--foreground` daemon lands here.
@@ -73,10 +77,23 @@ export type SelfUpdateRefusalCode =
   | "package-unreadable"
   /** An update is already running. One at a time. */
   | "busy"
-  /** Work is in flight — a chat is streaming, or a job run is mid-step — and a restart would kill it. */
-  | "work-in-flight"
+  /**
+   * An update finished moments ago. The same shape the engine installer uses —
+   * the lock alone does not stop an authenticated LAN client driving a
+   * back-to-back `npm install -g` loop.
+   */
+  | "cooling-down"
   /** npm could not be started, or exited non-zero. */
   | "update-failed";
+
+/*
+ * Deliberately absent: a `work-in-flight` code. A restart declined because a
+ * chat is streaming happens *after* a successful install, so it is not a
+ * refusal to start anything — it is reported as `update_verified` carrying
+ * `restart: "refused"` and a `restartRefusal` naming what is busy. A code here
+ * that nothing emits would be a published claim about a response shape that
+ * does not exist.
+ */
 
 /**
  * Whether this client may press the button, evaluated per request.

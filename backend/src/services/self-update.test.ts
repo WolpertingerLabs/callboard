@@ -29,7 +29,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,6 +81,7 @@ vi.mock("./engine-install.js", () => ({ isInstallRunning: mocks.isInstallRunning
 vi.mock("./job-store.js", () => ({ listRuns: mocks.listRuns }));
 
 const {
+  activeSelfUpdateId,
   assertSelfUpdateArgv,
   describeWorkInFlight,
   getSelfUpdateCapability,
@@ -189,6 +190,17 @@ function eventOfType<T extends SelfUpdateEvent["type"]>(events: SelfUpdateEvent[
   return events.find((e): e is Extract<SelfUpdateEvent, { type: T }> => e.type === type);
 }
 
+/**
+ * The *last* frame of a type.
+ *
+ * `update_verified` is emitted twice on the deferred path — once as `pending`
+ * before the restart beat, once as `refused` when the work-in-flight re-check
+ * inside it says no — and the second one is the verdict.
+ */
+function lastEventOfType<T extends SelfUpdateEvent["type"]>(events: SelfUpdateEvent[], type: T): Extract<SelfUpdateEvent, { type: T }> | undefined {
+  return events.filter((e): e is Extract<SelfUpdateEvent, { type: T }> => e.type === type).pop();
+}
+
 /** Finish the child process the way npm would. */
 async function exitNpm(code: number, signal: NodeJS.Signals | null = null): Promise<void> {
   child.emit("close", code, signal);
@@ -225,7 +237,42 @@ describe("the install-source gate — is this daemon the copy npm would replace?
 
   it("reports the resolved pair without deciding anything", async () => {
     const source = await resolveInstallSource(PACKAGE_NAME);
-    expect(source).toMatchObject({ globalPackageRoot: GLOBAL_PACKAGE_ROOT, runningFrom: SELF_ROOT, isGlobalInstall: true });
+    expect(source).toMatchObject({ globalPackageRoot: GLOBAL_PACKAGE_ROOT, runningFrom: SELF_ROOT, isGlobalInstall: true, isLinked: false });
+  });
+
+  it("refuses an `npm link`ed checkout, which the realpath comparison lets through", async () => {
+    // The one way a checkout passes the gate: `npm link` makes the global entry
+    // a symlink *into* the working tree, so both sides resolve to the same
+    // directory. Pressing the button would delete that link, install a
+    // published package over it, and restart from somewhere else entirely.
+    const linkedRoot = join(GLOBAL_ROOT, "@wolpertingerlabs", "linked-callboard");
+    rmSync(linkedRoot, { force: true, recursive: true });
+    symlinkSync(SELF_ROOT, linkedRoot);
+    mocks.realpathSync.mockImplementation((p: string) => (String(p) === linkedRoot ? SELF_ROOT : String(p)));
+    mocks.execFileAsync.mockResolvedValue({ stdout: `${GLOBAL_ROOT}\n`, stderr: "" });
+    try {
+      const source = await resolveInstallSource("@wolpertingerlabs/linked-callboard");
+      expect(source).toMatchObject({ isGlobalInstall: true, isLinked: true });
+
+      // And the capability refuses on it, with a sentence that says what
+      // happened rather than the "you are running from a checkout" one, which
+      // would be describing a directory comparison that passed.
+      const pkg = selfPackage()!;
+      mocks.realpathSync.mockImplementation((p: string) => (String(p) === GLOBAL_PACKAGE_ROOT ? SELF_ROOT : String(p)));
+      symlinkSync(SELF_ROOT, `${GLOBAL_PACKAGE_ROOT}.link`);
+      rmSync(GLOBAL_PACKAGE_ROOT, { force: true, recursive: true });
+      renameSync(`${GLOBAL_PACKAGE_ROOT}.link`, GLOBAL_PACKAGE_ROOT);
+
+      const capability = await getSelfUpdateCapability({ local: true });
+      expect(capability).toMatchObject({ oneClick: false, code: "not-global-install" });
+      expect(capability.refusal).toContain("symlink");
+      expect(capability.refusal).toContain(`npm link`);
+      expect(capability.refusal).toContain(pkg.name);
+    } finally {
+      rmSync(linkedRoot, { force: true, recursive: true });
+      rmSync(GLOBAL_PACKAGE_ROOT, { force: true, recursive: true });
+      writeGlobalPackage("9.9.9");
+    }
   });
 });
 
@@ -438,14 +485,38 @@ describe("the restart waits for work to finish", () => {
     sessionRegistry.register("chat-abc", { type: "web" });
     const { events } = await runUpdate();
     await exitNpm(0);
+    await sleep(700);
 
-    const verified = eventOfType(events, "update_verified")!;
+    const verified = lastEventOfType(events, "update_verified")!;
     expect(verified).toMatchObject({ restart: "refused", changed: true, installedVersion: "9.9.9" });
     expect(verified.restartRefusal).toContain("chat-abc");
     // The install still happened and is still worth having — the sentence says
     // so, because the alternative reads as "the update failed".
     expect(verified.restartRefusal).toContain("v9.9.9 is installed");
     expect(verified.restartRefusal).toContain("callboard restart");
+    // And the thing that is easy to leave out of that sentence: npm replaced
+    // `frontend/dist` in place, so this daemon is already serving the new
+    // interface out of the old backend.
+    expect(verified.restartRefusal).toContain("already being served");
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    // Nothing announced a restart it then declined.
+    expect(eventOfType(events, "update_restarting")).toBeUndefined();
+  });
+
+  it("re-checks for work inside the restart beat, not before it", async () => {
+    // The gap this closes: the check used to run before the 500ms delay, and
+    // the helper then paid its own Node boot before signalling — a second or
+    // so in which a chat could start and be killed mid-turn. Nothing is busy
+    // when npm exits here; something is by the time the timer fires.
+    const { events } = await runUpdate();
+    await exitNpm(0);
+
+    expect(eventOfType(events, "update_verified")).toMatchObject({ restart: "pending" });
+    sessionRegistry.register("chat-late", { type: "web" });
+    await sleep(700);
+
+    expect(lastEventOfType(events, "update_verified")).toMatchObject({ restart: "refused" });
+    expect(lastEventOfType(events, "update_verified")!.restartRefusal).toContain("chat-late");
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
   });
 
@@ -453,9 +524,36 @@ describe("the restart waits for work to finish", () => {
     mocks.listRuns.mockReturnValue([{ runId: "run-1", jobName: "nightly-sweep", status: "running" }]);
     const { events } = await runUpdate();
     await exitNpm(0);
-    const verified = eventOfType(events, "update_verified")!;
+    await sleep(700);
+    const verified = lastEventOfType(events, "update_verified")!;
     expect(verified).toMatchObject({ restart: "refused" });
     expect(verified.restartRefusal).toContain("nightly-sweep");
+  });
+
+  it("names a streaming chat by its title rather than its uuid", async () => {
+    // `describeWorkInFlight` reads the title out of the record's metadata blob,
+    // the same reading `chat-lineage.ts` makes. A summary that names a raw
+    // UUID does not tell the user which of their chats to wait for.
+    const chatId = "11111111-2222-3333-4444-555555555555";
+    mkdirSync(join(DATA_DIR, "chats"), { recursive: true });
+    writeFileSync(
+      join(DATA_DIR, "chats", `${chatId}.json`),
+      JSON.stringify({ id: chatId, session_id: chatId, folder: "/tmp", metadata: JSON.stringify({ title: "Reticulating splines" }) }),
+    );
+    try {
+      sessionRegistry.register(chatId, { type: "web" });
+      const work = describeWorkInFlight();
+      expect(work.busy).toBe(true);
+      expect(work.summary).toContain("Reticulating splines");
+      expect(work.summary).not.toContain(chatId);
+    } finally {
+      rmSync(join(DATA_DIR, "chats", `${chatId}.json`), { force: true });
+    }
+  });
+
+  it("falls back to the id for a chat it cannot name", () => {
+    sessionRegistry.register("no-such-chat", { type: "web" });
+    expect(describeWorkInFlight().summary).toContain("no-such-chat");
   });
 
   it("ignores CLI sessions, which a restart does not touch", async () => {
@@ -488,6 +586,17 @@ describe("handing the machine to a detached helper", () => {
     expect(resolveRestartHelper(GLOBAL_PACKAGE_ROOT)).toBeNull();
   });
 
+  it("refuses a bin that resolves to the package root itself", () => {
+    // `"."` resolves to a directory that exists, so the existence check passes
+    // it — and `node <packageRoot>` runs the package's own main entry, which
+    // is a second Callboard server, in the foreground, holding the port the
+    // restart was meant to free. Strictly inside the root, or nothing.
+    for (const bin of [".", "./", ""]) {
+      writeGlobalPackage("9.9.9", { bin: { callboard: bin } });
+      expect(resolveRestartHelper(GLOBAL_PACKAGE_ROOT)).toBeNull();
+    }
+  });
+
   it("refuses a package with no bin at all", () => {
     mkdirSync(GLOBAL_PACKAGE_ROOT, { recursive: true });
     writeFileSync(join(GLOBAL_PACKAGE_ROOT, "package.json"), JSON.stringify({ name: PACKAGE_NAME, version: "9.9.9" }));
@@ -498,16 +607,31 @@ describe("handing the machine to a detached helper", () => {
     process.env.PORT = "8123";
     try {
       const { events } = await runUpdate();
-      await exitNpm(0);
 
-      // The client is told *first* — the socket dies with the process, so a
-      // frame written after the helper starts may never be flushed.
-      const restarting = eventOfType(events, "update_restarting")!;
-      expect(restarting).toMatchObject({ helper: HELPER, installedVersion: "9.9.9", fromVersion: SELF_VERSION });
-      expect(restarting.rollbackCommand).toBe(`npm install -g ${PACKAGE_NAME}@${SELF_VERSION}`);
+      // What the client had been told at the moment the helper's spawn was
+      // called. The frame has to be *in* the transcript before the spawn — the
+      // helper's first act is to signal this pid, and an SSE frame written
+      // after that is a client left waiting on a stream that never speaks
+      // again.
+      let typesAtSpawn: string[] = [];
+      mocks.spawn.mockImplementation(() => {
+        typesAtSpawn = events.map((e) => e.type);
+        return child;
+      });
+
+      await exitNpm(0);
+      // Nothing announced yet: the restart is not committed to until the beat
+      // below has re-checked for work in flight.
+      expect(eventOfType(events, "update_restarting")).toBeUndefined();
       expect(mocks.spawn).toHaveBeenCalledTimes(1);
 
       await sleep(700);
+      expect(typesAtSpawn).toContain("update_restarting");
+
+      const restarting = eventOfType(events, "update_restarting")!;
+      expect(restarting).toMatchObject({ helper: HELPER, installedVersion: "9.9.9", fromVersion: SELF_VERSION });
+      expect(restarting.rollbackCommand).toBe(`npm install -g ${PACKAGE_NAME}@${SELF_VERSION}`);
+
       expect(mocks.spawn).toHaveBeenCalledTimes(2);
       const [command, args, options] = mocks.spawn.mock.calls[1];
       expect(command).toBe(process.execPath);
@@ -555,6 +679,75 @@ describe("handing the machine to a detached helper", () => {
     expect(failed).toBeTruthy();
     expect(failed.refusal).toContain("callboard restart");
     expect(failed.rollbackCommand).toBe(`npm install -g ${PACKAGE_NAME}@${SELF_VERSION}`);
+  });
+
+  it("says so when the helper fails *after* the spawn returned", async () => {
+    // The failure that actually happens. `spawn` throws synchronously only for
+    // a bad argument; EACCES on the cwd, ENOENT, EAGAIN and EMFILE under fork
+    // pressure all arrive later as an `error` event on the child. Without a
+    // listener Node rethrows that as an uncaught exception, the process guards
+    // call `process.exit(1)`, and the outcome is the worst this feature has:
+    // the daemon gone, no helper running, and the client never told, because
+    // the spawn had already been reported as a success.
+    const { events } = await runUpdate();
+    const helperChild = new FakeChild();
+    mocks.spawn.mockReturnValue(helperChild);
+    await exitNpm(0);
+    await sleep(700);
+
+    expect(eventOfType(events, "update_restart_failed")).toBeUndefined();
+    expect(helperChild.listenerCount("error")).toBe(1);
+
+    helperChild.emit("error", Object.assign(new Error("spawn EACCES"), { code: "EACCES" }));
+    await settle();
+
+    const failed = eventOfType(events, "update_restart_failed")!;
+    expect(failed).toBeTruthy();
+    expect(failed.refusal).toContain("EACCES");
+    expect(failed.refusal).toContain("callboard restart");
+    expect(failed.rollbackCommand).toBe(`npm install -g ${PACKAGE_NAME}@${SELF_VERSION}`);
+  });
+});
+
+// ── The hand-over window ────────────────────────────────────────────
+
+describe("the 500ms between npm finishing and the daemon being stopped", () => {
+  it("is still busy, so a second POST cannot spawn npm underneath the pending restart", async () => {
+    await runUpdate();
+    await exitNpm(0);
+
+    // npm is over — `run.done` is set — but the restart timer is armed. A
+    // second update accepted here would spawn its own npm while the first
+    // run's timer SIGTERMed the daemon in the middle of its writes.
+    expect(isSelfUpdateRunning()).toBe(true);
+    const second = startSelfUpdate({
+      capability: { oneClick: true },
+      source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+    });
+    expect(second).toMatchObject({ ok: false, code: "busy", status: 409 });
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+
+    // And the restart the first run scheduled still happens.
+    await sleep(700);
+    expect(mocks.spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it("still names the run in flight, so a second tab attaches to it", async () => {
+    const { started } = await runUpdate();
+    await exitNpm(0);
+    expect(activeSelfUpdateId()).toBe(started.ok ? started.updateId : undefined);
+  });
+
+  it("refuses a second update while it cools down, rather than looping npm", async () => {
+    await runUpdate();
+    await exitNpm(1);
+    const second = startSelfUpdate({
+      capability: { oneClick: true },
+      source: { packageName: PACKAGE_NAME, fromVersion: SELF_VERSION, globalPackageRoot: GLOBAL_PACKAGE_ROOT },
+    });
+    expect(second).toMatchObject({ ok: false, code: "cooling-down", status: 429 });
+    expect(second.ok === false && second.refusal).toContain("second");
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
   });
 });
 

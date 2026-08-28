@@ -32,6 +32,15 @@
  * copy-and-paste command carries a sentence saying which directory Callboard is
  * actually running from.
  *
+ * Resolving symlinks is what makes that comparison work on the prefixes people
+ * actually have — nvm's `versions/node`, Homebrew, a moved `~/.npm-global` —
+ * and it is also the one way the comparison can say yes to a checkout. `npm
+ * link` makes `<npm root -g>/<package>` a symlink *into* the working tree, so
+ * both sides resolve to the same directory and the gate passes; pressing the
+ * button would then have npm delete the link, install a real package over it,
+ * and restart from a directory that is not the one `runningFrom` named. So the
+ * global entry is `lstat`ed too, and a symlink is refused on its own terms.
+ *
  * The second half of the same question is whether there is anything to restart.
  * `callboard start` writes `<DATA_DIR>/callboard.pid`; `callboard start
  * --foreground` and a bare `node backend/dist/index.js` write nothing, and the
@@ -68,6 +77,14 @@
  * banner says, and pressing the button again once idle is a cheap no-op install
  * followed by the restart that was deferred.
  *
+ * "Immediately before" is meant literally, and it did not used to be. The check
+ * ran before the {@link RESTART_DELAY_MS} beat that lets the last frames flush,
+ * and the helper then pays its own Node boot before `cmdStop` signals — call it
+ * a second, during which a job run or a chat can start and be killed mid-turn.
+ * It now runs *inside* that timer, with the pending verdict already sent, so a
+ * window that opened after the install is still caught and answered with a
+ * second `update_verified` carrying `restart: "refused"`.
+ *
  * ## No rollback, but a loud way back
  *
  * Callboard does not keep the old tarball and does not attempt to reinstate it:
@@ -82,12 +99,13 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SelfUpdateCapability, SelfUpdateEvent, SelfUpdateRefusalCode } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { DATA_DIR } from "../utils/paths.js";
+import { chatFileService } from "./chat-file-service.js";
 import { isInstallRunning } from "./engine-install.js";
 import { listRuns } from "./job-store.js";
 import { isNewerVersion } from "./npm-registry.js";
@@ -122,8 +140,50 @@ const RETENTION_MS = RUN_RETENTION_MS;
 /** The record left behind for a daemon that does not come back. */
 const STATE_FILE = path.join(DATA_DIR, "self-update.json");
 
-/** How long the last two frames get to reach the browser before the daemon is asked to die. */
+/** How long the pending verdict gets to reach the browser before the restart is committed to. */
 const RESTART_DELAY_MS = 500;
+
+/** How many chats or job runs the "still busy" sentence names before it gives up and says "…". */
+const NAMED_IN_SUMMARY = 3;
+
+/**
+ * How long after one update finishes before another may start.
+ *
+ * The one-at-a-time lock says nothing about *rate*, and the global rate limiter
+ * is 300/minute — so an authenticated LAN client could sit in a loop driving
+ * back-to-back `npm install -g` runs against this machine's global tree, each
+ * one a real network fetch and a real rewrite of the package directory this
+ * daemon is running out of. The engine installer refuses the same shape with
+ * `cooling-down`; this is that refusal, sized for a different reason.
+ *
+ * Ten seconds, measured from the previous run's completion. It has to be short
+ * enough not to be felt by the retry this feature actually expects — "the
+ * restart was deferred because a chat was streaming, press it again now that
+ * things are idle" — and long enough that a loop is not a loop. A user who does
+ * hit it is told how many seconds are left.
+ */
+const COOLDOWN_MS = 10_000;
+
+/**
+ * The sentence every "installed, but not restarted" verdict ends with.
+ *
+ * `index.ts` serves the frontend with `express.static(<pkgRoot>/frontend/dist)`,
+ * which resolves the file per request — and npm replaced that directory in
+ * place. So from the moment npm exits 0 this daemon is serving the **new**
+ * bundle out of the **old** backend, and it will keep doing so for as long as
+ * the deferred restart is deferred. A user who takes the "carry on working"
+ * advice literally and reloads a tab gets a new client talking to an old
+ * server: the reverse of the direction `shared/types/stream.ts`'s compatibility
+ * rules are written for, and not a case they cover.
+ *
+ * Snapshotting `frontend/dist` into memory at boot would fix it properly and is
+ * out of scope for this change; the honest interim is to say so, and to say
+ * which action makes the pair consistent again. Recorded as a known limitation
+ * in `plans/self-update.md`, along with the two other things this daemon reads
+ * from its own package root at runtime.
+ */
+const NEW_BUNDLE_IS_LIVE =
+  "One thing to know while you wait: the new version's web interface is already being served from this daemon, because npm replaced those files in place. Nothing breaks if you keep the page you have open, but avoid reloading until after `callboard restart` — a reloaded tab would be the new interface talking to the old server.";
 
 /**
  * npm's own package-name grammar, near enough.
@@ -197,17 +257,42 @@ export interface InstallSource {
   runningFrom: string;
   /** True when the two are the same directory, symlinks resolved. */
   isGlobalInstall: boolean;
+  /**
+   * True when the global entry is itself a symlink — an `npm link`ed checkout.
+   *
+   * Reported separately from {@link isGlobalInstall} rather than folded into
+   * it, because both facts are true at once and only saying the second one
+   * produces the misleading half of the sentence: the directories *do* match,
+   * and the reason that is not good enough is the link.
+   */
+  isLinked: boolean;
   /** Why the global root could not be resolved, when it could not. */
   error?: string;
+}
+
+/** Is `p` a symlink, as opposed to whatever it points at? `lstat`, so it does not follow. */
+function isSymlink(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    // It does not exist, or cannot be stat'ed. Either way it is not a link this
+    // function has seen, and `isGlobalInstall` is the check that then refuses.
+    return false;
+  }
 }
 
 export async function resolveInstallSource(packageName: string): Promise<InstallSource> {
   const runningFrom = resolved(__pkgRoot);
   const { root, error } = await resolveNpmGlobalRoot();
-  if (!root) return { runningFrom, isGlobalInstall: false, ...(error ? { error } : {}) };
+  if (!root) return { runningFrom, isGlobalInstall: false, isLinked: false, ...(error ? { error } : {}) };
   // A scoped name joins as two segments, which is exactly how npm lays it out.
   const globalPackageRoot = path.join(root, ...packageName.split("/"));
-  return { globalPackageRoot, runningFrom, isGlobalInstall: resolved(globalPackageRoot) === runningFrom };
+  return {
+    globalPackageRoot,
+    runningFrom,
+    isGlobalInstall: resolved(globalPackageRoot) === runningFrom,
+    isLinked: isSymlink(globalPackageRoot),
+  };
 }
 
 // ── Is there anything to restart? ───────────────────────────────────
@@ -250,15 +335,51 @@ export function pidFileNamesThisProcess(): boolean {
  * counting them would make the button permanently unavailable to anyone who
  * leaves a terminal open.
  */
+/**
+ * What a user would call this chat, or its id.
+ *
+ * The title lives in the record's `metadata` blob rather than on the record, so
+ * this is the same `(title || preview || null)` reading `chat-lineage.ts` and
+ * `card-rollup.ts` make. Every failure — no record, unparseable metadata, an
+ * unreadable directory — falls back to the id, because a summary naming a raw
+ * UUID is worse than one naming a title and still far better than none.
+ */
+function chatTitle(chatId: string): string {
+  try {
+    const chat = chatFileService.getChat(chatId);
+    if (!chat) return chatId;
+    const meta = JSON.parse(chat.metadata || "{}");
+    const title: string = (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || "";
+    // Titles run to 240 characters and previews are a whole first message.
+    // Three of either, inline in a refusal sentence, is a wall.
+    if (!title) return chatId;
+    return title.length > 60 ? `${title.slice(0, 60)}…` : title;
+  } catch (err) {
+    log.warn(`could not name chat ${chatId} for the restart summary: ${err instanceof Error ? err.message : String(err)}`);
+    return chatId;
+  }
+}
+
 export function describeWorkInFlight(): { busy: boolean; summary: string } {
-  const chats: string[] = [];
+  const chatIds: string[] = [];
   try {
     for (const [chatId, info] of Object.entries(sessionRegistry.getAll())) {
-      if (info.type === "web") chats.push(chatId);
+      if (info.type === "web") chatIds.push(chatId);
     }
   } catch (err) {
     log.warn(`could not read the session registry: ${err instanceof Error ? err.message : String(err)}`);
   }
+
+  // Named the way job runs are, rather than by raw UUID: "1 chat is still
+  // streaming (a2f7719c-…)" tells a user nothing they can act on, and it is the
+  // sentence that has to persuade them the refusal was right.
+  //
+  // Only the ids the summary will actually print are looked up, and a lookup
+  // that fails falls back to the id rather than to nothing: `getChat`'s miss
+  // path is a readdir and a parse of every chat record, and paying that per
+  // streaming session for a phrase that names three of them is not a trade
+  // worth making.
+  const chats = chatIds.map((chatId, i) => (i < NAMED_IN_SUMMARY ? chatTitle(chatId) : chatId));
 
   let runs: string[] = [];
   try {
@@ -272,8 +393,14 @@ export function describeWorkInFlight(): { busy: boolean; summary: string } {
   if (chats.length === 0 && runs.length === 0) return { busy: false, summary: "" };
 
   const parts: string[] = [];
-  if (chats.length > 0) parts.push(`${chats.length} chat${chats.length === 1 ? " is" : "s are"} still streaming (${chats.slice(0, 3).join(", ")}${chats.length > 3 ? ", …" : ""})`);
-  if (runs.length > 0) parts.push(`${runs.length} job run${runs.length === 1 ? " is" : "s are"} mid-step (${runs.slice(0, 3).join(", ")}${runs.length > 3 ? ", …" : ""})`);
+  if (chats.length > 0)
+    parts.push(
+      `${chats.length} chat${chats.length === 1 ? " is" : "s are"} still streaming (${chats.slice(0, NAMED_IN_SUMMARY).join(", ")}${chats.length > NAMED_IN_SUMMARY ? ", …" : ""})`,
+    );
+  if (runs.length > 0)
+    parts.push(
+      `${runs.length} job run${runs.length === 1 ? " is" : "s are"} mid-step (${runs.slice(0, NAMED_IN_SUMMARY).join(", ")}${runs.length > NAMED_IN_SUMMARY ? ", …" : ""})`,
+    );
   return { busy: true, summary: parts.join(" and ") };
 }
 
@@ -323,6 +450,19 @@ export async function getSelfUpdateCapability(opts: { local: boolean }): Promise
     };
   }
 
+  if (source.isLinked) {
+    // The paths matched, and they matched *through the link* — this is a
+    // development checkout wired up with `npm link`. Running the install would
+    // unlink it: npm replaces `<npm root -g>/<package>` with a real package,
+    // the checkout stops being the thing that is running, and the restart comes
+    // up somewhere other than the directory this daemon just reported.
+    return {
+      oneClick: false,
+      code: "not-global-install",
+      refusal: `npm's copy of ${pkg.name} (\`${source.globalPackageRoot}\`) is a symlink to \`${source.runningFrom}\` — this is an \`npm link\`ed checkout, not a global install. \`npm install -g ${pkg.name}\` would delete that link and install a published package over it, so Callboard would restart from somewhere else and your checkout would no longer be linked. Update the checkout the way you built it, or run the command in a terminal if unlinking is what you want.`,
+    };
+  }
+
   if (!pidFileNamesThisProcess()) {
     return {
       oneClick: false,
@@ -365,13 +505,27 @@ export interface SelfUpdateRun {
  */
 let current: SelfUpdateRun | null = null;
 
+/**
+ * Is an update still holding this daemon?
+ *
+ * Deliberately wider than "is npm running". `run.done` is set the moment npm
+ * exits, and the *hand-over* — the {@link RESTART_DELAY_MS} beat and the helper
+ * spawn it schedules — happens after that. For those 500ms nothing else was
+ * true either: `isInstallRunning()` and `npmInstallInFlight()` are both clear,
+ * so a second POST landing in the window was accepted, spawned its own npm, and
+ * replaced `current` — while the first run's orphaned timer fired anyway and
+ * SIGTERMed the daemon in the middle of the new install's writes.
+ *
+ * So a pending restart counts as running, and {@link startSelfUpdate} clears
+ * any timer it displaces.
+ */
 export function isSelfUpdateRunning(): boolean {
-  return current !== null && !current.done;
+  return current !== null && (!current.done || current.restartTimer !== null);
 }
 
 /** The id of an update currently in flight, so a second tab attaches instead of starting another. */
 export function activeSelfUpdateId(): string | undefined {
-  return current && !current.done ? current.updateId : undefined;
+  return isSelfUpdateRunning() ? current!.updateId : undefined;
 }
 
 export function getSelfUpdateRun(updateId: string): SelfUpdateRun | null {
@@ -484,6 +638,20 @@ export function startSelfUpdate(opts: {
     };
   }
 
+  // See {@link COOLDOWN_MS}. Measured from the previous run's completion, so
+  // the deferred-restart retry this feature tells users to make is not the
+  // thing it catches.
+  const sinceLast = current?.finishedAt ? Date.now() - current.finishedAt : Infinity;
+  if (sinceLast < COOLDOWN_MS) {
+    const waitSeconds = Math.max(1, Math.ceil((COOLDOWN_MS - sinceLast) / 1000));
+    return {
+      ok: false,
+      code: "cooling-down",
+      refusal: `Callboard just finished an update and will not run \`npm install -g\` on itself again straight away. Try again in ${waitSeconds} second${waitSeconds === 1 ? "" : "s"}, or copy the command into a terminal.`,
+      status: 429,
+    };
+  }
+
   const command = selfUpdateCommand(source.packageName);
   const run: SelfUpdateRun = {
     updateId: randomUUID(),
@@ -499,6 +667,16 @@ export function startSelfUpdate(opts: {
     done: false,
     restartTimer: null,
   };
+  // Belt and braces against the window {@link isSelfUpdateRunning} now closes:
+  // a run that is being replaced must not still be holding a timer that will
+  // stop this daemon on the *previous* update's behalf. The gate above should
+  // make this unreachable; a stray SIGTERM is not a failure mode to leave
+  // depending on one check being right.
+  if (current?.restartTimer) {
+    clearTimeout(current.restartTimer);
+    current.restartTimer = null;
+    log.warn(`self-update ${current.updateId}: cancelled its pending restart — update ${run.updateId} replaced it`);
+  }
   current = run;
 
   run.log.emit({
@@ -594,7 +772,7 @@ function finishInstalled(run: SelfUpdateRun): void {
   const changed = installedVersion !== undefined && installedVersion !== run.fromVersion;
 
   if (!installedVersion) {
-    const refusal = `\`${run.command}\` exited 0, but Callboard could not read \`${path.join(run.globalPackageRoot, "package.json")}\` afterwards, so it cannot tell what is installed — and it will not restart into a version it has not seen. Check the output above, then restart Callboard yourself with \`callboard restart\`.`;
+    const refusal = `\`${run.command}\` exited 0, but Callboard could not read \`${path.join(run.globalPackageRoot, "package.json")}\` afterwards, so it cannot tell what is installed — and it will not restart into a version it has not seen. Check the output above, then restart Callboard yourself with \`callboard restart\`. ${NEW_BUNDLE_IS_LIVE}`;
     log.warn(`self-update ${run.updateId}: ${refusal}`);
     run.log.emit({
       type: "update_verified",
@@ -635,27 +813,13 @@ function finishInstalled(run: SelfUpdateRun): void {
   // because the banner promised an upgrade.
   const direction = isNewerVersion(run.fromVersion, installedVersion) ? "" : " (which is not newer than what was running — npm's `latest` has moved)";
 
-  const work = describeWorkInFlight();
-  if (work.busy) {
-    const refusal = `v${installedVersion} is installed, but Callboard did not restart: ${work.summary}, and a restart stops those mid-turn. The new version takes effect the next time Callboard restarts — press this again when things are idle, or run \`callboard restart\` yourself.`;
-    log.warn(`self-update ${run.updateId}: installed v${installedVersion} but did not restart — ${work.summary}`);
-    run.log.emit({
-      type: "update_verified",
-      updateId: run.updateId,
-      fromVersion: run.fromVersion,
-      installedVersion,
-      changed: true,
-      summary: refusal,
-      restart: "refused",
-      restartRefusal: refusal,
-      rollbackCommand,
-    });
-    return;
-  }
-
+  // Resolved before the beat below, unlike the work-in-flight check, because it
+  // is a question about disk rather than about timing: the helper either exists
+  // in the package npm just wrote or it does not, and nothing that happens in
+  // the next 500ms changes the answer.
   const helper = resolveRestartHelper(run.globalPackageRoot);
   if (!helper) {
-    const refusal = `v${installedVersion} is installed, but Callboard could not find the \`callboard\` CLI inside \`${run.globalPackageRoot}\` to restart itself with. The new version takes effect on the next restart — run \`callboard restart\` in a terminal.`;
+    const refusal = `v${installedVersion} is installed, but Callboard could not find the \`callboard\` CLI inside \`${run.globalPackageRoot}\` to restart itself with. The new version takes effect on the next restart — run \`callboard restart\` in a terminal. ${NEW_BUNDLE_IS_LIVE}`;
     log.warn(`self-update ${run.updateId}: ${refusal}`);
     run.log.emit({
       type: "update_verified",
@@ -684,31 +848,56 @@ function finishInstalled(run: SelfUpdateRun): void {
 
   recordUpdate(run, installedVersion);
 
-  // Loud, in the place a user looks when the daemon does not come back: this is
-  // the last line the old process writes, and `callboard logs` still shows it
-  // afterwards because the new process appends to the same file.
-  log.warn(`self-update ${run.updateId}: restarting into v${installedVersion} from v${run.fromVersion}. If Callboard does not come back, run: ${rollbackCommand}`);
-
-  run.log.emit({
-    type: "update_restarting",
-    updateId: run.updateId,
-    fromVersion: run.fromVersion,
-    installedVersion,
-    helper,
-    rollbackCommand,
-  });
-
-  // A beat, so the two frames above reach the browser before the socket dies
-  // with the process. The helper's first act is to SIGTERM this pid, and an SSE
-  // frame that was written but not flushed is a client left waiting on a stream
-  // that will never say anything again.
+  // A beat, so the frame above reaches the browser before this daemon commits
+  // to dying. Everything that decides *whether* to restart happens on the far
+  // side of it — see the module header: the check has to be the last thing
+  // before the spawn, not the last thing before a timer that leads to one.
   run.restartTimer = setTimeout(() => {
     run.restartTimer = null;
-    const spawned = spawnRestartHelper(helper, run.globalPackageRoot);
-    if (spawned) return;
-    const refusal = `v${installedVersion} is installed, but Callboard could not start the helper that restarts it. Callboard is still running v${run.fromVersion}; run \`callboard restart\` in a terminal to pick up the new version.`;
-    log.error(`self-update ${run.updateId}: ${refusal}`);
-    run.log.emit({ type: "update_restart_failed", updateId: run.updateId, refusal, rollbackCommand });
+
+    const work = describeWorkInFlight();
+    if (work.busy) {
+      const refusal = `v${installedVersion} is installed, but Callboard did not restart: ${work.summary}, and a restart stops those mid-turn. The new version takes effect the next time Callboard restarts — press this again when things are idle, or run \`callboard restart\` yourself. ${NEW_BUNDLE_IS_LIVE}`;
+      log.warn(`self-update ${run.updateId}: installed v${installedVersion} but did not restart — ${work.summary}`);
+      run.log.emit({
+        type: "update_verified",
+        updateId: run.updateId,
+        fromVersion: run.fromVersion,
+        installedVersion,
+        changed: true,
+        summary: refusal,
+        restart: "refused",
+        restartRefusal: refusal,
+        rollbackCommand,
+      });
+      return;
+    }
+
+    // Loud, in the place a user looks when the daemon does not come back: this
+    // is the last line the old process writes, and `callboard logs` still shows
+    // it afterwards because the new process appends to the same file.
+    log.warn(`self-update ${run.updateId}: restarting into v${installedVersion} from v${run.fromVersion}. If Callboard does not come back, run: ${rollbackCommand}`);
+
+    // Emitted immediately before the spawn rather than 500ms ahead of it, and
+    // it still reaches the browser: the helper has its own Node boot to pay
+    // before `cmdStop` signals this pid. Saying it any earlier would be
+    // announcing a restart the check above is still entitled to refuse.
+    run.log.emit({
+      type: "update_restarting",
+      updateId: run.updateId,
+      fromVersion: run.fromVersion,
+      installedVersion,
+      helper,
+      rollbackCommand,
+    });
+
+    const failed = (detail: string) => {
+      const refusal = `v${installedVersion} is installed, but Callboard could not start the helper that restarts it (${detail}). Callboard is still running v${run.fromVersion}; run \`callboard restart\` in a terminal to pick up the new version. ${NEW_BUNDLE_IS_LIVE}`;
+      log.error(`self-update ${run.updateId}: ${refusal}`);
+      run.log.emit({ type: "update_restart_failed", updateId: run.updateId, refusal, rollbackCommand });
+    };
+
+    spawnRestartHelper(helper, run.globalPackageRoot, failed);
   }, RESTART_DELAY_MS);
 }
 
@@ -719,15 +908,18 @@ function finishInstalled(run: SelfUpdateRun): void {
  *
  * Read from the *new* package's own `bin` field, which is both more honest than
  * hardcoding `bin/callboard.js` and the only way to notice that the thing npm
- * installed is not shaped like Callboard at all. The result must live inside the
- * package root — a `bin` pointing anywhere else is not a path this daemon is
- * going to hand to `spawn`.
+ * installed is not shaped like Callboard at all. The result must live **inside**
+ * the package root — strictly inside, so a `bin` of `"."` or `"./"` resolving
+ * back to the root itself is refused rather than admitted. That path exists, so
+ * the `existsSync` below would pass it, and `node <packageRoot>` runs the
+ * package's own main entry: a second Callboard server in the foreground of the
+ * helper's process, holding the port the restart was meant to free.
  */
 export function resolveRestartHelper(globalPackageRoot: string): string | null {
   const pkg = readPackageJson(globalPackageRoot);
   if (!pkg?.bin) return null;
   const helper = path.resolve(globalPackageRoot, pkg.bin);
-  if (helper !== globalPackageRoot && !helper.startsWith(globalPackageRoot + path.sep)) return null;
+  if (!helper.startsWith(globalPackageRoot + path.sep)) return null;
   return existsSync(helper) ? helper : null;
 }
 
@@ -746,19 +938,45 @@ export function resolveRestartHelper(globalPackageRoot: string): string | null {
  * whatever `.env` says, and a daemon started on a port that lives only in an
  * environment variable would come back on a different one — the browser would
  * poll for a server that is running perfectly well somewhere else.
+ *
+ * ## Why there is an `error` listener as well as a `try`
+ *
+ * The `try` catches almost nothing. `spawn` throws synchronously only for a bad
+ * *argument*; every way the operating system can refuse this — `EACCES` or
+ * `ENOENT` on the cwd, `EAGAIN` or `EMFILE` under fork pressure, and the fork
+ * itself failing — arrives later as an `error` event on the returned child.
+ * With no listener that event is what Node calls an unhandled `'error'`: it is
+ * rethrown, `installProcessGuards` logs it and calls `process.exit(1)`, and the
+ * result is the worst outcome this feature has — the daemon gone, no helper
+ * running to bring it back, and the client told nothing because the old code
+ * had already reported the spawn as a success. `spawnNpmInstall` gets this
+ * right for npm; this is the same listener for the same reason.
+ *
+ * @param onFailure called once, from either path, with a short description.
  */
-function spawnRestartHelper(helper: string, cwd: string): boolean {
+function spawnRestartHelper(helper: string, cwd: string, onFailure: (detail: string) => void): void {
+  let child;
   try {
     const port = process.env.PORT?.trim();
     const argv = port ? [helper, "restart", "--port", port] : [helper, "restart"];
-    const child = spawn(process.execPath, argv, { detached: true, stdio: "ignore", env: process.env, cwd });
-    child.unref();
-    log.info(`spawned restart helper ${helper} (PID ${child.pid})`);
-    return true;
+    child = spawn(process.execPath, argv, { detached: true, stdio: "ignore", env: process.env, cwd });
   } catch (err) {
-    log.error(`failed to spawn restart helper: ${err instanceof Error ? err.message : String(err)}`);
-    return false;
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error(`failed to spawn restart helper: ${detail}`);
+    onFailure(detail);
+    return;
   }
+
+  // Attached *before* `unref()`: unreferencing does not detach the listener,
+  // but it does let this event loop drain, and there is no version of this
+  // where the window between the two is worth leaving open.
+  child.on("error", (err) => {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error(`restart helper failed after spawn: ${detail}`);
+    onFailure(detail);
+  });
+  child.unref();
+  log.info(`spawned restart helper ${helper} (PID ${child.pid})`);
 }
 
 /**

@@ -54,7 +54,13 @@ const TUNNELLED_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: { "cf-c
 
 const PACKAGE = "@wolpertingerlabs/callboard";
 
-async function call(run: Handler, req: Record<string, unknown> = {}): Promise<{ status: number; body: any; sse: string[]; ended: boolean }> {
+/**
+ * `ended` is a snapshot taken when the handler returned; `isEnded()` reads it
+ * now. The stream tests that push a frame through the subscriber after the
+ * handler has returned need the second one — the response ends *later*, which
+ * is the whole point of those cases.
+ */
+async function call(run: Handler, req: Record<string, unknown> = {}): Promise<{ status: number; body: any; sse: string[]; ended: boolean; isEnded: () => boolean }> {
   let status = 200;
   let body: unknown = null;
   const sse: string[] = [];
@@ -81,7 +87,7 @@ async function call(run: Handler, req: Record<string, unknown> = {}): Promise<{ 
     },
   } as unknown as Response;
   await run({ query: {}, params: {}, headers: {}, on: () => undefined, ...req } as unknown as Request, res);
-  return { status, body, sse, ended };
+  return { status, body, sse, ended, isEnded: () => ended };
 }
 
 beforeEach(() => {
@@ -221,12 +227,76 @@ describe("GET /api/self-update/runs/:updateId/stream", () => {
     expect(mocks.subscribeToSelfUpdateRun).not.toHaveBeenCalled();
   });
 
-  it("treats the restarting frame as terminal — nothing follows it on this connection", async () => {
+  it("keeps the connection open past the restarting frame, because one frame can still follow it", async () => {
+    // `update_restarting` is the last frame of the path that *works*, not the
+    // last frame there is. Closing on it ended the response 500ms before the
+    // helper was spawned, so `update_restart_failed` — the one case where the
+    // daemon is alive and needs to explain itself — landed on an ended
+    // response and reached nobody. The socket costs nothing: on the ordinary
+    // path the process is about to die and take it with it.
     mocks.isSelfUpdateRunDone.mockReturnValue(true);
     mocks.selfUpdateRunEvents.mockReturnValue([
       { type: "update_restarting", updateId: "upd-1", fromVersion: "1.2.3", installedVersion: "1.3.0", helper: "/g/bin/callboard.js", rollbackCommand: "npm install -g x@1.2.3" },
     ]);
     const { ended } = await call(streamHandler, { ...LOCAL_REQ, params: { updateId: "upd-1" } });
-    expect(ended).toBe(true);
+    expect(ended).toBe(false);
+    expect(mocks.subscribeToSelfUpdateRun).toHaveBeenCalled();
+  });
+
+  it("delivers update_restart_failed to a subscriber, and then closes", async () => {
+    // Delivery, not emission. The service test asserts the frame reaches the
+    // run log; this asserts it reaches the *socket*, which is the half that
+    // was broken — and which no assertion about the log could have caught.
+    let listener: ((e: unknown) => void) | undefined;
+    mocks.subscribeToSelfUpdateRun.mockImplementation((_run: unknown, fn: (e: unknown) => void) => {
+      listener = fn;
+      return () => undefined;
+    });
+    mocks.isSelfUpdateRunDone.mockReturnValue(true);
+    mocks.selfUpdateRunEvents.mockReturnValue([
+      { type: "update_restarting", updateId: "upd-1", fromVersion: "1.2.3", installedVersion: "1.3.0", helper: "/g/bin/callboard.js", rollbackCommand: "npm install -g x@1.2.3" },
+    ]);
+
+    const { sse, ended, isEnded } = await call(streamHandler, { ...LOCAL_REQ, params: { updateId: "upd-1" } });
+    expect(ended).toBe(false);
+
+    listener!({ type: "update_restart_failed", updateId: "upd-1", refusal: "Callboard could not start the helper (spawn EACCES).", rollbackCommand: "npm install -g x@1.2.3" });
+    expect(sse.join("")).toContain("spawn EACCES");
+    // Terminal, unlike the frame before it: the daemon is still here and has
+    // said everything it is going to.
+    expect(isEnded()).toBe(true);
+  });
+
+  it("delivers a restart refused after the pending verdict, and then closes", async () => {
+    // The other frame the old terminal rule made undeliverable: work in flight
+    // is re-checked inside the restart beat, so a run can go
+    // `update_verified(pending)` → `update_verified(refused)` with no
+    // `update_restarting` between them.
+    let listener: ((e: unknown) => void) | undefined;
+    mocks.subscribeToSelfUpdateRun.mockImplementation((_run: unknown, fn: (e: unknown) => void) => {
+      listener = fn;
+      return () => undefined;
+    });
+    mocks.isSelfUpdateRunDone.mockReturnValue(true);
+    mocks.selfUpdateRunEvents.mockReturnValue([
+      { type: "update_verified", updateId: "upd-1", fromVersion: "1.2.3", installedVersion: "1.3.0", changed: true, summary: "Restarting…", restart: "pending", rollbackCommand: "npm install -g x@1.2.3" },
+    ]);
+
+    const { sse, ended, isEnded } = await call(streamHandler, { ...LOCAL_REQ, params: { updateId: "upd-1" } });
+    expect(ended).toBe(false);
+
+    listener!({
+      type: "update_verified",
+      updateId: "upd-1",
+      fromVersion: "1.2.3",
+      installedVersion: "1.3.0",
+      changed: true,
+      summary: "1 chat is still streaming",
+      restart: "refused",
+      restartRefusal: "1 chat is still streaming",
+      rollbackCommand: "npm install -g x@1.2.3",
+    });
+    expect(sse.join("")).toContain("still streaming");
+    expect(isEnded()).toBe(true);
   });
 });
