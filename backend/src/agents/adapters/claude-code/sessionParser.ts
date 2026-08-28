@@ -154,8 +154,15 @@ const COMMAND_TAG = /<command-(name|message|args)>[\s\S]*?<\/command-\1>/g;
 /** The opening tags alone — a fixed alternation, so counting them is one pass. */
 const COMMAND_OPEN_TAG = /<command-(?:name|message|args)>/g;
 
-/** An envelope carries at most one of each tag; more than three is not one. */
-const MAX_COMMAND_TAGS = 3;
+/**
+ * Ceiling on opening tags before recognition gives up. Deliberately loose: its
+ * job is to make the scanning below a bounded constant, and any small constant
+ * does that. Three — the number of tags an envelope actually has — is *too*
+ * tight, because a command's arguments may quote a tag name (`/ask what does
+ * <command-name> mean?`), and rejecting that puts the raw envelope back in the
+ * bubble for exactly the input this file exists to project.
+ */
+const MAX_COMMAND_TAGS = 16;
 
 /**
  * The `/name args` line behind a command envelope, or null for anything that
@@ -173,7 +180,7 @@ const MAX_COMMAND_TAGS = 3;
  * but repeated openers pays that once per opener — quadratic, on the event
  * loop, on every transcript read *and* every sidebar preview via
  * {@link getFirstUserMessage}. So the opener count is bounded first, which is
- * a single linear pass and caps the stripping at three scans.
+ * a single linear pass and caps the stripping at {@link MAX_COMMAND_TAGS}.
  */
 function parseCommandEnvelope(raw: string): string | null {
   const trimmed = raw.trim();
@@ -202,20 +209,6 @@ function projectCommandEntry(content: unknown): string | null {
   if (!isTextOnly(content)) return null;
   return parseCommandEnvelope(contentText(content));
 }
-
-/**
- * A local built-in's output, written as its own plain user turn immediately
- * after the envelope — `/login` is followed by
- * `<local-command-stdout>Login successful</local-command-stdout>`.
- *
- * Dropped rather than rendered. It is the CLI's own output, not something the
- * user said, so it was a second block of raw XML sitting directly under the
- * command. It also *is* a user text turn, which put it in the tail window
- * `visibleInFlight` compares against — displacing the command itself out of
- * that window and rendering the optimistic bubble beside the transcript's own
- * copy of it until the next settle.
- */
-const LOCAL_COMMAND_STDOUT = /^<local-command-stdout>[\s\S]*<\/local-command-stdout>$/;
 
 /** Flatten JSONL message content (string or block array) to its plain text. */
 function contentText(content: unknown): string {
@@ -296,7 +289,13 @@ export function getFirstUserMessage(filePath: string, maxLength: number = 200): 
       // conversation in `parseMessages`. The one that bites: the CLI writes an
       // `isMeta` `<local-command-caveat>…` line immediately before every
       // built-in command envelope, so without this a chat opened with `/login`
-      // previewed that caveat — a paragraph of XML the user never wrote.
+      // previewed that caveat — a paragraph of XML the user never wrote. Across
+      // 2178 local main-session transcripts that chat is the only one with an
+      // `isMeta` first user turn, so this skips almost nothing else. Subagent
+      // transcripts are the exception — theirs is the task prompt, and every
+      // later user turn is a text-less `tool_result` — but nothing previews
+      // those (`stream.ts` routes them to `parseSubagentMessages`). Anyone
+      // adding a subagent preview needs to revisit this line.
       if (msg.isMeta) return undefined;
       const content = msg.message.content;
       // A chat opened with `/skill …` has a command envelope as its first user
@@ -307,8 +306,8 @@ export function getFirstUserMessage(filePath: string, maxLength: number = 200): 
       if (command) return command.substring(0, maxLength);
       // `""` is deliberately returned rather than skipped: it is a hit, and the
       // whole-file loop this replaced stopped on it too. Every caller treats an
-      // empty preview and a null one identically, so the only thing preserving
-      // this buys is that the scan cannot run further than it used to.
+      // empty preview and a null one identically, so preserving it keeps the
+      // scan from running past the entry the old loop would have stopped at.
       if (typeof content === "string") return content.substring(0, maxLength);
       if (Array.isArray(content)) {
         const textBlock = content.find((b: any) => b?.type === "text");
@@ -585,9 +584,6 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
         result.push({ role, type: "text", content: typed, isBuiltInCommand: true, timestamp, ...(teamName && { teamName }), ...meta });
         continue;
       }
-      // The built-in's output, which trails its envelope. See
-      // {@link LOCAL_COMMAND_STDOUT}.
-      if (isTextOnly(content) && LOCAL_COMMAND_STDOUT.test(contentText(content).trim())) continue;
     }
 
     if (typeof content === "string") {

@@ -417,17 +417,14 @@ describe("parseMessages — slash-command envelopes", () => {
     expect(msg.isBuiltInCommand).toBeUndefined();
   });
 
-  it("drops the built-in's output that trails its envelope", () => {
-    // A second block of raw XML under the command — and, being a user text
-    // turn, it displaced the command out of the tail window the optimistic
-    // bubble is compared against.
-    const parsed = parseMessages([userLine(builtin), userLine("<local-command-stdout>Login successful</local-command-stdout>"), userLine("now do the thing")]);
-    expect(parsed.map((m) => m.content)).toEqual(["/login", "now do the thing"]);
-  });
-
-  it("leaves prose that merely mentions the stdout tag alone", () => {
-    const prose = "what is <local-command-stdout> for?";
-    expect(parseMessages([userLine(prose)])[0].content).toBe(prose);
+  it("projects a command whose arguments quote a tag name", () => {
+    // Four openers, so a bound set to the three tags an envelope really has
+    // would reject this and put the raw envelope back in the bubble — for
+    // exactly the input this projection exists to handle. The lazy
+    // `<command-args>` match runs to the real closer, so the quoted tag is
+    // just text.
+    const quoting = "<command-name>/ask</command-name>\n<command-message>ask</command-message>\n<command-args>what does <command-name> mean?</command-args>";
+    expect(parseMessages([userLine(quoting)])[0].content).toBe("/ask what does <command-name> mean?");
   });
 });
 
