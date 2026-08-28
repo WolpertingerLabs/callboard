@@ -270,11 +270,24 @@ either — the daemon exits and the install is orphaned mid-write.
 So a `restartPending` marker is parked next to `inFlight`, set where the restart
 timer is scheduled and cleared wherever that timer is cleared (a work-in-flight
 refusal inside it, a helper spawn that fails, the test seams). It is deliberately
-*not* cleared on a successful spawn: for the seconds before this process is
-killed, the correct answer is still "do not start writing". It lives in
+*not* cleared promptly on a successful spawn: for the seconds before this process
+is killed, the correct answer is still "do not start writing". It lives in
 `npm-global-install.ts` rather than being exported from `self-update.ts` because
 `engine-install.ts` cannot import that module without a cycle, and this is where
 both features already meet.
+
+"The seconds before this process is killed" is a claim about a process that dies,
+and one case does not: the helper spawns cleanly and then dies on its own, having
+signalled nothing — the freshly-installed `bin/callboard.js` throwing at import, a
+`cmdStop` that fails before it reaches this pid. Node reports neither (`spawn`
+succeeded, and a child that starts and then exits raises no `'error'`), so the
+daemon lives on holding the tree for a restart that is not coming, and every later
+`POST /api/engines/:id/install` is refused with "Callboard is about to restart" for
+the life of the process. The spawn site therefore arms a 60-second grace timer that
+releases the marker and says so in the log. It is `unref`ed, so it holds nothing
+open, and the marker carries a **token** — the same discipline `inFlight` already
+uses — so an expiring timer can only release the claim it was armed for, never a
+newer restart's.
 
 ### Known limitation: a cron job firing during the restart
 

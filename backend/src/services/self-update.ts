@@ -187,6 +187,25 @@ const STATE_FILE = path.join(DATA_DIR, "self-update.json");
 /** How long the pending verdict gets to reach the browser before the restart is committed to. */
 const RESTART_DELAY_MS = 500;
 
+/**
+ * How long the restart marker may outlive a helper that spawned cleanly.
+ *
+ * A restart that is coming holds npm's global tree against engine installs — see
+ * `restartPending` in `npm-global-install.ts` — and the ordinary way that hold
+ * ends is this process being killed a second or two later. It is not the only
+ * way. The helper is a *separate* Node process running the freshly-installed
+ * `bin/callboard.js`, and it can spawn without error and then die having done
+ * nothing: a bad release that throws at import, a `cmdStop` that fails before it
+ * signals this pid. Node reports neither to us — `spawn` succeeded, and there is
+ * no `'error'` event for a child that started and then exited — so this daemon
+ * lives on with a marker nothing will ever clear, and every later `POST
+ * /api/engines/:id/install` is refused for a restart that is not coming.
+ *
+ * A minute, which is two orders of magnitude more than the hand-over needs and
+ * still bounded. On the ordinary path this process is long dead before it fires.
+ */
+const RESTART_GRACE_MS = 60_000;
+
 /** How many chats or job runs the "still busy" sentence names before it gives up and says "…". */
 const NAMED_IN_SUMMARY = 3;
 
@@ -1050,7 +1069,7 @@ function finishInstalled(run: SelfUpdateRun): void {
   // It is parked in `npm-global-install.ts` rather than exported from here
   // because `engine-install.ts` cannot import this module — the two would form a
   // cycle. That file is where both features already meet.
-  setSelfRestartPending(`a Callboard self-update (restarting into v${installedVersion})`);
+  const pendingToken = setSelfRestartPending(`a Callboard self-update (restarting into v${installedVersion})`);
 
   // A beat, so the frame above reaches the browser before this daemon commits
   // to dying. Everything that decides *whether* to restart happens on the far
@@ -1062,7 +1081,7 @@ function finishInstalled(run: SelfUpdateRun): void {
     const work = describeWorkInFlight();
     if (work.busy) {
       // The restart is off, so the tree is free again.
-      clearSelfRestartPending();
+      clearSelfRestartPending(pendingToken);
       const refusal = `v${installedVersion} is installed, but Callboard did not restart: ${work.summary}, and a restart stops those mid-turn. The new version takes effect the next time Callboard restarts — press this again when things are idle, or run \`callboard restart\` yourself. ${NEW_BUNDLE_IS_LIVE}`;
       log.warn(`self-update ${run.updateId}: installed v${installedVersion} but did not restart — ${work.summary}`);
       run.log.emit({
@@ -1101,13 +1120,13 @@ function finishInstalled(run: SelfUpdateRun): void {
       // No restart is coming, so nothing is holding npm's tree on its behalf.
       // Only reachable while this process is alive, which is the whole reason
       // there is a frame to emit here at all.
-      clearSelfRestartPending();
+      clearSelfRestartPending(pendingToken);
       const refusal = `v${installedVersion} is installed, but Callboard could not start the helper that restarts it (${detail}). Callboard is still running v${run.fromVersion}; run \`callboard restart\` in a terminal to pick up the new version. ${NEW_BUNDLE_IS_LIVE}`;
       log.error(`self-update ${run.updateId}: ${refusal}`);
       run.log.emit({ type: "update_restart_failed", updateId: run.updateId, refusal, rollbackCommand });
     };
 
-    spawnRestartHelper(helper, run.globalPackageRoot, failed);
+    spawnRestartHelper(helper, run.globalPackageRoot, pendingToken, failed);
   }, RESTART_DELAY_MS);
 }
 
@@ -1165,9 +1184,20 @@ export function resolveRestartHelper(globalPackageRoot: string): string | null {
  * had already reported the spawn as a success. `spawnNpmInstall` gets this
  * right for npm; this is the same listener for the same reason.
  *
+ * ## Why the success path arms a timer
+ *
+ * Neither of those two paths covers a helper that starts and then dies on its
+ * own — the new `bin/callboard.js` throwing at import, its `cmdStop` failing
+ * before it signals this pid. `spawn` succeeded, so there is no error to report
+ * and nothing to tell the client; the daemon simply lives on. What it must not
+ * do is live on still holding npm's global tree for a restart that is not
+ * coming, so the marker gets an expiry rather than only an owner. See {@link
+ * RESTART_GRACE_MS}.
+ *
+ * @param pendingToken the {@link setSelfRestartPending} claim this restart holds.
  * @param onFailure called once, from either path, with a short description.
  */
-function spawnRestartHelper(helper: string, cwd: string, onFailure: (detail: string) => void): void {
+function spawnRestartHelper(helper: string, cwd: string, pendingToken: symbol, onFailure: (detail: string) => void): void {
   let child;
   try {
     const port = process.env.PORT?.trim();
@@ -1189,6 +1219,16 @@ function spawnRestartHelper(helper: string, cwd: string, onFailure: (detail: str
     onFailure(detail);
   });
   child.unref();
+
+  // `unref` so a process that somehow gets this far and then has nothing else
+  // to do is not held open by it, and no `clearTimeout` anywhere: the token
+  // makes a late firing harmless — a marker set by a *later* restart is not
+  // this claim, and `clearSelfRestartPending` says so rather than clearing it.
+  setTimeout(() => {
+    if (!clearSelfRestartPending(pendingToken)) return;
+    log.warn(`restart helper ${helper} spawned ${RESTART_GRACE_MS / 1000}s ago and this process is still running; releasing the hold it had on npm's global tree. The new version is installed but not running — run \`callboard restart\` in a terminal.`);
+  }, RESTART_GRACE_MS).unref();
+
   log.info(`spawned restart helper ${helper} (PID ${child.pid})`);
 }
 

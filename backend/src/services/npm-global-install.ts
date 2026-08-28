@@ -512,23 +512,46 @@ export function clearNpmInstallInFlight(): void {
  *
  * Set where the restart timer is scheduled and cleared wherever that timer is
  * cleared — including the work-in-flight refusal inside it and a helper spawn
- * that fails. It is deliberately *not* cleared on a successful spawn: the
+ * that fails. It is not cleared *promptly* on a successful spawn, because the
  * correct state for the seconds before this process is killed is "no, do not
- * start writing".
+ * start writing" — but "the seconds before" is a claim about a process that
+ * dies, and a helper can spawn cleanly and then die on its own without ever
+ * signalling this pid. So the spawn site arms a grace timer that releases the
+ * marker if the restart it was holding the tree for never lands; see
+ * `spawnRestartHelper` in `self-update.ts`.
+ *
+ * The **token** makes that release safe. It is a single slot, and a marker set
+ * by a *later* restart must not be erased by an earlier one's grace timer
+ * expiring — the same failure {@link npmInstallInFlight} documents, reached the
+ * same way. A holder that knows which claim it is releasing passes its token; the
+ * reset seams, which mean "forget everything", pass nothing.
  */
-let restartPending: { what: string } | null = null;
+let restartPending: { token: symbol; what: string } | null = null;
 
 /** What restart is pending, as a noun phrase, or `null`. */
 export function selfRestartPending(): string | null {
   return restartPending?.what ?? null;
 }
 
-export function setSelfRestartPending(what: string): void {
-  restartPending = { what };
+/** Claim the marker. The returned token is that claim, and the only safe way to release it later. */
+export function setSelfRestartPending(what: string): symbol {
+  const token = Symbol(what);
+  restartPending = { token, what };
+  return token;
 }
 
-export function clearSelfRestartPending(): void {
+/**
+ * Release the marker — with a token, only while that claim still holds it.
+ *
+ * @returns whether this call is what cleared it, so a caller releasing a claim
+ * it may have lost can tell the difference between "I let go" and "someone else
+ * already had".
+ */
+export function clearSelfRestartPending(token?: symbol): boolean {
+  if (!restartPending) return false;
+  if (token && restartPending.token !== token) return false;
   restartPending = null;
+  return true;
 }
 
 /** How a run of npm ended. The *sentence* is the caller's to write — see this module's header. */

@@ -1024,6 +1024,39 @@ describe("an engine install must not start inside the hand-over", () => {
     expect(selfRestartPending()).toBeNull();
   });
 
+  it("is released by the grace timer when the helper spawns and the daemon lives on", async () => {
+    // The gap the two tests above leave: `spawn` succeeded, so there is no
+    // failure path, and this process was not killed, so the "seconds before we
+    // die" argument for holding the marker has quietly stopped being true. The
+    // helper ran the *new* `bin/callboard.js` and it threw at import, or its
+    // `cmdStop` failed before it signalled this pid — Node reports neither.
+    // Without the timer the marker is held for the life of the process, and
+    // every later engine install is refused for a restart that never comes.
+    //
+    // Only `setTimeout` is faked, so `settle()`'s `setImmediate` still works and
+    // the update runs for real up to the spawn.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await runUpdate();
+      await npmInstalls(NEXT_VERSION);
+      expect(selfRestartPending()).not.toBeNull();
+
+      // The restart beat (500ms), then the grace (60s) — the same two constants
+      // the module holds privately, spelled out here the way `sleep(700)` is
+      // everywhere else in this file.
+      await vi.advanceTimersByTimeAsync(700);
+      expect(mocks.spawn.mock.calls.some((c) => c[0] === process.execPath)).toBe(true);
+      // Still held immediately after the spawn: the ordinary hand-over is a
+      // second or two, and this must not open a window inside it.
+      expect(selfRestartPending()).not.toBeNull();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(selfRestartPending()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("counts a running engine install as work a restart would destroy", () => {
     // The other direction of the same hazard: a restart kills an engine install
     // as surely as it kills a chat turn, so `describeWorkInFlight` has to say so.
