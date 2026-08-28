@@ -23,130 +23,10 @@ import {
 const DEFAULT_MAX_CALLBACK_CHAIN_DEPTH = 10;
 const DEFAULT_MAX_PENDING_CALLBACKS = 25;
 import { reloadCustomTheme } from "../../App";
-import type { ThemeListItem, UserContactInfo, UserContactAvailability, NotifiableChannel } from "../../api";
+import type { ThemeListItem, UserContactInfo, UserContactAvailability } from "../../api";
 import ThemeAuditPanel from "./ThemeAuditPanel";
-
-type ContactKey = keyof UserContactInfo;
-
-interface ContactField {
-  key: ContactKey;
-  label: string;
-  placeholder: string;
-  help: string;
-  /** The notify_user channel this field feeds; absent ⇒ never deliverable. */
-  channel?: NotifiableChannel;
-  /** Stored, but not yet a real channel — always off. */
-  comingSoon?: boolean;
-}
-
-const CONTACT_FIELDS: ContactField[] = [
-  {
-    key: "discord",
-    label: "Discord username",
-    placeholder: "username",
-    help: "Delivered through a Discord connection on your drawlatch credential.",
-    channel: "discord",
-  },
-  {
-    key: "telegram",
-    label: "Telegram account",
-    placeholder: "@handle",
-    help: "Delivered through a Telegram connection on your drawlatch credential.",
-    channel: "telegram",
-  },
-  { key: "phone", label: "Phone number", placeholder: "+1 555 123 4567", help: "Coming soon.", comingSoon: true },
-  {
-    key: "email",
-    label: "Email address",
-    placeholder: "you@example.com",
-    help: "Delivered through the AgentMail connection on your drawlatch credential.",
-    channel: "email",
-  },
-];
-
-/** What a contact field may do, and what to say beneath it. */
-interface ContactFieldState {
-  /** May the handle be typed? False only for a channel nothing can deliver. */
-  editable: boolean;
-  /** May the channel be switched ON? Switching OFF is always permitted. */
-  canEnable: boolean;
-  note: string;
-  warn: boolean;
-  /**
-   * True only when the fix is "add this connection in drawlatch" — which is
-   * where the dashboard link is worth showing. A missing *credential* is a
-   * different fix (Settings → Proxy), so the banner handles that one and the
-   * link must not follow it around.
-   */
-  missingConnection?: boolean;
-}
-
-/**
- * Resolve one contact field against the availability answer.
- *
- * Two rules do all the work here, and both are about not overstating what we
- * know:
- *
- * 1. **Fail open when the check failed.** No answer yet, or `channelsKnown:
- *    false`, leaves the field fully usable. "Not connected" and "couldn't ask"
- *    are different, and only the first justifies taking controls away.
- * 2. **Switching a channel OFF is never gated.** A handle enabled while its
- *    connection existed stays enabled if that connection disappears, and
- *    `notify_user` will still dispatch on it — so the one control that fixes
- *    the problem must not be disabled by the same condition that reports it.
- */
-function contactFieldState(field: ContactField, availability: UserContactAvailability | null): ContactFieldState {
-  if (field.comingSoon) return { editable: false, canEnable: false, note: field.help, warn: false };
-
-  if (!field.channel || !availability) {
-    return { editable: true, canEnable: true, note: field.help, warn: false };
-  }
-
-  if (!availability.channelsKnown) {
-    return { editable: true, canEnable: true, note: `${field.help} Couldn't check your connections just now, so this isn't being verified.`, warn: false };
-  }
-
-  // No usable credential at all — every channel is dark for one shared reason,
-  // so the section banner carries the explanation and the field stays terse.
-  if (!availability.configured) {
-    return { editable: false, canEnable: false, note: "Unavailable until a drawlatch credential is set up.", warn: true };
-  }
-
-  const entry = availability.channels[field.channel];
-  if (!entry?.available) {
-    return {
-      editable: false,
-      canEnable: false,
-      note: `Needs the "${entry?.connection ?? field.channel}" connection, which none of your drawlatch credentials have.`,
-      warn: true,
-      missingConnection: true,
-    };
-  }
-
-  // Available, but only to agents: an agent session uses its own credential and
-  // never borrows the default one, so this channel works from those sessions
-  // and not from ordinary chats. Saying "unavailable" here would be false.
-  const onDefault = !availability.callerAlias || entry.providedBy?.includes(availability.callerAlias);
-  if (!onDefault) {
-    return {
-      editable: true,
-      canEnable: true,
-      note: `Only agents using the ${entry.providedBy?.map((a) => `"${a}"`).join(", ") ?? "other"} credential can deliver this — ordinary chats can't.`,
-      warn: false,
-    };
-  }
-
-  return { editable: true, canEnable: true, note: `Delivered through your "${entry.connection}" connection.`, warn: false };
-}
-
-function emptyContact(): UserContactInfo {
-  return {
-    discord: { value: "", enabled: false },
-    telegram: { value: "", enabled: false },
-    phone: { value: "", enabled: false },
-    email: { value: "", enabled: false },
-  };
-}
+import { CONTACT_FIELDS, contactFieldState, emptyContact } from "./contactFields";
+import type { ContactKey } from "./contactFields";
 
 export default function GeneralSettings() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getThemeMode());
@@ -571,7 +451,11 @@ export default function GeneralSettings() {
             <Link to="/settings/proxy" style={{ color: "var(--warning)", fontWeight: 600 }}>
               Settings → Proxy
             </Link>{" "}
-            (Enrolled callers → Set default), or bind one to an agent.
+            (Enrolled callers → Set default), or bind one to an agent under{" "}
+            <Link to="/agents" style={{ color: "var(--warning)", fontWeight: 600 }}>
+              Agents
+            </Link>{" "}
+            → your agent → Overview.
           </div>
         )}
 
@@ -665,15 +549,29 @@ export default function GeneralSettings() {
                 </div>
                 <div id={`contact-${key}-note`} style={{ fontSize: 11, color: warn ? "var(--warning)" : "var(--text-muted)", paddingLeft: 140 }}>
                   {enabledButUndeliverable ? `Enabled, but not deliverable right now — ${note.charAt(0).toLowerCase()}${note.slice(1)}` : note}
-                  {missingConnection && drawlatchDashboardUrl && (
-                    <>
-                      {" "}
-                      <a href={drawlatchDashboardUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--warning)", fontWeight: 600 }}>
-                        Add it in the drawlatch dashboard
-                      </a>
-                      .
-                    </>
-                  )}
+                  {/* Connections are added in drawlatch's own dashboard, never
+                      here — so the note is only actionable with a pointer to
+                      it. When the daemon URL is unknown, Settings → Proxy is
+                      the destination that always exists and links onward. */}
+                  {missingConnection &&
+                    (drawlatchDashboardUrl ? (
+                      <>
+                        {" "}
+                        <a href={drawlatchDashboardUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--warning)", fontWeight: 600 }}>
+                          Add it in the drawlatch dashboard
+                        </a>
+                        .
+                      </>
+                    ) : (
+                      <>
+                        {" "}
+                        Add it in the drawlatch dashboard, which you can open from{" "}
+                        <Link to="/settings/proxy" style={{ color: "var(--warning)", fontWeight: 600 }}>
+                          Settings → Proxy
+                        </Link>
+                        .
+                      </>
+                    ))}
                 </div>
               </div>
             );
