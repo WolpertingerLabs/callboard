@@ -15,6 +15,7 @@
  * read as walking off: a layout remount at the same entry, which is what every
  * phone rotation does.
  */
+import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
@@ -35,21 +36,50 @@ vi.mock("./agents/AgentDashboard", () => ({ default: () => <div>agent dashboard<
 // The composer is a rich contenteditable with its own suspense of behaviour;
 // none of it is what these tests are about. A button that fires `onSend` is —
 // plus its `disabled` state, which is how the page says "a send is in flight".
-vi.mock("../components/PromptInput", () => ({
-  default: ({ onSend, disabled }: { onSend: (prompt: string, images?: File[]) => void; disabled?: boolean }) => (
-    <>
-      <button type="button" disabled={disabled} onClick={() => onSend("do the thing")}>
-        send prompt
-      </button>
-      <button type="button" disabled={disabled} onClick={() => onSend("do the thing", [new File(["x"], "shot.png", { type: "image/png" })])}>
-        send prompt with image
-      </button>
-    </>
-  ),
-}));
+//
+// It does keep one piece of the real component's shape: handing its setter
+// back through `onSetValue` from a mount effect, the way PromptInput does. The
+// draft-strip navigate is gated on that registration, and that navigate is the
+// one thing in the app that can rotate `location.key` without the user moving
+// — so a mock that never registers would leave the whole compose window
+// untested.
+vi.mock("../components/PromptInput", () => {
+  // Named, and returned below rather than declared inline: an anonymous arrow
+  // under the `default` key is not a component as far as rules-of-hooks is
+  // concerned, and this stub uses a hook.
+  function PromptInputStub({
+    onSend,
+    disabled,
+    onSetValue,
+  }: {
+    onSend: (prompt: string, images?: File[]) => void;
+    disabled?: boolean;
+    onSetValue?: (setter: (value: string) => void) => void;
+  }) {
+    useEffect(() => {
+      // Arrow-wrapped for the same reason the real one is: setState reads a
+      // bare function as an updater.
+      onSetValue?.(() => (_value: string) => {});
+    }, [onSetValue]);
+    return (
+      <>
+        <button type="button" disabled={disabled} onClick={() => onSend("do the thing")}>
+          send prompt
+        </button>
+        <button type="button" disabled={disabled} onClick={() => onSend("do the thing", [new File(["x"], "shot.png", { type: "image/png" })])}>
+          send prompt with image
+        </button>
+      </>
+    );
+  }
+  return { default: PromptInputStub };
+});
 
 const FOLDER = "/tmp/project";
 const NEW_CHAT_ID = "chat-created-123";
+
+// All of the handles below are module state, so these tests must stay serial:
+// `describe.concurrent` would have two of them writing the same slots.
 
 /** Pushes SSE frames into the in-flight new-chat stream. */
 let emit: (frame: unknown) => void;
@@ -74,6 +104,10 @@ function jsonResponse(body: unknown) {
  * open. Unmocked routes throw rather than resolving to `{}`: a silent empty
  * body is how a stale path (or a real endpoint nobody noticed the page calls)
  * turns into a passing test that exercises the wrong thing.
+ *
+ * Rejecting is loud, not fatal — `Chat` swallows several of these fetches. Any
+ * `unmocked request:` on stderr from this file is a failure even when the run
+ * is green: it means a test took a path whose data it never actually supplied.
  */
 function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
@@ -124,6 +158,7 @@ function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
   if (url.includes("/activity")) return Promise.resolve(jsonResponse({ activities: [], conditionWatch: null, awaitingChildren: 0 }));
   if (url.includes("/read") && method === "PATCH") return Promise.resolve(jsonResponse({}));
   if (url.includes("/slash-commands")) return Promise.resolve(jsonResponse({ slashCommands: [], plugins: [] }));
+  if (url.includes("/queue/") && method === "DELETE") return Promise.resolve(jsonResponse({}));
   if (method === "GET" && /\/chats\/[^/]+$/.test(url)) return Promise.resolve(jsonResponse({ id: NEW_CHAT_ID, folder: FOLDER, metadata: "{}" }));
 
   return Promise.reject(new Error(`unmocked request: ${method} ${url}`));
@@ -136,6 +171,7 @@ function Probe() {
   return (
     <>
       <div data-testid="path">{location.pathname}</div>
+      <div data-testid="state">{JSON.stringify(location.state ?? null)}</div>
       <button type="button" onClick={() => navigate("/")}>
         back to list
       </button>
@@ -150,9 +186,9 @@ function Probe() {
   );
 }
 
-function renderNewChat(onChatListRefresh?: () => void) {
+function renderNewChat(onChatListRefresh?: () => void, state?: unknown) {
   return render(
-    <MemoryRouter initialEntries={[`/chat/new?folder=${encodeURIComponent(FOLDER)}`]}>
+    <MemoryRouter initialEntries={[{ pathname: "/chat/new", search: `?folder=${encodeURIComponent(FOLDER)}`, state }]}>
       <Routes>
         <Route path="/chat/new" element={<Chat onChatListRefresh={onChatListRefresh} />} />
         <Route path="/chat/:id" element={<Chat onChatListRefresh={onChatListRefresh} />} />
@@ -163,13 +199,18 @@ function renderNewChat(onChatListRefresh?: () => void) {
   );
 }
 
+/** Fail with what went missing rather than a bare vitest timeout. */
+function withTimeout<T>(promise: Promise<T>, what: string): Promise<T> {
+  return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(what)), 2000))]);
+}
+
 /** Send the first prompt and wait until the stream is actually open. */
 async function sendFirstPrompt() {
   await act(async () => {
     fireEvent.click(screen.getByText("send prompt"));
   });
   await act(async () => {
-    await streamOpened;
+    await withTimeout(streamOpened, "the new-chat POST was never issued");
   });
 }
 
@@ -268,7 +309,7 @@ describe("chat_created only redirects the user who is waiting for it", () => {
     expect(refresh).toHaveBeenCalled();
     // The fresh composer is usable rather than stuck behind the previous
     // send's streaming state.
-    expect(screen.getByText("send prompt")).toHaveProperty("disabled", false);
+    expect((screen.getByText("send prompt") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("leaves the user alone when they walked off during an image upload", async () => {
@@ -281,16 +322,21 @@ describe("chat_created only redirects the user who is waiting for it", () => {
     });
 
     // Still uploading — the POST that creates the chat has not been sent yet.
+    // Asserted, not assumed: `Chat` swallows upload failures, so if this mock
+    // ever stops matching the upload URL the chat gets created immediately and
+    // this test quietly becomes a duplicate of the one above, still green and
+    // covering nothing.
+    expect(finishImageUpload, "the image upload was never requested").toBeTypeOf("function");
     // The compose screen the send was fired from must have been recorded
-    // before this await, or the user's move gets folded into the origin and
+    // before that await, or the user's move gets folded into the origin and
     // the check compares the destination against itself.
     await act(async () => {
       fireEvent.click(screen.getByText("start another new chat"));
     });
 
     await act(async () => {
-      finishImageUpload?.();
-      await streamOpened;
+      finishImageUpload!();
+      await withTimeout(streamOpened, "the new-chat POST was never issued");
     });
     await emitChatCreated();
 
@@ -332,6 +378,27 @@ describe("chat_created only redirects the user who is waiting for it", () => {
     // router state once at mount, so state arriving with a later navigation is
     // never read. Pre-existing and unrelated to this guard — test 1 pins the
     // handoff for the path where the destination does mount fresh.
+    expect(path()).toBe(`/chat/${NEW_CHAT_ID}`);
+  });
+
+  it("still redirects when the send came from a staged draft", async () => {
+    // The whole guard rests on one invariant: nothing rotates `location.key`
+    // between the send and `chat_created`. The only thing in the app that
+    // could is the draft-strip `navigate(samePath, { replace: true })`, which
+    // fires once the composer registers its setter — before anything is
+    // clickable, so it lands ahead of any send. That ordering lives in
+    // PromptInput, not here, and without this test no test executes the strip
+    // at all: the guard would be resting on a comment.
+    renderNewChat(undefined, { draft: { id: "draft-1", user_message: "staged text" } });
+    // Proof the strip actually fired — and therefore that the key rotated —
+    // before the send, rather than this test passing because the path was
+    // never taken.
+    expect(screen.getByTestId("state").textContent).not.toContain("draft-1");
+
+    await sendFirstPrompt();
+
+    await emitChatCreated();
+
     expect(path()).toBe(`/chat/${NEW_CHAT_ID}`);
   });
 
