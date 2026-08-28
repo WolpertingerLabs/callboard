@@ -794,6 +794,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // declaration for why the slot is not a ref. Re-runs on every navigation, so
   // the slot names where the user is now rather than where they came in.
   useEffect(() => {
+    // The seat is always empty by the time we take it: SplitLayout mounts Chat
+    // in exactly one place, and both orderings that reach this line — a
+    // same-instance navigation, and a remount — run the outgoing cleanup
+    // first. A seat still taken here means one of those premises has broken (a
+    // second Chat somewhere, or create-before-destroy), and the symptom would
+    // otherwise be silent: a redirect skipped, someone's prompt vanishing off
+    // a screen they never left. That is the failure mode this whole guard
+    // exists to remove, so it says so out loud rather than degrading quietly.
+    if (activeComposeScreen) {
+      console.error("Chat: a compose screen was already published; the new-chat redirect may skip for one of them", activeComposeScreen);
+    }
     const token = {};
     activeComposeScreen = { key: location.key, token };
     return () => {
