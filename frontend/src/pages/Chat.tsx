@@ -116,30 +116,28 @@ interface ChatProps {
 }
 
 /**
- * The compose screen currently in front of the user, if one is: the history
- * entry it lives at, plus a token identifying the mounted instance that
- * published it. Read by the `chat_created` handler in `readSSE` to decide
- * whether a finished new-chat stream still has someone waiting for it.
+ * The history entry the Chat view is currently showing, plus a token for the
+ * instance that published it. Read by the `chat_created` handler in `readSSE`:
+ * a send stamps the entry it was fired from in `newChatOriginKeyRef`, and the
+ * redirect only fires while the two still agree.
  *
- * Module scope, not a ref, because the question is "is that screen still on
- * screen" and a ref can only answer "is my own instance still alive" — a
- * different question the moment the layout swaps under a user who has not
- * moved. `useIsMobile` crossing 768px is exactly that: SplitLayout returns a
- * different root element on each side of the breakpoint, so every phone
- * rotation unmounts and remounts this component at the same history entry,
- * and the redirect must survive it. Only one Chat is ever mounted — SplitLayout
- * renders it in a single slot — so one slot here is enough.
+ * Module scope, not a ref, because the question is "is that screen still in
+ * front of the user" and a ref can only answer "is my own instance still
+ * alive" — a different question the moment the layout swaps under a user who
+ * has not moved. `useIsMobile` crossing 768px is exactly that: SplitLayout
+ * returns a different root element on each side of the breakpoint, so every
+ * phone rotation unmounts and remounts this component at the same entry, and
+ * the redirect has to survive it.
  *
- * The token is what makes the remount safe: the outgoing instance clears the
- * slot only while it is still the publisher, so it cannot erase the incoming
- * instance's claim to the same entry whichever order React runs the two
- * effects in. No test distinguishes it from clearing unconditionally, and none
- * can — React commits the deletion's destroy before the insertion's create, so
- * the ordering it guards against is not reachable today. It is here so that
- * ordering is not load-bearing for a bug whose symptom is silence: the user's
- * prompt disappearing with nothing on screen to say where it went.
+ * Not compose-specific: a /chat/:id view publishes here too. That is harmless
+ * — its entry can never equal a stamped new-chat origin — and cheaper than a
+ * second condition to get wrong.
+ *
+ * The token defends the one case where clearing on unmount would drop a claim
+ * that is still good: two mounted Chats, the second publishing over the first,
+ * the first then unmounting. Only the publisher may clear the slot.
  */
-let activeComposeScreen: { key: string; token: object } | null = null;
+let activeChatViewEntry: { key: string; token: object } | null = null;
 
 // How close (in px) to the bottom of the chat the user must scroll before
 // auto-scroll re-latches and follows new messages again.
@@ -802,13 +800,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // otherwise be silent: a redirect skipped, someone's prompt vanishing off
     // a screen they never left. That is the failure mode this whole guard
     // exists to remove, so it says so out loud rather than degrading quietly.
-    if (activeComposeScreen) {
-      console.error("Chat: a compose screen was already published; the new-chat redirect may skip for one of them", activeComposeScreen);
+    if (activeChatViewEntry) {
+      console.error("Chat: a chat view was already published to the slot; a new-chat redirect may skip for one of them", activeChatViewEntry);
     }
     const token = {};
-    activeComposeScreen = { key: location.key, token };
+    activeChatViewEntry = { key: location.key, token };
     return () => {
-      if (activeComposeScreen?.token === token) activeComposeScreen = null;
+      if (activeChatViewEntry?.token === token) activeChatViewEntry = null;
     };
   }, [location.key]);
 
@@ -908,7 +906,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // the stream costs nothing because the screen that would have
                 // rendered it is gone. Reopening the chat re-attaches through
                 // the usual globalSessionActive path.
-                if (activeComposeScreen?.key !== newChatOriginKeyRef.current) {
+                if (activeChatViewEntry?.key !== newChatOriginKeyRef.current) {
                   onChatListRefreshRef.current?.();
                   reader.cancel();
                   return;

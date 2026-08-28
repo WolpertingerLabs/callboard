@@ -267,8 +267,10 @@ describe("chat_created only redirects the user who is waiting for it", () => {
     await emitChatCreated();
 
     expect(path()).toBe(`/chat/${NEW_CHAT_ID}`);
-    // The in-flight bubble rides across on router state; losing it would blank
-    // the transcript until the refetch lands.
+    // The optimistic bubble survives the landing. Not via the router-state
+    // handoff, despite appearances: the instance is preserved across
+    // /chat/new → /chat/:id, so what saves the bubble is `isNewChatTransition`
+    // stopping the id-effect from clearing it. That is what this pins.
     expect(screen.getByText("do the thing")).toBeTruthy();
   });
 
@@ -373,11 +375,12 @@ describe("chat_created only redirects the user who is waiting for it", () => {
 
     await emitChatCreated();
 
-    // Only the landing is asserted, not the in-flight bubble: the post-rotation
-    // instance mounted at /chat/new, and `transitionInFlightMessagesRef` reads
-    // router state once at mount, so state arriving with a later navigation is
-    // never read. Pre-existing and unrelated to this guard — test 1 pins the
-    // handoff for the path where the destination does mount fresh.
+    // The landing is the whole claim. A remount discards `inFlightMessages`,
+    // and `transitionInFlightMessagesRef` reads router state once at mount —
+    // the post-rotation instance mounted at /chat/new, so the redirect's state
+    // is never read. So for the seconds creation takes, a rotating user does
+    // see an empty composer with their prompt gone; what this fixes is that
+    // they used to stay there. Both pre-existing, neither restored here.
     expect(path()).toBe(`/chat/${NEW_CHAT_ID}`);
   });
 
