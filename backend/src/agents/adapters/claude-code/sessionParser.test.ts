@@ -397,20 +397,70 @@ describe("parseMessages — slash-command envelopes", () => {
     expect(parseMessages([userLine(nameless)])[0].content).toBe(nameless);
   });
 
-  it("rejects a near-envelope in linear time rather than backtracking on it", () => {
-    // Many well-formed tag pairs followed by one character that cannot belong
-    // to an envelope is the shape that makes an anchored `(...)+` pattern
-    // explore every split. A user could type this; the parse runs on every
-    // transcript read, on the event loop.
-    const bomb = `${"<command-name>x</command-name>".repeat(400)}!`;
-    const started = performance.now();
-    const [msg] = parseMessages([userLine(bomb)]);
-    expect(performance.now() - started).toBeLessThan(1000);
-    expect(msg.content).toBe(bomb);
-  });
-
   it("does not project an assistant turn that echoes the envelope", () => {
     const [msg] = parseMessages([assistantLine([{ type: "text", text: skill }])]);
     expect(msg.content).toBe(skill);
+  });
+
+  it("keeps an image sent alongside a command", () => {
+    // The projection `continue`s past the block loop, which is the only thing
+    // that interns images — so it must not claim an entry that carries one.
+    // `buildFormattedPrompt` emits exactly this shape when the composer has an
+    // attachment.
+    const [msg] = parseMessages([
+      userLine([
+        { type: "text", text: "<command-name>/skill</command-name><command-args>look at this</command-args>" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } },
+      ]),
+    ]);
+    expect(msg.imageIds).toEqual(["img-png-12"]);
+    expect(msg.isBuiltInCommand).toBeUndefined();
+  });
+
+  it("drops the built-in's output that trails its envelope", () => {
+    // A second block of raw XML under the command — and, being a user text
+    // turn, it displaced the command out of the tail window the optimistic
+    // bubble is compared against.
+    const parsed = parseMessages([userLine(builtin), userLine("<local-command-stdout>Login successful</local-command-stdout>"), userLine("now do the thing")]);
+    expect(parsed.map((m) => m.content)).toEqual(["/login", "now do the thing"]);
+  });
+
+  it("leaves prose that merely mentions the stdout tag alone", () => {
+    const prose = "what is <local-command-stdout> for?";
+    expect(parseMessages([userLine(prose)])[0].content).toBe(prose);
+  });
+});
+
+describe("parseMessages — command recognition is bounded work", () => {
+  // Recognition runs on every transcript read and, via getFirstUserMessage, on
+  // every sidebar row of every `GET /api/chats`. Both shapes below are strings
+  // a user could paste; neither may cost more than a linear pass.
+  const budgetMs = 1000;
+
+  function parseWithin(text: string): number {
+    const started = performance.now();
+    parseMessages([userLine(text)]);
+    return performance.now() - started;
+  }
+
+  it("rejects repeated unclosed openers without rescanning per opener", () => {
+    // The expensive shape: `COMMAND_TAG` is lazy, so an opener with no closer
+    // scans to end-of-string before failing. Unbounded, 20k openers took ~4.8s.
+    expect(parseWithin("<command-name>".repeat(20_000))).toBeLessThan(budgetMs);
+  });
+
+  it("rejects well-formed pairs followed by a stray character", () => {
+    // The shape that made the anchored `(...)+` pattern this replaced explore
+    // every split — it ran past 60s on 30 repetitions.
+    expect(parseWithin(`${"<command-name>x</command-name>".repeat(2_000)}!`)).toBeLessThan(budgetMs);
+  });
+
+  it("does not treat a pile of openers as one enormous command name", () => {
+    // Unbounded, the lazy match swallowed every opener into the name and
+    // rendered kilobytes of markup as a monospace "command".
+    const degenerate = `${"<command-name>".repeat(500)}<command-name>/x</command-name>`;
+    const [msg] = parseMessages([userLine(degenerate)]);
+    expect(msg.content).toBe(degenerate);
+    expect(msg.isBuiltInCommand).toBeUndefined();
   });
 });

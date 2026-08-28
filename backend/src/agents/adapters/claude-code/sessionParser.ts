@@ -151,20 +151,35 @@ function parseTaskNotification(raw: unknown): TaskNotification | null {
  */
 const COMMAND_TAG = /<command-(name|message|args)>[\s\S]*?<\/command-\1>/g;
 
+/** The opening tags alone — a fixed alternation, so counting them is one pass. */
+const COMMAND_OPEN_TAG = /<command-(?:name|message|args)>/g;
+
+/** An envelope carries at most one of each tag; more than three is not one. */
+const MAX_COMMAND_TAGS = 3;
+
 /**
  * The `/name args` line behind a command envelope, or null for anything that
  * isn't one. Whole-content match only, like the task-notification probe above:
  * prose that merely mentions `<command-name>` is a real message.
  *
- * Recognition is "strip the three known tags and see if anything is left"
- * rather than one anchored pattern for the whole envelope. A single regex
- * needs the tag group under a `+`, and a nested quantifier over content that
- * can itself look like more tags backtracks exponentially on input a user
- * could type by hand. This is linear in the number of tags.
+ * Recognition strips the known tags and checks the remainder rather than
+ * matching one anchored pattern for the whole envelope. A single regex needs
+ * the tag group under a `+`, and that nested quantifier backtracks
+ * exponentially: 30 well-formed pairs plus one stray character ran past 60s.
+ *
+ * Stripping is not free either, and the cost is in the *unclosed* opener, not
+ * the well-formed pair. `COMMAND_TAG` is lazy, so an opener with no closer
+ * scans to the end of the string before failing, and a message that is nothing
+ * but repeated openers pays that once per opener — quadratic, on the event
+ * loop, on every transcript read *and* every sidebar preview via
+ * {@link getFirstUserMessage}. So the opener count is bounded first, which is
+ * a single linear pass and caps the stripping at three scans.
  */
 function parseCommandEnvelope(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed.startsWith("<command-")) return null;
+  const opens = trimmed.match(COMMAND_OPEN_TAG);
+  if (!opens || opens.length > MAX_COMMAND_TAGS) return null;
   if (trimmed.replace(COMMAND_TAG, "").trim() !== "") return null;
 
   // `<command-message>` is the CLI's own label for the command, not anything
@@ -176,6 +191,32 @@ function parseCommandEnvelope(raw: string): string | null {
   return args ? `${slashed} ${args}` : slashed;
 }
 
+/**
+ * The command line behind an *entry*, or null. Wraps
+ * {@link parseCommandEnvelope} with the all-text guard both call sites need: an
+ * entry carrying an image block alongside the envelope is not a bare command,
+ * and projecting it would `continue` past the block loop that interns the
+ * image, losing it entirely.
+ */
+function projectCommandEntry(content: unknown): string | null {
+  if (!isTextOnly(content)) return null;
+  return parseCommandEnvelope(contentText(content));
+}
+
+/**
+ * A local built-in's output, written as its own plain user turn immediately
+ * after the envelope — `/login` is followed by
+ * `<local-command-stdout>Login successful</local-command-stdout>`.
+ *
+ * Dropped rather than rendered. It is the CLI's own output, not something the
+ * user said, so it was a second block of raw XML sitting directly under the
+ * command. It also *is* a user text turn, which put it in the tail window
+ * `visibleInFlight` compares against — displacing the command itself out of
+ * that window and rendering the optimistic bubble beside the transcript's own
+ * copy of it until the next settle.
+ */
+const LOCAL_COMMAND_STDOUT = /^<local-command-stdout>[\s\S]*<\/local-command-stdout>$/;
+
 /** Flatten JSONL message content (string or block array) to its plain text. */
 function contentText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -183,9 +224,19 @@ function contentText(content: unknown): string {
   return content.map((b: any) => (b?.type === "text" ? (b.text ?? "") : "")).join("");
 }
 
+/**
+ * True when the entry carries nothing but text — a bare string, or blocks that
+ * are all `text`. Anything else (an image riding along with the prompt) has to
+ * go through the block loop in {@link parseMessages}, which is the only thing
+ * that interns images.
+ */
+function isTextOnly(content: unknown): boolean {
+  return !Array.isArray(content) || content.every((b: any) => b?.type === "text");
+}
+
 /** True when the entry is a text-only turn whose whole text is `expected`. */
 function isTextOnlySaying(content: unknown, expected: string): boolean {
-  if (Array.isArray(content) && !content.every((b: any) => b?.type === "text")) return false;
+  if (!isTextOnly(content)) return false;
   return contentText(content).trim() === expected;
 }
 
@@ -241,19 +292,27 @@ export function getFirstUserMessage(filePath: string, maxLength: number = 200): 
   const hit = scanJsonlLines<string>(filePath, (msg) => {
     try {
       if (msg?.type !== "user" || msg.message?.role !== "user") return undefined;
+      // CLI plumbing is not the preview, for the same reason it is not
+      // conversation in `parseMessages`. The one that bites: the CLI writes an
+      // `isMeta` `<local-command-caveat>…` line immediately before every
+      // built-in command envelope, so without this a chat opened with `/login`
+      // previewed that caveat — a paragraph of XML the user never wrote.
+      if (msg.isMeta) return undefined;
       const content = msg.message.content;
       // A chat opened with `/skill …` has a command envelope as its first user
       // turn, so the preview every chat-list row is built from was a line of
-      // XML. Same projection the transcript gets — see
-      // {@link parseCommandEnvelope}.
+      // XML. Projected exactly as the transcript projects it, off the same
+      // whole-entry text, so the two cannot disagree about what is a command.
+      const command = projectCommandEntry(content);
+      if (command) return command.substring(0, maxLength);
       // `""` is deliberately returned rather than skipped: it is a hit, and the
       // whole-file loop this replaced stopped on it too. Every caller treats an
       // empty preview and a null one identically, so the only thing preserving
       // this buys is that the scan cannot run further than it used to.
-      if (typeof content === "string") return (parseCommandEnvelope(content) ?? content).substring(0, maxLength);
+      if (typeof content === "string") return content.substring(0, maxLength);
       if (Array.isArray(content)) {
         const textBlock = content.find((b: any) => b?.type === "text");
-        if (typeof textBlock?.text === "string" && textBlock.text) return (parseCommandEnvelope(textBlock.text) ?? textBlock.text).substring(0, maxLength);
+        if (typeof textBlock?.text === "string" && textBlock.text) return textBlock.text.substring(0, maxLength);
       }
       return undefined;
     } catch {
@@ -521,11 +580,14 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
     // just a cosmetic one. Flagged as a command so it renders as the literal
     // it is, rather than being run through the markdown renderer.
     if (role === "user") {
-      const typed = parseCommandEnvelope(contentText(content));
+      const typed = projectCommandEntry(content);
       if (typed) {
         result.push({ role, type: "text", content: typed, isBuiltInCommand: true, timestamp, ...(teamName && { teamName }), ...meta });
         continue;
       }
+      // The built-in's output, which trails its envelope. See
+      // {@link LOCAL_COMMAND_STDOUT}.
+      if (isTextOnly(content) && LOCAL_COMMAND_STDOUT.test(contentText(content).trim())) continue;
     }
 
     if (typeof content === "string") {
