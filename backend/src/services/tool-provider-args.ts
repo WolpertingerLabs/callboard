@@ -35,7 +35,7 @@ export const providerModelSchema = {
         "or THIS session's own engine if you did not. So passing `model` without `provider` means naming a model of the engine you are running " +
         'on right now, which is not necessarily Claude Code: "opus" passed from a Codex session is a Codex chat with an Anthropic alias for a ' +
         'model slug, and it fails at startup. With provider="claude-code": an Anthropic model alias ("opus", "sonnet", "haiku", "opusplan") or ' +
-        'full model ID (e.g. "claude-sonnet-4-6"). With provider="codex": a Codex model slug (e.g. "gpt-5.5") — use search_codex_models to ' +
+        'full model ID (e.g. "claude-sonnet-4-6"). With provider="codex": a Codex model slug (e.g. "gpt-5.5") — use list_codex_models to ' +
         'discover. With any other provider: that harness\'s own model id. A cross-harness model alias (e.g. "planner") works with ANY provider ' +
         "and resolves to that provider's configured target — use list_model_aliases to discover; it is the safe choice when you are not certain " +
         "which engine the new session will run on. Omit `model` to inherit THIS session's current model when the child runs on this session's " +

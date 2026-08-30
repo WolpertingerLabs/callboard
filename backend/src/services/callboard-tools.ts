@@ -10,13 +10,7 @@ import { getActiveSession } from "./claude.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { resolveBranch } from "../utils/git.js";
-import {
-  getOpenRouterModelsAsync,
-  searchOpenRouterModels,
-  getOpenRouterModelAliasesAsync,
-  searchOpenRouterModelAliases,
-  formatOpenRouterPrice,
-} from "./openrouter-models.js";
+import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
 import { getVisibleCodexModelsAsync, searchCodexModels } from "./codex-models.js";
 import { getSdkInfoAsync } from "./sdk-info.js";
 import { getUserContact } from "./user-contact.js";
@@ -24,7 +18,7 @@ import { customSkillsService, slugifySkillName } from "./custom-skills-service.j
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
 import { buildChatTree, getParentChatId, walkToRootId } from "./chat-lineage.js";
-import { patchCardFields, isCardEligible, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX } from "./card-fields.js";
+import { patchCardFields, isCardEligible, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX, CARD_STATUS_MAX } from "./card-fields.js";
 import { buildCardSummaries } from "./card-rollup.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { listRuns } from "./job-store.js";
@@ -574,16 +568,40 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "update_card",
-        "Amend the card (ticket) this conversation belongs to: its title, description, and emoji. Omitted fields are left untouched. The card is the board view of this conversation's lineage root — use set_card_status / set_card_category / set_card_metadata for those fields. Defaults to the current chat's card.",
+        "Amend the card (ticket) this conversation belongs to: its title, description, face emoji, narrative status, and category. Omitted fields are left untouched; every field except title can be cleared by passing an empty string (a blank title is rejected instead). The card is the board view of this conversation's lineage root — use set_card_metadata for arbitrary key→value cross-references. Defaults to the current chat's card.",
         {
           title: z.string().max(CARD_TITLE_MAX).optional().describe("New card title (blank titles are rejected)"),
           description: z.string().optional().describe("Markdown description of the topic/goal"),
           emoji: z.string().optional().describe("Single emoji shown on the card face"),
+          status: z
+            .string()
+            .max(CARD_STATUS_MAX)
+            .optional()
+            .describe(
+              `Short narrative status shown on the card face, e.g. 'waiting on CI for branch 3/4' (max ${CARD_STATUS_MAX} chars). Empty string clears it. ` +
+                "Changing the status does NOT reset status_emoji — an emoji an earlier call left there stays in front of your new status. " +
+                'Pass status_emoji too (or "" to drop it) whenever the old one would no longer fit.',
+            ),
+          status_emoji: z
+            .string()
+            .optional()
+            .describe(
+              "Single emoji prefix for the narrative status (e.g. '⏳', '🧪'). Empty string clears it. Not the card face emoji — that is `emoji`. " +
+                "It persists until you change it: it is not reset when `status` changes, and nothing in the UI lets the user clear it for you.",
+            ),
+          category: z
+            .string()
+            .max(CARD_CATEGORY_MAX)
+            .optional()
+            .describe(
+              `Free-form label the board groups open cards under — reuse an existing category from list_cards when one fits (max ${CARD_CATEGORY_MAX} chars). Empty string clears it.`,
+            ),
           card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
         },
         async (args) => {
-          if (args.title === undefined && args.description === undefined && args.emoji === undefined) {
-            return error("Pass at least one of title, description, emoji");
+          const touchesStatus = args.status !== undefined || args.status_emoji !== undefined;
+          if (args.title === undefined && args.description === undefined && args.emoji === undefined && args.category === undefined && !touchesStatus) {
+            return error("Pass at least one of title, description, emoji, status, status_emoji, category");
           }
           const target = resolveCardTarget(args.card_id);
           if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
@@ -593,65 +611,43 @@ export function buildCallboardToolsSpec(
               ...(args.title !== undefined && { title: args.title }),
               ...(args.description !== undefined && { description: args.description }),
               ...(args.emoji !== undefined && { emoji: args.emoji }),
+              // `|| null` is what makes "" clear rather than write an empty
+              // value, matching the setters this tool absorbed. Blank titles
+              // stay a rejection (patchCardFields throws) — a card with no
+              // title has nothing to show on the board, a card with no status
+              // simply has no status.
+              ...(args.status !== undefined && { status: args.status || null }),
+              ...(args.status_emoji !== undefined && { statusEmoji: args.status_emoji || null }),
+              ...(args.category !== undefined && { category: args.category || null }),
             });
           } catch (err) {
             return error(err instanceof Error ? err.message : "Failed to update card");
           }
           if (!card) return error(`Card "${target.rootChatId}" not found`);
-          sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, title: card.title, emoji: card.emoji }) }],
-          };
-        },
-      ),
-
-      defineTool(
-        "set_card_status",
-        "Set the narrative status shown on a card (ticket) face in the board view, e.g. 'waiting on CI for branch 3/4'. Defaults to the current chat's card. Pass an empty status string to clear it.",
-        {
-          status: z.string().max(160).describe("Short status line (max 160 chars). Empty string clears the status."),
-          emoji: z.string().optional().describe("Single emoji prefix (e.g. '⏳', '🧪')"),
-          card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
-        },
-        async (args) => {
-          const target = resolveCardTarget(args.card_id);
-          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
-          let card;
-          try {
-            card = patchCardFields(target.rootChatId, { status: args.status || null, statusEmoji: args.emoji || null });
-          } catch (err) {
-            return error(err instanceof Error ? err.message : "Failed to update card status");
-          }
-          if (!card) return error(`Card "${target.rootChatId}" not found`);
-          sessionRegistry.notifyMetadata(card.id, { cardEvent: "status" });
+          // `cardEvent` currently has producers and no consumers: the client
+          // only watches the metadata version counter and refetches the board
+          // wholesale, so neither value changes what happens. Kept — and kept
+          // distinct — for continuity with the set_card_status event this tool
+          // absorbed, so a future consumer inherits the distinction rather than
+          // having to reconstruct it. A mixed call reports "status" as the
+          // strictly more specific of the two; a consumer that only knows
+          // "updated" still re-reads the card either way.
+          sessionRegistry.notifyMetadata(card.id, { cardEvent: touchesStatus ? "status" : "updated" });
           return {
             content: [
-              { type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, status: card.status ?? null, emoji: card.statusEmoji ?? null }) },
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  cardId: card.id,
+                  title: card.title,
+                  emoji: card.emoji,
+                  status: card.status ?? null,
+                  statusEmoji: card.statusEmoji ?? null,
+                  category: card.category ?? null,
+                }),
+              },
             ],
-          };
-        },
-      ),
-
-      defineTool(
-        "set_card_category",
-        "Set or clear the category on a card (ticket). Categories are optional free-form labels the board groups open cards under — reuse an existing category from list_cards when one fits. Defaults to the current chat's card. Pass an empty string to clear.",
-        {
-          category: z.string().max(CARD_CATEGORY_MAX).describe(`Category label (max ${CARD_CATEGORY_MAX} chars). Empty string clears the category.`),
-          card_id: z.string().optional().describe("Target card id (default: the current chat's lineage root)"),
-        },
-        async (args) => {
-          const target = resolveCardTarget(args.card_id);
-          if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
-          let card;
-          try {
-            card = patchCardFields(target.rootChatId, { category: args.category || null });
-          } catch (err) {
-            return error(err instanceof Error ? err.message : "Failed to update card category");
-          }
-          if (!card) return error(`Card "${target.rootChatId}" not found`);
-          sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, category: card.category ?? null }) }],
           };
         },
       ),
@@ -1017,14 +1013,25 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "list_codex_models",
-        "List Codex models from the cached live Codex CLI model catalog. Use the returned slug as the `model` param when starting a codex session. The list is refreshed on app start.",
+        "List Codex models from the cached live Codex CLI model catalog, optionally filtered by a search query. Use the returned slug as the `model` param when starting a codex session. The list is refreshed on app start.",
         {
-          limit: z.number().optional().describe("Max models to return (default: all)."),
+          query: z
+            .string()
+            .optional()
+            .describe("Filter to models whose slug or display name matches this text as a subsequence (characters in order, e.g. 'g55' matches 'gpt-5.5')."),
+          limit: z.number().optional().describe("Max models to return (default: all, or 50 when `query` is given)."),
         },
         async (args) => {
           try {
             const models = await getVisibleCodexModelsAsync();
-            const limited = typeof args.limit === "number" ? models.slice(0, Math.max(1, args.limit)) : models;
+            // Two defaults on purpose: an unfiltered listing is a catalog and
+            // returns everything, a query is a lookup and stops at 50.
+            const limited =
+              args.query !== undefined
+                ? await searchCodexModels(args.query, args.limit ?? 50)
+                : typeof args.limit === "number"
+                  ? models.slice(0, Math.max(1, args.limit))
+                  : models;
             const rows = limited.map((m) => ({
               id: m.id,
               name: m.name,
@@ -1038,6 +1045,7 @@ export function buildCallboardToolsSpec(
                 {
                   type: "text" as const,
                   text: JSON.stringify({
+                    ...(args.query !== undefined && { query: args.query }),
                     count: rows.length,
                     total: models.length,
                     models: rows,
@@ -1052,70 +1060,43 @@ export function buildCallboardToolsSpec(
         },
       ),
 
-      defineTool(
-        "search_codex_models",
-        "Search cached Codex models by slug or display name using subsequence matching (characters in order, e.g. 'g55' matches 'gpt-5.5').",
-        {
-          query: z.string().describe("Search text matched as a subsequence against the model slug or display name."),
-          limit: z.number().optional().describe("Max results to return (default: 50)."),
-        },
-        async (args) => {
-          try {
-            const matched = await searchCodexModels(args.query, args.limit ?? 50);
-            const rows = matched.map((m) => ({
-              id: m.id,
-              name: m.name,
-              ...(m.description && { description: m.description }),
-              ...(m.defaultReasoningLevel && { defaultReasoningLevel: m.defaultReasoningLevel }),
-              ...(m.supportedReasoningLevels && { supportedReasoningLevels: m.supportedReasoningLevels }),
-              ...(m.serviceTiers && { serviceTiers: m.serviceTiers }),
-            }));
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    query: args.query,
-                    count: rows.length,
-                    models: rows,
-                  }),
-                },
-              ],
-            };
-          } catch (err: any) {
-            log.error(`search_codex_models failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error searching Codex models: ${err.message}` }] };
-          }
-        },
-      ),
-
       // ── OpenRouter Model Discovery ──────────────────────────────────
 
       defineTool(
         "list_openrouter_models",
-        "List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens). Use the returned slug wherever an OpenRouter model id is configured — the Claude Code / Codex / Cline / pi harnesses can each be pointed at OpenRouter credentials in Settings → API. The list is cached and refreshed on app start. The `aliases` field is vestigial: it reads the deprecated OpenRouter-only alias map, which is retired the first time the unified registry is written, so it is empty for most installs — use list_model_aliases for cross-harness aliases.",
+        "List OpenRouter models that support tool calling, with their input/output pricing (per 1M tokens), optionally filtered by a search query. Use the returned slug wherever an OpenRouter model id is configured — the Claude Code / Codex / Cline / pi harnesses can each be pointed at OpenRouter credentials in Settings → API. The list is cached and refreshed on app start. Use list_model_aliases for cross-harness aliases.",
         {
-          limit: z.number().optional().describe("Max models to return (default: all). Aliases are always returned in full."),
+          query: z
+            .string()
+            .optional()
+            .describe("Filter to models whose slug matches this text as a subsequence (characters in order, e.g. 'claop' matches 'anthropic/claude-opus')."),
+          limit: z.number().optional().describe("Max models to return (default: all, or 50 when `query` is given)."),
         },
         async (args) => {
           try {
-            const [models, aliases] = await Promise.all([getOpenRouterModelsAsync(), getOpenRouterModelAliasesAsync()]);
-            const limited = typeof args.limit === "number" ? models.slice(0, Math.max(1, args.limit)) : models;
+            const models = await getOpenRouterModelsAsync();
+            // Two defaults on purpose: an unfiltered listing is a catalog and
+            // returns everything, a query is a lookup and stops at 50.
+            const limited =
+              args.query !== undefined
+                ? await searchOpenRouterModels(args.query, args.limit ?? 50)
+                : typeof args.limit === "number"
+                  ? models.slice(0, Math.max(1, args.limit))
+                  : models;
             const rows = limited.map((m) => ({
               id: m.id,
               in: formatOpenRouterPrice(m.promptPrice),
               out: formatOpenRouterPrice(m.completionPrice),
             }));
-            const aliasRows = aliases.map((a) => ({ alias: a.alias, target: a.modelId }));
             return {
               content: [
                 {
                   type: "text" as const,
                   text: JSON.stringify({
+                    ...(args.query !== undefined && { query: args.query }),
                     count: rows.length,
                     total: models.length,
                     pricingUnit: "per 1M tokens",
-                    ...(aliasRows.length > 0 && { aliases: aliasRows }),
                     models: rows,
                   }),
                 },
@@ -1129,46 +1110,8 @@ export function buildCallboardToolsSpec(
       ),
 
       defineTool(
-        "search_openrouter_models",
-        "Search tool-calling OpenRouter models by slug using subsequence matching (characters in order, e.g. 'claop' matches 'anthropic/claude-opus'). Returns matching slugs with input/output pricing (per 1M tokens). Alias matching is vestigial — it reads the deprecated OpenRouter-only alias map, which is retired the first time the unified registry is written, so it matches nothing for most installs. Use list_model_aliases for cross-harness aliases.",
-        {
-          query: z.string().describe("Search text matched as a subsequence against the model slug (and alias names)."),
-          limit: z.number().optional().describe("Max results to return (default: 50)."),
-        },
-        async (args) => {
-          try {
-            const limit = args.limit ?? 50;
-            const [matched, matchedAliases] = await Promise.all([searchOpenRouterModels(args.query, limit), searchOpenRouterModelAliases(args.query, limit)]);
-            const rows = matched.map((m) => ({
-              id: m.id,
-              in: formatOpenRouterPrice(m.promptPrice),
-              out: formatOpenRouterPrice(m.completionPrice),
-            }));
-            const aliasRows = matchedAliases.map((a) => ({ alias: a.alias, target: a.modelId }));
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    query: args.query,
-                    count: rows.length,
-                    pricingUnit: "per 1M tokens",
-                    ...(aliasRows.length > 0 && { aliases: aliasRows }),
-                    models: rows,
-                  }),
-                },
-              ],
-            };
-          } catch (err: any) {
-            log.error(`search_openrouter_models failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error searching models: ${err.message}` }] };
-          }
-        },
-      ),
-
-      defineTool(
         "get_session_status",
-        "Check the status of a Claude Code session. Returns whether the session is active, complete, or not found. " +
+        "Check the status of a chat session on any engine (claude-code, codex, cline, pi, acp). Returns whether the session is active, complete, or not found. " +
           "To poll, sleep between checks with the `wait` tool — not a background `sleep` shell, which is invisible to the user and holds this session open until it finishes.",
         {
           chatId: z.string().describe("The chat/session ID to check"),
@@ -1208,7 +1151,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "read_session_messages",
-        "Read the text messages from a Claude Code session. Returns the conversation content (user and assistant messages). Useful for checking what a spawned session did.",
+        "Read the text messages from a chat session on any engine (claude-code, codex, cline, pi, acp) — each engine's transcript format is read for you. Returns the conversation content (user and assistant messages). Useful for checking what a spawned session did.",
         {
           chatId: z.string().describe("The chat/session ID to read messages from"),
           limit: z.number().optional().describe("Maximum number of messages to return (default: 50, returns most recent)"),
@@ -1356,13 +1299,35 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "find_chats",
-        "Search chat sessions for a repo folder, including worktrees. Scans all Claude Code sessions in ~/.claude/projects/, minus any project folder the user has ignored in Settings — those are skipped even when this call names one. Ignoring a folder is the user's instruction to leave it alone, so treat an empty result for an ignored folder as the answer, not as a reason to go read ~/.claude/projects/ directly. Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
+        "Search chat sessions for a repo folder. Scans the stored sessions of every engine (claude-code, codex, cline, pi, acp), minus any project folder the user has ignored in Settings — those are skipped even when this call names one. Ignoring a folder is the user's instruction to leave it alone, so treat an empty result for an ignored folder as the answer, not as a reason to go read the engines' transcript directories directly. " +
+          "Two caveats, and they fail in OPPOSITE directions. (1) Too few rows: `folder` expands to the repo's worktrees for claude-code sessions only — every other engine matches the working directory exactly, so a codex/cline/pi/acp chat run in a worktree is simply absent unless you name that worktree's path. " +
+          "(2) Too many rows: gitBranch, agentAlias and triggered are applied to claude-code sessions only. The other engines do not store those fields, ignore the filters entirely, and return their folder matches anyway, stamped gitBranch null / agentAlias null / triggered false. So gitBranch:'main' gives you claude-code chats on main PLUS every codex/cline/pi/acp chat in that folder whatever its branch — these filters narrow nothing outside claude-code. Read gitBranch/agentAlias/triggered off each returned row instead of trusting that the filter removed anything. " +
+          "Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
         {
-          folder: z.string().describe("Repo working directory path (also searches worktrees of this repo)"),
+          folder: z
+            .string()
+            .describe(
+              "Repo working directory path (also searches this repo's worktrees, for claude-code sessions only — other engines match this path exactly, so their worktree chats are absent unless you name the worktree)",
+            ),
           grep: z.string().optional().describe("Search term to grep across session conversation content (messages, tool calls, code, etc.)"),
-          gitBranch: z.string().optional().describe("Filter by git branch (matches live worktree branches and stored session metadata)"),
-          agentAlias: z.string().optional().describe("Filter to chats started by a specific agent"),
-          triggered: z.boolean().optional().describe("Filter to automated (true) or manual (false) sessions"),
+          gitBranch: z
+            .string()
+            .optional()
+            .describe(
+              "Filter by git branch (matches live worktree branches and stored session metadata). Applied to claude-code sessions only — other engines ignore it and still return their folder matches, stamped gitBranch null. Check the field on each row.",
+            ),
+          agentAlias: z
+            .string()
+            .optional()
+            .describe(
+              "Filter to chats started by a specific agent. Applied to claude-code sessions only — other engines ignore it and still return their folder matches, stamped agentAlias null. Check the field on each row.",
+            ),
+          triggered: z
+            .boolean()
+            .optional()
+            .describe(
+              "Filter to automated (true) or manual (false) sessions. Applied to claude-code sessions only — other engines ignore it and still return their folder matches, always stamped triggered=false, so triggered:true returns rows saying triggered:false. Check the field on each row.",
+            ),
           updatedAfter: z.string().optional().describe("ISO-8601 date — only chats updated after this time"),
           updatedBefore: z.string().optional().describe("ISO-8601 date — only chats updated before this time"),
           parentChatId: z

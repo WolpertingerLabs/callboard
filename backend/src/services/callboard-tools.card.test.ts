@@ -1,9 +1,10 @@
 /**
  * Card MCP tools against the cards-as-metadata model: `get_card` (member
- * list + ordering), the setters resolving the calling chat's lineage root,
- * and the new `update_card`. `create_card` and `add_chat_to_card` are gone —
- * membership is lineage — and the first test pins that the tool surface
- * matches the new world.
+ * list + ordering) and `update_card`, which resolves the calling chat's
+ * lineage root and now carries every card field except the per-key metadata
+ * merge. `create_card` / `add_chat_to_card` are gone (membership is lineage)
+ * and so are `set_card_status` / `set_card_category` (folded into
+ * `update_card`); the first test pins that the tool surface matches.
  *
  * Chats are written straight to a temp CALLBOARD_DATA_DIR (the stat-gated
  * snapshot and the real file service both read them); the same cycle break as
@@ -75,7 +76,17 @@ describe("the card tool surface", () => {
     const names = spec.tools.map((t) => t.name);
     expect(names).not.toContain("create_card");
     expect(names).not.toContain("add_chat_to_card");
-    expect(names).toEqual(expect.arrayContaining(["update_card", "list_cards", "get_card", "set_card_status", "set_card_category", "set_card_metadata"]));
+    expect(names).toEqual(expect.arrayContaining(["update_card", "list_cards", "get_card", "set_card_metadata"]));
+  });
+
+  it("has one writer per card field group — set_card_status/category folded into update_card", () => {
+    const spec = buildCallboardToolsSpec(() => "chat-under-test", undefined, { includeJobTools: false });
+    const names = spec.tools.map((t) => t.name);
+    expect(names).not.toContain("set_card_status");
+    expect(names).not.toContain("set_card_category");
+    // set_card_metadata survives: its per-key merge does not compose with
+    // update_card's "omitted fields are untouched" contract.
+    expect(names).toContain("set_card_metadata");
   });
 });
 
@@ -119,19 +130,19 @@ describe("get_card", () => {
   });
 });
 
-describe("setters resolve the calling chat's lineage root", () => {
-  it("set_card_status writes onto the root's metadata.card", async () => {
+describe("update_card resolves the calling chat's lineage root", () => {
+  it("writes status and status emoji onto the root's metadata.card", async () => {
     seedCallingTree();
-    const result = await tool("set_card_status").handler({ status: "waiting on CI", emoji: "⏳" });
+    const result = await tool("update_card").handler({ status: "waiting on CI", status_emoji: "⏳" });
     const payload = JSON.parse(text(result));
     expect(payload.success).toBe(true);
     expect(payload.cardId).toBe("chat-under-test");
     expect(readCardFields("chat-under-test")).toMatchObject({ status: "waiting on CI", statusEmoji: "⏳" });
   });
 
-  it("set_card_category and set_card_metadata write through the same resolution", async () => {
+  it("writes category through the same resolution as set_card_metadata", async () => {
     seedCallingTree();
-    JSON.parse(text(await tool("set_card_category").handler({ category: "eng" })));
+    JSON.parse(text(await tool("update_card").handler({ category: "eng" })));
     JSON.parse(text(await tool("set_card_metadata").handler({ set: { "github-pr": "https://gh/42" } })));
     expect(readCardFields("chat-under-test")).toMatchObject({
       category: "eng",
@@ -142,7 +153,7 @@ describe("setters resolve the calling chat's lineage root", () => {
   it("an explicit card_id can target another tree's root", async () => {
     seedCallingTree();
     writeChat("other-root", "2026-08-01T00:00:00.000Z", {}, "Other");
-    const result = await tool("set_card_status").handler({ card_id: "other-root", status: "elsewhere" });
+    const result = await tool("update_card").handler({ card_id: "other-root", status: "elsewhere" });
     const payload = JSON.parse(text(result));
     expect(payload.cardId).toBe("other-root");
     expect(readCardFields("chat-under-test")!.status).toBeUndefined();
@@ -153,7 +164,7 @@ describe("setters resolve the calling chat's lineage root", () => {
     // card at all. Both must fail cleanly rather than write a phantom card.
     writeChat("step-chat", "2026-08-01T00:00:00.000Z", { triggered: true, jobRunId: "run-1" }, "Step");
     const spec = buildCallboardToolsSpec(() => "step-chat", undefined, { includeJobTools: false });
-    const found = spec.tools.find((t) => t.name === "set_card_status")!;
+    const found = spec.tools.find((t) => t.name === "update_card")!;
     const result = await found.handler({ status: "nope" });
     expect(text(result)).toMatch(/no card|not a card root/i);
   });
@@ -187,5 +198,72 @@ describe("update_card", () => {
     const result = await tool("update_card").handler({ title: "   " });
     expect(text(result)).toMatch(/blank/i);
     expect(readCardFields("chat-under-test")!.title).toBe("Root");
+  });
+
+  it("a blank title is still rejected when the same call carries a valid status", async () => {
+    // The status must not sneak through on a call the title rejects.
+    seedCallingTree();
+    const result = await tool("update_card").handler({ title: "", status: "should not land" });
+    expect(text(result)).toMatch(/blank/i);
+    expect(readCardFields("chat-under-test")!.status).toBeUndefined();
+  });
+
+  it("keeps emoji (card face) and status_emoji (status prefix) apart", async () => {
+    // The whole reason the folded param is not called `emoji`: set_card_status's
+    // emoji wrote statusEmoji, update_card's writes the card face.
+    seedCallingTree();
+    await tool("update_card").handler({ emoji: "🚀", status: "building", status_emoji: "🧪" });
+    expect(readCardFields("chat-under-test")).toMatchObject({ emoji: "🚀", status: "building", statusEmoji: "🧪" });
+  });
+
+  it("clears status, status_emoji and category on an explicit empty string", async () => {
+    seedCallingTree();
+    await tool("update_card").handler({ status: "building", status_emoji: "🧪", category: "eng" });
+    await tool("update_card").handler({ status_emoji: "", category: "" });
+    let card = readCardFields("chat-under-test")!;
+    expect(card.statusEmoji).toBeUndefined();
+    expect(card.category).toBeUndefined();
+    expect(card.status).toBe("building");
+
+    await tool("update_card").handler({ status: "" });
+    card = readCardFields("chat-under-test")!;
+    expect(card.status).toBeUndefined();
+  });
+
+  it("clearing status also clears a status_emoji left behind by an earlier call", async () => {
+    // The one automatic cleanup left: status_emoji has no UI editor and
+    // persists across status changes, so `status: ""` taking the emoji with it
+    // is the only way a stale one is ever reclaimed. It is a single `delete` in
+    // patchCardFields and nothing else pins it.
+    seedCallingTree();
+    await tool("update_card").handler({ status: "waiting on review", status_emoji: "⏳" });
+    await tool("update_card").handler({ status: "" });
+    const card = readCardFields("chat-under-test")!;
+    expect(card.status).toBeUndefined();
+    expect(card.statusEmoji).toBeUndefined();
+  });
+
+  it("changing status does NOT reset status_emoji — the documented sharp edge", async () => {
+    // The behaviour change from set_card_status, which always wrote both. The
+    // tool description tells the agent to pass status_emoji explicitly; this
+    // pins what happens when it does not, so the description stays honest.
+    seedCallingTree();
+    await tool("update_card").handler({ status: "waiting on review", status_emoji: "⏳" });
+    await tool("update_card").handler({ status: "merged" });
+    expect(readCardFields("chat-under-test")).toMatchObject({ status: "merged", statusEmoji: "⏳" });
+  });
+
+  it("leaves status, status_emoji and category untouched when they are omitted", async () => {
+    // Omitted is not cleared — only an explicit "" clears. This is what makes
+    // update_card safe to call for a title while another writer owns the status.
+    seedCallingTree();
+    await tool("update_card").handler({ status: "building", status_emoji: "🧪", category: "eng" });
+    await tool("update_card").handler({ title: "Renamed" });
+    expect(readCardFields("chat-under-test")).toMatchObject({
+      title: "Renamed",
+      status: "building",
+      statusEmoji: "🧪",
+      category: "eng",
+    });
   });
 });
