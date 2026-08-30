@@ -109,16 +109,22 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     name: "update_card",
     qualifiedName: "mcp__callboard-tools__update_card",
     description:
-      "Amend the card (ticket) this conversation belongs to: title, description, face emoji, narrative status, category. Omitted fields are untouched; an empty string clears status/status_emoji/category. A card is the board view of the conversation's lineage root — it exists automatically, so there is no create.",
+      "Amend the card (ticket) this conversation belongs to: title, description, face emoji, narrative status, category. Omitted fields are untouched; every field except title is cleared by passing an empty string. A card is the board view of the conversation's lineage root — it exists automatically, so there is no create.",
     parameters: [
       { name: "title", type: "string", description: "New card title (max 200 chars)", required: false },
       { name: "description", type: "string", description: "Markdown description of the topic/goal", required: false },
       { name: "emoji", type: "string", description: "Single emoji shown on the card face", required: false },
-      { name: "status", type: "string", description: "Short narrative status shown on the card face (max 160 chars). Empty string clears.", required: false },
+      {
+        name: "status",
+        type: "string",
+        description: "Short narrative status shown on the card face (max 160 chars). Empty string clears. Changing it does not reset status_emoji.",
+        required: false,
+      },
       {
         name: "status_emoji",
         type: "string",
-        description: "Single emoji prefix for the narrative status. Empty string clears. Not the card face emoji.",
+        description:
+          "Single emoji prefix for the narrative status. Empty string clears. Not the card face emoji. Persists until changed — it is not reset when status changes, and the UI has no editor for it.",
         required: false,
       },
       {
@@ -344,13 +350,18 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     name: "find_chats",
     qualifiedName: "mcp__callboard-tools__find_chats",
     description:
-      "Search chat sessions for a repo folder, including worktrees, across all engines. Project folders the user has ignored in Settings are skipped. Use with continue_chat to resume a previous conversation.",
+      "Search chat sessions for a repo folder, across all engines. Project folders the user has ignored in Settings are skipped. Worktree expansion and the gitBranch/agentAlias/triggered filters apply to claude-code sessions only — other engines match the folder exactly and do not store those fields. Use with continue_chat to resume a previous conversation.",
     parameters: [
-      { name: "folder", type: "string", description: "Repo working directory path (also searches worktrees)", required: true },
+      {
+        name: "folder",
+        type: "string",
+        description: "Repo working directory path (also searches worktrees, for claude-code sessions only — other engines match it exactly)",
+        required: true,
+      },
       { name: "grep", type: "string", description: "Search term to grep across session conversation content", required: false },
-      { name: "gitBranch", type: "string", description: "Filter by git branch", required: false },
-      { name: "agentAlias", type: "string", description: "Filter to chats by a specific agent", required: false },
-      { name: "triggered", type: "boolean", description: "Filter to automated (true) or manual (false) sessions", required: false },
+      { name: "gitBranch", type: "string", description: "Filter by git branch (claude-code sessions only)", required: false },
+      { name: "agentAlias", type: "string", description: "Filter to chats by a specific agent (claude-code sessions only)", required: false },
+      { name: "triggered", type: "boolean", description: "Filter to automated (true) or manual (false) sessions (claude-code sessions only)", required: false },
       { name: "updatedAfter", type: "string", description: "ISO-8601 date — only chats updated after this time", required: false },
       { name: "updatedBefore", type: "string", description: "ISO-8601 date — only chats updated before this time", required: false },
       { name: "parentChatId", type: "string", description: "Filter to direct children of this chat in the parentage tree", required: false },

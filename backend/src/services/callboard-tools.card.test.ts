@@ -230,6 +230,29 @@ describe("update_card", () => {
     expect(card.status).toBeUndefined();
   });
 
+  it("clearing status also clears a status_emoji left behind by an earlier call", async () => {
+    // The one automatic cleanup left: status_emoji has no UI editor and
+    // persists across status changes, so `status: ""` taking the emoji with it
+    // is the only way a stale one is ever reclaimed. It is a single `delete` in
+    // patchCardFields and nothing else pins it.
+    seedCallingTree();
+    await tool("update_card").handler({ status: "waiting on review", status_emoji: "⏳" });
+    await tool("update_card").handler({ status: "" });
+    const card = readCardFields("chat-under-test")!;
+    expect(card.status).toBeUndefined();
+    expect(card.statusEmoji).toBeUndefined();
+  });
+
+  it("changing status does NOT reset status_emoji — the documented sharp edge", async () => {
+    // The behaviour change from set_card_status, which always wrote both. The
+    // tool description tells the agent to pass status_emoji explicitly; this
+    // pins what happens when it does not, so the description stays honest.
+    seedCallingTree();
+    await tool("update_card").handler({ status: "waiting on review", status_emoji: "⏳" });
+    await tool("update_card").handler({ status: "merged" });
+    expect(readCardFields("chat-under-test")).toMatchObject({ status: "merged", statusEmoji: "⏳" });
+  });
+
   it("leaves status, status_emoji and category untouched when they are omitted", async () => {
     // Omitted is not cleared — only an explicit "" clears. This is what makes
     // update_card safe to call for a title while another writer owns the status.

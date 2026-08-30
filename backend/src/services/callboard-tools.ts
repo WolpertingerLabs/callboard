@@ -568,7 +568,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "update_card",
-        "Amend the card (ticket) this conversation belongs to: its title, description, face emoji, narrative status, and category. Omitted fields are left untouched; pass an empty string to clear status, status_emoji, or category. The card is the board view of this conversation's lineage root — use set_card_metadata for arbitrary key→value cross-references. Defaults to the current chat's card.",
+        "Amend the card (ticket) this conversation belongs to: its title, description, face emoji, narrative status, and category. Omitted fields are left untouched; every field except title can be cleared by passing an empty string (a blank title is rejected instead). The card is the board view of this conversation's lineage root — use set_card_metadata for arbitrary key→value cross-references. Defaults to the current chat's card.",
         {
           title: z.string().max(CARD_TITLE_MAX).optional().describe("New card title (blank titles are rejected)"),
           description: z.string().optional().describe("Markdown description of the topic/goal"),
@@ -578,12 +578,17 @@ export function buildCallboardToolsSpec(
             .max(CARD_STATUS_MAX)
             .optional()
             .describe(
-              `Short narrative status shown on the card face, e.g. 'waiting on CI for branch 3/4' (max ${CARD_STATUS_MAX} chars). Empty string clears it.`,
+              `Short narrative status shown on the card face, e.g. 'waiting on CI for branch 3/4' (max ${CARD_STATUS_MAX} chars). Empty string clears it. ` +
+                "Changing the status does NOT reset status_emoji — an emoji an earlier call left there stays in front of your new status. " +
+                'Pass status_emoji too (or "" to drop it) whenever the old one would no longer fit.',
             ),
           status_emoji: z
             .string()
             .optional()
-            .describe("Single emoji prefix for the narrative status (e.g. '⏳', '🧪'). Empty string clears it. Not the card face emoji — that is `emoji`."),
+            .describe(
+              "Single emoji prefix for the narrative status (e.g. '⏳', '🧪'). Empty string clears it. Not the card face emoji — that is `emoji`. " +
+                "It persists until you change it: it is not reset when `status` changes, and nothing in the UI lets the user clear it for you.",
+            ),
           category: z
             .string()
             .max(CARD_CATEGORY_MAX)
@@ -619,11 +624,14 @@ export function buildCallboardToolsSpec(
             return error(err instanceof Error ? err.message : "Failed to update card");
           }
           if (!card) return error(`Card "${target.rootChatId}" not found`);
-          // The board animates a status change differently from a plain edit,
-          // so a call that touches status keeps the old set_card_status event.
-          // A mixed call reports "status" because that is the strictly more
-          // specific of the two — a client that only knows "updated" still
-          // re-reads the card either way.
+          // `cardEvent` currently has producers and no consumers: the client
+          // only watches the metadata version counter and refetches the board
+          // wholesale, so neither value changes what happens. Kept — and kept
+          // distinct — for continuity with the set_card_status event this tool
+          // absorbed, so a future consumer inherits the distinction rather than
+          // having to reconstruct it. A mixed call reports "status" as the
+          // strictly more specific of the two; a consumer that only knows
+          // "updated" still re-reads the card either way.
           sessionRegistry.notifyMetadata(card.id, { cardEvent: touchesStatus ? "status" : "updated" });
           return {
             content: [
@@ -1291,13 +1299,31 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "find_chats",
-        "Search chat sessions for a repo folder, including worktrees. Scans the stored sessions of every engine (claude-code, codex, cline, pi, acp), minus any project folder the user has ignored in Settings — those are skipped even when this call names one. Ignoring a folder is the user's instruction to leave it alone, so treat an empty result for an ignored folder as the answer, not as a reason to go read the engines' transcript directories directly. Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
+        "Search chat sessions for a repo folder. Scans the stored sessions of every engine (claude-code, codex, cline, pi, acp), minus any project folder the user has ignored in Settings — those are skipped even when this call names one. Ignoring a folder is the user's instruction to leave it alone, so treat an empty result for an ignored folder as the answer, not as a reason to go read the engines' transcript directories directly. " +
+          "Two caveats on how far the search reaches, both of which mean a narrow call can miss a chat that exists: `folder` expands to the repo's worktrees for claude-code sessions only — every other engine matches the working directory exactly, so a codex/cline/pi/acp chat run in a worktree is only found by naming that worktree's path. " +
+          "The gitBranch, agentAlias and triggered filters are likewise honored for claude-code sessions only; the other engines do not store those fields and report every row as gitBranch null, agentAlias null, triggered false, so filtering on them narrows to claude-code in practice. " +
+          "Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
         {
-          folder: z.string().describe("Repo working directory path (also searches worktrees of this repo)"),
+          folder: z
+            .string()
+            .describe(
+              "Repo working directory path (also searches this repo's worktrees, for claude-code sessions only — other engines match this path exactly)",
+            ),
           grep: z.string().optional().describe("Search term to grep across session conversation content (messages, tool calls, code, etc.)"),
-          gitBranch: z.string().optional().describe("Filter by git branch (matches live worktree branches and stored session metadata)"),
-          agentAlias: z.string().optional().describe("Filter to chats started by a specific agent"),
-          triggered: z.boolean().optional().describe("Filter to automated (true) or manual (false) sessions"),
+          gitBranch: z
+            .string()
+            .optional()
+            .describe(
+              "Filter by git branch (matches live worktree branches and stored session metadata). claude-code sessions only — other engines report no branch and are filtered out.",
+            ),
+          agentAlias: z
+            .string()
+            .optional()
+            .describe("Filter to chats started by a specific agent. claude-code sessions only — other engines report no alias and are filtered out."),
+          triggered: z
+            .boolean()
+            .optional()
+            .describe("Filter to automated (true) or manual (false) sessions. claude-code sessions only — other engines always report triggered=false."),
           updatedAfter: z.string().optional().describe("ISO-8601 date — only chats updated after this time"),
           updatedBefore: z.string().optional().describe("ISO-8601 date — only chats updated before this time"),
           parentChatId: z
