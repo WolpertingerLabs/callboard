@@ -109,11 +109,24 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     name: "update_card",
     qualifiedName: "mcp__callboard-tools__update_card",
     description:
-      "Amend the card (ticket) this conversation belongs to: title, description, emoji. Omitted fields are untouched. A card is the board view of the conversation's lineage root — it exists automatically, so there is no create.",
+      "Amend the card (ticket) this conversation belongs to: title, description, face emoji, narrative status, category. Omitted fields are untouched; an empty string clears status/status_emoji/category. A card is the board view of the conversation's lineage root — it exists automatically, so there is no create.",
     parameters: [
       { name: "title", type: "string", description: "New card title (max 200 chars)", required: false },
       { name: "description", type: "string", description: "Markdown description of the topic/goal", required: false },
       { name: "emoji", type: "string", description: "Single emoji shown on the card face", required: false },
+      { name: "status", type: "string", description: "Short narrative status shown on the card face (max 160 chars). Empty string clears.", required: false },
+      {
+        name: "status_emoji",
+        type: "string",
+        description: "Single emoji prefix for the narrative status. Empty string clears. Not the card face emoji.",
+        required: false,
+      },
+      {
+        name: "category",
+        type: "string",
+        description: "Category label the board groups open cards under (max 64 chars). Empty string clears.",
+        required: false,
+      },
       { name: "card_id", type: "string", description: "Target card id (default: the current chat's lineage root)", required: false },
     ],
     serverName: "callboard-tools",
@@ -142,31 +155,6 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     qualifiedName: "mcp__callboard-tools__get_card",
     description: "Get a card (ticket) with its full description and member chats. card_id is the card's root chat id; any member chat id resolves to the same card.",
     parameters: [{ name: "card_id", type: "string", description: "The card id (default: the current chat's lineage root)", required: false }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "set_card_status",
-    qualifiedName: "mcp__callboard-tools__set_card_status",
-    description: "Set the narrative status shown on a card (ticket) face in the board view.",
-    parameters: [
-      { name: "status", type: "string", description: "Short status line (max 160 chars). Empty string clears.", required: true },
-      { name: "emoji", type: "string", description: "Single emoji prefix", required: false },
-      { name: "card_id", type: "string", description: "Target card id (default: the current chat's lineage root)", required: false },
-    ],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "set_card_category",
-    qualifiedName: "mcp__callboard-tools__set_card_category",
-    description: "Set or clear the optional category label a card (ticket) is grouped under on the board view.",
-    parameters: [
-      { name: "category", type: "string", description: "Category label (max 64 chars). Empty string clears.", required: true },
-      { name: "card_id", type: "string", description: "Target card id (default: the current chat's lineage root)", required: false },
-    ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
     category: "platform",
@@ -284,19 +272,10 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "list_codex_models",
     qualifiedName: "mcp__callboard-tools__list_codex_models",
-    description: "List Codex models from the cached live Codex CLI model catalog.",
-    parameters: [{ name: "limit", type: "number", description: "Max models to return (default: all)", required: false }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "search_codex_models",
-    qualifiedName: "mcp__callboard-tools__search_codex_models",
-    description: "Search cached Codex models by slug or display name (subsequence match).",
+    description: "List Codex models from the cached live Codex CLI model catalog, optionally filtered by a subsequence search query.",
     parameters: [
-      { name: "query", type: "string", description: "Search text matched as a subsequence against the model slug or display name", required: true },
-      { name: "limit", type: "number", description: "Max results to return (default: 50)", required: false },
+      { name: "query", type: "string", description: "Filter to models whose slug or display name matches this text as a subsequence", required: false },
+      { name: "limit", type: "number", description: "Max models to return (default: all, or 50 when query is given)", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -305,19 +284,11 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "list_openrouter_models",
     qualifiedName: "mcp__callboard-tools__list_openrouter_models",
-    description: "List OpenRouter models that support tool calling, with input/output pricing (per 1M tokens).",
-    parameters: [{ name: "limit", type: "number", description: "Max models to return (default: all)", required: false }],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "search_openrouter_models",
-    qualifiedName: "mcp__callboard-tools__search_openrouter_models",
-    description: "Search tool-calling OpenRouter models by slug (subsequence match), with input/output pricing.",
+    description:
+      "List OpenRouter models that support tool calling, with input/output pricing (per 1M tokens), optionally filtered by a subsequence search query.",
     parameters: [
-      { name: "query", type: "string", description: "Search text matched as a subsequence against the model slug", required: true },
-      { name: "limit", type: "number", description: "Max results to return (default: 50)", required: false },
+      { name: "query", type: "string", description: "Filter to models whose slug matches this text as a subsequence", required: false },
+      { name: "limit", type: "number", description: "Max models to return (default: all, or 50 when query is given)", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -326,7 +297,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "get_session_status",
     qualifiedName: "mcp__callboard-tools__get_session_status",
-    description: "Check the status of a Claude Code session (active, complete, or not found).",
+    description: "Check the status of a chat session on any engine (active, complete, or not found).",
     parameters: [{ name: "chatId", type: "string", description: "The chat ID to check", required: true }],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -335,7 +306,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "read_session_messages",
     qualifiedName: "mcp__callboard-tools__read_session_messages",
-    description: "Read text messages from a Claude Code session conversation.",
+    description: "Read text messages from a chat session conversation, on any engine.",
     parameters: [
       { name: "chatId", type: "string", description: "The chat ID to read from", required: true },
       { name: "limit", type: "number", description: "Max number of messages to return", required: false },
@@ -372,7 +343,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "find_chats",
     qualifiedName: "mcp__callboard-tools__find_chats",
-    description: "Search chat sessions for a repo folder, including worktrees. Use with continue_chat to resume a previous conversation.",
+    description:
+      "Search chat sessions for a repo folder, including worktrees, across all engines. Project folders the user has ignored in Settings are skipped. Use with continue_chat to resume a previous conversation.",
     parameters: [
       { name: "folder", type: "string", description: "Repo working directory path (also searches worktrees)", required: true },
       { name: "grep", type: "string", description: "Search term to grep across session conversation content", required: false },

@@ -44,7 +44,7 @@ export interface Card {
    */
   hidden?: boolean;
   pinned: boolean;
-  /** Agent-settable narrative status (set_card_status tool), max 160 chars. */
+  /** Agent-settable narrative status (update_card tool), max 160 chars. */
   status?: string;
   statusEmoji?: string;
   /**

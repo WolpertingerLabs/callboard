@@ -411,14 +411,3 @@ export async function getOpenRouterModelAliasesAsync(): Promise<OpenRouterModelA
     })
     .sort((a, b) => a.alias.localeCompare(b.alias));
 }
-
-/**
- * Subsequence-search user-defined aliases by alias name or target slug.
- * An empty query returns all aliases.
- */
-export async function searchOpenRouterModelAliases(query: string, limit = 50): Promise<OpenRouterModelAliasInfo[]> {
-  const aliases = await getOpenRouterModelAliasesAsync();
-  const q = query.trim();
-  const matched = q === "" ? aliases : aliases.filter((a) => isSubsequence(q, a.alias) || isSubsequence(q, a.modelId));
-  return matched.slice(0, Math.max(1, limit));
-}
