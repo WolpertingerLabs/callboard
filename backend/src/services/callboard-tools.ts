@@ -1300,30 +1300,34 @@ export function buildCallboardToolsSpec(
       defineTool(
         "find_chats",
         "Search chat sessions for a repo folder. Scans the stored sessions of every engine (claude-code, codex, cline, pi, acp), minus any project folder the user has ignored in Settings — those are skipped even when this call names one. Ignoring a folder is the user's instruction to leave it alone, so treat an empty result for an ignored folder as the answer, not as a reason to go read the engines' transcript directories directly. " +
-          "Two caveats on how far the search reaches, both of which mean a narrow call can miss a chat that exists: `folder` expands to the repo's worktrees for claude-code sessions only — every other engine matches the working directory exactly, so a codex/cline/pi/acp chat run in a worktree is only found by naming that worktree's path. " +
-          "The gitBranch, agentAlias and triggered filters are likewise honored for claude-code sessions only; the other engines do not store those fields and report every row as gitBranch null, agentAlias null, triggered false, so filtering on them narrows to claude-code in practice. " +
+          "Two caveats, and they fail in OPPOSITE directions. (1) Too few rows: `folder` expands to the repo's worktrees for claude-code sessions only — every other engine matches the working directory exactly, so a codex/cline/pi/acp chat run in a worktree is simply absent unless you name that worktree's path. " +
+          "(2) Too many rows: gitBranch, agentAlias and triggered are applied to claude-code sessions only. The other engines do not store those fields, ignore the filters entirely, and return their folder matches anyway, stamped gitBranch null / agentAlias null / triggered false. So gitBranch:'main' gives you claude-code chats on main PLUS every codex/cline/pi/acp chat in that folder whatever its branch — these filters narrow nothing outside claude-code. Read gitBranch/agentAlias/triggered off each returned row instead of trusting that the filter removed anything. " +
           "Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
         {
           folder: z
             .string()
             .describe(
-              "Repo working directory path (also searches this repo's worktrees, for claude-code sessions only — other engines match this path exactly)",
+              "Repo working directory path (also searches this repo's worktrees, for claude-code sessions only — other engines match this path exactly, so their worktree chats are absent unless you name the worktree)",
             ),
           grep: z.string().optional().describe("Search term to grep across session conversation content (messages, tool calls, code, etc.)"),
           gitBranch: z
             .string()
             .optional()
             .describe(
-              "Filter by git branch (matches live worktree branches and stored session metadata). claude-code sessions only — other engines report no branch and are filtered out.",
+              "Filter by git branch (matches live worktree branches and stored session metadata). Applied to claude-code sessions only — other engines ignore it and still return their folder matches, stamped gitBranch null. Check the field on each row.",
             ),
           agentAlias: z
             .string()
             .optional()
-            .describe("Filter to chats started by a specific agent. claude-code sessions only — other engines report no alias and are filtered out."),
+            .describe(
+              "Filter to chats started by a specific agent. Applied to claude-code sessions only — other engines ignore it and still return their folder matches, stamped agentAlias null. Check the field on each row.",
+            ),
           triggered: z
             .boolean()
             .optional()
-            .describe("Filter to automated (true) or manual (false) sessions. claude-code sessions only — other engines always report triggered=false."),
+            .describe(
+              "Filter to automated (true) or manual (false) sessions. Applied to claude-code sessions only — other engines ignore it and still return their folder matches, always stamped triggered=false, so triggered:true returns rows saying triggered:false. Check the field on each row.",
+            ),
           updatedAfter: z.string().optional().describe("ISO-8601 date — only chats updated after this time"),
           updatedBefore: z.string().optional().describe("ISO-8601 date — only chats updated before this time"),
           parentChatId: z

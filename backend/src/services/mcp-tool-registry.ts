@@ -350,18 +350,36 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     name: "find_chats",
     qualifiedName: "mcp__callboard-tools__find_chats",
     description:
-      "Search chat sessions for a repo folder, across all engines. Project folders the user has ignored in Settings are skipped. Worktree expansion and the gitBranch/agentAlias/triggered filters apply to claude-code sessions only — other engines match the folder exactly and do not store those fields. Use with continue_chat to resume a previous conversation.",
+      "Search chat sessions for a repo folder, across all engines. Project folders the user has ignored in Settings are skipped. Two claude-code-only behaviours that fail in opposite directions: worktree expansion (other engines match the folder exactly, so their worktree chats are absent) and the gitBranch/agentAlias/triggered filters (other engines ignore them and return their folder matches anyway, so those rows come back unfiltered). Use with continue_chat to resume a previous conversation.",
     parameters: [
       {
         name: "folder",
         type: "string",
-        description: "Repo working directory path (also searches worktrees, for claude-code sessions only — other engines match it exactly)",
+        description:
+          "Repo working directory path (also searches worktrees, for claude-code sessions only — other engines match it exactly, so their worktree chats are absent)",
         required: true,
       },
       { name: "grep", type: "string", description: "Search term to grep across session conversation content", required: false },
-      { name: "gitBranch", type: "string", description: "Filter by git branch (claude-code sessions only)", required: false },
-      { name: "agentAlias", type: "string", description: "Filter to chats by a specific agent (claude-code sessions only)", required: false },
-      { name: "triggered", type: "boolean", description: "Filter to automated (true) or manual (false) sessions (claude-code sessions only)", required: false },
+      {
+        name: "gitBranch",
+        type: "string",
+        description: "Filter by git branch. Applied to claude-code sessions only — other engines ignore it and return their folder matches unfiltered.",
+        required: false,
+      },
+      {
+        name: "agentAlias",
+        type: "string",
+        description:
+          "Filter to chats by a specific agent. Applied to claude-code sessions only — other engines ignore it and return their folder matches unfiltered.",
+        required: false,
+      },
+      {
+        name: "triggered",
+        type: "boolean",
+        description:
+          "Filter to automated (true) or manual (false) sessions. Applied to claude-code sessions only — other engines ignore it and always report triggered=false.",
+        required: false,
+      },
       { name: "updatedAfter", type: "string", description: "ISO-8601 date — only chats updated after this time", required: false },
       { name: "updatedBefore", type: "string", description: "ISO-8601 date — only chats updated before this time", required: false },
       { name: "parentChatId", type: "string", description: "Filter to direct children of this chat in the parentage tree", required: false },

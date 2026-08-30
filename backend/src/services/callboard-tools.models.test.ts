@@ -9,9 +9,13 @@
  * separate defaults before, so collapsing them is exactly where a default can
  * be silently lost.
  *
- * The subsequence matcher itself is NOT re-tested here; it is unchanged and
- * covered by codex-models.test.ts / openrouter-models.test.ts. These tests
- * assert the routing instead: which branch runs, and what limit it is handed.
+ * The subsequence matcher itself is NOT tested here. It is untouched by the
+ * fold — and, for the record, untested at any layer: nothing in the repo
+ * exercises searchCodexModels, searchOpenRouterModels or isSubsequence
+ * (codex-models.test.ts covers parseCodexModelsCatalog; openrouter-models.test.ts
+ * covers the cache, not the search). That gap is pre-existing and out of scope
+ * here. These tests assert the routing instead: which branch runs, and what
+ * limit it is handed.
  *
  * Both catalog modules are partially mocked (real module via importOriginal,
  * with the two entry points overridden) so the tools read a fixed synthetic
