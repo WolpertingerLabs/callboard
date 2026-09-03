@@ -1,4 +1,5 @@
 import { execSync, execFileSync } from "child_process";
+import { randomBytes } from "crypto";
 import { existsSync, statSync, lstatSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, basename, resolve, extname, relative } from "path";
 import type { DiffFileEntry, DiffFileType, WorkspaceCleanliness } from "shared/types/index.js";
@@ -556,6 +557,103 @@ function sanitizeBranchForPath(branch: string): string {
   return branch.replace(/\//g, "-");
 }
 
+/**
+ * The sibling directory {@link ensureWorktreeDetailed} derives for a branch:
+ * `[repo-parent]/[repo-name].[sanitized-branch]`.
+ *
+ * Exported so uniqueness checks ask the same question the creation path will
+ * answer. The sanitization is lossy — `feat/a-b` and `feat/a/b` collapse onto
+ * one directory — so a caller that re-derives this by hand will disagree with
+ * git in exactly the case that matters.
+ */
+export function worktreePathForBranch(repoDir: string, branch: string): string {
+  return join(dirname(repoDir), `${basename(repoDir)}.${sanitizeBranchForPath(branch)}`);
+}
+
+/**
+ * The cap `generateBranchName` (services/quick-completion.ts) enforces on the
+ * names it invents. A `-2` suffix must not push a name past it.
+ */
+const MAX_GENERATED_BRANCH_LENGTH = 60;
+
+/** How many `-2`, `-3`… suffixes to try before giving up on the candidate. */
+const MAX_UNIQUE_BRANCH_ATTEMPTS = 20;
+
+/**
+ * A name for a chat branch that owes nothing to the prompt: `chat/<yyyymmdd>-<6 hex>`.
+ *
+ * The fallback for "we were asked to invent a name and could not" — a failed
+ * `generateBranchName` call, a candidate git would refuse, or a candidate whose
+ * suffixes are all taken. Never returning a name is not an option: the caller
+ * that wanted an isolated worktree would otherwise proceed with no branch at
+ * all and silently land in the main checkout.
+ */
+export function fallbackBranchName(): string {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+  return `chat/${stamp}-${randomBytes(3).toString("hex")}`;
+}
+
+/** `candidate` with a `-n` suffix, kept inside the length cap and git-legal, or null. */
+function suffixedBranchName(candidate: string, n: number): string | null {
+  const suffix = `-${n}`;
+  const room = MAX_GENERATED_BRANCH_LENGTH - suffix.length;
+  // Truncation can leave a trailing separator or dot, none of which git accepts
+  // at the end of a ref.
+  const base = (candidate.length > room ? candidate.slice(0, room) : candidate).replace(/[-/.]+$/, "");
+  if (!base) return null;
+
+  const name = `${base}${suffix}`;
+  try {
+    validateGitRef(name);
+  } catch {
+    return null;
+  }
+  return name;
+}
+
+/**
+ * Make a branch name we invented unique, so two chats never silently share one
+ * branch and one worktree.
+ *
+ * Only for **generated** names. `ensureWorktreeDetailed` deliberately reuses an
+ * existing directory or an already-checked-out branch, which is right for a
+ * name the user typed — asking for `feat/x` twice should land you in the same
+ * place — and wrong for one we made up from a prompt, where the collision is an
+ * accident of two chats describing similar work.
+ *
+ * A candidate is taken if git knows the branch, if any worktree has it checked
+ * out, or if the directory {@link worktreePathForBranch} derives for it already
+ * exists. The last is the one nothing else catches: `feat/a-b` and `feat/a/b`
+ * are distinct branches that want the same directory.
+ */
+export function uniqueBranchName(repoDir: string, candidate: string): string {
+  try {
+    validateGitRef(candidate);
+  } catch {
+    // A name git would refuse can't be made unique, only replaced. Reachable:
+    // `generateBranchName` scrubs unsafe characters *after* its structure
+    // check, so a description of nothing but punctuation leaves `feat/`.
+    return fallbackBranchName();
+  }
+
+  const branches = new Set(getGitBranches(repoDir));
+  const checkedOut = new Set(getGitWorktrees(repoDir).flatMap((wt) => (wt.branch ? [wt.branch] : [])));
+  const taken = (name: string): boolean => branches.has(name) || checkedOut.has(name) || existsSync(worktreePathForBranch(repoDir, name));
+
+  if (!taken(candidate)) return candidate;
+
+  for (let n = 2; n <= MAX_UNIQUE_BRANCH_ATTEMPTS; n++) {
+    const suffixed = suffixedBranchName(candidate, n);
+    if (suffixed && !taken(suffixed)) return suffixed;
+  }
+
+  // Twenty variants of one name all taken means the name is not the problem.
+  // The stamped fallback carries 24 bits of randomness, so it is returned
+  // without re-entering this loop.
+  return fallbackBranchName();
+}
+
 export interface EnsuredWorktree {
   /** The absolute path to the worktree directory. */
   path: string;
@@ -586,10 +684,7 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
   validateGitRef(branch);
   if (baseBranch) validateGitRef(baseBranch);
 
-  const sanitized = sanitizeBranchForPath(branch);
-  const repoName = basename(repoDir);
-  const parentDir = dirname(repoDir);
-  const worktreePath = join(parentDir, `${repoName}.${sanitized}`);
+  const worktreePath = worktreePathForBranch(repoDir, branch);
 
   // If worktree directory already exists, reuse it
   if (existsSync(worktreePath)) {

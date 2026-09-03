@@ -8,10 +8,10 @@
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ensureWorktreeDetailed, resolveBranch } from "./git.js";
+import { dirname, join } from "node:path";
+import { ensureWorktreeDetailed, fallbackBranchName, resolveBranch, uniqueBranchName } from "./git.js";
 
 // Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
 // a symlink to `/private/var/folders/...`. Worktree resolution reports the real
@@ -25,6 +25,22 @@ function git(args: string[], cwd: string): void {
 
 execFileSync("git", ["init", "-q", "-b", "main", repoDir], { stdio: "pipe" });
 git(["commit", "-q", "--allow-empty", "-m", "init"], repoDir);
+
+/**
+ * A repository of its own, in a parent directory of its own.
+ *
+ * Uniqueness is answered partly from sibling directories on disk, so every case
+ * that asserts about collisions needs a parent nobody else is writing worktrees
+ * into — including the shared `repoDir` above, whose siblings accumulate as the
+ * suite runs.
+ */
+function makeRepo(name: string): string {
+  const parent = mkdtempSync(join(tmpRoot, `${name}-`));
+  const dir = join(parent, "repo");
+  execFileSync("git", ["init", "-q", "-b", "main", dir], { stdio: "pipe" });
+  git(["commit", "-q", "--allow-empty", "-m", "init"], dir);
+  return dir;
+}
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -125,5 +141,100 @@ describe("resolveBranch worktree intent", () => {
     if (!result.ok) return;
     expect(result.folder).toBe(inPlacePath);
     expect(result.worktree).toBeUndefined();
+  });
+});
+
+describe("uniqueBranchName", () => {
+  it("hands back a free name untouched", () => {
+    const dir = makeRepo("unique-free");
+    expect(uniqueBranchName(dir, "feat/free")).toBe("feat/free");
+  });
+
+  it("suffixes -2 when the branch already exists", () => {
+    const dir = makeRepo("unique-branch");
+    git(["branch", "feat/dup"], dir);
+    expect(uniqueBranchName(dir, "feat/dup")).toBe("feat/dup-2");
+  });
+
+  it("suffixes -2 when only the derived path collides", () => {
+    // `feat/a-b` and `feat/a/b` are different branches that sanitize onto one
+    // directory. Neither the branch list nor the worktree list says so — the
+    // second chat would just be handed the first one's worktree.
+    const dir = makeRepo("unique-path");
+    git(["worktree", "add", "-q", "-b", "feat/a-b", join(dirname(dir), "repo.feat-a-b"), "main"], dir);
+
+    expect(uniqueBranchName(dir, "feat/a/b")).toBe("feat/a/b-2");
+  });
+
+  it("keeps suffixing past an occupied -2", () => {
+    const dir = makeRepo("unique-chain");
+    git(["branch", "fix/login"], dir);
+    git(["branch", "fix/login-2"], dir);
+    expect(uniqueBranchName(dir, "fix/login")).toBe("fix/login-3");
+  });
+
+  it("falls back to a stamped name for a candidate git would refuse", () => {
+    // `generateBranchName` scrubs unsafe characters *after* its structure
+    // check, so a description made entirely of punctuation leaves a bare
+    // `feat/` — a ref git rejects, and one no suffix can rescue.
+    const dir = makeRepo("unique-invalid");
+    expect(uniqueBranchName(dir, "feat/")).toMatch(/^chat\/\d{8}-[0-9a-f]{6}$/);
+  });
+
+  it("stays inside the 60-character cap when it suffixes", () => {
+    const dir = makeRepo("unique-long");
+    const long = `feat/${"a".repeat(55)}`; // exactly 60
+    git(["branch", long], dir);
+
+    const unique = uniqueBranchName(dir, long);
+    expect(unique).not.toBe(long);
+    expect(unique.length).toBeLessThanOrEqual(60);
+    expect(unique.endsWith("-2")).toBe(true);
+  });
+});
+
+describe("fallbackBranchName", () => {
+  it("is a dated, git-legal name that differs run to run", () => {
+    expect(fallbackBranchName()).toMatch(/^chat\/\d{8}-[0-9a-f]{6}$/);
+    // 24 bits of randomness: a repeat here is a broken generator, not luck.
+    expect(fallbackBranchName()).not.toBe(fallbackBranchName());
+  });
+});
+
+describe("generated names never share a worktree", () => {
+  it("still reuses one worktree for a name asked for twice", () => {
+    // The regression guard on uniqueness: it belongs on the generated path in
+    // the route, never inside resolveBranch. Two chats on a name the user
+    // typed are meant to land in the same place.
+    const dir = makeRepo("typed-reuse");
+
+    const first = resolveBranch({ folder: dir, newBranch: "feat/typed", baseBranch: "main", useWorktree: true });
+    const second = resolveBranch({ folder: dir, newBranch: "feat/typed", baseBranch: "main", useWorktree: true });
+    expect(first.ok && second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+
+    expect(first.folder).toBe(join(dirname(dir), "repo.feat-typed"));
+    expect(second.folder).toBe(first.folder);
+    expect(first.worktree?.created).toBe(true);
+    expect(second.worktree?.created).toBe(false);
+    expect(existsSync(join(dirname(dir), "repo.feat-typed-2"))).toBe(false);
+  });
+
+  it("never lands in the main checkout when generation failed", () => {
+    // The route's fallback composition. Before it, a null from
+    // `generateBranchName` meant no `newBranch` at all, so `useWorktree` +
+    // `baseBranch: "main"` found `main` checked out in the main repo and
+    // returned it — isolation asked for, silently not delivered.
+    const dir = makeRepo("generation-failed");
+
+    const fallback = uniqueBranchName(dir, fallbackBranchName());
+    const result = resolveBranch({ folder: dir, newBranch: fallback, baseBranch: "main", useWorktree: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.folder).not.toBe(dir);
+    expect(result.worktree?.created).toBe(true);
+    expect(result.worktree?.isMainCheckout).toBe(false);
+    expect(result.worktree?.mode).toBe("branch-off");
   });
 });

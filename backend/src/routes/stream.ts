@@ -9,7 +9,7 @@ import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import { getGitInfo, resolveBranch } from "../utils/git.js";
+import { fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
@@ -122,17 +122,26 @@ streamRouter.post("/new/message", async (req, res) => {
 
     // Auto-generate branch name from the prompt if requested
     if (autoCreateBranch && !newBranch) {
+      let generated: string | null = null;
       try {
-        const generated = await generateBranchName(prompt);
-        if (generated) {
-          newBranch = generated;
-          log.debug(`Auto-generated branch name: ${newBranch}`);
-        } else {
-          log.warn("Auto-generate branch name returned null, proceeding without new branch");
-        }
+        generated = await generateBranchName(prompt);
+        if (!generated) log.warn("Auto-generate branch name returned null, using a stamped fallback name");
       } catch (err: any) {
-        log.warn(`Auto-generate branch name failed: ${err.message}, proceeding without new branch`);
+        log.warn(`Auto-generate branch name failed: ${err.message}, using a stamped fallback name`);
       }
+      // Proceeding with no branch at all used to be the failure path, and it is
+      // the one thing that must not happen: with `useWorktree` and a
+      // `baseBranch`, resolveBranch then finds the base already checked out in
+      // the main repo and hands the chat that directory — the user asked for
+      // isolation and silently got none.
+      //
+      // Uniquified only here, on the generated path. A name the user typed
+      // keeps today's reuse semantics (asking for `feat/x` twice lands in the
+      // same worktree); a name we invented from a prompt must not merge two
+      // unrelated chats onto one branch because they happened to be described
+      // the same way.
+      newBranch = uniqueBranchName(folder, generated ?? fallbackBranchName());
+      log.debug(`Auto-generated branch name: ${newBranch}`);
     }
 
     const branchResult = resolveBranch({
