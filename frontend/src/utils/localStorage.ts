@@ -68,6 +68,10 @@ interface LocalStorageData {
   sidebarViewMode?: "folders" | "chats";
   /** Whether the board's Closed section is expanded. */
   boardClosedExpanded?: boolean;
+  /** Board layout: full-width rows instead of the tile grid. Absent = "cards". */
+  boardViewMode?: "cards" | "list";
+  /** Whether card faces show the folders their chats live in. Absent = hidden. */
+  boardShowPaths?: boolean;
   folderMaxAgeDays?: number;
   folderShowSizes?: boolean;
   /** User's last-selected provider in the New Chat panel — persisted so the
@@ -570,6 +574,36 @@ export function getBoardClosedExpanded(): boolean {
 export function saveBoardClosedExpanded(expanded: boolean): void {
   const data = getStorageData();
   data.boardClosedExpanded = expanded;
+  setStorageData(data);
+}
+
+export type BoardViewMode = "cards" | "list";
+
+const BOARD_VIEW_MODES: readonly string[] = ["cards", "list"];
+
+export function getBoardViewMode(): BoardViewMode {
+  const data = getStorageData();
+  // Matched against the known values rather than cast: the store is shared
+  // with bundles this one has never met, so an unrecognised mode has to fall
+  // back to the default rather than render a container that doesn't exist.
+  const stored = data.boardViewMode as string | undefined;
+  return stored && BOARD_VIEW_MODES.includes(stored) ? (stored as BoardViewMode) : "cards";
+}
+
+export function saveBoardViewMode(mode: BoardViewMode): void {
+  const data = getStorageData();
+  data.boardViewMode = mode;
+  setStorageData(data);
+}
+
+export function getBoardShowPaths(): boolean {
+  const data = getStorageData();
+  return data.boardShowPaths === true;
+}
+
+export function saveBoardShowPaths(show: boolean): void {
+  const data = getStorageData();
+  data.boardShowPaths = show;
   setStorageData(data);
 }
 
