@@ -21,9 +21,29 @@ describe("CardPathLabel", () => {
     expect(parts(container)).toEqual(["/home/cybil/some/deep/proj/", "callboard/frontend"]);
 
     const [head, tail] = container.querySelectorAll<HTMLElement>("span > span");
-    expect(head.style.flex).toBe("0 1 auto");
+    // 999 against the tail's 1: the head takes essentially all the shrinkage.
+    expect(head.style.flex).toBe("0 999 auto");
     expect(head.style.textOverflow).toBe("ellipsis");
-    expect(tail.style.flex).toBe("0 0 auto");
+    expect(tail.style.flex).toBe("0 1 auto");
+  });
+
+  it("truncates a tail too long for the label instead of spilling out of it", () => {
+    // A single-segment leaf: there is no head to give up, so the tail is the
+    // only thing that can yield. Real remainders reach 82 characters, which at
+    // 11px is wider than the 260px tile this sits in.
+    const leaf = `/${"deeply-named-worktree".repeat(4)}`;
+    const { container } = render(<CardPathLabel path={leaf} />);
+    const root = container.firstElementChild as HTMLElement;
+    const tail = root.querySelector<HTMLElement>("span")!;
+
+    // jsdom lays nothing out, so the assertion is the CSS contract that makes
+    // the escape impossible: a shrinkable, clippable tail inside a clipping
+    // container. `flex: 0 0 auto` with no overflow rule is what used to spill.
+    expect(root.style.overflow).toBe("hidden");
+    expect(tail.style.flex).toBe("0 1 auto");
+    expect(tail.style.minWidth).toBe("0");
+    expect(tail.style.overflow).toBe("hidden");
+    expect(tail.style.textOverflow).toBe("ellipsis");
   });
 
   it("renders tail-only when there is nothing to elide", () => {

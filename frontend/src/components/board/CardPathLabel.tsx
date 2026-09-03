@@ -26,6 +26,11 @@ interface CardPathLabelProps {
  * on a `/`, since CSS cannot be told to cut at a delimiter. The full path is
  * in the `title`, and a JS-measured implementation can replace the internals
  * later without touching this component's surface.
+ *
+ * The tail's priority is a *ratio*, not an absolute: `flex: 0 0 auto` gave it
+ * an unbreakable width, so a parent+leaf longer than the whole label — real
+ * paths reach 82 characters after the shared prefix comes off — spilled out of
+ * a 260px tile instead of truncating. It shrinks last, not never.
  */
 export default function CardPathLabel({ path, prefix, color, fontSize = 11 }: CardPathLabelProps) {
   const shown = stripPathPrefix(path, prefix);
@@ -36,10 +41,14 @@ export default function CardPathLabel({ path, prefix, color, fontSize = 11 }: Ca
       // The title is always the FULL path, never the stripped remainder: the
       // hover is the escape hatch for everything the layout had to drop.
       title={path}
-      style={{ display: "flex", minWidth: 0, fontSize, color: color ?? "inherit" }}
+      // overflow is the backstop: whatever the flex arithmetic decides, nothing
+      // in here escapes the cell the caller sized.
+      style={{ display: "flex", minWidth: 0, overflow: "hidden", fontSize, color: color ?? "inherit" }}
     >
-      {head && <span style={{ flex: "0 1 auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{head}</span>}
-      <span style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>{tail}</span>
+      {/* 999 vs the tail's 1 is the priority: the head absorbs essentially all
+          of the shrinkage, which is the entire point of the component. */}
+      {head && <span style={{ flex: "0 999 auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{head}</span>}
+      <span style={{ flex: "0 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tail}</span>
     </span>
   );
 }
