@@ -3,12 +3,20 @@ import { useNavigate } from "react-router-dom";
 import type { CardSummary, CardPatch } from "../api";
 import { listCards, updateCard, bulkSetCardLifecycle } from "../api";
 import { useMetadataVersion } from "../contexts/SessionContext";
-import { getBoardClosedExpanded, saveBoardClosedExpanded } from "../utils/localStorage";
+import {
+  getBoardClosedExpanded,
+  saveBoardClosedExpanded,
+  getBoardViewMode,
+  saveBoardViewMode,
+  getBoardShowPaths,
+  saveBoardShowPaths,
+} from "../utils/localStorage";
 import { uniqueCategories } from "../utils/cardCategories";
 import CardTile from "../components/board/CardTile";
+import CardRow from "../components/board/CardRow";
 import BoardSelectionBar from "../components/board/BoardSelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
-import { ChevronRight, ChevronDown, ChevronLeft, LayoutGrid } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronLeft, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /** A category's cards inside one status section. `label: null` is uncategorized. */
@@ -134,6 +142,9 @@ export default function Board() {
   const [error, setError] = useState<string | null>(null);
   const [openCardId, setOpenCardId] = useState<string | null>(null);
   const [closedExpanded, setClosedExpanded] = useState(() => getBoardClosedExpanded());
+  // Both persisted, both defaulting to today's board: the tile grid, no paths.
+  const [viewMode, setViewMode] = useState(() => getBoardViewMode());
+  const [showPaths, setShowPaths] = useState(() => getBoardShowPaths());
 
   // Multi-select. Deliberately NOT persisted: a stale selection restored
   // across a reload is a way to act on the wrong cards.
@@ -399,11 +410,107 @@ export default function Board() {
     gap: 10,
   };
 
+  const listColumn: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4 };
+
+  /**
+   * One card container, used by every section, group and the closed strip.
+   *
+   * View mode swaps the container and the face and NOTHING else — same array,
+   * same order. `orderedIds` is flattened out of these very arrays, so a list
+   * mode that re-derived its own order would make shift+click select cards the
+   * user never saw, on a board that still looked right.
+   */
+  const cardContainer = (list: CardSummary[]) => (
+    <div style={viewMode === "list" ? listColumn : grid}>
+      {list.map((card) => {
+        const Face = viewMode === "list" ? CardRow : CardTile;
+        return <Face key={card.id} card={card} onClick={() => setOpenCardId(card.id)} showPath={showPaths} {...selectionProps(card)} />;
+      })}
+    </div>
+  );
+
+  /** Segmented layout switch and the folder toggle — icon-only where the row is already full. */
+  const viewControls = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+      <div role="radiogroup" aria-label="Board layout" style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+        {(
+          [
+            { mode: "cards", icon: <LayoutGrid size={14} />, text: "Cards" },
+            { mode: "list", icon: <List size={14} />, text: "List" },
+          ] as const
+        ).map((option, i) => (
+          <button
+            key={option.mode}
+            role="radio"
+            aria-checked={viewMode === option.mode}
+            aria-label={`${option.text} view`}
+            title={`${option.text} view`}
+            onClick={() => {
+              setViewMode(option.mode);
+              saveBoardViewMode(option.mode);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              padding: isMobile ? "6px 8px" : "5px 9px",
+              fontSize: 12,
+              background: viewMode === option.mode ? "var(--accent)" : "var(--surface)",
+              color: viewMode === option.mode ? "var(--text-on-accent)" : "var(--text)",
+              border: "none",
+              borderRight: i === 0 ? "1px solid var(--border)" : "none",
+              cursor: "pointer",
+            }}
+          >
+            {option.icon}
+            {/* The back button and the title already own the mobile header. */}
+            {!isMobile && option.text}
+          </button>
+        ))}
+      </div>
+      <button
+        aria-pressed={showPaths}
+        aria-label="Show folders"
+        title="Show folders"
+        onClick={() => {
+          const next = !showPaths;
+          setShowPaths(next);
+          saveBoardShowPaths(next);
+        }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          padding: isMobile ? "6px 8px" : "5px 9px",
+          fontSize: 12,
+          borderRadius: 6,
+          background: showPaths ? "var(--accent)" : "var(--surface)",
+          color: showPaths ? "var(--text-on-accent)" : "var(--text)",
+          border: "1px solid var(--border)",
+          cursor: "pointer",
+        }}
+      >
+        <Folder size={14} />
+        {!isMobile && "Folders"}
+      </button>
+    </div>
+  );
+
   return (
     <div style={{ height: "100%", overflowY: "auto", background: "var(--bg)" }}>
       {/* The fixed selection bar sits over the last row of tiles, so the page
           has to give it room while it is up. */}
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: isMobile ? `14px 12px ${selectionMode ? 120 : 48}px` : `24px 24px ${selectionMode ? 132 : 60}px` }}>
+      {/* A full-width row has a path column and an expansion the grid does
+          not, and at 1100 it wastes the one advantage rows have over tiles.
+          Still capped rather than 100%: past ~1400 the eye loses the line
+          between the title column and the time column. */}
+      <div
+        style={{
+          maxWidth: viewMode === "list" ? 1400 : 1100,
+          margin: "0 auto",
+          padding: isMobile ? `14px 12px ${selectionMode ? 120 : 48}px` : `24px 24px ${selectionMode ? 132 : 60}px`,
+        }}
+      >
         {/* Header — mobile gets the standard full-page back button (same
             convention as AgentList/Settings) since there's no sidebar. */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: isMobile ? 16 : 24 }}>
@@ -427,6 +534,7 @@ export default function Board() {
           )}
           <LayoutGrid size={20} style={{ color: "var(--accent-text)" }} />
           <h1 style={{ fontSize: 20, fontWeight: 600, color: "var(--text)", flex: 1 }}>Board</h1>
+          {viewControls}
         </div>
 
         {error && (
@@ -460,11 +568,7 @@ export default function Board() {
                 {section.groups.map((group, i) => (
                   <div key={group.key} style={{ marginBottom: i === section.groups.length - 1 ? 0 : 18 }}>
                     {showsGroupLabel(section) && groupHeader(group.label, group.cards.length)}
-                    <div style={grid}>
-                      {group.cards.map((card) => (
-                        <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} {...selectionProps(card)} />
-                      ))}
-                    </div>
+                    {cardContainer(group.cards)}
                   </div>
                 ))}
               </div>
@@ -498,13 +602,7 @@ export default function Board() {
                   Closed
                   <span style={{ fontWeight: 400 }}>{closed.length}</span>
                 </button>
-                {closedExpanded && (
-                  <div style={grid}>
-                    {closed.map((card) => (
-                      <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} {...selectionProps(card)} />
-                    ))}
-                  </div>
-                )}
+                {closedExpanded && cardContainer(closed)}
               </div>
             )}
           </>
