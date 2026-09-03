@@ -664,6 +664,15 @@ export interface EnsuredWorktree {
    */
   created: boolean;
   /**
+   * True only when this call created the branch (`git worktree add -b`).
+   *
+   * `createBranch` is what the *caller asked for*; this is what happened. They
+   * part company when the branch already exists and is checked out nowhere: we
+   * check it out rather than failing, so nothing was branched off anything and
+   * a record saying "branch-off from `main`" would be inventing a base.
+   */
+  branchCreated: boolean;
+  /**
    * True when `path` is a **main checkout**, not a worktree of one.
    *
    * Asking for a worktree of a branch that is already checked out in the main
@@ -693,7 +702,7 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
     // to a worktree at `<x>`) — but it costs one lstat to answer rather than
     // assume. `.git` a directory is a main checkout; a *file* is a linked
     // worktree — the same test workspace-adoption.ts refuses "main-checkout" on.
-    return { path: worktreePath, created: false, isMainCheckout: hasGitDirectory(worktreePath) };
+    return { path: worktreePath, created: false, branchCreated: false, isMainCheckout: hasGitDirectory(worktreePath) };
   }
 
   // If the branch is already checked out in another worktree (including the
@@ -705,11 +714,18 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
     // "including the main one" is the case that produced self-misdescribing
     // workspace records: git's own listing says whether this is the main
     // checkout, so the caller never has to infer it from the path.
-    return { path: existing.path, created: false, isMainCheckout: existing.isMainWorktree };
+    return { path: existing.path, created: false, branchCreated: false, isMainCheckout: existing.isMainWorktree };
   }
 
+  // `createBranch` is the caller's intent, not a fact about the repository. A
+  // branch that exists but is checked out nowhere reaches here with neither
+  // reuse path above having fired, and `-b` on it is a hard failure:
+  //   fatal: a branch named 'feat/exists' already exists
+  // Checking it out into the new worktree is what the caller wanted anyway.
+  const branchCreated = createBranch && !localBranchExists(repoDir, branch);
+
   // Create the worktree
-  if (createBranch) {
+  if (branchCreated) {
     // Create a new branch and worktree in one command
     const base = baseBranch || "HEAD";
     execFileSync("git", ["worktree", "add", "-b", branch, worktreePath, base], {
@@ -727,7 +743,21 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
   }
 
   // We just ran `git worktree add`, so this is a linked worktree by construction.
-  return { path: worktreePath, created: true, isMainCheckout: false };
+  return { path: worktreePath, created: true, branchCreated, isMainCheckout: false };
+}
+
+/** Does `refs/heads/<branch>` exist in this repository? */
+function localBranchExists(repoDir: string, branch: string): boolean {
+  try {
+    execFileSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+      cwd: repoDir,
+      stdio: "pipe",
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1156,6 +1186,15 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
     return { ok: true, folder };
   }
 
+  // A `branchConfig` now rides on nearly every new chat, including chats started
+  // in a directory that is not a repository. There is no branch to switch and
+  // no worktree to add there, so this is a no-op rather than a `git worktree
+  // add` throwing a 500 out of the route. The UI's `is_git_repo` gate stays the
+  // first line of defence; this is the second.
+  if (!getGitInfo(folder).isGitRepo) {
+    return { ok: true, folder };
+  }
+
   // Dirty-state guard: block in-place branch switch if uncommitted changes exist.
   // Worktrees are inherently isolated, so they bypass this check.
   if (targetBranch && !useWorktree) {
@@ -1190,9 +1229,12 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
         repoPath,
         created: ensured.created,
         isMainCheckout: ensured.isMainCheckout,
-        mode: newBranch ? "branch-off" : "checkout-branch",
+        // What happened, not what was asked for: `newBranch` on a branch that
+        // already existed checks it out instead of branching, and a record
+        // saying "branch-off from `main`" would invent a base git never used.
+        mode: ensured.branchCreated ? "branch-off" : "checkout-branch",
         branch: targetBranch,
-        ...(newBranch && baseBranch && { baseBranch }),
+        ...(ensured.branchCreated && baseBranch && { baseBranch }),
       },
     };
   }

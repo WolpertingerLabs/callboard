@@ -238,3 +238,51 @@ describe("generated names never share a worktree", () => {
     expect(result.worktree?.mode).toBe("branch-off");
   });
 });
+
+describe("existing branches and non-repositories", () => {
+  it("checks out an existing, unchecked-out branch rather than failing on -b", () => {
+    // The branch exists and lives nowhere, so neither reuse path fires and
+    // `git worktree add -b` refuses with "a branch named 'x' already exists".
+    // The worktree is still what the caller wanted; only `-b` was wrong.
+    const dir = makeRepo("existing-branch");
+    git(["branch", "feat/orphan"], dir);
+
+    const ensured = ensureWorktreeDetailed(dir, "feat/orphan", true, "main");
+    expect(ensured.path).toBe(join(dirname(dir), "repo.feat-orphan"));
+    expect(ensured.created).toBe(true);
+    expect(ensured.branchCreated).toBe(false);
+    expect(ensured.isMainCheckout).toBe(false);
+    expect(existsSync(ensured.path)).toBe(true);
+  });
+
+  it("reports checkout-branch, with no invented base, for that resolution", () => {
+    const dir = makeRepo("existing-branch-resolve");
+    git(["branch", "feat/orphan"], dir);
+
+    const result = resolveBranch({ folder: dir, newBranch: "feat/orphan", baseBranch: "main", useWorktree: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // `baseBranch` absent: nothing was branched off `main`, and a workspace
+    // record claiming otherwise would be describing history git never has.
+    expect(result.worktree).toEqual({
+      repoPath: dir,
+      created: true,
+      isMainCheckout: false,
+      mode: "checkout-branch",
+      branch: "feat/orphan",
+    });
+  });
+
+  it("is a no-op on a folder that is not a repository", () => {
+    // `branchConfig` rides on nearly every new chat now, so a plain directory
+    // reaches here routinely. `git worktree add` there is a 500.
+    const plain = mkdtempSync(join(tmpRoot, "not-a-repo-"));
+
+    const result = resolveBranch({ folder: plain, newBranch: "feat/x", baseBranch: "main", useWorktree: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(plain);
+    expect(result.worktree).toBeUndefined();
+    expect(existsSync(`${plain}.feat-x`)).toBe(false);
+  });
+});
