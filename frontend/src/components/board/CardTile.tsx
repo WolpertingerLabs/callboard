@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
-import type { CardSummary, CardRollupState } from "../../api";
+import type { CardSummary } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
-import { needsYouLabel, activeLabel } from "./pendingLabels";
-import { useLongPress } from "../../hooks/useLongPress";
+import { cardFolders } from "../../utils/cardFolders";
+import { ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
+import CardPathLabel from "./CardPathLabel";
 import { MessageSquare, Pin, Check } from "lucide-react";
 
 interface CardTileProps {
@@ -16,72 +16,47 @@ interface CardTileProps {
   /** Receives the event so the board can read shift/meta/ctrl for range and toggle. */
   onToggleSelect?: (e: React.MouseEvent) => void;
   onLongPress?: () => void;
+  /** The board's "show paths" preference. Off by default, which is today's tile. */
+  showPath?: boolean;
 }
 
-const ROLLUP_LABELS: Record<CardRollupState, string> = {
-  needs_you: "Needs you",
-  job_running: "Job running",
-  active: "Active",
-  idle: "Idle",
-};
-
-/** Rollup-state colors — themable via the --board-* section of index.css. */
-export const ROLLUP_COLORS: Record<CardRollupState, string> = {
-  needs_you: "var(--board-rollup-needs-you)",
-  job_running: "var(--board-rollup-job-running)",
-  active: "var(--board-rollup-active)",
-  idle: "var(--board-rollup-idle)",
-};
-
-export default function CardTile({ card, onClick, selectionMode = false, selected = false, selectable = true, onToggleSelect, onLongPress }: CardTileProps) {
+export default function CardTile({
+  card,
+  onClick,
+  selectionMode = false,
+  selected = false,
+  selectable = true,
+  onToggleSelect,
+  onLongPress,
+  showPath = false,
+}: CardTileProps) {
   const closed = card.lifecycle === "closed";
   const rollupColor = ROLLUP_COLORS[card.rollup];
   const live = card.rollup !== "idle" && !closed;
   const activeRun = card.memberRuns.find((r) => !r.endedAt);
+  const now = useCardCountdown(card);
 
-  // Tick only while this tile actually has something counting down, so a board
-  // of idle cards re-renders no more than it did before.
-  const hasCountdown =
-    !closed &&
-    (card.memberChats.some((c) => c.activity?.expiresAt !== undefined) ||
-      card.memberRuns.some((r) => r.nextWakeAt && (r.status === "sleeping" || r.status === "waiting_event")));
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!hasCountdown) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [hasCountdown]);
+  const { handleClick, gestureProps, inert, showCheckbox, checkboxLabel, hoverProps, checkboxFocusProps } = useCardActivation({
+    card,
+    selectionMode,
+    selectable,
+    onClick,
+    onToggleSelect,
+    onLongPress,
+  });
 
-  const [hovered, setHovered] = useState(false);
-  const [checkboxFocused, setCheckboxFocused] = useState(false);
-
-  const gestures = useLongPress({ onLongPress: () => onLongPress?.() });
-  // Only mounted when the board asked for the gesture. Otherwise the
-  // contextmenu handler's preventDefault would silently take the browser's own
-  // menu away from a tile that has no selection behaviour to offer instead.
-  const gestureProps = onLongPress ? gestures.handlers : {};
-
-  const inert = selectionMode && !selectable;
-  // Discoverability is the checkbox — Ctrl+click is invisible, and nobody
-  // long-presses a surface that has never shown them it can be selected.
-  const showCheckbox = Boolean(onToggleSelect) && selectable && (selectionMode || hovered || checkboxFocused);
-
-  const handleClick = (e: React.MouseEvent) => {
-    // A long press or a context menu has already acted on this gesture; the
-    // click browsers emit afterwards must not act on it a second time.
-    if (onLongPress && gestures.consumeClickSuppression()) return;
-    const modified = e.metaKey || e.ctrlKey || e.shiftKey;
-    if (selectionMode || (modified && onToggleSelect)) {
-      onToggleSelect?.(e);
-      return;
-    }
-    onClick();
-  };
+  // 97% of cards live in exactly one folder, so the extra folders are the
+  // exception the +N exists for — and computing them is a pass over an array
+  // the tile already holds.
+  const folders = showPath ? cardFolders(card) : [];
+  const extraFolders = folders.length - 1;
+  // The one glyph that says "the action is somewhere other than the folder on
+  // this row", which is the failure mode of showing the root path alone.
+  const extrasLive = folders.slice(1).some((f) => f.live) && !closed;
 
   return (
     <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      {...hoverProps}
       {...gestureProps}
       style={{
         position: "relative",
@@ -110,14 +85,13 @@ export default function CardTile({ card, onClick, selectionMode = false, selecte
         <button
           role="checkbox"
           aria-checked={selected}
-          aria-label={`Select ${card.title}`}
+          aria-label={checkboxLabel}
           onClick={onToggleSelect}
           // Out of tab order too, not merely invisible: a focusable button
           // still fires on Enter however transparent it is, which would let a
           // keyboard user select a card the mouse cannot reach.
           disabled={inert}
-          onFocus={() => setCheckboxFocused(true)}
-          onBlur={() => setCheckboxFocused(false)}
+          {...checkboxFocusProps}
           style={{
             position: "absolute",
             top: 12,
@@ -216,6 +190,27 @@ export default function CardTile({ card, onClick, selectionMode = false, selecte
           </div>
         )}
 
+        {folders.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, width: "100%" }}>
+            <CardPathLabel path={folders[0].path} color="var(--board-tile-meta-text)" />
+            {/* Nothing at all on a single-folder card: a "+0" on 794 of 818
+                cards is noise on every one of them. */}
+            {extraFolders > 0 && (
+              <span
+                title={`${extraFolders} other folder${extraFolders === 1 ? "" : "s"}`}
+                style={{
+                  flexShrink: 0,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: extrasLive ? rollupColor : "var(--board-tile-meta-text)",
+                }}
+              >
+                +{extraFolders}
+              </span>
+            )}
+          </div>
+        )}
+
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 11, color: "var(--board-tile-meta-text)", minWidth: 0, width: "100%" }}>
           <span style={{ display: "flex", alignItems: "center", gap: 5, color: rollupColor, fontWeight: 600, flexShrink: 0 }}>
             <span
@@ -227,13 +222,7 @@ export default function CardTile({ card, onClick, selectionMode = false, selecte
                 ...(live && { boxShadow: `0 0 5px ${rollupColor}` }),
               }}
             />
-            {closed
-              ? "Closed"
-              : card.rollup === "needs_you"
-                ? needsYouLabel(card)
-                : card.rollup === "idle"
-                  ? ROLLUP_LABELS.idle
-                  : activeLabel(card, now)}
+            {statusLine(card, now)}
           </span>
           {activeRun && !closed && (
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={activeRun.jobName}>

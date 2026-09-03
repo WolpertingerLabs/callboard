@@ -1,0 +1,132 @@
+/**
+ * Everything a card face knows that isn't markup.
+ *
+ * A tile and a list row show the same facts about the same card and answer the
+ * same gestures; only their layout differs. This module is the shared half, so
+ * the two faces cannot drift on what "Active" means or on when a click counts
+ * as a selection — reimplementing the activation contract per face is exactly
+ * where the bug would be.
+ */
+
+import { useState, useEffect } from "react";
+import type { CardSummary, CardRollupState } from "../../api";
+import { needsYouLabel, activeLabel } from "./pendingLabels";
+import { useLongPress, type UseLongPressResult } from "../../hooks/useLongPress";
+
+export const ROLLUP_LABELS: Record<CardRollupState, string> = {
+  needs_you: "Needs you",
+  job_running: "Job running",
+  active: "Active",
+  idle: "Idle",
+};
+
+/** Rollup-state colors — themable via the --board-* section of index.css. */
+export const ROLLUP_COLORS: Record<CardRollupState, string> = {
+  needs_you: "var(--board-rollup-needs-you)",
+  job_running: "var(--board-rollup-job-running)",
+  active: "var(--board-rollup-active)",
+  idle: "var(--board-rollup-idle)",
+};
+
+/**
+ * `Date.now()`, re-read once a second, but only for cards that have something
+ * counting down. The gate is a real perf guard, not a micro-optimisation: it
+ * is what keeps a board of idle cards re-rendering no more than it did before
+ * countdowns existed, and it matters more in list mode where more faces are on
+ * screen at once.
+ */
+export function useCardCountdown(card: CardSummary): number {
+  const hasCountdown =
+    card.lifecycle !== "closed" &&
+    (card.memberChats.some((c) => c.activity?.expiresAt !== undefined) ||
+      card.memberRuns.some((r) => r.nextWakeAt && (r.status === "sleeping" || r.status === "waiting_event")));
+
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasCountdown) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasCountdown]);
+
+  return now;
+}
+
+/** The one-line state a card face leads with. */
+export function statusLine(card: CardSummary, now: number): string {
+  if (card.lifecycle === "closed") return "Closed";
+  if (card.rollup === "needs_you") return needsYouLabel(card);
+  if (card.rollup === "idle") return ROLLUP_LABELS.idle;
+  return activeLabel(card, now);
+}
+
+export interface UseCardActivationOptions {
+  card: CardSummary;
+  /** Every field below is optional: with none passed the face behaves exactly as it did before multi-select existed. */
+  selectionMode?: boolean;
+  selectable?: boolean;
+  onClick: () => void;
+  /** Receives the event so the board can read shift/meta/ctrl for range and toggle. */
+  onToggleSelect?: (e: React.MouseEvent) => void;
+  onLongPress?: () => void;
+}
+
+export interface UseCardActivationResult {
+  handleClick: (e: React.MouseEvent) => void;
+  /** Spread onto the face's outer element; empty when the board asked for no gesture. */
+  gestureProps: Partial<UseLongPressResult["handlers"]>;
+  /** True for a face outside the selection's lifecycle scope — render it dimmed and disabled. */
+  inert: boolean;
+  showCheckbox: boolean;
+  /** Accessible name for the checkbox — shared so the two faces name the same control identically. */
+  checkboxLabel: string;
+  /** Spread onto the face's outer element to drive `showCheckbox` from hover. */
+  hoverProps: { onMouseEnter: () => void; onMouseLeave: () => void };
+  /** Spread onto the checkbox so keyboard focus reveals it too, not only the mouse. */
+  checkboxFocusProps: { onFocus: () => void; onBlur: () => void };
+}
+
+/** The whole click/press/select contract of a card face, independent of its layout. */
+export function useCardActivation({
+  card,
+  selectionMode = false,
+  selectable = true,
+  onClick,
+  onToggleSelect,
+  onLongPress,
+}: UseCardActivationOptions): UseCardActivationResult {
+  const [hovered, setHovered] = useState(false);
+  const [checkboxFocused, setCheckboxFocused] = useState(false);
+
+  const gestures = useLongPress({ onLongPress: () => onLongPress?.() });
+  // Only mounted when the board asked for the gesture. Otherwise the
+  // contextmenu handler's preventDefault would silently take the browser's own
+  // menu away from a tile that has no selection behaviour to offer instead.
+  const gestureProps = onLongPress ? gestures.handlers : {};
+
+  const inert = selectionMode && !selectable;
+  // Discoverability is the checkbox — Ctrl+click is invisible, and nobody
+  // long-presses a surface that has never shown them it can be selected.
+  const showCheckbox = Boolean(onToggleSelect) && selectable && (selectionMode || hovered || checkboxFocused);
+
+  const handleClick = (e: React.MouseEvent) => {
+    // A long press or a context menu has already acted on this gesture; the
+    // click browsers emit afterwards must not act on it a second time.
+    if (onLongPress && gestures.consumeClickSuppression()) return;
+    const modified = e.metaKey || e.ctrlKey || e.shiftKey;
+    if (selectionMode || (modified && onToggleSelect)) {
+      onToggleSelect?.(e);
+      return;
+    }
+    onClick();
+  };
+
+  return {
+    handleClick,
+    gestureProps,
+    inert,
+    showCheckbox,
+    checkboxLabel: `Select ${card.title}`,
+    hoverProps: { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) },
+    checkboxFocusProps: { onFocus: () => setCheckboxFocused(true), onBlur: () => setCheckboxFocused(false) },
+  };
+}
