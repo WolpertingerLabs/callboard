@@ -1,7 +1,6 @@
 import type { CardSummary } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
-import { cardFolders } from "../../utils/cardFolders";
-import { ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
+import { cardFolderSummary, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
 import CardPathLabel from "./CardPathLabel";
 import { MessageSquare, Pin, Check } from "lucide-react";
 
@@ -45,14 +44,10 @@ export default function CardTile({
     onLongPress,
   });
 
-  // 97% of cards live in exactly one folder, so the extra folders are the
-  // exception the +N exists for — and computing them is a pass over an array
-  // the tile already holds.
-  const folders = showPath ? cardFolders(card) : [];
-  const extraFolders = folders.length - 1;
-  // The one glyph that says "the action is somewhere other than the folder on
-  // this row", which is the failure mode of showing the root path alone.
-  const extrasLive = folders.slice(1).some((f) => f.live) && !closed;
+  // Shared with CardRow so the two faces cannot disagree about when the +N
+  // lights up. 97% of cards live in exactly one folder, so the extras are the
+  // exception it exists for.
+  const { folders, extraCount, extrasLive } = cardFolderSummary(card, showPath);
 
   return (
     <div
@@ -195,9 +190,9 @@ export default function CardTile({
             <CardPathLabel path={folders[0].path} color="var(--board-tile-meta-text)" />
             {/* Nothing at all on a single-folder card: a "+0" on 794 of 818
                 cards is noise on every one of them. */}
-            {extraFolders > 0 && (
+            {extraCount > 0 && (
               <span
-                title={`${extraFolders} other folder${extraFolders === 1 ? "" : "s"}`}
+                title={`${extraCount} other folder${extraCount === 1 ? "" : "s"}`}
                 style={{
                   flexShrink: 0,
                   fontSize: 11,
@@ -205,7 +200,7 @@ export default function CardTile({
                   color: extrasLive ? rollupColor : "var(--board-tile-meta-text)",
                 }}
               >
-                +{extraFolders}
+                +{extraCount}
               </span>
             )}
           </div>

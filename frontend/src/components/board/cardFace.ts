@@ -11,6 +11,7 @@
 import { useState, useEffect } from "react";
 import type { CardSummary, CardRollupState } from "../../api";
 import { needsYouLabel, activeLabel } from "./pendingLabels";
+import { cardFolders, type CardFolder } from "../../utils/cardFolders";
 import { useLongPress, type UseLongPressResult } from "../../hooks/useLongPress";
 
 export const ROLLUP_LABELS: Record<CardRollupState, string> = {
@@ -57,6 +58,36 @@ export function statusLine(card: CardSummary, now: number): string {
   if (card.rollup === "needs_you") return needsYouLabel(card);
   if (card.rollup === "idle") return ROLLUP_LABELS.idle;
   return activeLabel(card, now);
+}
+
+export interface CardFolderSummary {
+  /** Ordered root-first; empty when paths are off, or the card's member rows are gone. */
+  folders: CardFolder[];
+  /** Distinct folders OTHER than the root's — zero on 97% of cards, where nothing renders. */
+  extraCount: number;
+  /** Whether one of those other folders holds a live chat. */
+  extrasLive: boolean;
+}
+
+/**
+ * The collapsed folder story both faces tell: one path, plus a `+N` that is
+ * coloured when the action is somewhere other than the path on show.
+ *
+ * That colour rule is the whole reason this is shared rather than inlined
+ * twice. It is the one glyph that says "the work has moved", which is the
+ * failure mode of showing the root path alone — a tile and a row disagreeing
+ * about when it lights up would make the board lie on one of them.
+ */
+export function cardFolderSummary(card: CardSummary, showPath: boolean): CardFolderSummary {
+  // Computing it is one pass over an array the face already holds, but there
+  // is no reason to make that pass for a board with paths switched off.
+  const folders = showPath ? cardFolders(card) : [];
+  return {
+    folders,
+    extraCount: Math.max(0, folders.length - 1),
+    // A closed card has no live anything, whatever its member rows still say.
+    extrasLive: card.lifecycle !== "closed" && folders.slice(1).some((f) => f.live),
+  };
 }
 
 export interface UseCardActivationOptions {
