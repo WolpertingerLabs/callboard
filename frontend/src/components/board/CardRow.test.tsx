@@ -479,6 +479,22 @@ describe("the folder expansion", () => {
   });
 });
 
+describe("the selection checkbox", () => {
+  it("sits on the emoji it replaces, not in the middle of whatever the row grew", () => {
+    setWidth(1024);
+    render(
+      <CardRow card={card({ memberChats: fanout(8) })} onClick={vi.fn()} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} onToggleSelect={vi.fn()} />,
+    );
+
+    // The checkbox is absolutely positioned against the OUTER element, which
+    // is a column holding the row and its expansion. Centring it there put it
+    // level with folder five while the blanked emoji slot stayed on line one.
+    const box = screen.getByRole("checkbox");
+    expect(box.style.top).toBe("7px");
+    expect(box.style.transform).toBe("");
+  });
+});
+
 describe("mobile", () => {
   it("collapses to two lines with a thumb-sized target", () => {
     setWidth(500);

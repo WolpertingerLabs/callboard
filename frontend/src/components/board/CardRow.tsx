@@ -424,7 +424,14 @@ export default function CardRow({
           style={{
             position: "absolute",
             left: 12,
-            ...(isMobile ? { top: 10 } : { top: "50%", transform: "translateY(-50%)" }),
+            // The row's own top padding, NOT a 50% of the outer element: that
+            // element is a column holding the row AND its expansion, so on an
+            // expanded card the checkbox centred on it drifted a hundred pixels
+            // down the folder list while the emoji it replaces stayed blanked
+            // on the first line. Both branches align to the padding of the
+            // button beside them — 7px desktop, 8px mobile plus 2 to sit on
+            // the first of two lines.
+            top: isMobile ? 10 : 7,
             zIndex: 1,
             width: 18,
             height: 18,
