@@ -341,6 +341,36 @@ describe("the folder expansion", () => {
     expect(dots).toEqual(["var(--board-rollup-needs-you)", "var(--board-rollup-active)", "transparent"]);
   });
 
+  it("says nothing is live in a closed card's folders, whatever its member rows claim", () => {
+    setWidth(1024);
+    const { container } = render(
+      <CardRow
+        card={card({
+          lifecycle: "closed",
+          memberChats: [
+            member({ chatId: "card-1", folder: "/home/cybil/callboard" }),
+            member({ chatId: "b", folder: "/home/cybil/callboard.feat-a", status: "waiting" }),
+          ],
+        })}
+        onClick={vi.fn()}
+        showPath
+        expanded
+        onToggleExpand={vi.fn()}
+        onOpenFolder={vi.fn()}
+      />,
+    );
+
+    // A member session is still marked `waiting` — closing a card does not
+    // recompute its rows. The row above already says "Closed", and the +N
+    // beside it is grey; an amber dot one line below announcing "needs you"
+    // contradicts both faces of the same card.
+    const expansion = container.firstElementChild!.children[1];
+    const dots = [...expansion.querySelectorAll<HTMLElement>("button > span:first-child")].map((el) => el.style.background);
+    expect(dots).toEqual(["transparent", "transparent"]);
+    // And in the name, not only the colour: the dot is the sighted half.
+    expect(screen.queryByRole("button", { name: /needs you/ })).toBeNull();
+  });
+
   it("opens the drawer filtered to the folder that was clicked", () => {
     setWidth(1024);
     const onOpenFolder = vi.fn();

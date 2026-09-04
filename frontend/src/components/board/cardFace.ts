@@ -72,7 +72,11 @@ export const FOLDER_LIVE_COLORS: Record<"waiting" | "ongoing", string> = {
 };
 
 export interface CardFolderSummary {
-  /** Ordered root-first; empty when paths are off, or the card's member rows are gone. */
+  /**
+   * Ordered root-first; empty when paths are off, or the card's member rows
+   * are gone. On a closed card every entry's `live` is already stripped, so
+   * no consumer has to remember to ask about the lifecycle a second time.
+   */
   folders: CardFolder[];
   /** Distinct folders OTHER than the root's — zero on 97% of cards, where nothing renders. */
   extraCount: number;
@@ -101,11 +105,20 @@ export interface CardFolderSummary {
 export function cardFolderSummary(card: CardSummary, showPath: boolean): CardFolderSummary {
   // Computing it is one pass over an array the face already holds, but there
   // is no reason to make that pass for a board with paths switched off.
-  const folders = showPath ? cardFolders(card) : [];
+  const all = showPath ? cardFolders(card) : [];
+  // A closed card has no live anything, whatever its member rows still say —
+  // the rule `statusLine` applies to the rollup, applied to the folders.
+  //
+  // Stripped off the folders themselves rather than gated at each reader,
+  // because there is more than one reader: the `+N` on the collapsed face and
+  // the dot and accessible name of every entry in the row's expansion. Gating
+  // only the first left a card closed while a member session was blocked
+  // showing `+1` in meta grey and, one line below, an amber dot announcing
+  // "needs you". One home for the rule, so the two cannot disagree.
+  const folders = all.some((f) => f.live) && card.lifecycle === "closed" ? all.map(({ live: _live, ...rest }) => rest) : all;
   // `cardFolders` already ranks waiting above ongoing, so the first live one
-  // among the extras is the most urgent of them. A closed card has no live
-  // anything, whatever its member rows still say.
-  const extrasLive = card.lifecycle === "closed" ? undefined : folders.slice(1).find((f) => f.live)?.live;
+  // among the extras is the most urgent of them.
+  const extrasLive = folders.slice(1).find((f) => f.live)?.live;
   return {
     folders,
     extraCount: Math.max(0, folders.length - 1),
