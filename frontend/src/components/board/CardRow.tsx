@@ -51,8 +51,22 @@ const EXPANSION_CAP = 8;
  * that row's second line, where a 44px box either overlaps the status cell
  * beside it or pushes the path out of the line. 36px is the compromise: a
  * real target, comfortably above the 28px it had, and it fits.
+ *
+ * Horizontally. Vertically it did not: a 36px box on a line of 11px text is
+ * the tallest thing in the row, and measured at 360px it took the ~3% of
+ * cards that fan out from 58px to 77px — a third taller than the rows either
+ * side of them, in the view whose whole argument is that columns line up.
+ * `CHEVRON_BLEED` gives that height back to the line while the target keeps
+ * it, by letting the box overhang above and below instead of pushing.
+ *
+ * Block-only, and that restriction is the original point restated: a target
+ * that bled sideways would sit over the status text next to it, where a miss
+ * opens the drawer. Above and below is the row's own padding and its own
+ * first line, where a miss hits the row it was aimed at.
  */
 const CHEVRON_TOUCH = 36;
+/** (36 − 16)/2: back to the ~16px a line of this row's text occupies. */
+const CHEVRON_BLEED = -10;
 
 /**
  * The three trailing columns are `auto` in the shared template, and each row is
@@ -304,9 +318,11 @@ export default function CardRow({
               color: "var(--board-tile-meta-text)",
               // A thumb needs more than 12px, and what it hits by mistake is
               // the row underneath, which opens a drawer. Sized rather than
-              // bled outwards with a negative margin, so the target cannot
-              // reach into the status cell beside it.
-              ...(isMobile && { width: CHEVRON_TOUCH, height: CHEVRON_TOUCH }),
+              // bled sideways, so the target cannot reach into the status
+              // cell beside it — and bled upwards and downwards, so it does
+              // not make its row a third taller than the ones around it. See
+              // CHEVRON_TOUCH.
+              ...(isMobile && { width: CHEVRON_TOUCH, height: CHEVRON_TOUCH, marginBlock: CHEVRON_BLEED }),
             }}
           >
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}

@@ -731,10 +731,28 @@ describe("mobile", () => {
     const chevron = screen.getByTitle("Show all 3 folders");
     expect(chevron.style.width).toBe("36px");
     expect(chevron.style.height).toBe("36px");
-    // Sized rather than bled outwards: a negative margin would have put the
-    // target over the status text next to it, where a miss opens the drawer.
-    expect(chevron.style.margin).toBe("");
+    // Sized rather than bled sideways: a horizontal negative margin would put
+    // the target over the status text next to it, where a miss opens the
+    // drawer.
+    expect(chevron.style.marginInline).toBe("");
     expect(chevron.parentElement!.style.width).toBe("36px");
+  });
+
+  it("does not spend that target on making its row a third taller", () => {
+    setWidth(360);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+
+    // Measured at 360px: 77px with the chevron against 58px without, on the
+    // ~3% of cards that fan out — a third taller than their neighbours, in
+    // the view that exists so columns line up. The bleed hands the height
+    // back to the line while the box keeps it; above and below is the row's
+    // own padding, so unlike a sideways bleed nothing else is under it.
+    const chevron = screen.getByTitle("Show all 3 folders");
+    expect(chevron.style.marginBlock).toBe("-10px");
+    // (36 - 16) / 2 either side, so a 36px box occupies the 16px a line of
+    // this row's text does. A bleed that does not cancel the overflow leaves
+    // the row taller than the one under it by whatever is left.
+    expect(Number.parseInt(chevron.style.height, 10) + 2 * Number.parseInt(chevron.style.marginBlock, 10)).toBe(16);
   });
 
   it("does not reserve the target on rows that have no chevron to put in it", () => {
