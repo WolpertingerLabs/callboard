@@ -504,7 +504,9 @@ describe("a typed name that is not new", () => {
     // The request still asks for isolation. It just will not get any, which is
     // exactly why the sentence has to say so.
     expect(emitted(onChange)).toEqual({ useWorktree: true, baseBranch: "main", newBranch: "main" });
-    expect(summary()).toBe("main is already checked out here — the chat will run here, with no worktree.");
+    expect(summary()).toBe(
+      "main is already checked out here — the chat will run here, with no worktree. If callboard.main already exists, the chat runs in it as it is.",
+    );
   });
 
   it("with the toggle off, the same name is a no-op and says nothing will change", async () => {
@@ -544,7 +546,9 @@ describe("a typed name that is not new", () => {
     fireEvent.click(toggle());
     type("main");
 
-    expect(summary()).toBe("main is already checked out here — the chat will run here, with no worktree.");
+    expect(summary()).toBe(
+      "main is already checked out here — the chat will run here, with no worktree. If callboard.main already exists, the chat runs in it as it is.",
+    );
   });
 
   /**
@@ -569,7 +573,58 @@ describe("a typed name that is not new", () => {
     fireEvent.click(toggle());
     type("feat/a");
 
-    expect(summary()).toBe("feat/a is already checked out here — the chat will run here, with no worktree.");
+    expect(summary()).toBe(
+      "feat/a is already checked out here — the chat will run here, with no worktree. " +
+        "If callboard.feat-a.feat-a already exists, the chat runs in it as it is.",
+    );
+  });
+
+  /**
+   * The redirect is right about *which branch* and can still be wrong about
+   * *which directory*. `existsSync(derivedPath)` is the resolver's first rung,
+   * and a directory sitting there that is not a registered worktree of this
+   * repository — a leftover, an unrelated clone, a worktree on a detached HEAD
+   * — is invisible to `checkedOut`. So a worktree on `feat/y` that lives
+   * somewhere other than `callboard.feat-y` loses to whatever is at
+   * `callboard.feat-y`, and the sentence names a directory the chat may never
+   * reach. The listing cannot answer it, so the sentence hedges instead.
+   */
+  it("hedges the redirect when the worktree is not the one at the derived path", async () => {
+    stubBranches({
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "feat/y", path: "/somewhere/else/y-work", isMainWorktree: false },
+      ],
+    });
+    await open();
+
+    fireEvent.click(toggle());
+    type("feat/y");
+
+    expect(summary()).toBe(
+      "feat/y is checked out at y-work — the chat will run there. If callboard.feat-y already exists, the chat runs in it as it is.",
+    );
+  });
+
+  /**
+   * ...and does not hedge when there is nothing left to hedge. A worktree on
+   * the branch that *is* at the derived path is the very directory the reuse
+   * would land in, so "if that directory already exists" would be asking the
+   * user to worry about a case the listing has already answered.
+   */
+  it("drops the hedge when the worktree on the branch is the derived directory", async () => {
+    stubBranches({
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "feat/y", path: "/home/cybil/callboard.feat-y", isMainWorktree: false },
+      ],
+    });
+    await open();
+
+    fireEvent.click(toggle());
+    type("feat/y");
+
+    expect(summary()).toBe("feat/y is checked out at callboard.feat-y — the chat will run there.");
   });
 
   /** A name nobody has used still reads as a creation, on both sides. */

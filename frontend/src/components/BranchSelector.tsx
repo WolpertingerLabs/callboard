@@ -283,8 +283,17 @@ export default function BranchSelector({ folder, currentBranch, isDetached, onCh
    * Answering properly needs an endpoint that stats the path, and one is not
    * worth adding for this. So the sentence hedges instead of overstating: the
    * common case first, the reuse named, and no claim that the box has checked.
+   *
+   * Two spellings because two kinds of sentence need it. The rungs that promise
+   * a `git worktree add` have just named the directory, so "that directory" is
+   * unambiguous. The two rungs that promise something *else* — a redirect to a
+   * worktree living somewhere other than the derived path, and a dropped
+   * worktree request on the branch you are standing on — never mention the
+   * derived directory at all, and are wrong in the same way for the same
+   * reason: `existsSync` is the resolver's first rung and outranks both.
    */
   const unlessItExists = <> If that directory already exists, the chat runs in it as it is.</>;
+  const unlessDirExists = (branch: string) => <> If <Name>{derivedDir(branch)}</Name> already exists, the chat runs in it as it is.</>;
 
   /**
    * The branch that already lives somewhere else, and where. Said twice, with
@@ -398,18 +407,42 @@ export default function BranchSelector({ folder, currentBranch, isDetached, onCh
        * so this holds even when the endpoint sent no listing at all — and it
        * cannot fire on a detached HEAD, where there is no branch for a name to
        * match and `main` is a branch like any other.
+       *
+       * What neither the guard nor the listing can vouch for is the rung above
+       * this one, which asks the disk rather than git: a directory at the
+       * derived path that is not a registered worktree of this repository is
+       * invisible from here, and `existsSync` reuses it before either of these
+       * questions is asked — so "the chat will run here" is the one part of
+       * this sentence that can be wrong, and it is hedged. Unconditionally:
+       * `worktreeDirName` always appends to the directory's own name, so the
+       * derived path is never the directory we are standing in, and a worktree
+       * the listing *can* see at that path is on some other branch and was
+       * answered by the rung above.
        */
       if (trimmedName === onBranch) {
         return (
           <>
             <Name>{onBranch}</Name> is already checked out here — the chat will run here, with no worktree.
+            {unlessDirExists(trimmedName)}
           </>
         );
       }
       // Everything below this line is read off the listing.
       if (listingUnknown) return notKnownYet(trimmedName);
       const occupied = worktreeOn(trimmedName);
-      if (occupied) return runsThereInstead(trimmedName, occupied.path, false);
+      if (occupied) {
+        // The redirect is right about *which branch* and can be wrong about
+        // *which directory*: a worktree on this branch that lives outside the
+        // derived path loses to a leftover sitting at it, because `existsSync`
+        // is asked first. `atDerived` non-null means the two are the same
+        // directory — the listing has seen it, and there is nothing to hedge.
+        return (
+          <>
+            {runsThereInstead(trimmedName, occupied.path, false)}
+            {atDerived ? "" : unlessDirExists(trimmedName)}
+          </>
+        );
+      }
       if (branchExists(trimmedName)) {
         return (
           <>
