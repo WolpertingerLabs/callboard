@@ -712,7 +712,20 @@ export async function getSlashCommandContent(name: string, scope: SlashCommandSc
 }
 
 // Branch / worktree configuration
-export async function getGitBranches(folder: string): Promise<{ branches: string[] }> {
+
+/** A branch that a worktree is sitting on, and the directory it sits in. */
+export interface CheckedOutBranch {
+  branch: string;
+  path: string;
+  isMainWorktree: boolean;
+}
+
+/**
+ * `checkedOut` is optional because a daemon older than this bundle does not send
+ * it. Callers must treat its absence as "unknown", not as "nothing is checked
+ * out elsewhere" — the latter would let the UI state the opposite of the truth.
+ */
+export async function getGitBranches(folder: string): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
   const res = await fetch(`${BASE}/git/branches?folder=${encodeURIComponent(folder)}`);
   await assertOk(res, "Failed to list branches");
   return res.json();
