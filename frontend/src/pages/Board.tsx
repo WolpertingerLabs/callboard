@@ -158,8 +158,11 @@ export default function Board() {
    *
    * Persisting them would restore an expansion across a reload onto a card
    * that has since collapsed to one folder: a row that opens onto nothing.
-   * Storing the DIFFERENCE rather than the state is also what lets the header
-   * toggle keep meaning something after a row has been touched.
+   *
+   * A difference rather than a state, and a difference from the LAST header
+   * press: pressing the header clears the set (see the toggle below), so
+   * "expand all" always means all. Left uncleared, the one row the user had
+   * opened by hand would be the only row on the board that closed.
    */
   const [expandOverrides, setExpandOverrides] = useState<Set<string>>(new Set());
   const isExpanded = (id: string) => rowsExpanded !== expandOverrides.has(id);
@@ -551,6 +554,11 @@ export default function Board() {
             const next = !rowsExpanded;
             setRowsExpanded(next);
             saveBoardRowsExpanded(next);
+            // Pressing the header is the user restating the resting state, so
+            // the per-row differences start again from none. Otherwise the row
+            // they had opened by hand is the single row that "expand all"
+            // closes.
+            setExpandOverrides(new Set());
           }}
           style={{
             display: "flex",

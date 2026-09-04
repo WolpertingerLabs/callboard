@@ -336,13 +336,31 @@ describe("row expansion", () => {
     expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(true);
 
     // And the other way: expanded at rest, closed by its own chevron. The
-    // override is a DIFFERENCE from the resting state, not a state of its
-    // own, which is why flipping the default flips this row back open first.
+    // override is a DIFFERENCE from the resting state, not a state of its own.
     fireEvent.click(rowChevron("Many folders"));
     expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(false);
     fireEvent.click(expandToggle());
     expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(true);
     fireEvent.click(rowChevron("Many folders"));
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(false);
+  });
+
+  it("expands every row on 'expand all', including the one already open by hand", async () => {
+    await mount(FOLDER_CARDS);
+    listWithPaths();
+
+    // The difference is a difference from the last HEADER press, not a
+    // standing per-row state. Carried across, the row the user had just opened
+    // would be the only row on the board that "expand all" closed — the exact
+    // row they had shown most interest in.
+    fireEvent.click(rowChevron("Many folders"));
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(true);
+
+    fireEvent.click(expandToggle());
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(true);
+
+    // And it is still a toggle afterwards, not a one-way latch.
+    fireEvent.click(expandToggle());
     expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(false);
   });
 
