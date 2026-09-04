@@ -1,6 +1,7 @@
 import type { CardSummary } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
-import { cardFolderSummary, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
+import { cardFolderSummary, FOLDER_LIVE_COLORS, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
+import CardFolderLine from "./CardFolderLine";
 import CardPathLabel from "./CardPathLabel";
 import { commonPathPrefix } from "../../utils/pathTruncate";
 import { useIsMobile } from "../../hooks/useIsMobile";
@@ -34,16 +35,6 @@ interface CardRowProps {
  * footer goes there.
  */
 const EXPANSION_CAP = 8;
-
-/**
- * Live folders only. `cardFolders` already distinguishes the two states, and
- * the distinction is the useful half: "someone is blocked on you in that
- * worktree" is a different fact from "something is running there".
- */
-const FOLDER_LIVE_COLORS: Record<"waiting" | "ongoing", string> = {
-  waiting: "var(--board-rollup-needs-you)",
-  ongoing: "var(--board-rollup-active)",
-};
 
 /**
  * The three trailing columns are `auto` in the shared template, and each row is
@@ -241,21 +232,7 @@ export default function CardRow({
           </span>
         )}
       </span>
-      {folders.length > 0 && (
-        <>
-          <CardPathLabel path={folders[0].path} color="var(--board-tile-meta-text)" />
-          {/* Nothing at all on a single-folder card: a "+0" on 794 of 818
-              cards is noise on every one of them. */}
-          {extraCount > 0 && (
-            <span
-              title={`${extraCount} other folder${extraCount === 1 ? "" : "s"}`}
-              style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, color: extrasLive ? rollupColor : "var(--board-tile-meta-text)" }}
-            >
-              +{extraCount}
-            </span>
-          )}
-        </>
-      )}
+      <CardFolderLine folders={folders} extraCount={extraCount} extrasLive={extrasLive} />
     </span>
   );
 

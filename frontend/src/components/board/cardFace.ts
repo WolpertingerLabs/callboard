@@ -60,13 +60,32 @@ export function statusLine(card: CardSummary, now: number): string {
   return activeLabel(card, now);
 }
 
+/**
+ * Live folders only. `cardFolders` already distinguishes the two states, and
+ * the distinction is the useful half: "someone is blocked on you in that
+ * worktree" is a different fact from "something is running there".
+ */
+export const FOLDER_LIVE_COLORS: Record<"waiting" | "ongoing", string> = {
+  waiting: "var(--board-rollup-needs-you)",
+  ongoing: "var(--board-rollup-active)",
+};
+
 export interface CardFolderSummary {
   /** Ordered root-first; empty when paths are off, or the card's member rows are gone. */
   folders: CardFolder[];
   /** Distinct folders OTHER than the root's — zero on 97% of cards, where nothing renders. */
   extraCount: number;
-  /** Whether one of those other folders holds a live chat. */
-  extrasLive: boolean;
+  /**
+   * The most urgent live state among those other folders; undefined when none
+   * of them is live.
+   *
+   * The state of the OTHER folders, deliberately, not the card's rollup. A
+   * card whose root needs you but whose second folder is merely ticking over
+   * would otherwise paint its `+N` in "needs you" — a glyph claiming someone
+   * is blocked over there when nobody is, which is the one thing this glyph
+   * exists to say.
+   */
+  extrasLive?: "waiting" | "ongoing";
 }
 
 /**
@@ -82,11 +101,14 @@ export function cardFolderSummary(card: CardSummary, showPath: boolean): CardFol
   // Computing it is one pass over an array the face already holds, but there
   // is no reason to make that pass for a board with paths switched off.
   const folders = showPath ? cardFolders(card) : [];
+  // `cardFolders` already ranks waiting above ongoing, so the first live one
+  // among the extras is the most urgent of them. A closed card has no live
+  // anything, whatever its member rows still say.
+  const extrasLive = card.lifecycle === "closed" ? undefined : folders.slice(1).find((f) => f.live)?.live;
   return {
     folders,
     extraCount: Math.max(0, folders.length - 1),
-    // A closed card has no live anything, whatever its member rows still say.
-    extrasLive: card.lifecycle !== "closed" && folders.slice(1).some((f) => f.live),
+    ...(extrasLive && { extrasLive }),
   };
 }
 

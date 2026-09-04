@@ -1,7 +1,7 @@
 import type { CardSummary } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { cardFolderSummary, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
-import CardPathLabel from "./CardPathLabel";
+import CardFolderLine from "./CardFolderLine";
 import { MessageSquare, Pin, Check } from "lucide-react";
 
 interface CardTileProps {
@@ -44,9 +44,9 @@ export default function CardTile({
     onLongPress,
   });
 
-  // Shared with CardRow so the two faces cannot disagree about when the +N
-  // lights up. 97% of cards live in exactly one folder, so the extras are the
-  // exception it exists for.
+  // Shared with CardRow — data here, markup in CardFolderLine — so the two
+  // faces cannot disagree about when the +N lights up. 97% of cards live in
+  // exactly one folder, so the extras are the exception it exists for.
   const { folders, extraCount, extrasLive } = cardFolderSummary(card, showPath);
 
   return (
@@ -187,22 +187,7 @@ export default function CardTile({
 
         {folders.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, width: "100%" }}>
-            <CardPathLabel path={folders[0].path} color="var(--board-tile-meta-text)" />
-            {/* Nothing at all on a single-folder card: a "+0" on 794 of 818
-                cards is noise on every one of them. */}
-            {extraCount > 0 && (
-              <span
-                title={`${extraCount} other folder${extraCount === 1 ? "" : "s"}`}
-                style={{
-                  flexShrink: 0,
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: extrasLive ? rollupColor : "var(--board-tile-meta-text)",
-                }}
-              >
-                +{extraCount}
-              </span>
-            )}
+            <CardFolderLine folders={folders} extraCount={extraCount} extrasLive={extrasLive} />
           </div>
         )}
 

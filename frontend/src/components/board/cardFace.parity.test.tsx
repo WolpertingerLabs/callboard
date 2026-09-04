@@ -285,5 +285,55 @@ describe.each(FACES)("%s — the shared selection contract", (_name, Face) => {
       );
       expect(screen.getByText("+1").getAttribute("style")).toContain("--board-rollup-needs-you");
     });
+
+    it("leaves the count in meta colour when only the folder on show is live", () => {
+      render(
+        <Face
+          card={card({
+            memberChats: [member({ chatId: "card-1", folder: "/home/cybil/callboard", status: "waiting" }), member({ chatId: "a", folder: "/elsewhere" })],
+            rollup: "needs_you",
+          })}
+          onClick={vi.fn()}
+          showPath
+        />,
+      );
+      // The action is on the path already on the face. Lighting up the +N here
+      // would send the reader somewhere there is nothing to find.
+      expect(screen.getByText("+1").getAttribute("style")).toContain("--board-tile-meta-text");
+    });
+
+    it("takes the count's colour from those other folders, not from the card's rollup", () => {
+      render(
+        <Face
+          card={card({
+            memberChats: [
+              member({ chatId: "card-1", folder: "/home/cybil/callboard", status: "waiting" }),
+              member({ chatId: "a", folder: "/elsewhere", status: "ongoing" }),
+            ],
+            rollup: "needs_you",
+          })}
+          onClick={vi.fn()}
+          showPath
+        />,
+      );
+      // Someone is blocked on the root, and something is merely ticking over
+      // in the other folder. Painting the +N "needs you" would have it claim a
+      // person is waiting over there when nobody is — which is precisely the
+      // fact this one glyph exists to carry.
+      expect(screen.getByText("+1").getAttribute("style")).toContain("--board-rollup-active");
+    });
+
+    it("names the count for a reader who cannot see the colour it is painted in", () => {
+      render(
+        <Face
+          card={card({ memberChats: [SINGLE[0], member({ chatId: "a", folder: "/elsewhere", status: "waiting" })], rollup: "needs_you" })}
+          onClick={vi.fn()}
+          showPath
+        />,
+      );
+      // Otherwise the face's accessible name runs "+1" into the path beside it
+      // and the state the colour carries is simply gone.
+      expect(screen.getByText("+1").getAttribute("aria-label")).toBe("1 other folder, one needs you");
+    });
   });
 });
