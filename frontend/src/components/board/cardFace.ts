@@ -115,7 +115,7 @@ export function cardFolderSummary(card: CardSummary, showPath: boolean): CardFol
   // only the first left a card closed while a member session was blocked
   // showing `+1` in meta grey and, one line below, an amber dot announcing
   // "needs you". One home for the rule, so the two cannot disagree.
-  const folders = all.some((f) => f.live) && card.lifecycle === "closed" ? all.map(({ live: _live, ...rest }) => rest) : all;
+  const folders: CardFolder[] = all.some((f) => f.live) && card.lifecycle === "closed" ? all.map(({ live: _live, ...rest }) => rest) : all;
   // `cardFolders` already ranks waiting above ongoing, so the first live one
   // among the extras is the most urgent of them.
   const extrasLive = folders.slice(1).find((f) => f.live)?.live;
