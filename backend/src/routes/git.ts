@@ -151,6 +151,12 @@ gitRouter.get("/diff/file/raw", (req, res) => {
 /**
  * Generate a git-safe branch name from a natural language prompt.
  * Uses AI to produce a <type>/<kebab-case-description> format branch name.
+ *
+ * No first-party caller: this bundle never called it, and its client wrapper
+ * was deleted rather than left to look load-bearing. Kept because it is
+ * published REST surface in swagger, and because it is the obvious way to give
+ * the branch picker a real name preview instead of "named from your first
+ * message" — at the cost of a completion call on prompt blur.
  */
 gitRouter.post("/generate-branch-name", async (req, res) => {
   // #swagger.tags = ['Git']
