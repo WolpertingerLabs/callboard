@@ -1,22 +1,18 @@
 /**
- * What `autoCreateBranch` does to a real checkout when name generation fails.
+ * What `branchConfig` does to a real checkout, and what the route answers when
+ * it cannot.
  *
  * `generateBranchName` is a Haiku call, so it is the one thing stubbed — to
- * `null`, which is the failure that matters and the only one the route can see.
- * Everything below it is real git against a throwaway repo, because the claim
- * is about the state the chat's checkout is left in, and a mocked
- * `resolveBranch` cannot make that claim.
+ * whatever a case needs, `null` being the failure that matters most and the
+ * only one the route can see. Everything below it is real git against a
+ * throwaway repo, because the claims here are about the state the chat's
+ * checkout is left in and about what git actually refuses, and a mocked
+ * `resolveBranch` cannot make either claim.
  *
- * The two cases are deliberately asymmetric. `useWorktree` is a promise of
- * isolation, and a chat that silently runs in the main checkout has broken it —
- * so a name is invented rather than skipped. In place there is no such promise,
- * and minting `chat/<date>-<hex>` in someone's working checkout as a *failure*
- * response would be more invasive than doing nothing.
- *
- * DATA_DIR is redirected before the dynamic import: the worktree case writes a
- * workspace record, and it must not land in the developer's real data dir.
+ * DATA_DIR is redirected before the dynamic import: the worktree cases write
+ * workspace records, and they must not land in the developer's real data dir.
  */
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "events";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -44,11 +40,15 @@ vi.mock("../services/claude.js", () => ({
   getPendingRequest: () => null,
 }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMetadata: () => {} } }));
+// What the stubbed generator returns, per test. `vi.hoisted` because `vi.mock`
+// is hoisted above every other statement in the file and the factory closes
+// over this.
+const generator = vi.hoisted(() => ({ result: null as string | null }));
 // Only the generator is replaced; the rest of the module stays real, since
 // other things in this import graph use it.
 vi.mock("../services/quick-completion.js", async (importActual) => ({
   ...(await importActual<typeof import("../services/quick-completion.js")>()),
-  generateBranchName: async () => null,
+  generateBranchName: async () => generator.result,
 }));
 
 const { streamRouter } = await import("./stream.js");
@@ -76,9 +76,22 @@ function localBranches(repoDir: string): string[] {
     .sort();
 }
 
-/** Drive the route to the point where it has called `sendMessage`, then close it. */
-async function postNewMessage(folder: string, branchConfig: Record<string, unknown>): Promise<void> {
+/** What the handler wrote back, if it answered rather than streaming. */
+interface Answered {
+  status?: number;
+  body?: any;
+}
+
+/**
+ * Drive the route to the point where it has called `sendMessage`, then close it.
+ *
+ * The returned object is empty for a request that opened a stream, and carries
+ * the status and body for one the route answered outright — which is the whole
+ * question for the failure cases: an unanswered request writes nothing at all.
+ */
+async function postNewMessage(folder: string, branchConfig: Record<string, unknown>): Promise<Answered> {
   lastSendOptions = undefined;
+  const answered: Answered = {};
   const res = {
     writeHead() {
       return this;
@@ -89,19 +102,39 @@ async function postNewMessage(folder: string, branchConfig: Record<string, unkno
     end() {
       return this;
     },
+    status(code: number) {
+      answered.status = code;
+      return this;
+    },
+    json(body: unknown) {
+      answered.body = body;
+      return this;
+    },
   } as unknown as Response;
   const req = { headers: {}, body: { folder, prompt: "add a dark mode toggle", branchConfig }, on: () => {} } as unknown as Request;
 
   await newMessageHandler(req, res);
   // Close the stream so no heartbeat outlives the test.
   lastEmitter?.emit("event", { type: "done", content: "" });
+  return answered;
 }
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+/**
+ * The two cases are deliberately asymmetric. `useWorktree` is a promise of
+ * isolation, and a chat that silently runs in the main checkout has broken it —
+ * so a name is invented rather than skipped. In place there is no such promise,
+ * and minting `chat/<date>-<hex>` in someone's working checkout as a *failure*
+ * response would be more invasive than doing nothing.
+ */
 describe("POST /new/message — autoCreateBranch when generation returns null", () => {
+  beforeEach(() => {
+    generator.result = null;
+  });
+
   it("creates nothing in place, exactly as before", async () => {
     const repoDir = makeRepo("inplace");
 
@@ -128,5 +161,38 @@ describe("POST /new/message — autoCreateBranch when generation returns null", 
     const invented = localBranches(repoDir).filter((b) => b !== "main");
     expect(invented).toHaveLength(1);
     expect(invented[0]).toMatch(/^chat\/\d{8}-[0-9a-f]{6}$/);
+  });
+});
+
+/**
+ * A git failure during branch resolution has to become a response.
+ *
+ * `resolveBranch` ran before the route's own `try` opened, and Express 4 does
+ * not catch a rejected handler promise: the throw was logged as an unhandled
+ * rejection by process-guards, the server survived, and **nothing was ever
+ * written to the response**. No 409, no 500, no `message_error` frame — the
+ * client's POST simply hung.
+ *
+ * A base branch that does not exist is the cheapest real instance:
+ * `git worktree add -b feat/x <path> nope` → `fatal: invalid reference: nope`,
+ * exit 128, straight out of `execFileSync`.
+ */
+describe("POST /new/message — when git refuses", () => {
+  beforeEach(() => {
+    generator.result = null;
+  });
+
+  it("answers 500 with git's own message instead of hanging", async () => {
+    const repoDir = makeRepo("git-throws");
+
+    const answered = await postNewMessage(repoDir, { newBranch: "feat/x", baseBranch: "does-not-exist", useWorktree: true });
+
+    expect(answered.status).toBe(500);
+    // A readable string in `error`, which is the field Chat.tsx renders
+    // verbatim when the status is not one of the two 409s it has modals for.
+    expect(typeof answered.body?.error).toBe("string");
+    expect(answered.body.error).toMatch(/invalid reference: does-not-exist/);
+    // The stream was never opened, so nothing was handed to sendMessage.
+    expect(lastSendOptions).toBeUndefined();
   });
 });
