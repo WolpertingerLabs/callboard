@@ -64,20 +64,29 @@ const REPO_A = "/home/cybil/alpha";
 const REPO_B = "/home/cybil/beta";
 const PLAIN = "/home/cybil/notes";
 const DETACHED = "/home/cybil/gamma";
+/** The one repository deliberately *not* on `main` — see `FOLDER_INFO`. */
+const REPO_C = "/home/cybil/delta";
 
 /**
  * What `GET /chats/new/info` says about each folder the tests visit.
  *
- * Both repositories are on `main`, which is not a detail: `currentBranch` is
- * the one prop a folder change is *likely* to alter, and altering it re-runs
+ * `REPO_A` and `REPO_B` are both on `main`, which is not a detail: `currentBranch`
+ * is the one prop a folder change is *likely* to alter, and altering it re-runs
  * the propagate effect through `onBranch` all by itself. Two repositories on
  * the same branch — the overwhelmingly common case — is what leaves the effect
  * with nothing to notice, so a fixture that varies the branch name reports a
- * fix that is not there.
+ * fix that is not there. Measured, not assumed: give `REPO_B` any other branch
+ * and two of the four folder-change tests below go green against the *unfixed*
+ * `Chat.tsx`. The assertion under this table is what keeps that loud.
+ *
+ * `REPO_C` is the deliberate exception, and it is not in that pairing: it exists
+ * so the stale-`info` tests can tell "the base we sent came from the folder we
+ * left" from "the base we sent happens to be right everywhere".
  */
 const FOLDER_INFO: Record<string, { is_git_repo: boolean; git_branch?: string; isDetached?: boolean }> = {
   [REPO_A]: { is_git_repo: true, git_branch: "main" },
   [REPO_B]: { is_git_repo: true, git_branch: "main" },
+  [REPO_C]: { is_git_repo: true, git_branch: "develop" },
   [PLAIN]: { is_git_repo: false },
   // `git_branch: "main"` beside `isDetached` is not a contrived pair — it is
   // exactly what the endpoint sends, because `getGitInfo` has always reported
@@ -86,18 +95,50 @@ const FOLDER_INFO: Record<string, { is_git_repo: boolean; git_branch?: string; i
 };
 
 /**
+ * The fixture invariant the folder-change tests rest on, asserted rather than
+ * described. A doc comment does not fail, and a test that stops discriminating
+ * without failing is worse than no test at all: it reports a fix that is not
+ * there, in the file whose whole subject is a bug that hid behind a green suite.
+ */
+if (FOLDER_INFO[REPO_A].git_branch !== FOLDER_INFO[REPO_B].git_branch) {
+  throw new Error(
+    `Chat.branchConfig.test fixture: REPO_A and REPO_B must be on the same branch (got ` +
+      `${FOLDER_INFO[REPO_A].git_branch} and ${FOLDER_INFO[REPO_B].git_branch}). A differing ` +
+      `currentBranch re-runs BranchSelector's propagate effect on its own, so the folder-change ` +
+      `tests below pass against the unfixed Chat.tsx. Use REPO_C if you need a repository on ` +
+      `another branch.`,
+  );
+}
+
+/**
  * What `GET /git/branches` says about each repository. The second branch is how
- * the tests tell the two listings apart on screen, since the first is `main` in
- * both.
+ * the tests tell the listings apart on screen, since the first is `main` in
+ * every repository that has one.
  */
 const FOLDER_BRANCHES: Record<string, string[]> = {
   [REPO_A]: ["main", "feat/a"],
   [REPO_B]: ["main", "feat/b"],
+  // No `main` at all: a base branch carried in from another repository is a ref
+  // this one cannot resolve, which is the failure the stale-`info` tests are about.
+  [REPO_C]: ["develop", "feat/c"],
   [DETACHED]: ["main", "feat/d"],
 };
 
 /** Every body POSTed to the new-chat route, in order. */
 let sentBodies: any[] = [];
+
+/**
+ * Folders whose `GET /chats/new/info` is held open, and the resolvers holding
+ * them.
+ *
+ * The round trip is the subject, not an obstacle: `/new/info` runs `getGitInfo`,
+ * `buildWorkspaceIndex` and two plugin scans, so the compose screen spends tens
+ * to hundreds of real milliseconds knowing the *previous* folder's answer about
+ * this one. A fixture that answers instantly closes that window and can say
+ * nothing about what happens inside it.
+ */
+let holdInfoFor: Set<string>;
+let heldInfo: Map<string, () => void>;
 
 function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as unknown as Response;
@@ -125,7 +166,11 @@ function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
 
   if (url.includes("/chats/new/info")) {
     const folder = folderOf(url);
-    return Promise.resolve(jsonResponse({ folder, slash_commands: [], plugins: [], ...FOLDER_INFO[folder] }));
+    const answer = () => jsonResponse({ folder, slash_commands: [], plugins: [], ...FOLDER_INFO[folder] });
+    if (holdInfoFor.has(folder)) {
+      return new Promise<Response>((resolve) => heldInfo.set(folder, () => resolve(answer())));
+    }
+    return Promise.resolve(answer());
   }
   if (url.includes("/git/branches")) {
     const folder = folderOf(url);
@@ -146,7 +191,7 @@ function Probe() {
   const navigate = useNavigate();
   return (
     <>
-      {[REPO_B, PLAIN, DETACHED].map((folder) => (
+      {[REPO_B, REPO_C, PLAIN, DETACHED].map((folder) => (
         <button key={folder} type="button" onClick={() => navigate(`/chat/new?folder=${encodeURIComponent(folder)}`)}>
           {`compose in ${folder}`}
         </button>
@@ -185,6 +230,36 @@ async function goTo(folder: string) {
   else await waitFor(() => expect(screen.queryByLabelText("Base branch")).toBeNull());
 }
 
+/**
+ * The same move as `goTo`, but stopping inside the window `goTo` waits out: the
+ * new folder's `/new/info` is held, so `folder` has changed and `info` has not.
+ *
+ * Nothing is waited *for* here, deliberately — the two states this has to
+ * distinguish disagree about what is on screen (a box built from the previous
+ * repository's branch, or no box at all), so any DOM settle point would only
+ * exist in one of them. What makes it deterministic instead is that the emission
+ * under test is synchronous: the box is keyed on `folder`, so the change
+ * remounts it in the same commit, and its propagate effect reads `currentBranch`
+ * and emits without waiting for a listing. If the config is coming, it is here
+ * by the time this returns.
+ */
+async function goToWithInfoHeld(folder: string) {
+  holdInfoFor.add(folder);
+  await act(async () => {
+    fireEvent.click(screen.getByText(`compose in ${folder}`));
+  });
+}
+
+/** Let the held answer through, and wait for the screen to take it. */
+async function releaseInfo(folder: string) {
+  holdInfoFor.delete(folder);
+  const release = heldInfo.get(folder);
+  heldInfo.delete(folder);
+  await act(async () => {
+    release?.();
+  });
+}
+
 const nameField = () => screen.getByLabelText("New branch name") as HTMLInputElement;
 const toggle = () => screen.getByLabelText(/New worktree/) as HTMLInputElement;
 const summary = () => (screen.getByTestId("branch-summary").textContent ?? "").replace(/\s+/g, " ").trim();
@@ -199,6 +274,8 @@ async function send() {
 beforeEach(() => {
   localStorage.clear();
   sentBodies = [];
+  holdInfoFor = new Set();
+  heldInfo = new Map();
   vi.stubGlobal("fetch", vi.fn(fakeServer));
   vi.stubGlobal(
     "IntersectionObserver",
@@ -334,6 +411,110 @@ describe("a folder change cannot leave the parent holding the previous folder's 
 
     expect(sentBodies).toHaveLength(1);
     expect(sentBodies[0].branchConfig).toBeUndefined();
+  });
+});
+
+/**
+ * The folder changes on a click; what the server says about it does not. In
+ * between, `info` is the *previous* directory's answer — and everything on the
+ * compose screen that names a branch, including the branch box's own
+ * `currentBranch`, was reading it about the new one.
+ *
+ * That is a config built from repository A, in a box mounted on repository B,
+ * with the parent's gate open because `info.is_git_repo` was A's. Press Enter
+ * inside that window — a typed prompt and a click on the sidebar's "New chat" is
+ * all it takes — and it goes out. `git worktree add -b … main` in a repository
+ * with no `main` is a 500; in a repository that happens to have one it is a
+ * worktree off the wrong base, silently.
+ *
+ * The window is not hypothetical and not short: `/new/info` does `getGitInfo`,
+ * `buildWorkspaceIndex` and two plugin scans before it answers, which is why
+ * these two hold it open rather than racing it.
+ */
+describe("a config built from the folder that was left cannot ride out on a stale answer", () => {
+  /**
+   * The base branch case, which is the one that can fail quietly. `REPO_C` is on
+   * `develop` and has no `main` at all, so a `main` in the request could only
+   * have come from the repository the user just left.
+   */
+  it("does not post a base branch read from the previous folder", async () => {
+    await compose(); // REPO_A, on main
+    fireEvent.click(toggle());
+
+    await goToWithInfoHeld(REPO_C);
+
+    await send();
+    expect(sentBodies).toHaveLength(1);
+    expect(sentBodies[0].folder).toBe(REPO_C);
+    expect(sentBodies[0].branchConfig).toBeUndefined();
+
+    // The stale header goes with it: naming REPO_A's branch above a box mounted
+    // on REPO_C is the same wrong fact, one line up. `queryAll` because the
+    // failure to catch is the name being present, and `queryByText` throws on
+    // *two* of them rather than reporting the one thing this asserts.
+    expect(screen.queryAllByText("main", { selector: ":not(option)" })).toHaveLength(0);
+
+    // And the other half, without which "send nothing, ever" would pass: once
+    // REPO_C's own answer lands the box is back, and what it emits is its own.
+    await releaseInfo(REPO_C);
+    await screen.findByRole("option", { name: "feat/c" });
+    await send();
+    expect(sentBodies).toHaveLength(2);
+    expect(sentBodies[1].branchConfig).toEqual({ useWorktree: true, autoCreateBranch: true, baseBranch: "develop" });
+  });
+
+  /**
+   * The louder case, and the reviewer's repro: the new folder is not a
+   * repository at all. Nothing on screen should be offering isolation, but
+   * `branchBoxShown` was reading the previous folder's `is_git_repo` — so the
+   * box rendered, emitted, and `useWorktree` was posted at a plain directory.
+   */
+  it("does not post a worktree request at a folder that is not a repository", async () => {
+    await compose();
+    fireEvent.click(toggle());
+
+    await goToWithInfoHeld(PLAIN);
+
+    expect(screen.queryByLabelText("Base branch")).toBeNull();
+
+    await send();
+    expect(sentBodies).toHaveLength(1);
+    expect(sentBodies[0].folder).toBe(PLAIN);
+    expect(sentBodies[0].branchConfig).toBeUndefined();
+
+    // Still none once the answer arrives — a plain directory renders no box.
+    await releaseInfo(PLAIN);
+    expect(screen.queryByLabelText("Base branch")).toBeNull();
+  });
+
+  /**
+   * The same staleness reached from the other side. Two folder changes in flight
+   * land in the order the server answers them, so clearing `info` on the way out
+   * is not enough on its own: the slower request for the folder the user left
+   * would install its answer over the one they are standing in, and the window
+   * reopens with nothing to close it.
+   */
+  it("ignores an answer for a folder that has already been left", async () => {
+    holdInfoFor.add(REPO_A);
+    render(
+      <MemoryRouter initialEntries={[`/chat/new?folder=${encodeURIComponent(REPO_A)}`]}>
+        <Routes>
+          <Route path="/chat/new" element={<Chat />} />
+        </Routes>
+        <Probe />
+      </MemoryRouter>,
+    );
+
+    // Leave before REPO_A ever answers, settle in REPO_C, ask for isolation
+    // there — and only then let REPO_A's answer turn up.
+    await goTo(REPO_C);
+    fireEvent.click(toggle());
+    await releaseInfo(REPO_A);
+
+    await send();
+    expect(sentBodies).toHaveLength(1);
+    expect(sentBodies[0].branchConfig).toEqual({ useWorktree: true, autoCreateBranch: true, baseBranch: "develop" });
+    expect(screen.queryAllByText("main", { selector: ":not(option)" })).toHaveLength(0);
   });
 });
 

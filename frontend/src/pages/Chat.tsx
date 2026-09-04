@@ -1372,6 +1372,31 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setNetworkError(null);
     setChat(null);
     setMessages([]);
+    /**
+     * `info` is a fact about `folder`, so it stops being true the instant
+     * `folder` changes — and the round trip that makes it true again is not
+     * short: `/new/info` runs `getGitInfo`, `buildWorkspaceIndex` and two
+     * plugin scans, which is filesystem work measured in tens to hundreds of
+     * milliseconds. For that whole window every consumer of `info` was
+     * asserting the *previous* directory's answer about this one: the header
+     * named its branch, the summary line named its worktree, and — the reason
+     * this is a correctness fix rather than a cosmetic one — `branchBoxShown`
+     * read its `is_git_repo`, so the box remounted on the new folder's key with
+     * the old folder's `currentBranch`, emitted a config built from it, and a
+     * send in that window posted it. A base branch from repository A against
+     * repository B is `fatal: invalid reference` at best, and a worktree off
+     * the wrong commit in silence if B happens to have a branch by that name.
+     *
+     * Nulling it, rather than teaching the box alone to check that `info`
+     * matches `folder`: the box is one of five readers and every one of them is
+     * wrong in the same window for the same reason, so the narrow fix leaves
+     * four stale assertions on screen and adds a second piece of state whose
+     * agreement with `folder` has to be maintained by hand. This way the
+     * invariant is structural — `info` is null or it is about `folder` — and
+     * the panel briefly saying nothing about the new directory is the honest
+     * rendering of not knowing yet.
+     */
+    setInfo(null);
     // `branchConfig` is deliberately *not* reset here. It used to be, and that
     // reset is what made a folder change lose the user's isolation: the branch
     // box is keyed on `folder`, so it remounts and re-emits — and React flushes
@@ -1395,8 +1420,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       abortRef.current = null;
     }
 
+    // The other half of the invariant above. Clearing `info` on the way out
+    // only covers the window *before* an answer arrives; two folder changes in
+    // flight at once land in the order the server answers, not the order they
+    // were asked, and the loser would then install repository A's answer while
+    // `folder` says B — the same stale-`info` bug, reached from the other side
+    // and not fixed by the reset. `BranchSelector` guards its own listing fetch
+    // the same way and for the same reason.
+    let current = true;
     getNewChatInfo(folder)
       .then((data) => {
+        if (!current) return;
         setInfo(data);
         if (data.slash_commands) {
           setSlashCommands(data.slash_commands.map((cmd: any) => (typeof cmd === "string" ? cmd : cmd.name)));
@@ -1409,8 +1443,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       })
       .catch((err) => {
+        if (!current) return;
         setNetworkError(err.message || "Failed to load folder info");
       });
+    return () => {
+      current = false;
+    };
   }, [folder, id]);
 
   // Load existing chat data (only when id is available)
@@ -1812,6 +1850,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    * would otherwise go on riding along, and arrive as a `useWorktree` on
    * somewhere git does not manage. Reading it through this gate is what makes
    * its lifetime the box's lifetime.
+   *
+   * Which puts the whole weight of "is this config about `folder`" on `info`
+   * being about `folder`. It is, in both directions — the folder effect nulls
+   * it on the way out and ignores an answer that arrives after a change — and
+   * that is load-bearing here rather than incidental: while `info` described
+   * the previous directory, this said `true` for a box mounted on the new one.
    */
   const branchBoxShown = !id && !!info?.is_git_repo && !pendingAction;
 

@@ -1378,11 +1378,13 @@ export type ResolveBranchResult =
    * worktree, and the same silence: a success carrying the folder unchanged is
    * indistinguishable from "no worktree was asked for".
    *
-   * The UI cannot produce it. `BranchSelector` sends `baseBranch` alongside the
-   * toggle, or `autoCreateBranch` when there is no branch to name, and the
-   * route mints a `newBranch` from that before resolving. `start_chat_session`
-   * has all three optional, which is where this is reachable from — and a
-   * bundle older than the toggle rewrite is the other way in.
+   * `start_chat_session` is the only door. Its three branch fields are each
+   * independently optional, so `useWorktree: true` on its own is a call shape
+   * the schema accepts. No bundle of the UI can produce it, new or old:
+   * `BranchSelector` has always set `config.baseBranch` from its base picker,
+   * which seeds from `currentBranch` and is empty only on a detached HEAD —
+   * where `autoCreateBranch` rides along instead and the route mints a
+   * `newBranch` from it before resolving.
    */
   | { ok: false; error: "no_branch_for_worktree"; message: string; folder: string };
 

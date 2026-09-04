@@ -822,7 +822,13 @@ export function buildCallboardToolsSpec(
           maxTurns: z.number().optional().describe("Maximum agentic turns before stopping (default: 200)"),
           baseBranch: z.string().optional().describe("Base branch to start from (switches to this branch before starting)"),
           newBranch: z.string().optional().describe("New branch name to create (created from baseBranch or current HEAD)"),
-          useWorktree: z.boolean().optional().describe("Create a git worktree instead of switching branches in-place (default: false)"),
+          useWorktree: z
+            .boolean()
+            .optional()
+            .describe(
+              "Create a git worktree instead of switching branches in-place (default: false). Requires baseBranch or newBranch — " +
+                "on its own there is nothing to put in the worktree and the call is refused rather than run in the folder unisolated.",
+            ),
           onComplete: z
             .boolean()
             .optional()
