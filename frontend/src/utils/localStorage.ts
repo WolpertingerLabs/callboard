@@ -72,6 +72,8 @@ interface LocalStorageData {
   boardViewMode?: "cards" | "list";
   /** Whether card faces show the folders their chats live in. Absent = hidden. */
   boardShowPaths?: boolean;
+  /** List view: whether rows rest expanded. Absent = collapsed. */
+  boardRowsExpanded?: boolean;
   folderMaxAgeDays?: number;
   folderShowSizes?: boolean;
   /** User's last-selected provider in the New Chat panel — persisted so the
@@ -604,6 +606,23 @@ export function getBoardShowPaths(): boolean {
 export function saveBoardShowPaths(show: boolean): void {
   const data = getStorageData();
   data.boardShowPaths = show;
+  setStorageData(data);
+}
+
+/**
+ * The RESTING state of a list row's folder breakdown, not the state of any
+ * particular row. Per-row overrides are deliberately ephemeral: an expansion
+ * restored across a reload onto a card that has since collapsed to one folder
+ * is a row that opens onto nothing.
+ */
+export function getBoardRowsExpanded(): boolean {
+  const data = getStorageData();
+  return data.boardRowsExpanded === true;
+}
+
+export function saveBoardRowsExpanded(expanded: boolean): void {
+  const data = getStorageData();
+  data.boardRowsExpanded = expanded;
   setStorageData(data);
 }
 
