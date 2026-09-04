@@ -93,6 +93,9 @@ still creates a branch in place.
 
 ## Phase 1 — backend correctness (own PR, lands first)
 
+**Status: landed** — `c30aa9e`, `437285c`, `f346a2e`, `2c534ad`. See "Landed" below for
+the four ways it differs from what is written here.
+
 All four are live bugs today. They are prerequisites for making auto-naming ordinary,
 which is why they go first and alone.
 
@@ -149,6 +152,46 @@ defence, but make `resolveBranch` a no-op on a non-repo folder rather than letti
 - typed name still reuses an existing worktree (regression guard on 1.1)
 - typed name for an existing, unchecked-out branch → worktree created, no throw (1.3)
 - `useWorktree` with a null generated name never resolves to the main checkout (1.2)
+
+### Landed
+
+Four departures from the text above, all of them deliberate:
+
+- **A fourth signal for "taken".** The three checks named in 1.1 are not exhaustive:
+  `getGitBranches` is `git branch --list`, local refs only, so a generated `feat/x` that
+  exists solely as `origin/feat/x` reads as free and `git worktree add -b` happily mints
+  an unrelated local branch — verified exit 0 on a real repo — with the collision
+  surfacing at push time. `uniqueBranchName` now also consults
+  `git for-each-ref --format=%(refname:strip=3) refs/remotes/`, one subprocess for all
+  candidates, with `origin/HEAD` filtered out (a symref to the remote's default branch,
+  which would otherwise make `main` look permanently taken). Generated names only — a
+  typed name that matches a remote branch is the user's call to make.
+
+- **A fifth bug, found by fixing 1.1.** The `-b`-on-an-existing-branch failure in 1.3 has
+  an in-place twin: without a worktree, a generated name that already exists reaches
+  `switchBranch(…, createNew: true)` → `git checkout -b x` → the same `fatal: a branch
+  named 'x' already exists`. This is why uniquification is unconditional while the
+  stamped fallback is gated on `useWorktree`: the fallback keeps an isolation promise
+  that only exists on the worktree path, but the collision it would paper over exists on
+  both.
+
+- **`branchCreated` is now distinct from `created`.** `created` is about the directory;
+  `branchCreated` is about the ref. `resolveBranch` derives `mode` and the presence of
+  `baseBranch` from the latter, so a 1.3 resolution no longer records `branch-off` from a
+  base it never branched from. Side effect: pre-existing *reuse* paths carrying a
+  `newBranch` also flip `branch-off` → `checkout-branch`. Checked before accepting —
+  `mode` is written to workspace records and read by nothing; removability gates on
+  `repoPath` and `not-a-worktree-on-disk`.
+
+- **Known limitation: `uniqueBranchName` is check-then-act.** Generation, the uniqueness
+  check and `git worktree add` are three separate moments, so two chats generating the
+  same name at the same instant both see it free and the second silently reuses the
+  first's worktree. Bounded in practice: only this route generates names
+  (`start_chat_session` never sets `autoCreateBranch`) and the Phase 3 toggle defaults
+  off, so it takes two tabs racing in one repo. The fix, if it ever bites, is to stop
+  asking and let creation arbitrate — attempt `git worktree add -b`, and on
+  "already exists" / "is already checked out" retry with the next suffix. Not done here:
+  it rewrites the reuse semantics every other caller depends on.
 
 ---
 
