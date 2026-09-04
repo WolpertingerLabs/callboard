@@ -643,6 +643,40 @@ describe("keyboard and screen reader", () => {
     expect(screen.getByTitle("Show all 3 folders").getAttribute("aria-hidden")).toBe("true");
   });
 
+  it("says the expansion's state in words, since neither the chevron nor the button can", () => {
+    setWidth(1024);
+    const { rerender } = open();
+
+    // The chevron above is aria-hidden and the row button carries no
+    // aria-expanded, both for good reasons. Between them, nothing announced
+    // that a state existed or that ArrowRight had just changed it.
+    expect(surface().textContent).toContain("3 folders, collapsed");
+    rerender(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+    expect(surface().textContent).toContain("3 folders, expanded");
+  });
+
+  it("keeps that state off the screen, where the chevron already says it", () => {
+    setWidth(1024);
+    const { container } = open();
+    // The innermost match — the chevron slot around it has the same
+    // textContent, since the chevron itself is an icon and contributes none.
+    const label = [...container.querySelectorAll<HTMLElement>("span")].filter((el) => el.textContent === "3 folders, collapsed").at(-1)!;
+
+    // Clipped, not `display: none` — that would take it out of the
+    // accessibility tree along with the layout, which is the whole point.
+    expect(label.style.position).toBe("absolute");
+    expect(label.style.clipPath).toBe("inset(50%)");
+    expect(label.style.display).toBe("");
+  });
+
+  it("says nothing about folders on a row that has no expansion", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+    // Same rule as the chevron: an announcement about a state this row cannot
+    // be in is noise on 794 of 818 rows.
+    expect(surface().textContent).not.toMatch(/folders, (collapsed|expanded)/);
+  });
+
   it("names the two cells that are otherwise bare numbers in a column", () => {
     setWidth(1024);
     open();

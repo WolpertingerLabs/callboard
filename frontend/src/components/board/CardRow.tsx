@@ -101,6 +101,27 @@ const TIME_WIDTH = 44;
 const ellipsis: React.CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 
 /**
+ * Off screen but in the accessibility tree — not `display: none`, which takes
+ * it out of both.
+ *
+ * `clip` for the browsers that want the deprecated one and `clipPath` for the
+ * rest; a 1px box rather than a zero one, because a zero-sized element is
+ * skipped by some screen readers outright.
+ */
+const VISUALLY_HIDDEN: React.CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0 0 0 0)",
+  clipPath: "inset(50%)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
+
+/**
  * Spread onto a control inside the row that owns its own click, so the row's
  * long press does not also fire on it.
  *
@@ -304,6 +325,20 @@ export default function CardRow({
           justifyContent: "center",
         }}
       >
+        {expandable && (
+          // The state, for anyone who cannot see the chevron pointing at it.
+          //
+          // The chevron itself is `aria-hidden` (a decorative span with no
+          // keyboard path, whose `title` would otherwise leak into the row's
+          // name) and the row button deliberately carries no `aria-expanded`,
+          // because Enter on it opens the drawer and the attribute would be
+          // lying about what activating it does. Between those two correct
+          // decisions, nothing said the state existed or that ArrowRight had
+          // changed it. This participates in name-from-content, so the row is
+          // named "… 3 folders, collapsed …" without any part of it claiming
+          // to be the expander.
+          <span style={VISUALLY_HIDDEN}>{`${folders.length} folders, ${expanded ? "expanded" : "collapsed"}`}</span>
+        )}
         {expandable && (
           <span
             onClick={(e) => {
