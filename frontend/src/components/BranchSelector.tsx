@@ -70,33 +70,67 @@ interface BranchSelectorProps {
   onChange: (config: BranchConfig | null) => void;
 }
 
+/**
+ * What `GET /git/branches` said about **this folder**, or `null` for "it has
+ * not said".
+ *
+ * One nullable object rather than two arrays and a `loading` flag, so that
+ * "which repository is this about" cannot drift from "do we have an answer
+ * yet". The arrays are only ever read through a null check, and the null is the
+ * same thing the folder change sets — there is no state in which a listing from
+ * the previous repository is readable, because there is no half-cleared state
+ * to be in.
+ */
+interface BranchListing {
+  branches: string[];
+  checkedOut: CheckedOutBranch[];
+}
+
 export default function BranchSelector({ folder, currentBranch, onChange }: BranchSelectorProps) {
-  const [branches, setBranches] = useState<string[]>([]);
-  const [checkedOut, setCheckedOut] = useState<CheckedOutBranch[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [listing, setListing] = useState<BranchListing | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const branches = listing?.branches ?? [];
+  const checkedOut = listing?.checkedOut ?? [];
+  const loading = listing === null && error === null;
 
   const [baseBranch, setBaseBranch] = useState(currentBranch);
   const [newBranch, setNewBranch] = useState("");
   const [useWorktree, setUseWorktree] = useState(() => getWorktreeByDefault());
 
-  // Fetch branches on mount
+  // Fetch branches on mount, and again whenever the folder changes.
+  //
+  // The clearing is not tidiness. `folder` is a query parameter, not a remount
+  // key: this component stays mounted across a folder change, so without it the
+  // previous repository's branches and worktrees stay in state for the length
+  // of the new request, and every sentence below describes them. "feat/y is
+  // checked out at callboard.feat-y" is a claim about a repository the user has
+  // left.
   useEffect(() => {
-    setLoading(true);
+    let current = true;
+    setListing(null);
     setError(null);
     getGitBranches(folder)
       .then((data) => {
-        setBranches(data.branches);
-        // Absent on a daemon older than this bundle, which reads as "no branch
-        // is known to be checked out elsewhere" — the summary then says the
-        // switch will happen here, which is what it said before this existed.
-        setCheckedOut(data.checkedOut ?? []);
-        setLoading(false);
+        // Two folder changes in flight at once land in the order the server
+        // answers, not the order they were asked — and the loser would overwrite
+        // the winner with another repository's listing.
+        if (!current) return;
+        setListing({
+          branches: data.branches,
+          // Absent on a daemon older than this bundle, which reads as "no branch
+          // is known to be checked out elsewhere" — the summary then says the
+          // switch will happen here, which is what it said before this existed.
+          checkedOut: data.checkedOut ?? [],
+        });
       })
       .catch((err) => {
+        if (!current) return;
         setError(err.message);
-        setLoading(false);
       });
+    return () => {
+      current = false;
+    };
   }, [folder]);
 
   // Reset base branch when currentBranch changes
@@ -237,6 +271,39 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   );
 
   /**
+   * The sentence for a state the listing has not answered yet, or never will.
+   *
+   * `loading` and `error` used to gate only the `<select>`; the summary rendered
+   * off `branches = []` and `checkedOut = []`, and in this ladder an empty
+   * listing reads as "the branch does not exist" and "it is checked out
+   * nowhere" — the optimistic end of every rung. So mid-fetch, and permanently
+   * after a failed fetch, "`feat/y` is checked out at `callboard.feat-y` — the
+   * chat will run there" degraded into "Will create branch `feat/y`". The
+   * redirect sentence, the row this rewrite exists for, degraded into a claim
+   * of creation.
+   *
+   * Only the *existence-dependent* rungs defer to this. What the user asked for
+   * is known either way, and so is the branch this directory is on — git's own
+   * worktree list always contains the directory you are standing in, which is
+   * why those rungs are keyed on `currentBranch` and not on the listing.
+   *
+   * The trigger is `listing === null`, which is also what a folder change sets:
+   * `folder` is a query parameter and not a remount key, so a listing that
+   * outlived its repository would otherwise describe the one the user just left.
+   */
+  const listingUnknown = listing === null;
+  const notKnownYet = (branch: string) =>
+    error ? (
+      <>
+        Could not load this repository&apos;s branches — cannot say whether <Name>{branch}</Name> exists, or where the chat will run.
+      </>
+    ) : (
+      <>
+        Still loading this repository&apos;s branches — cannot say yet whether <Name>{branch}</Name> exists, or where the chat will run.
+      </>
+    );
+
+  /**
    * What the current selection will do, in a sentence. Always rendered, because
    * every one of these states was previously silent — including the ones where
    * picking a branch that lives in another worktree sends the chat to that
@@ -298,6 +365,8 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
           </>
         );
       }
+      // Everything below this line is read off the listing.
+      if (listingUnknown) return notKnownYet(trimmedName);
       const occupied = worktreeOn(trimmedName);
       if (occupied) return runsThereInstead(trimmedName, occupied.path, false);
       if (branchExists(trimmedName)) {
@@ -322,6 +391,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
     // checkout to it" would be a generous verb for a no-op, and this box is
     // supposed to state facts.
     if (trimmedName && trimmedName !== currentBranch) {
+      if (listingUnknown) return notKnownYet(trimmedName);
       const occupied = worktreeElsewhereOn(trimmedName);
       if (occupied) return runsThereInstead(trimmedName, occupied.path, true);
       if (branchExists(trimmedName)) {
@@ -348,6 +418,10 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         </>
       );
     }
+    // A base that differs from the current branch while the listing is missing
+    // is not only the first-load window — it is the folder-change window, where
+    // the picked base outlives the repository it was picked in.
+    if (listingUnknown) return notKnownYet(baseBranch);
     const occupied = worktreeElsewhereOn(baseBranch);
     if (occupied) return runsThereInstead(baseBranch, occupied.path, true);
     return (

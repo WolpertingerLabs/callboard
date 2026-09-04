@@ -19,7 +19,7 @@
  * chats by default".
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BranchConfig, CheckedOutBranch } from "../api";
 import BranchSelector from "./BranchSelector";
 
@@ -225,6 +225,88 @@ describe("a branch that is checked out somewhere else", () => {
 
     expect(emitted(onChange)).toEqual({ baseBranch: "feat/y" });
     expect(summary()).toBe("Will switch this checkout to feat/y.");
+  });
+});
+
+/**
+ * `loading` and `error` used to gate only the `<select>`. The sentence rendered
+ * off `branches = []` and `checkedOut = []` regardless, and in this ladder an
+ * empty listing reads as "the branch does not exist" and "it is checked out
+ * nowhere" — the optimistic end of every rung. So mid-fetch, and permanently
+ * after a failed fetch, the box asserted creation for a branch it had not been
+ * told anything about.
+ */
+describe("a branch listing that has not arrived, or never will", () => {
+  /** A request that stays in flight, so the wait itself is the state under test. */
+  const stubPending = () => getGitBranches.mockReturnValue(new Promise(() => {}));
+
+  it("does not claim a name is new while the listing is still loading", () => {
+    stubPending();
+    render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+
+    type("feat/y");
+    expect(summary()).toBe("Still loading this repository's branches — cannot say yet whether feat/y exists, or where the chat will run.");
+
+    fireEvent.click(toggle());
+    expect(summary()).toBe("Still loading this repository's branches — cannot say yet whether feat/y exists, or where the chat will run.");
+  });
+
+  /**
+   * The failed fetch is the worse of the two, because it never resolves into
+   * anything: the box would have gone on saying "Will create branch `feat/y`"
+   * for as long as the compose screen was open.
+   */
+  it("says it cannot tell after a failed fetch, rather than promising creation", async () => {
+    getGitBranches.mockRejectedValue(new Error("not a git repository"));
+    render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("not a git repository")).toBeTruthy());
+
+    type("feat/y");
+
+    expect(summary()).toBe("Could not load this repository's branches — cannot say whether feat/y exists, or where the chat will run.");
+  });
+
+  /**
+   * `folder` is a query parameter, not a remount key, so a folder change
+   * re-runs the fetch underneath a component that keeps everything it already
+   * had. The picked base outlives the repository it was picked in, and the
+   * redirect sentence — the row this rewrite exists for — went on describing a
+   * worktree in a repository the user had left.
+   */
+  it("stops describing the previous repository the moment the folder changes", async () => {
+    stubBranches({
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "feat/y", path: "/home/cybil/callboard.feat-y", isMainWorktree: false },
+      ],
+    });
+    const view = render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+    await screen.findByLabelText("Base branch");
+    pickBase("feat/y");
+    expect(summary()).toBe("feat/y is checked out at callboard.feat-y — the chat will run there. This checkout is untouched.");
+
+    stubPending();
+    view.rerender(<BranchSelector folder="/home/cybil/other-repo" currentBranch="main" onChange={vi.fn()} />);
+
+    expect(summary()).toBe("Still loading this repository's branches — cannot say yet whether feat/y exists, or where the chat will run.");
+  });
+
+  /**
+   * Two folder changes in flight land in the order the server answers them, not
+   * the order they were asked. Without the guard the slower first request wins
+   * by arriving last, and the box describes a repository nobody is looking at.
+   */
+  it("ignores a listing that arrives after the folder has moved on", async () => {
+    let answerFirst: (value: { branches: string[]; checkedOut: CheckedOutBranch[] }) => void = () => {};
+    getGitBranches.mockReturnValueOnce(new Promise((resolve) => (answerFirst = resolve)));
+    const view = render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);
+
+    stubPending();
+    view.rerender(<BranchSelector folder="/home/cybil/other-repo" currentBranch="main" onChange={vi.fn()} />);
+    await act(async () => answerFirst({ branches: ["main", "feat/y"], checkedOut: [] }));
+
+    type("feat/y");
+    expect(summary()).toBe("Still loading this repository's branches — cannot say yet whether feat/y exists, or where the chat will run.");
   });
 });
 
