@@ -126,6 +126,32 @@ describe("with a folder filter", () => {
     expect(screen.getByLabelText("Clear folder filter")).toBeDefined();
   });
 
+  it("starts a new chat in the folder the drawer is showing", () => {
+    mount({ initialFolderFilter: "/home/cybil/callboard.feat-x" });
+    fireEvent.click(screen.getByText("New chat on card"));
+
+    // The chip above the list says feat-x. Reading the card's unfiltered
+    // member list here would put the chat in the card's most recent folder
+    // while the only context on screen claimed otherwise.
+    expect(navigate).toHaveBeenCalledWith(`/chat/new?folder=${encodeURIComponent("/home/cybil/callboard.feat-x")}`, expect.anything());
+  });
+
+  it("goes back to the card's most recent folder once the filter is cleared", () => {
+    mount({ initialFolderFilter: "/home/cybil/callboard.feat-x" });
+    fireEvent.click(screen.getByLabelText("Clear folder filter"));
+    fireEvent.click(screen.getByText("New chat on card"));
+
+    expect(navigate).toHaveBeenCalledWith(`/chat/new?folder=${encodeURIComponent("/home/cybil/callboard")}`, expect.anything());
+  });
+
+  it("falls back rather than guessing when the filtered folder has emptied out", () => {
+    // The 15s poll can empty a folder under an open drawer, and there is no
+    // member chat left to read a folder off.
+    mount({ initialFolderFilter: "/home/cybil/gone" });
+    fireEvent.click(screen.getByText("New chat on card"));
+    expect(navigate).not.toHaveBeenCalledWith(expect.stringContaining("folder=%2Fhome%2Fcybil%2Fcallboard"), expect.anything());
+  });
+
   it("leaves everything else about the drawer alone", () => {
     mount({ initialFolderFilter: "/home/cybil/callboard.feat-x" });
     // The card's identity and actions are not the chat list's business.

@@ -63,7 +63,10 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
   // the agent's identity prompt and permissions (mirrors AgentDashboard's
   // start-chat flow). Falls back to the most recent New Chat directory.
   const startChatOnCard = async () => {
-    const recent = card.memberChats[0]; // sorted newest-first server-side
+    // From the FILTERED list: the chip above says which folder the drawer is
+    // showing, so a new chat that landed in the card's most recent folder
+    // instead would contradict the only context on screen.
+    const recent = shownChats[0]; // sorted newest-first server-side
     const folder = recent?.folder ?? getRecentDirectories()[0]?.path;
     if (!folder) {
       // No known folder anywhere — land on the picker message rather than guessing.
