@@ -1227,7 +1227,9 @@ export type ResolveBranchResult =
  * success, or a structured error when uncommitted changes block an
  * in-place branch switch.
  *
- * Worktrees are inherently isolated and bypass the dirty-state guard.
+ * Two resolutions bypass the dirty-state guard, for the same reason: neither
+ * writes to `folder`. Worktrees are inherently isolated, and a target branch
+ * that is already checked out in another worktree sends the chat there.
  */
 export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
   const { folder, baseBranch, newBranch, useWorktree, forceBranchChange } = opts;
@@ -1249,16 +1251,27 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
   // Dirty-state guard: block in-place branch switch if uncommitted changes exist.
   // Worktrees are inherently isolated, so they bypass this check.
   if (targetBranch && !useWorktree) {
+    // Asked before the guard, because the guard asks about the wrong directory
+    // otherwise. `switchBranch` looks for the target branch in another worktree
+    // and returns *that* path when it finds one, never writing to `folder` at
+    // all — so uncommitted changes here could refuse a chat that was never
+    // going to disturb them. The branch picker states "This checkout is
+    // untouched" for precisely this case, which makes the refusal a
+    // contradiction as well as a nuisance.
+    //
+    // Deliberately the same expression `switchBranch` runs, `wt.path !== folder`
+    // and all: two spellings of "is it somewhere else" that could disagree
+    // would put the guard back out of step with the checkout it guards.
+    const worktreeElsewhere = getGitWorktrees(folder).find((wt) => wt.branch === targetBranch && wt.path !== folder);
     const currentBranch = getGitInfo(folder).branch;
-    const effectiveBranch = newBranch || baseBranch;
 
-    if (effectiveBranch && effectiveBranch !== currentBranch && !forceBranchChange && hasUncommittedChanges(folder)) {
+    if (!worktreeElsewhere && targetBranch !== currentBranch && !forceBranchChange && hasUncommittedChanges(folder)) {
       return {
         ok: false,
         error: "uncommitted_changes",
-        message: `Cannot switch from "${currentBranch}" to "${effectiveBranch}" because there are uncommitted changes. Use a worktree to work in isolation instead.`,
+        message: `Cannot switch from "${currentBranch}" to "${targetBranch}" because there are uncommitted changes. Use a worktree to work in isolation instead.`,
         currentBranch: currentBranch || "unknown",
-        targetBranch: effectiveBranch,
+        targetBranch,
       };
     }
   }

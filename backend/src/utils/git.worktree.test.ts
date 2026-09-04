@@ -8,10 +8,10 @@
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ensureWorktreeDetailed, fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "./git.js";
+import { ensureWorktreeDetailed, fallbackBranchName, getGitInfo, hasUncommittedChanges, resolveBranch, uniqueBranchName } from "./git.js";
 
 // Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
 // a symlink to `/private/var/folders/...`. Worktree resolution reports the real
@@ -146,6 +146,94 @@ describe("resolveBranch worktree intent", () => {
     if (!result.ok) return;
     expect(result.folder).toBe(inPlacePath);
     expect(result.worktree).toBeUndefined();
+  });
+});
+
+/**
+ * The guard asks whether `folder` is dirty. That is the right question only
+ * when `folder` is where the checkout is going to happen — and when the target
+ * branch already lives in another worktree, `switchBranch` returns that path
+ * and never writes here at all. Both directions are pinned: skipping the guard
+ * when it applies would let a real in-place switch stomp uncommitted work,
+ * which is the failure it exists to prevent.
+ */
+describe("the dirty-state guard and where the checkout actually lands", () => {
+  /** A repo with one uncommitted change, so the guard has something to find. */
+  function dirtyRepo(name: string): string {
+    const dir = makeRepo(name);
+    writeFileSync(join(dir, "scratch.txt"), "uncommitted");
+    return dir;
+  }
+
+  it("refuses an in-place switch over uncommitted changes", () => {
+    const dir = dirtyRepo("dirty-in-place");
+    git(["branch", "feat/target"], dir);
+
+    const result = resolveBranch({ folder: dir, baseBranch: "feat/target" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("uncommitted_changes");
+    expect(result.currentBranch).toBe("main");
+    expect(result.targetBranch).toBe("feat/target");
+  });
+
+  it("allows the same switch when the target branch lives in another worktree", () => {
+    const dir = dirtyRepo("dirty-redirected");
+    const elsewhere = join(dirname(dir), "repo.feat-elsewhere");
+    git(["worktree", "add", "-q", "-b", "feat/elsewhere", elsewhere, "main"], dir);
+
+    // The chat runs in `elsewhere`. Nothing reads or writes `dir`, so its
+    // uncommitted changes are not this request's business.
+    const result = resolveBranch({ folder: dir, baseBranch: "feat/elsewhere" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(elsewhere);
+    // Still dirty: the point is that nothing here was touched, not that the
+    // changes were dealt with.
+    expect(hasUncommittedChanges(dir)).toBe(true);
+  });
+
+  /**
+   * The redirect is what lifts the guard, not the mere existence of some other
+   * worktree. A repo with a worktree on an unrelated branch is still doing an
+   * in-place switch and must still be refused.
+   */
+  it("still refuses when the other worktree is on a different branch", () => {
+    const dir = dirtyRepo("dirty-unrelated-worktree");
+    git(["worktree", "add", "-q", "-b", "feat/unrelated", join(dirname(dir), "repo.feat-unrelated"), "main"], dir);
+    git(["branch", "feat/target"], dir);
+
+    const result = resolveBranch({ folder: dir, baseBranch: "feat/target" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("uncommitted_changes");
+  });
+
+  /**
+   * `newBranch` is the target when it is set, so the lookup has to follow it
+   * rather than the base — the same precedence `switchBranch` uses.
+   */
+  it("follows the typed name rather than the base branch", () => {
+    const dir = dirtyRepo("dirty-redirected-by-name");
+    const elsewhere = join(dirname(dir), "repo.feat-named");
+    git(["worktree", "add", "-q", "-b", "feat/named", elsewhere, "main"], dir);
+
+    const result = resolveBranch({ folder: dir, newBranch: "feat/named", baseBranch: "main" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(elsewhere);
+  });
+
+  /** A clean checkout was never blocked, and still is not. */
+  it("leaves a clean in-place switch alone", () => {
+    const dir = makeRepo("clean-in-place");
+    git(["branch", "feat/target"], dir);
+
+    const result = resolveBranch({ folder: dir, baseBranch: "feat/target" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(dir);
+    expect(getGitInfo(dir).branch).toBe("feat/target");
   });
 });
 
