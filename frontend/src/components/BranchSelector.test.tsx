@@ -180,17 +180,48 @@ describe("a branch that is checked out somewhere else", () => {
   });
 
   /**
-   * The listing includes the directory you are standing in. Reporting that as a
-   * redirect would tell the user their chat is going somewhere else when it is
-   * going nowhere at all.
+   * The listing includes the directory you are standing in, and reporting that
+   * as a redirect would say the chat is going somewhere else when it is going
+   * nowhere at all.
+   *
+   * What this pins is the *early exit*, not the path filter: the target is the
+   * branch this folder is on, so the ladder answers before the listing is
+   * consulted at all. That is worth a test of its own — the exit is what keeps
+   * the sentence true when the endpoint sends no listing — but it is not
+   * coverage of `wt.path !== here`, which the sibling below reaches.
    */
-  it("does not call this very directory 'elsewhere'", async () => {
+  it("answers 'nothing changes' without consulting the listing", async () => {
     stubBranches({
       checkedOut: [{ branch: "feat/a", path: WORKTREE, isMainWorktree: false }],
     });
     await open({ folder: WORKTREE, currentBranch: "feat/a" });
 
     expect(summary()).toBe("Runs here on feat/a. No branch or worktree change.");
+  });
+
+  /**
+   * The path filter, reached. `currentBranch` and `checkedOut` come from two
+   * different requests at two different moments, so they disagree whenever
+   * something switches the branch in this directory in between — an agent in
+   * another chat, a terminal, the user. The listing is then the fresher of the
+   * two and says `feat/y` is checked out *here*, while the box still believes
+   * `main`.
+   *
+   * Without `wt.path !== here` the box reads its own directory out of the
+   * listing and calls it a redirect: "the chat will run there. This checkout is
+   * untouched" — about the very checkout it is describing. `switchBranch`
+   * applies the same exclusion, finds no other worktree, and checks the branch
+   * out here, which is what the sentence below says.
+   */
+  it("does not call this very directory 'elsewhere' when the listing is fresher than the branch it was told", async () => {
+    stubBranches({
+      checkedOut: [{ branch: "feat/y", path: REPO, isMainWorktree: true }],
+    });
+    await open();
+
+    type("feat/y");
+
+    expect(summary()).toBe("feat/y already exists — will switch this checkout to it.");
   });
 
   /**
@@ -516,7 +547,16 @@ describe("a typed name that is not new", () => {
     expect(summary()).toBe("main is already checked out here — the chat will run here, with no worktree.");
   });
 
-  /** From inside a worktree, "here" is that worktree and its branch. */
+  /**
+   * From inside a worktree, "here" is that worktree and its branch — not the
+   * main checkout, and not `main`.
+   *
+   * Like its sibling above, this pins the guard rather than the lookup behind
+   * it: the target is the branch this folder is on, so the ladder answers
+   * before `worktreeOn` is reached. That is the point — the guard is what makes
+   * the sentence hold with no listing at all — and the listing is stubbed here
+   * only so the folder is a plausible worktree of it.
+   */
   it("is about the branch this folder is on, not about main", async () => {
     stubBranches({
       checkedOut: [
@@ -655,6 +695,18 @@ describe("the sticky toggle", () => {
    */
   it("ignores a value left behind under the old useWorktree key", async () => {
     localStorage.setItem("claude-code-settings", JSON.stringify({ useWorktree: true, autoCreateBranch: true }));
+    const { onChange } = await open();
+
+    expect(toggle().checked).toBe(false);
+    expect(emitted(onChange)).toEqual({});
+  });
+
+  /**
+   * The store is JSON some other build wrote, so a value that is not a boolean
+   * has to be read as one rather than handed to `checked=` as a string.
+   */
+  it("reads a non-boolean stored value as off", async () => {
+    localStorage.setItem("claude-code-settings", JSON.stringify({ worktreeByDefault: "yes" }));
     const { onChange } = await open();
 
     expect(toggle().checked).toBe(false);

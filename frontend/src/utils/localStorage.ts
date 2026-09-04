@@ -383,7 +383,11 @@ export function removeRecentDirectory(path: string): void {
 
 export function getWorktreeByDefault(): boolean {
   const data = getStorageData();
-  return data.worktreeByDefault ?? false;
+  // Coerced on read, like `getDefaultProvider` validates on read: the store is
+  // JSON someone else's build wrote, and `?? false` passes a stored `"yes"`
+  // straight through to a checkbox's `checked=`, where a string is not a
+  // boolean and React has to guess.
+  return data.worktreeByDefault === true;
 }
 
 export function saveWorktreeByDefault(value: boolean): void {
