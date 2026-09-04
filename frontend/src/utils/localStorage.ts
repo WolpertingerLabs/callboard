@@ -23,8 +23,24 @@ interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;
   recentDirectories?: RecentDirectory[];
   maxTurns?: number;
+  /**
+   * The two halves of the old `Auto-create` + `Worktree` checkbox pair.
+   *
+   * @deprecated Superseded by {@link worktreeByDefault}. Unread — kept as
+   * fields only so a bundle predating the change, open in another tab, still
+   * parses the store it shares with this one.
+   *
+   * Deliberately *not* migrated into `worktreeByDefault`: under the old gated
+   * semantics `useWorktree: true` meant "checked while a branch change was
+   * pending", and it did nothing at all on a chat with no branch change.
+   * Reading it as the new preference would start minting worktrees for chats
+   * the user never asked to isolate.
+   */
   useWorktree?: boolean;
+  /** @deprecated See {@link useWorktree}. */
   autoCreateBranch?: boolean;
+  /** BranchSelector's "New worktree" toggle, restored on the next new chat. */
+  worktreeByDefault?: boolean;
   showTriggeredChats?: boolean;
   /**
    * Sidebar scoped to chats on an open card (and their descendants).
@@ -365,25 +381,14 @@ export function removeRecentDirectory(path: string): void {
   setStorageData(data);
 }
 
-export function getUseWorktree(): boolean {
+export function getWorktreeByDefault(): boolean {
   const data = getStorageData();
-  return data.useWorktree ?? false;
+  return data.worktreeByDefault ?? false;
 }
 
-export function saveUseWorktree(value: boolean): void {
+export function saveWorktreeByDefault(value: boolean): void {
   const data = getStorageData();
-  data.useWorktree = value;
-  setStorageData(data);
-}
-
-export function getAutoCreateBranch(): boolean {
-  const data = getStorageData();
-  return data.autoCreateBranch ?? false;
-}
-
-export function saveAutoCreateBranch(value: boolean): void {
-  const data = getStorageData();
-  data.autoCreateBranch = value;
+  data.worktreeByDefault = value;
   setStorageData(data);
 }
 

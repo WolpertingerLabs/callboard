@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { GitBranch, GitFork, Sparkles } from "lucide-react";
-import { getGitBranches, type BranchConfig } from "../api";
-import { getUseWorktree, saveUseWorktree, getAutoCreateBranch, saveAutoCreateBranch } from "../utils/localStorage";
+import { useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
+import { GitBranch, GitFork } from "lucide-react";
+import { getGitBranches, type BranchConfig, type CheckedOutBranch } from "../api";
+import { getWorktreeByDefault, saveWorktreeByDefault } from "../utils/localStorage";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /**
@@ -22,6 +22,18 @@ function validateBranchName(name: string): string | null {
   return null;
 }
 
+/** Last path segment, ignoring trailing slashes — `path.basename` for the browser. */
+function basename(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  const lastSlash = trimmed.lastIndexOf("/");
+  return lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed;
+}
+
+/** A branch or directory name inside the summary sentence. */
+function Name({ children }: { children: ReactNode }) {
+  return <span style={{ fontFamily: "monospace", color: "var(--text)" }}>{children}</span>;
+}
+
 interface BranchSelectorProps {
   folder: string;
   currentBranch: string;
@@ -30,19 +42,13 @@ interface BranchSelectorProps {
 
 export default function BranchSelector({ folder, currentBranch, onChange }: BranchSelectorProps) {
   const [branches, setBranches] = useState<string[]>([]);
+  const [checkedOut, setCheckedOut] = useState<CheckedOutBranch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [baseBranch, setBaseBranch] = useState(currentBranch);
   const [newBranch, setNewBranch] = useState("");
-  const [useWorktree, setUseWorktree] = useState(() => getUseWorktree());
-  const [autoCreateBranch, setAutoCreateBranch] = useState(() => getAutoCreateBranch());
-
-  // Worktree only makes sense when there's a branch change:
-  // - different base branch selected, OR
-  // - new branch name entered manually, OR
-  // - auto-create branch is checked (will create a new branch)
-  const worktreeEnabled = baseBranch !== currentBranch || !!newBranch.trim() || autoCreateBranch;
+  const [useWorktree, setUseWorktree] = useState(() => getWorktreeByDefault());
 
   // Fetch branches on mount
   useEffect(() => {
@@ -51,6 +57,10 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
     getGitBranches(folder)
       .then((data) => {
         setBranches(data.branches);
+        // Absent on a daemon older than this bundle, which reads as "no branch
+        // is known to be checked out elsewhere" — the summary then says the
+        // switch will happen here, which is what it said before this existed.
+        setCheckedOut(data.checkedOut ?? []);
         setLoading(false);
       })
       .catch((err) => {
@@ -64,29 +74,30 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
     setBaseBranch(currentBranch);
   }, [currentBranch]);
 
-  // Propagate changes to parent
+  /**
+   * The whole control, as three inputs mapped onto a `BranchConfig`.
+   *
+   * `autoCreateBranch` is set explicitly rather than left for the backend to
+   * infer from `useWorktree && !newBranch`: that pair already means "check out
+   * this existing branch in a worktree", which is what `start_chat_session`
+   * sends, and overloading it would change what every existing caller asks for.
+   */
   const propagateChange = useCallback(
-    (base: string, newBr: string, worktree: boolean, wtEnabled: boolean, autoCreate: boolean) => {
+    (base: string, newBr: string, worktree: boolean) => {
       const config: BranchConfig = {};
+      const named = newBr.trim();
 
-      if (autoCreate && !newBr.trim()) {
-        // Auto-create mode: backend will generate the branch name
-        config.autoCreateBranch = true;
+      if (worktree) {
+        config.useWorktree = true;
+        // Always sent with a worktree so the backend knows what to branch from.
         config.baseBranch = base;
-      } else if (newBr.trim()) {
+        if (named) config.newBranch = named;
+        else config.autoCreateBranch = true;
+      } else if (named) {
         config.baseBranch = base;
-        config.newBranch = newBr.trim();
+        config.newBranch = named;
       } else if (base !== currentBranch) {
         config.baseBranch = base;
-      }
-
-      // Only honor worktree when enabled (i.e. there's a branch change)
-      if (wtEnabled && worktree) {
-        config.useWorktree = true;
-        // Always include baseBranch when using worktree so the backend knows context
-        if (!config.baseBranch) {
-          config.baseBranch = base;
-        }
       }
 
       onChange(config);
@@ -100,36 +111,86 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   // Propagate on state changes (skip if branch name is invalid)
   useEffect(() => {
     if (branchError) return;
-    propagateChange(baseBranch, newBranch, useWorktree, worktreeEnabled, autoCreateBranch);
-  }, [baseBranch, newBranch, useWorktree, worktreeEnabled, autoCreateBranch, propagateChange, branchError]);
+    propagateChange(baseBranch, newBranch, useWorktree);
+  }, [baseBranch, newBranch, useWorktree, propagateChange, branchError]);
 
-  // Persist worktree preference
+  // Persist worktree preference — the toggle is the only sticky control here.
   const handleWorktreeChange = useCallback((checked: boolean) => {
     setUseWorktree(checked);
-    saveUseWorktree(checked);
+    saveWorktreeByDefault(checked);
   }, []);
-
-  // Persist auto-create branch preference
-  const handleAutoCreateBranchChange = useCallback((checked: boolean) => {
-    setAutoCreateBranch(checked);
-    saveAutoCreateBranch(checked);
-  }, []);
-
-  // Compute worktree path preview (mirrors backend ensureWorktree in git.ts)
-  const effectiveBranch = newBranch.trim() || baseBranch;
-  const sanitized = effectiveBranch.replace(/\//g, "-");
-  const trimmedFolder = folder.replace(/\/+$/, ""); // strip trailing slashes like path.dirname
-  const lastSlash = trimmedFolder.lastIndexOf("/");
-  const repoName = lastSlash >= 0 ? trimmedFolder.slice(lastSlash + 1) : trimmedFolder || "repo";
-  const parentDir = lastSlash >= 0 ? trimmedFolder.slice(0, lastSlash) : "";
-  const worktreePath = `${parentDir}/${repoName}.${sanitized}`;
 
   const isMobile = useIsMobile();
 
-  const hasChanges = baseBranch !== currentBranch || newBranch.trim() || autoCreateBranch || (worktreeEnabled && useWorktree);
+  const trimmedName = newBranch.trim();
 
-  // The new branch text field is disabled when auto-create is checked
-  const newBranchDisabled = autoCreateBranch;
+  // Directory ensureWorktree derives for a branch: `[repo-name].[branch with / as -]`,
+  // mirroring worktreePathForBranch in backend/src/utils/git.ts. Only the last
+  // segment is shown — the parent directory is the one the user is already in.
+  const repoName = basename(folder) || "repo";
+  const worktreeDirName = (branch: string) => `${repoName}.${branch.replace(/\//g, "-")}`;
+
+  /**
+   * Where the selected base branch already lives, if that is somewhere other
+   * than here. `switchBranch` matches on the exact directory, so a worktree
+   * whose path *is* this folder is not a redirect.
+   */
+  const baseCheckedOutElsewhere = useMemo(() => {
+    const here = folder.replace(/\/+$/, "");
+    return checkedOut.find((wt) => wt.branch === baseBranch && wt.path.replace(/\/+$/, "") !== here) ?? null;
+  }, [checkedOut, baseBranch, folder]);
+
+  /**
+   * What the current selection will do, in a sentence. Always rendered, because
+   * every one of these states was previously silent — including the last one,
+   * where picking a branch that lives in another worktree sends the chat to
+   * that directory and leaves this checkout alone.
+   */
+  const summary: ReactNode = (() => {
+    if (useWorktree && !trimmedName) {
+      return (
+        <>
+          Will create a new worktree off <Name>{baseBranch}</Name>, on a branch named from your first message.
+        </>
+      );
+    }
+    if (useWorktree) {
+      return (
+        <>
+          Will create <Name>{worktreeDirName(trimmedName)}</Name> on new branch <Name>{trimmedName}</Name>, off <Name>{baseBranch}</Name>.
+        </>
+      );
+    }
+    if (trimmedName) {
+      return (
+        <>
+          Will create branch <Name>{trimmedName}</Name> off <Name>{baseBranch}</Name> in this checkout.
+        </>
+      );
+    }
+    if (baseBranch === currentBranch) {
+      return (
+        <>
+          Runs here on <Name>{currentBranch}</Name>. No branch or worktree change.
+        </>
+      );
+    }
+    if (baseCheckedOutElsewhere) {
+      return (
+        <>
+          <Name>{baseBranch}</Name> is checked out at <Name>{basename(baseCheckedOutElsewhere.path)}</Name> — the chat will run there. This checkout
+          is untouched.
+        </>
+      );
+    }
+    return (
+      <>
+        Will switch this checkout to <Name>{baseBranch}</Name>.
+      </>
+    );
+  })();
+
+  const hasChanges = baseBranch !== currentBranch || !!trimmedName || useWorktree;
 
   // Shared sub-components
   const baseBranchSelect = (
@@ -143,6 +204,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         <select
           value={baseBranch}
           onChange={(e) => setBaseBranch(e.target.value)}
+          aria-label="Base branch"
           style={{
             background: "var(--bg)",
             color: "var(--text)",
@@ -169,73 +231,29 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
   const newBranchInput = (
     <div style={{ display: "flex", alignItems: "center", gap: 4, flex: 1, minWidth: isMobile ? 0 : 120 }}>
-      {newBranchDisabled ? (
-        <div
-          style={{
-            flex: 1,
-            padding: "4px 8px",
-            fontSize: 12,
-            fontFamily: "monospace",
-            color: "var(--accent-text)",
-            fontStyle: "italic",
-            opacity: 0.85,
-            minWidth: 0,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-        >
-          Will auto-create new branch name
-        </div>
-      ) : (
-        <input
-          type="text"
-          value={newBranch}
-          onChange={(e) => setNewBranch(e.target.value)}
-          placeholder="new-branch (optional)"
-          style={{
-            flex: 1,
-            background: "var(--bg)",
-            color: "var(--text)",
-            border: branchError ? "1px solid var(--danger)" : "1px solid var(--border)",
-            borderRadius: 5,
-            padding: "4px 8px",
-            fontSize: 12,
-            fontFamily: "monospace",
-            outline: "none",
-            minWidth: 0,
-            boxSizing: "border-box",
-          }}
-        />
-      )}
-    </div>
-  );
-
-  const autoCreateBranchToggle = (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 5,
-        cursor: "pointer",
-        fontSize: 12,
-        color: autoCreateBranch ? "var(--accent)" : "var(--text-muted)",
-        flexShrink: 0,
-        userSelect: "none",
-        fontWeight: autoCreateBranch ? 500 : 400,
-        transition: "color 0.15s ease",
-      }}
-      title="Auto-generate a branch name from the first message"
-    >
       <input
-        type="checkbox"
-        checked={autoCreateBranch}
-        onChange={(e) => handleAutoCreateBranchChange(e.target.checked)}
-        style={{ cursor: "pointer", margin: 0 }}
+        type="text"
+        value={newBranch}
+        onChange={(e) => setNewBranch(e.target.value)}
+        aria-label="New branch name"
+        /* The placeholder tracks the toggle because empty means two different
+           things: a generated name with a worktree, no new branch without one. */
+        placeholder={useWorktree ? "auto" : "new-branch (optional)"}
+        style={{
+          flex: 1,
+          background: "var(--bg)",
+          color: "var(--text)",
+          border: branchError ? "1px solid var(--danger)" : "1px solid var(--border)",
+          borderRadius: 5,
+          padding: "4px 8px",
+          fontSize: 12,
+          fontFamily: "monospace",
+          outline: "none",
+          minWidth: 0,
+          boxSizing: "border-box",
+        }}
       />
-      <Sparkles size={12} style={{ flexShrink: 0 }} />
-      Auto-create
-    </label>
+    </div>
   );
 
   const worktreeToggle = (
@@ -244,26 +262,23 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         display: "flex",
         alignItems: "center",
         gap: 5,
-        cursor: worktreeEnabled ? "pointer" : "not-allowed",
+        cursor: "pointer",
         fontSize: 12,
-        color: !worktreeEnabled ? "var(--text-muted)" : useWorktree ? "var(--accent)" : "var(--text-muted)",
+        color: useWorktree ? "var(--accent)" : "var(--text-muted)",
         flexShrink: 0,
         userSelect: "none",
-        fontWeight: worktreeEnabled && useWorktree ? 500 : 400,
-        opacity: worktreeEnabled ? 1 : 0.5,
-        transition: "color 0.15s ease, opacity 0.15s ease",
+        fontWeight: useWorktree ? 500 : 400,
+        transition: "color 0.15s ease",
       }}
-      title={worktreeEnabled ? undefined : "Select a different branch, enter a new branch name, or enable auto-create to use worktrees"}
     >
       <input
         type="checkbox"
-        checked={worktreeEnabled && useWorktree}
-        disabled={!worktreeEnabled}
+        checked={useWorktree}
         onChange={(e) => handleWorktreeChange(e.target.checked)}
-        style={{ cursor: worktreeEnabled ? "pointer" : "not-allowed", margin: 0 }}
+        style={{ cursor: "pointer", margin: 0 }}
       />
       <GitFork size={12} style={{ flexShrink: 0 }} />
-      Worktree
+      New worktree
     </label>
   );
 
@@ -285,11 +300,8 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
           {baseBranchSelect}
           {/* Row 2: New branch input */}
           {newBranchInput}
-          {/* Row 3: Toggles */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {autoCreateBranchToggle}
-            {worktreeToggle}
-          </div>
+          {/* Row 3: Worktree toggle */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>{worktreeToggle}</div>
         </div>
       ) : (
         /* Desktop: single-row inline layout */
@@ -304,13 +316,13 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
           {baseBranchSelect}
           <span style={{ color: "var(--border)", fontSize: 14, userSelect: "none" }}>/</span>
           {newBranchInput}
-          {autoCreateBranchToggle}
           {worktreeToggle}
         </div>
       )}
 
-      {/* Validation error */}
-      {branchError && !newBranchDisabled && (
+      {/* An invalid name is not propagated, so no sentence about it would be
+          true — the error takes the summary's place until the name is fixable. */}
+      {branchError ? (
         <div
           style={{
             marginTop: 6,
@@ -322,22 +334,18 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         >
           {branchError}
         </div>
-      )}
-
-      {/* Worktree path preview - only show when not auto-creating (we don't know the branch name yet) */}
-      {worktreeEnabled && useWorktree && !autoCreateBranch && (
+      ) : (
         <div
+          data-testid="branch-summary"
           style={{
             marginTop: 6,
             fontSize: 11,
             color: "var(--text-muted)",
-            fontFamily: "monospace",
-            wordBreak: "break-all",
             paddingLeft: 19,
-            opacity: 0.8,
+            lineHeight: 1.5,
           }}
         >
-          {worktreePath}
+          {summary}
         </div>
       )}
     </div>
