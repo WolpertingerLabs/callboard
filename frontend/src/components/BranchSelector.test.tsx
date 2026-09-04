@@ -50,14 +50,14 @@ afterEach(cleanup);
 
 /** Render and wait for the branch list to arrive, so the select is real. */
 async function open(props: { folder?: string; currentBranch?: string } = {}) {
-  const onChange = vi.fn<(config: BranchConfig) => void>();
+  const onChange = vi.fn<(config: BranchConfig | null) => void>();
   render(<BranchSelector folder={props.folder ?? REPO} currentBranch={props.currentBranch ?? "main"} onChange={onChange} />);
   await screen.findByLabelText("Base branch");
   return { onChange };
 }
 
-/** The most recent config the box handed to its parent. */
-function emitted(onChange: ReturnType<typeof vi.fn>): BranchConfig {
+/** The most recent config the box handed to its parent — `null` when the typed name is invalid. */
+function emitted(onChange: ReturnType<typeof vi.fn>): BranchConfig | null {
   expect(onChange).toHaveBeenCalled();
   return onChange.mock.calls[onChange.mock.calls.length - 1][0];
 }
@@ -478,23 +478,49 @@ describe("the controls themselves", () => {
   });
 
   /**
-   * An invalid name is never propagated, so the last config the parent holds
-   * would describe a state the user has since left. The sentence would be a lie
-   * about what the box is about to do; the error explains why nothing will.
+   * An invalid name **withdraws** the config rather than merely failing to
+   * replace it. The distinction is the whole bug: skipping the callback reads
+   * as "nothing was propagated", and what it actually does is leave the parent
+   * holding the last valid config — the name the user typed on the way to the
+   * one they meant. `feat/my thing` sent `feat/my`, silently, with the box
+   * showing nothing but a validation error.
+   *
+   * `null` is the box saying there is no config to send, which is what
+   * `sendBlockedReason` in `pages/Chat.tsx` greys the Send button on.
    */
-  it("shows the error instead of a sentence while the name is invalid", async () => {
+  it("withdraws the config while the name is invalid, rather than leaving a stale one", async () => {
     const { onChange } = await open();
 
     type("feat/x");
-    const good = emitted(onChange);
-    type("bad name");
+    expect(emitted(onChange)).toEqual({ baseBranch: "main", newBranch: "feat/x" });
 
+    type("feat/my thing");
+
+    expect(emitted(onChange)).toBeNull();
     expect(screen.queryByTestId("branch-summary")).toBeNull();
-    expect(screen.getByText("Branch name cannot contain spaces")).toBeTruthy();
-    expect(emitted(onChange)).toEqual(good);
+    expect(screen.getByText(/Branch name cannot contain spaces/)).toBeTruthy();
 
     type("feat/x2");
+    expect(emitted(onChange)).toEqual({ baseBranch: "main", newBranch: "feat/x2" });
     expect(summary()).toBe("Will create branch feat/x2 off main in this checkout.");
+  });
+
+  /**
+   * The P0 in miniature, and the reason the withdrawal has to be per-keystroke.
+   * `m` is a perfectly good branch name, so it is emitted; the space that
+   * follows it is what makes the name invalid, and before this the parent went
+   * on holding `m`. Send then made a worktree `callboard.m` on a branch `m`.
+   */
+  it("withdraws a half-typed name as soon as the rest makes it invalid", async () => {
+    const { onChange } = await open();
+
+    fireEvent.click(toggle());
+    type("m");
+    expect(emitted(onChange)).toEqual({ useWorktree: true, baseBranch: "main", newBranch: "m" });
+
+    type("my branch");
+
+    expect(emitted(onChange)).toBeNull();
   });
 
   it("reports a failed branch listing rather than an empty picker", async () => {

@@ -296,7 +296,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // reports one. Reset every time we land on a new chat so cross-chat values
   // don't leak.
   const [_lastRunCostUsd, setLastRunCostUsd] = useState<number | null>(null);
-  const [branchConfig, setBranchConfig] = useState<BranchConfig>({});
+  // `null` is the branch box reporting that its typed name is one git would
+  // refuse. It is not "no branch config" — that is `{}` — it is "there is no
+  // config to send", which is why the composer blocks on it below rather than
+  // quietly posting without one.
+  const [branchConfig, setBranchConfig] = useState<BranchConfig | null>({});
   // Card association is no longer a composer choice: the server gives every
   // top-level chat a card on its own (backend/src/routes/stream.ts). The one
   // thing the client still decides is JOINING an existing card, and that comes
@@ -1786,8 +1790,24 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [promptInputSetValue, navigate, location.state, location.pathname, location.search]);
 
+  /**
+   * Why the composer must not send, when it must not.
+   *
+   * Only ever the branch box, and only while it is on screen: the same
+   * condition renders it below, so a box that has been unmounted (the folder
+   * stopped being a repo, a pending action took over) cannot leave the composer
+   * blocked by a name nobody can see to fix.
+   */
+  const sendBlockedReason = !id && info?.is_git_repo && !pendingAction && branchConfig === null ? "The branch name above is not one git will accept." : undefined;
+
   const handleSend = useCallback(
     async (prompt: string, images?: File[]) => {
+      // The composer greys Send out for this, so reaching here means some other
+      // caller (a plan-review auto-reply, a retry) got in. Bail before the
+      // in-flight bubble and the streaming flag, because there is no config to
+      // send: the alternative is posting the last *valid* one, which is the
+      // name the user abandoned on the way to this one.
+      if (sendBlockedReason) return;
       // Sending a message re-latches auto-scroll so the user sees their
       // message and the response, even if they had scrolled up
       suppressRelatchRef.current = false;
@@ -1865,7 +1885,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (activePluginIds.length > 0) {
             requestBody.activePlugins = activePluginIds;
           }
-          if (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree || branchConfig.autoCreateBranch) {
+          if (branchConfig && (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree || branchConfig.autoCreateBranch)) {
             requestBody.branchConfig = {
               ...branchConfig,
               ...(forceBranchChangeRef.current && { forceBranchChange: true }),
@@ -2044,6 +2064,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       activePluginIds,
       chat,
       branchConfig,
+      sendBlockedReason,
       activeDraftId,
     ],
   );
@@ -3501,6 +3522,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         <PromptInput
           onSend={handleSend}
           disabled={!id && streaming}
+          sendBlockedReason={sendBlockedReason}
           onSaveDraft={handleSaveDraft}
           slashCommands={allSlashCommands}
           commandDescriptions={pluginCommandDescriptions}

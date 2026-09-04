@@ -37,7 +37,19 @@ function Name({ children }: { children: ReactNode }) {
 interface BranchSelectorProps {
   folder: string;
   currentBranch: string;
-  onChange: (config: BranchConfig) => void;
+  /**
+   * The config for the current selection, or `null` when the typed name is one
+   * git would refuse.
+   *
+   * `null` rather than "don't call": the parent holds this until Send, and a
+   * skipped call leaves it holding the *last valid* config — a name the user
+   * typed on the way to the one they meant. Typing `feat/my thing` would have
+   * started a chat on `feat/my`; with the toggle on, the first keystroke of
+   * `my branch` emitted `newBranch: "m"` and Send made `repo.m`. Nothing about
+   * that is visible from the parent, which is why the invalid state has to be
+   * something it is *told*, not something it infers from silence.
+   */
+  onChange: (config: BranchConfig | null) => void;
 }
 
 export default function BranchSelector({ folder, currentBranch, onChange }: BranchSelectorProps) {
@@ -108,11 +120,15 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   // Validate new branch name
   const branchError = useMemo(() => validateBranchName(newBranch.trim()), [newBranch]);
 
-  // Propagate on state changes (skip if branch name is invalid)
+  // Propagate on state changes. An invalid name replaces the config outright
+  // rather than leaving the previous one standing — see `onChange`.
   useEffect(() => {
-    if (branchError) return;
+    if (branchError) {
+      onChange(null);
+      return;
+    }
     propagateChange(baseBranch, newBranch, useWorktree);
-  }, [baseBranch, newBranch, useWorktree, propagateChange, branchError]);
+  }, [baseBranch, newBranch, useWorktree, propagateChange, branchError, onChange]);
 
   // Persist worktree preference — the toggle is the only sticky control here.
   const handleWorktreeChange = useCallback((checked: boolean) => {
@@ -388,8 +404,9 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         </div>
       )}
 
-      {/* An invalid name is not propagated, so no sentence about it would be
-          true — the error takes the summary's place until the name is fixable. */}
+      {/* An invalid name leaves the parent holding no config at all, so no
+          sentence about it would be true — the error takes the summary's place,
+          and says why Send is doing nothing, until the name is fixable. */}
       {branchError ? (
         <div
           style={{
@@ -400,7 +417,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
             paddingLeft: 19,
           }}
         >
-          {branchError}
+          {branchError} — nothing will send until this is fixed.
         </div>
       ) : (
         <div
