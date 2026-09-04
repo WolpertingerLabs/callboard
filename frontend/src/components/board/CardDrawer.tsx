@@ -67,7 +67,20 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
     // showing, so a new chat that landed in the card's most recent folder
     // instead would contradict the only context on screen.
     const recent = shownChats[0]; // sorted newest-first server-side
-    const folder = recent?.folder ?? getRecentDirectories()[0]?.path;
+    // `folderFilter` between them, because `shownChats` can be empty while a
+    // filter is set — a folder emptying out under the 15s poll, which is the
+    // state the chat list below already explains to the user in so many
+    // words. Falling straight through to the global New Chat MRU there lands
+    // the new chat in whatever project was opened last and then joins it to
+    // THIS card, so a card silently acquires a folder from an unrelated repo.
+    // The chip on screen names a real path the user is looking at, which is
+    // strictly a better guess than another project.
+    //
+    // Nothing sits between the filter and the MRU: `shownChats` is the whole
+    // member list whenever there is no filter, so `card.memberChats[0]` here
+    // is either `recent` itself or, on a card with no member rows at all,
+    // equally absent.
+    const folder = recent?.folder ?? folderFilter ?? getRecentDirectories()[0]?.path;
     if (!folder) {
       // No known folder anywhere — land on the picker message rather than guessing.
       // parentChatId = the card's root chat: the new chat joins the card by

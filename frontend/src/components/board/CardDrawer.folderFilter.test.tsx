@@ -10,6 +10,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { CardMemberChat, CardSummary } from "../../api";
+import { addRecentDirectory } from "../../utils/localStorage";
 import CardDrawer from "./CardDrawer";
 
 const navigate = vi.fn();
@@ -73,6 +74,8 @@ function chatTitles() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // The MRU is the fallback these tests are about, and it is process-wide.
+  localStorage.clear();
 });
 
 describe("without the prop", () => {
@@ -144,12 +147,27 @@ describe("with a folder filter", () => {
     expect(navigate).toHaveBeenCalledWith(`/chat/new?folder=${encodeURIComponent("/home/cybil/callboard")}`, expect.anything());
   });
 
-  it("falls back rather than guessing when the filtered folder has emptied out", () => {
+  it("still starts in the folder the chip names when that folder has emptied out", () => {
     // The 15s poll can empty a folder under an open drawer, and there is no
-    // member chat left to read a folder off.
+    // member chat left to read a folder off. The chip is still on screen
+    // naming a real path, so that is the answer — falling through to the
+    // global New Chat MRU here started the chat in whatever project was
+    // opened last and then joined it to THIS card, which is how a card
+    // acquires a folder from an unrelated repo.
+    addRecentDirectory("/home/cybil/unrelated-project");
     mount({ initialFolderFilter: "/home/cybil/gone" });
     fireEvent.click(screen.getByText("New chat on card"));
-    expect(navigate).not.toHaveBeenCalledWith(expect.stringContaining("folder=%2Fhome%2Fcybil%2Fcallboard"), expect.anything());
+    expect(navigate).toHaveBeenCalledWith(`/chat/new?folder=${encodeURIComponent("/home/cybil/gone")}`, expect.anything());
+  });
+
+  it("still reaches the MRU on a card with no member rows and no filter", () => {
+    // 8.8% of cards: every lineage on the retired provider, so `memberChats`
+    // is empty outright. There is no folder anywhere on the card to prefer,
+    // and the guard above must not have cut the last resort off.
+    addRecentDirectory("/home/cybil/unrelated-project");
+    mount({ card: card({ memberChats: [] }) });
+    fireEvent.click(screen.getByText("New chat on card"));
+    expect(navigate).toHaveBeenCalledWith(`/chat/new?folder=${encodeURIComponent("/home/cybil/unrelated-project")}`, expect.anything());
   });
 
   it("leaves everything else about the drawer alone", () => {
