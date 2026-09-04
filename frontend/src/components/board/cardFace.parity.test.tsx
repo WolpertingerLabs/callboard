@@ -259,6 +259,31 @@ describe.each(FACES)("%s — the shared selection contract", (_name, Face) => {
     });
   });
 
+  describe("the status line", () => {
+    // The most prominent fact on a card face, and the exact thing `statusLine`
+    // was extracted so the two faces could not drift on — and until these,
+    // stubbing it to "" left 296 tests green on both.
+    it("says what a card wants from you rather than naming its rollup state", () => {
+      render(<Face card={card({ rollup: "needs_you", memberChats: [member({ chatId: "a", folder: "/x", status: "waiting", pendingKind: "permission" })] })} onClick={vi.fn()} />);
+      // "Approval needed", not "Needs you": that difference is the whole
+      // reason a board is scannable rather than something to click through.
+      expect(screen.getByText("Approval needed")).toBeDefined();
+    });
+
+    it("says Idle when there is nothing to say", () => {
+      render(<Face card={card({ rollup: "idle" })} onClick={vi.fn()} />);
+      expect(screen.getByText("Idle")).toBeDefined();
+    });
+
+    it("says Closed over whatever the rollup still claims", () => {
+      // A closed card's rollup is not recomputed on close, so the lifecycle
+      // has to win here or a closed card reads as live.
+      render(<Face card={card({ lifecycle: "closed", rollup: "needs_you" })} onClick={vi.fn()} />);
+      expect(screen.getByText("Closed")).toBeDefined();
+      expect(screen.queryByText("Needs you")).toBeNull();
+    });
+  });
+
   describe("the folder summary", () => {
     const SINGLE = [member({ chatId: "card-1", folder: "/home/cybil/callboard" })];
     const FANOUT = [...SINGLE, member({ chatId: "a", folder: "/home/cybil/callboard.feat-a" })];
