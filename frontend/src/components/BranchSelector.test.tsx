@@ -523,6 +523,37 @@ describe("the controls themselves", () => {
     expect(emitted(onChange)).toBeNull();
   });
 
+  /**
+   * The sentence is the entire reason this box was rewritten, and a plain
+   * `<div>` rewriting itself as the checkbox toggles is invisible to anyone not
+   * looking at it. Live regions rather than focus management: nothing here
+   * steals the caret out of the field the user is typing in.
+   *
+   * The two roles are not interchangeable. The sentence is `status` (polite —
+   * it narrates a choice) and the rejection is `alert` (assertive — the send is
+   * blocked until it is dealt with), and the rejection is also *associated*
+   * with the field, so a screen reader reaching the input reads the reason
+   * rather than announcing it once into the void.
+   */
+  it("announces the sentence, and ties a rejected name to the field it was typed in", async () => {
+    await open();
+
+    expect(screen.getByRole("status").textContent).toContain("Runs here on main");
+    expect(nameField().getAttribute("aria-invalid")).toBeNull();
+    expect(nameField().getAttribute("aria-describedby")).toBeNull();
+
+    fireEvent.click(toggle());
+    expect(screen.getByRole("status").textContent).toContain("Will create a new worktree off main");
+
+    type("bad name");
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("Branch name cannot contain spaces — nothing will send until this is fixed.");
+    expect(nameField().getAttribute("aria-invalid")).toBe("true");
+    expect(nameField().getAttribute("aria-describedby")).toBe(alert.id);
+    expect(alert.id).toBeTruthy();
+  });
+
   it("reports a failed branch listing rather than an empty picker", async () => {
     getGitBranches.mockRejectedValue(new Error("not a git repository"));
     render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);

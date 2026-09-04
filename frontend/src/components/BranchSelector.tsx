@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useId, useMemo, type ReactNode } from "react";
 import { GitBranch, GitFork } from "lucide-react";
 import { getGitBranches, type BranchConfig, type CheckedOutBranch } from "../api";
 import { getWorktreeByDefault, saveWorktreeByDefault } from "../utils/localStorage";
@@ -137,6 +137,12 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   }, []);
 
   const isMobile = useIsMobile();
+
+  // The error owns an id because the name field points at it: a rejected name
+  // has to be *associated* with the field it was typed in, not merely rendered
+  // near it. Generated rather than hard-coded — the box is not guaranteed to be
+  // the only one on a page.
+  const errorId = useId();
 
   const trimmedName = newBranch.trim();
 
@@ -320,6 +326,8 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         value={newBranch}
         onChange={(e) => setNewBranch(e.target.value)}
         aria-label="New branch name"
+        aria-invalid={branchError ? true : undefined}
+        aria-describedby={branchError ? errorId : undefined}
         /* The placeholder tracks the toggle because empty means two different
            things: a generated name with a worktree, no new branch without one. */
         placeholder={useWorktree ? "auto" : "new-branch (optional)"}
@@ -406,9 +414,19 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
       {/* An invalid name leaves the parent holding no config at all, so no
           sentence about it would be true — the error takes the summary's place,
-          and says why Send is doing nothing, until the name is fixable. */}
+          and says why Send is doing nothing, until the name is fixable.
+
+          Both halves are announced, because both are the whole point of this
+          box: a plain <div> that silently rewrites itself as you toggle the
+          checkbox tells a screen reader nothing at all, and the Send button
+          going grey is not a signal anyone can hear. `alert` for the rejection
+          (it interrupts — the user cannot send until they act on it) and
+          `status` for the sentence (polite — it is describing a choice being
+          made, not demanding one). */}
       {branchError ? (
         <div
+          id={errorId}
+          role="alert"
           style={{
             marginTop: 6,
             fontSize: 11,
@@ -422,6 +440,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       ) : (
         <div
           data-testid="branch-summary"
+          role="status"
           style={{
             marginTop: 6,
             fontSize: 11,
