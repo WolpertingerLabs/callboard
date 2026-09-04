@@ -629,8 +629,21 @@ export function fallbackBranchName(): string {
  * Listed once rather than probed per candidate: `uniqueBranchName` may test
  * twenty names, and this is one subprocess instead of twenty. `strip=3` drops
  * exactly `refs`, `remotes` and the remote name, leaving branch names that
- * contain slashes intact. `origin/HEAD` is a symref to the remote's default
- * branch, not a branch of its own, and is dropped.
+ * contain slashes intact.
+ *
+ * The literal `HEAD` is dropped. `refs/remotes/origin/HEAD` is a symref naming
+ * the remote's default branch, and `strip=3` prints the last segment of *its
+ * own* refname — so what comes out is the string `HEAD`, not the branch it
+ * points at. (Checked against real git: a repo whose `origin/HEAD` resolves to
+ * `origin/main` lists `HEAD` and `main` as two separate lines.) It is a pseudo
+ * entry, not a branch any remote has, and this function's contract is branch
+ * names.
+ *
+ * Filtering it changes nothing a caller can observe today: every candidate that
+ * reaches here is `<type>/<kebab>` or `chat/<stamp>-<hex>`, and none of those is
+ * `HEAD` or lives under `HEAD/`. It is hygiene at the source rather than a live
+ * guard — an earlier version of this comment claimed the filter stopped `main`
+ * from looking permanently taken, which is not something `strip=3` can produce.
  */
 function listRemoteBranchNames(repoDir: string): Set<string> {
   const names = new Set<string>();

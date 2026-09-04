@@ -314,12 +314,35 @@ describe("uniqueBranchName", () => {
     // collision then waits until a push, with the work already done.
     const dir = makeRepo("unique-remote");
     git(["update-ref", "refs/remotes/origin/feat/remote-only", "HEAD"], dir);
-    // A remote's default-branch symref is not a branch of its own and must not
-    // make every candidate look taken.
-    git(["update-ref", "refs/remotes/origin/HEAD", "HEAD"], dir);
 
     expect(uniqueBranchName(dir, "feat/remote-only")).toBe("feat/remote-only-2");
     expect(uniqueBranchName(dir, "feat/untaken")).toBe("feat/untaken");
+  });
+
+  /**
+   * `refs/remotes/origin/HEAD` is a symref naming the remote's default branch,
+   * and `%(refname:strip=3)` prints the last segment of *its own* refname — so
+   * the line that comes out is the string `HEAD`, never the branch it points
+   * at. A repo whose `origin/HEAD` resolves to `origin/main` lists `HEAD` and
+   * `main` as two separate lines; the filter drops the first, and `main` was
+   * never at risk. (An earlier comment here claimed otherwise.)
+   *
+   * Nothing observable turns on this — every candidate that reaches
+   * `uniqueBranchName` is `<type>/<kebab>` or `chat/<stamp>-<hex>`, none of
+   * which is `HEAD` — so the assertion goes through the only door there is, to
+   * pin the set's contents rather than a behaviour anyone will meet.
+   */
+  it("keeps the origin/HEAD pseudo-entry out of the remote names", () => {
+    const dir = makeRepo("unique-remote-head");
+    git(["update-ref", "refs/remotes/origin/main", "HEAD"], dir);
+    git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], dir);
+
+    // The branch the symref points at is a real remote branch and is taken.
+    // Its name is `main`, which the local branch also claims — asserted here so
+    // the two halves of the claim sit together.
+    expect(uniqueBranchName(dir, "main")).toBe("main-2");
+    // `HEAD` itself is not a branch name and never entered the set.
+    expect(uniqueBranchName(dir, "HEAD")).toBe("HEAD");
   });
 
   /**
