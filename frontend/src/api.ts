@@ -432,6 +432,17 @@ export interface NewChatInfo {
   is_git_repo: boolean;
   is_worktree?: boolean;
   git_branch?: string;
+  /**
+   * Present, and only ever `true`, when this checkout is on no branch — a
+   * detached HEAD, or the vanishing case of a HEAD symref outside
+   * `refs/heads`. `git_branch` keeps reporting its long-standing `"main"`
+   * fallback in that state, which is why this exists beside it rather than
+   * inside it; see `GitInfo.isDetached` in `backend/src/utils/git.ts`.
+   *
+   * Absent from a daemon older than this bundle, and absent when git could not
+   * answer. Treat absence as "no reason to think so".
+   */
+  isDetached?: boolean;
   slash_commands: SlashCommand[];
   plugins: Plugin[];
   appPlugins?: AppPluginsData;

@@ -56,6 +56,18 @@ interface BranchSelectorProps {
   folder: string;
   currentBranch: string;
   /**
+   * This checkout is on no branch — `GET /chats/new/info`'s `isDetached`, which
+   * is sent only when true.
+   *
+   * It has to be a second prop because `currentBranch` cannot carry it:
+   * `git_branch` reports `"main"` for a detached HEAD, that fallback is read
+   * across the whole UI, and `"main"` may exist and be checked out somewhere
+   * else entirely. Set, every sentence that names the branch you are on stops
+   * naming one, and the base `<select>` stops claiming a current option it does
+   * not have.
+   */
+  isDetached?: boolean;
+  /**
    * The config for the current selection, or `null` when the typed name is one
    * git would refuse.
    *
@@ -86,7 +98,18 @@ interface BranchListing {
   checkedOut: CheckedOutBranch[];
 }
 
-export default function BranchSelector({ folder, currentBranch, onChange }: BranchSelectorProps) {
+export default function BranchSelector({ folder, currentBranch, isDetached, onChange }: BranchSelectorProps) {
+  /**
+   * The branch this checkout is on, or `null` for "it is on none".
+   *
+   * Every comparison below goes through this rather than through
+   * `currentBranch`, because on a detached HEAD `currentBranch` is the string
+   * `"main"` and is not a fact about this directory: typing `main` there is a
+   * request to check out a branch that may live in another worktree entirely,
+   * not a no-op, and `null` is what stops the ladder short-circuiting on it.
+   */
+  const onBranch = isDetached ? null : currentBranch;
+
   const [listing, setListing] = useState<BranchListing | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -94,7 +117,10 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   const checkedOut = listing?.checkedOut ?? [];
   const loading = listing === null && error === null;
 
-  const [baseBranch, setBaseBranch] = useState(currentBranch);
+  // Empty means "no base picked", which is only reachable on a detached HEAD:
+  // there is no branch to default to, and the backend reads an absent base as
+  // `HEAD` — this checkout's current commit, which is exactly what is wanted.
+  const [baseBranch, setBaseBranch] = useState(onBranch ?? "");
   const [newBranch, setNewBranch] = useState("");
   const [useWorktree, setUseWorktree] = useState(() => getWorktreeByDefault());
 
@@ -133,10 +159,10 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
     };
   }, [folder]);
 
-  // Reset base branch when currentBranch changes
+  // Reset base branch when the branch this checkout is on changes
   useEffect(() => {
-    setBaseBranch(currentBranch);
-  }, [currentBranch]);
+    setBaseBranch(onBranch ?? "");
+  }, [onBranch]);
 
   /**
    * The whole control, as three inputs mapped onto a `BranchConfig`.
@@ -153,20 +179,23 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
       if (worktree) {
         config.useWorktree = true;
-        // Always sent with a worktree so the backend knows what to branch from.
-        config.baseBranch = base;
+        // Always sent with a worktree so the backend knows what to branch from
+        // — except on a detached HEAD, where there is no branch to name and
+        // omitting it is what makes the backend fall back to `HEAD`. Sending
+        // `""` would be a base the resolver has to second-guess.
+        if (base) config.baseBranch = base;
         if (named) config.newBranch = named;
         else config.autoCreateBranch = true;
       } else if (named) {
-        config.baseBranch = base;
+        if (base) config.baseBranch = base;
         config.newBranch = named;
-      } else if (base !== currentBranch) {
+      } else if (base && base !== onBranch) {
         config.baseBranch = base;
       }
 
       onChange(config);
     },
-    [currentBranch, onChange],
+    [onBranch, onChange],
   );
 
   // Validate new branch name
@@ -271,6 +300,16 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   );
 
   /**
+   * What the new branch or worktree comes off, named.
+   *
+   * On a detached HEAD there is no base branch to name and none is sent, so the
+   * backend branches off `HEAD` — this checkout's commit. Saying so is the
+   * whole point: it is the one thing that is true whether HEAD is detached or
+   * pointing somewhere git will not call a branch.
+   */
+  const baseLabel: ReactNode = baseBranch ? <Name>{baseBranch}</Name> : <>this checkout&apos;s current commit</>;
+
+  /**
    * The sentence for a state the listing has not answered yet, or never will.
    *
    * `loading` and `error` used to gate only the `<select>`; the summary rendered
@@ -285,7 +324,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
    * Only the *existence-dependent* rungs defer to this. What the user asked for
    * is known either way, and so is the branch this directory is on — git's own
    * worktree list always contains the directory you are standing in, which is
-   * why those rungs are keyed on `currentBranch` and not on the listing.
+   * why those rungs are keyed on `onBranch` and not on the listing.
    *
    * The trigger is `listing === null`, which is also what a folder change sets:
    * `folder` is a query parameter and not a remount key, so a listing that
@@ -322,7 +361,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       if (!trimmedName) {
         return (
           <>
-            Will create a new worktree off <Name>{baseBranch}</Name>, on a branch named from your first message.
+            Will create a new worktree off {baseLabel}, on a branch named from your first message.
           </>
         );
       }
@@ -354,14 +393,16 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
        * worktree you are standing in and hands back this directory, so the
        * outcome is not "we are sending you elsewhere" — it is "your worktree
        * request was dropped", which is the Phase 1.2 failure surviving on the
-       * typed path. Keyed on `currentBranch` rather than on a `checkedOut`
-       * entry pointing here: git's own listing always contains the current
-       * worktree, so this holds even when the endpoint sent no listing at all.
+       * typed path. Keyed on `onBranch` rather than on a `checkedOut` entry
+       * pointing here: git's own listing always contains the current worktree,
+       * so this holds even when the endpoint sent no listing at all — and it
+       * cannot fire on a detached HEAD, where there is no branch for a name to
+       * match and `main` is a branch like any other.
        */
-      if (trimmedName === currentBranch) {
+      if (trimmedName === onBranch) {
         return (
           <>
-            <Name>{currentBranch}</Name> is already checked out here — the chat will run here, with no worktree.
+            <Name>{onBranch}</Name> is already checked out here — the chat will run here, with no worktree.
           </>
         );
       }
@@ -379,7 +420,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       }
       return (
         <>
-          Will create <Name>{derivedDir(trimmedName)}</Name> on new branch <Name>{trimmedName}</Name>, off <Name>{baseBranch}</Name>.
+          Will create <Name>{derivedDir(trimmedName)}</Name> on new branch <Name>{trimmedName}</Name>, off {baseLabel}.
           {unlessItExists}
         </>
       );
@@ -390,7 +431,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
     // here, which git completes and which changes nothing. "Will switch this
     // checkout to it" would be a generous verb for a no-op, and this box is
     // supposed to state facts.
-    if (trimmedName && trimmedName !== currentBranch) {
+    if (trimmedName && trimmedName !== onBranch) {
       if (listingUnknown) return notKnownYet(trimmedName);
       const occupied = worktreeElsewhereOn(trimmedName);
       if (occupied) return runsThereInstead(trimmedName, occupied.path, true);
@@ -403,7 +444,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       }
       return (
         <>
-          Will create branch <Name>{trimmedName}</Name> off <Name>{baseBranch}</Name> in this checkout.
+          Will create branch <Name>{trimmedName}</Name> off {baseLabel} in this checkout.
         </>
       );
     }
@@ -411,11 +452,16 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
     // Nothing typed, or a name naming the branch we are already on. The base
     // branch is irrelevant in the second case: `newBranch` wins in
     // `resolveBranch`, so the base is never consulted.
-    if (trimmedName === currentBranch || baseBranch === currentBranch) {
-      return (
+    if (trimmedName === onBranch || baseBranch === (onBranch ?? "")) {
+      return onBranch ? (
         <>
-          Runs here on <Name>{currentBranch}</Name>. No branch or worktree change.
+          Runs here on <Name>{onBranch}</Name>. No branch or worktree change.
         </>
+      ) : (
+        // True of a detached HEAD and of the vanishing case of a HEAD symref
+        // outside `refs/heads`, which `isDetached` also covers: both are "on no
+        // branch", and neither has a name worth putting in front of the user.
+        <>Runs here. This checkout is on no branch, and nothing here changes that.</>
       );
     }
     // A base that differs from the current branch while the listing is missing
@@ -431,7 +477,7 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
     );
   })();
 
-  const hasChanges = baseBranch !== currentBranch || !!trimmedName || useWorktree;
+  const hasChanges = baseBranch !== (onBranch ?? "") || !!trimmedName || useWorktree;
 
   // Shared sub-components
   const baseBranchSelect = (
@@ -459,10 +505,15 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
             ...(isMobile ? { flex: 1, minWidth: 0 } : { maxWidth: 180 }),
           }}
         >
+          {/* A detached HEAD is on no branch, so the picker would otherwise open
+              on a value none of its options carries. The empty option is a real
+              choice, not a placeholder: no base is what the backend reads as
+              `HEAD`, and it has to stay reachable after picking a branch. */}
+          {isDetached && <option value="">(not on a branch)</option>}
           {branches.map((branch) => (
             <option key={branch} value={branch}>
               {branch}
-              {branch === currentBranch ? " (current)" : ""}
+              {branch === onBranch ? " (current)" : ""}
             </option>
           ))}
         </select>

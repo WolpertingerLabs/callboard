@@ -3436,7 +3436,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       {/* Branch selector for git repos - shown above prompt for new chats */}
       {!id && info?.is_git_repo && !pendingAction && (
         <div style={{ padding: "0 16px" }}>
-          <BranchSelector folder={folder} currentBranch={info.git_branch || "main"} onChange={setBranchConfig} />
+          {/* `git_branch` is "main" on a detached HEAD — the fallback the whole
+              UI reads — so the flag rides alongside it rather than replacing
+              it, and the box decides what to say. Without it the box promised
+              "Runs here on `main`" for a checkout on no branch, and offered a
+              `<select>` whose value matched none of its options. */}
+          <BranchSelector folder={folder} currentBranch={info.git_branch || "main"} isDetached={info.isDetached} onChange={setBranchConfig} />
         </div>
       )}
 

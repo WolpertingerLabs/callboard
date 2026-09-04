@@ -49,9 +49,11 @@ beforeEach(() => {
 afterEach(cleanup);
 
 /** Render and wait for the branch list to arrive, so the select is real. */
-async function open(props: { folder?: string; currentBranch?: string } = {}) {
+async function open(props: { folder?: string; currentBranch?: string; isDetached?: boolean } = {}) {
   const onChange = vi.fn<(config: BranchConfig | null) => void>();
-  render(<BranchSelector folder={props.folder ?? REPO} currentBranch={props.currentBranch ?? "main"} onChange={onChange} />);
+  render(
+    <BranchSelector folder={props.folder ?? REPO} currentBranch={props.currentBranch ?? "main"} isDetached={props.isDetached} onChange={onChange} />,
+  );
   await screen.findByLabelText("Base branch");
   return { onChange };
 }
@@ -540,6 +542,83 @@ describe("a typed name that is not new", () => {
 
     fireEvent.click(toggle());
     expect(summary()).toBe("Will create callboard.feat-brand-new on new branch feat/brand-new, off main. If that directory already exists, the chat runs in it as it is.");
+  });
+});
+
+/**
+ * `git_branch` reports `"main"` for a checkout on no branch — the "empty means
+ * main" fallback the whole UI reads — so every sentence keyed on it was false
+ * here, and `main` may exist and be checked out somewhere else entirely. The
+ * separate `isDetached` flag is what the box goes on instead; it is sent only
+ * when true, and covers both a detached HEAD and the vanishing case of a HEAD
+ * symref outside `refs/heads`, which is why nothing below names either.
+ *
+ * `currentBranch` is deliberately still `"main"` in these renders: that is what
+ * the endpoint sends, and the point is that the box no longer believes it.
+ */
+describe("a checkout that is on no branch", () => {
+  it("does not tell the user the chat runs here on main", async () => {
+    const { onChange } = await open({ isDetached: true });
+
+    expect(summary()).toBe("Runs here. This checkout is on no branch, and nothing here changes that.");
+    expect(emitted(onChange)).toEqual({});
+  });
+
+  /** The picker used to open on a value matching none of its options. */
+  it("gives the base picker a value it actually has, and marks nothing current", async () => {
+    await open({ isDetached: true });
+
+    expect(baseSelect().value).toBe("");
+    expect([...baseSelect().options].map((o) => o.textContent)).toEqual(["(not on a branch)", "main", "feat/y", "feat/a"]);
+  });
+
+  /**
+   * No base is sent rather than an invented one, and the backend reads that as
+   * `HEAD` — this checkout's commit. Which is the only true thing to say: there
+   * is no branch here to name as the base.
+   */
+  it("branches off this checkout's commit, and says so", async () => {
+    const { onChange } = await open({ isDetached: true });
+
+    fireEvent.click(toggle());
+
+    expect(emitted(onChange)).toEqual({ useWorktree: true, autoCreateBranch: true });
+    expect(summary()).toBe("Will create a new worktree off this checkout's current commit, on a branch named from your first message.");
+
+    type("feat/x");
+
+    expect(emitted(onChange)).toEqual({ useWorktree: true, newBranch: "feat/x" });
+    expect(summary()).toBe(
+      "Will create callboard.feat-x on new branch feat/x, off this checkout's current commit. If that directory already exists, the chat runs in it as it is.",
+    );
+  });
+
+  /**
+   * The consequence that bites: with `currentBranch` believed, typing `main`
+   * was a no-op ("Runs here on main") when it is in fact a checkout — the one
+   * the backend's dirty guard now refuses over uncommitted work rather than
+   * running it silently.
+   */
+  it("treats main as a branch like any other, not as the branch it is on", async () => {
+    // Git drops the detached directory from its own listing — it has no branch
+    // to be listed under — so nothing here is checked out anywhere.
+    stubBranches({ checkedOut: [] });
+    const { onChange } = await open({ isDetached: true });
+
+    type("main");
+
+    expect(emitted(onChange)).toEqual({ newBranch: "main" });
+    expect(summary()).toBe("main already exists — will switch this checkout to it.");
+  });
+
+  it("still switches to a base the user picks", async () => {
+    stubBranches({ checkedOut: [] });
+    const { onChange } = await open({ isDetached: true });
+
+    pickBase("feat/y");
+
+    expect(emitted(onChange)).toEqual({ baseBranch: "feat/y" });
+    expect(summary()).toBe("Will switch this checkout to feat/y.");
   });
 });
 
