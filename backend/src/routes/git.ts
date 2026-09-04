@@ -3,6 +3,7 @@ import {
   getGitBranches,
   getGitDiffStructured,
   getGitFileDiff,
+  getGitWorktrees,
   readRepoFile,
   validateFilename,
   validateFolderPath,
@@ -14,13 +15,19 @@ export const gitRouter = Router();
 /**
  * List local branches for a git repository.
  * Returns branches sorted alphabetically with the current branch first.
+ *
+ * `checkedOut` is an additive sibling of `branches`: which of them are occupied
+ * by a worktree, and where. Picking such a branch runs the chat in *that*
+ * directory rather than switching this one (`switchBranch` in `utils/git.ts`),
+ * which is behaviour the UI could not describe without knowing the paths.
+ * Optional on purpose — a bundle predating it just ignores the key.
  */
 gitRouter.get("/branches", (req, res) => {
   // #swagger.tags = ['Git']
   // #swagger.summary = 'List git branches'
-  // #swagger.description = 'Returns local branches for a git repository, sorted alphabetically with the current branch first.'
+  // #swagger.description = 'Returns local branches for a git repository, sorted alphabetically with the current branch first, plus which of them are checked out in a worktree and where.'
   /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute path to the git repository' } */
-  /* #swagger.responses[200] = { description: "Array of branch objects" } */
+  /* #swagger.responses[200] = { description: "Branch names, plus an optional checkedOut array of { branch, path, isMainWorktree } for the branches occupied by a worktree" } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
   const rawFolder = req.query.folder as string;
   if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
@@ -34,7 +41,12 @@ gitRouter.get("/branches", (req, res) => {
 
   try {
     const branches = getGitBranches(folder);
-    res.json({ branches });
+    // Detached-HEAD worktrees hold no branch, so there is nothing for a caller
+    // to match a branch name against — drop them rather than emit a null.
+    const checkedOut = getGitWorktrees(folder)
+      .filter((wt): wt is typeof wt & { branch: string } => wt.branch !== null)
+      .map((wt) => ({ branch: wt.branch, path: wt.path, isMainWorktree: wt.isMainWorktree }));
+    res.json({ branches, checkedOut });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to list branches", details: err.message });
   }
@@ -139,6 +151,12 @@ gitRouter.get("/diff/file/raw", (req, res) => {
 /**
  * Generate a git-safe branch name from a natural language prompt.
  * Uses AI to produce a <type>/<kebab-case-description> format branch name.
+ *
+ * No first-party caller: this bundle never called it, and its client wrapper
+ * was deleted rather than left to look load-bearing. Kept because it is
+ * published REST surface in swagger, and because it is the obvious way to give
+ * the branch picker a real name preview instead of "named from your first
+ * message" — at the cost of a completion call on prompt blur.
  */
 gitRouter.post("/generate-branch-name", async (req, res) => {
   // #swagger.tags = ['Git']

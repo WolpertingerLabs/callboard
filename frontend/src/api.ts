@@ -432,6 +432,17 @@ export interface NewChatInfo {
   is_git_repo: boolean;
   is_worktree?: boolean;
   git_branch?: string;
+  /**
+   * Present, and only ever `true`, when this checkout is on no branch — a
+   * detached HEAD, or the vanishing case of a HEAD symref outside
+   * `refs/heads`. `git_branch` keeps reporting its long-standing `"main"`
+   * fallback in that state, which is why this exists beside it rather than
+   * inside it; see `GitInfo.isDetached` in `backend/src/utils/git.ts`.
+   *
+   * Absent from a daemon older than this bundle, and absent when git could not
+   * answer. Treat absence as "no reason to think so".
+   */
+  isDetached?: boolean;
   slash_commands: SlashCommand[];
   plugins: Plugin[];
   appPlugins?: AppPluginsData;
@@ -712,19 +723,27 @@ export async function getSlashCommandContent(name: string, scope: SlashCommandSc
 }
 
 // Branch / worktree configuration
-export async function getGitBranches(folder: string): Promise<{ branches: string[] }> {
-  const res = await fetch(`${BASE}/git/branches?folder=${encodeURIComponent(folder)}`);
-  await assertOk(res, "Failed to list branches");
-  return res.json();
+
+/** A branch that a worktree is sitting on, and the directory it sits in. */
+export interface CheckedOutBranch {
+  branch: string;
+  path: string;
+  isMainWorktree: boolean;
 }
 
-export async function generateGitBranchName(prompt: string): Promise<{ branchName: string }> {
-  const res = await fetch(`${BASE}/git/generate-branch-name`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
-  });
-  await assertOk(res, "Failed to generate branch name");
+/**
+ * `checkedOut` is optional because a daemon older than this bundle does not send
+ * it. `BranchSelector` renders absence and emptiness identically — as "nothing
+ * is checked out elsewhere" — and that is deliberate rather than a gap left to
+ * close: what the field buys is one extra sentence about a redirect, so losing
+ * it costs the enhancement, not correctness. The fallback sentence is the one
+ * the box showed before this field existed, and the request it describes is
+ * unchanged either way. A third "we cannot tell" state would spend the user's
+ * attention on the daemon's version rather than on their own choice.
+ */
+export async function getGitBranches(folder: string): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
+  const res = await fetch(`${BASE}/git/branches?folder=${encodeURIComponent(folder)}`);
+  await assertOk(res, "Failed to list branches");
   return res.json();
 }
 

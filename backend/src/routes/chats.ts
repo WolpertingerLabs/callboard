@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory, resolveSlashCommandContent } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
-import { getGitInfo } from "../utils/git.js";
+import { getGitInfo, type GitInfo } from "../utils/git.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
@@ -910,7 +910,7 @@ chatsRouter.get("/new/info", (req, res) => {
   // #swagger.summary = 'Get folder info for new chat'
   // #swagger.description = 'Returns git info, slash commands, and plugins available for a given folder — used before creating a new chat.'
   /* #swagger.parameters['folder'] = { in: 'query', type: 'string', required: true, description: 'Absolute path to the project folder' } */
-  /* #swagger.responses[200] = { description: "Folder info with git status, slash commands, and plugins" } */
+  /* #swagger.responses[200] = { description: "Folder info with git status, slash commands, and plugins. `isDetached` is present and true only when HEAD points at a commit rather than a branch — `git_branch` still reports its \"main\" fallback in that case." } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
   const folder = req.query.folder as string;
   if (!folder) return res.status(400).json({ error: "folder query param is required" });
@@ -921,7 +921,7 @@ chatsRouter.get("/new/info", (req, res) => {
   }
 
   // Always fetch fresh git info for new chats so the branch is up-to-date
-  let gitInfo: { isGitRepo: boolean; branch?: string } = { isGitRepo: false };
+  let gitInfo: GitInfo = { isGitRepo: false };
   try {
     gitInfo = getGitInfo(folder);
   } catch {}
@@ -955,6 +955,13 @@ chatsRouter.get("/new/info", (req, res) => {
     is_git_repo: gitInfo.isGitRepo,
     is_worktree: isWorktree,
     git_branch: gitInfo.branch,
+    // Additive, and only present when it is true. `git_branch` keeps saying
+    // "main" for a detached HEAD — its long-standing fallback, which the whole
+    // UI reads — so this is the only thing that can tell the branch picker not
+    // to promise the chat "runs here on `main`" in a checkout that is on no
+    // branch at all. An older bundle ignores the key and behaves exactly as it
+    // does today.
+    ...(gitInfo.isDetached && { isDetached: true }),
     slash_commands: slashCommands,
     plugins: plugins,
     appPlugins: appPluginsData,

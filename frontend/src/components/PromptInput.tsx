@@ -56,6 +56,21 @@ export function stripLeadingCommandToken(text: string): string {
 interface Props {
   onSend: (prompt: string, images?: File[]) => void;
   disabled: boolean;
+  /**
+   * Why this composer cannot send right now, if it cannot. Set, Send greys out
+   * and Enter does nothing. The string is the reason, not the message: a
+   * disabled button carries no tooltip, so the caller is expected to be showing
+   * it somewhere the user is already looking — the branch box's own validation
+   * error, for the one caller that sets this.
+   *
+   * Deliberately not `disabled`: that one turns off the textarea, the paperclip
+   * and paste-to-attach as well, and the states this covers are ones the user
+   * fixes *elsewhere* while their half-written message sits here. Blocking the
+   * send while the draft stays editable is the whole point — `handleSend`
+   * clears the composer, so an unguarded send that the page then refuses would
+   * take the message with it.
+   */
+  sendBlockedReason?: string;
   onSaveDraft?: (prompt: string, images?: File[], onSuccess?: () => void) => void;
   slashCommands?: string[];
   commandDescriptions?: Record<string, string>;
@@ -106,6 +121,7 @@ interface Props {
 export default function PromptInput({
   onSend,
   disabled,
+  sendBlockedReason,
   onSaveDraft,
   slashCommands = [],
   commandDescriptions,
@@ -266,7 +282,7 @@ export default function PromptInput({
 
   const handleSend = useCallback(async () => {
     const prompt = composePrompt(activeCommand, value);
-    if ((!prompt && images.length === 0) || disabled) return;
+    if ((!prompt && images.length === 0) || disabled || sendBlockedReason) return;
 
     // Send message with images
     onSend(prompt, images.length > 0 ? images : undefined);
@@ -274,7 +290,7 @@ export default function PromptInput({
     // Clear input and images
     clearComposer();
     setAutocompleteDismissed(false);
-  }, [value, activeCommand, images, disabled, onSend, clearComposer]);
+  }, [value, activeCommand, images, disabled, sendBlockedReason, onSend, clearComposer]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (showAutocomplete && e.key === "Escape") {
@@ -608,7 +624,7 @@ export default function PromptInput({
   );
 
   // A chip alone is sendable: /compact and /clear take no argument.
-  const canSend = (value.trim() || activeCommand || images.length > 0) && !disabled;
+  const canSend = (value.trim() || activeCommand || images.length > 0) && !disabled && !sendBlockedReason;
 
   const menuHasActiveItem = menuItems.some((item) => item.active);
 

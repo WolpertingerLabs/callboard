@@ -296,7 +296,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // reports one. Reset every time we land on a new chat so cross-chat values
   // don't leak.
   const [_lastRunCostUsd, setLastRunCostUsd] = useState<number | null>(null);
-  const [branchConfig, setBranchConfig] = useState<BranchConfig>({});
+  // `null` is the branch box reporting that its typed name is one git would
+  // refuse. It is not "no branch config" — that is `{}` — it is "there is no
+  // config to send", which is why the composer blocks on it below rather than
+  // quietly posting without one.
+  const [branchConfig, setBranchConfig] = useState<BranchConfig | null>({});
   // Card association is no longer a composer choice: the server gives every
   // top-level chat a card on its own (backend/src/routes/stream.ts). The one
   // thing the client still decides is JOINING an existing card, and that comes
@@ -1368,7 +1372,41 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setNetworkError(null);
     setChat(null);
     setMessages([]);
-    setBranchConfig({});
+    /**
+     * `info` is a fact about `folder`, so it stops being true the instant
+     * `folder` changes — and the round trip that makes it true again is not
+     * short: `/new/info` runs `getGitInfo`, `buildWorkspaceIndex` and two
+     * plugin scans, which is filesystem work measured in tens to hundreds of
+     * milliseconds. For that whole window every consumer of `info` was
+     * asserting the *previous* directory's answer about this one: the header
+     * named its branch, the summary line named its worktree, and — the reason
+     * this is a correctness fix rather than a cosmetic one — `branchBoxShown`
+     * read its `is_git_repo`, so the box remounted on the new folder's key with
+     * the old folder's `currentBranch`, emitted a config built from it, and a
+     * send in that window posted it. A base branch from repository A against
+     * repository B is `fatal: invalid reference` at best, and a worktree off
+     * the wrong commit in silence if B happens to have a branch by that name.
+     *
+     * Nulling it, rather than teaching the box alone to check that `info`
+     * matches `folder`: the box is one of five readers and every one of them is
+     * wrong in the same window for the same reason, so the narrow fix leaves
+     * four stale assertions on screen and adds a second piece of state whose
+     * agreement with `folder` has to be maintained by hand. This way the
+     * invariant is structural — `info` is null or it is about `folder` — and
+     * the panel briefly saying nothing about the new directory is the honest
+     * rendering of not knowing yet.
+     */
+    setInfo(null);
+    // `branchConfig` is deliberately *not* reset here. It used to be, and that
+    // reset is what made a folder change lose the user's isolation: the branch
+    // box is keyed on `folder`, so it remounts and re-emits — and React flushes
+    // a child's effects before its parent's, so this line ran last and put `{}`
+    // back over the config the box had just handed up. Nothing re-emitted
+    // afterwards, because nothing the propagate effect depends on had changed.
+    //
+    // Ownership instead of a race: the box emits for every folder it is shown
+    // for, and `branchBoxShown` below is what stops a config outliving the box
+    // that made it.
     setViewMode("chat");
     currentIdRef.current = undefined;
     tempChatIdRef.current = null;
@@ -1382,8 +1420,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       abortRef.current = null;
     }
 
+    // The other half of the invariant above. Clearing `info` on the way out
+    // only covers the window *before* an answer arrives; two folder changes in
+    // flight at once land in the order the server answers, not the order they
+    // were asked, and the loser would then install repository A's answer while
+    // `folder` says B — the same stale-`info` bug, reached from the other side
+    // and not fixed by the reset. `BranchSelector` guards its own listing fetch
+    // the same way and for the same reason.
+    let current = true;
     getNewChatInfo(folder)
       .then((data) => {
+        if (!current) return;
         setInfo(data);
         if (data.slash_commands) {
           setSlashCommands(data.slash_commands.map((cmd: any) => (typeof cmd === "string" ? cmd : cmd.name)));
@@ -1396,8 +1443,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }
       })
       .catch((err) => {
+        if (!current) return;
         setNetworkError(err.message || "Failed to load folder info");
       });
+    return () => {
+      current = false;
+    };
   }, [folder, id]);
 
   // Load existing chat data (only when id is available)
@@ -1786,8 +1837,45 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [promptInputSetValue, navigate, location.state, location.pathname, location.search]);
 
+  /**
+   * Is the branch box on screen? The one condition, read by everything that
+   * depends on it — the render below, the block reason, and whether the config
+   * it emitted is sent at all.
+   *
+   * `branchConfig` is the box's, and only the box's. It is not reset when the
+   * folder changes (see the folder effect above): the box is keyed on `folder`,
+   * so a folder change remounts it and its mount-time propagate effect emits
+   * afresh. What the box cannot do is emit for a folder it is not shown for —
+   * a plain directory renders no box at all — so a config from the last folder
+   * would otherwise go on riding along, and arrive as a `useWorktree` on
+   * somewhere git does not manage. Reading it through this gate is what makes
+   * its lifetime the box's lifetime.
+   *
+   * Which puts the whole weight of "is this config about `folder`" on `info`
+   * being about `folder`. It is, in both directions — the folder effect nulls
+   * it on the way out and ignores an answer that arrives after a change — and
+   * that is load-bearing here rather than incidental: while `info` described
+   * the previous directory, this said `true` for a box mounted on the new one.
+   */
+  const branchBoxShown = !id && !!info?.is_git_repo && !pendingAction;
+
+  /**
+   * Why the composer must not send, when it must not.
+   *
+   * Only ever the branch box, and only while it is on screen: a box that has
+   * been unmounted (the folder stopped being a repo, a pending action took
+   * over) cannot leave the composer blocked by a name nobody can see to fix.
+   */
+  const sendBlockedReason = branchBoxShown && branchConfig === null ? "The branch name above is not one git will accept." : undefined;
+
   const handleSend = useCallback(
     async (prompt: string, images?: File[]) => {
+      // The composer greys Send out for this, so reaching here means some other
+      // caller (a plan-review auto-reply, a retry) got in. Bail before the
+      // in-flight bubble and the streaming flag, because there is no config to
+      // send: the alternative is posting the last *valid* one, which is the
+      // name the user abandoned on the way to this one.
+      if (sendBlockedReason) return;
       // Sending a message re-latches auto-scroll so the user sees their
       // message and the response, even if they had scrolled up
       suppressRelatchRef.current = false;
@@ -1865,7 +1953,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (activePluginIds.length > 0) {
             requestBody.activePlugins = activePluginIds;
           }
-          if (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree || branchConfig.autoCreateBranch) {
+          if (branchBoxShown && branchConfig && (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree || branchConfig.autoCreateBranch)) {
             requestBody.branchConfig = {
               ...branchConfig,
               ...(forceBranchChangeRef.current && { forceBranchChange: true }),
@@ -2044,6 +2132,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       activePluginIds,
       chat,
       branchConfig,
+      branchBoxShown,
+      sendBlockedReason,
       activeDraftId,
     ],
   );
@@ -2406,6 +2496,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     );
   }
 
+  /**
+   * What to call the branch a *new* chat's folder is on, in the two places the
+   * header names it.
+   *
+   * `git_branch` reports `"main"` for a checkout on no branch — the fallback
+   * the whole UI reads — so both sites printed "Branch: main" a few lines above
+   * a branch box that had just been taught to say this checkout is on none.
+   * `isDetached` is already in hand here for the box, and this PR is what
+   * created the contradiction.
+   *
+   * New chats only. `chat.git_branch`, for an existing chat, has no such flag
+   * on the wire and goes on saying "main" until it does.
+   */
+  const newChatOnNoBranch = !!info?.isDetached;
+
   // View mode radio-style switcher: explicit Chat button first (active by
   // default), followed by Git diff / Debug / Job buttons when applicable.
   const viewModeButtons: { mode: "chat" | "diff" | "debug" | "job"; icon: ReactNode; title: string }[] = [
@@ -2489,7 +2594,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             <div style={{ fontSize: 15, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {!id
                 ? info?.is_git_repo
-                  ? info.git_branch || "main"
+                  ? newChatOnNoBranch
+                    ? "(no branch)"
+                    : info.git_branch || "main"
                   : folder.split("/").pop() || "New Chat"
                 : chat?.is_git_repo
                   ? chat.git_branch || "main"
@@ -3100,7 +3207,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                             Git
                           </span>
                           <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                            Branch: <strong style={{ color: "var(--text)" }}>{info.git_branch || "main"}</strong>
+                            {newChatOnNoBranch ? (
+                              <>
+                                Not on a branch — <strong style={{ color: "var(--text)" }}>detached HEAD</strong>
+                              </>
+                            ) : (
+                              <>
+                                Branch: <strong style={{ color: "var(--text)" }}>{info.git_branch || "main"}</strong>
+                              </>
+                            )}
                           </span>
                         </div>
                       )}
@@ -3413,9 +3528,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       </div>
 
       {/* Branch selector for git repos - shown above prompt for new chats */}
-      {!id && info?.is_git_repo && !pendingAction && (
+      {branchBoxShown && info && (
         <div style={{ padding: "0 16px" }}>
-          <BranchSelector folder={folder} currentBranch={info.git_branch || "main"} onChange={setBranchConfig} />
+          {/* `git_branch` is "main" on a detached HEAD — the fallback the whole
+              UI reads — so the flag rides alongside it rather than replacing
+              it, and the box decides what to say. Without it the box promised
+              "Runs here on `main`" for a checkout on no branch, and offered a
+              `<select>` whose value matched none of its options.
+
+              Keyed on `folder`, which is what makes the box's state per-folder
+              rather than per-mount: a folder change is a query-parameter change
+              on a screen nothing else remounts, so without this the typed name,
+              the picked base and the emitted config all outlived the repository
+              they were chosen in. The remount is also the *only* thing that
+              re-emits — the propagate effect depends on none of the props a
+              folder change touches. */}
+          <BranchSelector key={folder} folder={folder} currentBranch={info.git_branch || "main"} isDetached={info.isDetached} onChange={setBranchConfig} />
         </div>
       )}
 
@@ -3501,6 +3629,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         <PromptInput
           onSend={handleSend}
           disabled={!id && streaming}
+          sendBlockedReason={sendBlockedReason}
           onSaveDraft={handleSaveDraft}
           slashCommands={allSlashCommands}
           commandDescriptions={pluginCommandDescriptions}

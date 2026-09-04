@@ -9,7 +9,7 @@ import { loadImageBuffers } from "../services/image-storage.js";
 import { storeMessageImages } from "../services/image-metadata.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
-import { getGitInfo, resolveBranch } from "../utils/git.js";
+import { fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
 import { findChatForStatus } from "../utils/chat-lookup.js";
@@ -78,8 +78,9 @@ streamRouter.post("/new/message", async (req, res) => {
     }
   } */
   /* #swagger.responses[200] = { description: "SSE stream opening with a server_info frame, then chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
-  /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
+  /* #swagger.responses[400] = { description: "Missing required fields, invalid folder, or a branchConfig that cannot be honored here (e.g. useWorktree on a folder that is not a git repository). Body is { error, code? }." } */
   /* #swagger.responses[409] = { description: "Uncommitted changes block branch switch. Set forceBranchChange to override." } */
+  /* #swagger.responses[500] = { description: "Branch or worktree preparation failed — git's own message is in error." } */
   const {
     folder,
     prompt,
@@ -120,39 +121,92 @@ streamRouter.post("/new/message", async (req, res) => {
     let { newBranch } = branchConfig;
     const { baseBranch, useWorktree, autoCreateBranch } = branchConfig;
 
-    // Auto-generate branch name from the prompt if requested
-    if (autoCreateBranch && !newBranch) {
-      try {
-        const generated = await generateBranchName(prompt);
-        if (generated) {
-          newBranch = generated;
+    // Every step below shells out to git, and every one of them can throw: a
+    // ref git refuses, a locked index, a worktree directory that cannot be
+    // written. None of that used to reach the client. The route's own `try`
+    // opened *after* this block, and Express 4 does not catch a rejected
+    // handler promise — so a throw here was logged as an unhandled rejection
+    // by process-guards and nothing was ever written to the response. No 409,
+    // no 500, no `message_error` frame; the client's POST just hung.
+    //
+    // (`start_chat_session` calls `resolveBranch` too, and has always been
+    // inside its own try/catch — services/callboard-tools.ts. Only this caller
+    // was exposed.)
+    try {
+      // Auto-generate branch name from the prompt if requested
+      if (autoCreateBranch && !newBranch) {
+        let generated: string | null = null;
+        try {
+          generated = await generateBranchName(prompt);
+        } catch (err: any) {
+          log.warn(`Auto-generate branch name failed: ${err.message}`);
+        }
+
+        // The stamped fallback keeps one specific promise — you asked for
+        // isolation, you get isolation. Without it, `useWorktree` plus a
+        // `baseBranch` and no `newBranch` sends resolveBranch down its reuse
+        // path, where the base is already checked out in the main repo, and the
+        // chat runs unisolated in the user's working tree with nothing saying so.
+        //
+        // There is no equivalent promise in place, so no fallback there: minting
+        // `chat/<date>-<hex>` in someone's working checkout as the *failure*
+        // response is more invasive than the warn-and-proceed it replaced. Phase
+        // 3 drops this mode from the UI, but the wire flag outlives the UI and an
+        // older bundle can still send `autoCreateBranch` without `useWorktree`.
+        const candidate = generated ?? (useWorktree ? fallbackBranchName() : null);
+        if (candidate) {
+          // Uniquified on both paths. On the in-place path this used to be what
+          // stood between a colliding generated name and a hard failure —
+          // `switchBranch(…, createNew: true)` → `git checkout -b x` → "fatal: a
+          // branch named 'x' already exists". `switchBranch` now checks out an
+          // existing branch instead of insisting on `-b`, which turns that crash
+          // into something quieter and worse for an *invented* name: the chat
+          // would silently adopt whatever unrelated branch happens to share the
+          // name. So the guard matters more, not less. Only for names we invent —
+          // a typed name keeps today's reuse semantics, where asking for `feat/x`
+          // twice lands you in one place.
+          newBranch = uniqueBranchName(folder, candidate);
           log.debug(`Auto-generated branch name: ${newBranch}`);
         } else {
-          log.warn("Auto-generate branch name returned null, proceeding without new branch");
+          log.warn("Auto-generate branch name returned null and no worktree was asked for, proceeding without new branch");
         }
-      } catch (err: any) {
-        log.warn(`Auto-generate branch name failed: ${err.message}, proceeding without new branch`);
       }
+
+      const branchResult = resolveBranch({
+        folder,
+        baseBranch,
+        newBranch,
+        useWorktree,
+        forceBranchChange: branchConfig.forceBranchChange,
+      });
+
+      if (!branchResult.ok) {
+        log.warn(`Blocked branch resolution: ${branchResult.message}`);
+        // `uncommitted_changes` is the one refusal the client can do something
+        // with: Chat.tsx keys its force-retry modal on `409` plus that code and
+        // reads `message` out of the structured body. Every other status falls
+        // through to `setNetworkError(errorData.error)`, which renders that
+        // field verbatim — so shipping a machine code in `error` would put the
+        // code itself on screen. The rest get a 400 with the readable string
+        // there and the code alongside it for anyone who wants to branch on it.
+        if (branchResult.error === "uncommitted_changes") return res.status(409).json(branchResult);
+        return res.status(400).json({ error: branchResult.message, code: branchResult.error });
+      }
+
+      effectiveFolder = branchResult.folder;
+      // Record why the worktree exists while we still know. Nothing reads this
+      // yet (see plans/workspace-object.md, Phase 1) and it never throws, so a
+      // failure here leaves the chat exactly as it was before.
+      workspaceId = captureWorktreeWorkspace(branchResult);
+    } catch (err: any) {
+      log.error(`Branch resolution failed: ${err.message}`);
+      // A 500 with a readable string in `error`, because that is what the
+      // client can do something with: Chat.tsx intercepts 409 for the two
+      // codes it has modals for and otherwise renders `errorData.error`
+      // verbatim (`setNetworkError`). A machine code there would put the code
+      // on screen; git's own message at least says what went wrong.
+      return res.status(500).json({ error: `Could not prepare the branch or worktree: ${err.message}` });
     }
-
-    const branchResult = resolveBranch({
-      folder,
-      baseBranch,
-      newBranch,
-      useWorktree,
-      forceBranchChange: branchConfig.forceBranchChange,
-    });
-
-    if (!branchResult.ok) {
-      log.warn(`Blocked branch switch: ${branchResult.message}`);
-      return res.status(409).json(branchResult);
-    }
-
-    effectiveFolder = branchResult.folder;
-    // Record why the worktree exists while we still know. Nothing reads this
-    // yet (see plans/workspace-object.md, Phase 1) and it never throws, so a
-    // failure here leaves the chat exactly as it was before.
-    workspaceId = captureWorktreeWorkspace(branchResult);
   }
 
   try {

@@ -1,6 +1,8 @@
 import { execSync, execFileSync } from "child_process";
+import { randomBytes } from "crypto";
 import { existsSync, statSync, lstatSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, basename, resolve, extname, relative } from "path";
+import { worktreeDirName } from "shared/types/index.js";
 import type { DiffFileEntry, DiffFileType, WorkspaceCleanliness } from "shared/types/index.js";
 
 /**
@@ -60,6 +62,25 @@ export function validateFolderPath(folder: string): string {
 export interface GitInfo {
   isGitRepo: boolean;
   branch?: string;
+  /**
+   * True when HEAD does not name a local branch.
+   *
+   * Almost always a detached HEAD; also the vanishing case of a HEAD symref
+   * pointing outside `refs/heads`. The two are one fact to every caller —
+   * `git branch --show-current` prints nothing for either, and there is no
+   * current branch to compare a target against.
+   *
+   * Additive, and deliberately *beside* `branch` rather than inside it.
+   * `branch` reports a detached HEAD as `"main"` — the "empty means main"
+   * fallback it has always applied — and that field is read across the sidebar,
+   * the chat list, the folder header and chat search. Re-pointing it is a
+   * change with its own blast radius; this flag lets the callers that care ask
+   * the question without any of them having their answer changed underneath.
+   *
+   * Absent, not `false`, when the answer is unknown: git itself failed to say.
+   * Treat an absent value as "no reason to think so".
+   */
+  isDetached?: boolean;
 }
 
 /**
@@ -232,7 +253,11 @@ export function getGitInfo(directory: string): GitInfo {
       // is what the empty-output fallback below has always reported as "main".
       const fromHead = headHome ? branchFromHead(headHome) : undefined;
       if (fromHead !== undefined) {
-        return { isGitRepo: true, branch: fromHead ?? "main" };
+        // `null` is the detached answer, and it is the same fact
+        // `--show-current` prints nothing for. Reported as a flag of its own
+        // while `branch` keeps its long-standing "main" fallback — see
+        // {@link GitInfo.isDetached}.
+        return { isGitRepo: true, branch: fromHead ?? "main", ...(fromHead === null && { isDetached: true }) };
       }
 
       try {
@@ -247,9 +272,19 @@ export function getGitInfo(directory: string): GitInfo {
         return {
           isGitRepo: true,
           branch: branch || "main", // fallback to 'main' if branch is empty
+          // The same emptiness, read the same way, one line apart: `""` from
+          // `--show-current` is git's detached signal, and the "main" fallback
+          // beside it is what makes the flag necessary. Defensive here rather
+          // than load-bearing — every detached checkout reachable in practice
+          // is answered by `branchFromHead` above without spawning, and the
+          // HEADs that do reach this path make `--show-current` *fail* rather
+          // than print nothing ("fatal: HEAD not found below refs/heads!").
+          ...(!branch && { isDetached: true }),
         };
       } catch {
-        // Git repo exists but can't get branch (detached HEAD, etc.)
+        // Git repo exists but can't get branch. No `isDetached` either way:
+        // git declined to answer, and guessing here would be a claim, not a
+        // fallback.
         return {
           isGitRepo: true,
           branch: "main",
@@ -549,11 +584,255 @@ export function getGitWorktrees(directory: string): WorktreeInfo[] {
 }
 
 /**
- * Sanitize a branch name for use in filesystem paths.
- * Replaces slashes with hyphens.
+ * The sibling directory {@link ensureWorktreeDetailed} derives for a branch:
+ * `[repo-parent]/[repo-name].[sanitized-branch]`.
+ *
+ * Exported so uniqueness checks ask the same question the creation path will
+ * answer. The name itself comes from {@link worktreeDirName} in `shared/`,
+ * because the branch picker has to predict this directory and cannot import
+ * anything from here — see that function's doc for why the rule lives there and
+ * only the `dirname` split lives here.
  */
-function sanitizeBranchForPath(branch: string): string {
-  return branch.replace(/\//g, "-");
+export function worktreePathForBranch(repoDir: string, branch: string): string {
+  return join(dirname(repoDir), worktreeDirName(basename(repoDir), branch));
+}
+
+/**
+ * The cap `generateBranchName` (services/quick-completion.ts) enforces on the
+ * names it invents. A `-2` suffix must not push a name past it.
+ */
+const MAX_GENERATED_BRANCH_LENGTH = 60;
+
+/** How many `-2`, `-3`… suffixes to try before giving up on the candidate. */
+const MAX_UNIQUE_BRANCH_ATTEMPTS = 20;
+
+/** `<prefix><yyyymmdd>-<6 hex>` — the shape every invented name shares. */
+function stampedBranchName(prefix: string): string {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+  return `${prefix}${stamp}-${randomBytes(3).toString("hex")}`;
+}
+
+/**
+ * A name for a chat branch that owes nothing to the prompt: `chat/<yyyymmdd>-<6 hex>`.
+ *
+ * The fallback for "we were asked to invent a name and could not" — a failed
+ * `generateBranchName` call, a candidate git would refuse, or a candidate whose
+ * suffixes are all taken. Never returning a name is not an option: the caller
+ * that wanted an isolated worktree would otherwise proceed with no branch at
+ * all and silently land in the main checkout.
+ *
+ * Unchecked against the repository, because it has no repository to check
+ * against. Callers that have one should reach for {@link uniqueBranchName},
+ * which routes this through the same occupancy tests as any other candidate —
+ * the 24 bits of randomness here answer name collision and nothing else.
+ */
+export function fallbackBranchName(): string {
+  return stampedBranchName("chat/");
+}
+
+/**
+ * Branch names any remote has, with the `refs/remotes/<remote>/` prefix off —
+ * so `refs/remotes/origin/feat/x` reads as `feat/x`, comparable to the local
+ * names {@link getGitBranches} returns.
+ *
+ * Listed once rather than probed per candidate: `uniqueBranchName` may test
+ * twenty names, and this is one subprocess instead of twenty. `strip=3` drops
+ * exactly `refs`, `remotes` and the remote name, leaving branch names that
+ * contain slashes intact.
+ *
+ * The literal `HEAD` is dropped. `refs/remotes/origin/HEAD` is a symref naming
+ * the remote's default branch, and `strip=3` prints the last segment of *its
+ * own* refname — so what comes out is the string `HEAD`, not the branch it
+ * points at. (Checked against real git: a repo whose `origin/HEAD` resolves to
+ * `origin/main` lists `HEAD` and `main` as two separate lines.) It is a pseudo
+ * entry, not a branch any remote has, and this function's contract is branch
+ * names.
+ *
+ * Filtering it changes nothing a caller can observe today: every candidate that
+ * reaches here is `<type>/<kebab>` or `chat/<stamp>-<hex>`, and none of those is
+ * `HEAD` or lives under `HEAD/`. It is hygiene at the source rather than a live
+ * guard — an earlier version of this comment claimed the filter stopped `main`
+ * from looking permanently taken, which is not something `strip=3` can produce.
+ */
+function listRemoteBranchNames(repoDir: string): Set<string> {
+  const names = new Set<string>();
+  try {
+    const output = execFileSync("git", ["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"], {
+      cwd: repoDir,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 5000,
+    }).trim();
+    for (const line of output.split("\n")) {
+      const name = line.trim();
+      if (name && name !== "HEAD") names.add(name);
+    }
+  } catch {
+    // No remotes, or git could not answer. Uniqueness degrades to the local
+    // checks, which is where it was before this existed.
+  }
+  return names;
+}
+
+/** {@link validateGitRef} asked as a question rather than as an assertion. */
+function isValidGitRef(name: string): boolean {
+  try {
+    validateGitRef(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** `candidate` with a `-n` suffix, kept inside the length cap and git-legal, or null. */
+function suffixedBranchName(candidate: string, n: number): string | null {
+  const suffix = `-${n}`;
+  const room = MAX_GENERATED_BRANCH_LENGTH - suffix.length;
+  // Truncation can leave a trailing separator or dot, none of which git accepts
+  // at the end of a ref.
+  const base = (candidate.length > room ? candidate.slice(0, room) : candidate).replace(/[-/.]+$/, "");
+  if (!base) return null;
+
+  const name = `${base}${suffix}`;
+  return isValidGitRef(name) ? name : null;
+}
+
+/**
+ * Do two branch names fight over one slot in git's ref *directory tree*?
+ *
+ * Refs are files under `.git/refs/heads/`, so a branch name is a path and a
+ * branch may not be a directory prefix of another in either direction. With
+ * `feat/login` on disk, `refs/heads/feat/login` is a file and cannot also be
+ * the directory `refs/heads/feat/login/` that `feat/login/redirect` needs:
+ *
+ *   fatal: cannot lock ref 'refs/heads/feat/login/redirect':
+ *          'refs/heads/feat/login' exists; cannot create ...
+ *
+ * and symmetrically, `feat/api` cannot be created while `feat/api/v1` exists.
+ * Verified against real git, both directions, for `worktree add -b` and
+ * `checkout -b` alike — so both of Callboard's creation paths hit it.
+ *
+ * Equality is deliberately *not* included: the callers test that separately, on
+ * sets, and folding it in here would hide an O(1) lookup inside an O(n) scan.
+ */
+function refPathConflict(name: string, other: string): boolean {
+  return other.startsWith(`${name}/`) || name.startsWith(`${other}/`);
+}
+
+/** Rolls of one stamped shape before trying the next — enough for a hex collision. */
+const MAX_FALLBACK_ROLLS = 2;
+
+/**
+ * A stamped fallback name this repository does not already hold.
+ *
+ * {@link fallbackBranchName} answers *name* collision, with 24 bits of
+ * randomness, and answers nothing else — which is not the conflict that bites.
+ * `chat/<stamp>-<hex>` lives under `refs/heads/chat/`, so in a repository that
+ * has a branch called `chat`, `refs/heads/chat` is a file where that directory
+ * has to go and **every** name of this shape is uncreatable. Re-rolling the hex
+ * cannot help, and the fallback is the last resort of a request that asked for
+ * isolation: unrouted, one ordinary branch name turned every auto-named
+ * worktree chat in the repository into a failure. (Verified against real git.)
+ *
+ * So the *shape* changes rather than the digits. `chat-<stamp>-<hex>` has no
+ * path component to be blocked by: it cannot conflict with `chat`, with
+ * anything under `chat/`, or with anything the derived worktree directory of a
+ * `chat/…` name would occupy. Each shape is rolled twice first, because that is
+ * what a genuine hex collision needs and it costs two set lookups.
+ *
+ * Bounded at every level, deliberately. A fallback that cannot be placed is
+ * still handed back: the caller has to be given a name, git's own refusal
+ * reaches the client as a 500 carrying its message (`POST /chats/new/message`),
+ * and a request that hangs while this spins is strictly worse than one that is
+ * answered badly.
+ */
+function unusedFallbackName(taken: (name: string) => boolean): string {
+  for (const prefix of ["chat/", "chat-"]) {
+    for (let roll = 0; roll < MAX_FALLBACK_ROLLS; roll++) {
+      const name = stampedBranchName(prefix);
+      if (!taken(name)) return name;
+    }
+  }
+
+  // Nothing structural blocks the flat shape, so reaching here means the names
+  // themselves are held. Suffix it like any other candidate.
+  const flat = stampedBranchName("chat-");
+  for (let n = 2; n <= MAX_UNIQUE_BRANCH_ATTEMPTS; n++) {
+    const suffixed = suffixedBranchName(flat, n);
+    if (suffixed && !taken(suffixed)) return suffixed;
+  }
+  return flat;
+}
+
+/**
+ * Make a branch name we invented unique, so two chats never silently share one
+ * branch and one worktree.
+ *
+ * Only for **generated** names. `ensureWorktreeDetailed` deliberately reuses an
+ * existing directory or an already-checked-out branch, which is right for a
+ * name the user typed — asking for `feat/x` twice should land you in the same
+ * place — and wrong for one we made up from a prompt, where the collision is an
+ * accident of two chats describing similar work.
+ *
+ * A candidate is taken if git knows the branch locally, if a remote has it, if
+ * any worktree has it checked out, if it {@link refPathConflict}s with any of
+ * those names, or if the directory {@link worktreePathForBranch} derives for it
+ * already exists. Each catches something the others do not: the path is the
+ * only one that sees `feat/a-b` against `feat/a/b`, two distinct branches that
+ * want one directory; the ref-tree check is the only one that sees `feat/login`
+ * against `feat/login/redirect`, which git refuses outright; and the remotes are
+ * the only one that sees a name that exists solely as `origin/feat/x` —
+ * `git worktree add -b feat/x` succeeds there, minting a local branch unrelated
+ * to the remote one, and the collision does not surface until a push, with the
+ * work already done.
+ *
+ * The remote check is deliberately *not* applied to names the user typed. A
+ * typed name matching a remote branch is a choice they are entitled to make;
+ * silently suffixing it would be worse than today's behaviour.
+ */
+export function uniqueBranchName(repoDir: string, candidate: string): string {
+  const branches = new Set(getGitBranches(repoDir));
+  const remotes = listRemoteBranchNames(repoDir);
+  const checkedOut = new Set(getGitWorktrees(repoDir).flatMap((wt) => (wt.branch ? [wt.branch] : [])));
+  // Local and remote both: the ref tree under `refs/heads/` is what creation
+  // locks against, and a name that only a remote has today is a name someone is
+  // going to fetch into `refs/heads/` tomorrow.
+  const refNames = [...branches, ...remotes];
+  const taken = (name: string): boolean =>
+    branches.has(name) ||
+    remotes.has(name) ||
+    checkedOut.has(name) ||
+    refNames.some((other) => refPathConflict(name, other)) ||
+    existsSync(worktreePathForBranch(repoDir, name));
+
+  // A name git would refuse can't be made unique, only replaced. Reachable:
+  // `generateBranchName` scrubs unsafe characters *after* its structure check,
+  // so a description of nothing but punctuation leaves `feat/`.
+  if (!isValidGitRef(candidate)) return unusedFallbackName(taken);
+
+  if (!taken(candidate)) return candidate;
+
+  for (let n = 2; n <= MAX_UNIQUE_BRANCH_ATTEMPTS; n++) {
+    const suffixed = suffixedBranchName(candidate, n);
+    if (suffixed && !taken(suffixed)) return suffixed;
+  }
+
+  // Twenty variants of one name all taken means the name is not the problem.
+  //
+  // The suffix goes on the *last* segment, so it can only move a candidate out
+  // of a conflict it owns the tail of. `feat/api` against an existing
+  // `feat/api/v1` resolves to `feat/api-2`; `feat/login/redirect` against an
+  // existing `feat/login` cannot resolve at all, because every `-n` variant is
+  // still underneath `feat/login/`. That case walks the loop and lands here,
+  // which is the correct answer rather than a missed one: no name derived from
+  // this candidate is creatable, so the candidate has to be abandoned.
+  //
+  // The stamped fallback is a different name, not another variant of this one,
+  // so it does not re-enter this loop — but it goes through the same occupancy
+  // tests, which is a question its randomness cannot answer. See
+  // {@link unusedFallbackName}.
+  return unusedFallbackName(taken);
 }
 
 export interface EnsuredWorktree {
@@ -565,6 +844,15 @@ export interface EnsuredWorktree {
    * claim ownership of something we merely found.
    */
   created: boolean;
+  /**
+   * True only when this call created the branch (`git worktree add -b`).
+   *
+   * `createBranch` is what the *caller asked for*; this is what happened. They
+   * part company when the branch already exists and is checked out nowhere: we
+   * check it out rather than failing, so nothing was branched off anything and
+   * a record saying "branch-off from `main`" would be inventing a base.
+   */
+  branchCreated: boolean;
   /**
    * True when `path` is a **main checkout**, not a worktree of one.
    *
@@ -586,10 +874,7 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
   validateGitRef(branch);
   if (baseBranch) validateGitRef(baseBranch);
 
-  const sanitized = sanitizeBranchForPath(branch);
-  const repoName = basename(repoDir);
-  const parentDir = dirname(repoDir);
-  const worktreePath = join(parentDir, `${repoName}.${sanitized}`);
+  const worktreePath = worktreePathForBranch(repoDir, branch);
 
   // If worktree directory already exists, reuse it
   if (existsSync(worktreePath)) {
@@ -598,7 +883,7 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
     // to a worktree at `<x>`) — but it costs one lstat to answer rather than
     // assume. `.git` a directory is a main checkout; a *file* is a linked
     // worktree — the same test workspace-adoption.ts refuses "main-checkout" on.
-    return { path: worktreePath, created: false, isMainCheckout: hasGitDirectory(worktreePath) };
+    return { path: worktreePath, created: false, branchCreated: false, isMainCheckout: hasGitDirectory(worktreePath) };
   }
 
   // If the branch is already checked out in another worktree (including the
@@ -610,11 +895,18 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
     // "including the main one" is the case that produced self-misdescribing
     // workspace records: git's own listing says whether this is the main
     // checkout, so the caller never has to infer it from the path.
-    return { path: existing.path, created: false, isMainCheckout: existing.isMainWorktree };
+    return { path: existing.path, created: false, branchCreated: false, isMainCheckout: existing.isMainWorktree };
   }
 
+  // `createBranch` is the caller's intent, not a fact about the repository. A
+  // branch that exists but is checked out nowhere reaches here with neither
+  // reuse path above having fired, and `-b` on it is a hard failure:
+  //   fatal: a branch named 'feat/exists' already exists
+  // Checking it out into the new worktree is what the caller wanted anyway.
+  const branchCreated = createBranch && !localBranchExists(repoDir, branch);
+
   // Create the worktree
-  if (createBranch) {
+  if (branchCreated) {
     // Create a new branch and worktree in one command
     const base = baseBranch || "HEAD";
     execFileSync("git", ["worktree", "add", "-b", branch, worktreePath, base], {
@@ -632,7 +924,21 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
   }
 
   // We just ran `git worktree add`, so this is a linked worktree by construction.
-  return { path: worktreePath, created: true, isMainCheckout: false };
+  return { path: worktreePath, created: true, branchCreated, isMainCheckout: false };
+}
+
+/** Does `refs/heads/<branch>` exist in this repository? */
+function localBranchExists(repoDir: string, branch: string): boolean {
+  try {
+    execFileSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+      cwd: repoDir,
+      stdio: "pipe",
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -665,7 +971,8 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
 
 /**
  * Switch to a branch in the given directory (non-worktree mode).
- * If createNew is true, creates the branch from baseBranch first.
+ * If createNew is true, creates the branch from baseBranch — unless it already
+ * exists, in which case it is checked out as-is.
  *
  * Before checking out, inspects the worktree list. If the target branch is
  * already checked out in a different worktree, returns that worktree's path
@@ -685,7 +992,15 @@ export function switchBranch(directory: string, branch: string, createNew: boole
     return existing.path;
   }
 
-  if (createNew) {
+  // `createNew` is the caller's intent, not a fact about the repository — the
+  // in-place twin of the `-b` failure `ensureWorktreeDetailed` guards against.
+  // The lookup above only catches a branch checked out *somewhere*; one that
+  // exists and lives nowhere falls through to here, and `-b` on it is fatal:
+  //   fatal: a branch named 'feat/exists' already exists
+  // Checking it out is what the caller wanted; only `-b` was wrong. `baseBranch`
+  // is dropped with it, because a branch that already exists is not being
+  // branched off anything.
+  if (createNew && !localBranchExists(directory, branch)) {
     const base = baseBranch || "HEAD";
     execFileSync("git", ["checkout", "-b", branch, base], {
       cwd: directory,
@@ -1041,7 +1356,37 @@ export interface ResolvedWorktree {
 
 export type ResolveBranchResult =
   | { ok: true; folder: string; worktree?: ResolvedWorktree }
-  | { ok: false; error: "uncommitted_changes"; message: string; currentBranch: string; targetBranch: string };
+  | { ok: false; error: "uncommitted_changes"; message: string; currentBranch: string; targetBranch: string }
+  /**
+   * A worktree was asked for in a directory git does not manage.
+   *
+   * Distinct from `uncommitted_changes` because nothing about it is
+   * recoverable: there is no force flag, no branch to switch, and the caller's
+   * request cannot be honoured in any form. Distinct from `{ok: true}` because
+   * a success carrying the folder unchanged is indistinguishable from "no
+   * worktree was asked for", which is how an `useWorktree: true` from
+   * `start_chat_session` used to come back as a chatId with no isolation and
+   * nothing saying so.
+   */
+  | { ok: false; error: "not_a_git_repo"; message: string; folder: string }
+  /**
+   * A worktree was asked for with nothing saying what should be in it.
+   *
+   * The twin of `not_a_git_repo`, reached by the identical argument. Every rung
+   * below is gated on `newBranch || baseBranch`, so `useWorktree` alone fell
+   * straight through to `{ok: true, folder}` — the caller's own checkout, no
+   * worktree, and the same silence: a success carrying the folder unchanged is
+   * indistinguishable from "no worktree was asked for".
+   *
+   * `start_chat_session` is the only door. Its three branch fields are each
+   * independently optional, so `useWorktree: true` on its own is a call shape
+   * the schema accepts. No bundle of the UI can produce it, new or old:
+   * `BranchSelector` has always set `config.baseBranch` from its base picker,
+   * which seeds from `currentBranch` and is empty only on a detached HEAD —
+   * where `autoCreateBranch` rides along instead and the route mints a
+   * `newBranch` from it before resolving.
+   */
+  | { ok: false; error: "no_branch_for_worktree"; message: string; folder: string };
 
 /**
  * Resolve a branch configuration to an effective working directory.
@@ -1051,7 +1396,9 @@ export type ResolveBranchResult =
  * success, or a structured error when uncommitted changes block an
  * in-place branch switch.
  *
- * Worktrees are inherently isolated and bypass the dirty-state guard.
+ * Two resolutions bypass the dirty-state guard, for the same reason: neither
+ * writes to `folder`. Worktrees are inherently isolated, and a target branch
+ * that is already checked out in another worktree sends the chat there.
  */
 export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
   const { folder, baseBranch, newBranch, useWorktree, forceBranchChange } = opts;
@@ -1061,19 +1408,84 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
     return { ok: true, folder };
   }
 
+  // A `branchConfig` now rides on nearly every new chat, including chats started
+  // in a directory that is not a repository. There is no branch to switch and
+  // no worktree to add there, so this is a no-op rather than a `git worktree
+  // add` throwing a 500 out of the route. The UI's `is_git_repo` gate stays the
+  // first line of defence; this is the second.
+  //
+  // The no-op stops at `useWorktree`, though. That flag is a request for
+  // isolation, and there is no way to report "asked for, and refused" through
+  // an `{ok: true}` carrying the folder unchanged — it reads identically to
+  // "nothing was asked for". The HTTP route has the UI's gate in front of it,
+  // but `start_chat_session` has no gate at all, so an agent passing
+  // `useWorktree: true` on a plain directory got a chatId, no worktree, and no
+  // signal. It threw before this PR; a refusal is what replaces the throw.
+  if (!getGitInfo(folder).isGitRepo) {
+    if (useWorktree) {
+      return {
+        ok: false,
+        error: "not_a_git_repo",
+        message: `Cannot create a worktree in "${folder}" because it is not a git repository.`,
+        folder,
+      };
+    }
+    return { ok: true, folder };
+  }
+
+  // Isolation asked for, with nothing to isolate. Refused for exactly the
+  // reason the non-repository case above is: `useWorktree` is a request, the
+  // rungs below all need a branch, and `{ok: true}` on the way past them is
+  // the shape of silence this PR exists to remove.
+  //
+  // Deliberately *after* the repository check, so a plain directory is told
+  // the more fundamental of the two things wrong with the request.
+  if (!targetBranch) {
+    return {
+      ok: false,
+      error: "no_branch_for_worktree",
+      message: `Cannot create a worktree in "${folder}" without a branch: pass newBranch to make one, or baseBranch to check an existing one out.`,
+      folder,
+    };
+  }
+
   // Dirty-state guard: block in-place branch switch if uncommitted changes exist.
   // Worktrees are inherently isolated, so they bypass this check.
   if (targetBranch && !useWorktree) {
-    const currentBranch = getGitInfo(folder).branch;
-    const effectiveBranch = newBranch || baseBranch;
+    // Asked before the guard, because the guard asks about the wrong directory
+    // otherwise. `switchBranch` looks for the target branch in another worktree
+    // and returns *that* path when it finds one, never writing to `folder` at
+    // all — so uncommitted changes here could refuse a chat that was never
+    // going to disturb them. The branch picker states "This checkout is
+    // untouched" for precisely this case, which makes the refusal a
+    // contradiction as well as a nuisance.
+    //
+    // Deliberately the same expression `switchBranch` runs, `wt.path !== folder`
+    // and all: two spellings of "is it somewhere else" that could disagree
+    // would put the guard back out of step with the checkout it guards.
+    const worktreeElsewhere = getGitWorktrees(folder).find((wt) => wt.branch === targetBranch && wt.path !== folder);
 
-    if (effectiveBranch && effectiveBranch !== currentBranch && !forceBranchChange && hasUncommittedChanges(folder)) {
+    // A detached HEAD has no current branch, and `getGitInfo.branch` says
+    // `"main"` for one — its long-standing "empty means main" fallback, read
+    // all over this repo and not this guard's to redefine. Taken at face value
+    // it made the guard *inert* on the most common target there is: switching
+    // to `main` from a detached checkout compared equal, the guard never fired,
+    // and `git checkout main` ran over uncommitted work — carrying it onto a
+    // branch nobody asked for and leaving the detached commit reachable only
+    // from the reflog. Silently.
+    //
+    // Unknown, not "main", so the comparison below cannot accidentally match.
+    const info = getGitInfo(folder);
+    const currentBranch = info.isDetached ? undefined : info.branch;
+
+    if (!worktreeElsewhere && targetBranch !== currentBranch && !forceBranchChange && hasUncommittedChanges(folder)) {
+      const from = currentBranch ? `"${currentBranch}"` : info.isDetached ? "a detached HEAD" : "an unknown branch";
       return {
         ok: false,
         error: "uncommitted_changes",
-        message: `Cannot switch from "${currentBranch}" to "${effectiveBranch}" because there are uncommitted changes. Use a worktree to work in isolation instead.`,
+        message: `Cannot switch from ${from} to "${targetBranch}" because there are uncommitted changes. Use a worktree to work in isolation instead.`,
         currentBranch: currentBranch || "unknown",
-        targetBranch: effectiveBranch,
+        targetBranch,
       };
     }
   }
@@ -1095,9 +1507,12 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
         repoPath,
         created: ensured.created,
         isMainCheckout: ensured.isMainCheckout,
-        mode: newBranch ? "branch-off" : "checkout-branch",
+        // What happened, not what was asked for: `newBranch` on a branch that
+        // already existed checks it out instead of branching, and a record
+        // saying "branch-off from `main`" would invent a base git never used.
+        mode: ensured.branchCreated ? "branch-off" : "checkout-branch",
         branch: targetBranch,
-        ...(newBranch && baseBranch && { baseBranch }),
+        ...(ensured.branchCreated && baseBranch && { baseBranch }),
       },
     };
   }
