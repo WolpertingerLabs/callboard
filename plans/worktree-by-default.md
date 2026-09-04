@@ -309,8 +309,13 @@ when it hits.
   the static `auto` this plan specified. Static would be false in the off state, where empty
   means "no new branch" directly above a sentence saying nothing will change.
 - **The summary yields its slot to the validation error** while a typed name is invalid.
-  Nothing is propagated in that state, so any sentence would describe a config the parent
-  does not hold.
+  This plan originally justified that with "nothing is propagated in that state, so any
+  sentence would describe a config the parent does not hold" — which was false, and the
+  review caught it. The effect early-returned, so the parent kept the *last valid* config:
+  typing `feat/my thing` sent `feat/my`, and typing `my branch` from empty sent `m` and
+  made a worktree for it. `onChange` now takes `BranchConfig | null` and the box withdraws
+  its config explicitly; the composer's Send is blocked, with the box's own error as the
+  stated reason. Withdrawal is not silence, and the difference was a wrong branch.
 - **A missing `checkedOut` renders as an empty one.** The distinction the API type allows is
   not made in the UI; an old daemon simply loses the redirect sentence, which is the
   pre-Phase-2 behaviour. Documented at the wrapper rather than given a third UI state.
