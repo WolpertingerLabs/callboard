@@ -105,7 +105,7 @@ describe("the state table", () => {
     type("feat/x");
 
     expect(emitted(onChange)).toEqual({ useWorktree: true, baseBranch: "main", newBranch: "feat/x" });
-    expect(summary()).toBe("Will create callboard.feat-x on new branch feat/x, off main.");
+    expect(summary()).toBe("Will create callboard.feat-x on new branch feat/x, off main. If that directory already exists, the chat runs in it as it is.");
   });
 
   it("toggle off with a name: creates the branch here", async () => {
@@ -263,7 +263,83 @@ describe("a typed name that is not new", () => {
     type("feat/y");
 
     expect(emitted(onChange)).toEqual({ useWorktree: true, baseBranch: "main", newBranch: "feat/y" });
-    expect(summary()).toBe("feat/y already exists — will check it out in a new worktree at callboard.feat-y.");
+    expect(summary()).toBe("feat/y already exists — will check it out in a new worktree at callboard.feat-y. If that directory already exists, the chat runs in it as it is.");
+  });
+
+  /**
+   * `ensureWorktreeDetailed`'s *first* rung, which the box used to skip
+   * entirely: `existsSync(derivedPath)` reuses whatever is at that path before
+   * asking a single question about the branch. Someone ran `git switch other`
+   * inside `callboard.feat-y`, so asking for a worktree on `feat/y` runs the
+   * chat there, on `other` — and the box used to say it would check `feat/y`
+   * out somewhere new.
+   *
+   * Detectable only because `checkedOut` carries paths: the directory is still
+   * a worktree of this repo, merely on a different branch.
+   */
+  it("worktree on, the derived directory is a worktree that moved to another branch", async () => {
+    stubBranches({
+      branches: ["main", "feat/y", "other"],
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "other", path: "/home/cybil/callboard.feat-y", isMainWorktree: false },
+      ],
+    });
+    const { onChange } = await open();
+
+    fireEvent.click(toggle());
+    type("feat/y");
+
+    // The request is unchanged and still asks for `feat/y` — the resolver just
+    // never gets as far as looking at it.
+    expect(emitted(onChange)).toEqual({ useWorktree: true, baseBranch: "main", newBranch: "feat/y" });
+    expect(summary()).toBe("callboard.feat-y already exists and is on other — the chat will run there, on other rather than feat/y.");
+  });
+
+  /**
+   * The directory check outranks the branch you are standing on, because it
+   * does in the resolver: `existsSync` is asked first and returns before
+   * `getGitWorktrees` is ever called. Ordering the box's rungs the other way
+   * round would claim the worktree request was simply dropped, when the chat is
+   * in fact leaving this directory for another one.
+   */
+  it("puts the directory check ahead of the branch this checkout is on", async () => {
+    stubBranches({
+      branches: ["main", "other"],
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "other", path: "/home/cybil/callboard.main", isMainWorktree: false },
+      ],
+    });
+    await open();
+
+    fireEvent.click(toggle());
+    type("main");
+
+    expect(summary()).toBe("callboard.main already exists and is on other — the chat will run there, on other rather than main.");
+  });
+
+  /**
+   * A worktree elsewhere on the same repo does not become "the derived
+   * directory" by having a similar name. The match is on the whole path — the
+   * sibling of this folder — not on the last segment, so a worktree someone put
+   * in a different parent cannot be mistaken for the one the resolver will
+   * reach for.
+   */
+  it("matches the derived directory by path, not by name", async () => {
+    stubBranches({
+      branches: ["main", "feat/y", "other"],
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "other", path: "/somewhere/else/callboard.feat-y", isMainWorktree: false },
+      ],
+    });
+    await open();
+
+    fireEvent.click(toggle());
+    type("feat/y");
+
+    expect(summary()).toBe("feat/y already exists — will check it out in a new worktree at callboard.feat-y. If that directory already exists, the chat runs in it as it is.");
   });
 
   it("worktree off, name already has a worktree: the same redirect, plus the reassurance", async () => {
@@ -381,7 +457,7 @@ describe("a typed name that is not new", () => {
     expect(summary()).toBe("Will create branch feat/brand-new off main in this checkout.");
 
     fireEvent.click(toggle());
-    expect(summary()).toBe("Will create callboard.feat-brand-new on new branch feat/brand-new, off main.");
+    expect(summary()).toBe("Will create callboard.feat-brand-new on new branch feat/brand-new, off main. If that directory already exists, the chat runs in it as it is.");
   });
 });
 

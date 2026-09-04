@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useId, useMemo, type ReactNode } from "react";
 import { GitBranch, GitFork } from "lucide-react";
 import { getGitBranches, type BranchConfig, type CheckedOutBranch } from "../api";
+import { worktreeDirName } from "shared/types/index.js";
 import { getWorktreeByDefault, saveWorktreeByDefault } from "../utils/localStorage";
 import { useIsMobile } from "../hooks/useIsMobile";
 
@@ -163,30 +164,64 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
 
   const trimmedName = newBranch.trim();
 
-  // Directory ensureWorktree derives for a branch: `[repo-name].[branch with / as -]`,
-  // mirroring worktreePathForBranch in backend/src/utils/git.ts. Only the last
-  // segment is shown — the parent directory is the one the user is already in.
+  // The directory `ensureWorktreeDetailed` derives for a branch, and where it
+  // would sit: `worktreePathForBranch` joins the same name onto the *parent* of
+  // the folder we are in. Only the name is shown, because the parent is the
+  // directory the user is already standing beside.
+  //
+  // `worktreeDirName` is imported rather than re-derived: a picker predicting
+  // `repo.feat-a-b` for a directory git will make at `repo.feat-a/b` has told
+  // the user something false, and the only thing that keeps the two in step is
+  // being one function. See its doc comment in `shared/types/git.ts`.
+  const here = folder.replace(/\/+$/, "");
+  const parentDir = here.slice(0, here.lastIndexOf("/") + 1);
   const repoName = basename(folder) || "repo";
-  const worktreeDirName = (branch: string) => `${repoName}.${branch.replace(/\//g, "-")}`;
+  const derivedDir = (branch: string) => worktreeDirName(repoName, branch);
+  const derivedPath = (branch: string) => parentDir + derivedDir(branch);
 
   /**
-   * The two questions the backend asks about a branch before it does anything,
-   * asked of the same data: does a worktree hold it, and does it exist at all.
+   * The three questions the backend asks about a branch before it does
+   * anything, asked of the same data: is the directory it would use already
+   * taken, does a worktree hold the branch, and does the branch exist at all.
    *
-   * The asymmetry between these two is not an oversight — it mirrors one in the
-   * code they describe. `ensureWorktreeDetailed` matches *any* worktree on the
-   * branch, including the directory you are standing in, and hands that path
-   * back. `switchBranch` excludes it (`wt.path !== directory`), because
-   * checking out the branch you are already on is not a redirect. Collapsing
-   * them would make the sentence wrong on one side or the other.
+   * The asymmetry between the two worktree lookups is not an oversight — it
+   * mirrors one in the code they describe. `ensureWorktreeDetailed` matches
+   * *any* worktree on the branch, including the directory you are standing in,
+   * and hands that path back. `switchBranch` excludes it (`wt.path !==
+   * directory`), because checking out the branch you are already on is not a
+   * redirect. Collapsing them would make the sentence wrong on one side or the
+   * other.
+   *
+   * `worktreeAtDerivedDir` is the resolver's *first* rung, and the reason it can
+   * be asked at all is that `checkedOut` carries paths: a worktree someone ran
+   * `git switch` inside is still listed, now under a different branch, at the
+   * directory this branch's worktree would have used. `existsSync` reuses it
+   * whatever is in it, so the chat runs on that other branch.
    *
    * `branches` is `git branch --list`, local refs only — the same question
    * `localBranchExists` answers before deciding whether to pass `-b`.
    */
-  const here = folder.replace(/\/+$/, "");
+  const worktreeAtDerivedDir = (branch: string) => checkedOut.find((wt) => wt.path.replace(/\/+$/, "") === derivedPath(branch)) ?? null;
   const worktreeOn = (branch: string) => checkedOut.find((wt) => wt.branch === branch) ?? null;
   const worktreeElsewhereOn = (branch: string) => checkedOut.find((wt) => wt.branch === branch && wt.path.replace(/\/+$/, "") !== here) ?? null;
   const branchExists = (branch: string) => branches.includes(branch);
+
+  /**
+   * What `existsSync(derivedPath)` might find that the listing cannot show.
+   *
+   * A directory that is not a worktree of this repository is invisible from
+   * here — a leftover from a removed worktree, an unrelated clone, a plain
+   * folder — and so is a worktree of this repo sitting on a detached HEAD,
+   * which `GET /git/branches` drops because it has no branch name to match on.
+   * The resolver reuses any of them, in place of the `git worktree add` these
+   * sentences promise, and the chat then runs in whatever state that directory
+   * is in.
+   *
+   * Answering properly needs an endpoint that stats the path, and one is not
+   * worth adding for this. So the sentence hedges instead of overstating: the
+   * common case first, the reuse named, and no claim that the box has checked.
+   */
+  const unlessItExists = <> If that directory already exists, the chat runs in it as it is.</>;
 
   /**
    * The branch that already lives somewhere else, and where. Said twice, with
@@ -209,10 +244,11 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
    *
    * The subject is always the *target* branch — the typed name if there is one,
    * the base branch otherwise — because that is what the backend keys all of
-   * its decisions on. The one ladder rung deliberately not mirrored is
-   * `ensureWorktreeDetailed`'s first: a derived directory that already exists
-   * while the branch does not. That is rare, and describing it would mean
-   * modelling reuse rather than reading two facts off a listing.
+   * its decisions on. The rungs are walked in the resolver's own order, which
+   * is load-bearing rather than tidy: the directory check comes first there, so
+   * an occupied directory beats the branch you are standing on, and saying
+   * otherwise would describe the wrong outcome for exactly the state that is
+   * hardest to spot.
    */
   const summary: ReactNode = (() => {
     if (useWorktree) {
@@ -220,6 +256,28 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         return (
           <>
             Will create a new worktree off <Name>{baseBranch}</Name>, on a branch named from your first message.
+          </>
+        );
+      }
+      /**
+       * `ensureWorktreeDetailed`'s first rung, and the one the box used to skip:
+       * `existsSync(derivedPath)` reuses whatever sits at that path before it
+       * asks a single question about the branch. A worktree made for `feat/y`
+       * that someone then ran `git switch other` inside is still sitting at
+       * `repo.feat-y`, so asking for a worktree on `feat/y` runs the chat there,
+       * on `other` — while the box said it would check `feat/y` out somewhere
+       * new.
+       *
+       * Only reported when the branches differ. When they match, the next rung
+       * names the same directory and says the same thing about it, and two
+       * sentences for one outcome is one too many.
+       */
+      const atDerived = worktreeAtDerivedDir(trimmedName);
+      if (atDerived && atDerived.branch !== trimmedName) {
+        return (
+          <>
+            <Name>{derivedDir(trimmedName)}</Name> already exists and is on <Name>{atDerived.branch}</Name> — the chat will run there, on{" "}
+            <Name>{atDerived.branch}</Name> rather than <Name>{trimmedName}</Name>.
           </>
         );
       }
@@ -245,13 +303,15 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       if (branchExists(trimmedName)) {
         return (
           <>
-            <Name>{trimmedName}</Name> already exists — will check it out in a new worktree at <Name>{worktreeDirName(trimmedName)}</Name>.
+            <Name>{trimmedName}</Name> already exists — will check it out in a new worktree at <Name>{derivedDir(trimmedName)}</Name>.
+            {unlessItExists}
           </>
         );
       }
       return (
         <>
-          Will create <Name>{worktreeDirName(trimmedName)}</Name> on new branch <Name>{trimmedName}</Name>, off <Name>{baseBranch}</Name>.
+          Will create <Name>{derivedDir(trimmedName)}</Name> on new branch <Name>{trimmedName}</Name>, off <Name>{baseBranch}</Name>.
+          {unlessItExists}
         </>
       );
     }
