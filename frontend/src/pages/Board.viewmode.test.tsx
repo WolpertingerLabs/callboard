@@ -144,9 +144,15 @@ function outline(): string[] {
   });
 }
 
-/** A card's main surface, by title — a tile in one mode, a row in the other. */
+/**
+ * A card's main surface, by title — a tile in one mode, a row in the other.
+ *
+ * Filtered past the expansion: a row's folder entries name the card they
+ * belong to, so several buttons on an expanded board match one title.
+ */
 function face(title: string) {
-  return screen.getByRole("button", { name: new RegExp(title) });
+  const matches = screen.getAllByRole("button", { name: new RegExp(title) });
+  return matches.find((el) => el.closest('[role="group"]') === null)!;
 }
 
 function selectedTitles() {
@@ -159,19 +165,19 @@ function selectedTitles() {
 /** The width-capped page body — the header's grandparent. */
 const page = () => screen.getByRole("heading", { level: 1 }).parentElement!.parentElement as HTMLElement;
 
-const layoutRadio = (name: "Cards view" | "List view") => screen.getByRole("radio", { name });
+const layoutToggle = (name: "Cards view" | "List view") => screen.getByRole("button", { name });
 const foldersToggle = () => screen.getByRole("button", { name: "Show folders" });
 const expandToggle = () => screen.getByRole("button", { name: "Expand rows" });
 
 /** List mode with paths on — the only configuration where an expansion means anything. */
 function listWithPaths() {
-  fireEvent.click(layoutRadio("List view"));
+  fireEvent.click(layoutToggle("List view"));
   fireEvent.click(foldersToggle());
 }
 
 /** The chevron on one row, addressed by the card it belongs to. */
 function rowChevron(title: string) {
-  return screen.getByRole("button", { name: new RegExp(title) }).parentElement!.querySelector<HTMLElement>('[title^="Show all"],[title^="Hide"]')!;
+  return face(title).parentElement!.querySelector<HTMLElement>('[title^="Show all"],[title^="Hide"]')!;
 }
 
 /**
@@ -191,28 +197,40 @@ afterEach(cleanup);
 describe("the layout control", () => {
   it("starts on cards, which is the board that already existed", async () => {
     await mount();
-    expect(layoutRadio("Cards view").getAttribute("aria-checked")).toBe("true");
-    expect(layoutRadio("List view").getAttribute("aria-checked")).toBe("false");
+    expect(layoutToggle("Cards view").getAttribute("aria-pressed")).toBe("true");
+    expect(layoutToggle("List view").getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("moves aria-checked with the mode, and actually swaps the face", async () => {
+  it("moves aria-pressed with the mode, and actually swaps the face", async () => {
     await mount();
     // A tile stacks its lines; a row lays them out on the shared column
     // template. Asserted so the rest of this file cannot pass against a mode
     // that flipped a flag and rendered tiles anyway.
     expect(face("Alpha one").style.display).toBe("flex");
 
-    fireEvent.click(layoutRadio("List view"));
-    expect(layoutRadio("List view").getAttribute("aria-checked")).toBe("true");
-    expect(layoutRadio("Cards view").getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(layoutToggle("List view"));
+    expect(layoutToggle("List view").getAttribute("aria-pressed")).toBe("true");
+    expect(layoutToggle("Cards view").getAttribute("aria-pressed")).toBe("false");
     expect(face("Alpha one").style.display).toBe("grid");
+  });
+
+  it("is a group of pressed toggles, not radios it cannot drive from the keyboard", async () => {
+    await mount();
+    // ARIA radios owe the user roving tabindex and Arrow navigation between
+    // them. These are two plain buttons in the tab order, and the two controls
+    // beside them were already aria-pressed — a role promising a keyboard
+    // contract the widget does not implement is worse than no role.
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    expect(screen.getByRole("group", { name: "Board layout" })).toBeDefined();
+    expect(layoutToggle("Cards view").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("widens the page for a list, which has a column the grid does not", async () => {
     await mount();
     expect(page().style.maxWidth).toBe("1100px");
 
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     expect(page().style.maxWidth).toBe("1400px");
   });
 });
@@ -225,7 +243,7 @@ describe("list mode renders the same board", () => {
     // and Board.grouping.test.tsx already pins what that order should be.
     expect(asCards).toEqual(["## Needs you", "### Alpha", "Alpha one", "## Idle", "### Alpha", "Alpha two", "### Beta", "Beta one", "Beta two"]);
 
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     expect(outline()).toEqual(asCards);
   });
 
@@ -241,7 +259,7 @@ describe("list mode renders the same board", () => {
     // reordered anything on its way through.
     cleanup();
     await mount();
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     fireEvent.click(face("Alpha one"), { metaKey: true });
     fireEvent.click(face("Beta one"), { shiftKey: true });
     expect(selectedTitles()).toEqual(asCards);
@@ -249,7 +267,7 @@ describe("list mode renders the same board", () => {
 
   it("still opens the drawer on a plain click", async () => {
     await mount();
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     fireEvent.click(face("Alpha two"));
 
     expect(screen.getByTestId("drawer").textContent).toBe("Alpha two");
@@ -259,7 +277,7 @@ describe("list mode renders the same board", () => {
 describe("the folder summary in list mode", () => {
   it("shows one path and no +N for a card that lives in one folder", async () => {
     await mount(FOLDER_CARDS);
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     fireEvent.click(foldersToggle());
 
     expect(screen.getByTitle("/home/cybil/callboard")).toBeDefined();
@@ -269,7 +287,7 @@ describe("the folder summary in list mode", () => {
 
   it("counts the other folders on a card that fanned out", async () => {
     await mount(FOLDER_CARDS);
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     fireEvent.click(foldersToggle());
 
     expect(screen.getByTitle("/home/cybil/countinghouse")).toBeDefined();
@@ -292,7 +310,7 @@ describe("the folders toggle", () => {
     expect(screen.getByTitle("/home/cybil/callboard")).toBeDefined();
 
     // The preference is the board's, not the face's, so it survives the swap.
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     expect(screen.getByTitle("/home/cybil/callboard")).toBeDefined();
 
     fireEvent.click(foldersToggle());
@@ -306,14 +324,14 @@ describe("row expansion", () => {
     // Card mode: tiles do not expand, so the control would be a lie.
     expect(screen.queryByRole("button", { name: "Expand rows" })).toBeNull();
 
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     // List mode with paths still off: nothing to expand into.
     expect(screen.queryByRole("button", { name: "Expand rows" })).toBeNull();
 
     fireEvent.click(foldersToggle());
     expect(expandToggle()).toBeDefined();
 
-    fireEvent.click(layoutRadio("Cards view"));
+    fireEvent.click(layoutToggle("Cards view"));
     expect(screen.queryByRole("button", { name: "Expand rows" })).toBeNull();
   });
 
@@ -436,13 +454,13 @@ describe("drilling into a folder", () => {
 describe("persistence", () => {
   it("restores both preferences on a remount", async () => {
     await mount(FOLDER_CARDS);
-    fireEvent.click(layoutRadio("List view"));
+    fireEvent.click(layoutToggle("List view"));
     fireEvent.click(foldersToggle());
 
     cleanup();
     await mount(FOLDER_CARDS);
 
-    expect(layoutRadio("List view").getAttribute("aria-checked")).toBe("true");
+    expect(layoutToggle("List view").getAttribute("aria-pressed")).toBe("true");
     expect(foldersToggle().getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByTitle("/home/cybil/countinghouse")).toBeDefined();
   });
@@ -470,7 +488,7 @@ describe("persistence", () => {
     localStorage.setItem("claude-code-settings", JSON.stringify({ boardViewMode: "gantt", boardShowPaths: "yes" }));
     await mount();
 
-    expect(layoutRadio("Cards view").getAttribute("aria-checked")).toBe("true");
+    expect(layoutToggle("Cards view").getAttribute("aria-pressed")).toBe("true");
     expect(foldersToggle().getAttribute("aria-pressed")).toBe("false");
   });
 });

@@ -69,8 +69,12 @@ function setWidth(px: number) {
   Object.defineProperty(window, "innerWidth", { configurable: true, value: px });
 }
 
+/**
+ * The row's own button. Filtered past the expansion: a folder entry names the
+ * card it belongs to, so several buttons match the title once a row is open.
+ */
 function surface() {
-  return screen.getByRole("button", { name: /Ship the thing/ });
+  return screen.getAllByRole("button", { name: /Ship the thing/ }).find((el) => el.closest('[role="group"]') === null)!;
 }
 
 afterEach(cleanup);
@@ -479,6 +483,112 @@ describe("the folder expansion", () => {
   });
 });
 
+describe("keyboard and screen reader", () => {
+  const open = (extra: Partial<React.ComponentProps<typeof CardRow>> = {}) =>
+    render(
+      <CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} {...extra} />,
+    );
+
+  it("opens and closes one row from the keyboard", () => {
+    setWidth(1024);
+    const onToggleExpand = vi.fn();
+    const { rerender } = open({ onToggleExpand });
+
+    // The chevron is a span inside a button and can never take focus, so
+    // without this there is NO keyboard path to one row's expansion at all —
+    // only the header's all-rows toggle. A literal WCAG 2.1.1 failure.
+    fireEvent.keyDown(surface(), { key: "ArrowRight" });
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+
+    rerender(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath expanded onToggleExpand={onToggleExpand} onOpenFolder={vi.fn()} />);
+    fireEvent.keyDown(surface(), { key: "ArrowLeft" });
+    expect(onToggleExpand).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the arrow keys alone in the direction the row is already in", () => {
+    setWidth(1024);
+    const onToggleExpand = vi.fn();
+    open({ onToggleExpand });
+    // ArrowRight on an open row is not "close it": the disclosure convention
+    // is directional, not a toggle, and the row scrolls under it otherwise.
+    fireEvent.keyDown(surface(), { key: "ArrowLeft" });
+    expect(onToggleExpand).not.toHaveBeenCalled();
+  });
+
+  it("does not claim to be the expander, because Enter opens the drawer", () => {
+    setWidth(1024);
+    open({ expanded: true });
+    // aria-expanded here would promise that activating this button toggles
+    // the expansion. It opens the drawer.
+    expect(surface().getAttribute("aria-expanded")).toBeNull();
+  });
+
+  it("keeps the decorative chevron out of the row's name", () => {
+    setWidth(1024);
+    open();
+    expect(screen.getByTitle("Show all 3 folders").getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("names the two cells that are otherwise bare numbers in a column", () => {
+    setWidth(1024);
+    open();
+    // "…callboard +2 Idle 2 2h" is not something a screen reader can parse,
+    // and the icon and the column position that disambiguate them for a
+    // sighted reader are exactly what is unavailable here.
+    expect(surface().textContent).toContain("2");
+    expect(screen.getByLabelText("2 chats")).toBeDefined();
+    expect(screen.getByLabelText(/^last active .+ ago$/)).toBeDefined();
+  });
+
+  it("ties the expansion back to the card whose folders it lists", () => {
+    setWidth(1024);
+    open({ expanded: true });
+    // Tab lands in here from the row above with no announcement that the
+    // context changed.
+    const group = screen.getByRole("group", { name: "Folders Ship the thing spans" });
+    expect(group.querySelectorAll("button").length).toBe(3);
+  });
+
+  it("names each folder entry in full, card included", () => {
+    setWidth(1024);
+    open({ expanded: true });
+    // The path label inside is middle-truncated and the count and time beside
+    // it are bare numbers, so the visible text names nothing on its own.
+    expect(screen.getByRole("button", { name: "/home/cybil/callboard, 1 chat, root folder, in Ship the thing" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "/home/cybil/callboard.feat-1, 1 chat, in Ship the thing" })).toBeDefined();
+  });
+
+  it("puts focus back on the row when a collapse takes the expansion away", () => {
+    setWidth(1024);
+    const { rerender } = open({ expanded: true });
+
+    const entry = screen.getByRole("button", { name: /callboard\.feat-1/ });
+    entry.focus();
+    expect(document.activeElement).toBe(entry);
+
+    // The header toggle, a chevron, or the 15s poll dropping a folder — all
+    // unmount this while focus is inside it, and focus would otherwise fall
+    // to <body>, back at the top of the document.
+    rerender(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+    expect(document.activeElement).toBe(surface());
+  });
+
+  it("leaves focus where the user put it when the collapse did not steal it", () => {
+    setWidth(1024);
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      const { rerender } = open({ expanded: true });
+      outside.focus();
+
+      rerender(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
+});
+
 describe("contrast", () => {
   it("makes no text in the row recede by opacity", () => {
     setWidth(1024);
@@ -533,5 +643,28 @@ describe("mobile", () => {
     expect(surface().children).toHaveLength(2);
     // Two lines of 11-13px text do not reach the 44px a thumb can hit.
     expect(surface().style.minHeight).toBe("44px");
+  });
+
+  it("gives the chevron a target a thumb can hit, without reaching into the cell beside it", () => {
+    setWidth(500);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+
+    const chevron = screen.getByTitle("Show all 3 folders");
+    expect(chevron.style.width).toBe("36px");
+    expect(chevron.style.height).toBe("36px");
+    // Sized rather than bled outwards: a negative margin would have put the
+    // target over the status text next to it, where a miss opens the drawer.
+    expect(chevron.style.margin).toBe("");
+    expect(chevron.parentElement!.style.width).toBe("36px");
+  });
+
+  it("does not reserve the target on rows that have no chevron to put in it", () => {
+    setWidth(500);
+    const { container } = render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    // The desktop grid holds the slot open so paths share a left edge; line
+    // two of a phone has no column to align, and 36px of dead space on a
+    // 360px screen only costs the path its width.
+    const slots = [...container.querySelectorAll<HTMLElement>("span")].filter((el) => el.style.width === "36px");
+    expect(slots).toHaveLength(0);
   });
 });

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { CardSummary } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { cardFolderSummary, FOLDER_LIVE_COLORS, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
@@ -35,6 +36,16 @@ interface CardRowProps {
  * footer goes there.
  */
 const EXPANSION_CAP = 8;
+
+/**
+ * The chevron's touch target on mobile.
+ *
+ * The plan promised 44px and 44px is what a row gets; the chevron sits inside
+ * that row's second line, where a 44px box either overlaps the status cell
+ * beside it or pushes the path out of the line. 36px is the compromise: a
+ * real target, comfortably above the 28px it had, and it fits.
+ */
+const CHEVRON_TOUCH = 36;
 
 /**
  * The three trailing columns are `auto` in the shared template, and each row is
@@ -192,18 +203,59 @@ export default function CardRow({
   const expandable = folders.length > 1 && Boolean(onToggleExpand);
   const showExpansion = expandable && expanded;
 
+  const rowRef = useRef<HTMLButtonElement>(null);
+  // Whether focus is currently somewhere inside the expansion. Cleared only
+  // when focus moves to a real element elsewhere: an unmounting expansion
+  // takes its focused button with it and leaves `relatedTarget` null, which
+  // is exactly the case this exists for.
+  const focusInsideExpansion = useRef(false);
+  useEffect(() => {
+    if (showExpansion || !focusInsideExpansion.current) return;
+    focusInsideExpansion.current = false;
+    // A collapse — by the chevron, by the header toggle, or by the 15s poll
+    // dropping a folder unprompted — must not leave a keyboard user on
+    // <body>, back at the top of the document. The row it belonged to is the
+    // nearest thing that still exists.
+    if (document.activeElement === null || document.activeElement === document.body) rowRef.current?.focus();
+  }, [showExpansion]);
+
+  // ArrowRight opens, ArrowLeft closes — the disclosure convention, and the
+  // only keyboard path to one row's expansion now that the chevron is a span
+  // inside the button rather than a control of its own.
+  //
+  // Deliberately NO aria-expanded on that button: Enter opens the drawer, so
+  // a button announcing itself as the expander would be lying about what
+  // activating it does.
+  const handleKeyDown = expandable
+    ? (e: React.KeyboardEvent) => {
+        if (e.key === "ArrowRight" && !expanded) onToggleExpand?.();
+        else if (e.key === "ArrowLeft" && expanded) onToggleExpand?.();
+        else return;
+        e.preventDefault();
+      }
+    : undefined;
+
   const folderCell = (
     <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
-      {/* The 12px slot phase 2a reserved. Held open on every row, chevron or
-          not, so each path in the column starts at the same x.
+      {/* The 12px slot phase 2a reserved. Held open on every DESKTOP row,
+          chevron or not, so each path in the column starts at the same x.
+          Mobile has no such column — line two is a free flex row — so there
+          the slot is the touch target or it is nothing; 36px of dead space on
+          a 360px screen aligns nothing and costs the path its width.
 
           A span rather than a button, deliberately: this cell lives inside the
           row's main <button>, and a focusable control nested in a button is
           invalid HTML that screen readers and keyboards both mishandle. The
-          keyboard path to the same state is the board header's expand toggle,
-          which sets the resting state for every row; once a row IS open, its
-          folder entries below are real buttons that Tab reaches. */}
-      <span style={{ width: 12, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          keyboard path is ArrowRight/ArrowLeft on the row button itself. */}
+      <span
+        style={{
+          width: isMobile ? (expandable ? CHEVRON_TOUCH : 0) : 12,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
         {expandable && (
           <span
             onClick={(e) => {
@@ -217,6 +269,11 @@ export default function CardRow({
             // gesture, exactly as the checkbox does by being a sibling.
             {...stopGesture}
             title={expanded ? "Hide folders" : `Show all ${folders.length} folders`}
+            // A decision, not an accident: this span has no keyboard path and
+            // is already absent from the accessibility tree, so saying so
+            // stops its `title` from leaking into the row's name. The keyboard
+            // equivalent is on the row button, where focus actually lands.
+            aria-hidden
             style={{
               display: "flex",
               alignItems: "center",
@@ -224,8 +281,10 @@ export default function CardRow({
               cursor: "pointer",
               color: "var(--board-tile-meta-text)",
               // A thumb needs more than 12px, and what it hits by mistake is
-              // the row underneath, which opens a drawer.
-              ...(isMobile && { padding: 8, margin: -8 }),
+              // the row underneath, which opens a drawer. Sized rather than
+              // bled outwards with a negative margin, so the target cannot
+              // reach into the status cell beside it.
+              ...(isMobile && { width: CHEVRON_TOUCH, height: CHEVRON_TOUCH }),
             }}
           >
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -248,8 +307,14 @@ export default function CardRow({
     </span>
   );
 
+  // The row's accessible name is built from its contents, so without labels
+  // on these last two cells it ends "…callboard +3 Active 4 2h" — a run-on of
+  // bare numbers whose meaning was carried entirely by an icon and a column
+  // position. A descendant's aria-label does participate in name-from-content,
+  // so one label per cell is enough; the row needs no name of its own.
   const countCell = (
     <span
+      aria-label={`${card.chatCount} chat${card.chatCount === 1 ? "" : "s"}`}
       style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 3, fontSize: 11, color: "var(--board-tile-meta-text)", ...(isMobile ? {} : { width: COUNT_WIDTH }) }}
     >
       <MessageSquare size={11} />
@@ -259,6 +324,7 @@ export default function CardRow({
 
   const timeCell = (
     <span
+      aria-label={`last active ${formatRelativeTime(card.lastActivityAt)} ago`}
       style={{ fontSize: 11, color: "var(--board-tile-meta-text)", textAlign: "right", ...(isMobile ? {} : { width: TIME_WIDTH }) }}
     >
       {formatRelativeTime(card.lastActivityAt)}
@@ -280,6 +346,15 @@ export default function CardRow({
       // held finger on a folder entry would otherwise select the card and then
       // open the drawer on that folder as it lifted.
       {...stopGesture}
+      // Tab lands in here from the row above with no announcement that the
+      // context changed; the group ties these buttons back to the card whose
+      // folders they are.
+      role="group"
+      aria-label={`Folders ${card.title} spans`}
+      onFocus={() => (focusInsideExpansion.current = true)}
+      onBlur={(e) => {
+        if (e.relatedTarget) focusInsideExpansion.current = false;
+      }}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -302,6 +377,20 @@ export default function CardRow({
           // on the row does. Only the destination differs — filtered, not open.
           onClick={handleActivate(() => onOpenFolder?.(folder.path))}
           disabled={inert}
+          // Named in full, because the path label inside is middle-truncated
+          // and the chat count and time beside it are bare numbers in columns
+          // a screen reader cannot see. The card's title is in here too: this
+          // button is one of eight identical-looking rows under one of many
+          // cards, and the group label above is not repeated per entry.
+          aria-label={[
+            folder.path,
+            `${folder.chatCount} chat${folder.chatCount === 1 ? "" : "s"}`,
+            folder.isRoot ? "root folder" : null,
+            folder.live === "waiting" ? "needs you" : folder.live === "ongoing" ? "active" : null,
+            `in ${card.title}`,
+          ]
+            .filter(Boolean)
+            .join(", ")}
           style={{
             display: "flex",
             alignItems: "center",
@@ -449,7 +538,9 @@ export default function CardRow({
 
       {isMobile ? (
         <button
+          ref={rowRef}
           onClick={handleClick}
+          onKeyDown={handleKeyDown}
           disabled={inert}
           aria-pressed={selectionMode ? selected : undefined}
           style={{
@@ -491,7 +582,9 @@ export default function CardRow({
         </button>
       ) : (
         <button
+          ref={rowRef}
           onClick={handleClick}
+          onKeyDown={handleKeyDown}
           disabled={inert}
           aria-pressed={selectionMode ? selected : undefined}
           style={{

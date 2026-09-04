@@ -482,7 +482,15 @@ export default function Board() {
   /** Segmented layout switch and the folder toggle — icon-only where the row is already full. */
   const viewControls = (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-      <div role="radiogroup" aria-label="Board layout" style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+      {/* A group of pressed toggles, NOT a radiogroup — a deliberate departure
+          from the plan, which specified the role without costing its keyboard
+          model. ARIA radios owe the user roving tabindex and arrow navigation
+          between them; these are two plain buttons in the tab order, and a
+          role promising a keyboard contract the widget does not implement is
+          worse for a screen-reader user than no role at all. It also makes the
+          three header controls consistent: the folders and expand toggles
+          beside it were already aria-pressed. */}
+      <div role="group" aria-label="Board layout" style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
         {(
           [
             { mode: "cards", icon: <LayoutGrid size={14} />, text: "Cards" },
@@ -491,8 +499,7 @@ export default function Board() {
         ).map((option, i) => (
           <button
             key={option.mode}
-            role="radio"
-            aria-checked={viewMode === option.mode}
+            aria-pressed={viewMode === option.mode}
             aria-label={`${option.text} view`}
             title={`${option.text} view`}
             onClick={() => {

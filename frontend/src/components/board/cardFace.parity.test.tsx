@@ -52,7 +52,7 @@ function card(overrides: Partial<CardSummary> = {}): CardSummary {
 
 /** The face's main surface — the button that opens the drawer, not the checkbox. */
 function face() {
-  return screen.getByRole("button", { name: /Ship the thing/ });
+  return screen.getAllByRole("button", { name: /Ship the thing/ }).find((el) => el.closest('[role="group"]') === null)!;
 }
 
 /** The face's outer element, which is where the board's hover and gesture props land. */
