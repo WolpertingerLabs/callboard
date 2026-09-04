@@ -10,13 +10,15 @@ import {
   saveBoardViewMode,
   getBoardShowPaths,
   saveBoardShowPaths,
+  getBoardRowsExpanded,
+  saveBoardRowsExpanded,
 } from "../utils/localStorage";
 import { uniqueCategories } from "../utils/cardCategories";
 import CardTile from "../components/board/CardTile";
 import CardRow from "../components/board/CardRow";
 import BoardSelectionBar from "../components/board/BoardSelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
-import { ChevronRight, ChevronDown, ChevronLeft, LayoutGrid, List, Folder } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /** A category's cards inside one status section. `label: null` is uncategorized. */
@@ -141,10 +143,38 @@ export default function Board() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openCardId, setOpenCardId] = useState<string | null>(null);
+  // Set when the drawer was opened from a row's folder entry, so it lands on
+  // that folder's chats. Cleared on every other route into the drawer.
+  const [openCardFolder, setOpenCardFolder] = useState<string | undefined>(undefined);
   const [closedExpanded, setClosedExpanded] = useState(() => getBoardClosedExpanded());
-  // Both persisted, both defaulting to today's board: the tile grid, no paths.
+  // All three persisted, all three defaulting to today's board: the tile grid,
+  // no paths, rows at rest.
   const [viewMode, setViewMode] = useState(() => getBoardViewMode());
   const [showPaths, setShowPaths] = useState(() => getBoardShowPaths());
+  const [rowsExpanded, setRowsExpanded] = useState(() => getBoardRowsExpanded());
+
+  /**
+   * Per-row departures from the resting state above — deliberately ephemeral.
+   *
+   * Persisting them would restore an expansion across a reload onto a card
+   * that has since collapsed to one folder: a row that opens onto nothing.
+   * Storing the DIFFERENCE rather than the state is also what lets the header
+   * toggle keep meaning something after a row has been touched.
+   */
+  const [expandOverrides, setExpandOverrides] = useState<Set<string>>(new Set());
+  const isExpanded = (id: string) => rowsExpanded !== expandOverrides.has(id);
+  const toggleExpanded = (id: string) =>
+    setExpandOverrides((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const openDrawer = (cardId: string, folder?: string) => {
+    setOpenCardId(cardId);
+    setOpenCardFolder(folder);
+  };
 
   // Multi-select. Deliberately NOT persisted: a stale selection restored
   // across a reload is a way to act on the wrong cards.
@@ -419,13 +449,30 @@ export default function Board() {
    * same order. `orderedIds` is flattened out of these very arrays, so a list
    * mode that re-derived its own order would make shift+click select cards the
    * user never saw, on a board that still looked right.
+   *
+   * Note the map stays ONE element per card even in list mode. A row's folder
+   * expansion lives inside that row, not as extra entries here: folder entries
+   * are not cards, cannot be selected, and a shift+click range that stepped
+   * through them would sweep up cards the user never saw.
    */
   const cardContainer = (list: CardSummary[]) => (
     <div style={viewMode === "list" ? listColumn : grid}>
-      {list.map((card) => {
-        const Face = viewMode === "list" ? CardRow : CardTile;
-        return <Face key={card.id} card={card} onClick={() => setOpenCardId(card.id)} showPath={showPaths} {...selectionProps(card)} />;
-      })}
+      {list.map((card) =>
+        viewMode === "list" ? (
+          <CardRow
+            key={card.id}
+            card={card}
+            onClick={() => openDrawer(card.id)}
+            showPath={showPaths}
+            expanded={isExpanded(card.id)}
+            onToggleExpand={() => toggleExpanded(card.id)}
+            onOpenFolder={(folder) => openDrawer(card.id, folder)}
+            {...selectionProps(card)}
+          />
+        ) : (
+          <CardTile key={card.id} card={card} onClick={() => openDrawer(card.id)} showPath={showPaths} {...selectionProps(card)} />
+        ),
+      )}
     </div>
   );
 
@@ -493,6 +540,35 @@ export default function Board() {
         <Folder size={14} />
         {!isMobile && "Folders"}
       </button>
+      {/* Only in list mode with paths on: everywhere else it controls nothing,
+          and a control that does nothing is worse than an absent one. */}
+      {viewMode === "list" && showPaths && (
+        <button
+          aria-pressed={rowsExpanded}
+          aria-label="Expand rows"
+          title="Rest rows expanded, showing every folder a card spans"
+          onClick={() => {
+            const next = !rowsExpanded;
+            setRowsExpanded(next);
+            saveBoardRowsExpanded(next);
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            padding: isMobile ? "6px 8px" : "5px 9px",
+            fontSize: 12,
+            borderRadius: 6,
+            background: rowsExpanded ? "var(--accent)" : "var(--surface)",
+            color: rowsExpanded ? "var(--text-on-accent)" : "var(--text)",
+            border: "1px solid var(--border)",
+            cursor: "pointer",
+          }}
+        >
+          <ChevronsUpDown size={14} />
+          {!isMobile && "Expand"}
+        </button>
+      )}
     </div>
   );
 
@@ -611,8 +687,13 @@ export default function Board() {
 
       {openCard && (
         <CardDrawer
+          // Keyed on the folder too, so opening a second folder entry on the
+          // same card re-seeds the drawer's filter rather than leaving it on
+          // the one it mounted with.
+          key={`${openCard.id}:${openCardFolder ?? ""}`}
           card={openCard}
           categories={knownCategories}
+          initialFolderFilter={openCardFolder}
           onPatch={(patch) => patchCard(openCard.id, patch)}
           onClose={() => setOpenCardId(null)}
         />

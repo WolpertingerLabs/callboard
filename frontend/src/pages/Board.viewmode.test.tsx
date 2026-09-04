@@ -29,7 +29,12 @@ vi.mock("../api", async (importOriginal) => ({
 vi.mock("../contexts/SessionContext", () => ({ useMetadataVersion: () => 0 }));
 
 vi.mock("../components/board/CardDrawer", () => ({
-  default: ({ card }: { card: CardSummary }) => <div data-testid="drawer">{card.title}</div>,
+  default: ({ card, initialFolderFilter }: { card: CardSummary; initialFolderFilter?: string }) => (
+    <div data-testid="drawer">
+      {card.title}
+      {initialFolderFilter && <span data-testid="drawer-folder">{initialFolderFilter}</span>}
+    </div>
+  ),
 }));
 
 function member(overrides: Partial<CardMemberChat> & Pick<CardMemberChat, "chatId" | "folder">): CardMemberChat {
@@ -92,6 +97,33 @@ const FOLDER_CARDS: CardSummary[] = [
   }),
 ];
 
+/**
+ * The same four cards, with one of them — Alpha two, which sits INSIDE the
+ * range the selection tests sweep — fanned out across three folders. That is
+ * the card whose expansion must not reach `orderedIds`.
+ */
+const CARDS_WITH_FANOUT: CardSummary[] = CARDS.map((c) =>
+  c.id === "a2"
+    ? {
+        ...c,
+        memberChats: [
+          member({ chatId: "a2", folder: "/home/cybil/callboard" }),
+          member({ chatId: "x", folder: "/home/cybil/callboard.feat-x" }),
+          member({ chatId: "y", folder: "/home/cybil/callboard.feat-y" }),
+        ],
+      }
+    : c,
+);
+
+/** One card spanning 20 folders — the widest fan-out in the measured data. */
+const WIDE_CARD: CardSummary[] = [
+  card("w1", "Wide fan-out", {
+    memberChats: Array.from({ length: 20 }, (_, i) =>
+      member({ chatId: i === 0 ? "w1" : `w-${i}`, folder: i === 0 ? "/home/cybil/callboard" : `/home/cybil/callboard.feat-${i}` }),
+    ),
+  }),
+];
+
 const mockList = vi.mocked(listCards);
 
 async function mount(cards: CardSummary[] = CARDS) {
@@ -129,6 +161,25 @@ const page = () => screen.getByRole("heading", { level: 1 }).parentElement!.pare
 
 const layoutRadio = (name: "Cards view" | "List view") => screen.getByRole("radio", { name });
 const foldersToggle = () => screen.getByRole("button", { name: "Show folders" });
+const expandToggle = () => screen.getByRole("button", { name: "Expand rows" });
+
+/** List mode with paths on — the only configuration where an expansion means anything. */
+function listWithPaths() {
+  fireEvent.click(layoutRadio("List view"));
+  fireEvent.click(foldersToggle());
+}
+
+/** The chevron on one row, addressed by the card it belongs to. */
+function rowChevron(title: string) {
+  return screen.getByRole("button", { name: new RegExp(title) }).parentElement!.querySelector<HTMLElement>('[title^="Show all"],[title^="Hide"]')!;
+}
+
+/**
+ * Whether a card's row is expanded, probed by a folder that is NOT its root —
+ * the collapsed row shows the root path and nothing else, so a non-root path
+ * on screen can only have come from the expansion.
+ */
+const isExpanded = (nonRootFolder: string) => screen.queryAllByTitle(nonRootFolder).length > 0;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -249,6 +300,121 @@ describe("the folders toggle", () => {
   });
 });
 
+describe("row expansion", () => {
+  it("offers the expand toggle only where it controls something", async () => {
+    await mount(FOLDER_CARDS);
+    // Card mode: tiles do not expand, so the control would be a lie.
+    expect(screen.queryByRole("button", { name: "Expand rows" })).toBeNull();
+
+    fireEvent.click(layoutRadio("List view"));
+    // List mode with paths still off: nothing to expand into.
+    expect(screen.queryByRole("button", { name: "Expand rows" })).toBeNull();
+
+    fireEvent.click(foldersToggle());
+    expect(expandToggle()).toBeDefined();
+
+    fireEvent.click(layoutRadio("Cards view"));
+    expect(screen.queryByRole("button", { name: "Expand rows" })).toBeNull();
+  });
+
+  it("sets the resting state of every row", async () => {
+    await mount(FOLDER_CARDS);
+    listWithPaths();
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(false);
+
+    fireEvent.click(expandToggle());
+    expect(expandToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(true);
+  });
+
+  it("lets one row override that resting state in either direction", async () => {
+    await mount(FOLDER_CARDS);
+    listWithPaths();
+
+    // Collapsed at rest, opened by its own chevron.
+    fireEvent.click(rowChevron("Many folders"));
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(true);
+
+    // And the other way: expanded at rest, closed by its own chevron. The
+    // override is a DIFFERENCE from the resting state, not a state of its
+    // own, which is why flipping the default flips this row back open first.
+    fireEvent.click(rowChevron("Many folders"));
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(false);
+    fireEvent.click(expandToggle());
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(true);
+    fireEvent.click(rowChevron("Many folders"));
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(false);
+  });
+
+  it("leaves the 97% of cards that live in one folder without a chevron", async () => {
+    await mount(FOLDER_CARDS);
+    listWithPaths();
+    fireEvent.click(expandToggle());
+
+    // Nothing to open onto, so nothing to open — even with the board's
+    // resting state set to expanded.
+    const single = screen.getByRole("button", { name: /Single folder/ }).parentElement!;
+    expect(single.querySelector('[title^="Show all"],[title^="Hide"]')).toBeNull();
+    // The selection checkbox and the row itself, and no expansion under them.
+    expect(single.querySelectorAll("button")).toHaveLength(2);
+  });
+
+  it("caps a wide fan-out at eight entries and offers the rest to the drawer", async () => {
+    await mount(WIDE_CARD);
+    listWithPaths();
+    fireEvent.click(expandToggle());
+
+    // 20 folders on the board would push every other card off the screen.
+    expect(screen.getByTitle("/home/cybil/callboard.feat-7")).toBeDefined();
+    expect(screen.queryByTitle("/home/cybil/callboard.feat-8")).toBeNull();
+    expect(screen.getByText("… 12 more")).toBeDefined();
+  });
+
+  it("sweeps the same range with a row expanded as with every row collapsed", async () => {
+    // The regression guard for `orderedIds`. A folder entry is not a card, and
+    // a range that stepped through one would select cards the user never saw.
+    await mount(CARDS_WITH_FANOUT);
+    fireEvent.click(face("Alpha one"), { metaKey: true });
+    fireEvent.click(face("Beta one"), { shiftKey: true });
+    const collapsed = selectedTitles();
+    expect(collapsed).toEqual(["Alpha one", "Alpha two", "Beta one"]);
+
+    cleanup();
+    await mount(CARDS_WITH_FANOUT);
+    listWithPaths();
+    // Alpha two sits mid-range and is the fanned-out card, so its expansion
+    // lands between the two ends of the sweep.
+    fireEvent.click(rowChevron("Alpha two"));
+    expect(isExpanded("/home/cybil/callboard.feat-x")).toBe(true);
+
+    fireEvent.click(face("Alpha one"), { metaKey: true });
+    fireEvent.click(face("Beta one"), { shiftKey: true });
+    expect(selectedTitles()).toEqual(collapsed);
+  });
+});
+
+describe("drilling into a folder", () => {
+  it("opens the drawer filtered to the folder that was clicked", async () => {
+    await mount(FOLDER_CARDS);
+    listWithPaths();
+    fireEvent.click(expandToggle());
+
+    fireEvent.click(screen.getByTitle("/home/cybil/countinghouse.feat-a"));
+    expect(screen.getByTestId("drawer").textContent).toContain("Many folders");
+    expect(screen.getByTestId("drawer-folder").textContent).toBe("/home/cybil/countinghouse.feat-a");
+  });
+
+  it("opens it unfiltered from the row itself", async () => {
+    await mount(FOLDER_CARDS);
+    listWithPaths();
+    fireEvent.click(expandToggle());
+
+    fireEvent.click(face("Many folders"));
+    expect(screen.getByTestId("drawer").textContent).toBe("Many folders");
+    expect(screen.queryByTestId("drawer-folder")).toBeNull();
+  });
+});
+
 describe("persistence", () => {
   it("restores both preferences on a remount", async () => {
     await mount(FOLDER_CARDS);
@@ -261,6 +427,23 @@ describe("persistence", () => {
     expect(layoutRadio("List view").getAttribute("aria-checked")).toBe("true");
     expect(foldersToggle().getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByTitle("/home/cybil/countinghouse")).toBeDefined();
+  });
+
+  it("restores the resting expansion too, but never a per-row override", async () => {
+    await mount(FOLDER_CARDS);
+    listWithPaths();
+    fireEvent.click(expandToggle());
+    // A row pushed back against the resting state — the state that must NOT
+    // come back. Restored, it would open a card that has since collapsed to
+    // one folder onto nothing.
+    fireEvent.click(rowChevron("Many folders"));
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(false);
+
+    cleanup();
+    await mount(FOLDER_CARDS);
+
+    expect(expandToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(true);
   });
 
   it("falls back to the default rather than throwing on a mode it has never heard of", async () => {
