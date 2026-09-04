@@ -60,6 +60,7 @@ export default function CardRow({
   const rollupColor = ROLLUP_COLORS[card.rollup];
   const live = card.rollup !== "idle" && !closed;
   const now = useCardCountdown(card);
+  const activeRun = closed ? undefined : card.memberRuns.find((r) => !r.endedAt);
 
   const { handleClick, gestureProps, inert, showCheckbox, checkboxLabel, hoverProps, checkboxFocusProps } = useCardActivation({
     card,
@@ -103,10 +104,31 @@ export default function CardRow({
     </span>
   );
 
+  /**
+   * Status and running job share one cell.
+   *
+   * The tile gives the job its own line; the row's template has seven columns
+   * and an eighth for one optional string would narrow every other row on the
+   * board to buy nothing. Sharing the status cell instead keeps the job name —
+   * which is exactly the information the board exists to surface, on exactly
+   * the cards that are doing something — and the ellipsis the cell already had
+   * decides what gives when there isn't room. The `title` carries both in full.
+   */
+  const jobName = activeRun?.jobName;
+  const statusTitle = [card.status, jobName].filter(Boolean).join(" · ");
+
   const statusCell = (
-    <span style={{ ...ellipsis, fontSize: 12, color: "var(--board-tile-meta-text)" }} title={card.status}>
+    <span style={{ ...ellipsis, fontSize: 12, color: "var(--board-tile-meta-text)" }} title={statusTitle}>
       {card.statusEmoji ? `${card.statusEmoji} ` : ""}
       {card.status}
+      {jobName && (
+        // Opacity rather than a second colour: the job is context for the
+        // status beside it, and it has to recede without a new token.
+        <span style={{ opacity: 0.7 }}>
+          {card.status ? " · " : ""}
+          {jobName}
+        </span>
+      )}
     </span>
   );
 
@@ -261,7 +283,7 @@ export default function CardRow({
             {rollupCell}
           </span>
           <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, width: "100%", paddingLeft: 26 }}>
-            {(card.status || card.statusEmoji) && <span style={{ flex: 1, minWidth: 0, display: "flex" }}>{statusCell}</span>}
+            {(card.status || card.statusEmoji || jobName) && <span style={{ flex: 1, minWidth: 0, display: "flex" }}>{statusCell}</span>}
             {showPath && folders.length > 0 && <span style={{ flex: 1, minWidth: 0, display: "flex" }}>{folderCell}</span>}
             <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
               {countCell}

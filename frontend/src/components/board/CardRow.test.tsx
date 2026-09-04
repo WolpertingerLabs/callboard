@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import type { CardMemberChat, CardSummary } from "../../api";
+import type { CardMemberChat, CardMemberRun, CardSummary } from "../../api";
 import CardRow from "./CardRow";
 
 function card(overrides: Partial<CardSummary> = {}): CardSummary {
@@ -43,6 +43,15 @@ const FOLDER: CardMemberChat = {
   isTriggered: false,
   createdAt: "2026-08-07T10:00:00.000Z",
   updatedAt: "2026-08-07T10:00:00.000Z",
+};
+
+const RUN: CardMemberRun = {
+  runId: "run-1",
+  jobId: "job-1",
+  jobName: "nightly-rebase",
+  status: "running",
+  createdAt: "2026-08-07T10:00:00.000Z",
+  updatedAt: "2026-08-07T10:30:00.000Z",
 };
 
 function setWidth(px: number) {
@@ -84,6 +93,36 @@ describe("the desktop template", () => {
 
     expect(surface().children).toHaveLength(7);
     expect(document.querySelector("[title^='/']")).toBeNull();
+  });
+});
+
+describe("the status cell carries the running job", () => {
+  it("appends it after the status without spending an eighth column", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ status: "rebasing onto main", memberRuns: [RUN] })} onClick={vi.fn()} />);
+
+    // Still the six-column template: the job shares the status cell rather
+    // than narrowing every other column on the board for one optional string.
+    expect(surface().style.gridTemplateColumns).toBe("18px minmax(0,2fr) minmax(0,3fr) auto auto auto");
+    // The title is the escape hatch for whatever the cell's ellipsis eats.
+    const cell = screen.getByTitle("rebasing onto main · nightly-rebase");
+    expect(cell.textContent).toBe("rebasing onto main · nightly-rebase");
+  });
+
+  it("lets the job stand alone when the card has no status text", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ memberRuns: [RUN] })} onClick={vi.fn()} />);
+
+    // No leading separator dangling off nothing.
+    expect(screen.getByTitle("nightly-rebase").textContent).toBe("nightly-rebase");
+  });
+
+  it("keeps it on the mobile second line, which is where the status lives there", () => {
+    setWidth(500);
+    render(<CardRow card={card({ memberRuns: [RUN] })} onClick={vi.fn()} />);
+    // The second line is mounted on the strength of the job alone — gating it
+    // on card.status would drop the job on a card that has never set one.
+    expect(screen.getByText("nightly-rebase")).toBeDefined();
   });
 });
 

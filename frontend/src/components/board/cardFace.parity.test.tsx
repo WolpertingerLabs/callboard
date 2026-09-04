@@ -13,7 +13,7 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
-import type { CardMemberChat, CardSummary } from "../../api";
+import type { CardMemberChat, CardMemberRun, CardSummary } from "../../api";
 import CardTile from "./CardTile";
 import CardRow from "./CardRow";
 
@@ -225,6 +225,37 @@ describe.each(FACES)("%s — the shared selection contract", (_name, Face) => {
       fireEvent.click(face());
       expect(onToggleSelect).toHaveBeenCalledTimes(1);
       expect(onClick).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("the running job", () => {
+    const run = (overrides: Partial<CardMemberRun> = {}): CardMemberRun => ({
+      runId: "run-1",
+      jobId: "job-1",
+      jobName: "nightly-rebase",
+      status: "running",
+      createdAt: "2026-08-07T10:00:00.000Z",
+      updatedAt: "2026-08-07T10:30:00.000Z",
+      ...overrides,
+    });
+
+    // The two faces give it different room — a line of its own on the tile,
+    // a share of the status cell on the row — but "a running job names itself
+    // on the card's face" is a fact contract, and the row silently dropping it
+    // is exactly the divergence this file exists to catch.
+    it("names itself on the face while the run is open", () => {
+      render(<Face card={card({ memberRuns: [run()] })} onClick={vi.fn()} />);
+      expect(screen.getByText(/nightly-rebase/)).toBeDefined();
+    });
+
+    it("says nothing once the run has ended", () => {
+      render(<Face card={card({ memberRuns: [run({ endedAt: "2026-08-07T10:31:00.000Z" })] })} onClick={vi.fn()} />);
+      expect(screen.queryByText(/nightly-rebase/)).toBeNull();
+    });
+
+    it("says nothing on a closed card, whose member runs are history", () => {
+      render(<Face card={card({ lifecycle: "closed", memberRuns: [run()] })} onClick={vi.fn()} />);
+      expect(screen.queryByText(/nightly-rebase/)).toBeNull();
     });
   });
 
