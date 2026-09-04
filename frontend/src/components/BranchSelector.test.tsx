@@ -228,6 +228,112 @@ describe("a branch that is checked out somewhere else", () => {
   });
 });
 
+/**
+ * The sentence describes the *target* branch — the typed name when there is
+ * one, the base branch otherwise — and follows the same ladder the backend
+ * walks: is a worktree already on it, does it exist at all, otherwise create.
+ *
+ * None of this changes a single emitted config. Every case below is the box
+ * telling the truth about a request it was already making.
+ */
+describe("a typed name that is not new", () => {
+  const occupiedElsewhere: CheckedOutBranch[] = [
+    { branch: "main", path: REPO, isMainWorktree: true },
+    { branch: "feat/y", path: "/home/cybil/callboard.feat-y", isMainWorktree: false },
+  ];
+
+  it("worktree on, name already has a worktree: names the directory the chat will land in", async () => {
+    stubBranches({ checkedOut: occupiedElsewhere });
+    const { onChange } = await open();
+
+    fireEvent.click(toggle());
+    type("feat/y");
+
+    // Unchanged request — `ensureWorktreeDetailed` finds the branch checked out
+    // and hands back that path instead of making anything.
+    expect(emitted(onChange)).toEqual({ useWorktree: true, baseBranch: "main", newBranch: "feat/y" });
+    expect(summary()).toBe("feat/y is checked out at callboard.feat-y — the chat will run there.");
+  });
+
+  it("worktree on, name exists with no worktree: says it will be checked out, not created", async () => {
+    stubBranches();
+    const { onChange } = await open();
+
+    fireEvent.click(toggle());
+    type("feat/y");
+
+    expect(emitted(onChange)).toEqual({ useWorktree: true, baseBranch: "main", newBranch: "feat/y" });
+    expect(summary()).toBe("feat/y already exists — will check it out in a new worktree at callboard.feat-y.");
+  });
+
+  it("worktree off, name already has a worktree: the same redirect, plus the reassurance", async () => {
+    stubBranches({ checkedOut: occupiedElsewhere });
+    const { onChange } = await open();
+
+    type("feat/y");
+
+    expect(emitted(onChange)).toEqual({ baseBranch: "main", newBranch: "feat/y" });
+    expect(summary()).toBe("feat/y is checked out at callboard.feat-y — the chat will run there. This checkout is untouched.");
+  });
+
+  /**
+   * True only since `switchBranch` stopped passing `-b` unconditionally — this
+   * exact request was a 500 before that, so the sentence would have been
+   * describing a crash.
+   */
+  it("worktree off, name exists with no worktree: says it will switch, not create", async () => {
+    stubBranches();
+    const { onChange } = await open();
+
+    type("feat/y");
+
+    expect(emitted(onChange)).toEqual({ baseBranch: "main", newBranch: "feat/y" });
+    expect(summary()).toBe("feat/y already exists — will switch this checkout to it.");
+  });
+
+  /**
+   * The asymmetry, and it is not a slip in either direction: the two backend
+   * functions disagree about whether the current directory counts, so the two
+   * sentences have to as well.
+   *
+   * `ensureWorktreeDetailed` matches any worktree on the branch — including
+   * this one — and returns its path, so asking for a worktree on the branch you
+   * are already on gets you this directory and no isolation at all. Saying so
+   * is the whole point. `switchBranch` excludes the current directory, because
+   * checking out the branch you are on is not a redirect anywhere.
+   */
+  it("with the toggle on, the branch you are already on is still 'checked out at' here", async () => {
+    stubBranches();
+    await open();
+
+    fireEvent.click(toggle());
+    type("main");
+
+    expect(summary()).toBe("main is checked out at callboard — the chat will run there.");
+  });
+
+  it("with the toggle off, the same name is not a redirect", async () => {
+    stubBranches();
+    await open();
+
+    type("main");
+
+    expect(summary()).toBe("main already exists — will switch this checkout to it.");
+  });
+
+  /** A name nobody has used still reads as a creation, on both sides. */
+  it("leaves a genuinely new name on the create sentences", async () => {
+    stubBranches({ checkedOut: occupiedElsewhere });
+    await open();
+
+    type("feat/brand-new");
+    expect(summary()).toBe("Will create branch feat/brand-new off main in this checkout.");
+
+    fireEvent.click(toggle());
+    expect(summary()).toBe("Will create callboard.feat-brand-new on new branch feat/brand-new, off main.");
+  });
+});
+
 describe("the sticky toggle", () => {
   it("starts off on a browser that has never set it", async () => {
     await open();

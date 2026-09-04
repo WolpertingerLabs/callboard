@@ -131,43 +131,92 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
   const worktreeDirName = (branch: string) => `${repoName}.${branch.replace(/\//g, "-")}`;
 
   /**
-   * Where the selected base branch already lives, if that is somewhere other
-   * than here. `switchBranch` matches on the exact directory, so a worktree
-   * whose path *is* this folder is not a redirect.
+   * The two questions the backend asks about a branch before it does anything,
+   * asked of the same data: does a worktree hold it, and does it exist at all.
+   *
+   * The asymmetry between these two is not an oversight — it mirrors one in the
+   * code they describe. `ensureWorktreeDetailed` matches *any* worktree on the
+   * branch, including the directory you are standing in, and hands that path
+   * back. `switchBranch` excludes it (`wt.path !== directory`), because
+   * checking out the branch you are already on is not a redirect. Collapsing
+   * them would make the sentence wrong on one side or the other.
+   *
+   * `branches` is `git branch --list`, local refs only — the same question
+   * `localBranchExists` answers before deciding whether to pass `-b`.
    */
-  const baseCheckedOutElsewhere = useMemo(() => {
-    const here = folder.replace(/\/+$/, "");
-    return checkedOut.find((wt) => wt.branch === baseBranch && wt.path.replace(/\/+$/, "") !== here) ?? null;
-  }, [checkedOut, baseBranch, folder]);
+  const here = folder.replace(/\/+$/, "");
+  const worktreeOn = (branch: string) => checkedOut.find((wt) => wt.branch === branch) ?? null;
+  const worktreeElsewhereOn = (branch: string) => checkedOut.find((wt) => wt.branch === branch && wt.path.replace(/\/+$/, "") !== here) ?? null;
+  const branchExists = (branch: string) => branches.includes(branch);
+
+  /**
+   * The branch that already lives somewhere else, and where. Said twice, with
+   * the reassurance only where it is worth saying: with the toggle on, this
+   * checkout was never going to be touched, so claiming credit for that would
+   * be noise. With it off, not switching is precisely the surprise.
+   */
+  const runsThereInstead = (branch: string, path: string, reassure: boolean) => (
+    <>
+      <Name>{branch}</Name> is checked out at <Name>{basename(path)}</Name> — the chat will run there.
+      {reassure ? " This checkout is untouched." : ""}
+    </>
+  );
 
   /**
    * What the current selection will do, in a sentence. Always rendered, because
-   * every one of these states was previously silent — including the last one,
-   * where picking a branch that lives in another worktree sends the chat to
-   * that directory and leaves this checkout alone.
+   * every one of these states was previously silent — including the ones where
+   * picking a branch that lives in another worktree sends the chat to that
+   * directory and leaves this checkout alone.
+   *
+   * The subject is always the *target* branch — the typed name if there is one,
+   * the base branch otherwise — because that is what the backend keys all of
+   * its decisions on. The one ladder rung deliberately not mirrored is
+   * `ensureWorktreeDetailed`'s first: a derived directory that already exists
+   * while the branch does not. That is rare, and describing it would mean
+   * modelling reuse rather than reading two facts off a listing.
    */
   const summary: ReactNode = (() => {
-    if (useWorktree && !trimmedName) {
-      return (
-        <>
-          Will create a new worktree off <Name>{baseBranch}</Name>, on a branch named from your first message.
-        </>
-      );
-    }
     if (useWorktree) {
+      if (!trimmedName) {
+        return (
+          <>
+            Will create a new worktree off <Name>{baseBranch}</Name>, on a branch named from your first message.
+          </>
+        );
+      }
+      const occupied = worktreeOn(trimmedName);
+      if (occupied) return runsThereInstead(trimmedName, occupied.path, false);
+      if (branchExists(trimmedName)) {
+        return (
+          <>
+            <Name>{trimmedName}</Name> already exists — will check it out in a new worktree at <Name>{worktreeDirName(trimmedName)}</Name>.
+          </>
+        );
+      }
       return (
         <>
           Will create <Name>{worktreeDirName(trimmedName)}</Name> on new branch <Name>{trimmedName}</Name>, off <Name>{baseBranch}</Name>.
         </>
       );
     }
+
     if (trimmedName) {
+      const occupied = worktreeElsewhereOn(trimmedName);
+      if (occupied) return runsThereInstead(trimmedName, occupied.path, true);
+      if (branchExists(trimmedName)) {
+        return (
+          <>
+            <Name>{trimmedName}</Name> already exists — will switch this checkout to it.
+          </>
+        );
+      }
       return (
         <>
           Will create branch <Name>{trimmedName}</Name> off <Name>{baseBranch}</Name> in this checkout.
         </>
       );
     }
+
     if (baseBranch === currentBranch) {
       return (
         <>
@@ -175,14 +224,8 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
         </>
       );
     }
-    if (baseCheckedOutElsewhere) {
-      return (
-        <>
-          <Name>{baseBranch}</Name> is checked out at <Name>{basename(baseCheckedOutElsewhere.path)}</Name> — the chat will run there. This checkout
-          is untouched.
-        </>
-      );
-    }
+    const occupied = worktreeElsewhereOn(baseBranch);
+    if (occupied) return runsThereInstead(baseBranch, occupied.path, true);
     return (
       <>
         Will switch this checkout to <Name>{baseBranch}</Name>.

@@ -722,8 +722,13 @@ export interface CheckedOutBranch {
 
 /**
  * `checkedOut` is optional because a daemon older than this bundle does not send
- * it. Callers must treat its absence as "unknown", not as "nothing is checked
- * out elsewhere" — the latter would let the UI state the opposite of the truth.
+ * it. `BranchSelector` renders absence and emptiness identically — as "nothing
+ * is checked out elsewhere" — and that is deliberate rather than a gap left to
+ * close: what the field buys is one extra sentence about a redirect, so losing
+ * it costs the enhancement, not correctness. The fallback sentence is the one
+ * the box showed before this field existed, and the request it describes is
+ * unchanged either way. A third "we cannot tell" state would spend the user's
+ * attention on the daemon's version rather than on their own choice.
  */
 export async function getGitBranches(folder: string): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
   const res = await fetch(`${BASE}/git/branches?folder=${encodeURIComponent(folder)}`);
