@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ensureWorktreeDetailed, fallbackBranchName, getGitInfo, hasUncommittedChanges, resolveBranch, uniqueBranchName } from "./git.js";
+import { ensureWorktreeDetailed, fallbackBranchName, getGitInfo, getGitWorktrees, hasUncommittedChanges, resolveBranch, uniqueBranchName } from "./git.js";
 
 // Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
 // a symlink to `/private/var/folders/...`. Worktree resolution reports the real
@@ -677,5 +677,69 @@ describe("existing branches and non-repositories", () => {
     // makes this one work, and the client's retry modal must not offer one.
     expect(result.message).toContain(plain);
     expect(existsSync(`${plain}.feat-x`)).toBe(false);
+  });
+
+  /**
+   * The twin refusal, reached by the identical argument on the identical shape
+   * of silence. `targetBranch` is `newBranch || baseBranch`, and every rung
+   * after the repository check is gated on it, so `useWorktree` with neither
+   * fell all the way through to `{ok: true, folder}` — the caller's own
+   * checkout, no worktree, indistinguishable from "no worktree was asked for".
+   *
+   * `start_chat_session` is where it is reachable from: all three fields are
+   * optional there, and it has no `is_git_repo` gate either.
+   */
+  it("refuses a worktree that names no branch at all", () => {
+    const dir = makeRepo("worktree-no-branch");
+
+    const result = resolveBranch({ folder: dir, useWorktree: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("no_branch_for_worktree");
+    expect(result.message).toContain(dir);
+    // And nothing was made on the way to saying so.
+    expect(getGitWorktrees(dir)).toHaveLength(1);
+  });
+
+  /** Either field is enough to name a target, and neither is refused. */
+  it("takes a base branch alone as the branch to put in the worktree", () => {
+    const dir = makeRepo("worktree-base-only");
+    git(["branch", "feat/base-only"], dir);
+
+    const result = resolveBranch({ folder: dir, baseBranch: "feat/base-only", useWorktree: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(join(dirname(dir), "repo.feat-base-only"));
+    expect(result.worktree?.mode).toBe("checkout-branch");
+  });
+
+  /**
+   * The refusal is about the worktree, not about the request. Without the
+   * flag, "no branch named" is a chat in the folder you asked for, which is
+   * what nearly every chat in the app is.
+   */
+  it("leaves a request that named no branch and asked for no worktree alone", () => {
+    const dir = makeRepo("no-branch-no-worktree");
+
+    const result = resolveBranch({ folder: dir });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(dir);
+  });
+
+  /**
+   * Which of the two refusals a plain directory gets, when both apply. The
+   * repository check comes first deliberately: "this is not a git repository"
+   * is the more fundamental of the two things wrong with the request, and
+   * telling the caller to pass a branch name would send them to fix the wrong
+   * thing.
+   */
+  it("reports the missing repository ahead of the missing branch", () => {
+    const plain = mkdtempSync(join(tmpRoot, "not-a-repo-no-branch-"));
+
+    const result = resolveBranch({ folder: plain, useWorktree: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("not_a_git_repo");
   });
 });

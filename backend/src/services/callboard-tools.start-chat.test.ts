@@ -9,6 +9,7 @@
  * reaches sendMessage and the result JSON.
  */
 import { describe, it, expect, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -144,6 +145,30 @@ describe("start_chat_session model inheritance", () => {
     expect(result.message).toContain(plain);
     // And no child: a session started in the unisolated folder is the outcome
     // the agent asked not to have.
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  /**
+   * The same silence, in a real repository. `useWorktree` is the only one of
+   * the three branch fields the schema requires an agent to think about — the
+   * other two are optional and easy to leave off — and without a branch to
+   * create or check out, every rung of `resolveBranch` was skipped and the
+   * request came back as a chatId in the caller's own checkout.
+   *
+   * This one is only reachable here: the branch box always sends a base branch
+   * or an `autoCreateBranch` the route turns into a name (see
+   * `stream.branch-config.test.ts`).
+   */
+  it("reports a worktree with no branch instead of starting the session in the checkout", async () => {
+    writeCallerChat({ title: "spawner" });
+    const sender = stubSender();
+    const repo = mkdtempSync(join(tmpdir(), "callboard-tools-bare-worktree-"));
+    execFileSync("git", ["init", "-q", "-b", "main", repo], { stdio: "pipe" });
+
+    const result = payload(await startChat().handler({ prompt: "go", folder: repo, useWorktree: true }));
+
+    expect(result).toMatchObject({ ok: false, error: "no_branch_for_worktree" });
+    expect(result.message).toContain(repo);
     expect(sender.calls).toHaveLength(0);
   });
 

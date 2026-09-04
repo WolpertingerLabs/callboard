@@ -242,4 +242,35 @@ describe("POST /new/message — when git refuses", () => {
     expect(answered.body.code).toBe("not_a_git_repo");
     expect(lastSendOptions).toBeUndefined();
   });
+
+  /**
+   * `resolveBranch` also refuses a worktree that names no branch, and the box
+   * must not be able to ask for one — a UI that can walk into a 400 it has no
+   * message for is a worse bug than the silence the refusal replaced.
+   *
+   * Asserted rather than reasoned about, because the reasoning is a chain
+   * across two files: `BranchSelector` sends `baseBranch` with the toggle, or
+   * `autoCreateBranch` when there is no branch to name (a detached HEAD), and
+   * the route turns the second into a `newBranch` *before* resolving. The two
+   * cases below are those two shapes, and neither reaches the refusal.
+   */
+  it("cannot be reached by either config the branch box emits with the toggle on", async () => {
+    // Generation off, so both cases lean on the stamped fallback — the path
+    // where a `newBranch` has to be minted before `resolveBranch` sees it.
+    generator.result = null;
+
+    const withBase = makeRepo("toggle-with-base");
+    await postNewMessage(withBase, { useWorktree: true, autoCreateBranch: true, baseBranch: "main" });
+    expect(basename(lastSendOptions!.folder)).toMatch(/^repo\.chat-\d{8}-[0-9a-f]{6}$/);
+
+    // No base at all, which is what the box sends from a detached HEAD.
+    const detached = makeRepo("toggle-detached");
+    await postNewMessage(detached, { useWorktree: true, autoCreateBranch: true });
+    expect(basename(lastSendOptions!.folder)).toMatch(/^repo\.chat-\d{8}-[0-9a-f]{6}$/);
+
+    // Isolation in both, which is the claim: a refused request would have left
+    // `lastSendOptions` undefined, and a silently-honoured one would have
+    // handed back the repository itself.
+    expect(lastSendOptions?.folder).not.toBe(detached);
+  });
 });

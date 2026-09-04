@@ -1368,7 +1368,23 @@ export type ResolveBranchResult =
    * `start_chat_session` used to come back as a chatId with no isolation and
    * nothing saying so.
    */
-  | { ok: false; error: "not_a_git_repo"; message: string; folder: string };
+  | { ok: false; error: "not_a_git_repo"; message: string; folder: string }
+  /**
+   * A worktree was asked for with nothing saying what should be in it.
+   *
+   * The twin of `not_a_git_repo`, reached by the identical argument. Every rung
+   * below is gated on `newBranch || baseBranch`, so `useWorktree` alone fell
+   * straight through to `{ok: true, folder}` — the caller's own checkout, no
+   * worktree, and the same silence: a success carrying the folder unchanged is
+   * indistinguishable from "no worktree was asked for".
+   *
+   * The UI cannot produce it. `BranchSelector` sends `baseBranch` alongside the
+   * toggle, or `autoCreateBranch` when there is no branch to name, and the
+   * route mints a `newBranch` from that before resolving. `start_chat_session`
+   * has all three optional, which is where this is reachable from — and a
+   * bundle older than the toggle rewrite is the other way in.
+   */
+  | { ok: false; error: "no_branch_for_worktree"; message: string; folder: string };
 
 /**
  * Resolve a branch configuration to an effective working directory.
@@ -1413,6 +1429,22 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
       };
     }
     return { ok: true, folder };
+  }
+
+  // Isolation asked for, with nothing to isolate. Refused for exactly the
+  // reason the non-repository case above is: `useWorktree` is a request, the
+  // rungs below all need a branch, and `{ok: true}` on the way past them is
+  // the shape of silence this PR exists to remove.
+  //
+  // Deliberately *after* the repository check, so a plain directory is told
+  // the more fundamental of the two things wrong with the request.
+  if (!targetBranch) {
+    return {
+      ok: false,
+      error: "no_branch_for_worktree",
+      message: `Cannot create a worktree in "${folder}" without a branch: pass newBranch to make one, or baseBranch to check an existing one out.`,
+      folder,
+    };
   }
 
   // Dirty-state guard: block in-place branch switch if uncommitted changes exist.
