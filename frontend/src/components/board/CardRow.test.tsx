@@ -9,7 +9,7 @@
  * the mobile fallback's touch target.
  */
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { CardMemberChat, CardMemberRun, CardSummary } from "../../api";
 import CardRow from "./CardRow";
 
@@ -44,6 +44,17 @@ const FOLDER: CardMemberChat = {
   createdAt: "2026-08-07T10:00:00.000Z",
   updatedAt: "2026-08-07T10:00:00.000Z",
 };
+
+function member(overrides: Partial<CardMemberChat> & Pick<CardMemberChat, "chatId" | "folder">): CardMemberChat {
+  return { ...FOLDER, ...overrides };
+}
+
+/** `count` distinct folders under one prefix, the root first — the shape of the real fan-out cards. */
+function fanout(count: number): CardMemberChat[] {
+  return Array.from({ length: count }, (_, i) =>
+    member({ chatId: i === 0 ? "card-1" : `chat-${i}`, folder: i === 0 ? "/home/cybil/callboard" : `/home/cybil/callboard.feat-${i}` }),
+  );
+}
 
 const RUN: CardMemberRun = {
   runId: "run-1",
@@ -123,6 +134,198 @@ describe("the status cell carries the running job", () => {
     // The second line is mounted on the strength of the job alone — gating it
     // on card.status would drop the job on a card that has never set one.
     expect(screen.getByText("nightly-rebase")).toBeDefined();
+  });
+});
+
+describe("the expansion chevron", () => {
+  // Not /folders$/: the +N badge beside it is titled "N other folders".
+  const chevron = () => screen.queryByTitle(/^(Show all|Hide) /);
+
+  it("stays away from the 97% of cards that live in one folder", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    // An affordance that does nothing on 794 of 818 rows is noise on all of them.
+    expect(chevron()).toBeNull();
+  });
+
+  it("appears once there is a second folder to open onto", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    expect(chevron()).toBeDefined();
+    expect(screen.getByTitle("Show all 3 folders")).toBeDefined();
+  });
+
+  it("toggles the row without opening the drawer under it", () => {
+    setWidth(1024);
+    const onClick = vi.fn();
+    const onToggleExpand = vi.fn();
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={onClick} showPath onToggleExpand={onToggleExpand} />);
+
+    fireEvent.click(screen.getByTitle("Show all 3 folders"));
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+    // It sits inside the row's main button, so a click that did not stop
+    // there would open the drawer on its way past.
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("is a span, not a button, because it lives inside one", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    // A nested <button> is invalid markup the parser splits apart, and no
+    // screen reader or keyboard can drive the result.
+    expect(screen.getByTitle("Show all 3 folders").tagName).toBe("SPAN");
+    expect(surface().querySelectorAll("button")).toHaveLength(0);
+  });
+
+  it("holds its 12px slot open on every row so the paths share a left edge", () => {
+    setWidth(1024);
+    const { container } = render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath />);
+    const slot = [...container.querySelectorAll<HTMLElement>("span")].find((el) => el.style.width === "12px");
+    expect(slot).toBeDefined();
+  });
+});
+
+describe("the folder expansion", () => {
+  /** The entries, in DOM order, as "<path text>" — the buttons below the row. */
+  function entries() {
+    return screen
+      .getAllByRole("button")
+      .filter((el) => el !== surface())
+      .map((el) => el.textContent);
+  }
+
+  it("hangs below the row's button rather than inside it", () => {
+    setWidth(1024);
+    const { container } = render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+
+    const outer = container.firstElementChild as HTMLElement;
+    // A folder entry is a button, so it cannot nest in the row's button. The
+    // outer element became a column exactly so it could hold both.
+    expect(outer.style.flexDirection).toBe("column");
+    expect(outer.children).toHaveLength(2);
+    expect(surface().querySelectorAll("button")).toHaveLength(0);
+  });
+
+  it("renders one entry per distinct folder, not per chat", () => {
+    setWidth(1024);
+    render(
+      <CardRow
+        // Four chats, two folders — the 20-folder card has 38 chats, and 38
+        // inline rows on the board is a second drawer.
+        card={card({
+          memberChats: [
+            member({ chatId: "card-1", folder: "/home/cybil/callboard" }),
+            member({ chatId: "b", folder: "/home/cybil/callboard" }),
+            member({ chatId: "c", folder: "/home/cybil/callboard.feat-a" }),
+            member({ chatId: "d", folder: "/home/cybil/callboard.feat-a" }),
+          ],
+        })}
+        onClick={vi.fn()}
+        showPath
+        expanded
+        onToggleExpand={vi.fn()}
+        onOpenFolder={vi.fn()}
+      />,
+    );
+    expect(entries()).toHaveLength(2);
+  });
+
+  it("caps at eight entries and sends the rest to the drawer", () => {
+    setWidth(1024);
+    const onClick = vi.fn();
+    render(<CardRow card={card({ memberChats: fanout(20) })} onClick={onClick} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+
+    const rendered = entries();
+    expect(rendered).toHaveLength(9); // 8 folders + the footer
+    expect(rendered[8]).toBe("… 12 more");
+
+    // Unfiltered: the footer's job is "go where all of these live".
+    fireEvent.click(screen.getByText("… 12 more"));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing about more when everything fits", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ memberChats: fanout(8) })} onClick={vi.fn()} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+    expect(screen.queryByText(/more$/)).toBeNull();
+  });
+
+  it("hoists the shared prefix once and leaves each entry its remainder", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+
+    // Once in the header, not once per row — twelve copies of /home/cybil is
+    // twelve copies of the substring that distinguishes nothing.
+    expect(screen.getAllByText("/home/cybil")).toHaveLength(1);
+    // And each entry shows only what is left of its own path.
+    expect(screen.getByTitle("/home/cybil/callboard.feat-2").textContent).toBe("callboard.feat-2");
+    expect(entries().every((text) => !text?.includes("/home/cybil"))).toBe(true);
+  });
+
+  it("labels the root folder, which is pinned first even when it is the quietest", () => {
+    setWidth(1024);
+    render(
+      <CardRow
+        card={card({
+          memberChats: [
+            member({ chatId: "card-1", folder: "/home/cybil/callboard", updatedAt: "2026-08-01T10:00:00.000Z" }),
+            member({ chatId: "b", folder: "/home/cybil/callboard.feat-a", status: "waiting" }),
+          ],
+        })}
+        onClick={vi.fn()}
+        showPath
+        expanded
+        onToggleExpand={vi.fn()}
+        onOpenFolder={vi.fn()}
+      />,
+    );
+    expect(entries()[0]).toContain("root");
+    expect(screen.getAllByText("root")).toHaveLength(1);
+  });
+
+  it("distinguishes a folder someone is blocked in from one that is merely busy", () => {
+    setWidth(1024);
+    const { container } = render(
+      <CardRow
+        card={card({
+          memberChats: [
+            member({ chatId: "card-1", folder: "/home/cybil/callboard", status: "waiting" }),
+            member({ chatId: "b", folder: "/home/cybil/callboard.feat-a", status: "ongoing" }),
+            member({ chatId: "c", folder: "/home/cybil/callboard.feat-b" }),
+          ],
+        })}
+        onClick={vi.fn()}
+        showPath
+        expanded
+        onToggleExpand={vi.fn()}
+        onOpenFolder={vi.fn()}
+      />,
+    );
+
+    // Scoped to the expansion — the row's own button leads with the emoji.
+    const expansion = container.firstElementChild!.children[1];
+    const dots = [...expansion.querySelectorAll<HTMLElement>("button > span:first-child")].map((el) => el.style.background);
+    // "Blocked on you over there" is a different fact from "running over
+    // there", and cardFolders already tells them apart.
+    expect(dots).toEqual(["var(--board-rollup-needs-you)", "var(--board-rollup-active)", "transparent"]);
+  });
+
+  it("opens the drawer filtered to the folder that was clicked", () => {
+    setWidth(1024);
+    const onOpenFolder = vi.fn();
+    const onClick = vi.fn();
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={onClick} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={onOpenFolder} />);
+
+    fireEvent.click(screen.getByTitle("/home/cybil/callboard.feat-2"));
+    expect(onOpenFolder).toHaveBeenCalledWith("/home/cybil/callboard.feat-2");
+    // The unfiltered open is a different gesture, and this is not it.
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("stays shut when the board has not asked for it", () => {
+    setWidth(1024);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+    expect(screen.queryAllByRole("button").filter((el) => el !== surface())).toHaveLength(0);
   });
 });
 

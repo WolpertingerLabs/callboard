@@ -2,8 +2,9 @@ import type { CardSummary } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { cardFolderSummary, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
 import CardPathLabel from "./CardPathLabel";
+import { commonPathPrefix } from "../../utils/pathTruncate";
 import { useIsMobile } from "../../hooks/useIsMobile";
-import { MessageSquare, Pin, Check } from "lucide-react";
+import { MessageSquare, Pin, Check, ChevronRight, ChevronDown } from "lucide-react";
 
 interface CardRowProps {
   card: CardSummary;
@@ -18,7 +19,31 @@ interface CardRowProps {
   onLongPress?: () => void;
   /** The board's "show paths" preference. Off by default, which drops the folder column entirely. */
   showPath?: boolean;
+  /** Whether this row's folder breakdown is open. The board owns it — see Board.tsx's isExpanded. */
+  expanded?: boolean;
+  /** Absent means no chevron at all, exactly as an absent onToggleSelect means no checkbox. */
+  onToggleExpand?: () => void;
+  /** Opens the drawer filtered to one folder. Absent leaves the folder entries unclickable text. */
+  onOpenFolder?: (folder: string) => void;
 }
+
+/**
+ * A 20-folder expansion pushes every other card off the screen, and the
+ * measured tail is 11, 12, 12, 16, 20. The cap is what keeps an expansion a
+ * summary rather than a navigation — the drawer is the navigation, and the
+ * footer goes there.
+ */
+const EXPANSION_CAP = 8;
+
+/**
+ * Live folders only. `cardFolders` already distinguishes the two states, and
+ * the distinction is the useful half: "someone is blocked on you in that
+ * worktree" is a different fact from "something is running there".
+ */
+const FOLDER_LIVE_COLORS: Record<"waiting" | "ongoing", string> = {
+  waiting: "var(--board-rollup-needs-you)",
+  ongoing: "var(--board-rollup-active)",
+};
 
 /**
  * The three trailing columns are `auto` in the shared template, and each row is
@@ -54,6 +79,9 @@ export default function CardRow({
   onToggleSelect,
   onLongPress,
   showPath = false,
+  expanded = false,
+  onToggleExpand,
+  onOpenFolder,
 }: CardRowProps) {
   const isMobile = useIsMobile();
   const closed = card.lifecycle === "closed";
@@ -132,13 +160,47 @@ export default function CardRow({
     </span>
   );
 
+  // 97% of cards live in exactly one folder. An affordance that does nothing
+  // on 794 of 818 rows is noise on every one of them, so the chevron exists
+  // only where there is a second folder to open onto.
+  const expandable = folders.length > 1 && Boolean(onToggleExpand);
+  const showExpansion = expandable && expanded;
+
   const folderCell = (
     <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
-      {/* Reserved for phase 2b's expansion chevron. Held open now so every
-          path in the column starts at the same x whether or not its card has
-          somewhere to expand to, and so adding the control later re-flows
-          nothing. */}
-      <span style={{ width: 12, flexShrink: 0 }} />
+      {/* The 12px slot phase 2a reserved. Held open on every row, chevron or
+          not, so each path in the column starts at the same x.
+
+          A span rather than a button, deliberately: this cell lives inside the
+          row's main <button>, and a focusable control nested in a button is
+          invalid HTML that screen readers and keyboards both mishandle. The
+          keyboard path to the same state is the board header's expand toggle,
+          which sets the resting state for every row; once a row IS open, its
+          folder entries below are real buttons that Tab reaches. */}
+      <span style={{ width: 12, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {expandable && (
+          <span
+            onClick={(e) => {
+              // The row's own click opens the drawer; this one must not.
+              e.stopPropagation();
+              onToggleExpand?.();
+            }}
+            title={expanded ? "Hide folders" : `Show all ${folders.length} folders`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              color: "var(--board-tile-meta-text)",
+              // A thumb needs more than 12px, and what it hits by mistake is
+              // the row underneath, which opens a drawer.
+              ...(isMobile && { padding: 8, margin: -8 }),
+            }}
+          >
+            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+        )}
+      </span>
       {folders.length > 0 && (
         <>
           <CardPathLabel path={folders[0].path} color="var(--board-tile-meta-text)" />
@@ -186,6 +248,101 @@ export default function CardRow({
     </span>
   );
 
+  // One entry PER FOLDER, not per chat: the 20-folder card in the real data
+  // has 38 chats, and 38 inline rows on the board is a second drawer.
+  const shownFolders = folders.slice(0, EXPANSION_CAP);
+  const hiddenCount = folders.length - shownFolders.length;
+  // Hoisted out of what is actually on screen, so the header describes the
+  // rows under it. This is what stops a twelve-row list printing /home/cybil
+  // twelve times; each label keeps the full path in its title regardless.
+  const sharedPrefix = commonPathPrefix(shownFolders.map((f) => f.path)) ?? undefined;
+
+  const expansion = showExpansion && (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 1,
+        // Clear of the emoji column, so the breakdown reads as belonging to
+        // the row above rather than as more rows.
+        padding: isMobile ? "2px 12px 8px 26px" : "2px 12px 8px 40px",
+      }}
+    >
+      {sharedPrefix && (
+        <span style={{ fontSize: 11, color: "var(--board-tile-meta-text)", opacity: 0.7, paddingBottom: 2 }}>{sharedPrefix}</span>
+      )}
+      {shownFolders.map((folder) => (
+        <button
+          key={folder.path}
+          onClick={() => onOpenFolder?.(folder.path)}
+          disabled={!onOpenFolder}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            minWidth: 0,
+            minHeight: isMobile ? 32 : undefined,
+            padding: "2px 6px",
+            background: "transparent",
+            border: "none",
+            borderRadius: 4,
+            textAlign: "left",
+            font: "inherit",
+            color: "var(--board-tile-meta-text)",
+            cursor: onOpenFolder ? "pointer" : "default",
+          }}
+        >
+          {/* The dot's box is there on every entry, coloured only when the
+              folder is live, so the paths under it stay on one left edge. */}
+          <span
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              flexShrink: 0,
+              background: folder.live ? FOLDER_LIVE_COLORS[folder.live] : "transparent",
+            }}
+            {...(folder.live && { title: folder.live })}
+          />
+          <CardPathLabel path={folder.path} prefix={sharedPrefix} color="var(--board-tile-meta-text)" />
+          {folder.isRoot && (
+            // A label, not a sort surprise: the root is pinned to the top of
+            // cardFolders' order even when it is the quietest folder here.
+            <span style={{ flexShrink: 0, fontSize: 10, opacity: 0.7 }}>root</span>
+          )}
+          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 3, flexShrink: 0, fontSize: 11 }}>
+            <MessageSquare size={10} />
+            {folder.chatCount}
+          </span>
+          <span style={{ flexShrink: 0, fontSize: 11, width: TIME_WIDTH, textAlign: "right" }}>{formatRelativeTime(folder.lastActivityAt)}</span>
+        </button>
+      ))}
+      {hiddenCount > 0 && (
+        // The drawer is where a fan-out this wide gets navigated, so the
+        // overflow goes there rather than growing the row.
+        <button
+          onClick={onClick}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            minHeight: isMobile ? 32 : undefined,
+            padding: "2px 6px",
+            background: "transparent",
+            border: "none",
+            borderRadius: 4,
+            font: "inherit",
+            fontSize: 11,
+            color: "var(--board-tile-meta-text)",
+            opacity: 0.8,
+            cursor: "pointer",
+          }}
+        >
+          … {hiddenCount} more
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <div
       {...hoverProps}
@@ -202,7 +359,12 @@ export default function CardRow({
         outline: selected ? "1px solid var(--accent)" : "none",
         outlineOffset: -1,
         borderRadius: 6,
+        // A column so the folder breakdown can sit BELOW the row's button as
+        // its sibling. It cannot sit inside: a folder entry is a button, and a
+        // button inside a button is invalid markup that the HTML parser splits
+        // apart and that keyboards and screen readers cannot drive.
         display: "flex",
+        flexDirection: "column",
         minWidth: 0,
         // A selected row is never dimmed — see CardTile for why the dim is an
         // opacity on the whole face and what that costs a selection ring.
@@ -327,6 +489,8 @@ export default function CardRow({
           {timeCell}
         </button>
       )}
+
+      {expansion}
     </div>
   );
 }
