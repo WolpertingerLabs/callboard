@@ -166,6 +166,21 @@ describe("uniqueBranchName", () => {
     expect(uniqueBranchName(dir, "feat/a/b")).toBe("feat/a/b-2");
   });
 
+  it("suffixes -2 for a name that exists only on a remote", () => {
+    // `git branch --list` is local refs only, so `origin/feat/remote-only`
+    // reads as free and `worktree add -b` happily mints an unrelated local
+    // branch of that name — verified against a real repo, it exits 0. The
+    // collision then waits until a push, with the work already done.
+    const dir = makeRepo("unique-remote");
+    git(["update-ref", "refs/remotes/origin/feat/remote-only", "HEAD"], dir);
+    // A remote's default-branch symref is not a branch of its own and must not
+    // make every candidate look taken.
+    git(["update-ref", "refs/remotes/origin/HEAD", "HEAD"], dir);
+
+    expect(uniqueBranchName(dir, "feat/remote-only")).toBe("feat/remote-only-2");
+    expect(uniqueBranchName(dir, "feat/untaken")).toBe("feat/untaken");
+  });
+
   it("keeps suffixing past an occupied -2", () => {
     const dir = makeRepo("unique-chain");
     git(["branch", "fix/login"], dir);
@@ -218,6 +233,21 @@ describe("generated names never share a worktree", () => {
     expect(first.worktree?.created).toBe(true);
     expect(second.worktree?.created).toBe(false);
     expect(existsSync(join(dirname(dir), "repo.feat-typed-2"))).toBe(false);
+  });
+
+  it("leaves a typed name that matches a remote branch alone", () => {
+    // The remote check belongs to `uniqueBranchName` and nothing else. Typing a
+    // name that matches `origin/feat/shared` is a choice the user is entitled
+    // to make — quietly redirecting them to `feat/shared-2` would be worse than
+    // today's behaviour, not better.
+    const dir = makeRepo("typed-remote");
+    git(["update-ref", "refs/remotes/origin/feat/shared", "HEAD"], dir);
+
+    const result = resolveBranch({ folder: dir, newBranch: "feat/shared", baseBranch: "main", useWorktree: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(join(dirname(dir), "repo.feat-shared"));
+    expect(result.worktree?.branch).toBe("feat/shared");
   });
 
   it("never lands in the main checkout when generation failed", () => {

@@ -594,6 +594,37 @@ export function fallbackBranchName(): string {
   return `chat/${stamp}-${randomBytes(3).toString("hex")}`;
 }
 
+/**
+ * Branch names any remote has, with the `refs/remotes/<remote>/` prefix off —
+ * so `refs/remotes/origin/feat/x` reads as `feat/x`, comparable to the local
+ * names {@link getGitBranches} returns.
+ *
+ * Listed once rather than probed per candidate: `uniqueBranchName` may test
+ * twenty names, and this is one subprocess instead of twenty. `strip=3` drops
+ * exactly `refs`, `remotes` and the remote name, leaving branch names that
+ * contain slashes intact. `origin/HEAD` is a symref to the remote's default
+ * branch, not a branch of its own, and is dropped.
+ */
+function listRemoteBranchNames(repoDir: string): Set<string> {
+  const names = new Set<string>();
+  try {
+    const output = execFileSync("git", ["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"], {
+      cwd: repoDir,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 5000,
+    }).trim();
+    for (const line of output.split("\n")) {
+      const name = line.trim();
+      if (name && name !== "HEAD") names.add(name);
+    }
+  } catch {
+    // No remotes, or git could not answer. Uniqueness degrades to the local
+    // checks, which is where it was before this existed.
+  }
+  return names;
+}
+
 /** `candidate` with a `-n` suffix, kept inside the length cap and git-legal, or null. */
 function suffixedBranchName(candidate: string, n: number): string | null {
   const suffix = `-${n}`;
@@ -622,10 +653,19 @@ function suffixedBranchName(candidate: string, n: number): string | null {
  * place — and wrong for one we made up from a prompt, where the collision is an
  * accident of two chats describing similar work.
  *
- * A candidate is taken if git knows the branch, if any worktree has it checked
- * out, or if the directory {@link worktreePathForBranch} derives for it already
- * exists. The last is the one nothing else catches: `feat/a-b` and `feat/a/b`
- * are distinct branches that want the same directory.
+ * A candidate is taken if git knows the branch locally, if a remote has it, if
+ * any worktree has it checked out, or if the directory
+ * {@link worktreePathForBranch} derives for it already exists. Each catches
+ * something the others do not: the path is the only one that sees `feat/a-b`
+ * against `feat/a/b`, two distinct branches that want one directory, and the
+ * remotes are the only one that sees a name that exists solely as
+ * `origin/feat/x` — `git worktree add -b feat/x` succeeds there, minting a
+ * local branch unrelated to the remote one, and the collision does not surface
+ * until a push, with the work already done.
+ *
+ * The remote check is deliberately *not* applied to names the user typed. A
+ * typed name matching a remote branch is a choice they are entitled to make;
+ * silently suffixing it would be worse than today's behaviour.
  */
 export function uniqueBranchName(repoDir: string, candidate: string): string {
   try {
@@ -638,8 +678,10 @@ export function uniqueBranchName(repoDir: string, candidate: string): string {
   }
 
   const branches = new Set(getGitBranches(repoDir));
+  const remotes = listRemoteBranchNames(repoDir);
   const checkedOut = new Set(getGitWorktrees(repoDir).flatMap((wt) => (wt.branch ? [wt.branch] : [])));
-  const taken = (name: string): boolean => branches.has(name) || checkedOut.has(name) || existsSync(worktreePathForBranch(repoDir, name));
+  const taken = (name: string): boolean =>
+    branches.has(name) || remotes.has(name) || checkedOut.has(name) || existsSync(worktreePathForBranch(repoDir, name));
 
   if (!taken(candidate)) return candidate;
 
