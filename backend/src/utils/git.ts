@@ -638,6 +638,28 @@ function suffixedBranchName(candidate: string, n: number): string | null {
 }
 
 /**
+ * Do two branch names fight over one slot in git's ref *directory tree*?
+ *
+ * Refs are files under `.git/refs/heads/`, so a branch name is a path and a
+ * branch may not be a directory prefix of another in either direction. With
+ * `feat/login` on disk, `refs/heads/feat/login` is a file and cannot also be
+ * the directory `refs/heads/feat/login/` that `feat/login/redirect` needs:
+ *
+ *   fatal: cannot lock ref 'refs/heads/feat/login/redirect':
+ *          'refs/heads/feat/login' exists; cannot create ...
+ *
+ * and symmetrically, `feat/api` cannot be created while `feat/api/v1` exists.
+ * Verified against real git, both directions, for `worktree add -b` and
+ * `checkout -b` alike — so both of Callboard's creation paths hit it.
+ *
+ * Equality is deliberately *not* included: the callers test that separately, on
+ * sets, and folding it in here would hide an O(1) lookup inside an O(n) scan.
+ */
+function refPathConflict(name: string, other: string): boolean {
+  return other.startsWith(`${name}/`) || name.startsWith(`${other}/`);
+}
+
+/**
  * Make a branch name we invented unique, so two chats never silently share one
  * branch and one worktree.
  *
@@ -648,14 +670,16 @@ function suffixedBranchName(candidate: string, n: number): string | null {
  * accident of two chats describing similar work.
  *
  * A candidate is taken if git knows the branch locally, if a remote has it, if
- * any worktree has it checked out, or if the directory
- * {@link worktreePathForBranch} derives for it already exists. Each catches
- * something the others do not: the path is the only one that sees `feat/a-b`
- * against `feat/a/b`, two distinct branches that want one directory, and the
- * remotes are the only one that sees a name that exists solely as
- * `origin/feat/x` — `git worktree add -b feat/x` succeeds there, minting a
- * local branch unrelated to the remote one, and the collision does not surface
- * until a push, with the work already done.
+ * any worktree has it checked out, if it {@link refPathConflict}s with any of
+ * those names, or if the directory {@link worktreePathForBranch} derives for it
+ * already exists. Each catches something the others do not: the path is the
+ * only one that sees `feat/a-b` against `feat/a/b`, two distinct branches that
+ * want one directory; the ref-tree check is the only one that sees `feat/login`
+ * against `feat/login/redirect`, which git refuses outright; and the remotes are
+ * the only one that sees a name that exists solely as `origin/feat/x` —
+ * `git worktree add -b feat/x` succeeds there, minting a local branch unrelated
+ * to the remote one, and the collision does not surface until a push, with the
+ * work already done.
  *
  * The remote check is deliberately *not* applied to names the user typed. A
  * typed name matching a remote branch is a choice they are entitled to make;
@@ -674,8 +698,16 @@ export function uniqueBranchName(repoDir: string, candidate: string): string {
   const branches = new Set(getGitBranches(repoDir));
   const remotes = listRemoteBranchNames(repoDir);
   const checkedOut = new Set(getGitWorktrees(repoDir).flatMap((wt) => (wt.branch ? [wt.branch] : [])));
+  // Local and remote both: the ref tree under `refs/heads/` is what creation
+  // locks against, and a name that only a remote has today is a name someone is
+  // going to fetch into `refs/heads/` tomorrow.
+  const refNames = [...branches, ...remotes];
   const taken = (name: string): boolean =>
-    branches.has(name) || remotes.has(name) || checkedOut.has(name) || existsSync(worktreePathForBranch(repoDir, name));
+    branches.has(name) ||
+    remotes.has(name) ||
+    checkedOut.has(name) ||
+    refNames.some((other) => refPathConflict(name, other)) ||
+    existsSync(worktreePathForBranch(repoDir, name));
 
   if (!taken(candidate)) return candidate;
 
@@ -685,6 +717,15 @@ export function uniqueBranchName(repoDir: string, candidate: string): string {
   }
 
   // Twenty variants of one name all taken means the name is not the problem.
+  //
+  // The suffix goes on the *last* segment, so it can only move a candidate out
+  // of a conflict it owns the tail of. `feat/api` against an existing
+  // `feat/api/v1` resolves to `feat/api-2`; `feat/login/redirect` against an
+  // existing `feat/login` cannot resolve at all, because every `-n` variant is
+  // still underneath `feat/login/`. That case walks the loop and lands here,
+  // which is the correct answer rather than a missed one: no name derived from
+  // this candidate is creatable, so the candidate has to be abandoned.
+  //
   // The stamped fallback carries 24 bits of randomness, so it is returned
   // without re-entering this loop.
   return fallbackBranchName();

@@ -274,6 +274,61 @@ describe("uniqueBranchName", () => {
     expect(uniqueBranchName(dir, "feat/untaken")).toBe("feat/untaken");
   });
 
+  /**
+   * Git stores refs as files under `refs/heads/`, so a branch name is a path
+   * and no branch may be a directory prefix of another — in either direction.
+   * `generateBranchName` validates `^(feat|fix|…)\/.+$` and scrubs to git-safe
+   * characters, both of which keep `/`, so a generated `feat/login/redirect` is
+   * an ordinary thing to reach this function with.
+   *
+   * Neither the branch list, the worktree list nor the derived path sees this:
+   * `feat/login` and `feat/login/redirect` are different strings that sanitize
+   * to different directories. Only the ref tree objects, and it objects by
+   * failing the creation.
+   */
+  it("suffixes when an existing branch sits underneath the candidate", () => {
+    // `git checkout -b feat/api` → fatal: cannot lock ref 'refs/heads/feat/api':
+    // 'refs/heads/feat/api/v1' exists; cannot create 'refs/heads/feat/api'
+    const dir = makeRepo("unique-ref-child");
+    git(["branch", "feat/api/v1"], dir);
+    expect(uniqueBranchName(dir, "feat/api")).toBe("feat/api-2");
+  });
+
+  it("sees the same conflict from a branch only a remote has", () => {
+    const dir = makeRepo("unique-ref-child-remote");
+    git(["update-ref", "refs/remotes/origin/feat/api/v1", "HEAD"], dir);
+    expect(uniqueBranchName(dir, "feat/api")).toBe("feat/api-2");
+  });
+
+  /**
+   * The other direction, and the one a suffix cannot rescue: every `-n` variant
+   * of `feat/login/redirect` is still underneath `refs/heads/feat/login/`, so
+   * the loop exhausts and the candidate is abandoned for a stamped name.
+   *
+   * That is the right answer rather than a missed one — no name derived from
+   * this candidate is creatable — but it is the one place where "suffix to -2"
+   * is not what happens, so it is pinned rather than assumed.
+   */
+  it("abandons a candidate nested under an existing branch", () => {
+    // `git checkout -b feat/login/redirect` → fatal: cannot lock ref
+    // 'refs/heads/feat/login/redirect': 'refs/heads/feat/login' exists
+    const dir = makeRepo("unique-ref-parent");
+    git(["branch", "feat/login"], dir);
+    expect(uniqueBranchName(dir, "feat/login/redirect")).toMatch(/^chat\/\d{8}-[0-9a-f]{6}$/);
+  });
+
+  /**
+   * A conflict is a shared *path* segment, not a shared prefix of characters.
+   * `feat/logins` is not underneath `feat/login`, and refusing it would suffix
+   * names that git would have accepted — the failure mode of a `startsWith`
+   * without the separator.
+   */
+  it("leaves a name that merely shares a prefix of characters alone", () => {
+    const dir = makeRepo("unique-ref-nonconflict");
+    git(["branch", "feat/login"], dir);
+    expect(uniqueBranchName(dir, "feat/logins")).toBe("feat/logins");
+  });
+
   it("keeps suffixing past an occupied -2", () => {
     const dir = makeRepo("unique-chain");
     git(["branch", "fix/login"], dir);
@@ -326,6 +381,43 @@ describe("generated names never share a worktree", () => {
     expect(first.worktree?.created).toBe(true);
     expect(second.worktree?.created).toBe(false);
     expect(existsSync(join(dirname(dir), "repo.feat-typed-2"))).toBe(false);
+  });
+
+  /**
+   * The two halves of the ref-tree conflict, end to end through the route's own
+   * composition — `uniqueBranchName` then `resolveBranch` — on both creation
+   * paths. The un-uniquified call is asserted to throw in each, because a test
+   * that only shows the fixed name working would still pass if the conflict
+   * had never been real.
+   */
+  it("survives a ref-tree conflict in place, where raw checkout -b is fatal", () => {
+    const dir = makeRepo("ref-conflict-inplace");
+    git(["branch", "feat/api/v1"], dir);
+
+    // The hazard, unmediated: `git checkout -b feat/api` cannot lock the ref.
+    expect(() => resolveBranch({ folder: dir, newBranch: "feat/api", baseBranch: "main" })).toThrow();
+
+    const unique = uniqueBranchName(dir, "feat/api");
+    expect(unique).toBe("feat/api-2");
+    const result = resolveBranch({ folder: dir, newBranch: unique, baseBranch: "main" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(dir);
+    expect(getGitInfo(dir).branch).toBe("feat/api-2");
+  });
+
+  it("survives a ref-tree conflict in a worktree, where raw worktree add -b is fatal", () => {
+    const dir = makeRepo("ref-conflict-worktree");
+    git(["branch", "feat/api/v1"], dir);
+
+    expect(() => resolveBranch({ folder: dir, newBranch: "feat/api", baseBranch: "main", useWorktree: true })).toThrow();
+
+    const unique = uniqueBranchName(dir, "feat/api");
+    const result = resolveBranch({ folder: dir, newBranch: unique, baseBranch: "main", useWorktree: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.folder).toBe(join(dirname(dir), "repo.feat-api-2"));
+    expect(result.worktree?.created).toBe(true);
   });
 
   it("leaves a typed name that matches a remote branch alone", () => {
