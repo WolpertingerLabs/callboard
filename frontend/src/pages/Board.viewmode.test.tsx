@@ -382,7 +382,7 @@ describe("row expansion", () => {
     expect(isExpanded("/home/cybil/countinghouse.feat-a")).toBe(false);
   });
 
-  it("leaves the 97% of cards that live in one folder without a chevron", async () => {
+  it("leaves the 97.1% of cards with at most one path without a chevron", async () => {
     await mount(FOLDER_CARDS);
     listWithPaths();
     fireEvent.click(expandToggle());

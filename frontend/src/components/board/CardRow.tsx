@@ -204,9 +204,10 @@ export default function CardRow({
     </span>
   );
 
-  // 97% of cards live in exactly one folder. An affordance that does nothing
-  // on 794 of 818 rows is noise on every one of them, so the chevron exists
-  // only where there is a second folder to open onto.
+  // 794 of 818 cards (97.1%) have at most one path — 722 in exactly one
+  // folder, 72 with none at all. An affordance that does nothing on 794 of
+  // 818 rows is noise on every one of them, so the chevron exists only where
+  // there is a second folder to open onto.
   const expandable = folders.length > 1 && Boolean(onToggleExpand);
   const showExpansion = expandable && expanded;
 
@@ -241,6 +242,20 @@ export default function CardRow({
         e.preventDefault();
       }
     : undefined;
+
+  /**
+   * Whether there is a folder line to draw at all.
+   *
+   * 8.8% of cards — 72 of 818, every lineage on the retired provider — come
+   * back with no member rows and so no folders, which is one card in eleven
+   * rather than an edge case. Both faces agree there is nothing to draw; they
+   * differ only in what they do with the space, and that difference is the
+   * grid: desktop still emits an empty cell because the template has a track
+   * for it and a missing child shifts every cell after it into the wrong
+   * column, while mobile's second line is a free flex row with no column to
+   * hold open and would only be spending width on a blank.
+   */
+  const hasFolderLine = folders.length > 0;
 
   const folderCell = (
     <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
@@ -580,7 +595,7 @@ export default function CardRow({
           </span>
           <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, width: "100%", paddingLeft: 26 }}>
             {(card.status || card.statusEmoji || jobName) && <span style={{ flex: 1, minWidth: 0, display: "flex" }}>{statusCell}</span>}
-            {showPath && folders.length > 0 && <span style={{ flex: 1, minWidth: 0, display: "flex" }}>{folderCell}</span>}
+            {showPath && hasFolderLine && <span style={{ flex: 1, minWidth: 0, display: "flex" }}>{folderCell}</span>}
             <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
               {countCell}
               {timeCell}
@@ -619,7 +634,11 @@ export default function CardRow({
           {emojiCell}
           {titleCell}
           {statusCell}
-          {showPath && folderCell}
+          {/* The track's placeholder on a card with nothing to put in it —
+              see `hasFolderLine`. An empty <span> rather than `folderCell`,
+              so the 12px chevron slot is not held open to align a path that
+              is not there. */}
+          {showPath && (hasFolderLine ? folderCell : <span />)}
           {rollupCell}
           {countCell}
           {timeCell}

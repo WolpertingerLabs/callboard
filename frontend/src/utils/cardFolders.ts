@@ -7,9 +7,10 @@
  * wire. Keeping it here costs one pass over an array the tile has anyway and
  * avoids a backend field that would have to be kept in sync forever.
  *
- * The measured distribution is what shapes the API: 97% of cards span exactly
- * one folder, and the ones that span more span a *lot* (11, 12, 16, 20). So
- * consumers get an ordered list they can show the head of, not a count.
+ * The measured distribution is what shapes the API: 88.3% of cards span exactly
+ * one folder and a further 8.8% span none — 97.1% between them have at most one
+ * path to show — while the ones that span more span a *lot* (11, 12, 16, 20).
+ * So consumers get an ordered list they can show the head of, not a count.
  */
 
 import type { CardSummary } from "../api";
@@ -38,10 +39,12 @@ function rankOf(live: CardFolder["live"]): number {
  * activity would move it on every 15s poll.
  *
  * Returns `[]` rather than anything undefined when there is nothing to report.
- * That is a real case, not a defensive one: `isCardEligible` has no provider
- * check but the member-chat grouping skips retired providers, so a root on a
- * retired provider is a genuine card whose own member row is missing — and
- * `memberChats` can be empty outright.
+ * That is the common case, not a defensive one: `isCardEligible` has no
+ * provider check but the member-chat grouping skips retired providers, so a
+ * root on a retired provider is a genuine card whose own member row is
+ * missing — and `memberChats` can be empty outright. Measured, that is **72 of
+ * 818 cards, 8.8%**, every one of them a lineage entirely on `openrouter`.
+ * About one card in eleven; every consumer needs an answer for it.
  */
 export function cardFolders(card: CardSummary): CardFolder[] {
   const rootFolder = card.memberChats.find((c) => c.chatId === card.id)?.folder;

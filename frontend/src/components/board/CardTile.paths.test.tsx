@@ -3,8 +3,8 @@
  * no-regression control for the selection contract and should stay readable as
  * exactly that.
  *
- * The measured shape of the data is the spec here: 97% of cards live in one
- * folder, so the single-folder tile must show one path and *nothing* else —
+ * The measured shape of the data is the spec here: 97.1% of cards have at most
+ * one path, so the single-folder tile must show one path and *nothing* else —
  * no count, no chevron, no `+0`.
  */
 import { describe, expect, it, afterEach, vi } from "vitest";

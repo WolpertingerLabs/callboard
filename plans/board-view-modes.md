@@ -19,24 +19,45 @@ chats                              8718
 card-eligible lineage roots         818
 
 distinct folders per card
-  1 folder     794   (97.1%)
-  2 folders     10
-  3 folders      5
-  4–7           4
-  11–20          5      ← 20, 16, 12, 12, 11
+  0 folders      72   (8.8%)   ← lineage entirely on the retired provider
+  1 folder      722   (88.3%)
+  2 folders      10
+  3 folders       5
+  4–7            4
+  11–20           5      ← 20, 16, 12, 12, 11
 cards spanning >1 folder             24   (2.9%)
+cards showing at most one path      794   (97.1%)
 ```
 
-Two facts drive everything below, and they pull in opposite directions:
+The zero-folder row is a correction, not a footnote. An earlier count of this
+table read "1 folder — 794 (97.1%)" because the measurement did not replicate
+the retired-provider skip at `card-rollup.ts:338`: it grouped every member
+chat, so a card whose entire lineage ran on `openrouter` still appeared to
+have a folder. It does not. `memberChats` comes back empty and `cardFolders`
+returns `[]`. All 72 are that case — none is a card with member rows that
+merely lack a `folder`.
 
-- **97% of cards live in exactly one folder.** So the common row must show one
-  path and nothing else — no count, no chevron, no `+0`. Any per-row affordance
-  that renders on a single-folder card is noise on 794 of 818 cards.
+Three facts drive everything below, and the first two pull in opposite
+directions:
+
+- **794 of 818 cards (97.1%) show at most one path.** So the common row must
+  show one path and nothing else — no count, no chevron, no `+0`. Any per-row
+  affordance that renders on a single-folder card is noise on 794 of 818 cards.
+  That conclusion is unchanged by the correction above: it rests on how many
+  cards have a *second* folder, and 24 is measured directly.
 - **When a card does span folders, it spans a *lot* of them.** The tail is 7, 11,
   12, 12, 16, 20 — a fan-out across worktrees. So "show a list of all active
   paths" cannot be an unbounded inline list; 20 paths would destroy the row it
   sits in. Those cards are also the *interesting* ones, which is exactly what
   earns the expansion.
+- **About one card in eleven has no path at all.** 8.8% is too many to treat as
+  a defensive branch, and it is the reason the empty case gets a rendering
+  decision rather than a `?.`: `cardFolders` returns `[]`, `CardFolderLine`
+  returns `null`, and the folder cell renders nothing on either face. Desktop
+  still emits the cell, empty, because the grid template has a track for it and
+  a missing child would shift every cell after it into the wrong column; mobile
+  omits it, because its second line is a free flex row with no column to hold
+  open. Same rule, two layouts.
 
 Two more measurements that shape the presentation:
 
@@ -46,8 +67,11 @@ full path length          mean 49   median 48   max 94 chars
 length after eliding the common prefix   mean 35   median 34   max 82
 ```
 
-The first means "root path at top" always has something real to pin — this is
-not a case we have to design a fallback story around. The second is why the
+The first means that on a card which spans folders at all, "root path at top"
+always has something real to pin — every one of the 24 has its root chat's own
+folder in the set, so the pinned row is never a synthesised one. It says
+nothing about the 72 cards with no member rows, which have no root path either
+and are the case the paragraph above covers. The second is why the
 expanded list hoists a shared prefix: a 12-row list where every row starts
 `/home/cybil/` is 12 copies of the one substring that distinguishes nothing.
 
@@ -92,12 +116,26 @@ The root pins to the top even when it is quiet, per your call. It is the card's
 origin, and a list whose first row moves on every 15s poll is a list you cannot
 build muscle memory against.
 
-Two edge cases the fallback has to cover, both real rather than defensive:
+Two edge cases the fallback has to cover, and the second is the common one:
 `isCardEligible` (card-fields.ts:321) has no provider check, but the member-chat
 grouping skips retired providers (`card-rollup.ts:338`) — so a root on a retired
 provider is a real card whose own member row is missing, and `memberChats` can
-even be empty. `cardFolders` returns `[]` there and every consumer renders
-nothing; it never renders `undefined`.
+be empty outright. That second case is **72 cards, 8.8% of the board**, not a
+rarity: about one card in eleven has nothing to say about folders at all.
+`cardFolders` returns `[]` there and every consumer renders nothing; it never
+renders `undefined`.
+
+The consumers that need a story for it, in full, because 8.8% is too many to
+leave to a `?.`:
+
+- `CardFolderLine` returns `null` — no path, no `+0`, no empty dot.
+- The row's folder cell renders on desktop and not on mobile, per the grid
+  argument above.
+- The drawer's "New chat on card" has no member folder to start in, so it falls
+  through to the filter chip if one is set and then to the New Chat MRU. It
+  must not fall through to the MRU while a filter *is* set: the new chat joins
+  the card by lineage, so that would give the card a folder from whatever
+  project was opened last.
 
 Note what we give up by staying frontend-only: `CardMemberChat` carries `folder`
 but not `displayFolder`, so a worktree chat contributes its *worktree* path, not

@@ -45,8 +45,8 @@ export default function CardTile({
   });
 
   // Shared with CardRow — data here, markup in CardFolderLine — so the two
-  // faces cannot disagree about when the +N lights up. 97% of cards live in
-  // exactly one folder, so the extras are the exception it exists for.
+  // faces cannot disagree about when the +N lights up. 97.1% of cards have at
+  // most one path, so the extras are the exception it exists for.
   const { folders, extraCount, extrasLive } = cardFolderSummary(card, showPath);
 
   return (

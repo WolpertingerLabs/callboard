@@ -130,12 +130,34 @@ describe("the desktop template", () => {
 
   it("keeps the folders column when a card has no folders to put in it", () => {
     setWidth(1024);
-    // A root on a retired provider: a real card with no member rows. The
-    // column stays, or every path below it would step sideways.
+    // A root on a retired provider: a real card with no member rows, and 8.8%
+    // of the board rather than an edge case. The column stays, or every path
+    // below it would step sideways.
     render(<CardRow card={card()} onClick={vi.fn()} showPath onOpenFolder={vi.fn()} />);
 
     expect(surface().children).toHaveLength(7);
     expect(document.querySelector("[title^='/']")).toBeNull();
+    // Held open by an empty placeholder, not by the folder cell: there is no
+    // path to align, so the 12px chevron slot has nothing to align it to.
+    expect(surface().children[3].children).toHaveLength(0);
+  });
+});
+
+describe("a card with no folders at all", () => {
+  // 72 of 818 cards, 8.8%: a lineage entirely on the retired provider, so
+  // `memberChats` comes back empty. Both layouts draw the same nothing; only
+  // what they do with the space differs, and that difference is the grid.
+  it("draws no folder line on either layout", () => {
+    setWidth(1024);
+    const desktop = render(<CardRow card={card()} onClick={vi.fn()} showPath onOpenFolder={vi.fn()} />);
+    expect(desktop.container.querySelector("[title^='/']")).toBeNull();
+    // No chevron slot either — nothing to hold a column open for.
+    expect([...desktop.container.querySelectorAll<HTMLElement>("span")].filter((el) => el.style.width === "12px")).toHaveLength(0);
+    cleanup();
+
+    setWidth(500);
+    const mobile = render(<CardRow card={card()} onClick={vi.fn()} showPath onOpenFolder={vi.fn()} />);
+    expect(mobile.container.querySelector("[title^='/']")).toBeNull();
   });
 });
 
@@ -173,7 +195,7 @@ describe("the expansion chevron", () => {
   // Not /folders$/: the +N badge beside it is titled "N other folders".
   const chevron = () => screen.queryByTitle(/^(Show all|Hide) /);
 
-  it("stays away from the 97% of cards that live in one folder", () => {
+  it("stays away from the 97.1% of cards with at most one path", () => {
     setWidth(1024);
     render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
     // An affordance that does nothing on 794 of 818 rows is noise on all of them.
