@@ -184,6 +184,23 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
           </>
         );
       }
+      /**
+       * The branch you are already on is the one case where the redirect
+       * wording would bury the news. `ensureWorktreeDetailed` matches the
+       * worktree you are standing in and hands back this directory, so the
+       * outcome is not "we are sending you elsewhere" — it is "your worktree
+       * request was dropped", which is the Phase 1.2 failure surviving on the
+       * typed path. Keyed on `currentBranch` rather than on a `checkedOut`
+       * entry pointing here: git's own listing always contains the current
+       * worktree, so this holds even when the endpoint sent no listing at all.
+       */
+      if (trimmedName === currentBranch) {
+        return (
+          <>
+            <Name>{currentBranch}</Name> is already checked out here — the chat will run here, with no worktree.
+          </>
+        );
+      }
       const occupied = worktreeOn(trimmedName);
       if (occupied) return runsThereInstead(trimmedName, occupied.path, false);
       if (branchExists(trimmedName)) {
@@ -200,7 +217,12 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       );
     }
 
-    if (trimmedName) {
+    // A typed name matching the current branch falls through to the no-change
+    // sentence below: `switchBranch` checks out the branch already checked out
+    // here, which git completes and which changes nothing. "Will switch this
+    // checkout to it" would be a generous verb for a no-op, and this box is
+    // supposed to state facts.
+    if (trimmedName && trimmedName !== currentBranch) {
       const occupied = worktreeElsewhereOn(trimmedName);
       if (occupied) return runsThereInstead(trimmedName, occupied.path, true);
       if (branchExists(trimmedName)) {
@@ -217,7 +239,10 @@ export default function BranchSelector({ folder, currentBranch, onChange }: Bran
       );
     }
 
-    if (baseBranch === currentBranch) {
+    // Nothing typed, or a name naming the branch we are already on. The base
+    // branch is irrelevant in the second case: `newBranch` wins in
+    // `resolveBranch`, so the base is never consulted.
+    if (trimmedName === currentBranch || baseBranch === currentBranch) {
       return (
         <>
           Runs here on <Name>{currentBranch}</Name>. No branch or worktree change.

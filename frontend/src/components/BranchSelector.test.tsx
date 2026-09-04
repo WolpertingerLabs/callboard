@@ -298,27 +298,78 @@ describe("a typed name that is not new", () => {
    *
    * `ensureWorktreeDetailed` matches any worktree on the branch — including
    * this one — and returns its path, so asking for a worktree on the branch you
-   * are already on gets you this directory and no isolation at all. Saying so
-   * is the whole point. `switchBranch` excludes the current directory, because
-   * checking out the branch you are on is not a redirect anywhere.
+   * are already on gets you this directory and no isolation at all. The news
+   * there is the dropped worktree, not a redirect: nobody is being sent
+   * anywhere. `switchBranch` excludes the current directory, and checking out
+   * the branch you are already on is a no-op git completes without comment.
    */
-  it("with the toggle on, the branch you are already on is still 'checked out at' here", async () => {
+  it("with the toggle on, the branch you are already on means no worktree at all", async () => {
     stubBranches();
+    const { onChange } = await open();
+
+    fireEvent.click(toggle());
+    type("main");
+
+    // The request still asks for isolation. It just will not get any, which is
+    // exactly why the sentence has to say so.
+    expect(emitted(onChange)).toEqual({ useWorktree: true, baseBranch: "main", newBranch: "main" });
+    expect(summary()).toBe("main is already checked out here — the chat will run here, with no worktree.");
+  });
+
+  it("with the toggle off, the same name is a no-op and says nothing will change", async () => {
+    stubBranches();
+    await open();
+
+    type("main");
+
+    expect(summary()).toBe("Runs here on main. No branch or worktree change.");
+  });
+
+  /**
+   * `newBranch` wins over `baseBranch` in `resolveBranch`, so a base picked
+   * alongside a name that is already the current branch is never consulted —
+   * the sentence must not promise the switch the base implies.
+   */
+  it("does not promise a switch the ignored base branch implies", async () => {
+    stubBranches();
+    const { onChange } = await open();
+
+    pickBase("feat/y");
+    type("main");
+
+    expect(emitted(onChange)).toEqual({ baseBranch: "feat/y", newBranch: "main" });
+    expect(summary()).toBe("Runs here on main. No branch or worktree change.");
+  });
+
+  /**
+   * The no-worktree sentence does not depend on the endpoint's listing. Git's
+   * own worktree list always contains the directory you are standing in, so the
+   * outcome holds whether or not `checkedOut` arrived.
+   */
+  it("says it with no checkedOut listing at all", async () => {
+    stubBranches({ checkedOut: undefined });
     await open();
 
     fireEvent.click(toggle());
     type("main");
 
-    expect(summary()).toBe("main is checked out at callboard — the chat will run there.");
+    expect(summary()).toBe("main is already checked out here — the chat will run here, with no worktree.");
   });
 
-  it("with the toggle off, the same name is not a redirect", async () => {
-    stubBranches();
-    await open();
+  /** From inside a worktree, "here" is that worktree and its branch. */
+  it("is about the branch this folder is on, not about main", async () => {
+    stubBranches({
+      checkedOut: [
+        { branch: "main", path: REPO, isMainWorktree: true },
+        { branch: "feat/a", path: WORKTREE, isMainWorktree: false },
+      ],
+    });
+    await open({ folder: WORKTREE, currentBranch: "feat/a" });
 
-    type("main");
+    fireEvent.click(toggle());
+    type("feat/a");
 
-    expect(summary()).toBe("main already exists — will switch this checkout to it.");
+    expect(summary()).toBe("feat/a is already checked out here — the chat will run here, with no worktree.");
   });
 
   /** A name nobody has used still reads as a creation, on both sides. */
