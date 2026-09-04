@@ -433,6 +433,45 @@ describe("fallbackBranchName", () => {
     // 24 bits of randomness: a repeat here is a broken generator, not luck.
     expect(fallbackBranchName()).not.toBe(fallbackBranchName());
   });
+
+  /**
+   * The blind spot the randomness does not cover, and the one that actually
+   * bites. `chat/<stamp>-<hex>` lives under `refs/heads/chat/`, so a repository
+   * with an ordinary branch called `chat` has a *file* where that directory has
+   * to go — and every name of this shape is uncreatable, forever, for every
+   * chat. Re-rolling the hex cannot help; only changing the shape can.
+   *
+   * The hazard is asserted first, unmediated, because a test that only shows
+   * the routed name working would pass just as happily if the conflict had
+   * never been real.
+   */
+  it("is routed around a branch that blocks the whole chat/ namespace", () => {
+    const dir = makeRepo("fallback-namespace");
+    git(["branch", "chat"], dir);
+
+    expect(() => git(["branch", fallbackBranchName()], dir)).toThrow();
+
+    const routed = uniqueBranchName(dir, fallbackBranchName());
+    expect(routed).toMatch(/^chat-\d{8}-[0-9a-f]{6}$/);
+    // Creatable, which is the only claim that matters.
+    git(["branch", routed], dir);
+  });
+
+  /**
+   * The same conflict reached the way the route reaches it: an invalid
+   * candidate, which is `uniqueBranchName`'s other door to the fallback. Both
+   * `return` sites used to hand back a raw `fallbackBranchName()`.
+   */
+  it("routes the invalid-candidate fallback around it too", () => {
+    const dir = makeRepo("fallback-namespace-invalid");
+    git(["branch", "chat"], dir);
+
+    // `generateBranchName` scrubs after its structure check, so a description
+    // of nothing but punctuation leaves a bare `feat/`.
+    const routed = uniqueBranchName(dir, "feat/");
+    expect(routed).toMatch(/^chat-\d{8}-[0-9a-f]{6}$/);
+    git(["branch", routed], dir);
+  });
 });
 
 describe("generated names never share a worktree", () => {

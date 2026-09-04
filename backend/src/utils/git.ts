@@ -606,6 +606,13 @@ const MAX_GENERATED_BRANCH_LENGTH = 60;
 /** How many `-2`, `-3`… suffixes to try before giving up on the candidate. */
 const MAX_UNIQUE_BRANCH_ATTEMPTS = 20;
 
+/** `<prefix><yyyymmdd>-<6 hex>` — the shape every invented name shares. */
+function stampedBranchName(prefix: string): string {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+  return `${prefix}${stamp}-${randomBytes(3).toString("hex")}`;
+}
+
 /**
  * A name for a chat branch that owes nothing to the prompt: `chat/<yyyymmdd>-<6 hex>`.
  *
@@ -614,11 +621,14 @@ const MAX_UNIQUE_BRANCH_ATTEMPTS = 20;
  * suffixes are all taken. Never returning a name is not an option: the caller
  * that wanted an isolated worktree would otherwise proceed with no branch at
  * all and silently land in the main checkout.
+ *
+ * Unchecked against the repository, because it has no repository to check
+ * against. Callers that have one should reach for {@link uniqueBranchName},
+ * which routes this through the same occupancy tests as any other candidate —
+ * the 24 bits of randomness here answer name collision and nothing else.
  */
 export function fallbackBranchName(): string {
-  const now = new Date();
-  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-  return `chat/${stamp}-${randomBytes(3).toString("hex")}`;
+  return stampedBranchName("chat/");
 }
 
 /**
@@ -665,6 +675,16 @@ function listRemoteBranchNames(repoDir: string): Set<string> {
   return names;
 }
 
+/** {@link validateGitRef} asked as a question rather than as an assertion. */
+function isValidGitRef(name: string): boolean {
+  try {
+    validateGitRef(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** `candidate` with a `-n` suffix, kept inside the length cap and git-legal, or null. */
 function suffixedBranchName(candidate: string, n: number): string | null {
   const suffix = `-${n}`;
@@ -675,12 +695,7 @@ function suffixedBranchName(candidate: string, n: number): string | null {
   if (!base) return null;
 
   const name = `${base}${suffix}`;
-  try {
-    validateGitRef(name);
-  } catch {
-    return null;
-  }
-  return name;
+  return isValidGitRef(name) ? name : null;
 }
 
 /**
@@ -703,6 +718,51 @@ function suffixedBranchName(candidate: string, n: number): string | null {
  */
 function refPathConflict(name: string, other: string): boolean {
   return other.startsWith(`${name}/`) || name.startsWith(`${other}/`);
+}
+
+/** Rolls of one stamped shape before trying the next — enough for a hex collision. */
+const MAX_FALLBACK_ROLLS = 2;
+
+/**
+ * A stamped fallback name this repository does not already hold.
+ *
+ * {@link fallbackBranchName} answers *name* collision, with 24 bits of
+ * randomness, and answers nothing else — which is not the conflict that bites.
+ * `chat/<stamp>-<hex>` lives under `refs/heads/chat/`, so in a repository that
+ * has a branch called `chat`, `refs/heads/chat` is a file where that directory
+ * has to go and **every** name of this shape is uncreatable. Re-rolling the hex
+ * cannot help, and the fallback is the last resort of a request that asked for
+ * isolation: unrouted, one ordinary branch name turned every auto-named
+ * worktree chat in the repository into a failure. (Verified against real git.)
+ *
+ * So the *shape* changes rather than the digits. `chat-<stamp>-<hex>` has no
+ * path component to be blocked by: it cannot conflict with `chat`, with
+ * anything under `chat/`, or with anything the derived worktree directory of a
+ * `chat/…` name would occupy. Each shape is rolled twice first, because that is
+ * what a genuine hex collision needs and it costs two set lookups.
+ *
+ * Bounded at every level, deliberately. A fallback that cannot be placed is
+ * still handed back: the caller has to be given a name, git's own refusal
+ * reaches the client as a 500 carrying its message (`POST /chats/new/message`),
+ * and a request that hangs while this spins is strictly worse than one that is
+ * answered badly.
+ */
+function unusedFallbackName(taken: (name: string) => boolean): string {
+  for (const prefix of ["chat/", "chat-"]) {
+    for (let roll = 0; roll < MAX_FALLBACK_ROLLS; roll++) {
+      const name = stampedBranchName(prefix);
+      if (!taken(name)) return name;
+    }
+  }
+
+  // Nothing structural blocks the flat shape, so reaching here means the names
+  // themselves are held. Suffix it like any other candidate.
+  const flat = stampedBranchName("chat-");
+  for (let n = 2; n <= MAX_UNIQUE_BRANCH_ATTEMPTS; n++) {
+    const suffixed = suffixedBranchName(flat, n);
+    if (suffixed && !taken(suffixed)) return suffixed;
+  }
+  return flat;
 }
 
 /**
@@ -732,15 +792,6 @@ function refPathConflict(name: string, other: string): boolean {
  * silently suffixing it would be worse than today's behaviour.
  */
 export function uniqueBranchName(repoDir: string, candidate: string): string {
-  try {
-    validateGitRef(candidate);
-  } catch {
-    // A name git would refuse can't be made unique, only replaced. Reachable:
-    // `generateBranchName` scrubs unsafe characters *after* its structure
-    // check, so a description of nothing but punctuation leaves `feat/`.
-    return fallbackBranchName();
-  }
-
   const branches = new Set(getGitBranches(repoDir));
   const remotes = listRemoteBranchNames(repoDir);
   const checkedOut = new Set(getGitWorktrees(repoDir).flatMap((wt) => (wt.branch ? [wt.branch] : [])));
@@ -754,6 +805,11 @@ export function uniqueBranchName(repoDir: string, candidate: string): string {
     checkedOut.has(name) ||
     refNames.some((other) => refPathConflict(name, other)) ||
     existsSync(worktreePathForBranch(repoDir, name));
+
+  // A name git would refuse can't be made unique, only replaced. Reachable:
+  // `generateBranchName` scrubs unsafe characters *after* its structure check,
+  // so a description of nothing but punctuation leaves `feat/`.
+  if (!isValidGitRef(candidate)) return unusedFallbackName(taken);
 
   if (!taken(candidate)) return candidate;
 
@@ -772,9 +828,11 @@ export function uniqueBranchName(repoDir: string, candidate: string): string {
   // which is the correct answer rather than a missed one: no name derived from
   // this candidate is creatable, so the candidate has to be abandoned.
   //
-  // The stamped fallback carries 24 bits of randomness, so it is returned
-  // without re-entering this loop.
-  return fallbackBranchName();
+  // The stamped fallback is a different name, not another variant of this one,
+  // so it does not re-enter this loop — but it goes through the same occupancy
+  // tests, which is a question its randomness cannot answer. See
+  // {@link unusedFallbackName}.
+  return unusedFallbackName(taken);
 }
 
 export interface EnsuredWorktree {
