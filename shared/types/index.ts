@@ -101,6 +101,7 @@ export {
 export type { SlashCommand } from "./slashCommand.js";
 
 export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
+export { worktreeDirName } from "./git.js";
 
 export type { SessionStatus } from "./session.js";
 

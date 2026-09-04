@@ -2,6 +2,7 @@ import { execSync, execFileSync } from "child_process";
 import { randomBytes } from "crypto";
 import { existsSync, statSync, lstatSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, basename, resolve, extname, relative } from "path";
+import { worktreeDirName } from "shared/types/index.js";
 import type { DiffFileEntry, DiffFileType, WorkspaceCleanliness } from "shared/types/index.js";
 
 /**
@@ -550,24 +551,17 @@ export function getGitWorktrees(directory: string): WorktreeInfo[] {
 }
 
 /**
- * Sanitize a branch name for use in filesystem paths.
- * Replaces slashes with hyphens.
- */
-function sanitizeBranchForPath(branch: string): string {
-  return branch.replace(/\//g, "-");
-}
-
-/**
  * The sibling directory {@link ensureWorktreeDetailed} derives for a branch:
  * `[repo-parent]/[repo-name].[sanitized-branch]`.
  *
  * Exported so uniqueness checks ask the same question the creation path will
- * answer. The sanitization is lossy — `feat/a-b` and `feat/a/b` collapse onto
- * one directory — so a caller that re-derives this by hand will disagree with
- * git in exactly the case that matters.
+ * answer. The name itself comes from {@link worktreeDirName} in `shared/`,
+ * because the branch picker has to predict this directory and cannot import
+ * anything from here — see that function's doc for why the rule lives there and
+ * only the `dirname` split lives here.
  */
 export function worktreePathForBranch(repoDir: string, branch: string): string {
-  return join(dirname(repoDir), `${basename(repoDir)}.${sanitizeBranchForPath(branch)}`);
+  return join(dirname(repoDir), worktreeDirName(basename(repoDir), branch));
 }
 
 /**
