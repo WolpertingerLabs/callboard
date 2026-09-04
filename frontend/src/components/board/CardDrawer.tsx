@@ -4,10 +4,11 @@ import type { CardSummary, CardPatch } from "../../api";
 import { getAgentIdentityPrompt, CARD_CATEGORY_MAX } from "../../api";
 import MarkdownRenderer from "../MarkdownRenderer";
 import InlineEdit from "./InlineEdit";
+import CardPathLabel from "./CardPathLabel";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
-import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag } from "lucide-react";
+import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag, Folder } from "lucide-react";
 
 /** Mirrors the limits in backend/src/services/card-fields.ts. */
 const METADATA_KEY_MAX = 64;
@@ -21,6 +22,13 @@ interface CardDrawerProps {
   onPatch: (patch: CardPatch) => Promise<boolean>;
   /** Close the drawer (card deletion is root-chat deletion in the chat UI). */
   onClose: () => void;
+  /**
+   * Opens the chat list filtered to one folder — how a list row's folder entry
+   * drills in. Absent behaves exactly as the drawer always has, and the filter
+   * is always visible and always clearable: one the user can neither see nor
+   * escape is a drawer that appears to have lost their chats.
+   */
+  initialFolderFilter?: string;
 }
 
 /** Live-status dot colors — themable via the --board-* section of index.css. */
@@ -40,18 +48,39 @@ const ICON_BUTTON: React.CSSProperties = {
 };
 
 /** Right-hand drawer with the card's editable identity, members, and actions. */
-export default function CardDrawer({ card, categories, onPatch, onClose }: CardDrawerProps) {
+export default function CardDrawer({ card, categories, onPatch, onClose, initialFolderFilter }: CardDrawerProps) {
   const navigate = useNavigate();
   const [editingDescription, setEditingDescription] = useState(false);
+  // Seeded from the prop and owned here after that, so clearing it is a local
+  // gesture rather than a round-trip through the board's open-card state.
+  const [folderFilter, setFolderFilter] = useState(initialFolderFilter);
   const closed = card.lifecycle === "closed";
+
+  const shownChats = folderFilter ? card.memberChats.filter((c) => c.folder === folderFilter) : card.memberChats;
 
   // Start a chat in the card's working context: the most recently active
   // member chat's folder, and — when that chat runs a configured agent —
   // the agent's identity prompt and permissions (mirrors AgentDashboard's
   // start-chat flow). Falls back to the most recent New Chat directory.
   const startChatOnCard = async () => {
-    const recent = card.memberChats[0]; // sorted newest-first server-side
-    const folder = recent?.folder ?? getRecentDirectories()[0]?.path;
+    // From the FILTERED list: the chip above says which folder the drawer is
+    // showing, so a new chat that landed in the card's most recent folder
+    // instead would contradict the only context on screen.
+    const recent = shownChats[0]; // sorted newest-first server-side
+    // `folderFilter` between them, because `shownChats` can be empty while a
+    // filter is set — a folder emptying out under the 15s poll, which is the
+    // state the chat list below already explains to the user in so many
+    // words. Falling straight through to the global New Chat MRU there lands
+    // the new chat in whatever project was opened last and then joins it to
+    // THIS card, so a card silently acquires a folder from an unrelated repo.
+    // The chip on screen names a real path the user is looking at, which is
+    // strictly a better guess than another project.
+    //
+    // Nothing sits between the filter and the MRU: `shownChats` is the whole
+    // member list whenever there is no filter, so `card.memberChats[0]` here
+    // is either `recent` itself or, on a card with no member rows at all,
+    // equally absent.
+    const folder = recent?.folder ?? folderFilter ?? getRecentDirectories()[0]?.path;
     if (!folder) {
       // No known folder anywhere — land on the picker message rather than guessing.
       // parentChatId = the card's root chat: the new chat joins the card by
@@ -206,11 +235,44 @@ export default function CardDrawer({ card, categories, onPatch, onClose }: CardD
           {/* Member chats */}
           <div>
             <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
-              Chats ({card.memberChats.length})
+              {/* "3 of 8" rather than "3": a bare count under a filter reads
+                  as the card having lost five chats. */}
+              Chats ({folderFilter ? `${shownChats.length} of ${card.memberChats.length}` : card.memberChats.length})
             </div>
+            {folderFilter && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginBottom: 6,
+                  padding: "4px 6px 4px 8px",
+                  borderRadius: 999,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  minWidth: 0,
+                }}
+              >
+                <Folder size={11} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
+                <CardPathLabel path={folderFilter} color="var(--text)" fontSize={12} />
+                <button
+                  onClick={() => setFolderFilter(undefined)}
+                  aria-label="Clear folder filter"
+                  title="Show every chat on this card"
+                  style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)", flexShrink: 0 }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
             {card.memberChats.length === 0 && <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No chats yet — start one below.</div>}
+            {/* A folder can empty out under a poll while the drawer is open —
+                say so, rather than showing a filter over a blank space. */}
+            {card.memberChats.length > 0 && shownChats.length === 0 && (
+              <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No chats in this folder — clear the filter to see the rest.</div>
+            )}
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {card.memberChats.map((chat) => (
+              {shownChats.map((chat) => (
                 <div
                   key={chat.chatId}
                   onClick={() => navigate(`/chat/${chat.chatId}`)}

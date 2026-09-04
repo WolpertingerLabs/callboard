@@ -3,12 +3,22 @@ import { useNavigate } from "react-router-dom";
 import type { CardSummary, CardPatch } from "../api";
 import { listCards, updateCard, bulkSetCardLifecycle } from "../api";
 import { useMetadataVersion } from "../contexts/SessionContext";
-import { getBoardClosedExpanded, saveBoardClosedExpanded } from "../utils/localStorage";
+import {
+  getBoardClosedExpanded,
+  saveBoardClosedExpanded,
+  getBoardViewMode,
+  saveBoardViewMode,
+  getBoardShowPaths,
+  saveBoardShowPaths,
+  getBoardRowsExpanded,
+  saveBoardRowsExpanded,
+} from "../utils/localStorage";
 import { uniqueCategories } from "../utils/cardCategories";
 import CardTile from "../components/board/CardTile";
+import CardRow from "../components/board/CardRow";
 import BoardSelectionBar from "../components/board/BoardSelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
-import { ChevronRight, ChevronDown, ChevronLeft, LayoutGrid } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /** A category's cards inside one status section. `label: null` is uncategorized. */
@@ -133,7 +143,48 @@ export default function Board() {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openCardId, setOpenCardId] = useState<string | null>(null);
+  // Set when the drawer was opened from a row's folder entry, so it lands on
+  // that folder's chats. Cleared on every other route into the drawer.
+  const [openCardFolder, setOpenCardFolder] = useState<string | undefined>(undefined);
   const [closedExpanded, setClosedExpanded] = useState(() => getBoardClosedExpanded());
+  // All three persisted, all three defaulting to today's board: the tile grid,
+  // no paths, rows at rest.
+  const [viewMode, setViewMode] = useState(() => getBoardViewMode());
+  const [showPaths, setShowPaths] = useState(() => getBoardShowPaths());
+  const [rowsExpanded, setRowsExpanded] = useState(() => getBoardRowsExpanded());
+
+  /**
+   * Per-row departures from the resting state above — deliberately ephemeral.
+   *
+   * Persisting them would restore an expansion across a reload onto a card
+   * that has since collapsed to one folder: a row that opens onto nothing.
+   *
+   * A difference rather than a state, and a difference from the LAST header
+   * press: pressing the header clears the set (see the toggle below), so
+   * "expand all" always means all. Left uncleared, the one row the user had
+   * opened by hand would be the only row on the board that closed.
+   */
+  const [expandOverrides, setExpandOverrides] = useState<Set<string>>(new Set());
+  const isExpanded = (id: string) => rowsExpanded !== expandOverrides.has(id);
+  const toggleExpanded = (id: string) =>
+    setExpandOverrides((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const openDrawer = (cardId: string, folder?: string) => {
+    setOpenCardId(cardId);
+    setOpenCardFolder(folder);
+  };
+  // The filter goes with the card it filtered. Leaving it set was harmless —
+  // every route back in writes it — but a piece of state that outlives what
+  // it describes is one a later reader has to prove harmless again.
+  const closeDrawer = () => {
+    setOpenCardId(null);
+    setOpenCardFolder(undefined);
+  };
 
   // Multi-select. Deliberately NOT persisted: a stale selection restored
   // across a reload is a way to act on the wrong cards.
@@ -399,11 +450,165 @@ export default function Board() {
     gap: 10,
   };
 
+  const listColumn: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4 };
+
+  /**
+   * One card container, used by every section, group and the closed strip.
+   *
+   * View mode swaps the container and the face and NOTHING else — same array,
+   * same order. `orderedIds` is flattened out of these very arrays, so a list
+   * mode that re-derived its own order would make shift+click select cards the
+   * user never saw, on a board that still looked right.
+   *
+   * Note the map stays ONE element per card even in list mode. A row's folder
+   * expansion lives inside that row, not as extra entries here: folder entries
+   * are not cards, cannot be selected, and a shift+click range that stepped
+   * through them would sweep up cards the user never saw.
+   */
+  const cardContainer = (list: CardSummary[]) => (
+    <div style={viewMode === "list" ? listColumn : grid}>
+      {list.map((card) =>
+        viewMode === "list" ? (
+          <CardRow
+            key={card.id}
+            card={card}
+            onClick={() => openDrawer(card.id)}
+            showPath={showPaths}
+            expanded={isExpanded(card.id)}
+            onToggleExpand={() => toggleExpanded(card.id)}
+            onOpenFolder={(folder) => openDrawer(card.id, folder)}
+            {...selectionProps(card)}
+          />
+        ) : (
+          <CardTile key={card.id} card={card} onClick={() => openDrawer(card.id)} showPath={showPaths} {...selectionProps(card)} />
+        ),
+      )}
+    </div>
+  );
+
+  /** Segmented layout switch and the folder toggle — icon-only where the row is already full. */
+  const viewControls = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+      {/* A group of pressed toggles, NOT a radiogroup — a deliberate departure
+          from the plan, which specified the role without costing its keyboard
+          model. ARIA radios owe the user roving tabindex and arrow navigation
+          between them; these are two plain buttons in the tab order, and a
+          role promising a keyboard contract the widget does not implement is
+          worse for a screen-reader user than no role at all. It also makes the
+          three header controls consistent: the folders and expand toggles
+          beside it were already aria-pressed. */}
+      <div role="group" aria-label="Board layout" style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
+        {(
+          [
+            { mode: "cards", icon: <LayoutGrid size={14} />, text: "Cards" },
+            { mode: "list", icon: <List size={14} />, text: "List" },
+          ] as const
+        ).map((option, i) => (
+          <button
+            key={option.mode}
+            aria-pressed={viewMode === option.mode}
+            aria-label={`${option.text} view`}
+            title={`${option.text} view`}
+            onClick={() => {
+              setViewMode(option.mode);
+              saveBoardViewMode(option.mode);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              padding: isMobile ? "6px 8px" : "5px 9px",
+              fontSize: 12,
+              background: viewMode === option.mode ? "var(--accent)" : "var(--surface)",
+              color: viewMode === option.mode ? "var(--text-on-accent)" : "var(--text)",
+              border: "none",
+              borderRight: i === 0 ? "1px solid var(--border)" : "none",
+              cursor: "pointer",
+            }}
+          >
+            {option.icon}
+            {/* The back button and the title already own the mobile header. */}
+            {!isMobile && option.text}
+          </button>
+        ))}
+      </div>
+      <button
+        aria-pressed={showPaths}
+        aria-label="Show folders"
+        title="Show folders"
+        onClick={() => {
+          const next = !showPaths;
+          setShowPaths(next);
+          saveBoardShowPaths(next);
+        }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          padding: isMobile ? "6px 8px" : "5px 9px",
+          fontSize: 12,
+          borderRadius: 6,
+          background: showPaths ? "var(--accent)" : "var(--surface)",
+          color: showPaths ? "var(--text-on-accent)" : "var(--text)",
+          border: "1px solid var(--border)",
+          cursor: "pointer",
+        }}
+      >
+        <Folder size={14} />
+        {!isMobile && "Folders"}
+      </button>
+      {/* Only in list mode with paths on: everywhere else it controls nothing,
+          and a control that does nothing is worse than an absent one. */}
+      {viewMode === "list" && showPaths && (
+        <button
+          aria-pressed={rowsExpanded}
+          aria-label="Expand rows"
+          title="Rest rows expanded, showing every folder a card spans"
+          onClick={() => {
+            const next = !rowsExpanded;
+            setRowsExpanded(next);
+            saveBoardRowsExpanded(next);
+            // Pressing the header is the user restating the resting state, so
+            // the per-row differences start again from none. Otherwise the row
+            // they had opened by hand is the single row that "expand all"
+            // closes.
+            setExpandOverrides(new Set());
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            padding: isMobile ? "6px 8px" : "5px 9px",
+            fontSize: 12,
+            borderRadius: 6,
+            background: rowsExpanded ? "var(--accent)" : "var(--surface)",
+            color: rowsExpanded ? "var(--text-on-accent)" : "var(--text)",
+            border: "1px solid var(--border)",
+            cursor: "pointer",
+          }}
+        >
+          <ChevronsUpDown size={14} />
+          {!isMobile && "Expand"}
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <div style={{ height: "100%", overflowY: "auto", background: "var(--bg)" }}>
       {/* The fixed selection bar sits over the last row of tiles, so the page
           has to give it room while it is up. */}
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: isMobile ? `14px 12px ${selectionMode ? 120 : 48}px` : `24px 24px ${selectionMode ? 132 : 60}px` }}>
+      {/* A full-width row has a path column and an expansion the grid does
+          not, and at 1100 it wastes the one advantage rows have over tiles.
+          Still capped rather than 100%: past ~1400 the eye loses the line
+          between the title column and the time column. */}
+      <div
+        style={{
+          maxWidth: viewMode === "list" ? 1400 : 1100,
+          margin: "0 auto",
+          padding: isMobile ? `14px 12px ${selectionMode ? 120 : 48}px` : `24px 24px ${selectionMode ? 132 : 60}px`,
+        }}
+      >
         {/* Header — mobile gets the standard full-page back button (same
             convention as AgentList/Settings) since there's no sidebar. */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: isMobile ? 16 : 24 }}>
@@ -427,6 +632,7 @@ export default function Board() {
           )}
           <LayoutGrid size={20} style={{ color: "var(--accent-text)" }} />
           <h1 style={{ fontSize: 20, fontWeight: 600, color: "var(--text)", flex: 1 }}>Board</h1>
+          {viewControls}
         </div>
 
         {error && (
@@ -460,11 +666,7 @@ export default function Board() {
                 {section.groups.map((group, i) => (
                   <div key={group.key} style={{ marginBottom: i === section.groups.length - 1 ? 0 : 18 }}>
                     {showsGroupLabel(section) && groupHeader(group.label, group.cards.length)}
-                    <div style={grid}>
-                      {group.cards.map((card) => (
-                        <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} {...selectionProps(card)} />
-                      ))}
-                    </div>
+                    {cardContainer(group.cards)}
                   </div>
                 ))}
               </div>
@@ -498,13 +700,7 @@ export default function Board() {
                   Closed
                   <span style={{ fontWeight: 400 }}>{closed.length}</span>
                 </button>
-                {closedExpanded && (
-                  <div style={grid}>
-                    {closed.map((card) => (
-                      <CardTile key={card.id} card={card} onClick={() => setOpenCardId(card.id)} {...selectionProps(card)} />
-                    ))}
-                  </div>
-                )}
+                {closedExpanded && cardContainer(closed)}
               </div>
             )}
           </>
@@ -513,10 +709,17 @@ export default function Board() {
 
       {openCard && (
         <CardDrawer
+          // Keyed on the folder as well as the card, so the drawer's own copy
+          // of the filter can never outlive the props that seeded it. Today
+          // nothing can change the folder under an open drawer — its backdrop
+          // covers the board — so this is belt to that braces rather than a
+          // state you will find by clicking around.
+          key={`${openCard.id}:${openCardFolder ?? ""}`}
           card={openCard}
           categories={knownCategories}
+          initialFolderFilter={openCardFolder}
           onPatch={(patch) => patchCard(openCard.id, patch)}
-          onClose={() => setOpenCardId(null)}
+          onClose={closeDrawer}
         />
       )}
 

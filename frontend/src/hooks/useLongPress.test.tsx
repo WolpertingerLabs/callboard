@@ -151,6 +151,54 @@ describe("the mouse gate — the whole of the desktop decision", () => {
   });
 });
 
+describe("the click a gesture leaves behind", () => {
+  /**
+   * The pressable element with a child that owns its own gesture — a card
+   * row's expansion chevron, a folder entry. The child stops `pointerdown`
+   * bubbling so a held finger on it does not also enter selection mode.
+   */
+  function Nested(props: { onLongPress: () => void; onChildClick: (suppressed: boolean) => void }) {
+    const { handlers, consumeClickSuppression } = useLongPress({ onLongPress: props.onLongPress });
+    return (
+      <div data-testid="outer" {...handlers}>
+        <button
+          data-testid="child"
+          onPointerDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.stopPropagation()}
+          onClick={() => props.onChildClick(consumeClickSuppression())}
+        />
+      </div>
+    );
+  }
+
+  it("is consumed once, then gone", () => {
+    const seen: boolean[] = [];
+    const { getByTestId } = render(<Nested onLongPress={vi.fn()} onChildClick={(s) => seen.push(s)} />);
+    fireEvent.contextMenu(getByTestId("outer"));
+
+    // Without any pointerdown in between, the flag is the gesture's own
+    // trailing click and belongs to whoever asks first.
+    fireEvent.click(getByTestId("child"));
+    fireEvent.click(getByTestId("child"));
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("is cleared by a pointerdown the pressable element never sees", () => {
+    const seen: boolean[] = [];
+    const { getByTestId } = render(<Nested onLongPress={vi.fn()} onChildClick={(s) => seen.push(s)} />);
+
+    // Right-click the row: the flag is set and selection mode opens.
+    fireEvent.contextMenu(getByTestId("outer"));
+    // Now press the child. Its guard stops the bubble, so the hook's own
+    // `onPointerDown` never runs — and the reset used to live there, which
+    // left the flag standing to swallow the click below.
+    fireEvent.pointerDown(getByTestId("child"), { pointerType: "mouse" });
+    fireEvent.pointerUp(getByTestId("child"));
+    fireEvent.click(getByTestId("child"));
+    expect(seen).toEqual([false]);
+  });
+});
+
 describe("contextmenu", () => {
   it("fires immediately, without waiting out the delay", () => {
     const { onLongPress, el } = setup();

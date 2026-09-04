@@ -11,6 +11,14 @@ export interface UseLongPressOptions {
 export interface UseLongPressResult {
   /** Spread onto the pressable element. */
   handlers: {
+    /**
+     * Clears the click suppression, and does nothing else.
+     *
+     * Separate from `onPointerDown`, and on the capture phase, because a
+     * consumer can legitimately stop `onPointerDown` from ever running — see
+     * the note on the implementation.
+     */
+    onPointerDownCapture: (e: React.PointerEvent) => void;
     onPointerDown: (e: React.PointerEvent) => void;
     onPointerMove: (e: React.PointerEvent) => void;
     onPointerUp: (e: React.PointerEvent) => void;
@@ -77,11 +85,29 @@ export function useLongPress({ onLongPress, delayMs = 500, moveTolerance = 10 }:
   // unmounted tree.
   useEffect(() => clearTimer, [clearTimer]);
 
+  /**
+   * Bound the suppression flag to one gesture: a flag left set by an earlier
+   * press must never swallow an unrelated later click.
+   *
+   * On the CAPTURE phase, and split out of `onPointerDown` below, because a
+   * consumer can stop that one from ever running. A control inside the
+   * pressable element that owns its own gesture — the list row's expansion
+   * chevron and its folder entries — stops `pointerdown` bubbling on purpose,
+   * so a held finger on it does not also enter selection mode. That same
+   * guard used to stop this reset: right-click the row, then click a folder
+   * entry, and the flag set by the contextmenu was still there to swallow the
+   * entry's click. The exact mirror of the bug the contextmenu guard fixed.
+   *
+   * Capture runs before the target's own handler, so a stopped bubble cannot
+   * skip it — and clearing a stale flag is the half those consumers have no
+   * reason to stop. Starting the gesture stays below, where they can.
+   */
+  const onPointerDownCapture = useCallback(() => {
+    suppressClickRef.current = false;
+  }, []);
+
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      // Bound the suppression flag to one gesture: a flag left set by an
-      // earlier press must never swallow an unrelated later click.
-      suppressClickRef.current = false;
       if (e.pointerType === "mouse") return;
       clearTimer();
       startRef.current = { x: e.clientX, y: e.clientY };
@@ -126,6 +152,7 @@ export function useLongPress({ onLongPress, delayMs = 500, moveTolerance = 10 }:
 
   return {
     handlers: {
+      onPointerDownCapture,
       onPointerDown,
       onPointerMove,
       onPointerUp: clearTimer,
