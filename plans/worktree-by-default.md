@@ -338,6 +338,31 @@ when it hits.
   summary line the actual branch name and path instead of "named from your first
   message", at the cost of a Haiku call on prompt blur. Out of scope for v1; either wire
   it up later or delete the dead wrapper.
+### Found during review, deliberately deferred
+
+Three rounds of adversarial review ran against this branch. These survived triage as real
+but out of scope — none is caused by this work:
+
+- **A force-retry with an attached image silently re-hits the same 409.**
+  `handleConfirmBranchChange` (`Chat.tsx:2101-2107`) resets `forceBranchChangeRef` on the
+  stated grounds that "handleSend reads the ref before its first await" — but in new-chat
+  mode the first await is `uploadImagesOnly` (`:1878`), well before the read at `:1914`.
+  `handleConfirmBranchDrift` has the identical shape. Predates this branch entirely.
+- **`chat.git_branch` still renders `|| "main"` for existing chats** (`Chat.tsx:2516`). The
+  two `!id` sites were fixed here because this PR created the contradiction beside them;
+  this one needs `isDetached` on `shared/types/chat.ts`, which is a wider decision.
+- **`validateGitRef` accepts a path component starting with `.`; git does not.** Found by
+  aligning the client validator, which is now deliberately stricter than the server. A gap
+  on the backend side, not a regression.
+- **`uniqueBranchName`'s check-then-act race**, documented under Phase 1 above, with the
+  atomic alternative recorded there.
+- **`start_chat_session` cannot express "one of `baseBranch` or `newBranch` is required"**
+  in its schema, so `no_branch_for_worktree` is learned by being refused. The description
+  now says so; a schema-level constraint would be the real fix.
+- **~30 test assertions pin whole sentences verbatim**, the hedge clause alone in five, so
+  any copy edit breaks tests that are not about wording. A shared constant or a `toMatch`
+  on the distinguishing clause would decouple them.
+
 - **Per-repo stickiness.** One global preference may be too blunt — some checkouts you
   always want isolated, others never. The storage helpers are flat key-value today;
   revisit only if the single toggle actually annoys.
