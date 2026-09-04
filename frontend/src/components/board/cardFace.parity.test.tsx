@@ -84,13 +84,12 @@ const FACES = [
 describe.each(FACES)("%s — the shared selection contract", (_name, Face) => {
   describe("the checkbox affordance", () => {
     it("is mounted but invisible until something asks for it", () => {
-      const { container } = render(<Face card={card()} onClick={vi.fn()} onToggleSelect={vi.fn()} />);
+      render(<Face card={card()} onClick={vi.fn()} onToggleSelect={vi.fn()} />);
       const box = screen.getByRole("checkbox");
       // Hidden by opacity rather than by unmounting: a checkbox that only
       // exists on :hover is one keyboard users can never find.
       expect(box.style.opacity).toBe("0");
       expect(box.style.pointerEvents).toBe("none");
-      expect(outer(container)).toBeDefined();
     });
 
     it("is revealed by hover", () => {

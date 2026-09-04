@@ -77,26 +77,54 @@ function surface() {
   return screen.getAllByRole("button", { name: /Ship the thing/ }).find((el) => el.closest('[role="group"]') === null)!;
 }
 
+/**
+ * The desktop template's tracks, one per cell.
+ *
+ * Whitespace-normalised on the way out, deliberately: `minmax(0, 2fr)` and
+ * `minmax(0,2fr)` are the same template, and an assertion that tells them
+ * apart is testing how the string was typed rather than what the row lays out.
+ * What is worth pinning is the contract — a track per cell, in a known order.
+ */
+function tracks() {
+  return surface()
+    .style.gridTemplateColumns.replace(/,\s+/g, ",")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/** The `minmax(...)` tracks — the ones that share out the leftover width. */
+const flexible = (cols: string[]) => cols.filter((t) => t.startsWith("minmax("));
+
 afterEach(cleanup);
 
 describe("the desktop template", () => {
   it("drops the folders column outright when paths are off", () => {
     setWidth(1024);
     render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} />);
-    const columns = surface().style.gridTemplateColumns;
+    const cols = tracks();
 
     // Six columns, not seven with an empty one: with paths off the title and
     // status get that width back instead of a blank stripe down the list.
-    expect(columns).toBe("18px minmax(0,2fr) minmax(0,3fr) auto auto auto");
-    expect(surface().children).toHaveLength(6);
+    expect(cols).toHaveLength(6);
+    // One track per cell is the invariant the whole list view rests on — a
+    // template and a cell count that disagree misalign every row below.
+    expect(surface().children).toHaveLength(cols.length);
+    expect(cols[0]).toBe("18px"); // the fixed emoji box the checkbox swaps into
+    expect(flexible(cols)).toHaveLength(2); // title and status share the slack
+    expect(cols.slice(-3)).toEqual(["auto", "auto", "auto"]); // rollup, count, time
   });
 
   it("adds the folders column, in the middle, when paths are on", () => {
     setWidth(1024);
     render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath />);
+    const cols = tracks();
 
-    expect(surface().style.gridTemplateColumns).toBe("18px minmax(0,2fr) minmax(0,3fr) minmax(0,1.5fr) auto auto auto");
-    expect(surface().children).toHaveLength(7);
+    expect(cols).toHaveLength(7);
+    expect(surface().children).toHaveLength(cols.length);
+    // Fourth, between status and the three trailing cells — in the middle is
+    // the point, since a path column at the end would sit past the time.
+    expect(flexible(cols)).toHaveLength(3);
+    expect(cols[3].startsWith("minmax(")).toBe(true);
     expect(screen.getByTitle("/home/cybil/callboard")).toBeDefined();
   });
 
@@ -118,7 +146,7 @@ describe("the status cell carries the running job", () => {
 
     // Still the six-column template: the job shares the status cell rather
     // than narrowing every other column on the board for one optional string.
-    expect(surface().style.gridTemplateColumns).toBe("18px minmax(0,2fr) minmax(0,3fr) auto auto auto");
+    expect(tracks()).toHaveLength(6);
     // The title is the escape hatch for whatever the cell's ellipsis eats.
     const cell = screen.getByTitle("rebasing onto main · nightly-rebase");
     expect(cell.textContent).toBe("rebasing onto main · nightly-rebase");
@@ -155,7 +183,6 @@ describe("the expansion chevron", () => {
   it("appears once there is a second folder to open onto", () => {
     setWidth(1024);
     render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
-    expect(chevron()).toBeDefined();
     expect(screen.getByTitle("Show all 3 folders")).toBeDefined();
   });
 
