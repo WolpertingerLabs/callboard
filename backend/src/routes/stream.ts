@@ -78,8 +78,9 @@ streamRouter.post("/new/message", async (req, res) => {
     }
   } */
   /* #swagger.responses[200] = { description: "SSE stream opening with a server_info frame, then chat_created, message_update, permission_request, user_question, plan_review, message_complete, and message_error events" } */
-  /* #swagger.responses[400] = { description: "Missing required fields or invalid folder" } */
+  /* #swagger.responses[400] = { description: "Missing required fields, invalid folder, or a branchConfig that cannot be honored here (e.g. useWorktree on a folder that is not a git repository). Body is { error, code? }." } */
   /* #swagger.responses[409] = { description: "Uncommitted changes block branch switch. Set forceBranchChange to override." } */
+  /* #swagger.responses[500] = { description: "Branch or worktree preparation failed — git's own message is in error." } */
   const {
     folder,
     prompt,
@@ -180,8 +181,16 @@ streamRouter.post("/new/message", async (req, res) => {
       });
 
       if (!branchResult.ok) {
-        log.warn(`Blocked branch switch: ${branchResult.message}`);
-        return res.status(409).json(branchResult);
+        log.warn(`Blocked branch resolution: ${branchResult.message}`);
+        // `uncommitted_changes` is the one refusal the client can do something
+        // with: Chat.tsx keys its force-retry modal on `409` plus that code and
+        // reads `message` out of the structured body. Every other status falls
+        // through to `setNetworkError(errorData.error)`, which renders that
+        // field verbatim — so shipping a machine code in `error` would put the
+        // code itself on screen. The rest get a 400 with the readable string
+        // there and the code alongside it for anyone who wants to branch on it.
+        if (branchResult.error === "uncommitted_changes") return res.status(409).json(branchResult);
+        return res.status(400).json({ error: branchResult.message, code: branchResult.error });
       }
 
       effectiveFolder = branchResult.folder;

@@ -1252,7 +1252,19 @@ export interface ResolvedWorktree {
 
 export type ResolveBranchResult =
   | { ok: true; folder: string; worktree?: ResolvedWorktree }
-  | { ok: false; error: "uncommitted_changes"; message: string; currentBranch: string; targetBranch: string };
+  | { ok: false; error: "uncommitted_changes"; message: string; currentBranch: string; targetBranch: string }
+  /**
+   * A worktree was asked for in a directory git does not manage.
+   *
+   * Distinct from `uncommitted_changes` because nothing about it is
+   * recoverable: there is no force flag, no branch to switch, and the caller's
+   * request cannot be honoured in any form. Distinct from `{ok: true}` because
+   * a success carrying the folder unchanged is indistinguishable from "no
+   * worktree was asked for", which is how an `useWorktree: true` from
+   * `start_chat_session` used to come back as a chatId with no isolation and
+   * nothing saying so.
+   */
+  | { ok: false; error: "not_a_git_repo"; message: string; folder: string };
 
 /**
  * Resolve a branch configuration to an effective working directory.
@@ -1279,7 +1291,23 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
   // no worktree to add there, so this is a no-op rather than a `git worktree
   // add` throwing a 500 out of the route. The UI's `is_git_repo` gate stays the
   // first line of defence; this is the second.
+  //
+  // The no-op stops at `useWorktree`, though. That flag is a request for
+  // isolation, and there is no way to report "asked for, and refused" through
+  // an `{ok: true}` carrying the folder unchanged — it reads identically to
+  // "nothing was asked for". The HTTP route has the UI's gate in front of it,
+  // but `start_chat_session` has no gate at all, so an agent passing
+  // `useWorktree: true` on a plain directory got a chatId, no worktree, and no
+  // signal. It threw before this PR; a refusal is what replaces the throw.
   if (!getGitInfo(folder).isGitRepo) {
+    if (useWorktree) {
+      return {
+        ok: false,
+        error: "not_a_git_repo",
+        message: `Cannot create a worktree in "${folder}" because it is not a git repository.`,
+        folder,
+      };
+    }
     return { ok: true, folder };
   }
 

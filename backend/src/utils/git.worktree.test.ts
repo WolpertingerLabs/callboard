@@ -173,6 +173,7 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe("uncommitted_changes");
+    if (result.error !== "uncommitted_changes") return;
     expect(result.currentBranch).toBe("main");
     expect(result.targetBranch).toBe("feat/target");
   });
@@ -536,14 +537,36 @@ describe("existing branches and non-repositories", () => {
 
   it("is a no-op on a folder that is not a repository", () => {
     // `branchConfig` rides on nearly every new chat now, so a plain directory
-    // reaches here routinely. `git worktree add` there is a 500.
+    // reaches here routinely. `git checkout` there is a 500.
     const plain = mkdtempSync(join(tmpRoot, "not-a-repo-"));
 
-    const result = resolveBranch({ folder: plain, newBranch: "feat/x", baseBranch: "main", useWorktree: true });
+    const result = resolveBranch({ folder: plain, newBranch: "feat/x", baseBranch: "main" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.folder).toBe(plain);
     expect(result.worktree).toBeUndefined();
+  });
+
+  /**
+   * The no-op stops at `useWorktree`, because that flag is a request the
+   * success shape cannot answer honestly.
+   *
+   * `{ok: true, folder}` with the folder unchanged is exactly what "no worktree
+   * was asked for" returns, so a caller cannot tell the two apart. The HTTP
+   * route has the UI's `is_git_repo` gate in front of it and never sees this;
+   * `start_chat_session` has no gate, so an agent passing `useWorktree: true`
+   * on a plain directory got a chatId, no isolation, and no way to find out.
+   */
+  it("refuses a worktree on a folder that is not a repository", () => {
+    const plain = mkdtempSync(join(tmpRoot, "not-a-repo-worktree-"));
+
+    const result = resolveBranch({ folder: plain, newBranch: "feat/x", baseBranch: "main", useWorktree: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("not_a_git_repo");
+    // A distinct code, not `uncommitted_changes`: there is no force flag that
+    // makes this one work, and the client's retry modal must not offer one.
+    expect(result.message).toContain(plain);
     expect(existsSync(`${plain}.feat-x`)).toBe(false);
   });
 });

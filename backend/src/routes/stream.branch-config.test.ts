@@ -224,4 +224,22 @@ describe("POST /new/message — when git refuses", () => {
     // The stream was never opened, so nothing was handed to sendMessage.
     expect(lastSendOptions).toBeUndefined();
   });
+
+  /**
+   * The non-repo refusal, which is a different kind of failure and gets a
+   * different status. It is not recoverable — there is no force flag — so it
+   * must not come back as the 409 Chat.tsx offers a force-retry modal for.
+   */
+  it("answers 400 with a readable string when a worktree is asked for outside a repo", async () => {
+    const plain = mkdtempSync(join(tmpRoot, "not-a-repo-"));
+
+    const answered = await postNewMessage(plain, { newBranch: "feat/x", baseBranch: "main", useWorktree: true });
+
+    expect(answered.status).toBe(400);
+    // `error` holds prose, because that is the field Chat.tsx renders verbatim.
+    // The machine code rides alongside it rather than in its place.
+    expect(answered.body.error).toContain("not a git repository");
+    expect(answered.body.code).toBe("not_a_git_repo");
+    expect(lastSendOptions).toBeUndefined();
+  });
 });

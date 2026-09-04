@@ -126,6 +126,27 @@ describe("start_chat_session model inheritance", () => {
     expect(result.model).toBeUndefined();
   });
 
+  /**
+   * The tool has no `is_git_repo` gate — the UI's, which guards the HTTP route,
+   * is not in this path at all. So `resolveBranch`'s non-repo no-op landed here
+   * as a chatId with no worktree and nothing saying so: `{ok: true}` carrying
+   * the folder unchanged is indistinguishable from "no worktree was asked for".
+   * It threw before this PR, and the tool reported the throw.
+   */
+  it("reports a worktree it could not create instead of starting the session anyway", async () => {
+    writeCallerChat({ title: "spawner" });
+    const sender = stubSender();
+    const plain = mkdtempSync(join(tmpdir(), "callboard-tools-not-a-repo-"));
+
+    const result = payload(await startChat().handler({ prompt: "go", folder: plain, useWorktree: true, newBranch: "feat/x" }));
+
+    expect(result).toMatchObject({ ok: false, error: "not_a_git_repo" });
+    expect(result.message).toContain(plain);
+    // And no child: a session started in the unisolated folder is the outcome
+    // the agent asked not to have.
+    expect(sender.calls).toHaveLength(0);
+  });
+
   it("reads the model live: a record written after the spec was built is seen", async () => {
     // The getter is built once at spec time but must consult the record at
     // tool-call time — a model switch mid-session changes what the next
