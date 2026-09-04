@@ -5,7 +5,9 @@ sticky **New worktree** toggle, an always-visible branch-name field where empty 
 "generate one", and a one-line summary that states in plain words what the current
 selection will do.
 
-Status: **Approved, not started.** Branch `refactor/auto-create-worktree`.
+Status: **Implemented.** Branch `refactor/auto-create-worktree`. Each phase records below
+how it actually landed, including five live bugs found along the way that this plan did
+not anticipate.
 
 ---
 
@@ -46,16 +48,42 @@ browser. The name field is never sticky and never hidden; empty means "generate 
 
 ### Every state, and the sentence it renders
 
-| Toggle | Name field | Base | Emitted `BranchConfig` | Summary line |
-|---|---|---|---|---|
-| on | empty | `main` | `{useWorktree, autoCreateBranch, baseBranch}` | Will create a new worktree off `main`, on a branch named from your first message. |
-| on | `feat/x` | `main` | `{useWorktree, baseBranch, newBranch}` | Will create `callboard.feat-x` on new branch `feat/x`, off `main`. |
-| off | empty | unchanged | `{}` | Runs here on `main`. No branch or worktree change. |
-| off | empty | `feat/y` | `{baseBranch}` | Will switch this checkout to `feat/y`. |
-| off | empty | `feat/y` *(checked out elsewhere)* | `{baseBranch}` | `feat/y` is checked out at `callboard.feat-y` — the chat will run there. This checkout is untouched. |
-| off | `feat/x` | `main` | `{baseBranch, newBranch}` | Will create branch `feat/x` off `main` in this checkout. |
+Emitted `BranchConfig`: toggle on + empty → `{useWorktree, autoCreateBranch, baseBranch}`;
+toggle on + name → `{useWorktree, baseBranch, newBranch}`; off + name →
+`{baseBranch, newBranch}`; off + changed base → `{baseBranch}`; off + nothing → `{}`.
 
-The fifth row is the one worth building this for. It is today's behaviour
+The sentence is keyed on the **target** branch — the typed name when there is one, the base
+otherwise — and mirrors the resolver's own precedence, because a box that states facts has
+to answer the question the resolver will actually be asked.
+
+**Toggle on** (`ensureWorktreeDetailed`: matches *any* worktree, including this one)
+
+| Name field | Sentence |
+|---|---|
+| empty | Will create a new worktree off `main`, on a branch named from your first message. |
+| the branch you are on | `main` is already checked out here — the chat will run here, with no worktree. |
+| `feat/y`, has a worktree | `feat/y` is checked out at `callboard.feat-y` — the chat will run there. |
+| `feat/y`, exists, no worktree | `feat/y` already exists — will check it out in a new worktree at `callboard.feat-y`. |
+| `feat/x`, new | Will create `callboard.feat-x` on new branch `feat/x`, off `main`. |
+
+**Toggle off** (`switchBranch`: matches worktrees *other than* this one)
+
+| Name field | Base | Sentence |
+|---|---|---|
+| empty | unchanged | Runs here on `main`. No branch or worktree change. |
+| empty | `feat/y`, worktree elsewhere | `feat/y` is checked out at `callboard.feat-y` — the chat will run there. This checkout is untouched. |
+| empty | `feat/y` | Will switch this checkout to `feat/y`. |
+| the branch you are on | any | Runs here on `main`. No branch or worktree change. |
+| `feat/y`, worktree elsewhere | — | `feat/y` is checked out at `callboard.feat-y` — the chat will run there. This checkout is untouched. |
+| `feat/y`, exists, no worktree | — | `feat/y` already exists — will switch this checkout to it. |
+| `feat/x`, new | `main` | Will create branch `feat/x` off `main` in this checkout. |
+
+The two asymmetries are deliberate and pinned by tests: the toggle-on side counts the
+current directory as a worktree because the resolver does, and a typed name always wins
+over the base because `newBranch` wins in `resolveBranch` — promising the switch an
+ignored base implies would be inventing one.
+
+The redirect sentence is the one worth building this for. It is today's behaviour
 (`switchBranch` finds the branch in another worktree and returns that path,
 `backend/src/utils/git.ts:681-686`), it is completely silent, and it is symmetric: start
 a chat *in* `callboard.feat-a`, pick `main`, and the chat runs in the main checkout. The
@@ -197,6 +225,8 @@ Four departures from the text above, all of them deliberate:
 
 ## Phase 2 — the branches endpoint learns about worktrees
 
+**Status: landed** — `9c1cca6`.
+
 The summary line's fifth row needs to know where a branch is checked out. `GET
 /git/branches` returns `{ branches: string[] }` (`backend/src/routes/git.ts:37`).
 
@@ -213,6 +243,8 @@ the swagger block.
 ---
 
 ## Phase 3 — rebuild `BranchSelector`
+
+**Status: landed** — `901cbdb`, `95e1f2b`, `787276b`.
 
 **Storage.** New key `worktreeByDefault`, default `false`, in
 `frontend/src/utils/localStorage.ts`. Do not reuse `useWorktree` (`:362`): under the old
@@ -244,6 +276,8 @@ localStorage, and the checked-out-elsewhere sentence rendering from a stubbed
 
 ## Phase 4 — the dirty guard asks the wrong directory (independent)
 
+**Status: landed** — `e68bdbf`. No longer independent; see above.
+
 Pre-existing, unrelated to this refactor, worth its own small PR.
 
 `resolveBranch:1067-1070` runs the uncommitted-changes check against `folder` — the
@@ -253,6 +287,33 @@ your current checkout can 409 a chat that was never going to disturb them.
 
 Fix: hoist `switchBranch`'s worktree lookup ahead of the dirty check and skip the guard
 when it hits.
+
+---
+
+## How phases 2–4 landed
+
+`9c1cca6` (endpoint), `901cbdb` (rebuild), `95e1f2b` + `787276b` (the sentence ladder),
+`2722c9a` (a fifth backend bug, below), `e68bdbf` (Phase 4), `4e4c1c7` (sweep).
+
+- **A fifth live bug, found by writing the copy.** Asking what the box should say for "typed
+  name that already exists" exposed that the in-place path still had the `-b` failure Phase
+  1.3 fixed for worktrees: `resolveBranch` → `switchBranch(…, createNew: true)` →
+  `git checkout -b feat/x` → `fatal: a branch named 'feat/x' already exists`, a 500 out of
+  the route. Fixed the same way, with `localBranchExists` deciding `-b`. Writing an honest
+  sentence for a state is a surprisingly good way to find out the state is broken.
+- **Phase 4 stopped being optional.** The redirect sentence promises "This checkout is
+  untouched" — and the dirty guard could still 409 the request over uncommitted changes in
+  that untouched checkout. The UI copy made the latent bug a contradiction, so the reorder
+  shipped here rather than separately.
+- **The placeholder tracks the toggle** (`auto` on, `new-branch (optional)` off) rather than
+  the static `auto` this plan specified. Static would be false in the off state, where empty
+  means "no new branch" directly above a sentence saying nothing will change.
+- **The summary yields its slot to the validation error** while a typed name is invalid.
+  Nothing is propagated in that state, so any sentence would describe a config the parent
+  does not hold.
+- **A missing `checkedOut` renders as an empty one.** The distinction the API type allows is
+  not made in the UI; an old daemon simply loses the redirect sentence, which is the
+  pre-Phase-2 behaviour. Documented at the wrapper rather than given a third UI state.
 
 ---
 
