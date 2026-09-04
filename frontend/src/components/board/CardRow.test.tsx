@@ -100,7 +100,7 @@ afterEach(cleanup);
 describe("the desktop template", () => {
   it("drops the folders column outright when paths are off", () => {
     setWidth(1024);
-    render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} />);
+    render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} onOpenFolder={vi.fn()} />);
     const cols = tracks();
 
     // Six columns, not seven with an empty one: with paths off the title and
@@ -116,7 +116,7 @@ describe("the desktop template", () => {
 
   it("adds the folders column, in the middle, when paths are on", () => {
     setWidth(1024);
-    render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath />);
+    render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onOpenFolder={vi.fn()} />);
     const cols = tracks();
 
     expect(cols).toHaveLength(7);
@@ -132,7 +132,7 @@ describe("the desktop template", () => {
     setWidth(1024);
     // A root on a retired provider: a real card with no member rows. The
     // column stays, or every path below it would step sideways.
-    render(<CardRow card={card()} onClick={vi.fn()} showPath />);
+    render(<CardRow card={card()} onClick={vi.fn()} showPath onOpenFolder={vi.fn()} />);
 
     expect(surface().children).toHaveLength(7);
     expect(document.querySelector("[title^='/']")).toBeNull();
@@ -142,7 +142,7 @@ describe("the desktop template", () => {
 describe("the status cell carries the running job", () => {
   it("appends it after the status without spending an eighth column", () => {
     setWidth(1024);
-    render(<CardRow card={card({ status: "rebasing onto main", memberRuns: [RUN] })} onClick={vi.fn()} />);
+    render(<CardRow card={card({ status: "rebasing onto main", memberRuns: [RUN] })} onClick={vi.fn()} onOpenFolder={vi.fn()} />);
 
     // Still the six-column template: the job shares the status cell rather
     // than narrowing every other column on the board for one optional string.
@@ -154,7 +154,7 @@ describe("the status cell carries the running job", () => {
 
   it("lets the job stand alone when the card has no status text", () => {
     setWidth(1024);
-    render(<CardRow card={card({ memberRuns: [RUN] })} onClick={vi.fn()} />);
+    render(<CardRow card={card({ memberRuns: [RUN] })} onClick={vi.fn()} onOpenFolder={vi.fn()} />);
 
     // No leading separator dangling off nothing.
     expect(screen.getByTitle("nightly-rebase").textContent).toBe("nightly-rebase");
@@ -162,7 +162,7 @@ describe("the status cell carries the running job", () => {
 
   it("keeps it on the mobile second line, which is where the status lives there", () => {
     setWidth(500);
-    render(<CardRow card={card({ memberRuns: [RUN] })} onClick={vi.fn()} />);
+    render(<CardRow card={card({ memberRuns: [RUN] })} onClick={vi.fn()} onOpenFolder={vi.fn()} />);
     // The second line is mounted on the strength of the job alone — gating it
     // on card.status would drop the job on a card that has never set one.
     expect(screen.getByText("nightly-rebase")).toBeDefined();
@@ -175,14 +175,14 @@ describe("the expansion chevron", () => {
 
   it("stays away from the 97% of cards that live in one folder", () => {
     setWidth(1024);
-    render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
     // An affordance that does nothing on 794 of 818 rows is noise on all of them.
     expect(chevron()).toBeNull();
   });
 
   it("appears once there is a second folder to open onto", () => {
     setWidth(1024);
-    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
     expect(screen.getByTitle("Show all 3 folders")).toBeDefined();
   });
 
@@ -190,7 +190,7 @@ describe("the expansion chevron", () => {
     setWidth(1024);
     const onClick = vi.fn();
     const onToggleExpand = vi.fn();
-    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={onClick} showPath onToggleExpand={onToggleExpand} />);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={onClick} showPath onToggleExpand={onToggleExpand} onOpenFolder={vi.fn()} />);
 
     fireEvent.click(screen.getByTitle("Show all 3 folders"));
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
@@ -201,7 +201,7 @@ describe("the expansion chevron", () => {
 
   it("is a span, not a button, because it lives inside one", () => {
     setWidth(1024);
-    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
     // A nested <button> is invalid markup the parser splits apart, and no
     // screen reader or keyboard can drive the result.
     expect(screen.getByTitle("Show all 3 folders").tagName).toBe("SPAN");
@@ -210,7 +210,7 @@ describe("the expansion chevron", () => {
 
   it("holds its 12px slot open on every row so the paths share a left edge", () => {
     setWidth(1024);
-    const { container } = render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath />);
+    const { container } = render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onOpenFolder={vi.fn()} />);
     const slot = [...container.querySelectorAll<HTMLElement>("span")].find((el) => el.style.width === "12px");
     expect(slot).toBeDefined();
   });
@@ -662,7 +662,7 @@ describe("the selection checkbox", () => {
 describe("mobile", () => {
   it("collapses to two lines with a thumb-sized target", () => {
     setWidth(500);
-    render(<CardRow card={card({ status: "rebasing", memberChats: [FOLDER] })} onClick={vi.fn()} showPath />);
+    render(<CardRow card={card({ status: "rebasing", memberChats: [FOLDER] })} onClick={vi.fn()} showPath onOpenFolder={vi.fn()} />);
 
     // Not a grid at all: seven columns on a phone is a row of ellipses.
     expect(surface().style.display).toBe("flex");
@@ -674,7 +674,7 @@ describe("mobile", () => {
 
   it("gives the chevron a target a thumb can hit, without reaching into the cell beside it", () => {
     setWidth(500);
-    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
 
     const chevron = screen.getByTitle("Show all 3 folders");
     expect(chevron.style.width).toBe("36px");
@@ -687,7 +687,7 @@ describe("mobile", () => {
 
   it("does not reserve the target on rows that have no chevron to put in it", () => {
     setWidth(500);
-    const { container } = render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} />);
+    const { container } = render(<CardRow card={card({ memberChats: [FOLDER] })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
     // The desktop grid holds the slot open so paths share a left edge; line
     // two of a phone has no column to align, and 36px of dead space on a
     // 360px screen only costs the path its width.

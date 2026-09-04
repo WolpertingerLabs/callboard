@@ -14,7 +14,8 @@ import { needsYouLabel, activeLabel } from "./pendingLabels";
 import { cardFolders, type CardFolder } from "../../utils/cardFolders";
 import { useLongPress, type UseLongPressResult } from "../../hooks/useLongPress";
 
-export const ROLLUP_LABELS: Record<CardRollupState, string> = {
+/** Module-private: `statusLine` below is the only reader, and the only one there has ever been. */
+const ROLLUP_LABELS: Record<CardRollupState, string> = {
   needs_you: "Needs you",
   job_running: "Job running",
   active: "Active",

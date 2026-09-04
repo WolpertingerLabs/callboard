@@ -76,9 +76,19 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/**
+ * `onOpenFolder` is bound here rather than repeated on every render below.
+ *
+ * CardRow requires it — an expansion whose entries do nothing is a dead one,
+ * not a lesser one — and CardTile has no expansion to open. It plays no part
+ * in the contract this file asserts, and threading it through thirty renders
+ * would bury the props that do.
+ */
+const Row = (props: React.ComponentProps<typeof CardTile>) => <CardRow onOpenFolder={() => {}} {...props} />;
+
 const FACES = [
   ["CardTile", CardTile],
-  ["CardRow", CardRow],
+  ["CardRow", Row],
 ] as const;
 
 describe.each(FACES)("%s — the shared selection contract", (_name, Face) => {

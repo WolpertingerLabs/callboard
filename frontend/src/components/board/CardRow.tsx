@@ -25,8 +25,15 @@ interface CardRowProps {
   expanded?: boolean;
   /** Absent means no chevron at all, exactly as an absent onToggleSelect means no checkbox. */
   onToggleExpand?: () => void;
-  /** Opens the drawer filtered to one folder. Absent leaves the folder entries unclickable text. */
-  onOpenFolder?: (folder: string) => void;
+  /**
+   * Opens the drawer filtered to one folder.
+   *
+   * Required, unlike its neighbours: those are absent-means-no-affordance, but
+   * an expansion whose entries do nothing is not a lesser expansion, it is a
+   * dead one. Optional produced a `disabled` folder-entry state no caller
+   * could reach and no design had asked for.
+   */
+  onOpenFolder: (folder: string) => void;
 }
 
 /**
@@ -375,7 +382,7 @@ export default function CardRow({
           // inherits none of that button's `disabled`, and a click here has to
           // answer a long press and a selection in progress exactly as a click
           // on the row does. Only the destination differs — filtered, not open.
-          onClick={handleActivate(() => onOpenFolder?.(folder.path))}
+          onClick={handleActivate(() => onOpenFolder(folder.path))}
           disabled={inert}
           // Named in full, because the path label inside is middle-truncated
           // and the chat count and time beside it are bare numbers in columns

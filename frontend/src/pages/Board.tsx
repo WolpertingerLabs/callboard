@@ -178,6 +178,13 @@ export default function Board() {
     setOpenCardId(cardId);
     setOpenCardFolder(folder);
   };
+  // The filter goes with the card it filtered. Leaving it set was harmless —
+  // every route back in writes it — but a piece of state that outlives what
+  // it describes is one a later reader has to prove harmless again.
+  const closeDrawer = () => {
+    setOpenCardId(null);
+    setOpenCardFolder(undefined);
+  };
 
   // Multi-select. Deliberately NOT persisted: a stale selection restored
   // across a reload is a way to act on the wrong cards.
@@ -702,15 +709,17 @@ export default function Board() {
 
       {openCard && (
         <CardDrawer
-          // Keyed on the folder too, so opening a second folder entry on the
-          // same card re-seeds the drawer's filter rather than leaving it on
-          // the one it mounted with.
+          // Keyed on the folder as well as the card, so the drawer's own copy
+          // of the filter can never outlive the props that seeded it. Today
+          // nothing can change the folder under an open drawer — its backdrop
+          // covers the board — so this is belt to that braces rather than a
+          // state you will find by clicking around.
           key={`${openCard.id}:${openCardFolder ?? ""}`}
           card={openCard}
           categories={knownCategories}
           initialFolderFilter={openCardFolder}
           onPatch={(patch) => patchCard(openCard.id, patch)}
-          onClose={() => setOpenCardId(null)}
+          onClose={closeDrawer}
         />
       )}
 
