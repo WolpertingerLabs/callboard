@@ -2452,6 +2452,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     );
   }
 
+  /**
+   * What to call the branch a *new* chat's folder is on, in the two places the
+   * header names it.
+   *
+   * `git_branch` reports `"main"` for a checkout on no branch — the fallback
+   * the whole UI reads — so both sites printed "Branch: main" a few lines above
+   * a branch box that had just been taught to say this checkout is on none.
+   * `isDetached` is already in hand here for the box, and this PR is what
+   * created the contradiction.
+   *
+   * New chats only. `chat.git_branch`, for an existing chat, has no such flag
+   * on the wire and goes on saying "main" until it does.
+   */
+  const newChatOnNoBranch = !!info?.isDetached;
+
   // View mode radio-style switcher: explicit Chat button first (active by
   // default), followed by Git diff / Debug / Job buttons when applicable.
   const viewModeButtons: { mode: "chat" | "diff" | "debug" | "job"; icon: ReactNode; title: string }[] = [
@@ -2535,7 +2550,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             <div style={{ fontSize: 15, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {!id
                 ? info?.is_git_repo
-                  ? info.git_branch || "main"
+                  ? newChatOnNoBranch
+                    ? "(no branch)"
+                    : info.git_branch || "main"
                   : folder.split("/").pop() || "New Chat"
                 : chat?.is_git_repo
                   ? chat.git_branch || "main"
@@ -3146,7 +3163,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                             Git
                           </span>
                           <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                            Branch: <strong style={{ color: "var(--text)" }}>{info.git_branch || "main"}</strong>
+                            {newChatOnNoBranch ? (
+                              <>
+                                Not on a branch — <strong style={{ color: "var(--text)" }}>detached HEAD</strong>
+                              </>
+                            ) : (
+                              <>
+                                Branch: <strong style={{ color: "var(--text)" }}>{info.git_branch || "main"}</strong>
+                              </>
+                            )}
                           </span>
                         </div>
                       )}

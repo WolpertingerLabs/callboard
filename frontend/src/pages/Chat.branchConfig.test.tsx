@@ -63,6 +63,7 @@ vi.mock("../components/PromptInput", () => {
 const REPO_A = "/home/cybil/alpha";
 const REPO_B = "/home/cybil/beta";
 const PLAIN = "/home/cybil/notes";
+const DETACHED = "/home/cybil/gamma";
 
 /**
  * What `GET /chats/new/info` says about each folder the tests visit.
@@ -74,10 +75,14 @@ const PLAIN = "/home/cybil/notes";
  * with nothing to notice, so a fixture that varies the branch name reports a
  * fix that is not there.
  */
-const FOLDER_INFO: Record<string, { is_git_repo: boolean; git_branch?: string }> = {
+const FOLDER_INFO: Record<string, { is_git_repo: boolean; git_branch?: string; isDetached?: boolean }> = {
   [REPO_A]: { is_git_repo: true, git_branch: "main" },
   [REPO_B]: { is_git_repo: true, git_branch: "main" },
   [PLAIN]: { is_git_repo: false },
+  // `git_branch: "main"` beside `isDetached` is not a contrived pair — it is
+  // exactly what the endpoint sends, because `getGitInfo` has always reported
+  // "main" for a checkout on no branch.
+  [DETACHED]: { is_git_repo: true, git_branch: "main", isDetached: true },
 };
 
 /**
@@ -88,6 +93,7 @@ const FOLDER_INFO: Record<string, { is_git_repo: boolean; git_branch?: string }>
 const FOLDER_BRANCHES: Record<string, string[]> = {
   [REPO_A]: ["main", "feat/a"],
   [REPO_B]: ["main", "feat/b"],
+  [DETACHED]: ["main", "feat/d"],
 };
 
 /** Every body POSTed to the new-chat route, in order. */
@@ -140,7 +146,7 @@ function Probe() {
   const navigate = useNavigate();
   return (
     <>
-      {[REPO_B, PLAIN].map((folder) => (
+      {[REPO_B, PLAIN, DETACHED].map((folder) => (
         <button key={folder} type="button" onClick={() => navigate(`/chat/new?folder=${encodeURIComponent(folder)}`)}>
           {`compose in ${folder}`}
         </button>
@@ -331,3 +337,37 @@ describe("a folder change cannot leave the parent holding the previous folder's 
   });
 });
 
+/**
+ * The compose screen makes two claims about the branch — the header's, and the
+ * box's — and this PR is what put them at odds. Teaching the box to say "on no
+ * branch" left the header a few lines above it still reading `git_branch`,
+ * which is `"main"` for a detached HEAD and always has been.
+ *
+ * Asserted together, in one render, because the bug is not in either sentence:
+ * it is in the pair.
+ */
+describe("what the compose screen calls a checkout that is on no branch", () => {
+  it("does not put 'main' above a box that says there is no branch", async () => {
+    await compose(DETACHED);
+
+    // The header, in both of its new-chat spellings. `main` survives as an
+    // *option* in the base picker and should — it is a branch this repository
+    // has, merely not one it is on — so the exclusion is of everything else.
+    expect(screen.queryByText("main", { selector: ":not(option)" })).toBeNull();
+    expect(screen.getByText("(no branch)")).toBeTruthy();
+    expect(screen.getByText("detached HEAD")).toBeTruthy();
+
+    // ...and the box below it, agreeing.
+    expect(summary()).toBe("Runs here. This checkout is on no branch, and nothing here changes that.");
+  });
+
+  /** The same two sites, unchanged for the ordinary case they already served. */
+  it("still names the branch when there is one", async () => {
+    await compose();
+
+    expect(screen.getByText("Branch:")).toBeTruthy();
+    expect(screen.getAllByText("main", { selector: ":not(option)" }).length).toBeGreaterThan(0);
+    expect(screen.queryByText("(no branch)")).toBeNull();
+    expect(summary()).toBe("Runs here on main. No branch or worktree change.");
+  });
+});
