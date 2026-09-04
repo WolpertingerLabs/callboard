@@ -554,6 +554,32 @@ describe("the controls themselves", () => {
     expect(alert.id).toBeTruthy();
   });
 
+  /**
+   * Three names the client-side rules used to wave through and `validateGitRef`
+   * refuses on arrival. Each one got "Will create branch `-x` off `main` in this
+   * checkout" — a confident sentence about a request that could only ever end in
+   * an error, since the backend answers 500 rather than creating anything.
+   *
+   * `.x` is the odd one out and worth keeping: `validateGitRef` does not refuse
+   * it either, but git does, so the rule is stricter than the backend on purpose
+   * rather than by drift.
+   */
+  it.each([
+    ["-x", 'Branch name cannot start with "-"'],
+    ["feat/a[b", "Branch name contains invalid characters"],
+    [".x", 'No part of a branch name can start with "."'],
+    ["feat/.x", 'No part of a branch name can start with "."'],
+    ["x".repeat(256), "Branch name must be 255 characters or fewer"],
+  ])("refuses %s rather than promising to create it", async (name, message) => {
+    const { onChange } = await open();
+
+    type(name);
+
+    expect(screen.getByRole("alert").textContent).toContain(message);
+    expect(screen.queryByTestId("branch-summary")).toBeNull();
+    expect(emitted(onChange)).toBeNull();
+  });
+
   it("reports a failed branch listing rather than an empty picker", async () => {
     getGitBranches.mockRejectedValue(new Error("not a git repository"));
     render(<BranchSelector folder={REPO} currentBranch="main" onChange={vi.fn()} />);

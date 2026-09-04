@@ -7,13 +7,30 @@ import { useIsMobile } from "../hooks/useIsMobile";
 /**
  * Validate a git branch name according to git-check-ref-format rules.
  * Returns an error message string, or null if the name is valid.
+ *
+ * Kept in step with `validateGitRef` (`backend/src/utils/git.ts`), which is the
+ * rule the request is actually judged against. Looser here means the box states
+ * a confident fact about a branch the backend will refuse — "Will create branch
+ * `-x`" for a name that never reaches git — and the user finds out through a
+ * 500 rather than through the field they typed it in.
+ *
+ * One rule is deliberately *stricter* than `validateGitRef`: no path component
+ * may start with `.`. Git refuses those (`git check-ref-format refs/heads/.x`
+ * and `.../feat/.x` both fail) and the backend's validator does not, so that
+ * one is a gap on both sides. Matching git is the point; a client-side
+ * rejection is a better experience than the round trip either way.
  */
 function validateBranchName(name: string): string | null {
   if (!name) return null; // empty is fine (field is optional)
+  if (name.length > 255) return "Branch name must be 255 characters or fewer";
   if (/\s/.test(name)) return "Branch name cannot contain spaces";
   if (/\.\./.test(name)) return 'Branch name cannot contain ".."';
   // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f\x7f~^:?*\\]/.test(name)) return "Branch name contains invalid characters";
+  if (/[\x00-\x1f\x7f~^:?*[\\]/.test(name)) return "Branch name contains invalid characters";
+  // Not cosmetic: every git command that would take this name as an argument
+  // reads a leading "-" as an option instead.
+  if (name.startsWith("-")) return 'Branch name cannot start with "-"';
+  if (/(^|\/)\./.test(name)) return 'No part of a branch name can start with "."';
   if (name.startsWith("/") || name.endsWith("/") || name.endsWith(".")) return 'Branch name cannot start/end with "/" or end with "."';
   if (name.includes("@{")) return 'Branch name cannot contain "@{"';
   if (name.includes("//")) return "Branch name cannot contain consecutive slashes";
