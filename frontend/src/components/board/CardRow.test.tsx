@@ -121,6 +121,13 @@ describe("the desktop template", () => {
 
     expect(cols).toHaveLength(7);
     expect(surface().children).toHaveLength(cols.length);
+    // The same track identities the paths-off case asserts, because this is
+    // the branch the feature exists for and it had neither: the emoji box and
+    // the three trailing cells are the fixed frame the folders column is
+    // inserted INTO, and a change to either that only broke paths-on would
+    // have gone out green.
+    expect(cols[0]).toBe("18px");
+    expect(cols.slice(-3)).toEqual(["auto", "auto", "auto"]);
     // Fourth, between status and the three trailing cells — in the middle is
     // the point, since a path column at the end would sit past the time.
     expect(flexible(cols)).toHaveLength(3);
