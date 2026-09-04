@@ -687,6 +687,41 @@ describe("keyboard and screen reader", () => {
     expect(document.activeElement).toBe(surface());
   });
 
+  it("puts focus back when a poll takes one entry out from under it", () => {
+    setWidth(1024);
+    const { rerender } = open({ expanded: true });
+
+    const entry = screen.getByRole("button", { name: /callboard\.feat-2/ });
+    entry.focus();
+
+    // Not a collapse. Two folders remain, so the expansion is still open and
+    // `showExpansion` never changed — which is why watching only that missed
+    // this. The entry focus was on is gone all the same, and focus with it,
+    // onto <body> at the top of the document.
+    rerender(<CardRow card={card({ memberChats: fanout(2) })} onClick={vi.fn()} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+
+    expect(screen.getByRole("group", { name: /^Folders/ })).toBeDefined();
+    expect(document.activeElement).toBe(surface());
+  });
+
+  it("stays out of the way once the user has clicked away to nothing focusable", () => {
+    setWidth(1024);
+    const { rerender } = open({ expanded: true });
+
+    const entry = screen.getByRole("button", { name: /callboard\.feat-1/ });
+    entry.focus();
+    // Blank board background: unfocusable, so the entry blurs with a null
+    // relatedTarget — indistinguishable from an unmount by that test alone,
+    // and the user has genuinely left.
+    entry.blur();
+    expect(document.activeElement).toBe(document.body);
+
+    rerender(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);
+    // Reading that blur as an unmount left the flag set, so this collapse
+    // scrolled the board back to a row nobody was on.
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it("leaves focus where the user put it when the collapse did not steal it", () => {
     setWidth(1024);
     const outside = document.createElement("button");

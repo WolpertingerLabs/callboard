@@ -225,21 +225,33 @@ export default function CardRow({
   const expandable = folders.length > 1 && Boolean(onToggleExpand);
   const showExpansion = expandable && expanded;
 
+  // One entry PER FOLDER, not per chat: the 20-folder card in the real data
+  // has 38 chats, and 38 inline rows on the board is a second drawer.
+  const shownFolders = folders.slice(0, EXPANSION_CAP);
+  const hiddenCount = folders.length - shownFolders.length;
+
   const rowRef = useRef<HTMLButtonElement>(null);
-  // Whether focus is currently somewhere inside the expansion. Cleared only
-  // when focus moves to a real element elsewhere: an unmounting expansion
-  // takes its focused button with it and leaves `relatedTarget` null, which
-  // is exactly the case this exists for.
+  // Whether focus is currently somewhere inside the expansion.
   const focusInsideExpansion = useRef(false);
+  // The entries as they actually stand, so the guard below re-runs when the
+  // poll drops ONE of three — the case it names but did not watch, since
+  // `showExpansion` stays true throughout and the effect never fired.
+  const shownKey = shownFolders.map((f) => f.path).join("\n");
   useEffect(() => {
-    if (showExpansion || !focusInsideExpansion.current) return;
+    if (!focusInsideExpansion.current) return;
+    // Focus is still on something real — a surviving entry, or wherever the
+    // user has since put it. Nothing to hand back.
+    if (document.activeElement && document.activeElement !== document.body) {
+      if (!showExpansion) focusInsideExpansion.current = false;
+      return;
+    }
     focusInsideExpansion.current = false;
     // A collapse — by the chevron, by the header toggle, or by the 15s poll
     // dropping a folder unprompted — must not leave a keyboard user on
     // <body>, back at the top of the document. The row it belonged to is the
     // nearest thing that still exists.
-    if (document.activeElement === null || document.activeElement === document.body) rowRef.current?.focus();
-  }, [showExpansion]);
+    rowRef.current?.focus();
+  }, [showExpansion, shownKey]);
 
   // ArrowRight opens, ArrowLeft closes — the disclosure convention, and the
   // only keyboard path to one row's expansion now that the chevron is a span
@@ -369,10 +381,6 @@ export default function CardRow({
     </span>
   );
 
-  // One entry PER FOLDER, not per chat: the 20-folder card in the real data
-  // has 38 chats, and 38 inline rows on the board is a second drawer.
-  const shownFolders = folders.slice(0, EXPANSION_CAP);
-  const hiddenCount = folders.length - shownFolders.length;
   // Hoisted out of what is actually on screen, so the header describes the
   // rows under it. This is what stops a twelve-row list printing /home/cybil
   // twelve times; each label keeps the full path in its title regardless.
@@ -391,7 +399,19 @@ export default function CardRow({
       aria-label={`Folders ${card.title} spans`}
       onFocus={() => (focusInsideExpansion.current = true)}
       onBlur={(e) => {
-        if (e.relatedTarget) focusInsideExpansion.current = false;
+        // Tabbing from one entry to the next: the focus that follows would
+        // set the flag straight back, but there is no reason to drop it.
+        if (e.relatedTarget && e.currentTarget.contains(e.relatedTarget as Node)) return;
+        // Focus has left, and the flag goes with it — UNLESS this is the
+        // expansion going away under the focused entry, which leaves
+        // `relatedTarget` null and is the one case the flag exists for.
+        //
+        // Whether the entry is still in the document tells the two apart. A
+        // click on unfocusable board background also blurs to null, and
+        // reading that as an unmount left the flag standing for the next
+        // unprompted collapse, which then yanked focus — and the viewport —
+        // back to a row the user had walked away from.
+        if (e.relatedTarget || e.target.isConnected) focusInsideExpansion.current = false;
       }}
       style={{
         display: "flex",
