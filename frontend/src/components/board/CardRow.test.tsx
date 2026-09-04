@@ -480,6 +480,34 @@ describe("the folder expansion", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves a folder entry working after a right-click on the row", () => {
+    setWidth(1024);
+    const onOpenFolder = vi.fn();
+    render(
+      <CardRow
+        card={card({ memberChats: fanout(3) })}
+        onClick={vi.fn()}
+        showPath
+        expanded
+        onToggleExpand={vi.fn()}
+        onOpenFolder={onOpenFolder}
+        onLongPress={vi.fn()}
+      />,
+    );
+
+    // The mirror of the bug the contextmenu guard fixed, from the other end.
+    // A right-click on the row sets the hook's click-suppression flag; the
+    // flag is cleared by the next pointerdown, and the guard on a folder
+    // entry means the row never sees one. So the entry's next click was
+    // swallowed and the drawer did not open — the second click worked.
+    fireEvent.contextMenu(surface());
+    const entry = screen.getByTitle("/home/cybil/callboard.feat-1");
+    fireEvent.pointerDown(entry, { pointerType: "mouse" });
+    fireEvent.pointerUp(entry);
+    fireEvent.click(entry);
+    expect(onOpenFolder).toHaveBeenCalledTimes(1);
+  });
+
   it("goes dead with the rest of the row when the card is out of selection scope", () => {
     setWidth(1024);
     const onOpenFolder = vi.fn();
