@@ -4,10 +4,11 @@ import type { CardSummary, CardPatch } from "../../api";
 import { getAgentIdentityPrompt, CARD_CATEGORY_MAX } from "../../api";
 import MarkdownRenderer from "../MarkdownRenderer";
 import InlineEdit from "./InlineEdit";
+import CardPathLabel from "./CardPathLabel";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
-import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag } from "lucide-react";
+import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag, Folder } from "lucide-react";
 
 /** Mirrors the limits in backend/src/services/card-fields.ts. */
 const METADATA_KEY_MAX = 64;
@@ -21,6 +22,13 @@ interface CardDrawerProps {
   onPatch: (patch: CardPatch) => Promise<boolean>;
   /** Close the drawer (card deletion is root-chat deletion in the chat UI). */
   onClose: () => void;
+  /**
+   * Opens the chat list filtered to one folder — how a list row's folder entry
+   * drills in. Absent behaves exactly as the drawer always has, and the filter
+   * is always visible and always clearable: one the user can neither see nor
+   * escape is a drawer that appears to have lost their chats.
+   */
+  initialFolderFilter?: string;
 }
 
 /** Live-status dot colors — themable via the --board-* section of index.css. */
@@ -40,10 +48,15 @@ const ICON_BUTTON: React.CSSProperties = {
 };
 
 /** Right-hand drawer with the card's editable identity, members, and actions. */
-export default function CardDrawer({ card, categories, onPatch, onClose }: CardDrawerProps) {
+export default function CardDrawer({ card, categories, onPatch, onClose, initialFolderFilter }: CardDrawerProps) {
   const navigate = useNavigate();
   const [editingDescription, setEditingDescription] = useState(false);
+  // Seeded from the prop and owned here after that, so clearing it is a local
+  // gesture rather than a round-trip through the board's open-card state.
+  const [folderFilter, setFolderFilter] = useState(initialFolderFilter);
   const closed = card.lifecycle === "closed";
+
+  const shownChats = folderFilter ? card.memberChats.filter((c) => c.folder === folderFilter) : card.memberChats;
 
   // Start a chat in the card's working context: the most recently active
   // member chat's folder, and — when that chat runs a configured agent —
@@ -206,11 +219,44 @@ export default function CardDrawer({ card, categories, onPatch, onClose }: CardD
           {/* Member chats */}
           <div>
             <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
-              Chats ({card.memberChats.length})
+              {/* "3 of 8" rather than "3": a bare count under a filter reads
+                  as the card having lost five chats. */}
+              Chats ({folderFilter ? `${shownChats.length} of ${card.memberChats.length}` : card.memberChats.length})
             </div>
+            {folderFilter && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginBottom: 6,
+                  padding: "4px 6px 4px 8px",
+                  borderRadius: 999,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  minWidth: 0,
+                }}
+              >
+                <Folder size={11} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
+                <CardPathLabel path={folderFilter} color="var(--text)" fontSize={12} />
+                <button
+                  onClick={() => setFolderFilter(undefined)}
+                  aria-label="Clear folder filter"
+                  title="Show every chat on this card"
+                  style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)", flexShrink: 0 }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            )}
             {card.memberChats.length === 0 && <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No chats yet — start one below.</div>}
+            {/* A folder can empty out under a poll while the drawer is open —
+                say so, rather than showing a filter over a blank space. */}
+            {card.memberChats.length > 0 && shownChats.length === 0 && (
+              <div style={{ fontSize: 13, color: "var(--text-muted)" }}>No chats in this folder — clear the filter to see the rest.</div>
+            )}
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {card.memberChats.map((chat) => (
+              {shownChats.map((chat) => (
                 <div
                   key={chat.chatId}
                   onClick={() => navigate(`/chat/${chat.chatId}`)}
