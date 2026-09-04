@@ -125,23 +125,34 @@ streamRouter.post("/new/message", async (req, res) => {
       let generated: string | null = null;
       try {
         generated = await generateBranchName(prompt);
-        if (!generated) log.warn("Auto-generate branch name returned null, using a stamped fallback name");
       } catch (err: any) {
-        log.warn(`Auto-generate branch name failed: ${err.message}, using a stamped fallback name`);
+        log.warn(`Auto-generate branch name failed: ${err.message}`);
       }
-      // Proceeding with no branch at all used to be the failure path, and it is
-      // the one thing that must not happen: with `useWorktree` and a
-      // `baseBranch`, resolveBranch then finds the base already checked out in
-      // the main repo and hands the chat that directory — the user asked for
-      // isolation and silently got none.
+
+      // The stamped fallback keeps one specific promise — you asked for
+      // isolation, you get isolation. Without it, `useWorktree` plus a
+      // `baseBranch` and no `newBranch` sends resolveBranch down its reuse
+      // path, where the base is already checked out in the main repo, and the
+      // chat runs unisolated in the user's working tree with nothing saying so.
       //
-      // Uniquified only here, on the generated path. A name the user typed
-      // keeps today's reuse semantics (asking for `feat/x` twice lands in the
-      // same worktree); a name we invented from a prompt must not merge two
-      // unrelated chats onto one branch because they happened to be described
-      // the same way.
-      newBranch = uniqueBranchName(folder, generated ?? fallbackBranchName());
-      log.debug(`Auto-generated branch name: ${newBranch}`);
+      // There is no equivalent promise in place, so no fallback there: minting
+      // `chat/<date>-<hex>` in someone's working checkout as the *failure*
+      // response is more invasive than the warn-and-proceed it replaced. Phase
+      // 3 drops this mode from the UI, but the wire flag outlives the UI and an
+      // older bundle can still send `autoCreateBranch` without `useWorktree`.
+      const candidate = generated ?? (useWorktree ? fallbackBranchName() : null);
+      if (candidate) {
+        // Uniquified on both paths, and on the in-place path it prevents a
+        // second hard failure: a generated name that already exists reaches
+        // `switchBranch(…, createNew: true)` → `git checkout -b x` → "fatal: a
+        // branch named 'x' already exists", the in-place twin of the worktree
+        // case. Only for names we invent — a typed name keeps today's reuse
+        // semantics, where asking for `feat/x` twice lands you in one place.
+        newBranch = uniqueBranchName(folder, candidate);
+        log.debug(`Auto-generated branch name: ${newBranch}`);
+      } else {
+        log.warn("Auto-generate branch name returned null and no worktree was asked for, proceeding without new branch");
+      }
     }
 
     const branchResult = resolveBranch({
