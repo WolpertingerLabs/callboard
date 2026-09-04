@@ -103,6 +103,17 @@ export interface UseCardActivationOptions {
 
 export interface UseCardActivationResult {
   handleClick: (e: React.MouseEvent) => void;
+  /**
+   * The same contract with a different destination.
+   *
+   * A row's folder entry opens the drawer *filtered*, which is a different
+   * `open` from the row's — but every step in front of that decision is
+   * identical, and it is the steps in front that are easy to get wrong: a
+   * click left over from a long press must not act, and in selection mode a
+   * click anywhere on the face toggles the card rather than navigating away
+   * from a selection in progress. `handleClick` is this with `onClick`.
+   */
+  handleActivate: (open: () => void) => (e: React.MouseEvent) => void;
   /** Spread onto the face's outer element; empty when the board asked for no gesture. */
   gestureProps: Partial<UseLongPressResult["handlers"]>;
   /** True for a face outside the selection's lifecycle scope — render it dimmed and disabled. */
@@ -139,7 +150,11 @@ export function useCardActivation({
   // long-presses a surface that has never shown them it can be selected.
   const showCheckbox = Boolean(onToggleSelect) && selectable && (selectionMode || hovered || checkboxFocused);
 
-  const handleClick = (e: React.MouseEvent) => {
+  const handleActivate = (open: () => void) => (e: React.MouseEvent) => {
+    // Out of the selection's lifecycle scope: the face is dead, and a control
+    // that is a sibling of the disabled button rather than inside it does not
+    // get that for free.
+    if (inert) return;
     // A long press or a context menu has already acted on this gesture; the
     // click browsers emit afterwards must not act on it a second time.
     if (onLongPress && gestures.consumeClickSuppression()) return;
@@ -148,11 +163,12 @@ export function useCardActivation({
       onToggleSelect?.(e);
       return;
     }
-    onClick();
+    open();
   };
 
   return {
-    handleClick,
+    handleClick: handleActivate(onClick),
+    handleActivate,
     gestureProps,
     inert,
     showCheckbox,

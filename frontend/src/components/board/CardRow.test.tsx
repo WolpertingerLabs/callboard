@@ -390,6 +390,88 @@ describe("the folder expansion", () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it("goes dead with the rest of the row when the card is out of selection scope", () => {
+    setWidth(1024);
+    const onOpenFolder = vi.fn();
+    const onClick = vi.fn();
+    render(
+      <CardRow
+        card={card({ lifecycle: "closed", memberChats: fanout(20) })}
+        onClick={onClick}
+        showPath
+        expanded
+        selectionMode
+        selectable={false}
+        onToggleSelect={vi.fn()}
+        onToggleExpand={vi.fn()}
+        onOpenFolder={onOpenFolder}
+      />,
+    );
+
+    // The expansion is a SIBLING of the row's button, so the `disabled` that
+    // makes an out-of-scope row inert stops at that button. A dimmed, dead row
+    // whose folder paths still open the drawer is the row lying about itself.
+    fireEvent.click(screen.getByTitle("/home/cybil/callboard.feat-1"));
+    fireEvent.click(screen.getByText("… 12 more"));
+    expect(onOpenFolder).not.toHaveBeenCalled();
+    expect(onClick).not.toHaveBeenCalled();
+    // Out of tab order too, not merely unresponsive to the mouse.
+    expect(entries().length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button").filter((el) => el !== surface() && !(el as HTMLButtonElement).disabled)).toHaveLength(0);
+  });
+
+  it("toggles the selection instead of drilling in while a selection is in progress", () => {
+    setWidth(1024);
+    const onOpenFolder = vi.fn();
+    const onToggleSelect = vi.fn();
+    render(
+      <CardRow
+        card={card({ memberChats: fanout(3) })}
+        onClick={vi.fn()}
+        showPath
+        expanded
+        selectionMode
+        onToggleSelect={onToggleSelect}
+        onToggleExpand={vi.fn()}
+        onOpenFolder={onOpenFolder}
+      />,
+    );
+
+    // Same contract as the row above it: while cards are being selected, a
+    // click on the face is part of the selection, not a navigation away from
+    // one half-built.
+    fireEvent.click(screen.getByTitle("/home/cybil/callboard.feat-1"));
+    expect(onToggleSelect).toHaveBeenCalledTimes(1);
+    expect(onOpenFolder).not.toHaveBeenCalled();
+  });
+
+  it("does not let the click after a long press open the drawer from the footer", () => {
+    setWidth(1024);
+    const onClick = vi.fn();
+    render(
+      <CardRow
+        card={card({ memberChats: fanout(20) })}
+        onClick={onClick}
+        showPath
+        expanded
+        onToggleExpand={vi.fn()}
+        onOpenFolder={vi.fn()}
+        onLongPress={vi.fn()}
+      />,
+    );
+
+    // The footer went straight to the raw onClick prop, so it answered the
+    // click a long press leaves behind — which the row itself has always
+    // swallowed.
+    fireEvent.contextMenu(surface());
+    fireEvent.click(screen.getByText("… 12 more"));
+    expect(onClick).not.toHaveBeenCalled();
+
+    // Only that one click, though.
+    fireEvent.click(screen.getByText("… 12 more"));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
   it("stays shut when the board has not asked for it", () => {
     setWidth(1024);
     render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);

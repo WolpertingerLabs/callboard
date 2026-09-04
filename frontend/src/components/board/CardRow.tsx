@@ -107,7 +107,7 @@ export default function CardRow({
   const now = useCardCountdown(card);
   const activeRun = closed ? undefined : card.memberRuns.find((r) => !r.endedAt);
 
-  const { handleClick, gestureProps, inert, showCheckbox, checkboxLabel, hoverProps, checkboxFocusProps } = useCardActivation({
+  const { handleClick, handleActivate, gestureProps, inert, showCheckbox, checkboxLabel, hoverProps, checkboxFocusProps } = useCardActivation({
     card,
     selectionMode,
     selectable,
@@ -300,8 +300,13 @@ export default function CardRow({
       {shownFolders.map((folder) => (
         <button
           key={folder.path}
-          onClick={() => onOpenFolder?.(folder.path)}
-          disabled={!onOpenFolder}
+          // The same activation contract as the row above it, not a raw
+          // handler: the expansion is a SIBLING of the row's button, so it
+          // inherits none of that button's `disabled`, and a click here has to
+          // answer a long press and a selection in progress exactly as a click
+          // on the row does. Only the destination differs — filtered, not open.
+          onClick={handleActivate(() => onOpenFolder?.(folder.path))}
+          disabled={inert}
           style={{
             display: "flex",
             alignItems: "center",
@@ -315,7 +320,7 @@ export default function CardRow({
             textAlign: "left",
             font: "inherit",
             color: "var(--board-tile-meta-text)",
-            cursor: onOpenFolder ? "pointer" : "default",
+            cursor: inert ? "default" : "pointer",
           }}
         >
           {/* The dot's box is there on every entry, coloured only when the
@@ -347,7 +352,11 @@ export default function CardRow({
         // The drawer is where a fan-out this wide gets navigated, so the
         // overflow goes there rather than growing the row.
         <button
-          onClick={onClick}
+          // handleClick, not the raw prop: this is the row's own "open
+          // unfiltered" gesture, and going straight to onClick bypassed the
+          // click-suppression that keeps a long press from also navigating.
+          onClick={handleClick}
+          disabled={inert}
           style={{
             display: "flex",
             alignItems: "center",
@@ -360,7 +369,7 @@ export default function CardRow({
             fontSize: 11,
             color: "var(--board-tile-meta-text)",
             opacity: 0.8,
-            cursor: "pointer",
+            cursor: inert ? "default" : "pointer",
           }}
         >
           … {hiddenCount} more
