@@ -185,6 +185,11 @@ export default function CardRow({
               e.stopPropagation();
               onToggleExpand?.();
             }}
+            // The long-press gesture lives on the outer element, so without
+            // this a held finger on the chevron would enter selection mode and
+            // the release would ALSO toggle the row. The chevron owns its
+            // gesture, exactly as the checkbox does by being a sibling.
+            onPointerDown={(e) => e.stopPropagation()}
             title={expanded ? "Hide folders" : `Show all ${folders.length} folders`}
             style={{
               display: "flex",
@@ -259,6 +264,10 @@ export default function CardRow({
 
   const expansion = showExpansion && (
     <div
+      // As with the chevron: the outer element carries the long-press, and a
+      // held finger on a folder entry would otherwise select the card and then
+      // open the drawer on that folder as it lifted.
+      onPointerDown={(e) => e.stopPropagation()}
       style={{
         display: "flex",
         flexDirection: "column",

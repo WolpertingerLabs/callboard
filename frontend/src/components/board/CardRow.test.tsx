@@ -9,7 +9,7 @@
  * the mobile fallback's touch target.
  */
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { CardMemberChat, CardMemberRun, CardSummary } from "../../api";
 import CardRow from "./CardRow";
 
@@ -320,6 +320,38 @@ describe("the folder expansion", () => {
     expect(onOpenFolder).toHaveBeenCalledWith("/home/cybil/callboard.feat-2");
     // The unfiltered open is a different gesture, and this is not it.
     expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("does not let a held finger both select the card and work its own controls", () => {
+    setWidth(1024);
+    const onLongPress = vi.fn();
+    render(
+      <CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} onLongPress={onLongPress} />,
+    );
+
+    const hold = (el: HTMLElement) => {
+      fireEvent.pointerDown(el, { pointerType: "touch", clientX: 10, clientY: 20 });
+      act(() => void vi.advanceTimersByTime(600));
+      fireEvent.pointerUp(el);
+    };
+
+    vi.useFakeTimers();
+    try {
+      // The long press lives on the outer element, which both the chevron and
+      // the expansion sit inside. Left to bubble, one touch would enter
+      // selection mode on the way down and toggle the row — or open a filtered
+      // drawer — on the way back up.
+      hold(screen.getByTitle("/home/cybil/callboard.feat-1"));
+      hold(screen.getByTitle("Hide folders"));
+      expect(onLongPress).not.toHaveBeenCalled();
+
+      // The control, so this is not passing because nothing fires anywhere:
+      // the same gesture on the row itself still enters selection.
+      hold(surface());
+      expect(onLongPress).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("stays shut when the board has not asked for it", () => {
