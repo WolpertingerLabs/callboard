@@ -165,6 +165,35 @@ describe("POST /new/message — autoCreateBranch when generation returns null", 
 });
 
 /**
+ * The single line Phase 1.1 exists to add, asserted from the route rather than
+ * from `uniqueBranchName`.
+ *
+ * Every other test in this suite stubs the generator to `null` and reaches only
+ * the fallback, so replacing `newBranch = uniqueBranchName(folder, candidate)`
+ * with `newBranch = candidate` left them all green — the call was covered by
+ * nothing.
+ */
+describe("POST /new/message — a generated name that collides", () => {
+  beforeEach(() => {
+    generator.result = null;
+  });
+
+  it("uniquifies it rather than adopting the branch that already exists", async () => {
+    const repoDir = makeRepo("generated-collision");
+    git(["branch", "feat/x"], repoDir);
+    generator.result = "feat/x";
+
+    await postNewMessage(repoDir, { autoCreateBranch: true, baseBranch: "main", useWorktree: true });
+
+    // `feat/x` is a real branch that lives nowhere, so without uniquification
+    // `ensureWorktreeDetailed` checks *it* out and the chat silently adopts
+    // whatever unrelated work happens to share the name Haiku picked.
+    expect(basename(lastSendOptions!.folder)).toBe("repo.feat-x-2");
+    expect(localBranches(repoDir)).toEqual(["feat/x", "feat/x-2", "main"]);
+  });
+});
+
+/**
  * A git failure during branch resolution has to become a response.
  *
  * `resolveBranch` ran before the route's own `try` opened, and Express 4 does
