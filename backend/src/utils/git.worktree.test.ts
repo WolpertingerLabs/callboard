@@ -225,6 +225,53 @@ describe("the dirty-state guard and where the checkout actually lands", () => {
     expect(result.folder).toBe(elsewhere);
   });
 
+  /**
+   * A detached HEAD has no current branch, but `getGitInfo.branch` reports one
+   * anyway — `"main"`, its "empty means main" fallback. Taken at face value the
+   * guard compared `"main" !== "main"`, never fired, and `git checkout main`
+   * ran over uncommitted work: the changes ride onto a branch nobody asked for
+   * and the detached commit survives only in the reflog.
+   *
+   * `main` as the target is the whole point. Any other target already differed
+   * from the fallback and was already guarded, which is why this went unseen.
+   */
+  it("refuses a switch to main from a dirty detached HEAD", () => {
+    const dir = dirtyRepo("dirty-detached");
+    git(["commit", "-q", "--allow-empty", "-m", "second"], dir);
+    git(["checkout", "-q", "--detach", "HEAD~1"], dir);
+    const detachedAt = revParse(dir, "HEAD");
+
+    const result = resolveBranch({ folder: dir, baseBranch: "main" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("uncommitted_changes");
+    if (result.error !== "uncommitted_changes") return;
+    expect(result.targetBranch).toBe("main");
+    // Named for what it is rather than as the branch the fallback invents.
+    expect(result.message).toContain("detached HEAD");
+
+    // Nothing moved: still detached, still on the same commit, still dirty.
+    expect(revParse(dir, "HEAD")).toBe(detachedAt);
+    expect(getGitInfo(dir).isDetached).toBe(true);
+    expect(hasUncommittedChanges(dir)).toBe(true);
+  });
+
+  /**
+   * The force flag still works from a detached HEAD, and the switch still
+   * happens — the guard is a question, not a prohibition.
+   */
+  it("still switches from a detached HEAD when forced", () => {
+    const dir = dirtyRepo("dirty-detached-forced");
+    git(["commit", "-q", "--allow-empty", "-m", "second"], dir);
+    git(["checkout", "-q", "--detach", "HEAD~1"], dir);
+
+    const result = resolveBranch({ folder: dir, baseBranch: "main", forceBranchChange: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(getGitInfo(dir).branch).toBe("main");
+    expect(getGitInfo(dir).isDetached).toBeUndefined();
+  });
+
   /** A clean checkout was never blocked, and still is not. */
   it("leaves a clean in-place switch alone", () => {
     const dir = makeRepo("clean-in-place");

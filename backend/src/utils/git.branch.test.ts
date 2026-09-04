@@ -107,10 +107,12 @@ describe("getGitInfo reads the branch from HEAD", () => {
 
     expect(info.branch).toBe("trunk");
     expect(info.branch).toBe(gitSaysBranch(repo));
+    // An unborn branch is a branch, not a detachment — the flag stays absent.
+    expect(info.isDetached).toBeUndefined();
     expect(execSyncCalls).toBe(0);
   });
 
-  it("falls back to main on a detached HEAD, as it always has", () => {
+  it("falls back to main on a detached HEAD, and says that is what it did", () => {
     const repo = initRepo("detached");
     git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
     const sha = git(["rev-parse", "HEAD"], repo).trim();
@@ -122,7 +124,13 @@ describe("getGitInfo reads the branch from HEAD", () => {
     execSyncCalls = 0;
     const info = getGitInfo(repo);
 
-    expect(info).toEqual({ isGitRepo: true, branch: "main" });
+    // `branch` keeps the fallback — it is read across the sidebar, the chat
+    // list and the folder header, and re-pointing it is a change of its own.
+    // `isDetached` is the flag beside it, so a caller that must not treat
+    // "main" as a real current branch can ask. resolveBranch's dirty guard is
+    // the first: without this it compared "main" to "main", never fired, and
+    // checked out over uncommitted work.
+    expect(info).toEqual({ isGitRepo: true, branch: "main", isDetached: true });
     expect(execSyncCalls).toBe(0);
   });
 
@@ -240,7 +248,7 @@ describe("getGitInfo reads the branch from HEAD", () => {
     const info = getGitInfo(repo);
 
     expect(gitSaysBranch(repo)).toBe("");
-    expect(info).toEqual({ isGitRepo: true, branch: "main" });
+    expect(info).toEqual({ isGitRepo: true, branch: "main", isDetached: true });
     expect(execSyncCalls).toBe(0);
   });
 

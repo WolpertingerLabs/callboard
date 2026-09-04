@@ -62,6 +62,25 @@ export function validateFolderPath(folder: string): string {
 export interface GitInfo {
   isGitRepo: boolean;
   branch?: string;
+  /**
+   * True when HEAD does not name a local branch.
+   *
+   * Almost always a detached HEAD; also the vanishing case of a HEAD symref
+   * pointing outside `refs/heads`. The two are one fact to every caller —
+   * `git branch --show-current` prints nothing for either, and there is no
+   * current branch to compare a target against.
+   *
+   * Additive, and deliberately *beside* `branch` rather than inside it.
+   * `branch` reports a detached HEAD as `"main"` — the "empty means main"
+   * fallback it has always applied — and that field is read across the sidebar,
+   * the chat list, the folder header and chat search. Re-pointing it is a
+   * change with its own blast radius; this flag lets the callers that care ask
+   * the question without any of them having their answer changed underneath.
+   *
+   * Absent, not `false`, when the answer is unknown: git itself failed to say.
+   * Treat an absent value as "no reason to think so".
+   */
+  isDetached?: boolean;
 }
 
 /**
@@ -234,7 +253,11 @@ export function getGitInfo(directory: string): GitInfo {
       // is what the empty-output fallback below has always reported as "main".
       const fromHead = headHome ? branchFromHead(headHome) : undefined;
       if (fromHead !== undefined) {
-        return { isGitRepo: true, branch: fromHead ?? "main" };
+        // `null` is the detached answer, and it is the same fact
+        // `--show-current` prints nothing for. Reported as a flag of its own
+        // while `branch` keeps its long-standing "main" fallback — see
+        // {@link GitInfo.isDetached}.
+        return { isGitRepo: true, branch: fromHead ?? "main", ...(fromHead === null && { isDetached: true }) };
       }
 
       try {
@@ -249,9 +272,19 @@ export function getGitInfo(directory: string): GitInfo {
         return {
           isGitRepo: true,
           branch: branch || "main", // fallback to 'main' if branch is empty
+          // The same emptiness, read the same way, one line apart: `""` from
+          // `--show-current` is git's detached signal, and the "main" fallback
+          // beside it is what makes the flag necessary. Defensive here rather
+          // than load-bearing — every detached checkout reachable in practice
+          // is answered by `branchFromHead` above without spawning, and the
+          // HEADs that do reach this path make `--show-current` *fail* rather
+          // than print nothing ("fatal: HEAD not found below refs/heads!").
+          ...(!branch && { isDetached: true }),
         };
       } catch {
-        // Git repo exists but can't get branch (detached HEAD, etc.)
+        // Git repo exists but can't get branch. No `isDetached` either way:
+        // git declined to answer, and guessing here would be a claim, not a
+        // fallback.
         return {
           isGitRepo: true,
           branch: "main",
@@ -1326,13 +1359,26 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
     // and all: two spellings of "is it somewhere else" that could disagree
     // would put the guard back out of step with the checkout it guards.
     const worktreeElsewhere = getGitWorktrees(folder).find((wt) => wt.branch === targetBranch && wt.path !== folder);
-    const currentBranch = getGitInfo(folder).branch;
+
+    // A detached HEAD has no current branch, and `getGitInfo.branch` says
+    // `"main"` for one — its long-standing "empty means main" fallback, read
+    // all over this repo and not this guard's to redefine. Taken at face value
+    // it made the guard *inert* on the most common target there is: switching
+    // to `main` from a detached checkout compared equal, the guard never fired,
+    // and `git checkout main` ran over uncommitted work — carrying it onto a
+    // branch nobody asked for and leaving the detached commit reachable only
+    // from the reflog. Silently.
+    //
+    // Unknown, not "main", so the comparison below cannot accidentally match.
+    const info = getGitInfo(folder);
+    const currentBranch = info.isDetached ? undefined : info.branch;
 
     if (!worktreeElsewhere && targetBranch !== currentBranch && !forceBranchChange && hasUncommittedChanges(folder)) {
+      const from = currentBranch ? `"${currentBranch}"` : info.isDetached ? "a detached HEAD" : "an unknown branch";
       return {
         ok: false,
         error: "uncommitted_changes",
-        message: `Cannot switch from "${currentBranch}" to "${targetBranch}" because there are uncommitted changes. Use a worktree to work in isolation instead.`,
+        message: `Cannot switch from ${from} to "${targetBranch}" because there are uncommitted changes. Use a worktree to work in isolation instead.`,
         currentBranch: currentBranch || "unknown",
         targetBranch,
       };
