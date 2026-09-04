@@ -354,6 +354,42 @@ describe("the folder expansion", () => {
     }
   });
 
+  it("guards the OTHER long-press trigger too, which is the one Android fires", () => {
+    setWidth(1024);
+    const onLongPress = vi.fn();
+    render(
+      <CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} onLongPress={onLongPress} />,
+    );
+
+    // `useLongPress` fires on a held pointer AND on contextmenu, and the two
+    // bubble independently — stopping the pointer event does nothing to the
+    // contextmenu that a long press on Android Chrome arrives as.
+    fireEvent.contextMenu(screen.getByTitle("/home/cybil/callboard.feat-1"));
+    fireEvent.contextMenu(screen.getByTitle("Hide folders"));
+    expect(onLongPress).not.toHaveBeenCalled();
+
+    // Same control as above: the gesture is not dead everywhere.
+    fireEvent.contextMenu(surface());
+    expect(onLongPress).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the row's own activation working after a contextmenu on a folder entry", () => {
+    setWidth(1024);
+    const onClick = vi.fn();
+    render(
+      <CardRow card={card({ memberChats: fanout(3) })} onClick={onClick} showPath expanded onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} onLongPress={vi.fn()} />,
+    );
+
+    // The follow-on from the same root cause: a contextmenu that reached the
+    // row set the hook's click-suppression flag, and the guard on the entry's
+    // pointerdown meant no later pointerdown ever cleared it — so the row's
+    // next activation (a keyboard Enter, which has no pointer event at all)
+    // was swallowed with nothing to show for it.
+    fireEvent.contextMenu(screen.getByTitle("/home/cybil/callboard.feat-1"));
+    fireEvent.click(surface());
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
   it("stays shut when the board has not asked for it", () => {
     setWidth(1024);
     render(<CardRow card={card({ memberChats: fanout(3) })} onClick={vi.fn()} showPath onToggleExpand={vi.fn()} onOpenFolder={vi.fn()} />);

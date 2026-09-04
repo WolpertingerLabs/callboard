@@ -61,6 +61,23 @@ const TIME_WIDTH = 44;
 const ellipsis: React.CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 
 /**
+ * Spread onto a control inside the row that owns its own click, so the row's
+ * long press does not also fire on it.
+ *
+ * BOTH triggers, because `useLongPress` has two and they are independent: the
+ * held-pointer timer that `pointerdown` starts, and `contextmenu` — which is
+ * what Android Chrome fires on a long press, and which bubbles on its own even
+ * when the pointer event beneath it was stopped. Guarding only `pointerdown`
+ * leaves the gesture live on exactly the platform the second trigger exists
+ * for, and leaves the hook's click-suppression flag set with no `pointerdown`
+ * reaching the row to clear it — which then swallows the row's next activation.
+ */
+const stopGesture = {
+  onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+  onContextMenu: (e: React.MouseEvent) => e.stopPropagation(),
+};
+
+/**
  * A card as a full-width row.
  *
  * Same facts and the same gestures as `CardTile` — both drive them through
@@ -189,7 +206,7 @@ export default function CardRow({
             // this a held finger on the chevron would enter selection mode and
             // the release would ALSO toggle the row. The chevron owns its
             // gesture, exactly as the checkbox does by being a sibling.
-            onPointerDown={(e) => e.stopPropagation()}
+            {...stopGesture}
             title={expanded ? "Hide folders" : `Show all ${folders.length} folders`}
             style={{
               display: "flex",
@@ -267,7 +284,7 @@ export default function CardRow({
       // As with the chevron: the outer element carries the long-press, and a
       // held finger on a folder entry would otherwise select the card and then
       // open the drawer on that folder as it lifted.
-      onPointerDown={(e) => e.stopPropagation()}
+      {...stopGesture}
       style={{
         display: "flex",
         flexDirection: "column",
