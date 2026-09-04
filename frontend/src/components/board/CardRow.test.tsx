@@ -479,6 +479,33 @@ describe("the folder expansion", () => {
   });
 });
 
+describe("contrast", () => {
+  it("makes no text in the row recede by opacity", () => {
+    setWidth(1024);
+    // Every site that used to: the running job, the hoisted prefix, the `root`
+    // label and the footer, all in one render.
+    const { container } = render(
+      <CardRow
+        card={card({ status: "rebasing", memberRuns: [RUN], memberChats: fanout(20) })}
+        onClick={vi.fn()}
+        showPath
+        expanded
+        onToggleExpand={vi.fn()}
+        onOpenFolder={vi.fn()}
+      />,
+    );
+
+    // --board-tile-meta-text is 5.62:1 dark / 6.09:1 light on the row; at 0.7
+    // it composites to 3.43:1 / 3.16:1, under AA, on text as small as 10px.
+    // A partial opacity anywhere in here is that bug coming back — 1 and 0 are
+    // the row's own dim and the checkbox's reveal, which are not text colour.
+    const faded = [...container.querySelectorAll<HTMLElement>("*")].filter(
+      (el) => el.style.opacity !== "" && el.style.opacity !== "1" && el.style.opacity !== "0",
+    );
+    expect(faded.map((el) => el.textContent)).toEqual([]);
+  });
+});
+
 describe("the selection checkbox", () => {
   it("sits on the emoji it replaces, not in the middle of whatever the row grew", () => {
     setWidth(1024);

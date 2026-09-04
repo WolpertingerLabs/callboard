@@ -57,6 +57,23 @@ const ROLLUP_WIDTH = 132;
 const COUNT_WIDTH = 38;
 const TIME_WIDTH = 44;
 
+/**
+ * Nothing in this row recedes by `opacity`, and the reason is measured.
+ *
+ * `--board-tile-meta-text` is 5.62:1 dark / 6.09:1 light on `--board-tile-bg`.
+ * Composited at 0.7 — which is where the running job, the hoisted prefix, the
+ * `root` label and the `… N more` footer all sat — it lands at 3.43:1 / 3.16:1,
+ * under the 4.5:1 AA floor, and the two smallest of those are 10 and 11px.
+ * There is no headroom to buy back either: even 0.9 only reaches 4.81 / 4.84,
+ * for a dim nobody can see. So these read at the token's full strength and
+ * take their hierarchy from position, size and separators instead. The same
+ * trap `index.css` documents on --board-group-label-muted-text.
+ *
+ * (The dim on the whole row for a closed or out-of-scope card is a different
+ * thing and stays: it is a deliberate statement about the row, made once,
+ * exactly as the tile makes it.)
+ */
+
 /** One text cell: nothing in a row may push the columns apart. */
 const ellipsis: React.CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 
@@ -167,12 +184,13 @@ export default function CardRow({
       {card.statusEmoji ? `${card.statusEmoji} ` : ""}
       {card.status}
       {jobName && (
-        // Opacity rather than a second colour: the job is context for the
-        // status beside it, and it has to recede without a new token.
-        <span style={{ opacity: 0.7 }}>
+        // No opacity here, and none anywhere else in this row — see the note
+        // above `ellipsis`. The separator is what sets the job apart from the
+        // status; at 12px the colour cannot be.
+        <>
           {card.status ? " · " : ""}
           {jobName}
-        </span>
+        </>
       )}
     </span>
   );
@@ -295,7 +313,7 @@ export default function CardRow({
       }}
     >
       {sharedPrefix && (
-        <span style={{ fontSize: 11, color: "var(--board-tile-meta-text)", opacity: 0.7, paddingBottom: 2 }}>{sharedPrefix}</span>
+        <span style={{ fontSize: 11, color: "var(--board-tile-meta-text)", paddingBottom: 2 }}>{sharedPrefix}</span>
       )}
       {shownFolders.map((folder) => (
         <button
@@ -339,7 +357,7 @@ export default function CardRow({
           {folder.isRoot && (
             // A label, not a sort surprise: the root is pinned to the top of
             // cardFolders' order even when it is the quietest folder here.
-            <span style={{ flexShrink: 0, fontSize: 10, opacity: 0.7 }}>root</span>
+            <span style={{ flexShrink: 0, fontSize: 10 }}>root</span>
           )}
           <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 3, flexShrink: 0, fontSize: 11 }}>
             <MessageSquare size={10} />
@@ -368,7 +386,6 @@ export default function CardRow({
             font: "inherit",
             fontSize: 11,
             color: "var(--board-tile-meta-text)",
-            opacity: 0.8,
             cursor: inert ? "default" : "pointer",
           }}
         >
