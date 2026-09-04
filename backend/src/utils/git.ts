@@ -832,7 +832,8 @@ export function ensureWorktree(repoDir: string, branch: string, createBranch: bo
 
 /**
  * Switch to a branch in the given directory (non-worktree mode).
- * If createNew is true, creates the branch from baseBranch first.
+ * If createNew is true, creates the branch from baseBranch — unless it already
+ * exists, in which case it is checked out as-is.
  *
  * Before checking out, inspects the worktree list. If the target branch is
  * already checked out in a different worktree, returns that worktree's path
@@ -852,7 +853,15 @@ export function switchBranch(directory: string, branch: string, createNew: boole
     return existing.path;
   }
 
-  if (createNew) {
+  // `createNew` is the caller's intent, not a fact about the repository — the
+  // in-place twin of the `-b` failure `ensureWorktreeDetailed` guards against.
+  // The lookup above only catches a branch checked out *somewhere*; one that
+  // exists and lives nowhere falls through to here, and `-b` on it is fatal:
+  //   fatal: a branch named 'feat/exists' already exists
+  // Checking it out is what the caller wanted; only `-b` was wrong. `baseBranch`
+  // is dropped with it, because a branch that already exists is not being
+  // branched off anything.
+  if (createNew && !localBranchExists(directory, branch)) {
     const base = baseBranch || "HEAD";
     execFileSync("git", ["checkout", "-b", branch, base], {
       cwd: directory,

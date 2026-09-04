@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ensureWorktreeDetailed, fallbackBranchName, resolveBranch, uniqueBranchName } from "./git.js";
+import { ensureWorktreeDetailed, fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "./git.js";
 
 // Canonical, not as `tmpdir()` spells it: on macOS that is `/var/folders/...`,
 // a symlink to `/private/var/folders/...`. Worktree resolution reports the real
@@ -21,6 +21,11 @@ const repoDir = join(tmpRoot, "repo");
 
 function git(args: string[], cwd: string): void {
   execFileSync("git", ["-c", "user.email=test@example.com", "-c", "user.name=test", ...args], { cwd, stdio: "pipe" });
+}
+
+/** The commit a ref names, for asserting what a new branch was actually cut from. */
+function revParse(cwd: string, rev: string): string {
+  return execFileSync("git", ["rev-parse", rev], { cwd, encoding: "utf8", stdio: "pipe" }).trim();
 }
 
 execFileSync("git", ["init", "-q", "-b", "main", repoDir], { stdio: "pipe" });
@@ -283,6 +288,52 @@ describe("existing branches and non-repositories", () => {
     expect(ensured.branchCreated).toBe(false);
     expect(ensured.isMainCheckout).toBe(false);
     expect(existsSync(ensured.path)).toBe(true);
+  });
+
+  /**
+   * The in-place twin of the case above, and a live 500 until now.
+   *
+   * `switchBranch`'s worktree lookup only catches a branch checked out
+   * *somewhere*. One that exists and lives nowhere fell through to
+   * `git checkout -b`, which refuses with the same "a branch named 'x' already
+   * exists" — exit 128, straight out of the route. Typing an existing branch
+   * name with the worktree toggle off is an ordinary thing to do, and it is
+   * about to become the way the UI offers "switch to this branch".
+   */
+  it("checks out an existing, unchecked-out branch in place rather than failing on -b", () => {
+    const dir = makeRepo("existing-branch-inplace");
+    git(["branch", "feat/orphan"], dir);
+
+    const result = resolveBranch({ folder: dir, newBranch: "feat/orphan", baseBranch: "main" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // In place: the same directory, now on the branch that already existed.
+    expect(result.folder).toBe(dir);
+    expect(result.worktree).toBeUndefined();
+    expect(getGitInfo(dir).branch).toBe("feat/orphan");
+  });
+
+  /**
+   * The other half of the same decision: a name that does *not* exist must
+   * still be created, off the base it was given. Without this, "drop `-b`
+   * whenever the checkout would fail" would pass the test above by never
+   * branching at all.
+   */
+  it("still creates a branch that does not exist, off the given base", () => {
+    const dir = makeRepo("new-branch-inplace");
+    git(["commit", "-q", "--allow-empty", "-m", "second"], dir);
+    git(["branch", "feat/base"], dir);
+    git(["commit", "-q", "--allow-empty", "-m", "third"], dir);
+
+    const result = resolveBranch({ folder: dir, newBranch: "feat/fresh", baseBranch: "feat/base" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.folder).toBe(dir);
+    expect(getGitInfo(dir).branch).toBe("feat/fresh");
+    // Branched off `feat/base`, not off wherever HEAD happened to be.
+    expect(revParse(dir, "feat/fresh")).toBe(revParse(dir, "feat/base"));
   });
 
   it("reports checkout-branch, with no invented base, for that resolution", () => {

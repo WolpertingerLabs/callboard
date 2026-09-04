@@ -142,12 +142,16 @@ streamRouter.post("/new/message", async (req, res) => {
       // older bundle can still send `autoCreateBranch` without `useWorktree`.
       const candidate = generated ?? (useWorktree ? fallbackBranchName() : null);
       if (candidate) {
-        // Uniquified on both paths, and on the in-place path it prevents a
-        // second hard failure: a generated name that already exists reaches
+        // Uniquified on both paths. On the in-place path this used to be what
+        // stood between a colliding generated name and a hard failure —
         // `switchBranch(…, createNew: true)` → `git checkout -b x` → "fatal: a
-        // branch named 'x' already exists", the in-place twin of the worktree
-        // case. Only for names we invent — a typed name keeps today's reuse
-        // semantics, where asking for `feat/x` twice lands you in one place.
+        // branch named 'x' already exists". `switchBranch` now checks out an
+        // existing branch instead of insisting on `-b`, which turns that crash
+        // into something quieter and worse for an *invented* name: the chat
+        // would silently adopt whatever unrelated branch happens to share the
+        // name. So the guard matters more, not less. Only for names we invent —
+        // a typed name keeps today's reuse semantics, where asking for `feat/x`
+        // twice lands you in one place.
         newBranch = uniqueBranchName(folder, candidate);
         log.debug(`Auto-generated branch name: ${newBranch}`);
       } else {
