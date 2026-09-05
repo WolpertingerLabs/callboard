@@ -20,6 +20,8 @@ import {
   writeClaudeCredentialMode,
   readCodexCredentialMode,
   writeCodexCredentialMode,
+  claudeOpenRouterCredentialReady,
+  codexOpenRouterCredentialReady,
   type ClaudeCredentialMode,
   type CodexCredentialMode,
 } from "./credentialMode";
@@ -680,7 +682,12 @@ interface OpenRouterRoutingSectionProps {
   onBaseUrlChange: (v: string) => void;
   /** Env var the key is exposed as (ANTHROPIC_AUTH_TOKEN / OPENROUTER_API_KEY). */
   keyEnvLabel: string;
-  /** Harness-specific caveats rendered under the key field when routing is on. */
+  /**
+   * Harness-specific caveats — what this credential does to the harness's config
+   * once it is the selected one. Rendered whichever credential is selected, so
+   * they have to read as true in both states: an "Adds a … block" under an
+   * `Inactive` badge contradicts the badge three lines above it.
+   */
   caveats: React.ReactNode;
   /** True when the ambient env already routes this harness through OpenRouter. */
   detected: boolean;
@@ -719,12 +726,17 @@ function OpenRouterRoutingSection({
         {inactiveNote && <InactiveBadge>Inactive — {inactiveNote}</InactiveBadge>}
       </div>
       <div style={subtitleStyle}>
-        Run the native {harness} harness but send its requests to OpenRouter, authenticated with an OpenRouter API key. The model picker below switches to
-        OpenRouter&apos;s catalog.
+        The OpenRouter half of {harness}&rsquo;s credentials: the key it authenticates with, and the endpoint it points at. Picking OpenRouter under Credentials
+        above runs the native {harness} harness against these instead of its own vendor, and switches the model picker below to OpenRouter&apos;s catalog.
       </div>
       {detected && (
         <div style={{ ...helpStyle, marginTop: 0, marginBottom: 12, color: "var(--accent-text)" }}>
-          Detected OpenRouter in your environment — enabled by default. Add a key below to manage it through callboard, then Save.
+          {/* Two sentences rather than one, because the two harnesses genuinely
+              differ here — see codexOpenRouterCredentialReady for why a detected
+              env is enough on its own for Claude Code and not for Codex. */}
+          {harness === "Claude Code"
+            ? "Detected OpenRouter in your environment. Picking OpenRouter under Credentials above will use that environment's endpoint and key as-is; set them here instead, and Save, to manage them through Callboard."
+            : "Detected OpenRouter in your environment. Callboard leaves that wiring alone rather than replacing it with its own — so to run Codex on OpenRouter through Callboard, add a key here, or an endpoint above to override the environment's, and Save first."}
         </div>
       )}
       <div style={fieldWrap}>
@@ -761,7 +773,15 @@ function OpenRouterRoutingSection({
   );
 }
 
-interface CredentialModeOption<M extends string> {
+/**
+ * The instant-save controls on this page, as keys.
+ *
+ * Three of them, and their saving/error state is keyed by these rather than
+ * shared — see `credentialErrors`.
+ */
+type CredentialControl = "claude" | "codex" | "codexParkedAuth";
+
+interface SegmentOption<M extends string> {
   mode: M;
   label: string;
   /**
@@ -772,6 +792,76 @@ interface CredentialModeOption<M extends string> {
 }
 
 /**
+ * The two native Codex credentials, named once.
+ *
+ * The parked-login picker inside the Codex section offers the same two the
+ * Credentials control's first two segments do, and giving them two sets of names
+ * ("Subscription (ChatGPT login)" against "ChatGPT subscription") read as two
+ * different settings rather than one setting seen from two places.
+ */
+const CODEX_NATIVE_CREDENTIALS: SegmentOption<"subscription" | "api-key">[] = [
+  { mode: "subscription", label: "ChatGPT subscription" },
+  { mode: "api-key", label: "OpenAI API key" },
+];
+
+/**
+ * One row of mutually exclusive buttons.
+ *
+ * Shared because the Codex tab renders two of them and they are *not* the same
+ * decision — Credentials picks what runs now, the picker inside the parked Codex
+ * section picks what "switching back" will land on. Two copies of this markup is
+ * how they came to look like one control duplicated.
+ *
+ * A blocked segment is dimmed even when it is the selected one: selection and
+ * effect can disagree (a stored flag whose key was later cleared), and a segment
+ * that is both cannot be allowed to render as fully live.
+ */
+function SegmentedControl<M extends string>({
+  value,
+  options,
+  onSelect,
+  busy,
+}: {
+  value: M;
+  options: SegmentOption<M>[];
+  onSelect: (mode: M) => void;
+  /** A write is already in flight somewhere on the page; nothing is clickable until it lands. */
+  busy: boolean;
+}) {
+  return (
+    <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+      {options.map(({ mode, label, disabledReason }) => {
+        const selected = value === mode;
+        const blocked = Boolean(disabledReason);
+        return (
+          <button
+            key={mode}
+            type="button"
+            disabled={busy || blocked}
+            onClick={() => onSelect(mode)}
+            style={{
+              flex: 1,
+              padding: "8px 12px",
+              fontSize: 13,
+              fontWeight: 500,
+              borderRadius: 6,
+              border: selected ? "1px solid var(--accent)" : "1px solid var(--border)",
+              background: selected ? "var(--accent)" : "var(--surface)",
+              color: selected ? "var(--text-on-accent)" : blocked ? "var(--text-muted)" : "var(--text)",
+              opacity: blocked ? 0.6 : 1,
+              cursor: selected ? "default" : blocked ? "not-allowed" : "pointer",
+              transition: "all 0.15s",
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * "Which account pays for this harness's chats", as one control.
  *
  * It is the first thing on the tab because it decides what everything under it
@@ -779,6 +869,12 @@ interface CredentialModeOption<M extends string> {
  * Save: this is the switch a user flips to compare two setups, and a switch that
  * needs a scroll and a second click is one they stop using. The PUT carries only
  * the routing fields, so every unsaved edit elsewhere on the page survives it.
+ *
+ * The segments show what is *stored*; {@link notInEffect} shows where that and
+ * what the daemon actually does come apart. Saying so here is the only honest
+ * place for it — every other surface on the tab reports effective routing, and
+ * an `Inactive` badge that silently swaps which section it sits on is a worse
+ * lie than an unselected segment.
  */
 function CredentialModeSection<M extends string>({
   harness,
@@ -786,14 +882,22 @@ function CredentialModeSection<M extends string>({
   options,
   onSelect,
   saving,
+  busy,
   error,
+  notInEffect,
 }: {
   harness: "Claude Code" | "Codex";
   value: M;
-  options: CredentialModeOption<M>[];
+  options: SegmentOption<M>[];
   onSelect: (mode: M) => void;
+  /** This control's own write is in flight. */
   saving: boolean;
+  /** Any write is in flight, here or elsewhere on the page. */
+  busy: boolean;
+  /** This control's own failure. Never another control's — see `credentialErrors`. */
   error: string;
+  /** Why the stored selection is not what the daemon is doing, when the two disagree. */
+  notInEffect?: string;
 }) {
   const hints = options.filter((o) => o.disabledReason);
   return (
@@ -808,34 +912,9 @@ function CredentialModeSection<M extends string>({
         others.
       </div>
 
-      <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-        {options.map(({ mode, label, disabledReason }) => {
-          const selected = value === mode;
-          const blocked = Boolean(disabledReason);
-          return (
-            <button
-              key={mode}
-              type="button"
-              disabled={saving || blocked}
-              onClick={() => onSelect(mode)}
-              style={{
-                flex: 1,
-                padding: "8px 12px",
-                fontSize: 13,
-                fontWeight: 500,
-                borderRadius: 6,
-                border: selected ? "1px solid var(--accent)" : "1px solid var(--border)",
-                background: selected ? "var(--accent)" : "var(--surface)",
-                color: selected ? "var(--text-on-accent)" : blocked ? "var(--text-muted)" : "var(--text)",
-                cursor: selected ? "default" : blocked ? "not-allowed" : "pointer",
-                transition: "all 0.15s",
-              }}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
+      <SegmentedControl value={value} options={options} onSelect={onSelect} busy={busy} />
+
+      {notInEffect && <div style={{ ...helpStyle, color: "var(--warning)" }}>{notInEffect}</div>}
 
       {hints.map(({ mode, label, disabledReason }) => (
         <div key={mode} style={helpStyle}>
@@ -1048,9 +1127,14 @@ export default function ApiSettings() {
       setDefaultHaikuModel(s.defaultHaikuModel ?? "");
       setSubagentModel(s.subagentModel ?? "");
       setPathToClaudeCodeExecutable(s.pathToClaudeCodeExecutable ?? "");
-      // Default the toggle on when the ambient env already routes through
-      // OpenRouter and the user hasn't explicitly saved a choice yet.
-      setClaudeCodeUseOpenRouter(s.claudeCodeUseOpenRouter ?? Boolean(sys?.claudeCodeOpenRouterDetected));
+      // The stored flag, and nothing else. Seeding an unsaved `true` from a
+      // detected environment made the control claim a routing the daemon was
+      // not doing: both backend predicates start `if (!flag) return false`, and
+      // an unsaved flag is `undefined`, so the session took the native branch
+      // while Settings showed OpenRouter and New Chat showed Anthropic. The
+      // "Detected OpenRouter in your environment" banner is where that env gets
+      // mentioned; it invites the click rather than faking it.
+      setClaudeCodeUseOpenRouter(Boolean(s.claudeCodeUseOpenRouter));
       setClaudeCodeOpenRouterApiKey(s.claudeCodeOpenRouterApiKey ?? "");
       setClaudeCodeOpenRouterBaseUrl(s.claudeCodeOpenRouterBaseUrl ?? "");
       setClaudeCodeOpenRouterModel(s.claudeCodeOpenRouterModel ?? "");
@@ -1075,7 +1159,9 @@ export default function ApiSettings() {
       setCodexHome(s.codexHome ?? "");
       setCodexPathOverride(s.codexPathOverride ?? "");
       setCodexSandboxMode(s.codexSandboxMode ?? "workspace-write");
-      setCodexUseOpenRouter(s.codexUseOpenRouter ?? Boolean(sys?.codexOpenRouterDetected));
+      // Stored flag only, for the reason above — and more sharply here, since a
+      // detected Codex env with no endpoint override does not route at all.
+      setCodexUseOpenRouter(Boolean(s.codexUseOpenRouter));
       setCodexOpenRouterApiKey(s.codexOpenRouterApiKey ?? "");
       setAcpUseOpenRouter(Boolean(s.acpUseOpenRouter));
       setAcpOpenRouterApiKey(s.acpOpenRouterApiKey ?? "");
@@ -1122,7 +1208,28 @@ export default function ApiSettings() {
     setAcpProviderModel(settings?.acpProviderModels?.[activeAcpProviderId] ?? "");
   }, [settings, activeAcpProviderId]);
 
+  /**
+   * Which instant-save control is mid-write, and what each one's last write
+   * failed with.
+   *
+   * Keyed rather than one shared pair, because the page renders three of these:
+   * Claude Code's Credentials, Codex's Credentials, and Codex's parked-login
+   * picker. A shared slot rendered a Claude Code failure under Codex's heading
+   * the moment the user changed tabs, and put the parked picker's failure
+   * several sections and a scroll above the button that caused it.
+   */
+  const [credentialSavingControl, setCredentialSavingControl] = useState<CredentialControl | null>(null);
+  const [credentialErrors, setCredentialErrors] = useState<Partial<Record<CredentialControl, string>>>({});
+  // Every instant-save control is unclickable while any write is in flight,
+  // this page's own Save included: both writes carry the same fields, so two
+  // concurrent PUTs would settle by whichever the daemon served last.
+  const credentialsBusy = credentialSavingControl !== null || saving;
+
   const handleSave = async () => {
+    // A Credentials click followed straight away by Save would otherwise issue
+    // two PUTs carrying the same routing fields, one of them with the pre-click
+    // value still in local state. The button is disabled for this too.
+    if (saving || credentialSavingControl) return;
     setSaving(true);
     setError("");
 
@@ -1258,9 +1365,6 @@ export default function ApiSettings() {
     }
   };
 
-  const [credentialSaving, setCredentialSaving] = useState(false);
-  const [credentialError, setCredentialError] = useState("");
-
   /**
    * Write one harness's credential choice on its own, immediately.
    *
@@ -1272,60 +1376,83 @@ export default function ApiSettings() {
    * fields keeps `binaryOverrideFieldsTouched` false as well, so no engine
    * probe caches are dropped for a change that moves no binary.
    *
+   * `apply`/`revert` close over the values rather than taking a setter plus a
+   * next-and-previous pair. The pair version type-checked with its two
+   * same-typed arguments swapped, which inverts the optimistic update in
+   * silence; thunks remove both the hazard and the argument order that carried
+   * it, and match `persistEngineInstalls`.
+   *
    * `settings` is left alone on success even though the PUT returns the merged
    * object. Adopting it would re-run the effect that re-seeds the ACP tab's
    * Default Model from `settings`, discarding an unsaved edit there — and
    * nothing this control writes is read back off `settings`: the segments read
-   * `applied`, which the caller has already moved.
+   * the local flag, which `apply` has already moved.
    */
-  const persistCredentialFields = async <T,>(applied: T, apply: (value: T) => void, previous: T, fields: Partial<AgentSettings>) => {
-    if (credentialSaving) return;
-    setCredentialSaving(true);
-    setCredentialError("");
-    apply(applied);
+  const persistCredentialFields = async (control: CredentialControl, fields: Partial<AgentSettings>, apply: () => void, revert: () => void) => {
+    if (credentialsBusy) return;
+    setCredentialSavingControl(control);
+    setCredentialErrors((prev) => ({ ...prev, [control]: "" }));
+    apply();
     try {
       await updateAgentSettings(fields);
     } catch (e: any) {
       // Put the control back rather than leaving it showing a credential the
       // daemon will not use.
-      apply(previous);
-      setCredentialError(e?.message || "Failed to save");
+      revert();
+      setCredentialErrors((prev) => ({ ...prev, [control]: e?.message || "Failed to save" }));
     } finally {
-      setCredentialSaving(false);
+      setCredentialSavingControl(null);
     }
   };
 
   const handleClaudeCredentialMode = (mode: ClaudeCredentialMode) => {
     const fields = writeClaudeCredentialMode(mode);
-    void persistCredentialFields(fields.claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter, claudeCodeUseOpenRouter, fields);
+    const previous = claudeCodeUseOpenRouter;
+    void persistCredentialFields(
+      "claude",
+      fields,
+      () => setClaudeCodeUseOpenRouter(fields.claudeCodeUseOpenRouter),
+      () => setClaudeCodeUseOpenRouter(previous),
+    );
   };
 
   const handleCodexCredentialMode = (mode: CodexCredentialMode) => {
     const fields = writeCodexCredentialMode(mode);
-    const previous = { codexUseOpenRouter, codexAuthMode };
+    const previousUseOpenRouter = codexUseOpenRouter;
+    const previousAuthMode = codexAuthMode;
     void persistCredentialFields(
-      { codexUseOpenRouter: fields.codexUseOpenRouter, codexAuthMode: fields.codexAuthMode ?? codexAuthMode },
-      (v) => {
-        setCodexUseOpenRouter(v.codexUseOpenRouter);
-        setCodexAuthMode(v.codexAuthMode);
-      },
-      previous,
+      "codex",
       fields,
+      () => {
+        setCodexUseOpenRouter(fields.codexUseOpenRouter);
+        // Absent when selecting OpenRouter, because the native choice is parked
+        // rather than overwritten — so there is nothing to move locally either.
+        if (fields.codexAuthMode) setCodexAuthMode(fields.codexAuthMode);
+      },
+      () => {
+        setCodexUseOpenRouter(previousUseOpenRouter);
+        setCodexAuthMode(previousAuthMode);
+      },
     );
   };
 
   /**
-   * The native Codex credential, changed without leaving OpenRouter.
+   * The parked native Codex credential — what leaving OpenRouter will land on.
    *
-   * The same field the Credentials control writes, from the auth-mode buttons
-   * inside the Codex section — which stay useful while OpenRouter is selected,
-   * because that is where the parked native setup is configured. Sending
-   * `codexAuthMode` alone is what makes it a park rather than a switch: with
-   * routing off it is exactly `writeCodexCredentialMode(mode)`, and with routing
-   * on it changes what "back" will land on without going there yet.
+   * The same field the Credentials control writes, from a picker that renders
+   * only while OpenRouter is selected. With routing off it would be a second
+   * live control for the decision the Credentials segments already own, which is
+   * the gap this feature exists to close; with routing on it answers a question
+   * the top control has no way to ask.
    */
-  const handleCodexAuthMode = (mode: "subscription" | "api-key") => {
-    void persistCredentialFields(mode, setCodexAuthMode, codexAuthMode, { codexAuthMode: mode });
+  const handleCodexParkedAuthMode = (mode: "subscription" | "api-key") => {
+    const previous = codexAuthMode;
+    void persistCredentialFields(
+      "codexParkedAuth",
+      { codexAuthMode: mode },
+      () => setCodexAuthMode(mode),
+      () => setCodexAuthMode(previous),
+    );
   };
 
   const handleRefresh = async () => {
@@ -1435,15 +1562,43 @@ export default function ApiSettings() {
    * Whether picking OpenRouter would actually route anything.
    *
    * `isClaudeCodeRoutedThroughOpenRouter` / `isCodexRoutedThroughOpenRouter`
-   * both return false when the flag is on but neither a stored key nor an
-   * ambient OpenRouter env exists, so the segment would set a flag that changes
-   * nothing — the worst kind of switch. Compared against `settings`, the last
-   * server response, rather than the editable field: a key that has been typed
-   * but not saved is not a key the daemon has.
+   * both return false when the flag is on but the credentials they need are not
+   * there, so the segment would set a flag that changes nothing — the worst kind
+   * of switch. What "not there" means is **different for the two harnesses**;
+   * `credentialMode.ts` holds each mirror next to the predicate it copies, and
+   * one line of that file is the whole reason a Codex user with `openrouter.ai`
+   * in their `config.toml` used to get an enabled segment that did nothing.
+   *
+   * Compared against `settings`, the last server response, rather than the
+   * editable field: a key that has been typed but not saved is not a key the
+   * daemon has.
    */
+  const claudeOpenRouterReady = claudeOpenRouterCredentialReady(settings ?? {}, Boolean(systemInfo?.claudeCodeOpenRouterDetected));
+  const codexOpenRouterReady = codexOpenRouterCredentialReady(settings ?? {}, Boolean(systemInfo?.codexOpenRouterDetected));
   const openRouterKeyHint = "Add an OpenRouter key below and Save first.";
-  const claudeOpenRouterUnready = !settings?.claudeCodeOpenRouterApiKey?.trim() && !systemInfo?.claudeCodeOpenRouterDetected ? openRouterKeyHint : undefined;
-  const codexOpenRouterUnready = !settings?.codexOpenRouterApiKey?.trim() && !systemInfo?.codexOpenRouterDetected ? openRouterKeyHint : undefined;
+  const claudeOpenRouterUnready = claudeOpenRouterReady ? undefined : openRouterKeyHint;
+  const codexOpenRouterUnready = codexOpenRouterReady
+    ? undefined
+    : systemInfo?.codexOpenRouterDetected
+      ? "Your environment already routes Codex through OpenRouter, and Callboard leaves that wiring alone. Add a key below — or an endpoint to override the environment's with — and Save first."
+      : openRouterKeyHint;
+
+  /**
+   * What the daemon is *doing*, as opposed to what is selected.
+   *
+   * The two come apart in one reachable state — a stored flag whose key was
+   * later cleared and saved — and everything on this page that asserts a state
+   * reads this rather than the selection: the `Inactive` badges, the "is
+   * handling this" copy. Letting a badge follow the selection inverted it, so
+   * the section actually in effect was the one labelled inactive.
+   *
+   * Not `systemInfo.<harness>UseOpenRouter`, which computes the same thing
+   * server-side but is a page-load-old answer: this control writes the flag
+   * without refetching system-info, so a click would leave every badge on the
+   * tab stale until something else happened to refresh it.
+   */
+  const claudeRoutingInEffect = claudeCredentialMode === "openrouter" && claudeOpenRouterReady;
+  const codexRoutingInEffect = codexCredentialMode === "openrouter" && codexOpenRouterReady;
 
   return (
     <>
@@ -1528,8 +1683,14 @@ export default function ApiSettings() {
             harness="Claude Code"
             value={claudeCredentialMode}
             onSelect={handleClaudeCredentialMode}
-            saving={credentialSaving}
-            error={credentialError}
+            saving={credentialSavingControl === "claude"}
+            busy={credentialsBusy}
+            error={credentialErrors.claude ?? ""}
+            notInEffect={
+              claudeCredentialMode === "openrouter" && !claudeRoutingInEffect
+                ? "Selected, but not in effect — no OpenRouter key is stored, so Claude Code chats are still running on your Anthropic credentials. Add one below and Save."
+                : undefined
+            }
             options={[
               { mode: "anthropic", label: "Anthropic" },
               { mode: "openrouter", label: "OpenRouter", disabledReason: claudeOpenRouterUnready },
@@ -1540,7 +1701,7 @@ export default function ApiSettings() {
 
           <OpenRouterRoutingSection
             harness="Claude Code"
-            inactiveNote={claudeCredentialMode === "openrouter" ? undefined : "Claude Code is on your Anthropic credentials"}
+            inactiveNote={claudeRoutingInEffect ? undefined : "Claude Code is on your Anthropic credentials"}
             apiKey={claudeCodeOpenRouterApiKey}
             onApiKeyChange={setClaudeCodeOpenRouterApiKey}
             baseUrl={claudeCodeOpenRouterBaseUrl}
@@ -1550,42 +1711,49 @@ export default function ApiSettings() {
             keyEnvLabel="ANTHROPIC_AUTH_TOKEN"
             caveats={
               <>
-                Sets <code>ANTHROPIC_BASE_URL</code> to the endpoint above and forces <code>ANTHROPIC_API_KEY</code> empty. Claude Code is optimized for
-                Anthropic models — pick <code>anthropic/*</code> slugs below for best results. If you previously logged in to Anthropic directly, run{" "}
-                <code>/logout</code> in a chat to clear any cached session conflict.
+                While this is the selected credential, Callboard sets <code>ANTHROPIC_BASE_URL</code> to the endpoint above and forces{" "}
+                <code>ANTHROPIC_API_KEY</code> empty. Claude Code is optimized for Anthropic models — pick <code>anthropic/*</code> slugs below for best results.
+                If you previously logged in to Anthropic directly, run <code>/logout</code> in a chat to clear any cached session conflict.
               </>
             }
           />
 
-          {/* API Endpoint — manual overrides are unused while routing through OpenRouter. */}
-          {!claudeCodeUseOpenRouter && (
-            <div style={sectionStyle}>
-              <div style={headerStyle}>
-                <Globe size={16} style={{ color: "var(--accent-text)" }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Endpoint</span>
-              </div>
-              <div style={subtitleStyle}>
-                Override the base URL used by the Claude Agent SDK. Useful for routing through a corporate proxy or LLM gateway. Leave empty to use the default
-                Anthropic API endpoint.
-              </div>
-              <div style={fieldWrap}>
-                <label htmlFor="apiBaseUrl" style={labelStyle}>
-                  Base URL<span style={envLabelStyle}>ANTHROPIC_BASE_URL</span>
-                </label>
-                <input
-                  id="apiBaseUrl"
-                  type="text"
-                  value={apiBaseUrl}
-                  onChange={(e) => setApiBaseUrl(e.target.value)}
-                  placeholder="https://api.anthropic.com"
-                  autoComplete="off"
-                  spellCheck={false}
-                  style={inputStyle}
-                />
-                <div style={helpStyle}>When set to a non-first-party host, MCP tool search is disabled by default.</div>
+          {/* API Endpoint — rendered whichever credential is selected, for the
+              reason Authentication below it is: it is part of the native setup,
+              the page's Save still submits it, and someone preparing to switch
+              back cannot set a field that is not on the screen. Unmounting it
+              also made "is this configured?" a question only answerable by
+              flipping the switch that changes the answer. */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <Globe size={16} style={{ color: "var(--accent-text)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>API Endpoint</span>
+              {claudeRoutingInEffect && <InactiveBadge>Inactive — OpenRouter is handling this</InactiveBadge>}
+            </div>
+            <div style={subtitleStyle}>
+              Override the base URL used by the Claude Agent SDK. Useful for routing through a corporate proxy or LLM gateway. Leave empty to use the default
+              Anthropic API endpoint.
+            </div>
+            <div style={fieldWrap}>
+              <label htmlFor="apiBaseUrl" style={labelStyle}>
+                Base URL<span style={envLabelStyle}>ANTHROPIC_BASE_URL</span>
+              </label>
+              <input
+                id="apiBaseUrl"
+                type="text"
+                value={apiBaseUrl}
+                onChange={(e) => setApiBaseUrl(e.target.value)}
+                placeholder="https://api.anthropic.com"
+                autoComplete="off"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={helpStyle}>
+                When set to a non-first-party host, MCP tool search is disabled by default.
+                {claudeRoutingInEffect ? " The OpenRouter endpoint above wins over this one while OpenRouter is the selected credential." : ""}
               </div>
             </div>
-          )}
+          </div>
 
           {/* Authentication — rendered whichever credential is selected, so the
               page can state that both are configured. */}
@@ -1593,11 +1761,12 @@ export default function ApiSettings() {
             <div style={headerStyle}>
               <Key size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Authentication</span>
-              {claudeCredentialMode === "openrouter" && <InactiveBadge>Inactive — OpenRouter is handling this</InactiveBadge>}
+              {claudeRoutingInEffect && <InactiveBadge>Inactive — OpenRouter is handling this</InactiveBadge>}
             </div>
             <div style={subtitleStyle}>
-              Claude Code normally authenticates through your Claude subscription. Set an API key or auth token here to override that — for example, to use a
-              different account or a gateway that requires a bearer token.
+              {claudeRoutingInEffect
+                ? "Claude Code normally authenticates through your Claude subscription, and an API key or auth token here overrides that. Neither is in use while OpenRouter is the selected credential — they stay editable so the setup you switch back to is ready when you get there."
+                : "Claude Code normally authenticates through your Claude subscription. Set an API key or auth token here to override that — for example, to use a different account or a gateway that requires a bearer token."}
             </div>
 
             {/* Current source (view-only) */}
@@ -1690,13 +1859,14 @@ export default function ApiSettings() {
               </button>
             </div>
             <div style={subtitleStyle}>
-              {claudeCodeUseOpenRouter
-                ? "Pick OpenRouter slugs for the session model and the opus / sonnet / haiku aliases (anthropic/* listed first). Blank role fields default to the newest matching anthropic/* model in the OpenRouter catalog. Saved separately from your direct-endpoint models, so turning routing off restores those."
-                : "Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to. Saved separately from your OpenRouter models, so turning routing back on restores those."}
+              {claudeCredentialMode === "openrouter"
+                ? "Pick OpenRouter slugs for the session model and the opus / sonnet / haiku aliases (anthropic/* listed first). Blank role fields default to the newest matching anthropic/* model in the OpenRouter catalog. Saved separately from your direct-endpoint models, so setting Credentials back to Anthropic restores those."
+                : "Override which model is used for the session and what the `opus`, `sonnet`, and `haiku` aliases resolve to. Saved separately from your OpenRouter models, so setting Credentials to OpenRouter restores those."}
             </div>
 
-            {/* Currently available models (SDK catalog — hidden while routing through OpenRouter) */}
-            {!claudeCodeUseOpenRouter && models.length > 0 && (
+            {/* Currently available models (SDK catalog — the OpenRouter catalog
+                replaces it when OpenRouter is the selected credential). */}
+            {claudeCredentialMode !== "openrouter" && models.length > 0 && (
               <div style={{ marginBottom: 14 }}>
                 <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Currently available to your account:</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -1714,7 +1884,7 @@ export default function ApiSettings() {
               <label htmlFor="model" style={labelStyle}>
                 Default Model<span style={envLabelStyle}>ANTHROPIC_MODEL</span>
               </label>
-              {claudeCodeUseOpenRouter ? (
+              {claudeCredentialMode === "openrouter" ? (
                 <OpenRouterModelSelector
                   id="model"
                   value={claudeCodeOpenRouterModel}
@@ -1735,7 +1905,7 @@ export default function ApiSettings() {
                 />
               )}
               <div style={helpStyle}>
-                {claudeCodeUseOpenRouter
+                {claudeCredentialMode === "openrouter"
                   ? "OpenRouter model slug (or a configured alias). Applies to new sessions."
                   : "Alias (opus, sonnet, haiku, opusplan) or full model ID. Applies to new sessions."}
               </div>
@@ -1745,7 +1915,7 @@ export default function ApiSettings() {
               <label htmlFor="opusModel" style={labelStyle}>
                 Opus Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_OPUS_MODEL</span>
               </label>
-              {claudeCodeUseOpenRouter ? (
+              {claudeCredentialMode === "openrouter" ? (
                 <OpenRouterModelSelector
                   id="opusModel"
                   value={claudeCodeOpenRouterOpusModel}
@@ -1771,7 +1941,7 @@ export default function ApiSettings() {
               <label htmlFor="sonnetModel" style={labelStyle}>
                 Sonnet Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_SONNET_MODEL</span>
               </label>
-              {claudeCodeUseOpenRouter ? (
+              {claudeCredentialMode === "openrouter" ? (
                 <OpenRouterModelSelector
                   id="sonnetModel"
                   value={claudeCodeOpenRouterSonnetModel}
@@ -1797,7 +1967,7 @@ export default function ApiSettings() {
               <label htmlFor="haikuModel" style={labelStyle}>
                 Haiku Alias Target<span style={envLabelStyle}>ANTHROPIC_DEFAULT_HAIKU_MODEL</span>
               </label>
-              {claudeCodeUseOpenRouter ? (
+              {claudeCredentialMode === "openrouter" ? (
                 <OpenRouterModelSelector
                   id="haikuModel"
                   value={claudeCodeOpenRouterHaikuModel}
@@ -1824,7 +1994,7 @@ export default function ApiSettings() {
               <label htmlFor="subagentModel" style={labelStyle}>
                 Subagent Model<span style={envLabelStyle}>CLAUDE_CODE_SUBAGENT_MODEL</span>
               </label>
-              {claudeCodeUseOpenRouter ? (
+              {claudeCredentialMode === "openrouter" ? (
                 <OpenRouterModelSelector
                   id="subagentModel"
                   value={claudeCodeOpenRouterSubagentModel}
@@ -2001,26 +2171,27 @@ export default function ApiSettings() {
             harness="Codex"
             value={codexCredentialMode}
             onSelect={handleCodexCredentialMode}
-            saving={credentialSaving}
-            error={credentialError}
-            options={[
-              { mode: "subscription", label: "ChatGPT subscription" },
-              { mode: "api-key", label: "OpenAI API key" },
-              { mode: "openrouter", label: "OpenRouter", disabledReason: codexOpenRouterUnready },
-            ]}
+            saving={credentialSavingControl === "codex"}
+            busy={credentialsBusy}
+            error={credentialErrors.codex ?? ""}
+            notInEffect={
+              codexCredentialMode === "openrouter" && !codexRoutingInEffect
+                ? systemInfo?.codexOpenRouterDetected
+                  ? "Selected, but not in effect — Codex chats are still running on your native login. Your environment's own OpenRouter wiring stands until you give Callboard a key, or an endpoint to override it with, below."
+                  : "Selected, but not in effect — no OpenRouter key is stored, so Codex chats are still running on your native login. Add one below and Save."
+                : undefined
+            }
+            options={[...CODEX_NATIVE_CREDENTIALS, { mode: "openrouter", label: "OpenRouter", disabledReason: codexOpenRouterUnready }]}
           />
 
           <ReferenceLinksSection provider="codex" />
 
           <OpenRouterRoutingSection
             harness="Codex"
-            inactiveNote={
-              codexCredentialMode === "openrouter"
-                ? undefined
-                : codexCredentialMode === "api-key"
-                  ? "Codex is on your OpenAI API key"
-                  : "Codex is on your ChatGPT login"
-            }
+            // `codexAuthMode` rather than the credential mode: when the flag is
+            // on but not in effect the mode reads "openrouter", and the native
+            // credential actually running is still whichever one is parked.
+            inactiveNote={codexRoutingInEffect ? undefined : codexAuthMode === "api-key" ? "Codex is on your OpenAI API key" : "Codex is on your ChatGPT login"}
             apiKey={codexOpenRouterApiKey}
             onApiKeyChange={setCodexOpenRouterApiKey}
             baseUrl={codexOpenRouterBaseUrl}
@@ -2030,8 +2201,9 @@ export default function ApiSettings() {
             keyEnvLabel="OPENROUTER_API_KEY"
             caveats={
               <>
-                Adds a <code>[model_providers.openrouter]</code> block to Codex&apos;s config with <code>wire_api=&quot;responses&quot;</code>. Only models that
-                support the Responses API work reliably — <code>openai/*</code> slugs are listed first below. Non-OpenAI models may fail at runtime.
+                While this is the selected credential, Callboard adds a <code>[model_providers.openrouter]</code> block to Codex&apos;s config with{" "}
+                <code>wire_api=&quot;responses&quot;</code>. Only models that support the Responses API work reliably — <code>openai/*</code> slugs are listed
+                first below. Non-OpenAI models may fail at runtime.
               </>
             }
           />
@@ -2042,47 +2214,32 @@ export default function ApiSettings() {
             <div style={headerStyle}>
               <Terminal size={16} style={{ color: "var(--accent-text)" }} />
               <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>OpenAI Codex</span>
-              {codexCredentialMode === "openrouter" && <InactiveBadge>Inactive — OpenRouter is handling this</InactiveBadge>}
+              {codexRoutingInEffect && <InactiveBadge>Inactive — OpenRouter is handling this</InactiveBadge>}
             </div>
             <div style={subtitleStyle}>
               Run chats on OpenAI Codex. Authenticate with your ChatGPT subscription (recommended on a personal machine — personal use only) or a raw OpenAI API
               key.
             </div>
 
-            {/* Auth-mode toggle. Writes through immediately, like the Credentials
-                control it shares a field with — while OpenRouter is selected it
-                sets what leaving OpenRouter will land on. */}
-            <div style={fieldWrap}>
-              <label style={labelStyle}>Authentication mode</label>
-              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                {[
-                  { mode: "subscription" as const, label: "Subscription (ChatGPT login)" },
-                  { mode: "api-key" as const, label: "API key" },
-                ].map(({ mode, label }) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    disabled={credentialSaving}
-                    onClick={() => handleCodexAuthMode(mode)}
-                    style={{
-                      flex: 1,
-                      padding: "8px 12px",
-                      fontSize: 13,
-                      fontWeight: 500,
-                      borderRadius: 6,
-                      border: codexAuthMode === mode ? "1px solid var(--accent)" : "1px solid var(--border)",
-                      background: codexAuthMode === mode ? "var(--accent)" : "var(--surface)",
-                      color: codexAuthMode === mode ? "var(--text-on-accent)" : "var(--text)",
-                      cursor: codexAuthMode === mode ? "default" : "pointer",
-                      transition: "all 0.15s",
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
+            {/* Which native login is *parked* — rendered only while OpenRouter is
+                selected. With routing off, `codexAuthMode` is exactly what the
+                Credentials segments above already write, and a second
+                accent-highlighted row for the same decision is the gap this
+                feature set out to close; it survives here because it answers a
+                question the top control has no way to ask. Its labels are the
+                top control's, deliberately: one credential, one name. */}
+            {codexCredentialMode === "openrouter" && (
+              <div style={fieldWrap}>
+                <label style={labelStyle}>When you switch back</label>
+                <SegmentedControl value={codexAuthMode} options={CODEX_NATIVE_CREDENTIALS} onSelect={handleCodexParkedAuthMode} busy={credentialsBusy} />
+                {credentialSavingControl === "codexParkedAuth" && <div style={helpStyle}>Saving&hellip;</div>}
+                {credentialErrors.codexParkedAuth && <div style={{ ...helpStyle, color: "var(--error)" }}>{credentialErrors.codexParkedAuth}</div>}
+                <div style={helpStyle}>
+                  Saved as soon as you pick it, like Credentials above — and unlike the key field below it, which still needs the page&rsquo;s Save. Nothing runs
+                  on it until you set Credentials back to a native Codex login.
+                </div>
               </div>
-              {codexCredentialMode === "openrouter" && <div style={helpStyle}>Picked now, used when you switch Credentials back to a native Codex login.</div>}
-            </div>
+            )}
 
             {codexAuthMode === "subscription" ? (
               <>
@@ -2168,7 +2325,7 @@ export default function ApiSettings() {
               <label htmlFor="codexModel" style={labelStyle}>
                 Default Model
               </label>
-              {codexUseOpenRouter ? (
+              {codexCredentialMode === "openrouter" ? (
                 <OpenRouterModelSelector
                   id="codexModel"
                   value={codexOpenRouterModel}
@@ -2180,9 +2337,9 @@ export default function ApiSettings() {
                 <CodexModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} placeholder="gpt-5.5" />
               )}
               <div style={helpStyle}>
-                {codexUseOpenRouter
-                  ? "OpenRouter model slug (openai/* recommended). Free text accepted — OpenRouter validates the model. Saved separately from your native Codex model, so turning routing off restores it."
-                  : "Start typing to filter the live Codex model catalog. Free text accepted — the CLI validates the model. Saved separately from your OpenRouter model, so turning routing back on restores it."}
+                {codexCredentialMode === "openrouter"
+                  ? "OpenRouter model slug (openai/* recommended). Free text accepted — OpenRouter validates the model. Saved separately from your native Codex model, so setting Credentials back to a native Codex login restores it."
+                  : "Start typing to filter the live Codex model catalog. Free text accepted — the CLI validates the model. Saved separately from your OpenRouter model, so setting Credentials to OpenRouter restores it."}
               </div>
             </div>
 
@@ -2508,18 +2665,21 @@ export default function ApiSettings() {
       {error && <div style={{ fontSize: 13, color: "var(--error)", marginBottom: 12 }}>{error}</div>}
 
       <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}>
+        {/* Also held down while a Credentials click is in flight: that write and
+            this one carry the same routing fields, and this one would send the
+            pre-click value. */}
         <button
           onClick={handleSave}
-          disabled={saving}
+          disabled={credentialsBusy}
           style={{
-            background: saving ? "var(--surface)" : "var(--accent)",
-            color: saving ? "var(--text-muted)" : "var(--text-on-accent)",
+            background: credentialsBusy ? "var(--surface)" : "var(--accent)",
+            color: credentialsBusy ? "var(--text-muted)" : "var(--text-on-accent)",
             padding: "10px 20px",
             borderRadius: 8,
-            border: saving ? "1px solid var(--border)" : "none",
+            border: credentialsBusy ? "1px solid var(--border)" : "none",
             fontSize: 14,
             fontWeight: 500,
-            cursor: saving ? "not-allowed" : "pointer",
+            cursor: credentialsBusy ? "not-allowed" : "pointer",
           }}
         >
           {saving ? "Saving..." : saved ? "Saved!" : "Save"}

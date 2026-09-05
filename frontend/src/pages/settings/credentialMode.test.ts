@@ -4,6 +4,8 @@ import {
   writeClaudeCredentialMode,
   readCodexCredentialMode,
   writeCodexCredentialMode,
+  claudeOpenRouterCredentialReady,
+  codexOpenRouterCredentialReady,
   type ClaudeCredentialFields,
   type ClaudeCredentialMode,
   type CodexCredentialFields,
@@ -96,5 +98,58 @@ describe("the two controls together", () => {
     const legacy: ClaudeCredentialFields & CodexCredentialFields = {};
     expect(readClaudeCredentialMode(legacy)).toBe("anthropic");
     expect(readCodexCredentialMode(legacy)).toBe("subscription");
+  });
+});
+
+/**
+ * The readiness pair, case for case against the backend predicates it mirrors.
+ *
+ * The one that matters most is the last Codex case: the two harnesses agree on
+ * every row but that one, which is why the gate was copied between them and why
+ * the copy was wrong. `codexAuth.test.ts` pins the same case on the backend
+ * side.
+ */
+describe("claudeOpenRouterCredentialReady", () => {
+  it("is ready on a stored key alone", () => {
+    expect(claudeOpenRouterCredentialReady({ claudeCodeOpenRouterApiKey: "sk-or-x" }, false)).toBe(true);
+  });
+
+  it("is ready on a detected environment alone — no override needed", () => {
+    expect(claudeOpenRouterCredentialReady({}, true)).toBe(true);
+  });
+
+  it("treats a whitespace-only key as no key", () => {
+    expect(claudeOpenRouterCredentialReady({ claudeCodeOpenRouterApiKey: "   " }, false)).toBe(false);
+  });
+
+  it("is not ready with neither", () => {
+    expect(claudeOpenRouterCredentialReady({}, false)).toBe(false);
+  });
+});
+
+describe("codexOpenRouterCredentialReady", () => {
+  it("is ready on a stored key alone", () => {
+    expect(codexOpenRouterCredentialReady({ codexOpenRouterApiKey: "sk-or-x" }, false)).toBe(true);
+  });
+
+  it("is ready on a detected environment WITH an endpoint override to honour", () => {
+    expect(codexOpenRouterCredentialReady({ codexOpenRouterBaseUrl: "https://eu.openrouter.ai/api/v1" }, true)).toBe(true);
+  });
+
+  it("is NOT ready on a detected environment alone — the user's own provider wiring stands", () => {
+    // The case the Claude Code gate gets wrong when it is copied here: a
+    // config.toml naming openrouter.ai, no stored key, no override. The backend
+    // injects nothing, so the flag would be a no-op and the segment must stay
+    // disabled. See codexAuth.test.ts, "stays off with no key and no override".
+    expect(codexOpenRouterCredentialReady({}, true)).toBe(false);
+    expect(claudeOpenRouterCredentialReady({}, true)).toBe(true);
+  });
+
+  it("is not ready on an override with nothing to override", () => {
+    expect(codexOpenRouterCredentialReady({ codexOpenRouterBaseUrl: "https://eu.openrouter.ai/api/v1" }, false)).toBe(false);
+  });
+
+  it("is not ready with neither", () => {
+    expect(codexOpenRouterCredentialReady({}, false)).toBe(false);
   });
 });
