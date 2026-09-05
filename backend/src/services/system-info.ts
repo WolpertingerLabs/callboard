@@ -229,16 +229,35 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   }
   // OpenRouter routing is its own credential path: the native Codex harness
   // authenticates via the OpenRouter key, so it's usable even without a
-  // ChatGPT login / OpenAI key / config.toml provider.
+  // ChatGPT login / OpenAI key / config.toml provider. `codexConfigured` is what
+  // the New Chat provider gate reads, so it says yes.
+  //
+  // `codexAuthSource` is deliberately NOT forced along with it. It answers a
+  // different question — which *native* credential backs Codex — and forcing it
+  // to `config.toml` had Settings → API tell a routed user with no auth.json and
+  // no config.toml "Configured via config.toml", directly under a picker
+  // offering to switch them back to the login they do not have. The note carries
+  // the qualification instead, the way `codexCredentials` in engine-status.ts
+  // already does for the same forced flag.
+  //
+  // The note is `OPENROUTER_ROUTED_NOTE` there, verbatim. It names both
+  // credentials because routing has two doors:
+  // `isCodexRoutedThroughOpenRouter` also returns true on an endpoint override
+  // plus a detected env, and in *that* state `getApiEnvOverrides` sets no
+  // OPENROUTER_API_KEY at all — the injected provider block's `env_key` reads
+  // the ambient one. Naming only the stored key claimed a credential this user
+  // does not have, on a tab whose whole job is to stop the page over-claiming.
+  let codexAuthNote: string | undefined;
   if (codexUseOpenRouter) {
     codexConfigured = true;
-    if (!codexAuthSource) codexAuthSource = "config.toml";
+    codexAuthNote = "Routed through OpenRouter — authenticated with the OpenRouter key on this tab, or with the OpenRouter credentials already in your environment when none is stored here.";
   }
 
   // Detect whether the ambient environment already routes each harness through
   // OpenRouter (ANTHROPIC_BASE_URL / OPENAI base / config.toml pointing at
-  // openrouter.ai). Settings → API defaults the routing toggle on from these
-  // when the user hasn't explicitly saved a choice.
+  // openrouter.ai). Settings → API mentions this next to the OpenRouter key
+  // fields; it does not seed the credential control from it, because a detected
+  // env with no stored flag is a routing that is not happening.
   let claudeCodeOpenRouterDetected = false;
   let codexOpenRouterDetected = false;
   try {
@@ -266,6 +285,7 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
     codexOpenRouterDetected,
     codexConfigured,
     codexAuthSource,
+    codexAuthNote,
     // Which ACP vendors have their CLI installed. One entry per built-in
     // preset, present even when unavailable so the picker can say what to
     // install. Availability here means "the binary resolves", never

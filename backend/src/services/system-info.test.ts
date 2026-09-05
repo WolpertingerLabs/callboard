@@ -38,6 +38,9 @@ const mocks = vi.hoisted(() => ({
   dataDirBroken: false,
   getSdkInfoAsync: vi.fn(),
   listAcpProviderAvailability: vi.fn(),
+  /** Codex's two credential answers, stubbed so no case depends on the running machine's $CODEX_HOME. */
+  codexAuthSource: null as "api-key" | "auth.json" | "config.toml" | null,
+  codexRouted: false,
 }));
 
 // Partial mock: `DATA_DIR` and every other export stay real, because the
@@ -65,6 +68,15 @@ vi.mock("../agents/adapters/acp/availability.js", async (importOriginal) => ({
   listAcpProviderAvailability: mocks.listAcpProviderAvailability,
 }));
 
+// Codex's credential answers come from the real `$CODEX_HOME` otherwise, which
+// makes "is a routed harness reported as natively logged in?" depend on whoever
+// runs the suite.
+vi.mock("../agents/adapters/codex/codexAuth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/adapters/codex/codexAuth.js")>()),
+  getCodexAuthSource: () => mocks.codexAuthSource,
+  isCodexRoutedThroughOpenRouter: () => mocks.codexRouted,
+}));
+
 const { buildSystemInfo } = await import("./system-info.js");
 
 /** The vendor list the picker renders — the sibling answer a rejecting probe used to take down with it. */
@@ -75,6 +87,8 @@ writeFileSync(join(PKG_ROOT, "package.json"), JSON.stringify({ name: "@wolpertin
 
 beforeEach(() => {
   mocks.dataDirBroken = false;
+  mocks.codexAuthSource = null;
+  mocks.codexRouted = false;
   vi.clearAllMocks();
   mocks.getSdkInfoAsync.mockResolvedValue({ account: null, models: [], fetchedAt: 0 });
   mocks.listAcpProviderAvailability.mockResolvedValue(VENDORS);
@@ -165,6 +179,48 @@ describe("buildSystemInfo", () => {
   it("omits latestVersion rather than failing when the registry is unreachable", async () => {
     const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
     expect(info.latestVersion).toBeUndefined();
+  });
+
+  it("does not report a native Codex login that OpenRouter routing invented", async () => {
+    // `codexConfigured` is forced true so the New Chat provider gate lets Codex
+    // through on an OpenRouter key alone — that part is deliberate. Forcing
+    // `codexAuthSource` alongside it was not: Settings → API renders this row
+    // under a picker offering to switch back to the ChatGPT login, and told a
+    // user with no auth.json and no config.toml they were "Configured via
+    // config.toml". They switch back and Codex fails.
+    mocks.codexRouted = true;
+    mocks.codexAuthSource = null;
+
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+
+    expect(info.codexConfigured).toBe(true);
+    expect(info.codexAuthSource).toBeNull();
+    expect(info.codexAuthNote).toMatch(/OpenRouter/);
+  });
+
+  it("keeps a real native login visible while routed, and still says what is running", async () => {
+    // The other half: the note qualifies the forced flag, it does not erase an
+    // answer `getCodexAuthSource` actually found. Both are asserted because
+    // they answer different questions — what authenticates a chat now, against
+    // what "switch back" would land on — so the note is *not* conditional on
+    // the source being absent, and a reader of the field's doc-comment should
+    // not have to guess which.
+    mocks.codexRouted = true;
+    mocks.codexAuthSource = "auth.json";
+
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+
+    expect(info.codexAuthSource).toBe("auth.json");
+    expect(info.codexAuthNote).toMatch(/OpenRouter/);
+  });
+
+  it("says nothing about routing when nothing is routed", async () => {
+    mocks.codexAuthSource = "auth.json";
+
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+
+    expect(info.codexConfigured).toBe(true);
+    expect(info.codexAuthNote).toBeUndefined();
   });
 
   it("reports its own version as unknown for a package root with no manifest", async () => {

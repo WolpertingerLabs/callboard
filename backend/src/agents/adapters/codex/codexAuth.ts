@@ -84,8 +84,12 @@ export function isCodexConfigured(): boolean {
  * Detect whether the ambient environment already routes the native Codex
  * harness through OpenRouter — either OPENAI_BASE_URL points at openrouter.ai,
  * or `$CODEX_HOME/config.toml` declares an openrouter base_url. Surfaced via
- * /api/system-info so Settings → API can default the "Route through OpenRouter"
- * toggle on before the user explicitly chooses.
+ * /api/system-info so Settings → API can say so beside the OpenRouter key
+ * fields. It does not seed the Credentials control, and here that matters twice
+ * over: {@link isCodexRoutedThroughOpenRouter} needs an endpoint override on top
+ * of a detected env before callboard routes anything, so a control defaulted on
+ * from this alone would relabel the page while every chat stayed on the user's
+ * own wiring.
  */
 export function detectCodexOpenRouterEnv(): boolean {
   if (/openrouter\.ai/i.test(process.env.OPENAI_BASE_URL ?? "")) return true;
