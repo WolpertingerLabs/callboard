@@ -12,8 +12,9 @@
  * is what makes the gate real, and it is not optional.
  *
  * The spike confirmed every property this depends on against 0.83.0:
- * `tool_call` fires for all seven built-ins (`read`, `bash`, `edit`, `write`,
- * `grep`, `find`, `ls`) *and* for `customTools`; the handler is genuinely
+ * `tool_call` fires for every built-in (`read`, `bash`, `edit`, `write`,
+ * `grep`, `find`, `ls`, plus `powershell` since 0.85.0) *and* for `customTools`;
+ * the handler is genuinely
  * awaited (a 300 ms sleep inside it delayed execution rather than racing it);
  * and `{ block: true, reason }` both prevented the write and delivered the
  * reason to the model verbatim.
@@ -81,25 +82,32 @@ export type PiPermissionExtension = ExtensionFactory;
 export const MOST_RESTRICTIVE_CATEGORY: PermissionCategory = "codeExecution";
 
 /**
- * pi's built-in tools, all seven.
+ * pi's built-in tools, all eight.
  *
  * Confirmed by running `session.getAllTools()` against 0.83.0 with every tool
  * enabled — the default *active* set is only `read`/`bash`/`edit`/`write`, but
- * all seven are registerable and all seven fire `tool_call`.
+ * all of them are registerable and all of them fire `tool_call`.
+ *
+ * `powershell` joined the set in 0.85.0 (`allToolNames` in pi's
+ * `core/tools/index.js`). This list is not decorative: {@link buildToolFilters}
+ * turns it into the `tools` **allowlist** handed to pi, so a built-in missing
+ * here is a built-in silently removed from the model's tool surface whenever any
+ * axis narrows — the user allows `codeExecution` and gets no `powershell`.
+ * Adding a name is how a new pi built-in stays reachable.
  *
  * **There is no built-in web tool.** The `webAccess` axis therefore governs
  * nothing on a pi chat until one is added; Phase 4 should say so in the UI
  * rather than showing an inert control.
  */
-export const PI_BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+export const PI_BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
 
 /**
  * Exact tool-name → category table for everything pi ships.
  *
- * All seven names are single common words, which is exactly the case where the
- * token fallback below would be least reliable — `find` and `ls` carry no token
- * from any family, and would otherwise land on `codeExecution` and over-prompt.
- * An exact table is both correct and cheaper to reason about.
+ * The names are single common words, which is exactly the case where the token
+ * fallback below would be least reliable — `find` and `ls` carry no token from
+ * any family, and would otherwise land on `codeExecution` and over-prompt. An
+ * exact table is both correct and cheaper to reason about.
  */
 const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string, PermissionCategory>([
   // ── Read-only ──
@@ -114,6 +122,10 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
 
   // ── Code execution ──
   ["bash", "codeExecution"],
+  // pi 0.85.0's second shell. The token table below would already land it on
+  // `codeExecution` via the fallback, but only by accident of it being unknown;
+  // naming it makes the answer intentional rather than a default.
+  ["powershell", "codeExecution"],
 
   // Parity with the Claude, OpenRouter and Cline maps, which special-case this
   // same callboard tool. Under pi it arrives bare: `customTools` is an
@@ -146,7 +158,28 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
  */
 const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly string[]]> = [
   ["codeExecution", ["bash", "sh", "shell", "exec", "execute", "run", "terminal", "command", "spawn", "eval", "script", "process", "kill"]],
-  ["fileWrite", ["write", "edit", "create", "delete", "remove", "move", "rename", "patch", "apply", "mkdir", "replace", "insert", "append", "update", "modify", "save", "touch"]],
+  [
+    "fileWrite",
+    [
+      "write",
+      "edit",
+      "create",
+      "delete",
+      "remove",
+      "move",
+      "rename",
+      "patch",
+      "apply",
+      "mkdir",
+      "replace",
+      "insert",
+      "append",
+      "update",
+      "modify",
+      "save",
+      "touch",
+    ],
+  ],
   ["webAccess", ["fetch", "http", "https", "web", "browse", "url", "download", "upload", "curl", "request"]],
   ["fileRead", ["read", "glob", "grep", "search", "find", "list", "cat", "view", "stat"]],
 ];

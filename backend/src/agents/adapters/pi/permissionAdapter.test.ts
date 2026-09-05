@@ -109,6 +109,7 @@ describe("categorizePiToolName", () => {
     ["edit", "fileWrite"],
     ["write", "fileWrite"],
     ["bash", "codeExecution"],
+    ["powershell", "codeExecution"],
   ] as const)("maps the built-in %s to %s", (name, expected) => {
     expect(categorizePiToolName(name)).toBe(expected);
   });
@@ -119,7 +120,12 @@ describe("categorizePiToolName", () => {
     for (const name of PI_BUILTIN_TOOL_NAMES) {
       expect(categorizePiToolName(name)).not.toBe(null);
     }
-    expect(PI_BUILTIN_TOOL_NAMES).toHaveLength(7);
+    // Paired with the it.each above, which names all eight explicitly: the
+    // length is what makes that table a *complete* enumeration rather than a
+    // sample, so a built-in pi adds (as 0.85.0 added `powershell`) fails here
+    // instead of quietly falling through to the token fallback — and, worse,
+    // dropping out of the allowlist `buildToolFilters` derives from this list.
+    expect(PI_BUILTIN_TOOL_NAMES).toHaveLength(8);
   });
 
   it("special-cases render_file, as the Claude/OR/Cline maps do", () => {
@@ -277,8 +283,12 @@ describe("buildToolFilters", () => {
 
   it("hides denied built-ins from the model", () => {
     const filters = buildToolFilters({ ...ALL_ALLOW, codeExecution: "deny" }, []);
-    expect(filters.excludeTools).toEqual(["bash"]);
+    // Both shells: `powershell` is pi's second one (0.85.0), and a
+    // `codeExecution: deny` that excluded only `bash` would leave the axis
+    // half-open on any platform where powershell resolves.
+    expect(filters.excludeTools).toEqual(["bash", "powershell"]);
     expect(filters.tools).not.toContain("bash");
+    expect(filters.tools).not.toContain("powershell");
   });
 
   /**
