@@ -18,7 +18,7 @@
  *
  * ## Which SDK entry point
  *
- * The plan named `ClientSideConnection`. In the pinned SDK (1.3.0) that class is
+ * The plan named `ClientSideConnection`. In the pinned SDK (1.4.0) that class is
  * `@deprecated` in favour of the `client()` app builder, so this uses `client()`:
  * same wire protocol, but typed handler registration and a long-lived
  * `ClientConnection` handle (`connect(stream)`) instead of a class whose
@@ -572,7 +572,7 @@ export class AcpAgentClient {
   /**
    * Set one of the session's config options, e.g. the model.
    *
-   * ACP 1.3.0 has no models API — a model is just a `SessionConfigOption` whose
+   * ACP 1.4.0 has no models API — a model is just a `SessionConfigOption` whose
    * `category` is `"model"`, so selecting one is `session/set_config_option`
    * after the session exists. That ordering is forced by the protocol, not a
    * choice: there is nowhere on `session/new` to ask for a model.

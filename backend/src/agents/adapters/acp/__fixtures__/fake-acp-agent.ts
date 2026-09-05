@@ -70,7 +70,7 @@ export const SCENARIOS = [
   "reject-init",
   /**
    * Returns spec-shaped `configOptions` from `session/new` — the only place ACP
-   * 1.3.0 advertises a model list. Covers both `SessionConfigSelectOptions`
+   * 1.4.0 advertises a model list. Covers both `SessionConfigSelectOptions`
    * forms (flat and grouped).
    */
   "config-options",

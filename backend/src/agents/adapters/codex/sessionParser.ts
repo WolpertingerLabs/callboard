@@ -54,8 +54,17 @@ const log = createLogger("codex-session-parser");
  * format is undocumented and version-dependent; when a rollout's
  * `session_meta.cli_version` differs we log once so a future format drift is
  * diagnosable rather than silently mis-parsed (spike risk #4).
+ *
+ * Re-confirmed at 0.153.4 (bumped from 0.146.0): every discriminant this parser
+ * reads — the `session_meta` / `turn_context` / `event_msg` / `response_item`
+ * line types, the `token_count` event, the `message` / `function_call` /
+ * `custom_tool_call` / `function_call_output` / `custom_tool_call_output` /
+ * `reasoning` item types, and the `cached_input_tokens` /
+ * `reasoning_output_tokens` usage keys — is still emitted by the bundled
+ * `codex` binary. The SDK's own `.d.ts` changed only by addition over that
+ * range, so the rollout format did not drift.
  */
-export const EXPECTED_CODEX_CLI_VERSION = "0.146.0";
+export const EXPECTED_CODEX_CLI_VERSION = "0.153.4";
 
 /** Synthetic lead messages the Codex CLI injects ahead of the real transcript. */
 const SYNTHETIC_MESSAGE_PREFIXES = ["<permissions", "<environment_context", "<user_instructions"];
