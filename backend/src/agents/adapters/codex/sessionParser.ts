@@ -108,13 +108,27 @@ export const EXPECTED_CODEX_CLI_VERSION = "0.153.4";
  * that prefix. That leak predates the 0.153.4 bump and hit
  * {@link readFirstUserPrompt} too — every chat started under 0.146.x previews
  * in the sidebar as OpenAI's plugin catalogue instead of the user's prompt.
+ *
+ * `<user_instructions` is the one entry no rollout on this machine and no
+ * literal in the 0.153.4 binary still exercises, so its provenance is recorded
+ * rather than assumed. It was real, and it was on *this* channel: through
+ * rust-v0.50.0 `UserInstructions::serialize_to_xml` wrapped AGENTS.md in
+ * `<user_instructions>…</user_instructions>` and `impl From<UserInstructions>
+ * for ResponseItem` emitted it as `role: "user"` — codex's own
+ * `event_mapping.rs` then filtered it back out with the same two prefixes this
+ * list leads with. rust-v0.20.0 is older still and prepends the identical tag.
+ * By rust-v0.100.0 the wrapper had become `# AGENTS.md instructions for <dir>`
+ * and the tag survived only as `USER_INSTRUCTIONS_OPEN_TAG_LEGACY`, for reading
+ * old rollouts; by rust-v0.139.0 only an unused const remained. Kept for the
+ * same reason as the rest — a rollout written by one of those CLIs is still
+ * parseable, and still on someone's disk.
  */
 const SYNTHETIC_MESSAGE_PREFIXES = [
   "<recommended_plugins", // 0.146.x — displaced `<environment_context` in the first user message
   "<environment_context",
   "<skills_instructions", // 0.153.4 — displaced `<permissions` as the first developer blob
   "<permissions", // ≤0.146.x — the lead of every rollout already on disk
-  "<user_instructions",
+  "<user_instructions", // ≤ rust-v0.5x — retired upstream; kept for rollouts of that vintage
 ];
 
 /**
@@ -680,17 +694,19 @@ function translateResponseItem(payload: Record<string, unknown> | undefined, tim
 function translateMessage(payload: Record<string, unknown>, ts: string | undefined): ParsedMessage | null {
   const role = typeof payload.role === "string" ? payload.role : undefined;
 
-  // `developer` is the CLI's injection channel, not a conversational role, so
-  // drop it wholesale rather than chasing the tag of the week.
+  // `developer` is an injection channel — CLI- or client-authored — not a
+  // conversational role, so drop it wholesale rather than chasing the tag of
+  // the week.
   //
-  // Evidence: across the 376 rollouts on this machine (cli_version 0.139.0 /
-  // 0.146.0 / 0.146.1 / 0.153.4) all 411 developer messages are one of five
-  // CLI-authored blobs — `<permissions instructions>`, `<skills_instructions>`,
-  // `<multi_agent_mode>`, `<model_switch>`, and the multi-agent role brief —
-  // and each of those opening literals is compiled into the bundled `codex`
-  // binary. Nothing callboard sends can land here either: its own instructions
-  // ride `model_instructions_file` into `session_meta.base_instructions`, and
-  // `thread.run()` emits `user`.
+  // Evidence: across the 374 rollouts in `$CODEX_HOME` on this machine
+  // (cli_version 0.139.0 / 0.146.0 / 0.146.1) all 411 developer messages are one
+  // of five CLI-authored blobs — `<permissions instructions>`,
+  // `<skills_instructions>`, `<multi_agent_mode>`, `<model_switch>`, and the
+  // multi-agent role brief — and each of those opening literals is compiled
+  // into the bundled `codex` binary. The 0.153.4 rollouts in `__fixtures__` add
+  // no sixth kind. Nothing callboard sends can land here either: its own
+  // instructions ride `model_instructions_file` into
+  // `session_meta.base_instructions`, and `thread.run()` emits `user`.
   //
   // A tag allowlist cannot replace this. At 0.146.0 the multi-agent brief has
   // no tag at all — it opens "You are `/root`, the primary agent…" — so it
@@ -698,6 +714,31 @@ function translateMessage(payload: Record<string, unknown>, ts: string | undefin
   // rule ("everything before the first real user message"): a resumed turn
   // APPENDS to the same rollout and the CLI re-injects the whole lead run
   // mid-file, verified in `__fixtures__/rollout-cli-0.153.4-resumed.jsonl`.
+  //
+  // ## The one case this filter is known to over-reach on
+  //
+  // Codex has a first-class *client*-authored developer path:
+  // `Session::inject_client_response_items` → `annotate_client_response_item`
+  // records a `ResponseItem::Message { role: "developer" }` an app-server client
+  // supplied. Callboard cannot produce one — `@openai/codex-sdk@0.153.4` types
+  // `Input` as `string | ({type:"text"} | {type:"local_image"})[]`, `Thread`
+  // exposes no inject API, `HandoffTurn.role` (`agents/handoff.ts`) is
+  // `"user" | "assistant"`, and there is no `forkSession` — so no chat
+  // callboard *starts* can hit it. But discovery walks the whole of
+  // `$CODEX_HOME/sessions`, including rollouts callboard never wrote, so a user
+  // who also runs an app-server/IDE client that injects developer context loses
+  // it here silently.
+  //
+  // If a missing-message report ever arrives, the discriminator to reach for is
+  // `metadata.client_authored` — a sibling of `payload` on the rollout line,
+  // not a field inside it (`{"metadata":{"client_authored":true},"payload":
+  // {"type":"message","role":"developer",…}}`). It is not usable as a filter
+  // today: `annotate_client_response_item` only attaches that metadata when
+  // `Feature::RetainClientDeveloperMessages` is on, and 0.153.4 ships it
+  // `Stage::UnderDevelopment, default_enabled: false` — so a client-injected
+  // developer message currently lands with no metadata at all and is byte-for-
+  // byte indistinguishable from a CLI-authored one. Widening the filter has to
+  // wait for that flag to stabilize.
   if (role === "developer") return null;
 
   const { text: content, imageIds } = extractTextAndImages(payload.content);
