@@ -146,7 +146,8 @@ describe("Settings → API credentials control", () => {
     codexUseOpenRouter: true,
     codexConfigured: true,
     codexAuthSource: null,
-    codexAuthNote: "Routed through OpenRouter — authenticated with the OpenRouter key on this tab.",
+    codexAuthNote:
+      "Routed through OpenRouter — authenticated with the OpenRouter key on this tab, or with the OpenRouter credentials already in your environment when none is stored here.",
   };
 
   it("does not claim a native Codex login while OpenRouter is doing the authenticating", async () => {
@@ -230,6 +231,19 @@ describe("Settings → API credentials control", () => {
 
     expect(screen.queryByText(/on your Anthropic credentials/)).toBeNull();
     expect(screen.getByText(/Inactive — Callboard is not routing this; your environment's own ANTHROPIC_BASE_URL already does/)).toBeTruthy();
+  });
+
+  it("does not credit the environment for an endpoint the API Endpoint field overrides", async () => {
+    // The mirror image of the case above, and the one callboard can actually
+    // check: the native branch never *unsets* an inherited ANTHROPIC_BASE_URL,
+    // but `if (s.apiBaseUrl) env.ANTHROPIC_BASE_URL = s.apiBaseUrl` does
+    // overwrite it. So for a user with both, the environment's own URL is the
+    // one thing that is *not* in effect — which is what the detected sentence
+    // was telling them it was.
+    await renderSettings({ apiBaseUrl: "https://gateway.internal/v1" }, { claudeCodeOpenRouterDetected: true });
+
+    expect(screen.queryByText(/your environment's own ANTHROPIC_BASE_URL already does/)).toBeNull();
+    expect(screen.getByText(/Inactive — Callboard is not routing this; the API Endpoint below overrides your environment's ANTHROPIC_BASE_URL/)).toBeTruthy();
   });
 
   it("keeps the Codex badge from contradicting the banner four lines under it", async () => {

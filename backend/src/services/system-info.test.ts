@@ -198,15 +198,20 @@ describe("buildSystemInfo", () => {
     expect(info.codexAuthNote).toMatch(/OpenRouter/);
   });
 
-  it("keeps a real native login visible while routed", async () => {
+  it("keeps a real native login visible while routed, and still says what is running", async () => {
     // The other half: the note qualifies the forced flag, it does not erase an
-    // answer `getCodexAuthSource` actually found.
+    // answer `getCodexAuthSource` actually found. Both are asserted because
+    // they answer different questions — what authenticates a chat now, against
+    // what "switch back" would land on — so the note is *not* conditional on
+    // the source being absent, and a reader of the field's doc-comment should
+    // not have to guess which.
     mocks.codexRouted = true;
     mocks.codexAuthSource = "auth.json";
 
     const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
 
     expect(info.codexAuthSource).toBe("auth.json");
+    expect(info.codexAuthNote).toMatch(/OpenRouter/);
   });
 
   it("says nothing about routing when nothing is routed", async () => {

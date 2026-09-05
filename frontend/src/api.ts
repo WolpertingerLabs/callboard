@@ -1514,9 +1514,16 @@ export interface SystemInfo {
    */
   codexAuthSource?: "api-key" | "auth.json" | "config.toml" | null;
   /**
-   * Why `codexConfigured` is true when no native credential is. Absent on
-   * servers older than the Credentials control, and absent whenever
-   * `codexAuthSource` answers on its own.
+   * What is authenticating Codex while OpenRouter routing is in effect.
+   *
+   * Present whenever routing is on, *including* alongside a real
+   * `codexAuthSource`: those answer different questions — what is running now
+   * against what switching back would land on — and a routed user who also has
+   * a ChatGPT login is entitled to see both. Only its pairing with
+   * `codexAuthSource: null` is the "why is `codexConfigured` true, then?" case.
+   *
+   * Absent when nothing is routed, and on servers older than the Credentials
+   * control.
    */
   codexAuthNote?: string;
   /**

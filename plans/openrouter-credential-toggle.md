@@ -254,11 +254,26 @@ did.
 | `frontend/src/pages/settings/ApiSettings.tsx` | segmented control, instant-save handlers, unhide the parked sections, drop the checkbox from `OpenRouterRoutingSection`, demote the Codex auth-mode toggle to the parked picker |
 | `frontend/src/pages/settings/ApiSettings.credentials.test.tsx` | new — the wiring the mapping test cannot reach |
 | `backend/src/services/system-info.ts` | stop forcing `codexAuthSource` when routing forces `codexConfigured`; add `codexAuthNote` |
+| `frontend/src/api.ts` | `SystemInfo.codexAuthNote`, and the narrowed contract on `codexAuthSource` — the interface half of the change above |
+| `backend/src/services/engine-status.ts` | the routed-credentials note both engine rows print, widened to the env-supplied credential and hoisted to `OPENROUTER_ROUTED_NOTE` so system-info's copy has one source to match |
+| `backend/src/services/agent-settings.ts` | doc-comment only — what the native branch does and does not undo, which §5 relies on |
+| `backend/src/agents/adapters/codex/codexAuth.ts` | doc-comment only — why the Codex env half is narrower, which §3's table copies |
 
 One backend change, and it is §4's doing: unhiding the native Codex section put a
 value on screen that had only ever been consumed by a provider gate. No
 wire-surface (`shared/types/stream.ts`) change, and the system-info addition is
 an optional field, so older bundles ignore it.
+
+The `codexAuthSource` **narrowing** is the half that needs an argument rather
+than a shrug, since it changes what an existing field says rather than adding
+one. It is safe because `null` was already in the field's declared union: no old
+client is handed a value it cannot represent, only one it always had to handle.
+And the sole consumer already had a `null` branch — the *Codex auth status* row
+in `ApiSettings.tsx`, which stops printing "Configured via config.toml" at a user
+who has no `config.toml`, and prints "Not configured" beside `codexAuthNote` and
+the `codex login` instruction the forced value used to suppress. The field's
+other three values are untouched, so nothing an older bundle could already
+render has been dropped — the one state that changes is the one that was wrong.
 
 ## Tests
 

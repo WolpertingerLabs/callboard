@@ -481,6 +481,19 @@ function namedSource(value: string | undefined): string | undefined {
 }
 
 /**
+ * One sentence for both routed rows, and for `codexAuthNote` in
+ * `services/system-info.ts` — three places a user can read the same claim, so
+ * it is worth one place to keep it true.
+ *
+ * "or with the OpenRouter credentials already in your environment" is the half
+ * that had to be added: neither routing predicate requires a key stored here,
+ * and in the branch that does not, callboard injects no credential at all. See
+ * each call site for how its predicate reaches that state.
+ */
+const OPENROUTER_ROUTED_NOTE =
+  "Routed through OpenRouter — authenticated with the OpenRouter key on this tab, or with the OpenRouter credentials already in your environment when none is stored here.";
+
+/**
  * Claude Code's credentials, walked out of the SDK's account info — the block
  * above this one is the reasoning for every branch.
  *
@@ -496,7 +509,12 @@ function namedSource(value: string | undefined): string | undefined {
 export async function claudeCodeCredentials(): Promise<EngineCredentials> {
   try {
     if (isClaudeCodeRoutedThroughOpenRouter()) {
-      return { configured: true, source: "openrouter", note: "Routed through OpenRouter — authenticated with the OpenRouter key on this tab." };
+      // Both of that predicate's doors are named, because only one of them puts
+      // a credential in the env: with no stored key it returns true off
+      // `detectClaudeCodeOpenRouterEnv` alone, and `getApiEnvOverrides` then
+      // sets no ANTHROPIC_AUTH_TOKEN — the inherited one authenticates. Naming
+      // only the stored key told that user they had one here.
+      return { configured: true, source: "openrouter", note: OPENROUTER_ROUTED_NOTE };
     }
   } catch {
     // Settings unreadable — fall through to the SDK's answer.
@@ -545,7 +563,11 @@ function codexCredentials(): EngineCredentials {
 
   try {
     if (isCodexRoutedThroughOpenRouter()) {
-      return { configured: true, source: source ?? "config.toml", note: "Routed through OpenRouter — authenticated with the OpenRouter key on this tab." };
+      // Same two doors as the Claude Code row above, differently reached: this
+      // predicate's env half is an endpoint override plus a detected env, and
+      // there `getApiEnvOverrides` sets no OPENROUTER_API_KEY — the injected
+      // provider block's `env_key` picks up the ambient one.
+      return { configured: true, source: source ?? "config.toml", note: OPENROUTER_ROUTED_NOTE };
     }
   } catch {
     // Settings unreadable — the auth-source answer above still stands.

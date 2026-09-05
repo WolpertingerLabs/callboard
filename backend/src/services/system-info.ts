@@ -239,10 +239,18 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
   // offering to switch them back to the login they do not have. The note carries
   // the qualification instead, the way `codexCredentials` in engine-status.ts
   // already does for the same forced flag.
+  //
+  // The note is `OPENROUTER_ROUTED_NOTE` there, verbatim. It names both
+  // credentials because routing has two doors:
+  // `isCodexRoutedThroughOpenRouter` also returns true on an endpoint override
+  // plus a detected env, and in *that* state `getApiEnvOverrides` sets no
+  // OPENROUTER_API_KEY at all — the injected provider block's `env_key` reads
+  // the ambient one. Naming only the stored key claimed a credential this user
+  // does not have, on a tab whose whole job is to stop the page over-claiming.
   let codexAuthNote: string | undefined;
   if (codexUseOpenRouter) {
     codexConfigured = true;
-    codexAuthNote = "Routed through OpenRouter — authenticated with the OpenRouter key on this tab.";
+    codexAuthNote = "Routed through OpenRouter — authenticated with the OpenRouter key on this tab, or with the OpenRouter credentials already in your environment when none is stored here.";
   }
 
   // Detect whether the ambient environment already routes each harness through

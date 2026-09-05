@@ -1651,12 +1651,23 @@ export default function ApiSettings() {
    * banner inside the section says the rest. The Codex detect is a looser grep,
    * which makes the same sentence *more* necessary there: "Codex is on your
    * ChatGPT login" sat four lines above "Callboard leaves that wiring alone".
+   *
+   * That detected sentence then has the mirror image of the same bug, and this
+   * one callboard *can* check: the native branch never unsets an inherited
+   * `ANTHROPIC_BASE_URL`, but with `apiBaseUrl` stored it overwrites it, so
+   * "your environment's own already does" is false for exactly the user who
+   * filled in the API Endpoint field below. Naming which value wins is true
+   * whichever host that field holds, so the split is on the field being set at
+   * all. Read from `settings` rather than the editable box, like every other
+   * assertion here: an unsaved endpoint is not one the daemon injects.
    */
   const claudeInactiveNote = claudeRoutingInEffect
     ? undefined
-    : systemInfo?.claudeCodeOpenRouterDetected
-      ? "Callboard is not routing this; your environment's own ANTHROPIC_BASE_URL already does"
-      : "Claude Code is on your Anthropic credentials";
+    : !systemInfo?.claudeCodeOpenRouterDetected
+      ? "Claude Code is on your Anthropic credentials"
+      : settings?.apiBaseUrl?.trim()
+        ? "Callboard is not routing this; the API Endpoint below overrides your environment's ANTHROPIC_BASE_URL"
+        : "Callboard is not routing this; your environment's own ANTHROPIC_BASE_URL already does";
   const codexInactiveNote = codexRoutingInEffect
     ? undefined
     : systemInfo?.codexOpenRouterDetected
