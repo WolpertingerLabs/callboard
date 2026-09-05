@@ -22,9 +22,11 @@
  *  - `response_item` — the durable transcript. `payload.type`:
  *    - `"message"` (`role: "user"|"assistant"|"developer"|"system"`,
  *      `content:[{type:"input_text"|"output_text", text}]`) → text.
- *      The **first two messages are synthetic** (a `developer`
- *      "<permissions instructions>" and a `user` "<environment_context>") and are
- *      filtered out — the real user prompt is the next `user` message.
+ *      A **variable-length run of synthetic lead messages** precedes the real
+ *      transcript — the CLI's injected instruction blobs, which grow and get
+ *      reordered between CLI versions. They are filtered by tag prefix; see
+ *      {@link SYNTHETIC_MESSAGE_PREFIXES}. The real user prompt is the first
+ *      `user` message that survives that filter.
  *    - `"function_call"` / `"custom_tool_call"` → `tool_use`
  *      (`commandExecution`/`fileChange`/`mcpToolCall` all serialize through these
  *      Responses-API item shapes in the rollout).
@@ -52,24 +54,73 @@ const log = createLogger("codex-session-parser");
 /**
  * The Codex CLI version this parser was written against (spike §1). The rollout
  * format is undocumented and version-dependent; when a rollout's
- * `session_meta.cli_version` differs we log once so a future format drift is
+ * `session_meta.cli_version` differs we log so a future format drift is
  * diagnosable rather than silently mis-parsed (spike risk #4).
  *
- * Re-confirmed at 0.153.4 (bumped from 0.146.0): every discriminant this parser
- * reads — the `session_meta` / `turn_context` / `event_msg` / `response_item`
- * line types, the `token_count` event, the `message` / `function_call` /
- * `custom_tool_call` / `function_call_output` / `custom_tool_call_output` /
- * `reasoning` item types, and the `cached_input_tokens` /
- * `reasoning_output_tokens` usage keys — is still emitted by the bundled
- * `codex` binary. The SDK's own `.d.ts` changed only by addition over that
- * range, so the rollout format did not drift.
+ * ## What the 0.153.4 bump (from 0.146.0) actually verified
+ *
+ * **Structure, and only structure.** Every discriminant this parser switches
+ * on is still emitted by the bundled `codex` binary: the `session_meta` /
+ * `turn_context` / `event_msg` / `response_item` line types, the `token_count`
+ * event, the `message` / `function_call` / `custom_tool_call` /
+ * `function_call_output` / `custom_tool_call_output` / `reasoning` item types,
+ * and the `cached_input_tokens` / `reasoning_output_tokens` usage keys.
+ *
+ * ## What that check does NOT cover — re-check it on every bump
+ *
+ * This parser also depends on the **text** of the CLI's injected lead messages
+ * ({@link SYNTHETIC_MESSAGE_PREFIXES}), and that text drifts independently of
+ * the structure. 0.153.4 reordered the first `developer` blob so it opens with
+ * `<skills_instructions>` instead of `<permissions instructions>`, which the
+ * prefix list did not match — a ~2.5 KB boilerplate block leaked into the head
+ * of every transcript, with no structural change to point at it. The SDK's
+ * `.d.ts` describes none of this; diffing the type declarations cannot show it.
+ *
+ * So bumping this constant is not bookkeeping — it silences the boot-time
+ * drift warning that exists to force exactly this re-check. Before bumping:
+ * run the newly bundled binary, capture a rollout, and diff its `response_item`
+ * `message` leads against `__fixtures__/rollout-*.jsonl`.
  */
 export const EXPECTED_CODEX_CLI_VERSION = "0.153.4";
 
-/** Synthetic lead messages the Codex CLI injects ahead of the real transcript. */
-const SYNTHETIC_MESSAGE_PREFIXES = ["<permissions", "<environment_context", "<user_instructions"];
+/**
+ * Tag prefixes of the synthetic lead messages the Codex CLI injects ahead of
+ * the real transcript. Matched case-insensitively against the trimmed start of
+ * a message, so the filter is position-independent within the lead run.
+ *
+ * Deliberately an explicit allowlist rather than a shape heuristic ("starts
+ * with a snake_case XML tag"): real user content in these rollouts does start
+ * with tags — `<image name=[Image #1] path="…">` for an attachment, and
+ * callboard's own `<conversation_handoff from="…">` — and swallowing a user's
+ * prompt is far worse than leaking a boilerplate block.
+ *
+ * Entries are additive across CLI versions and none are retired, because
+ * rollouts written by older CLIs stay on disk and stay parseable. `<permissions`
+ * is dead as a *prefix* at 0.153.4 (that blob moved to second position inside
+ * the same message) but still leads 375 of the 411 developer messages in the
+ * rollouts on this machine, so removing it would regress every existing chat.
+ */
+const SYNTHETIC_MESSAGE_PREFIXES = [
+  "<skills_instructions", // 0.153.4 — displaced `<permissions` as the first developer blob
+  "<permissions", // ≤0.146.x — still the lead of every rollout already on disk
+  "<environment_context",
+  "<user_instructions",
+];
 
-let warnedVersionDrift = false;
+/**
+ * CLI versions already warned about. A single boolean latch hid every drift
+ * after the first: once the process read any stale rollout it went quiet, and
+ * right after a bump *every* rollout on disk is stale — so the one warning
+ * always burned on the old version and the next real drift was silent. Keyed
+ * per version instead, bounded by the number of CLI versions that ever wrote
+ * to this machine (3 here), which keeps it noise rather than spam.
+ */
+const warnedCliVersions = new Set<string>();
+
+/** Test seam — clears the per-version warning latch. */
+export function resetCodexCliVersionWarnings(): void {
+  warnedCliVersions.clear();
+}
 
 // ── Home / sessions-root resolution ─────────────────────────────────
 
@@ -472,10 +523,10 @@ export function readCodexSessionMeta(filePath: string): SessionMeta | null {
   return meta;
 }
 
-/** Warn once if a rollout was written by a Codex CLI version we don't target. */
+/** Warn once per distinct CLI version that wrote a rollout we don't target. */
 function checkCliVersion(cliVersion: string | undefined): void {
-  if (warnedVersionDrift || !cliVersion || cliVersion === EXPECTED_CODEX_CLI_VERSION) return;
-  warnedVersionDrift = true;
+  if (!cliVersion || cliVersion === EXPECTED_CODEX_CLI_VERSION || warnedCliVersions.has(cliVersion)) return;
+  warnedCliVersions.add(cliVersion);
   log.warn(
     `Codex rollout cli_version=${cliVersion} differs from the version this parser targets ` +
       `(${EXPECTED_CODEX_CLI_VERSION}); session parsing may be lossy if the rollout format drifted.`,
@@ -621,10 +672,10 @@ function translateMessage(payload: Record<string, unknown>, ts: string | undefin
   const { text: content, imageIds } = extractTextAndImages(payload.content);
   if (!content && imageIds.length === 0) return null;
 
-  // Drop the CLI's synthetic lead messages (permissions instructions /
-  // environment context / injected user instructions) — they aren't part of
-  // the user-visible conversation. Detected by their angle-bracket tag prefix
-  // so the filter is position-independent and survives reordering.
+  // Drop the CLI's synthetic lead messages — they aren't part of the
+  // user-visible conversation. Detected by their angle-bracket tag prefix
+  // ({@link SYNTHETIC_MESSAGE_PREFIXES}) so the filter is position-independent
+  // within the lead run.
   const head = content.trimStart().toLowerCase();
   if (SYNTHETIC_MESSAGE_PREFIXES.some((p) => head.startsWith(p))) return null;
 

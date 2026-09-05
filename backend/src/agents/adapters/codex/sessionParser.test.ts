@@ -18,7 +18,14 @@ import { ImageStorageService } from "../../../services/image-storage.js";
 
 const THREAD_ID = "019ec7f2-cd5d-7823-b2d1-6683c42bfe32";
 
-/** A representative rollout: meta, 2 synthetic leads, real turn with a tool. */
+/**
+ * A representative rollout: meta, synthetic leads, real turn with a tool.
+ *
+ * The lead texts are the **real heads** captured from `codex-cli 0.153.4`
+ * (see `__fixtures__/README.md`), not remembered ones. The previous cut of
+ * this fixture used the 0.146.0-era `<permissions instructions>` lead, which
+ * is why the 0.153.4 `<skills_instructions>` leak shipped green.
+ */
 const ROLLOUT_LINES: unknown[] = [
   {
     type: "session_meta",
@@ -33,7 +40,11 @@ const ROLLOUT_LINES: unknown[] = [
   },
   {
     type: "response_item",
-    payload: { type: "message", role: "developer", content: [{ type: "input_text", text: "<permissions instructions> ..." }] },
+    payload: {
+      type: "message",
+      role: "developer",
+      content: [{ type: "input_text", text: "<skills_instructions>\n## Skills\nA skill is a set of local instru..." }],
+    },
   },
   {
     type: "response_item",
