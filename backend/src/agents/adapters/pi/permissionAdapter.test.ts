@@ -20,6 +20,7 @@ import {
   decidePiToolCall,
   isPiToolIdentifier,
   MOST_RESTRICTIVE_CATEGORY,
+  piAllowlistBuiltinNames,
   PI_BUILTIN_TOOL_NAMES,
   type PiPermissionContext,
 } from "./permissionAdapter.js";
@@ -122,9 +123,13 @@ describe("categorizePiToolName", () => {
     }
     // Paired with the it.each above, which names all eight explicitly: the
     // length is what makes that table a *complete* enumeration rather than a
-    // sample, so a built-in pi adds (as 0.85.0 added `powershell`) fails here
+    // sample, so a built-in pi adds (as 0.84.3 added `powershell`) fails here
     // instead of quietly falling through to the token fallback — and, worse,
     // dropping out of the allowlist `buildToolFilters` derives from this list.
+    //
+    // The catalogue is platform-free on purpose: `powershell` is counted here on
+    // Linux too, because categorization must agree on every platform. Only the
+    // derived allowlist is gated — see the platform describe below.
     expect(PI_BUILTIN_TOOL_NAMES).toHaveLength(8);
   });
 
@@ -283,9 +288,9 @@ describe("buildToolFilters", () => {
 
   it("hides denied built-ins from the model", () => {
     const filters = buildToolFilters({ ...ALL_ALLOW, codeExecution: "deny" }, []);
-    // Both shells: `powershell` is pi's second one (0.85.0), and a
+    // Both shells: `powershell` is pi's second one (0.84.3), and a
     // `codeExecution: deny` that excluded only `bash` would leave the axis
-    // half-open on any platform where powershell resolves.
+    // half-open on Windows, where powershell is allowlistable.
     expect(filters.excludeTools).toEqual(["bash", "powershell"]);
     expect(filters.tools).not.toContain("bash");
     expect(filters.tools).not.toContain("powershell");
@@ -317,5 +322,54 @@ describe("buildToolFilters", () => {
       expect(filters.tools).not.toContain(denied);
     }
     expect(filters.excludeTools).toEqual(expect.arrayContaining(["edit", "write"]));
+  });
+});
+
+// ── The allowlist must not offer a tool that cannot run ─────────────
+
+/**
+ * `tools` is pi's *active set*, not a filter over it: `initialActiveToolNames`
+ * comes straight from it and every allowlisted name in the registry is then
+ * activated. `powershell` is built on every platform but its
+ * `getPowerShellConfig()` throws off win32, so allowlisting it on Linux offers
+ * the model a tool that can only error.
+ *
+ * Every case passes `platform` explicitly — a test that read `process.platform`
+ * would assert one branch on CI and the other on a developer's Windows box.
+ */
+describe("the allowlist is platform-gated (the catalogue is not)", () => {
+  it("piAllowlistBuiltinNames drops Windows-only built-ins off Windows", () => {
+    expect(piAllowlistBuiltinNames("win32")).toEqual([...PI_BUILTIN_TOOL_NAMES]);
+    expect(piAllowlistBuiltinNames("linux")).toEqual(PI_BUILTIN_TOOL_NAMES.filter((n) => n !== "powershell"));
+    expect(piAllowlistBuiltinNames("darwin")).not.toContain("powershell");
+  });
+
+  it("keeps powershell out of the allowlist off Windows", () => {
+    // The regression: post-bump, a `fileWrite: deny` chat on linux offered
+    // ["read","bash","powershell","grep","find","ls"].
+    for (const platform of ["linux", "darwin"] as const) {
+      const filters = buildToolFilters({ ...ALL_ALLOW, fileWrite: "deny" }, ["set_chat_title"], platform);
+      expect(filters.tools).toEqual(["read", "bash", "grep", "find", "ls", "set_chat_title"]);
+    }
+  });
+
+  it("admits powershell on Windows, where it resolves", () => {
+    const filters = buildToolFilters({ ...ALL_ALLOW, fileWrite: "deny" }, ["set_chat_title"], "win32");
+    expect(filters.tools).toEqual(["read", "bash", "powershell", "grep", "find", "ls", "set_chat_title"]);
+  });
+
+  it("still excludes powershell on a codeExecution deny, on every platform", () => {
+    // Free on Linux (pi's `isAllowedTool` is a Set test, so a name it never
+    // activated simply never matches) and load-bearing on Windows. Keeping the
+    // deny side ungated is what stops a platform gate from half-opening an axis.
+    for (const platform of ["linux", "darwin", "win32"] as const) {
+      expect(buildToolFilters({ ...ALL_ALLOW, codeExecution: "deny" }, [], platform).excludeTools).toEqual(["bash", "powershell"]);
+    }
+  });
+
+  it("categorizes powershell the same on every platform", () => {
+    // Pass 1 and pass 2 must agree, and neither reads the platform: the gate's
+    // answer for a name cannot depend on which machine runs the daemon.
+    expect(categorizePiToolName("powershell")).toBe("codeExecution");
   });
 });
