@@ -609,6 +609,61 @@ export default function BranchSelector({ folder, currentBranch, isDetached, onCh
     </label>
   );
 
+  /* An invalid name leaves the parent holding no config at all, so no sentence
+     about it would be true — the error takes the summary's place, and says why
+     Send is doing nothing, until the name is fixable.
+
+     Both halves are announced, because both are the whole point of this box: a
+     plain <div> that silently rewrites itself as you toggle the checkbox tells
+     a screen reader nothing at all, and the Send button going grey is not a
+     signal anyone can hear. `alert` for the rejection (it interrupts — the user
+     cannot send until they act on it) and `status` for the sentence (polite —
+     it is describing a choice being made, not demanding one).
+
+     One node, two homes. On mobile it sits beside the checkbox on the toggle's
+     own row, so the sentence reads as the consequence of the thing you just
+     ticked rather than as a caption stranded under the box; on desktop the
+     controls already fill their row, so it keeps the line below them. The
+     layout styles are the only difference — `flex: 1` with `minWidth: 0` is
+     what lets it wrap inside the row instead of pushing the checkbox off the
+     edge. */
+  const messageLayout = isMobile ? { flex: 1, minWidth: 0 } : { marginTop: 6, paddingLeft: 19 };
+
+  const branchMessage = branchError ? (
+    <div
+      id={errorId}
+      role="alert"
+      style={{
+        ...messageLayout,
+        fontSize: 11,
+        lineHeight: 1.5,
+        color: "var(--danger)",
+        fontWeight: 500,
+      }}
+    >
+      {branchError} — nothing will send until this is fixed.
+    </div>
+  ) : (
+    <div
+      data-testid="branch-summary"
+      role="status"
+      style={{
+        ...messageLayout,
+        fontSize: 11,
+        lineHeight: 1.5,
+        // The voice the box used before this control was rebuilt: the old
+        // "Will auto-create new branch name" hint was accent-yellow italic, and
+        // it read as the box talking about itself rather than as another label.
+        // The sentence does the same job, so it keeps the same voice.
+        color: "var(--accent-text)",
+        fontStyle: "italic",
+        opacity: 0.85,
+      }}
+    >
+      {summary}
+    </div>
+  );
+
   return (
     <div
       style={{
@@ -627,8 +682,14 @@ export default function BranchSelector({ folder, currentBranch, isDetached, onCh
           {baseBranchSelect}
           {/* Row 2: New branch input */}
           {newBranchInput}
-          {/* Row 3: Worktree toggle */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>{worktreeToggle}</div>
+          {/* Row 3: worktree toggle, with the sentence continuing from it.
+              `flex-start` rather than `center` so a sentence that wraps to two
+              lines keeps its first line level with the checkbox instead of
+              floating the checkbox to the middle of the paragraph. */}
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            {worktreeToggle}
+            {branchMessage}
+          </div>
         </div>
       ) : (
         /* Desktop: single-row inline layout */
@@ -647,46 +708,9 @@ export default function BranchSelector({ folder, currentBranch, isDetached, onCh
         </div>
       )}
 
-      {/* An invalid name leaves the parent holding no config at all, so no
-          sentence about it would be true — the error takes the summary's place,
-          and says why Send is doing nothing, until the name is fixable.
-
-          Both halves are announced, because both are the whole point of this
-          box: a plain <div> that silently rewrites itself as you toggle the
-          checkbox tells a screen reader nothing at all, and the Send button
-          going grey is not a signal anyone can hear. `alert` for the rejection
-          (it interrupts — the user cannot send until they act on it) and
-          `status` for the sentence (polite — it is describing a choice being
-          made, not demanding one). */}
-      {branchError ? (
-        <div
-          id={errorId}
-          role="alert"
-          style={{
-            marginTop: 6,
-            fontSize: 11,
-            color: "var(--danger)",
-            fontWeight: 500,
-            paddingLeft: 19,
-          }}
-        >
-          {branchError} — nothing will send until this is fixed.
-        </div>
-      ) : (
-        <div
-          data-testid="branch-summary"
-          role="status"
-          style={{
-            marginTop: 6,
-            fontSize: 11,
-            color: "var(--text-muted)",
-            paddingLeft: 19,
-            lineHeight: 1.5,
-          }}
-        >
-          {summary}
-        </div>
-      )}
+      {/* Desktop keeps the sentence on its own line under the controls; on
+          mobile it has already been rendered beside the checkbox above. */}
+      {!isMobile && branchMessage}
     </div>
   );
 }

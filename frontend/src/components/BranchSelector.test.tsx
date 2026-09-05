@@ -931,3 +931,61 @@ describe("the controls themselves", () => {
     await waitFor(() => expect(screen.getByText("not a git repository")).toBeTruthy());
   });
 });
+
+/**
+ * Where the sentence sits, and what it sounds like.
+ *
+ * The node is shared between two layouts, which is the whole risk: a naive
+ * "render it in the mobile row too" duplicates it, and a screen reader then
+ * announces the same `role="status"` twice on every keystroke. So the count is
+ * asserted, not just the placement.
+ *
+ * `useIsMobile` reads `window.innerWidth < 768` on mount, and jsdom defaults to
+ * 1024 — which is why every other test in this file is a desktop test without
+ * saying so.
+ */
+describe("where the sentence sits", () => {
+  const setWidth = (px: number) => {
+    Object.defineProperty(window, "innerWidth", { value: px, configurable: true, writable: true });
+  };
+
+  afterEach(() => setWidth(1024));
+
+  it("puts the sentence on the toggle's own row on mobile, exactly once", async () => {
+    setWidth(390);
+    await open();
+
+    const message = screen.getByTestId("branch-summary");
+    expect(screen.getAllByTestId("branch-summary")).toHaveLength(1);
+    // The checkbox's own <label> and the sentence are siblings in the row.
+    expect(message.parentElement).toBe(toggle().closest("label")?.parentElement);
+  });
+
+  it("keeps the sentence below the controls on desktop, exactly once", async () => {
+    setWidth(1024);
+    await open();
+
+    const message = screen.getByTestId("branch-summary");
+    expect(screen.getAllByTestId("branch-summary")).toHaveLength(1);
+    expect(message.parentElement).not.toBe(toggle().closest("label")?.parentElement);
+  });
+
+  it("speaks in the box's own voice — accent italic, as the old auto-create hint did", async () => {
+    await open();
+
+    const message = screen.getByTestId("branch-summary");
+    expect(message.style.fontStyle).toBe("italic");
+    expect(message.style.color).toBe("var(--accent-text)");
+  });
+
+  it("still hands the slot to the rejection, which is not styled as a remark", async () => {
+    await open();
+
+    type("feat/my thing");
+
+    expect(screen.queryByTestId("branch-summary")).toBeNull();
+    const alert = screen.getByRole("alert");
+    expect(alert.style.color).toBe("var(--danger)");
+    expect(alert.style.fontStyle).toBe("");
+  });
+});
