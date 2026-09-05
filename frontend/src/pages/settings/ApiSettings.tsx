@@ -838,7 +838,14 @@ function SegmentedControl<M extends string>({
             key={mode}
             type="button"
             disabled={busy || blocked}
-            onClick={() => onSelect(mode)}
+            // Re-picking what is already picked writes nothing. It can afford to
+            // now: the control is seeded from the stored flag alone, so what is
+            // displayed is what the daemon holds, and the PUT would only set
+            // `apiFieldsTouched` and drop the SDK info cache for a value that did
+            // not move. `cursor: default` below already says as much.
+            onClick={() => {
+              if (!selected) onSelect(mode);
+            }}
             style={{
               flex: 1,
               padding: "8px 12px",
@@ -1387,6 +1394,14 @@ export default function ApiSettings() {
    * Default Model from `settings`, discarding an unsaved edit there — and
    * nothing this control writes is read back off `settings`: the segments read
    * the local flag, which `apply` has already moved.
+   *
+   * `systemInfo` is a different matter and *is* refetched. Nothing derives
+   * editable state from it — the only two effects that write form fields key on
+   * `settings` and `activeAcpProviderId` — but plenty of this page's *claims*
+   * come out of it, and one of them is computed from the very flag just written:
+   * `codexConfigured` is forced true while Codex is routed, so a click that
+   * turned routing off left the Codex tab reporting credentials that the flag
+   * behind them no longer implies.
    */
   const persistCredentialFields = async (control: CredentialControl, fields: Partial<AgentSettings>, apply: () => void, revert: () => void) => {
     if (credentialsBusy) return;
@@ -1395,6 +1410,25 @@ export default function ApiSettings() {
     apply();
     try {
       await updateAgentSettings(fields);
+      // Not awaited: this is the switch a user flips to compare two setups, and
+      // holding every segment disabled through a full system-info probe is what
+      // made the checkbox it replaces feel like a page-wide Save.
+      //
+      // Reads the request id rather than claiming one. Claiming is what the
+      // three writers below do because each of them also owns the engine list,
+      // and bumping the counter here would strand `loadAll`'s in-flight
+      // `getEngines` — its `finally` is the only thing that clears
+      // `enginesLoading`. Reading still drops this answer if a newer asker
+      // appeared meanwhile, which is the half that matters.
+      const requestId = enginesRequestId.current;
+      void getSystemInfo({ refresh: true })
+        .then((sys) => {
+          if (enginesRequestId.current === requestId) setSystemInfo(sys);
+        })
+        .catch(() => {
+          // The write landed; a stale badge is a smaller lie than an error on a
+          // control that actually saved.
+        });
     } catch (e: any) {
       // Put the control back rather than leaving it showing a credential the
       // daemon will not use.
@@ -1600,6 +1634,40 @@ export default function ApiSettings() {
   const claudeRoutingInEffect = claudeCredentialMode === "openrouter" && claudeOpenRouterReady;
   const codexRoutingInEffect = codexCredentialMode === "openrouter" && codexOpenRouterReady;
 
+  /**
+   * What is running instead, on the badge of the routing section that is not.
+   *
+   * "Claude Code is on your Anthropic credentials" is a claim about the process
+   * env, and callboard only knows half of that env. `getApiEnvOverrides`'s native
+   * branch sets `ANTHROPIC_BASE_URL` from `apiBaseUrl` — it never *unsets* an
+   * inherited one — so a user whose shell exports the OpenRouter gateway
+   * (exactly what `detectClaudeCodeOpenRouterEnv` matches) has chats really
+   * running through OpenRouter while this badge told them they were on
+   * Anthropic. Taking the native branch says callboard added nothing; it does
+   * not say the ambient env was undone.
+   *
+   * So when the env is detected and callboard is not the one routing, the badge
+   * says only what callboard knows — that it is not driving this — and the
+   * banner inside the section says the rest. The Codex detect is a looser grep,
+   * which makes the same sentence *more* necessary there: "Codex is on your
+   * ChatGPT login" sat four lines above "Callboard leaves that wiring alone".
+   */
+  const claudeInactiveNote = claudeRoutingInEffect
+    ? undefined
+    : systemInfo?.claudeCodeOpenRouterDetected
+      ? "Callboard is not routing this; your environment's own ANTHROPIC_BASE_URL already does"
+      : "Claude Code is on your Anthropic credentials";
+  const codexInactiveNote = codexRoutingInEffect
+    ? undefined
+    : systemInfo?.codexOpenRouterDetected
+      ? "Callboard is not routing this; your environment's own Codex wiring stands"
+      : // `codexAuthMode` rather than the credential mode: when the flag is on
+        // but not in effect the mode reads "openrouter", and the native
+        // credential actually running is still whichever one is parked.
+        codexAuthMode === "api-key"
+        ? "Codex is on your OpenAI API key"
+        : "Codex is on your ChatGPT login";
+
   return (
     <>
       {/* Integration toggle — Claude Code and OpenRouter as first-class providers */}
@@ -1701,7 +1769,7 @@ export default function ApiSettings() {
 
           <OpenRouterRoutingSection
             harness="Claude Code"
-            inactiveNote={claudeRoutingInEffect ? undefined : "Claude Code is on your Anthropic credentials"}
+            inactiveNote={claudeInactiveNote}
             apiKey={claudeCodeOpenRouterApiKey}
             onApiKeyChange={setClaudeCodeOpenRouterApiKey}
             baseUrl={claudeCodeOpenRouterBaseUrl}
@@ -1906,7 +1974,13 @@ export default function ApiSettings() {
               )}
               <div style={helpStyle}>
                 {claudeCredentialMode === "openrouter"
-                  ? "OpenRouter model slug (or a configured alias). Applies to new sessions."
+                  ? // "Applies to new sessions" is only true once the selection
+                    // is also in effect — the routed model fields are read by the
+                    // routed branch of `getApiEnvOverrides`, which a flag with no
+                    // key never reaches.
+                    claudeRoutingInEffect
+                    ? "OpenRouter model slug (or a configured alias). Applies to new sessions."
+                    : "OpenRouter model slug (or a configured alias). Nothing runs on it until OpenRouter is in effect — see Credentials above."
                   : "Alias (opus, sonnet, haiku, opusplan) or full model ID. Applies to new sessions."}
               </div>
             </div>
@@ -2177,7 +2251,11 @@ export default function ApiSettings() {
             notInEffect={
               codexCredentialMode === "openrouter" && !codexRoutingInEffect
                 ? systemInfo?.codexOpenRouterDetected
-                  ? "Selected, but not in effect — Codex chats are still running on your native login. Your environment's own OpenRouter wiring stands until you give Callboard a key, or an endpoint to override it with, below."
+                  ? // Not "still running on your native login": callboard injected
+                    // nothing, so what the chats run on is whatever the user's own
+                    // config.toml / $OPENAI_BASE_URL says, which is not ours to
+                    // report.
+                    "Selected, but not in effect — Callboard is not routing Codex. Your environment's own wiring stands until you give Callboard a key, or an endpoint to override it with, below."
                   : "Selected, but not in effect — no OpenRouter key is stored, so Codex chats are still running on your native login. Add one below and Save."
                 : undefined
             }
@@ -2188,10 +2266,7 @@ export default function ApiSettings() {
 
           <OpenRouterRoutingSection
             harness="Codex"
-            // `codexAuthMode` rather than the credential mode: when the flag is
-            // on but not in effect the mode reads "openrouter", and the native
-            // credential actually running is still whichever one is parked.
-            inactiveNote={codexRoutingInEffect ? undefined : codexAuthMode === "api-key" ? "Codex is on your OpenAI API key" : "Codex is on your ChatGPT login"}
+            inactiveNote={codexInactiveNote}
             apiKey={codexOpenRouterApiKey}
             onApiKeyChange={setCodexOpenRouterApiKey}
             baseUrl={codexOpenRouterBaseUrl}
@@ -2243,22 +2318,30 @@ export default function ApiSettings() {
 
             {codexAuthMode === "subscription" ? (
               <>
-                {/* Auth status from /system-info (no key field in this mode). */}
+                {/* Auth status from /system-info (no key field in this mode).
+                    Read off `codexAuthSource`, never off `codexConfigured`:
+                    routing through OpenRouter forces that flag true so the New
+                    Chat gate lets Codex through on an OpenRouter key alone, and
+                    this row is answering a different question — whether there is
+                    a native login here to switch *back* to. Reading the forced
+                    flag told a routed user with no auth.json they were logged
+                    in, and suppressed the one instruction that would fix it. */}
                 <div style={{ marginBottom: 14 }}>
                   <div style={rowStyle}>
                     <span style={{ color: "var(--text-muted)", fontWeight: 500 }}>Codex auth status</span>
-                    <span style={{ fontFamily: "monospace", fontSize: 12, color: systemInfo?.codexConfigured ? "var(--text)" : "var(--text-muted)" }}>
+                    <span style={{ fontFamily: "monospace", fontSize: 12, color: systemInfo?.codexAuthSource ? "var(--text)" : "var(--text-muted)" }}>
                       {systemInfo?.codexAuthSource === "auth.json"
                         ? "Logged in (auth.json found)"
                         : systemInfo?.codexAuthSource === "config.toml"
                           ? "Configured via config.toml"
-                          : systemInfo?.codexConfigured
-                            ? "Configured"
+                          : systemInfo?.codexAuthSource === "api-key"
+                            ? "Configured (API key)"
                             : "Not configured"}
                     </span>
                   </div>
                 </div>
-                {!systemInfo?.codexConfigured && (
+                {systemInfo?.codexAuthNote && <div style={{ ...helpStyle, marginTop: 0, marginBottom: 14 }}>{systemInfo.codexAuthNote}</div>}
+                {!systemInfo?.codexAuthSource && (
                   <div style={{ ...helpStyle, marginTop: 0, marginBottom: 14 }}>
                     Run <code style={{ fontSize: 11 }}>codex login</code> once in a terminal to authenticate with your ChatGPT account (credentials stored in{" "}
                     <code style={{ fontSize: 11 }}>$CODEX_HOME/auth.json</code>), or declare a <code style={{ fontSize: 11 }}>model_provider</code> in{" "}

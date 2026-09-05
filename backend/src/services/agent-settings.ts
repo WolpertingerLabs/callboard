@@ -227,8 +227,11 @@ function isOpenRouterUrl(url: string | undefined): boolean {
  * Detect whether the ambient process environment already routes the native
  * Claude Code harness through OpenRouter — i.e. ANTHROPIC_BASE_URL points at
  * openrouter.ai (the docs' BYO-gateway setup). Surfaced via /api/system-info so
- * Settings → API can default the "Route through OpenRouter" toggle on when the
- * user hasn't explicitly chosen yet.
+ * Settings → API can *mention* that environment beside the OpenRouter key
+ * fields. It does not seed the Credentials control: this predicate's callers all
+ * open with `if (!flag) return false`, so an unsaved flag routes nothing, and a
+ * control defaulted on from a detected env claimed a routing that was not
+ * happening.
  */
 export function detectClaudeCodeOpenRouterEnv(): boolean {
   return isOpenRouterUrl(process.env.ANTHROPIC_BASE_URL);

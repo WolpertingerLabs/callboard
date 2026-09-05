@@ -1503,10 +1503,22 @@ export interface SystemInfo {
    */
   codexConfigured?: boolean;
   /**
-   * Which credential source backed `codexConfigured`. Lets the UI label the
-   * status accurately ("auth.json", "config.toml", api key, or unconfigured).
+   * Which **native** credential source backs Codex ("auth.json", "config.toml",
+   * api key, or `null` for none).
+   *
+   * Narrower than `codexConfigured`, deliberately: OpenRouter routing forces
+   * that flag true so the New Chat gate lets Codex through on an OpenRouter key
+   * alone, and this field is what says whether there is also a ChatGPT login to
+   * switch back to. `null` alongside `codexConfigured: true` means routing is
+   * carrying it — see `codexAuthNote`.
    */
   codexAuthSource?: "api-key" | "auth.json" | "config.toml" | null;
+  /**
+   * Why `codexConfigured` is true when no native credential is. Absent on
+   * servers older than the Credentials control, and absent whenever
+   * `codexAuthSource` answers on its own.
+   */
+  codexAuthNote?: string;
   /**
    * Configured ACP vendors and whether each one's CLI is installed.
    *

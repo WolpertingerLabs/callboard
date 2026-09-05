@@ -16,6 +16,7 @@ import ApiSettings from "./ApiSettings";
 
 const h = vi.hoisted(() => ({
   updateAgentSettings: vi.fn(),
+  getSystemInfo: vi.fn(),
   settings: {} as Record<string, unknown>,
   systemInfo: {} as Record<string, unknown>,
 }));
@@ -26,7 +27,7 @@ vi.mock("../../api", async (importOriginal) => {
     ...actual,
     getAgentSettings: async () => h.settings,
     updateAgentSettings: h.updateAgentSettings,
-    getSystemInfo: async () => h.systemInfo,
+    getSystemInfo: h.getSystemInfo,
     // `aliases` matters: OpenRouterModelSelector destructures both keys and maps
     // over them, so a catalog stub missing one crashes the routed model pickers.
     getOpenRouterCatalog: async () => ({ models: [], aliases: [] }),
@@ -75,6 +76,9 @@ function tab(name: string): HTMLElement {
 async function renderSettings(settings: Record<string, unknown>, systemInfo: Record<string, unknown> = {}) {
   h.settings = settings;
   h.systemInfo = { acpProviders: [], models: [], ...systemInfo };
+  // Read through `h` on every call rather than closed over, so a case that moves
+  // the payload mid-test sees the new one on the next fetch.
+  h.getSystemInfo.mockImplementation(async () => h.systemInfo);
   render(<ApiSettings />);
   await waitFor(() => expect(screen.getByText(/Which credential .* chats run on/)).toBeTruthy());
 }
@@ -82,6 +86,7 @@ async function renderSettings(settings: Record<string, unknown>, systemInfo: Rec
 describe("Settings → API credentials control", () => {
   afterEach(cleanup);
   beforeEach(() => {
+    h.getSystemInfo.mockReset();
     h.updateAgentSettings.mockReset();
     h.updateAgentSettings.mockImplementation(async (patch: Record<string, unknown>) => ({ ...h.settings, ...patch }));
   });
@@ -136,6 +141,54 @@ describe("Settings → API credentials control", () => {
     await waitFor(() => expect(h.updateAgentSettings).toHaveBeenCalledWith({ codexAuthMode: "subscription" }));
   });
 
+  /** Settings as the daemon reports them for a Codex harness routed through OpenRouter with no native login at all. */
+  const ROUTED_CODEX_SYSTEM_INFO = {
+    codexUseOpenRouter: true,
+    codexConfigured: true,
+    codexAuthSource: null,
+    codexAuthNote: "Routed through OpenRouter — authenticated with the OpenRouter key on this tab.",
+  };
+
+  it("does not claim a native Codex login while OpenRouter is doing the authenticating", async () => {
+    // `codexConfigured` is forced true so the New Chat gate lets Codex through
+    // on an OpenRouter key alone. This section is answering the other question —
+    // what "When you switch back → ChatGPT subscription", four lines above,
+    // would land on — and reading the forced flag told this user they were
+    // logged in and then withheld the one command that would make it true.
+    await renderSettings({ codexUseOpenRouter: true, codexOpenRouterApiKey: "sk-or-x", codexAuthMode: "subscription" }, ROUTED_CODEX_SYSTEM_INFO);
+    fireEvent.click(tab("Codex"));
+
+    const codex = await waitFor(() => section("OpenAI Codex"));
+    expect(within(codex).queryByText(/Configured via config.toml/)).toBeNull();
+    expect(within(codex).queryByText(/Logged in \(auth.json found\)/)).toBeNull();
+    expect(within(codex).getByText("Not configured")).toBeTruthy();
+    // The instruction the forced flag used to suppress, and the qualification
+    // that keeps "Not configured" from reading as "Codex is broken".
+    expect(within(codex).getByText(/once in a terminal to authenticate/)).toBeTruthy();
+    expect(within(codex).getByText(/Routed through OpenRouter/)).toBeTruthy();
+  });
+
+  it("refetches system-info after a credential write, so the forced values move with the flag", async () => {
+    // The click deliberately does not adopt the settings PUT response — that
+    // discards unsaved ACP edits. `systemInfo` is the opposite case: no effect
+    // derives editable state from it, and one of its fields is computed *from*
+    // the flag just written, so without this the Codex tab kept reporting
+    // credentials that the flag behind them no longer implied.
+    await renderSettings({ codexUseOpenRouter: true, codexOpenRouterApiKey: "sk-or-x", codexAuthMode: "subscription" }, ROUTED_CODEX_SYSTEM_INFO);
+    fireEvent.click(tab("Codex"));
+    await waitFor(() => expect(screen.getByText(/Routed through OpenRouter/)).toBeTruthy());
+
+    // What the daemon answers once the flag is off: nothing forces the
+    // configured state any more.
+    h.systemInfo = { ...h.systemInfo, codexUseOpenRouter: false, codexConfigured: false, codexAuthNote: undefined };
+
+    fireEvent.click(segment("Credentials", "ChatGPT subscription"));
+
+    await waitFor(() => expect(h.updateAgentSettings).toHaveBeenCalledWith({ codexUseOpenRouter: false, codexAuthMode: "subscription" }));
+    await waitFor(() => expect(screen.queryByText(/Routed through OpenRouter/)).toBeNull());
+    expect(h.getSystemInfo).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the Codex OpenRouter segment disabled when only the environment routes it", async () => {
     // The Codex predicate is narrower than the Claude Code one on its env half:
     // with no stored key and no endpoint override, callboard injects nothing and
@@ -162,8 +215,43 @@ describe("Settings → API credentials control", () => {
     await renderSettings({}, { claudeCodeOpenRouterDetected: true });
     expect(segment("Credentials", "Anthropic")).toHaveProperty("disabled", false);
     expect(screen.queryByText(/Inactive — OpenRouter is handling this/)).toBeNull();
-    expect(screen.getByText(/Inactive — Claude Code is on your Anthropic credentials/)).toBeTruthy();
     expect(screen.getByText(/Detected OpenRouter in your environment/)).toBeTruthy();
+  });
+
+  it("does not tell the BYO-gateway user their chats are on Anthropic", async () => {
+    // The env this user exports is exactly what `detectClaudeCodeOpenRouterEnv`
+    // matches, and `getApiEnvOverrides`'s native branch sets ANTHROPIC_BASE_URL
+    // from `apiBaseUrl` — it never *unsets* an inherited one. So their chats
+    // really do run through OpenRouter with the flag off, and "Claude Code is on
+    // your Anthropic credentials" was the page stating the opposite. Taking the
+    // native branch says callboard added nothing; it does not say the ambient
+    // env was undone, which is all this badge may now claim.
+    await renderSettings({}, { claudeCodeOpenRouterDetected: true });
+
+    expect(screen.queryByText(/on your Anthropic credentials/)).toBeNull();
+    expect(screen.getByText(/Inactive — Callboard is not routing this; your environment's own ANTHROPIC_BASE_URL already does/)).toBeTruthy();
+  });
+
+  it("keeps the Codex badge from contradicting the banner four lines under it", async () => {
+    // "Inactive — Codex is on your ChatGPT login" sat directly above "Callboard
+    // leaves that wiring alone rather than replacing it with its own". Codex's
+    // detect is a loose `openrouter.ai` grep of config.toml, so callboard cannot
+    // assert either credential here — only that it is not the one routing.
+    await renderSettings({}, { codexOpenRouterDetected: true });
+    fireEvent.click(tab("Codex"));
+
+    await waitFor(() => expect(screen.getByText(/Inactive — Callboard is not routing this/)).toBeTruthy());
+    expect(screen.queryByText(/on your ChatGPT login/)).toBeNull();
+    expect(within(section("Route through OpenRouter")).getByText(/Callboard leaves that wiring alone/)).toBeTruthy();
+  });
+
+  it("still names the parked native credential when no gateway is detected", async () => {
+    // The plain case has to keep reading as a sentence — the qualification above
+    // is for the detected env, not a blanket retreat into vagueness.
+    await renderSettings({ codexAuthMode: "api-key" });
+    fireEvent.click(tab("Codex"));
+
+    await waitFor(() => expect(screen.getByText(/Inactive — Codex is on your OpenAI API key/)).toBeTruthy());
   });
 
   it("says so when the stored selection is not what the daemon is doing", async () => {
@@ -175,6 +263,16 @@ describe("Settings → API credentials control", () => {
     expect(screen.getByText(/Selected, but not in effect/)).toBeTruthy();
     expect(screen.queryByText(/Inactive — OpenRouter is handling this/)).toBeNull();
     expect(screen.getByText(/Inactive — Claude Code is on your Anthropic credentials/)).toBeTruthy();
+  });
+
+  it("does not re-PUT the credential that is already selected", async () => {
+    // Safe only because the control is seeded from the stored flag alone: what
+    // is displayed is what the daemon holds, so re-picking it would set
+    // `apiFieldsTouched` and drop the SDK info cache for a value that did not
+    // move.
+    await renderSettings({ claudeCodeOpenRouterApiKey: "sk-or-x" });
+    fireEvent.click(segment("Credentials", "Anthropic"));
+    expect(h.updateAgentSettings).not.toHaveBeenCalled();
   });
 
   it("puts the control back when the write fails", async () => {

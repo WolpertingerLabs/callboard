@@ -27,8 +27,9 @@ takes over again. `PUT /api/agent-settings` is already a partial merge — a bod
 carrying one field leaves every other field untouched
 (`backend/src/routes/agent-settings.ts:117`).
 
-So: **no schema change, no wire change, no backend behavior change.** This is a
-UI-shaped problem.
+So: **no schema change, no wire change, no change to what a session does.** This
+is a UI-shaped problem — with one backend edit that §5 explains, to a reporting
+field the UI now renders and previously did not.
 
 ## The three gaps
 
@@ -189,18 +190,44 @@ section actually in effect and inverts.
 
 The control is therefore seeded from the stored flag alone. Seeding an unsaved
 `true` from a detected environment — which the checkbox this replaces did —
-makes the control claim a routing that is not happening, because both predicates
-open with `if (!flag) return false` and an unsaved flag is `undefined`. Settings
-said OpenRouter while New Chat's model picker, reading the same effective flag,
-said Anthropic. Displaying the native credential when nothing is stored is the
-truthful rendering; the existing "Detected OpenRouter in your environment" banner
-is where that environment gets mentioned, and it invites the click instead of
-faking it.
+makes the control claim a routing *callboard* is not doing, because both
+predicates open with `if (!flag) return false` and an unsaved flag is
+`undefined`. Settings said OpenRouter while New Chat's model picker, reading the
+same effective flag, said Anthropic. Displaying the native credential when
+nothing is stored is the truthful rendering; the existing "Detected OpenRouter in
+your environment" banner is where that environment gets mentioned, and it invites
+the click instead of faking it.
+
+**What the native branch does not say.** It says callboard added nothing. It does
+*not* say the session is on the vendor's own endpoint: `getApiEnvOverrides`'s
+native branch sets `ANTHROPIC_BASE_URL` from `apiBaseUrl` and never *unsets* an
+inherited one, so the BYO-gateway user whose shell exports the OpenRouter
+endpoint — exactly what `detectClaudeCodeOpenRouterEnv` matches — really is
+running through OpenRouter with the flag off. The seeding decision above survives
+that (it is about what callboard is doing, which is the question the flag
+answers); the *badges* do not. Where the env is detected and callboard is not
+routing, they say only that callboard is not driving this, and the banner inside
+the section says the rest. Asserting "Claude Code is on your Anthropic
+credentials" there is a claim about an environment callboard only half knows.
 
 Not read from `systemInfo.<harness>UseOpenRouter`, though the backend computes
-exactly this there: the Credentials control writes the flag without refetching
-system-info, so a click would leave every badge on the tab stale until something
-else happened to refresh it.
+exactly this there: that payload is a page-load-old answer, and the badges have
+to move with the click that changes them.
+
+The click does refetch system-info afterwards, though — not for the badges, which
+already read the local flag, but for the rows that only the daemon can answer.
+`codexConfigured` is *forced* true while Codex is routed (`system-info.ts`), so a
+click that turns routing off leaves the Codex tab reporting a credential the flag
+behind it no longer implies. Refetching is safe in a way that adopting the
+settings PUT response is not: no effect derives editable state from `systemInfo`,
+whereas the ACP tab's Default Model re-seeds from `settings`.
+
+That same forced flag is why the Codex auth-status row reads `codexAuthSource`
+and never `codexConfigured`. The two answer different questions — "can Codex run
+a chat" against "is there a native login to switch back to" — and the routing
+override only has business with the first. It no longer forces the second;
+`codexAuthNote` carries the qualification, the way `engine-status.ts` already
+did.
 
 ## What is deliberately not in scope
 
@@ -226,8 +253,12 @@ else happened to refresh it.
 | `frontend/src/pages/settings/credentialMode.test.ts` | new — mapping + round-trip losslessness + readiness, case for case against the backend predicates |
 | `frontend/src/pages/settings/ApiSettings.tsx` | segmented control, instant-save handlers, unhide the parked sections, drop the checkbox from `OpenRouterRoutingSection`, demote the Codex auth-mode toggle to the parked picker |
 | `frontend/src/pages/settings/ApiSettings.credentials.test.tsx` | new — the wiring the mapping test cannot reach |
+| `backend/src/services/system-info.ts` | stop forcing `codexAuthSource` when routing forces `codexConfigured`; add `codexAuthNote` |
 
-No backend, shared-types, or wire-surface changes.
+One backend change, and it is §4's doing: unhiding the native Codex section put a
+value on screen that had only ever been consumed by a provider gate. No
+wire-surface (`shared/types/stream.ts`) change, and the system-info addition is
+an optional field, so older bundles ignore it.
 
 ## Tests
 
