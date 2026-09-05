@@ -22,9 +22,13 @@
  *  - `response_item` — the durable transcript. `payload.type`:
  *    - `"message"` (`role: "user"|"assistant"|"developer"|"system"`,
  *      `content:[{type:"input_text"|"output_text", text}]`) → text.
- *      The **first two messages are synthetic** (a `developer`
- *      "<permissions instructions>" and a `user` "<environment_context>") and are
- *      filtered out — the real user prompt is the next `user` message.
+ *      A **variable-length run of synthetic messages** precedes the real
+ *      transcript, and the CLI re-injects it ahead of every resumed turn. Its
+ *      contents grow and get reordered between CLI versions, so it is filtered
+ *      by channel rather than by content where possible: `developer` is dropped
+ *      wholesale (see {@link translateMessage}) and the handful of synthetic
+ *      `user` messages by tag prefix ({@link SYNTHETIC_MESSAGE_PREFIXES}). The
+ *      real user prompt is the first `user` message that survives.
  *    - `"function_call"` / `"custom_tool_call"` → `tool_use`
  *      (`commandExecution`/`fileChange`/`mcpToolCall` all serialize through these
  *      Responses-API item shapes in the rollout).
@@ -52,15 +56,95 @@ const log = createLogger("codex-session-parser");
 /**
  * The Codex CLI version this parser was written against (spike §1). The rollout
  * format is undocumented and version-dependent; when a rollout's
- * `session_meta.cli_version` differs we log once so a future format drift is
+ * `session_meta.cli_version` differs we log so a future format drift is
  * diagnosable rather than silently mis-parsed (spike risk #4).
+ *
+ * ## What the 0.153.4 bump (from 0.146.0) actually verified
+ *
+ * **Structure, and only structure.** Every discriminant this parser switches
+ * on is still emitted by the bundled `codex` binary: the `session_meta` /
+ * `turn_context` / `event_msg` / `response_item` line types, the `token_count`
+ * event, the `message` / `function_call` / `custom_tool_call` /
+ * `function_call_output` / `custom_tool_call_output` / `reasoning` item types,
+ * and the `cached_input_tokens` / `reasoning_output_tokens` usage keys.
+ *
+ * ## What that check does NOT cover — re-check it on every bump
+ *
+ * This parser also depends on the **text** of the CLI's injected lead messages
+ * ({@link SYNTHETIC_MESSAGE_PREFIXES}), and that text drifts independently of
+ * the structure. 0.153.4 reordered the first `developer` blob so it opens with
+ * `<skills_instructions>` instead of `<permissions instructions>`, which the
+ * prefix list did not match — a ~2.5 KB boilerplate block leaked into the head
+ * of every transcript, with no structural change to point at it. The SDK's
+ * `.d.ts` describes none of this; diffing the type declarations cannot show it.
+ *
+ * So bumping this constant is not bookkeeping — it silences the boot-time
+ * drift warning that exists to force exactly this re-check. Before bumping:
+ * run the newly bundled binary, capture a rollout, and diff its `response_item`
+ * `message` leads against `__fixtures__/rollout-*.jsonl`.
  */
-export const EXPECTED_CODEX_CLI_VERSION = "0.146.0";
+export const EXPECTED_CODEX_CLI_VERSION = "0.153.4";
 
-/** Synthetic lead messages the Codex CLI injects ahead of the real transcript. */
-const SYNTHETIC_MESSAGE_PREFIXES = ["<permissions", "<environment_context", "<user_instructions"];
+/**
+ * Tag prefixes of the synthetic messages the Codex CLI injects into the **user**
+ * channel. Matched case-insensitively against the trimmed start of a message.
+ *
+ * Deliberately an explicit allowlist rather than a shape heuristic ("starts
+ * with a snake_case XML tag"): real user content in these rollouts does start
+ * with tags — `<image name=[Image #1] path="…">` for an attachment, and
+ * callboard's own `<conversation_handoff from="…">` — and swallowing a user's
+ * prompt is far worse than leaking a boilerplate block. The `developer` channel
+ * needs no such caution and is filtered wholesale; see {@link translateMessage}.
+ *
+ * Entries are additive across CLI versions and none are retired, because
+ * rollouts written by older CLIs stay on disk and stay parseable. `<permissions`
+ * and `<skills_instructions` only ever led `developer` messages, so the role
+ * filter now covers them, but they are kept here as the belt to that braces:
+ * the cost is a string compare, and the failure they guard against shipped once
+ * already.
+ *
+ * `<recommended_plugins` was added by 0.146.x, prepended to the
+ * `<environment_context` blob *inside the same user message*, which knocked out
+ * that prefix. That leak predates the 0.153.4 bump and hit
+ * {@link readFirstUserPrompt} too — every chat started under 0.146.x previews
+ * in the sidebar as OpenAI's plugin catalogue instead of the user's prompt.
+ *
+ * `<user_instructions` is the one entry no rollout on this machine and no
+ * literal in the 0.153.4 binary still exercises, so its provenance is recorded
+ * rather than assumed. It was real, and it was on *this* channel: through
+ * rust-v0.50.0 `UserInstructions::serialize_to_xml` wrapped AGENTS.md in
+ * `<user_instructions>…</user_instructions>` and `impl From<UserInstructions>
+ * for ResponseItem` emitted it as `role: "user"` — codex's own
+ * `event_mapping.rs` then filtered it back out with the same two prefixes this
+ * list leads with. rust-v0.20.0 is older still and prepends the identical tag.
+ * By rust-v0.100.0 the wrapper had become `# AGENTS.md instructions for <dir>`
+ * and the tag survived only as `USER_INSTRUCTIONS_OPEN_TAG_LEGACY`, for reading
+ * old rollouts; by rust-v0.139.0 only an unused const remained. Kept for the
+ * same reason as the rest — a rollout written by one of those CLIs is still
+ * parseable, and still on someone's disk.
+ */
+const SYNTHETIC_MESSAGE_PREFIXES = [
+  "<recommended_plugins", // 0.146.x — displaced `<environment_context` in the first user message
+  "<environment_context",
+  "<skills_instructions", // 0.153.4 — displaced `<permissions` as the first developer blob
+  "<permissions", // ≤0.146.x — the lead of every rollout already on disk
+  "<user_instructions", // ≤ rust-v0.5x — retired upstream; kept for rollouts of that vintage
+];
 
-let warnedVersionDrift = false;
+/**
+ * CLI versions already warned about. A single boolean latch hid every drift
+ * after the first: once the process read any stale rollout it went quiet, and
+ * right after a bump *every* rollout on disk is stale — so the one warning
+ * always burned on the old version and the next real drift was silent. Keyed
+ * per version instead, bounded by the number of CLI versions that ever wrote
+ * to this machine (3 here), which keeps it noise rather than spam.
+ */
+const warnedCliVersions = new Set<string>();
+
+/** Test seam — clears the per-version warning latch. */
+export function resetCodexCliVersionWarnings(): void {
+  warnedCliVersions.clear();
+}
 
 // ── Home / sessions-root resolution ─────────────────────────────────
 
@@ -463,10 +547,10 @@ export function readCodexSessionMeta(filePath: string): SessionMeta | null {
   return meta;
 }
 
-/** Warn once if a rollout was written by a Codex CLI version we don't target. */
+/** Warn once per distinct CLI version that wrote a rollout we don't target. */
 function checkCliVersion(cliVersion: string | undefined): void {
-  if (warnedVersionDrift || !cliVersion || cliVersion === EXPECTED_CODEX_CLI_VERSION) return;
-  warnedVersionDrift = true;
+  if (!cliVersion || cliVersion === EXPECTED_CODEX_CLI_VERSION || warnedCliVersions.has(cliVersion)) return;
+  warnedCliVersions.add(cliVersion);
   log.warn(
     `Codex rollout cli_version=${cliVersion} differs from the version this parser targets ` +
       `(${EXPECTED_CODEX_CLI_VERSION}); session parsing may be lossy if the rollout format drifted.`,
@@ -609,13 +693,61 @@ function translateResponseItem(payload: Record<string, unknown> | undefined, tim
 /** Translate a `payload.type === "message"` item, filtering synthetic leads. */
 function translateMessage(payload: Record<string, unknown>, ts: string | undefined): ParsedMessage | null {
   const role = typeof payload.role === "string" ? payload.role : undefined;
+
+  // `developer` is an injection channel — CLI- or client-authored — not a
+  // conversational role, so drop it wholesale rather than chasing the tag of
+  // the week.
+  //
+  // Evidence: across the 374 rollouts in `$CODEX_HOME` on this machine
+  // (cli_version 0.139.0 / 0.146.0 / 0.146.1) all 411 developer messages are one
+  // of five CLI-authored blobs — `<permissions instructions>`,
+  // `<skills_instructions>`, `<multi_agent_mode>`, `<model_switch>`, and the
+  // multi-agent role brief — and each of those opening literals is compiled
+  // into the bundled `codex` binary. The 0.153.4 rollouts in `__fixtures__` add
+  // no sixth kind. Nothing callboard sends can land here either: its own
+  // instructions ride `model_instructions_file` into
+  // `session_meta.base_instructions`, and `thread.run()` emits `user`.
+  //
+  // A tag allowlist cannot replace this. At 0.146.0 the multi-agent brief has
+  // no tag at all — it opens "You are `/root`, the primary agent…" — so it
+  // leaked for as long as the filter was prefix-only. Nor can a positional
+  // rule ("everything before the first real user message"): a resumed turn
+  // APPENDS to the same rollout and the CLI re-injects the whole lead run
+  // mid-file, verified in `__fixtures__/rollout-cli-0.153.4-resumed.jsonl`.
+  //
+  // ## The one case this filter is known to over-reach on
+  //
+  // Codex has a first-class *client*-authored developer path:
+  // `Session::inject_client_response_items` → `annotate_client_response_item`
+  // records a `ResponseItem::Message { role: "developer" }` an app-server client
+  // supplied. Callboard cannot produce one — `@openai/codex-sdk@0.153.4` types
+  // `Input` as `string | ({type:"text"} | {type:"local_image"})[]`, `Thread`
+  // exposes no inject API, `HandoffTurn.role` (`agents/handoff.ts`) is
+  // `"user" | "assistant"`, and there is no `forkSession` — so no chat
+  // callboard *starts* can hit it. But discovery walks the whole of
+  // `$CODEX_HOME/sessions`, including rollouts callboard never wrote, so a user
+  // who also runs an app-server/IDE client that injects developer context loses
+  // it here silently.
+  //
+  // If a missing-message report ever arrives, the discriminator to reach for is
+  // `metadata.client_authored` — a sibling of `payload` on the rollout line,
+  // not a field inside it (`{"metadata":{"client_authored":true},"payload":
+  // {"type":"message","role":"developer",…}}`). It is not usable as a filter
+  // today: `annotate_client_response_item` only attaches that metadata when
+  // `Feature::RetainClientDeveloperMessages` is on, and 0.153.4 ships it
+  // `Stage::UnderDevelopment, default_enabled: false` — so a client-injected
+  // developer message currently lands with no metadata at all and is byte-for-
+  // byte indistinguishable from a CLI-authored one. Widening the filter has to
+  // wait for that flag to stabilize.
+  if (role === "developer") return null;
+
   const { text: content, imageIds } = extractTextAndImages(payload.content);
   if (!content && imageIds.length === 0) return null;
 
-  // Drop the CLI's synthetic lead messages (permissions instructions /
-  // environment context / injected user instructions) — they aren't part of
-  // the user-visible conversation. Detected by their angle-bracket tag prefix
-  // so the filter is position-independent and survives reordering.
+  // Drop the CLI's synthetic user-channel messages — the environment context
+  // and plugin catalogue it prepends ahead of the real prompt. Matched by tag
+  // prefix ({@link SYNTHETIC_MESSAGE_PREFIXES}), which stays conservative
+  // because this channel also carries genuine user content.
   const head = content.trimStart().toLowerCase();
   if (SYNTHETIC_MESSAGE_PREFIXES.some((p) => head.startsWith(p))) return null;
 

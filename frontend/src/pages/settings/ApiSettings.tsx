@@ -2303,7 +2303,7 @@ export default function ApiSettings() {
           nothing is spawned and no environment is rewritten — a blank field falls through to whatever the backend process already has, and an explicit key here
           takes priority over one in the environment. What the agent is allowed to do is set under Permissions, and Callboard asks before every tool call it has
           not been told to allow. Note that <strong>third-party MCP servers do not apply to pi chats</strong>: pi has no MCP client, so a pi chat sees
-          Callboard&rsquo;s own tools and pi&rsquo;s seven built-ins, and nothing else.
+          Callboard&rsquo;s own tools and pi&rsquo;s own built-ins, and nothing else.
         </div>
       ) : activeProvider === "cline" ? (
         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16, lineHeight: 1.5 }}>

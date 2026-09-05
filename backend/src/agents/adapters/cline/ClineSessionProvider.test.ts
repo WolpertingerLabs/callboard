@@ -18,9 +18,12 @@ vi.mock("./ClineAgentQuery.js", () => ({
   getClineCore: () => Promise.resolve({ delete: deleteSession }),
 }));
 
+import type { AgentEvent as ClineAgentEvent } from "@cline/sdk";
 import { ClineSessionProvider } from "./ClineSessionProvider.js";
 import { ClineTranscriptWriter, clineSeedPath, readSeededMessages } from "./transcript.js";
 import { parseClineTranscript, namespaceFinishReason } from "./sessionParser.js";
+import { translateClineEvent } from "./messageAdapter.js";
+import type { AgentEvent } from "../../ports/events.js";
 
 let dataDir: string;
 let provider: ClineSessionProvider;
@@ -213,6 +216,34 @@ describe("transcript round-trip", () => {
     new ClineTranscriptWriter("sess1", "/repo").writeHeader({ providerId: "anthropic" });
     const raw = readFileSync(join(dataDir, "cline-sessions", "sess1.jsonl"), "utf8");
     expect(raw.split("\n").filter((l) => l.includes("session_meta"))).toHaveLength(1);
+  });
+
+  /**
+   * End to end for the strip in `messageAdapter`: a generated image travels the
+   * real path — translate, `writeEvent`, on-disk JSONL — and the megabytes do not
+   * arrive. `ClineAgentQuery` writes every translated event unconditionally, and
+   * `discoverSessions` re-parses the whole file twice per chat-list request, so
+   * one 5 MiB line (Cline's own per-image cap) is a permanent tax on a payload
+   * `parseClineTranscript` drops anyway.
+   */
+  it("cannot get a large base64 blob into the transcript via a media event", () => {
+    const blob = "A".repeat(4_000_000);
+    const translated = translateClineEvent({
+      type: "content_end",
+      contentType: "media",
+      media: { id: "m1", modality: "image", mediaType: "image/png", source: { type: "base64", data: blob } },
+    } as ClineAgentEvent);
+    expect(translated).not.toBeNull();
+
+    const w = new ClineTranscriptWriter("sess1", "/repo");
+    w.writeHeader();
+    w.writeEvent(translated as AgentEvent);
+
+    const raw = readFileSync(join(dataDir, "cline-sessions", "sess1.jsonl"), "utf8");
+    expect(raw).not.toContain(blob);
+    expect(raw.length).toBeLessThan(2_000);
+    // The descriptor is still there — "an image happened, here is what it was".
+    expect(raw).toContain('"mediaType":"image/png"');
   });
 
   it("refuses a session id that would escape the transcript root", () => {

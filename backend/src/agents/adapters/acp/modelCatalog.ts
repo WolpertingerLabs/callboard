@@ -3,7 +3,7 @@
  *
  * ## Why harvested rather than probed
  *
- * ACP 1.3.0 has no models API. The catalog exists in exactly one place — the
+ * ACP 1.4.0 has no models API. The catalog exists in exactly one place — the
  * `configOptions` returned by `session/new` / `session/resume` — so a client can
  * only learn it by opening a session. The obvious implementation is the one
  * `codex-models.ts` uses for Codex: ask the vendor once at startup and cache the

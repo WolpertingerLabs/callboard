@@ -287,7 +287,7 @@ export class AcpAgentQuery implements AgentQuery {
   /**
    * Models the agent is willing to route to.
    *
-   * ACP 1.3.0 has **no model API**. There is no `ModelId` type, no
+   * ACP 1.4.0 has **no model API**. There is no `ModelId` type, no
    * `models/list`, nothing on `AgentCapabilities`. What exists is
    * `SessionConfigOption` — a generic session-config mechanism whose entries
    * carry a `category`, one of whose values happens to be `"model"`. So the

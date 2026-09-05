@@ -99,11 +99,12 @@ export function translateEffort(effort: EffortLevel | undefined): { thinking?: b
  * ## Why the SDK's own default rather than a constant
  *
  * `getProviderConfig(providerId).modelId` is the default Cline itself would use,
- * per provider — verified against 0.0.69: `anthropic` → `claude-sonnet-5`,
+ * per provider — verified against 0.0.82: `anthropic` → `claude-sonnet-5`,
  * `openai-native` → `gpt-5.4`, `openrouter` → `anthropic/claude-sonnet-5`,
- * `gemini` → `gemini-3.5-flash-lite`. Hardcoding one id here would be wrong for
- * every provider but the one it was copied from, and stale the moment the SDK
- * moves.
+ * `gemini` → `gemini-3.7-flash` (which was `gemini-3.5-flash-lite` in 0.0.69 —
+ * the examples move with the pin, which is the point). Hardcoding one id here
+ * would be wrong for every provider but the one it was copied from, and stale
+ * the moment the SDK moves.
  *
  * An unknown provider id has no defaults to offer, and there is nothing honest
  * to invent — so that throws, with a message naming the two places a human can

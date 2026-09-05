@@ -552,7 +552,7 @@ describe("model discovery", () => {
         options: { cwd: process.cwd(), acp: { preset: acpTestAgentPreset("config-options"), getPermissions: () => allowAll } },
       });
       try {
-        // `configOptions` only exists once a session does — ACP 1.3.0 has no
+        // `configOptions` only exists once a session does — ACP 1.4.0 has no
         // models API, so the list cannot be answered before the turn starts.
         expect(await query.supportedModels()).toEqual([]);
         for await (const _event of query) {

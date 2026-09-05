@@ -12,8 +12,9 @@
  * is what makes the gate real, and it is not optional.
  *
  * The spike confirmed every property this depends on against 0.83.0:
- * `tool_call` fires for all seven built-ins (`read`, `bash`, `edit`, `write`,
- * `grep`, `find`, `ls`) *and* for `customTools`; the handler is genuinely
+ * `tool_call` fires for every built-in (`read`, `bash`, `edit`, `write`,
+ * `grep`, `find`, `ls`, plus `powershell` since 0.84.3) *and* for `customTools`;
+ * the handler is genuinely
  * awaited (a 300 ms sleep inside it delayed execution rather than racing it);
  * and `{ block: true, reason }` both prevented the write and delivered the
  * reason to the model verbatim.
@@ -81,25 +82,84 @@ export type PiPermissionExtension = ExtensionFactory;
 export const MOST_RESTRICTIVE_CATEGORY: PermissionCategory = "codeExecution";
 
 /**
- * pi's built-in tools, all seven.
+ * pi's built-in tools, all eight.
  *
  * Confirmed by running `session.getAllTools()` against 0.83.0 with every tool
  * enabled — the default *active* set is only `read`/`bash`/`edit`/`write`, but
- * all seven are registerable and all seven fire `tool_call`.
+ * all of them are registerable and all of them fire `tool_call`.
+ *
+ * `powershell` joined the set in 0.84.3, "for Windows" (`allToolNames` in pi's
+ * `core/tools/index.js`; the CHANGELOG entry is under 0.84.3, not 0.85.0).
+ *
+ * This is the **catalogue**, not the allowlist. It enumerates everything pi
+ * ships so that a ninth built-in fails `permissionAdapter.test.ts` loudly rather
+ * than falling through to the token table; the list actually handed to pi is
+ * derived from it by {@link piAllowlistBuiltinNames}, which drops the
+ * Windows-only entries. Do not collapse the two — see that function.
+ *
+ * The derived list is only load-bearing when an axis **denies**: with nothing
+ * denied {@link buildToolFilters} returns `{}` and pi keeps its own default
+ * active set (`read`/`bash`/`edit`/`write`, or the user's `defaultTools`). When
+ * something does deny, a built-in missing from this catalogue is one silently
+ * dropped from the allowlist — deny `fileWrite` and an unlisted `grep` vanishes
+ * from a chat whose `fileRead` axis allows it. Adding a name is how a new pi
+ * built-in stays reachable.
  *
  * **There is no built-in web tool.** The `webAccess` axis therefore governs
  * nothing on a pi chat until one is added; Phase 4 should say so in the UI
  * rather than showing an inert control.
  */
-export const PI_BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+export const PI_BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
+
+/**
+ * Built-ins that only work on one platform, and which one.
+ *
+ * A set of one today. It exists as a table rather than an inline `name !==
+ * "powershell"` so the next platform-specific built-in is a row, not a second
+ * special case somewhere else in the file.
+ */
+const PLATFORM_ONLY_TOOL_NAMES: ReadonlyMap<string, NodeJS.Platform> = new Map([["powershell", "win32"]]);
+
+/**
+ * The built-ins that may enter the `tools` **allowlist** on this platform.
+ *
+ * `tools` is not a filter over what pi would otherwise offer — it *is* the
+ * active set. `createAgentSession` computes `initialActiveToolNames` straight
+ * from it (`dist/core/sdk.js`), and `_refreshToolRegistry` then activates every
+ * allowlisted name present in the registry (`dist/core/agent-session.js`).
+ * `createAllToolDefinitions` builds `powershell` on *every* platform — there is
+ * no `win32` gate in `dist/core/tools/index.js` — but the tool's own
+ * `getPowerShellConfig()` throws `"The powershell tool is only available on
+ * Windows."` off win32 (`dist/utils/shell.js`).
+ *
+ * So naming `powershell` in the allowlist on Linux or macOS hands the model an
+ * "Execute PowerShell commands" tool that can only ever error, and costs it a
+ * turn discovering that. Measured on linux with `fileWrite: deny`: the active
+ * set was `["read","bash","powershell","grep","find","ls"]`.
+ *
+ * The gate is on allowlist **membership only**. `powershell` stays in
+ * {@link PI_BUILTIN_TOOL_NAMES}, stays in {@link EXACT_CATEGORIES} — pass 1 and
+ * pass 2 must categorize the name identically on every platform, since a
+ * Windows client's tool call is categorized by whichever machine runs the
+ * daemon — and stays on the deny side of {@link buildToolFilters}.
+ *
+ * `platform` is a parameter so both branches are testable off Windows; callers
+ * should leave it defaulted.
+ */
+export function piAllowlistBuiltinNames(platform: NodeJS.Platform = process.platform): string[] {
+  return PI_BUILTIN_TOOL_NAMES.filter((name) => {
+    const requires = PLATFORM_ONLY_TOOL_NAMES.get(name);
+    return requires === undefined || requires === platform;
+  });
+}
 
 /**
  * Exact tool-name → category table for everything pi ships.
  *
- * All seven names are single common words, which is exactly the case where the
- * token fallback below would be least reliable — `find` and `ls` carry no token
- * from any family, and would otherwise land on `codeExecution` and over-prompt.
- * An exact table is both correct and cheaper to reason about.
+ * The names are single common words, which is exactly the case where the token
+ * fallback below would be least reliable — `find` and `ls` carry no token from
+ * any family, and would otherwise land on `codeExecution` and over-prompt. An
+ * exact table is both correct and cheaper to reason about.
  */
 const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string, PermissionCategory>([
   // ── Read-only ──
@@ -114,6 +174,12 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
 
   // ── Code execution ──
   ["bash", "codeExecution"],
+  // pi 0.84.3's second shell — Windows-only at runtime, but categorized on
+  // every platform: the gate must give the same answer wherever the daemon
+  // happens to run. The token table below would already land it on
+  // `codeExecution` via the fallback, but only by accident of it being unknown;
+  // naming it makes the answer intentional rather than a default.
+  ["powershell", "codeExecution"],
 
   // Parity with the Claude, OpenRouter and Cline maps, which special-case this
   // same callboard tool. Under pi it arrives bare: `customTools` is an
@@ -146,7 +212,28 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
  */
 const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly string[]]> = [
   ["codeExecution", ["bash", "sh", "shell", "exec", "execute", "run", "terminal", "command", "spawn", "eval", "script", "process", "kill"]],
-  ["fileWrite", ["write", "edit", "create", "delete", "remove", "move", "rename", "patch", "apply", "mkdir", "replace", "insert", "append", "update", "modify", "save", "touch"]],
+  [
+    "fileWrite",
+    [
+      "write",
+      "edit",
+      "create",
+      "delete",
+      "remove",
+      "move",
+      "rename",
+      "patch",
+      "apply",
+      "mkdir",
+      "replace",
+      "insert",
+      "append",
+      "update",
+      "modify",
+      "save",
+      "touch",
+    ],
+  ],
   ["webAccess", ["fetch", "http", "https", "web", "browse", "url", "download", "upload", "curl", "request"]],
   ["fileRead", ["read", "glob", "grep", "search", "find", "list", "cat", "view", "stat"]],
 ];
@@ -375,10 +462,20 @@ export function assertPiTrustDenied(options: CreateAgentSessionServicesOptions):
  * Only `deny` produces an allowlist. `ask` and `allow` both leave the tool
  * visible, because "ask" means *prompt at call time*, which requires the model to
  * be able to call it.
+ *
+ * **The two sides are not symmetric.** The deny side runs over the whole
+ * catalogue; the allow side runs over {@link piAllowlistBuiltinNames}, which is
+ * platform-filtered. Listing a name in `excludeTools` that pi would never have
+ * activated is free — pi's `isAllowedTool` is a Set membership test
+ * (`dist/core/agent-session.js`), so an unmatched name simply never matches —
+ * whereas listing one in `tools` *activates* it. Denying `codeExecution` on
+ * Linux therefore still excludes `powershell` (belt and braces, and correct
+ * as-is on Windows), while allowing it never admits one that cannot run.
  */
 export function buildToolFilters(
   permissions: DefaultPermissions | null,
   customToolNames: readonly string[] = [],
+  platform: NodeJS.Platform = process.platform,
 ): { tools?: string[]; excludeTools?: string[] } {
   if (!permissions) return {};
 
@@ -389,7 +486,7 @@ export function buildToolFilters(
 
   if (denied.length === 0) return {};
 
-  const allowed = PI_BUILTIN_TOOL_NAMES.filter((name) => !denied.includes(name));
+  const allowed = piAllowlistBuiltinNames(platform).filter((name) => !denied.includes(name));
   return {
     // Both, deliberately. `tools` alone would be enough, but pi applies
     // `excludeTools` *after* `tools`, so listing the denied names too means a

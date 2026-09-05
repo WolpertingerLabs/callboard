@@ -137,9 +137,10 @@ export default function PermissionSettings({ permissions, onChange, title, provi
         onUpdate={updatePermission}
       />
 
-      {/* pi ships seven built-in tools — read, bash, edit, write, grep, find,
-          ls — and none of them reaches the network. Leaving the control looking
-          functional would be a gate that governs nothing. */}
+      {/* pi ships eight built-in tools — read, bash, powershell (Windows only),
+          edit, write, grep, find, ls — and none of them reaches the network.
+          Leaving the control looking functional would be a gate that governs
+          nothing. */}
       {provider === "pi" && (
         <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "6px 0 2px", lineHeight: 1.5 }}>
           <strong style={{ color: "var(--warning)" }}>Not used by pi.</strong> pi has no built-in web tool, so this axis governs nothing on a pi chat. It still
