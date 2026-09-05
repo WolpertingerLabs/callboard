@@ -59,6 +59,75 @@ export function unwrapSessionEvent(event: CoreSessionEvent, sessionId: string): 
   return event.payload.event ?? null;
 }
 
+// ── Generated media ─────────────────────────────────────────────────
+
+/** A `content_end`'s media descriptor, narrowed out of the SDK's event union. */
+type ClineGeneratedMedia = NonNullable<Extract<ClineAgentEvent, { type: "content_end" }>["media"]>;
+
+/**
+ * What replaces a stripped payload. Loud and sized on purpose: the escape hatch
+ * must not *quietly* drop a field (`AcpAgentClient` spells out why), and a human
+ * reading the JSONL should be able to tell "callboard removed this" from "the
+ * model produced an empty image".
+ */
+function strippedPayloadMarker(bytes: number): string {
+  return `[callboard stripped ${bytes} bytes of inline media]`;
+}
+
+/**
+ * Strip the bytes out of a generated-media event, keeping the descriptor.
+ *
+ * **This event is persisted, unconditionally.** `ClineAgentQuery` writes every
+ * translated event to `<DATA_DIR>/cline-sessions/<id>.jsonl` before yielding it
+ * — the SSE half does drop `adapter_specific` payloads other than `turn_cost`,
+ * but the transcript write happens first and does not filter. Cline's own caps
+ * are `DEFAULT_MAX_IMAGE_BASE64_BYTES` (5 MiB) and `DEFAULT_MAX_TOTAL_MEDIA_BYTES`
+ * (8 MiB), so one generated image is a multi-megabyte line appended forever.
+ *
+ * That line is then read hot: `ClineSessionProvider.discoverSessions` calls
+ * `readClineTranscriptCwd` on every transcript to apply the ignore-prefix
+ * filter and again on each row of the page. Each call is a `readFileSync` plus
+ * a per-line `JSON.parse` of the *whole* file — `readClineTranscriptLines`
+ * builds the full array before the header lookup gets to return, and there is
+ * no head-window scan like the Codex parser grew — so a chat-list request
+ * re-parses the blob once or twice per listing. And nothing ever renders it:
+ * `parseClineTranscript` drops `adapter_specific` outright.
+ *
+ * So the payload goes and the descriptor stays: id, modality, mediaType, name
+ * and `sizeBytes` still say *an image happened, and here is what it was*, which
+ * is everything a future media UI would need to know it must go fetch the bytes
+ * from somewhere other than this file. Returning `null` would have been
+ * defensible too; it loses that record for a saving of a few hundred bytes.
+ *
+ * `sizeBytes` is deliberately left as the provider set it rather than
+ * backfilled from the stripped length — the field's encoded-vs-decoded meaning
+ * is not documented, and a plausible wrong number is worse than an absent one.
+ * The byte count lives in the marker instead.
+ */
+function stripMediaEvent(event: Extract<ClineAgentEvent, { type: "content_end" }>): ClineAgentEvent {
+  const media = event.media;
+  if (!media) return event;
+  return { ...event, media: stripMediaPayload(media) };
+}
+
+function stripMediaPayload(media: ClineGeneratedMedia): ClineGeneratedMedia {
+  const source = media.source;
+  if (source.type === "base64") {
+    return { ...media, source: { ...source, data: strippedPayloadMarker(source.data.length) } };
+  }
+  // A `url` source is normally a reference and costs nothing to keep — but the
+  // schema types it as a bare string, so a `data:` URL is inline bytes wearing
+  // a reference's clothes. Keep the scheme and media type, drop the payload.
+  if (source.type === "url" && source.url.startsWith("data:")) {
+    const comma = source.url.indexOf(",");
+    if (comma >= 0) {
+      const head = source.url.slice(0, comma + 1);
+      return { ...media, source: { ...source, url: `${head}${strippedPayloadMarker(source.url.length - comma - 1)}` } };
+    }
+  }
+  return media;
+}
+
 /**
  * Translate one inner Cline event into zero or one callboard events.
  *
@@ -112,7 +181,7 @@ export function translateClineEvent(event: ClineAgentEvent): AgentEvent | null {
           return reasoning ? { type: "thinking", content: reasoning } : null;
         }
 
-        case "media":
+        case "media": {
           // Model-generated media (0.0.82). `@cline/core`'s runtime event adapter
           // maps `assistant-media` → `content_end { contentType:"media", media }`
           // and nothing else: no `toolCallId`, no text, just a `GeneratedMedia`
@@ -126,14 +195,12 @@ export function translateClineEvent(event: ClineAgentEvent): AgentEvent | null {
           // capability gate for. So it rides through the sanctioned escape hatch
           // instead — same as `notice` below, and pi's `tool_execution_update`.
           //
-          // Riding through rather than returning null: the event is dropped
-          // downstream today (`services/claude.ts` reads only `turn_cost` off
-          // `adapter_specific`), so this costs one discarded object per generated
-          // image, and it is the whole descriptor a future media UI would need.
-          // The payload is the raw event, unsummarized, for the reason
-          // `AcpAgentClient` spells out — an escape hatch that quietly drops
-          // fields is worse than no escape hatch.
-          return { type: "adapter_specific", adapter: CLINE_ADAPTER, payload: event };
+          // Riding through rather than returning null: the descriptor is the
+          // whole of what a future media UI would need, and it is the only
+          // record anywhere that an image was generated at all. But it rides
+          // through **without its bytes** — see {@link stripMediaEvent}.
+          return { type: "adapter_specific", adapter: CLINE_ADAPTER, payload: stripMediaEvent(event) };
+        }
 
         case "tool":
           return {
