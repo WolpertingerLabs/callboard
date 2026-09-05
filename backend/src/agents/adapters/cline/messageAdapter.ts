@@ -14,9 +14,11 @@
  *   cross-feed each other's text.
  * - **Content is discriminated by `contentType`, not by event type.** A
  *   `content_start` is text, reasoning *or* a tool call depending on
- *   `contentType: "text" | "reasoning" | "tool"`. So `tool_use` is the *start* of
- *   a `"tool"` and `tool_result` is its *end*, rather than each having an event
- *   of its own.
+ *   `contentType: "text" | "reasoning" | "media" | "tool"`. So `tool_use` is the
+ *   *start* of a `"tool"` and `tool_result` is its *end*, rather than each having
+ *   an event of its own. That union grows — `"media"` arrived in 0.0.82 — so
+ *   `content_end` switches over it exhaustively rather than defaulting to
+ *   `tool_result`; see the note there.
  *
  * ## Why `content_end` carries the text, not `content_start`
  *
@@ -86,21 +88,72 @@ export function translateClineEvent(event: ClineAgentEvent): AgentEvent | null {
         callId: event.toolCallId ?? "",
       };
 
-    case "content_end":
-      if (event.contentType === "text") {
-        const text = event.text ?? "";
-        return text ? { type: "text", content: text } : null;
+    // Every member of `AgentContentType` is named, and the `default` is a
+    // compile-time `never`. This used to handle text and reasoning by name and
+    // let *everything else* fall through to `tool_result`, which is how 0.0.82's
+    // new `"media"` became `{type:"tool_result", callId:"", content:""}` — an
+    // empty result bubble that `frontend/src/utils/toolGrouping.ts` pairs with
+    // whichever `tool_use` came before it. A fifth content type must be a build
+    // failure here, not another mislabelled tool result.
+    case "content_end": {
+      // The discriminant in a local, so the `default` below narrows *it* to
+      // `never`. Switching on `event.contentType` directly narrows `event`
+      // itself to `never` there, and reading a property off `never` is an error
+      // rather than the exhaustiveness check it looks like.
+      const contentType = event.contentType;
+      switch (contentType) {
+        case "text": {
+          const text = event.text ?? "";
+          return text ? { type: "text", content: text } : null;
+        }
+
+        case "reasoning": {
+          const reasoning = event.reasoning ?? "";
+          return reasoning ? { type: "thinking", content: reasoning } : null;
+        }
+
+        case "media":
+          // Model-generated media (0.0.82). `@cline/core`'s runtime event adapter
+          // maps `assistant-media` → `content_end { contentType:"media", media }`
+          // and nothing else: no `toolCallId`, no text, just a `GeneratedMedia`
+          // — `{ id, modality: image|audio|video|file, mediaType, source:
+          // base64|url|artifact, name?, sizeBytes? }`, validated by
+          // `isGeneratedMedia` before it is emitted.
+          //
+          // Callboard has no surface for an image the *model produced* (the
+          // gallery renders files a tool wrote), and giving it one means a new
+          // `type` on the wire, which `shared/types/stream.ts` requires a
+          // capability gate for. So it rides through the sanctioned escape hatch
+          // instead — same as `notice` below, and pi's `tool_execution_update`.
+          //
+          // Riding through rather than returning null: the event is dropped
+          // downstream today (`services/claude.ts` reads only `turn_cost` off
+          // `adapter_specific`), so this costs one discarded object per generated
+          // image, and it is the whole descriptor a future media UI would need.
+          // The payload is the raw event, unsummarized, for the reason
+          // `AcpAgentClient` spells out — an escape hatch that quietly drops
+          // fields is worse than no escape hatch.
+          return { type: "adapter_specific", adapter: CLINE_ADAPTER, payload: event };
+
+        case "tool":
+          return {
+            type: "tool_result",
+            callId: event.toolCallId ?? "",
+            content: renderToolOutput(event.error ? event.error : event.output),
+            ...(event.error ? { isError: true } : {}),
+          };
+
+        default: {
+          // A content type this pin has never seen. Dropping it is the only safe
+          // reading — it is certainly not a tool result — and the `never` means
+          // the next SDK bump that adds one fails `npm run build` rather than
+          // reaching this line.
+          const unhandled: never = contentType;
+          void unhandled;
+          return null;
+        }
       }
-      if (event.contentType === "reasoning") {
-        const reasoning = event.reasoning ?? "";
-        return reasoning ? { type: "thinking", content: reasoning } : null;
-      }
-      return {
-        type: "tool_result",
-        callId: event.toolCallId ?? "",
-        content: renderToolOutput(event.error ? event.error : event.output),
-        ...(event.error ? { isError: true } : {}),
-      };
+    }
 
     // `usage`, `done` and `error` all feed the single terminal result instead of
     // producing events of their own — see the note on this function and

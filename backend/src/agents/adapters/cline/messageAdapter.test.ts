@@ -77,6 +77,32 @@ describe("translateClineEvent", () => {
     }
   });
 
+  /**
+   * The 0.0.82 regression. `AgentContentType` gained `"media"`, and a
+   * `content_end` branch that handled text and reasoning by name and *defaulted*
+   * to `tool_result` turned every generated image into
+   * `{type:"tool_result", callId:"", content:""}` — an empty result bubble that
+   * `frontend/src/utils/toolGrouping.ts` pairs with the preceding `tool_use`,
+   * overwriting a real tool's output with nothing.
+   */
+  it("rides model-generated media through as adapter_specific, not a tool result", () => {
+    const media = {
+      type: "content_end",
+      contentType: "media",
+      media: { id: "m1", modality: "image", mediaType: "image/png", source: { type: "base64", data: "iVBORw0KGgo=" } },
+    } as ClineAgentEvent;
+    expect(translateClineEvent(media)).toEqual({ type: "adapter_specific", adapter: "cline", payload: media });
+  });
+
+  it("never produces a tool_result with no callId", () => {
+    // The shape of the bug, stated as the invariant it broke: a tool_result is
+    // only ever the end of a `"tool"` content, and that always carries an id.
+    for (const contentType of ["text", "reasoning", "media", "tool"] as const) {
+      const translated = translateClineEvent({ type: "content_end", contentType, toolCallId: contentType === "tool" ? "t1" : undefined } as ClineAgentEvent);
+      if (translated?.type === "tool_result") expect(translated.callId).toBe("t1");
+    }
+  });
+
   it("passes notices through as adapter_specific rather than inventing a type", () => {
     const notice = { type: "notice", noticeType: "recovery", message: "retrying" } as ClineAgentEvent;
     expect(translateClineEvent(notice)).toEqual({ type: "adapter_specific", adapter: "cline", payload: notice });
