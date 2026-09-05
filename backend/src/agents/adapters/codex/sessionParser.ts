@@ -22,11 +22,13 @@
  *  - `response_item` — the durable transcript. `payload.type`:
  *    - `"message"` (`role: "user"|"assistant"|"developer"|"system"`,
  *      `content:[{type:"input_text"|"output_text", text}]`) → text.
- *      A **variable-length run of synthetic lead messages** precedes the real
- *      transcript — the CLI's injected instruction blobs, which grow and get
- *      reordered between CLI versions. They are filtered by tag prefix; see
- *      {@link SYNTHETIC_MESSAGE_PREFIXES}. The real user prompt is the first
- *      `user` message that survives that filter.
+ *      A **variable-length run of synthetic messages** precedes the real
+ *      transcript, and the CLI re-injects it ahead of every resumed turn. Its
+ *      contents grow and get reordered between CLI versions, so it is filtered
+ *      by channel rather than by content where possible: `developer` is dropped
+ *      wholesale (see {@link translateMessage}) and the handful of synthetic
+ *      `user` messages by tag prefix ({@link SYNTHETIC_MESSAGE_PREFIXES}). The
+ *      real user prompt is the first `user` message that survives.
  *    - `"function_call"` / `"custom_tool_call"` → `tool_use`
  *      (`commandExecution`/`fileChange`/`mcpToolCall` all serialize through these
  *      Responses-API item shapes in the rollout).
@@ -84,26 +86,34 @@ const log = createLogger("codex-session-parser");
 export const EXPECTED_CODEX_CLI_VERSION = "0.153.4";
 
 /**
- * Tag prefixes of the synthetic lead messages the Codex CLI injects ahead of
- * the real transcript. Matched case-insensitively against the trimmed start of
- * a message, so the filter is position-independent within the lead run.
+ * Tag prefixes of the synthetic messages the Codex CLI injects into the **user**
+ * channel. Matched case-insensitively against the trimmed start of a message.
  *
  * Deliberately an explicit allowlist rather than a shape heuristic ("starts
  * with a snake_case XML tag"): real user content in these rollouts does start
  * with tags — `<image name=[Image #1] path="…">` for an attachment, and
  * callboard's own `<conversation_handoff from="…">` — and swallowing a user's
- * prompt is far worse than leaking a boilerplate block.
+ * prompt is far worse than leaking a boilerplate block. The `developer` channel
+ * needs no such caution and is filtered wholesale; see {@link translateMessage}.
  *
  * Entries are additive across CLI versions and none are retired, because
  * rollouts written by older CLIs stay on disk and stay parseable. `<permissions`
- * is dead as a *prefix* at 0.153.4 (that blob moved to second position inside
- * the same message) but still leads 375 of the 411 developer messages in the
- * rollouts on this machine, so removing it would regress every existing chat.
+ * and `<skills_instructions` only ever led `developer` messages, so the role
+ * filter now covers them, but they are kept here as the belt to that braces:
+ * the cost is a string compare, and the failure they guard against shipped once
+ * already.
+ *
+ * `<recommended_plugins` was added by 0.146.x, prepended to the
+ * `<environment_context` blob *inside the same user message*, which knocked out
+ * that prefix. That leak predates the 0.153.4 bump and hit
+ * {@link readFirstUserPrompt} too — every chat started under 0.146.x previews
+ * in the sidebar as OpenAI's plugin catalogue instead of the user's prompt.
  */
 const SYNTHETIC_MESSAGE_PREFIXES = [
-  "<skills_instructions", // 0.153.4 — displaced `<permissions` as the first developer blob
-  "<permissions", // ≤0.146.x — still the lead of every rollout already on disk
+  "<recommended_plugins", // 0.146.x — displaced `<environment_context` in the first user message
   "<environment_context",
+  "<skills_instructions", // 0.153.4 — displaced `<permissions` as the first developer blob
+  "<permissions", // ≤0.146.x — the lead of every rollout already on disk
   "<user_instructions",
 ];
 
@@ -669,13 +679,34 @@ function translateResponseItem(payload: Record<string, unknown> | undefined, tim
 /** Translate a `payload.type === "message"` item, filtering synthetic leads. */
 function translateMessage(payload: Record<string, unknown>, ts: string | undefined): ParsedMessage | null {
   const role = typeof payload.role === "string" ? payload.role : undefined;
+
+  // `developer` is the CLI's injection channel, not a conversational role, so
+  // drop it wholesale rather than chasing the tag of the week.
+  //
+  // Evidence: across the 376 rollouts on this machine (cli_version 0.139.0 /
+  // 0.146.0 / 0.146.1 / 0.153.4) all 411 developer messages are one of five
+  // CLI-authored blobs — `<permissions instructions>`, `<skills_instructions>`,
+  // `<multi_agent_mode>`, `<model_switch>`, and the multi-agent role brief —
+  // and each of those opening literals is compiled into the bundled `codex`
+  // binary. Nothing callboard sends can land here either: its own instructions
+  // ride `model_instructions_file` into `session_meta.base_instructions`, and
+  // `thread.run()` emits `user`.
+  //
+  // A tag allowlist cannot replace this. At 0.146.0 the multi-agent brief has
+  // no tag at all — it opens "You are `/root`, the primary agent…" — so it
+  // leaked for as long as the filter was prefix-only. Nor can a positional
+  // rule ("everything before the first real user message"): a resumed turn
+  // APPENDS to the same rollout and the CLI re-injects the whole lead run
+  // mid-file, verified in `__fixtures__/rollout-cli-0.153.4-resumed.jsonl`.
+  if (role === "developer") return null;
+
   const { text: content, imageIds } = extractTextAndImages(payload.content);
   if (!content && imageIds.length === 0) return null;
 
-  // Drop the CLI's synthetic lead messages — they aren't part of the
-  // user-visible conversation. Detected by their angle-bracket tag prefix
-  // ({@link SYNTHETIC_MESSAGE_PREFIXES}) so the filter is position-independent
-  // within the lead run.
+  // Drop the CLI's synthetic user-channel messages — the environment context
+  // and plugin catalogue it prepends ahead of the real prompt. Matched by tag
+  // prefix ({@link SYNTHETIC_MESSAGE_PREFIXES}), which stays conservative
+  // because this channel also carries genuine user content.
   const head = content.trimStart().toLowerCase();
   if (SYNTHETIC_MESSAGE_PREFIXES.some((p) => head.startsWith(p))) return null;
 

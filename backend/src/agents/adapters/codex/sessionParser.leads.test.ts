@@ -14,9 +14,10 @@
  * Both files here are exactly that — see `__fixtures__/README.md` for how they
  * were captured and the single redaction applied.
  */
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseCodexRollout, readCodexSessionMeta } from "./sessionParser.js";
+import { parseCodexRollout, readCodexSessionMeta, readFirstUserPrompt } from "./sessionParser.js";
 
 const fixture = (name: string): string => fileURLToPath(new URL(`./__fixtures__/${name}`, import.meta.url));
 
@@ -39,40 +40,48 @@ describe.each(CAPTURES)("captured rollout — codex-cli $cliVersion", ({ cliVers
     expect(messages.filter((m) => m.role === "assistant" && m.type === "text").map((m) => m.content)).toEqual(["OK"]);
   });
 
-  it("drops every instruction blob the CLI injects ahead of the transcript", () => {
-    const leaked = parseCodexRollout(file)
-      .map((m) => m.content ?? "")
-      .filter((c) => /^<(skills_instructions|permissions|environment_context|user_instructions)\b/i.test(c.trimStart()));
-    expect(leaked).toEqual([]);
+  it("previews the real prompt, not the CLI's plugin catalogue", () => {
+    expect(readFirstUserPrompt(file)).toBe(REAL_PROMPT);
+  });
+
+  /**
+   * The whole point: no assertion about *which* blobs leak, because the set of
+   * blobs is exactly the thing that keeps changing. Both captures reduce to
+   * the two lines a human typed or read.
+   */
+  it("reduces to nothing but the real conversation", () => {
+    expect(parseCodexRollout(file).map((m) => ({ role: m.role, type: m.type, content: m.content }))).toEqual([
+      { role: "user", type: "text", content: REAL_PROMPT },
+      { role: "assistant", type: "text", content: "OK" },
+    ]);
   });
 });
 
 /**
- * The leads that still leak, recorded as a fact rather than asserted as
- * correct. All three are CLI scaffolding — every one of these literals is
- * compiled into the bundled `codex` binary — but they are **not** caused by the
- * 0.153.4 bump: they leak identically at 0.146.0, so they are out of scope for
- * the regression fix and are addressed on their own.
- *
- * Note the 0.146.0 multi-agent lead carries no tag at all, which is why no
- * addition to the prefix list can reach it.
+ * A resumed turn appends to the *same* rollout, and the CLI re-injects its
+ * lead run ahead of it. This is why the filter cannot be positional — there is
+ * no single "before the first real user message" region to carve out — and why
+ * `developer` is dropped by role rather than by tag.
  */
-describe("pre-existing leaks (not introduced by the 0.153.4 bump)", () => {
-  const heads = (file: string): string[] =>
-    parseCodexRollout(file)
-      .filter((m) => m.type === "text" && m.content !== REAL_PROMPT && m.content !== "OK")
-      .map((m) => `${m.role}: ${(m.content ?? "").slice(0, 40)}`);
+describe("captured rollout — resumed thread (codex-cli 0.153.4)", () => {
+  const file = fixture("rollout-cli-0.153.4-resumed.jsonl");
 
-  it("leaks the same lead messages on both CLI versions", () => {
-    expect(heads(fixture("rollout-cli-0.146.0.jsonl"))).toEqual([
-      "system: You are `/root`, the primary agent in a ",
-      "system: <multi_agent_mode>Any earlier instructio",
-      "user: <recommended_plugins>\nHere is a list of ",
-    ]);
-    expect(heads(fixture("rollout-cli-0.153.4.jsonl"))).toEqual([
-      "system: <multi_agent_role>You are `/root`, the p",
-      "system: <multi_agent_mode>Any earlier instructio",
-      "user: <recommended_plugins>\nHere is a list of ",
+  it("re-injects the lead run mid-file", () => {
+    const roles: string[] = [];
+    for (const line of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
+      const r = JSON.parse(line) as { type?: string; payload?: { type?: string; role?: string } };
+      if (r.type === "response_item" && r.payload?.type === "message") roles.push(r.payload.role ?? "?");
+    }
+    // ...developer leads, turn 1, then developer leads AGAIN, then turn 2.
+    expect(roles).toEqual(["developer", "developer", "developer", "user", "user", "assistant", "developer", "user", "assistant"]);
+  });
+
+  it("keeps both turns and drops both lead runs", () => {
+    expect(parseCodexRollout(file).map((m) => `${m.role}: ${m.content}`)).toEqual([
+      `user: ${REAL_PROMPT}`,
+      "assistant: OK",
+      "user: Now reply with exactly the word TWO.",
+      "assistant: TWO",
     ]);
   });
 });

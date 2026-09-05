@@ -29,6 +29,13 @@ await thread.run("Reply with exactly the word OK and nothing else.");
 - 0.153.4 — this repo's `node_modules/@openai/codex-linux-x64/vendor/…/bin/codex`;
   binary reports `codex-cli 0.153.4`.
 
+`rollout-cli-0.153.4-resumed.jsonl` is the same 0.153.4 thread after a second
+turn via `codex.resumeThread(...)`, kept because it shows the one thing a
+single-turn capture cannot: a resumed turn **appends to the same file and the
+CLI re-injects the lead run mid-transcript**. Any filter that reasons about
+position ("everything before the first real user message") is wrong for that
+reason, and this fixture is what says so.
+
 ## The one edit
 
 `session_meta.payload.base_instructions.text` is replaced with a redaction
@@ -50,4 +57,11 @@ as the CLI wrote it.
 
 Note that `<permissions instructions>` did not disappear at 0.153.4 — it moved
 to second position *inside the same message*, which is precisely why a prefix
-match stopped seeing it.
+match stopped seeing it. The same move happened a version earlier on the user
+side: 0.146.x prepended `<recommended_plugins>` to the `<environment_context>`
+blob, knocking out that prefix too.
+
+Nothing here is user-authored except the two prompts (`Reply with exactly the
+word OK…`, `Now reply with exactly the word TWO.`) — every other opening
+literal above was confirmed present in the bundled `codex` binary with
+`grep -a -F`, in both 0.146.0 and 0.153.4.
