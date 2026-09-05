@@ -45,22 +45,63 @@ export interface BuildSystemInfoOptions {
    * `import.meta.url` with a fixed `../..`, which is correct for
    * `backend/dist/index.js` and wrong by one level for anything under
    * `backend/dist/services/` — a module that moved would silently start
-   * reporting `version: "unknown"`.
+   * reporting `installedVersion: undefined`.
    */
   pkgRoot: string;
+  /**
+   * The version of the code this process is **executing**, captured at boot.
+   *
+   * Passed in for the same reason `pkgRoot` is — this module cannot honestly
+   * derive it, and here the reason is timing rather than depth: the value has to
+   * be read before anything could have rewritten it, and this function first
+   * runs on a request. `index.ts` supplies `BOOT_VERSION` from
+   * `utils/package-manifest.ts`.
+   *
+   * Required, not defaulted. A default would be a silent path back to reading
+   * the manifest per request, which is the bug this parameter exists to close.
+   */
+  runningVersion: string | null;
 }
 
-export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
-  let version = "unknown";
+/**
+ * ## `version` is what is running, not what is on disk
+ *
+ * These used to be the same read and are not the same fact. `npm install -g`
+ * replaces Callboard's package tree **in place**, so from the moment npm exits,
+ * `<pkgRoot>/package.json` describes code that is not executing and will not be
+ * until the daemon restarts. This endpoint reported that read as `version`, and
+ * three things went wrong at once: the About page's "Version" row named a
+ * version nothing was running; `isNewerVersion(version, latestVersion)` went
+ * false, which is the condition the whole update banner is rendered behind, so
+ * the banner deleted itself — verdicts, retry button and reattach path with it —
+ * in precisely the window it was written for; and the update poll, which watches
+ * this field to decide the daemon has come back, could be satisfied by the *old*
+ * daemon answering before the SIGTERM landed.
+ *
+ * So `version` keeps its documented meaning ("the version this daemon is") and
+ * gets an implementation that matches it, and the genuinely new datum — what npm
+ * has put on disk — arrives as its own optional field. That is the direction the
+ * compatibility rule points: an old bundle reading `version` now gets a more
+ * correct answer to the question it was already asking, and nothing has to
+ * understand a redefinition.
+ */
+export async function buildSystemInfo({ pkgRoot, runningVersion }: BuildSystemInfoOptions) {
+  let installedVersion: string | undefined;
   let pkgName = "@wolpertingerlabs/callboard";
   try {
     const pkgPath = path.join(pkgRoot, "package.json");
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    version = pkg.version;
+    if (typeof pkg.version === "string" && pkg.version) installedVersion = pkg.version;
     pkgName = pkg.name || pkgName;
   } catch {
     // ignore
   }
+
+  // What is running, falling back to what is on disk only when the boot read
+  // failed — in which case they are the same guess and this is the more useful
+  // of the two ways to be wrong.
+  const version = runningVersion ?? installedVersion ?? "unknown";
+  const restartPending = installedVersion !== undefined && runningVersion !== null && installedVersion !== runningVersion;
 
   let sdkVersion = "unknown";
   try {
@@ -269,6 +310,13 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
 
   return {
     version,
+    // Additive, and optional in the wire sense: a bundle that does not know
+    // these keys ignores them, and one that does can say "new code is on disk,
+    // this process has not restarted into it" — which is otherwise invisible,
+    // most sharply to a *second* daemon sharing one global install that its
+    // sibling upgraded without ever telling it. See `services/self-update.ts`.
+    ...(installedVersion ? { installedVersion } : {}),
+    ...(restartPending ? { restartPending: true } : {}),
     latestVersion,
     nodeVersion: process.version,
     platform: `${process.platform} (${process.arch})`,

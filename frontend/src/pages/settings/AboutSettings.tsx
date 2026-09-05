@@ -1,64 +1,10 @@
 import { useEffect, useState } from "react";
-import { Info, Server, Cpu, Shield, ExternalLink, Layers, ArrowUpCircle } from "lucide-react";
+import { Info, Server, Cpu, Shield, ExternalLink, Layers } from "lucide-react";
 import { getSystemInfo, getAgentSettings } from "../../api";
 import type { SystemInfo } from "../../api";
 import type { AgentSettings } from "shared/types/index.js";
-
-/** Compare two semver strings. Returns > 0 if a > b, < 0 if a < b, 0 if equal.
- *  Handles pre-release segments: 1.0.0 > 1.0.0-alpha.1, alpha.10 > alpha.9. */
-function compareVersions(a: string, b: string): number {
-  const parseVer = (v: string) => {
-    const [core, pre] = v.split("-", 2);
-    const parts = core.split(".").map(Number);
-    return { parts, pre: pre || null };
-  };
-  const va = parseVer(a);
-  const vb = parseVer(b);
-
-  const maxLen = Math.max(va.parts.length, vb.parts.length);
-  for (let i = 0; i < maxLen; i++) {
-    const pa = va.parts[i] || 0;
-    const pb = vb.parts[i] || 0;
-    if (pa !== pb) return pa - pb;
-  }
-
-  // Same core: no pre-release > pre-release
-  if (!va.pre && vb.pre) return 1;
-  if (va.pre && !vb.pre) return -1;
-  if (!va.pre && !vb.pre) return 0;
-
-  // Both have pre-release: compare segments
-  const aParts = va.pre!.split(".");
-  const bParts = vb.pre!.split(".");
-  const preLen = Math.max(aParts.length, bParts.length);
-  for (let i = 0; i < preLen; i++) {
-    const sa = aParts[i];
-    const sb = bParts[i];
-    if (sa === undefined) return -1;
-    if (sb === undefined) return 1;
-    const na = Number(sa);
-    const nb = Number(sb);
-    const aIsNum = !isNaN(na);
-    const bIsNum = !isNaN(nb);
-    if (aIsNum && bIsNum) {
-      if (na !== nb) return na - nb;
-    } else if (aIsNum) {
-      return -1; // numbers sort before strings
-    } else if (bIsNum) {
-      return 1;
-    } else {
-      if (sa < sb) return -1;
-      if (sa > sb) return 1;
-    }
-  }
-  return 0;
-}
-
-/** Returns true if remote version is newer than local. */
-function isNewerVersion(local: string, remote: string): boolean {
-  if (!local || !remote || local === remote) return false;
-  return compareVersions(remote, local) > 0;
-}
+import UpdateBanner from "./UpdateBanner";
+import { isNewerVersion } from "../../utils/versions";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -146,38 +92,37 @@ export default function AboutSettings() {
   }
 
   const account = systemInfo?.account;
-  const hasUpdate = systemInfo?.version && systemInfo?.latestVersion && isNewerVersion(systemInfo.version, systemInfo.latestVersion);
+  const hasUpdate = Boolean(systemInfo?.version && systemInfo?.latestVersion && isNewerVersion(systemInfo.version, systemInfo.latestVersion));
+
+  /**
+   * New code is on disk and this daemon is not running it.
+   *
+   * Rendered as a second reason to show the banner, because `hasUpdate` alone
+   * cannot cover it. `version` is the *running* version, so on the ordinary
+   * deferred-restart path `hasUpdate` does stay true across the install — but it
+   * goes false the moment npm's `latest` is what the daemon booted on, which is
+   * the state a second daemon sharing one global install sits in permanently
+   * after its sibling upgraded it. Without this, that daemon reports "up to
+   * date" while executing code that was replaced underneath it, with no UI path
+   * to the restart that would fix it.
+   */
+  const restartPending = Boolean(systemInfo?.restartPending);
 
   return (
     <>
-      {/* Update Notice */}
-      {hasUpdate && (
-        <div
-          style={{
-            border: "1px solid var(--accent)",
-            borderRadius: 8,
-            padding: "14px 20px",
-            background: "var(--tint-info)",
-            marginBottom: 16,
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          <ArrowUpCircle size={20} style={{ color: "var(--accent-text)", flexShrink: 0 }} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>Update available</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              v{systemInfo!.version} → v{systemInfo!.latestVersion}
-              <span style={{ marginLeft: 8 }}>
-                Run:{" "}
-                <code style={{ fontSize: 11, background: "var(--surface)", padding: "2px 6px", borderRadius: 4 }}>
-                  npm install -g @wolpertingerlabs/callboard
-                </code>
-              </span>
-            </div>
-          </div>
-        </div>
+      {/* Update notice, and — where Callboard is the globally installed copy it
+          would be replacing — the button that installs it here. The
+          copy-and-paste command is rendered in every one of those states; see
+          UpdateBanner.tsx.
+
+          Gated on the *running* version, which is the whole reason this survives
+          an install: it used to be gated on a version the daemon re-read from a
+          package directory npm had just rewritten, so the instant npm exited the
+          banner decided there was no update and unmounted itself — taking the
+          verdict, the retry button and the reattach path with it, in exactly the
+          window they were written for. */}
+      {(hasUpdate || restartPending) && (
+        <UpdateBanner currentVersion={systemInfo!.version!} latestVersion={systemInfo!.latestVersion} installedVersion={systemInfo!.installedVersion} restartPending={restartPending} />
       )}
 
       {/* Application Info */}
@@ -188,7 +133,14 @@ export default function AboutSettings() {
         </div>
         <div style={subtitleStyle}>Callboard version and build information.</div>
         <div>
+          {/* The version this daemon is *running*. It used to be a per-request
+              read of a package.json npm replaces in place during an upgrade, so
+              between the install and the restart this row named a version
+              nothing was executing. */}
           <InfoRow label="Version" value={systemInfo?.version} />
+          {restartPending && systemInfo?.installedVersion && (
+            <InfoRow label="Installed (pending restart)" value={`v${systemInfo.installedVersion}`} />
+          )}
           {systemInfo?.latestVersion && <InfoRow label="Latest Version" value={`v${systemInfo.latestVersion}`} />}
           <InfoRow label="Environment" value={systemInfo?.environment} />
           <InfoRow label="Claude CLI" value={systemInfo?.claudeCliVersion} />

@@ -166,6 +166,22 @@ export type {
   EngineRefreshResponse,
 } from "./engines.js";
 
+export type {
+  SelfUpdateCapability,
+  SelfUpdateRefusalCode,
+  SelfUpdateStatusResponse,
+  SelfUpdateStartResponse,
+  SelfUpdateRefusalResponse,
+  SelfUpdateRestartDisposition,
+  SelfUpdateStartedEvent,
+  SelfUpdateOutputEvent,
+  SelfUpdateExitEvent,
+  SelfUpdateVerifiedEvent,
+  SelfUpdateRestartingEvent,
+  SelfUpdateRestartFailedEvent,
+  SelfUpdateEvent,
+} from "./selfUpdate.js";
+
 export type { HarnessProvider, ModelAlias, ModelAliasInfo } from "./modelAlias.js";
 export { HARNESS_PROVIDERS, validateModelAliases } from "./modelAlias.js";
 

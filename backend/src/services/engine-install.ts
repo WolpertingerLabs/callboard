@@ -1,11 +1,17 @@
 /**
- * The one place Callboard runs a command because a user asked it to.
+ * Running an engine's install recipe because a user asked for it.
  *
  * Phase 3 of `plans/engine-availability-and-install.md`. Everything before it
  * described the machine; this changes it, on a daemon whose own Remote Access
  * feature can put it on the public internet with a password as the only barrier.
  * The design is therefore built around *not* being an arbitrary-command surface,
  * and around never claiming more than was observed.
+ *
+ * The preflight, the child-process discipline and the replay buffer live in
+ * `npm-global-install.ts` — this module owns the *engine* half: which recipe an
+ * id selects, and what a zero exit is allowed to claim about an engine
+ * afterwards. `self-update.ts` is its sibling on the same core and deliberately
+ * not a recipe in here; see that module for why.
  *
  * ## What can be run, and how the request reaches it
  *
@@ -76,12 +82,8 @@
  *
  * @see plans/engine-availability-and-install.md — Phase 3, Decisions 4, 5, 7, 8
  */
-import { spawn, execFile, type ChildProcess } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
-import { delimiter, dirname, join } from "node:path";
-import { promisify } from "node:util";
 import type {
   EngineInstallCapability,
   EngineInstallEvent,
@@ -90,338 +92,39 @@ import type {
   EngineStatus,
 } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
-import { readAgentSettings } from "./agent-settings.js";
 import { INSTALLABLE_PACKAGES, oneClickRecipeFor } from "./engine-install-recipes.js";
 import { MIN_REFRESH_INTERVAL_MS, refreshEngineStatuses } from "./engine-status.js";
+import {
+  clearNpmInstallInFlight,
+  clearSelfRestartPending,
+  INSTALL_TIMEOUT_MS,
+  npmInstallInFlight,
+  npmSpawnRefusal,
+  resetNpmRootCache,
+  RunLog,
+  RUN_RETENTION_MS,
+  selfRestartPending,
+  spawnNpmInstall,
+} from "./npm-global-install.js";
 
 const log = createLogger("engine-install");
-const execFileAsync = promisify(execFile);
 
-// ── Bounds ──────────────────────────────────────────────────────────
-
-/** Wall-clock ceiling on one install. A global npm install that has not finished in this long is not going to. */
-export const INSTALL_TIMEOUT_MS = 10 * 60_000;
-
-/** How long `npm root -g` is remembered. Short, because a user who fixes their prefix should not have to wait long to be believed. */
-const NPM_ROOT_TTL_MS = 60_000;
-
-/** Longest single output line kept. npm's own lines are short; a runaway one is a memory leak with a progress bar. */
-const MAX_LINE_CHARS = 2_000;
-
-/** How many output lines one run retains for replay. Beyond this the oldest go, with a marker. */
-const MAX_BUFFERED_LINES = 800;
-
-/** How long a finished run stays fetchable, so a stream that reconnects still gets the transcript and the verdict. */
-const RUN_RETENTION_MS = 15 * 60_000;
-
-// ── Preflight ───────────────────────────────────────────────────────
+export { INSTALL_TIMEOUT_MS };
 
 /**
- * Where `npm install -g` would put things, and whether the daemon's user could.
+ * The preflight, re-exported rather than reimplemented.
  *
- * Cached for {@link NPM_ROOT_TTL_MS} because `npm root -g` is a ~200ms process
- * spawn and `GET /api/engines` is what a settings page loads — the writability
- * checks themselves are two `access()` syscalls (the package root and the bin
- * directory) and are deliberately *not* cached, so a `chown` takes effect on the
- * next page load rather than on the next daemon restart.
+ * It moved to `npm-global-install.ts` when the self-update feature needed the
+ * same gates, and it is re-exported here because the routes and the tests ask
+ * this module the question "may this client install an engine?" — which is
+ * still where that question belongs, even though the answer is now computed
+ * next door.
  */
-let npmRootCache: { at: number; root: string | null; error?: string } | null = null;
-
-async function resolveNpmGlobalRoot(): Promise<{ root: string | null; error?: string }> {
-  if (npmRootCache && Date.now() - npmRootCache.at < NPM_ROOT_TTL_MS) {
-    return { root: npmRootCache.root, ...(npmRootCache.error ? { error: npmRootCache.error } : {}) };
-  }
-
-  let root: string | null = null;
-  let error: string | undefined;
-  try {
-    const { stdout } = await execFileAsync("npm", ["root", "-g"], {
-      timeout: 15_000,
-      killSignal: "SIGKILL",
-      encoding: "utf-8",
-      maxBuffer: 1024 * 1024,
-    });
-    const line = stdout.trim().split("\n").pop()?.trim();
-    if (line) root = line;
-    else error = "`npm root -g` printed nothing";
-  } catch (err) {
-    // ENOENT here is the honest answer to "is npm even on this daemon's PATH",
-    // and it is the same lookup the spawn would do — so a machine without npm
-    // is refused at preflight rather than at a spawn error thirty seconds later.
-    error = err instanceof Error ? err.message : String(err);
-  }
-
-  npmRootCache = { at: Date.now(), root, ...(error ? { error } : {}) };
-  return { root, ...(error ? { error } : {}) };
-}
+export { getInstallCapability } from "./npm-global-install.js";
 
 /** Forget the cached `npm root -g`. Called after every install, so a prefix that appeared mid-session is seen. */
 export function resetEngineInstallCaches(): void {
-  npmRootCache = null;
-}
-
-/**
- * Is `dir` writable by this process — or, if it does not exist yet, is the
- * nearest directory that does?
- *
- * npm creates `lib/node_modules` on first global install, so a missing path is
- * not the same as an unwritable one and refusing on absence would be wrong on a
- * fresh prefix. Walks up until something exists, then asks about that.
- */
-function writableTarget(dir: string): { writable: boolean; checked: string } {
-  let cursor = dir;
-  for (let depth = 0; depth < 32; depth++) {
-    try {
-      accessSync(cursor, constants.W_OK);
-      return { writable: true, checked: cursor };
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code === "ENOENT") {
-        const parent = dirname(cursor);
-        if (parent === cursor) return { writable: false, checked: cursor };
-        cursor = parent;
-        continue;
-      }
-      return { writable: false, checked: cursor };
-    }
-  }
-  return { writable: false, checked: cursor };
-}
-
-/** True when this daemon's Node came from nvm, whose global prefix is per-version. */
-function isNvmManagedNode(): boolean {
-  return /[/\\]\.nvm[/\\]/.test(process.execPath);
-}
-
-/**
- * The directory `npm install -g` links binaries into, derived from `npm root -g`.
- *
- * `npm root -g` prints `<prefix>/lib/node_modules` on POSIX, and the bin
- * directory is `<prefix>/bin` — two levels up and across. Derived rather than
- * asked for, because `npm bin -g` was removed in npm 9 and a second spawn on a
- * settings-page load is not worth it.
- *
- * Returns `undefined` when the root does not have that shape, in which case the
- * caller must not assert anything about the bin directory — an unrecognised
- * layout is a reason to say nothing, not to guess.
- */
-function globalBinDirFor(root: string): string | undefined {
-  const parts = root.split(/[/\\]/);
-  if (parts.length < 3) return undefined;
-  if (parts[parts.length - 1] !== "node_modules" || parts[parts.length - 2] !== "lib") return undefined;
-  return join(parts.slice(0, -2).join("/"), "bin");
-}
-
-/**
- * Is `dir` one of the entries on the PATH this process inherited?
- *
- * The literal question, asked literally. `npm install -g` writing a binary into
- * a directory the daemon cannot search is the single most confusing outcome this
- * feature produces, and it is knowable *before* the install rather than only
- * from the verdict afterwards.
- *
- * Compared with trailing separators normalised and nothing else — no `realpath`,
- * because a symlinked PATH entry that resolves to the same place is a case this
- * cannot confirm and must therefore not claim either way.
- */
-function isOnDaemonPath(dir: string): boolean {
-  const normalise = (p: string) => p.replace(/[/\\]+$/, "");
-  const target = normalise(dir);
-  return (process.env.PATH ?? "")
-    .split(delimiter)
-    .filter(Boolean)
-    .some((entry) => normalise(entry) === target);
-}
-
-/**
- * Everything that decides whether this client sees an install button.
- *
- * Ordered cheapest-and-most-decisive first, and every branch returns a sentence
- * a user can act on rather than a code. `oneClick: false` is never the end of
- * the story — {@link installGuidanceFor} renders the reason directly under the
- * copy-and-paste command, which is Decision 8's structural fallback.
- */
-export async function getInstallCapability(opts: { local: boolean }): Promise<EngineInstallCapability> {
-  if (!opts.local) {
-    return {
-      oneClick: false,
-      code: "not-local",
-      // Worded for every shape this branch now catches, not just the tunnel.
-      // The check refuses any request that is not a *direct* local connection —
-      // a public peer address, or a local one carrying a forwarding header —
-      // because a proxy that does not mark the hop is indistinguishable from a
-      // browser on this machine, and one that does mark it might be anything.
-      refusal:
-        "Callboard only runs installs for a browser connected directly to it from this machine or your LAN, and this request either came from further away or arrived through a proxy. Running commands on the daemon's machine is a local-only capability — remote access puts this server behind nothing but a password. Copy the command into a terminal on the machine running Callboard.",
-    };
-  }
-
-  // `readAgentSettings`, not `getAgentSettings`, and the distinction is the
-  // whole of this branch.
-  //
-  // `getAgentSettings` folds "no file" and "file exists and did not parse" into
-  // the same `{ proxyMode: "local" }` — a valid object with `allowEngineInstalls`
-  // absent, which `!== false` reads as **on**. It swallows the error internally,
-  // so a `try/catch` here is dead code: an operator who had switched this off
-  // got the kill switch back on by corrupting or `chmod 000`-ing one file.
-  // Measured: both cases spawned npm.
-  //
-  // A setting whose absence means "allowed" cannot be read through a channel
-  // that returns absence on failure. So this reads the state explicitly and
-  // refuses on `unreadable`, while still treating a genuinely missing file as
-  // the documented default-on.
-  const { settings, state, error: settingsError } = readAgentSettings();
-  if (state === "unreadable") {
-    return {
-      oneClick: false,
-      code: "disabled",
-      refusal: `Callboard's settings file exists but could not be read (${settingsError ?? "unknown error"}), so it cannot tell whether one-click installs are permitted here — and it will not assume they are. Fix or remove \`agent-settings.json\`, or copy the command into a terminal.`,
-    };
-  }
-  if (settings.allowEngineInstalls === false) {
-    return {
-      oneClick: false,
-      code: "disabled",
-      refusal: "One-click engine installs are switched off for this Callboard (Settings → Remote access → One-click engine installs). Copy the command into a terminal instead.",
-    };
-  }
-
-  if (process.platform === "win32") {
-    // On Windows `npm` is `npm.cmd`, a batch script, and since the fix for
-    // CVE-2024-27980 Node refuses to `spawn` one without `shell: true` — which
-    // is the one thing this endpoint does not get to have.
-    //
-    // ## Why the obvious fix is not enough, having now been looked at
-    //
-    // The reviewer's suggestion is sound and was checked: spawning
-    // `process.execPath` with npm's own `npm-cli.js` needs no shell, and
-    // `node <npm root -g>/npm/bin/npm-cli.js root -g` was run here and works.
-    // That derivation is even platform-neutral — `npm root -g` prints the
-    // directory npm itself lives in on both platforms — so the *spawn* half
-    // could ship exercised on Linux with only the Windows `npm-cli.js`
-    // location untested.
-    //
-    // The spawn is not the load-bearing half. The **preflight** is: Decision 8
-    // only permits this button because a failure is predicted and degraded to
-    // the copy block rather than met with an EACCES wall of text. Two of its
-    // parts do not port, and both were checked against Windows-shaped inputs
-    // rather than assumed:
-    //
-    //   - `globalBinDirFor` requires a `.../lib/node_modules` suffix. Windows
-    //     `npm root -g` is `<prefix>\node_modules` with no `lib`, so it returns
-    //     `undefined` and the **bin-directory** writability check silently does
-    //     not run — the very check #359 added because testing only the package
-    //     root missed a reproduced real-world failure (a user-owned prefix
-    //     whose `bin/` belonged to root).
-    //   - `isOnDaemonPath` compares PATH entries with exact string equality.
-    //     Windows paths are case-insensitive, so a PATH carrying
-    //     `C:\Users\U\AppData\Roaming\npm` against a derived
-    //     `C:\Users\u\AppData\Roaming\npm` reads as "not on PATH" and produces
-    //     a warning that is false.
-    //
-    // Both are fixable, and neither fix is verifiable from here — nor is the
-    // question underneath them, which is whether `fs.access(W_OK)` answers
-    // "could npm write here" correctly against Windows ACLs at all. Shipping
-    // the button would mean shipping a capability check with a hole in it,
-    // which is this series' signature defect (a UI asserting something nothing
-    // checked) rather than a missing feature. The copy-and-paste command works
-    // perfectly meanwhile, so the cost of refusing is one click.
-    //
-    // @see plans/engine-availability-and-install.md — "Windows one-click"
-    return {
-      oneClick: false,
-      code: "unsupported-platform",
-      refusal:
-        "Callboard does not run installs itself on Windows. It can spawn npm here without a shell, but the checks it makes first — whether npm's global directories are actually writable, and whether the result would land somewhere Callboard can see — do not hold on Windows, and Callboard will not offer a button whose safety check it knows is incomplete. That is a limitation of Callboard rather than of npm: the command below works normally when you run it yourself.",
-    };
-  }
-
-  const { root, error } = await resolveNpmGlobalRoot();
-  if (!root) {
-    return {
-      oneClick: false,
-      code: "npm-unresolvable",
-      refusal: `Callboard could not resolve npm's global package directory (\`npm root -g\` failed: ${error ?? "no output"}), so it cannot tell whether an install would succeed. Run the command in a terminal, where you will see npm's own error.`,
-    };
-  }
-
-  // **Both** directories, not just the package root.
-  //
-  // `npm install -g` writes the package into `<prefix>/lib/node_modules` and
-  // then links its bin into `<prefix>/bin`, and it fails on either. Checking
-  // only the first missed a realistic and reproducible shape: a user-owned
-  // `~/.npm-global` whose `bin/` was created by an earlier `sudo npm i -g` and
-  // is therefore root's. That produced exactly the EACCES wall this preflight
-  // exists to prevent, from a card that had just promised it checked.
-  const binDir = globalBinDirFor(root);
-  for (const dir of binDir ? [root, binDir] : [root]) {
-    const { writable, checked } = writableTarget(dir);
-    if (writable) continue;
-    return {
-      oneClick: false,
-      code: "prefix-not-writable",
-      // The checked path is named separately only when it is not the directory
-      // itself — npm creates these on first global install, so the thing that
-      // actually refused is often an ancestor, and printing the same path twice
-      // reads like a bug in the message.
-      refusal: `npm's global ${dir === root ? "package directory" : "bin directory"} (\`${dir}\`) is not writable by the user running Callboard${
-        checked === dir ? "" : ` — \`${checked}\`, the nearest directory that exists, refused`
-      }. \`npm install -g\` would fail with EACCES, so Callboard will not run it. Point npm at a prefix you own (\`npm config set prefix ~/.npm-global\`), or run the command below with the privileges it needs.`,
-    };
-  }
-
-  return { oneClick: true, ...(installVisibilityNote(root, binDir) ?? {}) };
-}
-
-/**
- * The one true-but-survivable thing to say beside the button, or nothing.
- *
- * ## What the previous version got wrong
- *
- * It keyed on `process.execPath` matching `.nvm` and concluded *"Callboard
- * itself will see it, because it is that same Node"*. The premise is about which
- * interpreter is running; the conclusion is about the daemon's inherited `PATH`.
- * Those are different facts, and on a daemon whose `PATH` lacked the global bin
- * directory the note rendered that promise and the verdict thirty seconds later
- * said `visible: false`. It was this feature's own defect — a claim nothing
- * checked — inside the sentence warning about that defect.
- *
- * ## What it says now
- *
- * Only what was observed. The bin directory is derived from `npm root -g` and
- * compared against `process.env.PATH`:
- *
- * - **not on PATH** — a warning, and a genuine one: the install will land
- *   somewhere this daemon cannot search, so it will very likely report
- *   `visible: false` afterwards. Said *before* the install rather than only
- *   after it.
- * - **on PATH, nvm** — the prefix is per-Node-version, which is worth knowing
- *   for the user's own shell. No claim about Callboard beyond the observed
- *   directory membership.
- * - **on PATH, not nvm** — nothing to warn about. Silence is the honest output;
- *   a note that says "this will probably work" is noise with a risk attached.
- * - **unrecognised layout** (no derivable bin directory) — also nothing, because
- *   nothing was checked.
- */
-function installVisibilityNote(root: string, binDir: string | undefined): { note: string } | undefined {
-  if (!binDir) return undefined;
-
-  if (!isOnDaemonPath(binDir)) {
-    return {
-      // No markdown emphasis: the card renders these strings with a splitter
-      // that understands backticks and nothing else, so `**not**` would print
-      // its own asterisks. Verified rendered.
-      note: `Heads up: npm would link the binary into \`${binDir}\`, and that directory is not on the PATH this Callboard daemon inherited. The install will very likely succeed and stay invisible to Callboard until you run \`callboard restart\` from a shell where it is on PATH. Callboard will say either way once it has looked.`,
-    };
-  }
-
-  if (isNvmManagedNode()) {
-    return {
-      note: `Callboard's Node is nvm-managed (\`${process.execPath}\`), so this installs into that version's global prefix. Its bin directory \`${binDir}\` is on the PATH this daemon inherited, so Callboard should find it; a shell on a different Node version will not.`,
-    };
-  }
-
-  return undefined;
+  resetNpmRootCache();
 }
 
 // ── The run ─────────────────────────────────────────────────────────
@@ -435,9 +138,7 @@ export interface InstallRun {
   capability: EngineInstallCapability;
   startedAt: number;
   finishedAt: number | null;
-  events: EngineInstallEvent[];
-  droppedLines: number;
-  emitter: EventEmitter;
+  log: RunLog<EngineInstallEvent>;
   child: ChildProcess | null;
   done: boolean;
 }
@@ -471,7 +172,7 @@ export function getInstallRun(installId: string): InstallRun | null {
 
 /** Every event this run has emitted so far, for replay on connect. */
 export function installRunEvents(run: InstallRun): EngineInstallEvent[] {
-  return run.events.slice();
+  return run.log.snapshot();
 }
 
 export function isInstallRunDone(run: InstallRun): boolean {
@@ -479,8 +180,7 @@ export function isInstallRunDone(run: InstallRun): boolean {
 }
 
 export function subscribeToInstallRun(run: InstallRun, listener: (event: EngineInstallEvent) => void): () => void {
-  run.emitter.on("event", listener);
-  return () => run.emitter.off("event", listener);
+  return run.log.subscribe(listener);
 }
 
 /** Test seam: forget the retained run so the next start is not refused as busy. */
@@ -493,7 +193,9 @@ export function resetEngineInstallState(): void {
     }
   }
   current = null;
-  npmRootCache = null;
+  clearNpmInstallInFlight();
+  clearSelfRestartPending();
+  resetNpmRootCache();
 }
 
 // ── Starting one ────────────────────────────────────────────────────
@@ -582,6 +284,44 @@ export function startEngineInstall(opts: {
     };
   }
 
+  // The other direction of the same lock, and it is not symmetric by accident:
+  // `isInstallRunning` only knows about *this* module's runs, so without this
+  // an engine install would start while a self-update's npm is part-way through
+  // rewriting the global tree — including this daemon's own package directory,
+  // which `resolveRestartHelper` then reads out of. Two `npm install -g` runs
+  // against one prefix have no cross-process lock to fall back on.
+  const other = npmInstallInFlight();
+  if (other) {
+    return {
+      ok: false,
+      code: "busy",
+      refusal: `Callboard is already running ${other} and runs one global install at a time. Wait for it to finish, or copy the command into a terminal.`,
+      status: 409,
+    };
+  }
+
+  // And the state neither of the two questions above covers: a self-update whose
+  // npm has finished but whose restart has not happened yet.
+  //
+  // For the second or two between those — the hand-over beat plus the helper's
+  // Node boot before `cmdStop` signals — `isInstallRunning()` and
+  // `npmInstallInFlight()` are both false, so an install starting here used to
+  // be accepted by every gate. It is also invisible to `describeWorkInFlight`,
+  // so the restart it raced would not be deferred for it: the daemon exits,
+  // `gracefulShutdown` takes this process with it, and an `npm install -g` is
+  // orphaned mid-write of the global tree. A restart destroys an engine install
+  // as surely as it destroys a chat turn, and this is the half of that the
+  // *starting* side has to refuse.
+  const pendingRestart = selfRestartPending();
+  if (pendingRestart) {
+    return {
+      ok: false,
+      code: "busy",
+      refusal: `Callboard is about to restart for ${pendingRestart}, which will stop this process — so it will not start an install that a restart would kill part-way through. Try again once Callboard has come back, or copy the command into a terminal.`,
+      status: 409,
+    };
+  }
+
   // The cooldown, and why an accepted install needs one at all.
   //
   // Every completed install ends in `refreshEngineStatuses({ force: true })` —
@@ -620,14 +360,13 @@ export function startEngineInstall(opts: {
     capability,
     startedAt: Date.now(),
     finishedAt: null,
-    events: [],
-    droppedLines: 0,
-    emitter: new EventEmitter(),
+    // `install_output` is the droppable frame: the started/exit/verified ones
+    // are structural, and a transcript that has aged out its own header is not
+    // a transcript.
+    log: new RunLog<EngineInstallEvent>("install_output"),
     child: null,
     done: false,
   };
-  // One listener per open stream; several tabs on the settings page is ordinary.
-  run.emitter.setMaxListeners(64);
   current = run;
 
   emit(run, {
@@ -647,135 +386,42 @@ export function startEngineInstall(opts: {
 
 // ── Running one ─────────────────────────────────────────────────────
 
-/**
- * ANSI CSI sequences.
- *
- * `no-control-regex` is disabled rather than worked around: matching ESC is the
- * entire purpose. npm colours its output and draws a spinner whenever it thinks
- * it has a terminal, and those bytes replayed as text in a browser are noise at
- * best. Built with `new RegExp` so the source carries no literal control
- * character.
- */
-// eslint-disable-next-line no-control-regex
-const ANSI_ESCAPE = new RegExp("\\u001B\\[[0-9;?]*[ -/]*[@-~]", "g");
-
-function cleanLine(raw: string): string {
-  const stripped = raw.replace(/\r/g, "").replace(ANSI_ESCAPE, "");
-  return stripped.length > MAX_LINE_CHARS ? `${stripped.slice(0, MAX_LINE_CHARS)}… (line truncated)` : stripped;
-}
-
 function emit(run: InstallRun, event: EngineInstallEvent): void {
-  run.events.push(event);
-  if (run.events.length > MAX_BUFFERED_LINES) {
-    // Drop from the front, but never the `install_started` frame — a replayed
-    // transcript that does not say what was run is not a transcript.
-    const dropAt = run.events.findIndex((e, i) => i > 0 && e.type === "install_output");
-    if (dropAt > 0) {
-      run.events.splice(dropAt, 1);
-      run.droppedLines++;
-    }
-  }
-  run.emitter.emit("event", event);
+  run.log.emit(event);
 }
 
+/**
+ * Hand the argv to the shared runner and translate its outcome into this
+ * feature's sentences.
+ *
+ * The wording is deliberately not shared: "Callboard has not changed anything
+ * about this engine" is a claim about an engine, and the self-update's
+ * equivalent is a claim about the daemon. Only the mechanics are common.
+ */
 function spawnInstall(run: InstallRun): void {
-  const [command, ...args] = run.argv;
-
-  let child: ChildProcess;
-  try {
-    child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      // No shell, ever. The argv above is a frozen literal from the registry and
-      // there is nothing in it for a shell to reinterpret — which is only true
-      // while there is no shell.
-      shell: false,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        // Readability only; none of these change what is installed. npm emits a
-        // spinner and colour codes when it thinks it has a terminal, and a
-        // progress bar replayed as text is unreadable.
-        NO_COLOR: "1",
-        npm_config_color: "false",
-        npm_config_progress: "false",
-        npm_config_fund: "false",
-      },
-    });
-  } catch (err) {
-    finishFailed(run, null, null, spawnRefusal(run, err));
-    return;
-  }
-
-  run.child = child;
-
-  const timer = setTimeout(() => {
-    if (run.done) return;
-    log.warn(`install ${run.installId} exceeded ${INSTALL_TIMEOUT_MS}ms; killing`);
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      /* already gone */
-    }
-  }, INSTALL_TIMEOUT_MS);
-
-  const flushers: Array<() => void> = [];
-  for (const stream of ["stdout", "stderr"] as const) {
-    let pending = "";
-    const source = stream === "stdout" ? child.stdout : child.stderr;
-    // `setEncoding` rather than decoding each chunk: a multi-byte character
-    // straddling a chunk boundary decodes to U+FFFD twice when every chunk is
-    // converted independently, and npm prints non-ASCII routinely (package
-    // names, box drawing, a user's own path). The stream keeps the partial
-    // sequence and hands over whole characters.
-    source?.setEncoding("utf-8");
-    source?.on("data", (chunk: string) => {
-      pending += chunk;
-      const lines = pending.split("\n");
-      pending = lines.pop() ?? "";
-      for (const line of lines) emit(run, { type: "install_output", stream, line: cleanLine(line) });
-      // A process that writes a lot without a newline (a progress bar with no
-      // TTY still happens) must not grow this buffer without bound.
-      if (pending.length > MAX_LINE_CHARS) {
-        emit(run, { type: "install_output", stream, line: cleanLine(pending) });
-        pending = "";
+  run.child = spawnNpmInstall({
+    argv: run.argv,
+    label: `install ${run.installId}`,
+    what: `an install of ${run.package}`,
+    isDone: () => run.done,
+    onLine: (stream, line) => emit(run, { type: "install_output", stream, line }),
+    onDone: (outcome) => {
+      if (outcome.kind === "spawn-error") {
+        finishFailed(run, null, null, npmSpawnRefusal(run.command, outcome.error));
+        return;
       }
-    });
-    flushers.push(() => {
-      if (pending.trim()) emit(run, { type: "install_output", stream, line: cleanLine(pending) });
-      pending = "";
-    });
-  }
-
-  child.on("error", (err) => {
-    if (run.done) return;
-    clearTimeout(timer);
-    for (const flush of flushers) flush();
-    finishFailed(run, null, null, spawnRefusal(run, err));
+      const { code, signal } = outcome;
+      if (code === 0) {
+        void finishSucceeded(run);
+        return;
+      }
+      const killed = signal !== null;
+      const refusal = killed
+        ? `\`${run.command}\` was killed (${signal})${signal === "SIGKILL" ? " — it ran past Callboard's ten-minute limit" : ""}. Nothing was installed as far as Callboard can tell. Run the command in a terminal, where you can watch it without a timeout.`
+        : `\`${run.command}\` exited with code ${code}. The output above is npm's; Callboard has not changed anything about this engine. Run the same command in a terminal to retry it interactively.`;
+      finishFailed(run, code, signal, refusal);
+    },
   });
-
-  child.on("close", (code, signal) => {
-    if (run.done) return;
-    clearTimeout(timer);
-    for (const flush of flushers) flush();
-    if (code === 0) {
-      void finishSucceeded(run);
-      return;
-    }
-    const killed = signal !== null;
-    const refusal = killed
-      ? `\`${run.command}\` was killed (${signal})${signal === "SIGKILL" ? " — it ran past Callboard's ten-minute limit" : ""}. Nothing was installed as far as Callboard can tell. Run the command in a terminal, where you can watch it without a timeout.`
-      : `\`${run.command}\` exited with code ${code}. The output above is npm's; Callboard has not changed anything about this engine. Run the same command in a terminal to retry it interactively.`;
-    finishFailed(run, code, signal, refusal);
-  });
-}
-
-function spawnRefusal(run: InstallRun, err: unknown): string {
-  const code = (err as NodeJS.ErrnoException)?.code;
-  const message = err instanceof Error ? err.message : String(err);
-  if (code === "ENOENT") {
-    return `Callboard could not start \`npm\` — there is none on the PATH the daemon inherited. Run \`${run.command}\` in a terminal instead.`;
-  }
-  return `Callboard could not start \`npm\` (${message}). Run \`${run.command}\` in a terminal instead.`;
 }
 
 function finishFailed(run: InstallRun, code: number | null, signal: NodeJS.Signals | null, refusal: string): void {

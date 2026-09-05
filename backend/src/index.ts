@@ -60,6 +60,7 @@ import { acpRouter } from "./routes/acp.js";
 import { clineRouter } from "./routes/cline.js";
 import { piRouter } from "./routes/pi.js";
 import { enginesRouter } from "./routes/engines.js";
+import { selfUpdateRouter } from "./routes/self-update.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
@@ -83,6 +84,7 @@ import { getClaudeAuthStatus } from "./services/claude-auth-status.js";
 import { initOpenRouterModelsCache, stopOpenRouterModelsRefresh } from "./services/openrouter-models.js";
 import { initCodexModelsCache } from "./services/codex-models.js";
 import { buildSystemInfo } from "./services/system-info.js";
+import { BOOT_VERSION } from "./utils/package-manifest.js";
 
 const log = createLogger("server");
 
@@ -232,6 +234,9 @@ app.use("/api/pi", piRouter);
 // Per-engine runtime/version/credential status. Deliberately not part of
 // /api/system-info — see routes/engines.ts.
 app.use("/api/engines", enginesRouter);
+// Callboard installing its own newer version, and restarting into it. A sibling
+// of the engine installs above rather than one of them — see routes/self-update.ts.
+app.use("/api/self-update", selfUpdateRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/cards", cardsRouter);
 app.use("/api/api-keys", apiKeysRouter);
@@ -362,13 +367,16 @@ app.get(
   "/api/system-info",
   // #swagger.tags = ['System']
   // #swagger.summary = 'Get system information'
-  // #swagger.description = 'Returns Callboard version, Node.js version, platform, Claude Agent SDK version, account info, and supported models.'
+  // #swagger.description = 'Returns Callboard version, Node.js version, platform, Claude Agent SDK version, account info, and supported models. `version` is the version this daemon is *running* - the manifest as read at boot - and not whatever is in its package directory now, because `npm install -g` rewrites that directory in place underneath a live process. When the two differ, `installedVersion` carries what is on disk and `restartPending` is true: new files are installed and this daemon has not restarted into them. Both are omitted when there is nothing to say - `installedVersion` when the manifest cannot be read, `restartPending` when no restart is pending - so an absent `restartPending` means the same as false. Only when the boot read itself failed does `version` fall back to what is on disk, which is then the same guess.'
   /* #swagger.responses[200] = { description: "System information" } */
   async (_req, res) => {
     // Assembly lives in `services/system-info.ts` — see that module for why the
     // probes run concurrently and why not one of them is allowed to reject.
-    // `__pkgRoot` is passed in because it is derived from *this* file's depth.
-    res.json(await buildSystemInfo({ pkgRoot: __pkgRoot }));
+    // `__pkgRoot` is passed in because it is derived from *this* file's depth;
+    // `runningVersion` because it has to have been read before an `npm install
+    // -g` could rewrite the manifest under this process, and this handler first
+    // runs on a request.
+    res.json(await buildSystemInfo({ pkgRoot: __pkgRoot, runningVersion: BOOT_VERSION }));
   },
 );
 

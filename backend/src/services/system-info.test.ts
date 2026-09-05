@@ -103,14 +103,40 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("buildSystemInfo", () => {
-  it("reads its own version out of the package root it was handed", async () => {
-    // `pkgRoot` is a parameter rather than derived here precisely so this is
-    // checkable: a module that moved a directory deeper would otherwise start
-    // silently reporting "unknown".
-    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+  it("reports the version it is running, and reads the package root it was handed", async () => {
+    // Both are parameters rather than derived here, and for different reasons.
+    // `pkgRoot` because a module that moved a directory deeper would otherwise
+    // silently report "unknown"; `runningVersion` because it has to have been
+    // read before an upgrade could rewrite it, and this function first runs on a
+    // request.
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: "9.9.9-test" });
     expect(info.version).toBe("9.9.9-test");
+    expect(info.installedVersion).toBe("9.9.9-test");
+    expect(info.restartPending).toBeUndefined();
     expect(info.acpProviders).toEqual(VENDORS);
     expect(typeof info.claudeCliVersion).toBe("string");
+  });
+
+  it("reports what it is running, not what npm has since written over it", async () => {
+    // `npm install -g` replaces the package tree in place, so from the moment
+    // npm exits this manifest describes code that is not executing. Reporting
+    // that read as `version` is what made Settings → About name a version
+    // nothing was running — and, because the update banner is rendered behind
+    // `isNewerVersion(version, latestVersion)`, what made the banner delete
+    // itself the instant npm finished, taking the verdict and the retry button
+    // with it.
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: "9.9.8-test" });
+    expect(info.version).toBe("9.9.8-test");
+    expect(info.installedVersion).toBe("9.9.9-test");
+    expect(info.restartPending).toBe(true);
+  });
+
+  it("falls back to the manifest when the boot read failed", async () => {
+    // Both ways of being wrong are the same guess here, and this is the more
+    // useful of the two.
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: null });
+    expect(info.version).toBe("9.9.9-test");
+    expect(info.restartPending).toBeUndefined();
   });
 
   it("still answers when the data directory cannot be created", async () => {
@@ -119,7 +145,7 @@ describe("buildSystemInfo", () => {
     // request, not an error response.
     mocks.dataDirBroken = true;
 
-    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: "9.9.9-test" });
 
     // The failing probe degrades to exactly what a machine with no `claude`
     // reports, which is honest: Callboard could not start a chat in this state
@@ -133,7 +159,7 @@ describe("buildSystemInfo", () => {
     // `Promise.all` threw it away to report a failure in an unrelated probe.
     mocks.dataDirBroken = true;
 
-    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: "9.9.9-test" });
 
     expect(info.acpProviders).toEqual(VENDORS);
     expect(info.version).toBe("9.9.9-test");
@@ -146,7 +172,7 @@ describe("buildSystemInfo", () => {
     // resolver no longer throws past it.
     mocks.dataDirBroken = true;
 
-    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: "9.9.9-test" });
 
     expect(info.clineProviderId).toBe("anthropic");
     expect(info.claudeCodeUseOpenRouter).toBe(false);
@@ -158,7 +184,7 @@ describe("buildSystemInfo", () => {
     // rejection would hang the request for everyone else's fields too.
     mocks.listAcpProviderAvailability.mockRejectedValue(new Error("PATH exploded"));
 
-    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: "9.9.9-test" });
 
     expect(info.acpProviders).toEqual([]);
     expect(info.version).toBe("9.9.9-test");
@@ -169,7 +195,7 @@ describe("buildSystemInfo", () => {
     // cannot: one on the way *in*, before its try block is entered.
     mocks.getSdkInfoAsync.mockRejectedValue(new Error("SDK unavailable"));
 
-    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: "9.9.9-test" });
 
     expect(info.account).toBeUndefined();
     expect(info.models).toBeUndefined();
@@ -177,7 +203,7 @@ describe("buildSystemInfo", () => {
   });
 
   it("omits latestVersion rather than failing when the registry is unreachable", async () => {
-    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT });
+    const info = await buildSystemInfo({ pkgRoot: PKG_ROOT, runningVersion: "9.9.9-test" });
     expect(info.latestVersion).toBeUndefined();
   });
 
@@ -227,8 +253,9 @@ describe("buildSystemInfo", () => {
     // Not a crash, and not a fabricated number.
     const empty = mkdtempSync(join(tmpdir(), "callboard-no-manifest-"));
     try {
-      const info = await buildSystemInfo({ pkgRoot: empty });
+      const info = await buildSystemInfo({ pkgRoot: empty, runningVersion: null });
       expect(info.version).toBe("unknown");
+      expect(info.installedVersion).toBeUndefined();
       expect(info.sdkVersion).toBe("unknown");
     } finally {
       rmSync(empty, { recursive: true, force: true });
