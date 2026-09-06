@@ -21,7 +21,7 @@ import { builtinModules } from "node:module";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Directories whose compiled output is published (root `files` entries).
-const SHIPPED_ROOTS = ["backend/dist", "bin"];
+const SHIPPED_ROOTS = ["backend/dist", "packages/computer-use/dist", "bin"];
 
 // Mirrors the negations in root `files` — keep the two in sync.
 const isExcluded = (path) =>
@@ -31,7 +31,7 @@ const isExcluded = (path) =>
   /(^|\/)swagger\.js$/.test(path);
 
 // Workspace-internal specifier: rewritten to a relative path at build time.
-const INTERNAL = new Set(["shared"]);
+const INTERNAL = new Set(["shared", "@wolpertingerlabs/computer-use"]);
 
 const BUILTINS = new Set(builtinModules);
 

@@ -43,7 +43,11 @@
     "!**/*.js.map",
     "!**/*.d.ts.map",
     "!**/__fixtures__",
-    "!backend/dist/swagger.*"
+    "!backend/dist/swagger.*",
+    "packages/computer-use/dist",
+    "packages/computer-use/package.json",
+    "packages/computer-use/README.md",
+    "packages/computer-use/LICENSE"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -54,7 +58,8 @@
   "workspaces": [
     "shared",
     "backend",
-    "frontend"
+    "frontend",
+    "packages/computer-use"
   ],
   "scripts": {
     "dev": "CALLBOARD_DATA_DIR=$HOME/.callboard-dev concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
@@ -63,7 +68,7 @@
     "swagger": "tsx backend/src/swagger.ts",
     "prebuild": "npm run swagger",
     "clean": "rm -rf shared/dist backend/dist frontend/dist shared/tsconfig.tsbuildinfo backend/tsconfig.tsbuildinfo frontend/tsconfig.tsbuildinfo",
-    "build": "npm run build:shared && npm run build:backend && npm run build:frontend",
+    "build": "npm run build:shared && npm run build:computer-use && npm run build:backend && npm run build:frontend",
     "postbuild": "node scripts/rewrite-shared-imports.mjs",
     "build:shared": "npm -w shared run build",
     "build:backend": "npm -w callboard-backend run build",
@@ -89,7 +94,8 @@
     "drawlatch:local": "node scripts/drawlatch-switch.cjs local && npm install",
     "drawlatch:prod": "node scripts/drawlatch-switch.cjs prod && npm install",
     "drawlatch:which": "node scripts/drawlatch-switch.cjs which",
-    "drawlatch:check": "node scripts/drawlatch-switch.cjs check"
+    "drawlatch:check": "node scripts/drawlatch-switch.cjs check",
+    "build:computer-use": "npm -w @wolpertingerlabs/computer-use run build"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",

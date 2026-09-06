@@ -30,6 +30,7 @@ const sharedDist = join(repoRoot, 'shared', 'dist');
 
 // Resolve a bare `shared` specifier to its absolute target under shared/dist.
 function targetFor(spec) {
+  if (spec === '@wolpertingerlabs/computer-use') return join(repoRoot, 'packages', 'computer-use', 'dist', 'index.js');
   if (spec === 'shared') return join(sharedDist, 'index.js');
   const m = spec.match(/^shared\/types\/(.+)$/);
   if (m) return join(sharedDist, m[1]);
@@ -38,7 +39,7 @@ function targetFor(spec) {
 
 // Match the specifier only in import/export/dynamic-import position so plain
 // string literals like "shared" are never touched.
-const SPEC_RE = /((?:\bfrom|\bimport)\s*\(?\s*)(['"])(shared(?:\/[^'"]*)?)\2/g;
+const SPEC_RE = /((?:\bfrom|\bimport)\s*\(?\s*)(['"])(shared(?:\/[^'"]*)?|@wolpertingerlabs/computer-use)\2/g;
 
 function toRel(fromFile, targetAbs) {
   let rel = relative(dirname(fromFile), targetAbs).split('\\').join('/');
