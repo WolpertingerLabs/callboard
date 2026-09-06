@@ -1,6 +1,7 @@
 import { assertReasoningEffort } from "./reasoning-capabilities.js";
 import type { EffortLevel } from "shared";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { assertNativeAgentControllable, nativeAgentForChat, readNativeLifecycle, NATIVE_CONTROL_NOTE } from "./codex-native-agents.js";
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
@@ -1133,6 +1134,23 @@ export function buildCallboardToolsSpec(
         },
         async (args) => {
           try {
+            const native = nativeAgentForChat(args.chatId, true);
+            if (native)
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify({
+                      status: readNativeLifecycle(native.logPath),
+                      chatId: args.chatId,
+                      parentThreadId: native.parentThreadId,
+                      management: "read-only",
+                      note: NATIVE_CONTROL_NOTE,
+                      evidence: "Rollout replay; active means activity within 30 seconds, not verified process liveness",
+                    }),
+                  },
+                ],
+              };
             // Check if there's an active web session
             const activeSession = getActiveSession(args.chatId);
             if (activeSession) {
@@ -1228,6 +1246,7 @@ export function buildCallboardToolsSpec(
         },
         async (args) => {
           try {
+            assertNativeAgentControllable(args.chatId);
             // 1. Verify the chat exists
             const chat = findChat(args.chatId, false);
             if (!chat) {

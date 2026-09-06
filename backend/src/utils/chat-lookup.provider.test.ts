@@ -44,11 +44,16 @@ writeFileSync(
     payload: { id: child, cwd: dir, source: { subagent: { thread_spawn: { parent_thread_id: root, depth: 1 } } } },
   }) + "\n",
 );
+// Resume provenance uses a standalone root, never an exec-owned native child.
+writeFileSync(
+  join(logs, `rollout-2026-09-06T10-00-00-${root}.jsonl`),
+  JSON.stringify({ type: "session_meta", payload: { id: root, cwd: dir, source: "exec" } }) + "\n",
+);
 const codex = new CodexSessionProvider();
 
 function stub(kind: SessionProvider["kind"], id: string, acpProviderId?: string): SessionProvider {
   const path = join(dir, id + ".jsonl");
-  writeFileSync(path, "{}\n");
+  writeFileSync(path, JSON.stringify({ type: "session_meta", payload: { id, cwd: dir, source: "exec" } }) + "\n");
   return {
     kind,
     resolveSession: (sessionId: string) => (sessionId === id ? { logPath: path, folder: dir, displayFolder: dir, acpProviderId } : null),
@@ -155,10 +160,10 @@ describe("filesystem provider provenance", () => {
     { stored: false, kind: "claude-code" as const },
     { stored: true, kind: "claude-code" as const },
   ])("persists inferred routing on resume ($kind, legacy stored record: $stored)", async ({ stored, kind }) => {
-    const id = kind === "codex" && !stored ? child : "resume-" + kind + (stored ? "-stored" : "");
+    const id = kind === "codex" && !stored ? root : "resume-" + kind + (stored ? "-stored" : "");
     const vendor = kind === "acp" ? "opencode" : undefined;
     const legacyClaude = stored && kind === "claude-code";
-    setSessionProvidersForTesting(legacyClaude ? [] : id === child ? [codex] : [stub(kind, id, vendor)]);
+    setSessionProvidersForTesting(legacyClaude ? [] : id === root ? [codex] : [stub(kind, id, vendor)]);
     if (stored) chatFileService.upsertChat(id, dir, id, { metadata: '{"title":"keep"}' });
     const adapter = new MockAgentProvider({
       events: [
@@ -224,7 +229,7 @@ describe("review regressions: authoritative transcript consumers", () => {
       expect(JSON.parse(row.metadata).acpProviderId).toBeUndefined();
       expect(row._provider_resolution_error).toMatch(/ambiguous/);
     }
-    await expect(sendMessage({ chatId: "duplicate-review", prompt: "do not execute" })).rejects.toThrow(/Chat not found/);
+    await expect(sendMessage({ chatId: "duplicate-review", prompt: "do not execute" })).rejects.toThrow(/Ambiguous ACP/);
     expect(chatFileService.getChat("duplicate-review")).toBeNull();
 
     chatFileService.upsertChat("ambiguous-stored", dir, "duplicate-review", { metadata: '{"provider":"acp"}' });
@@ -244,7 +249,7 @@ describe("review regressions: authoritative transcript consumers", () => {
     expect(JSON.parse(chatFileService.getChat("explicit-vendor")!.metadata!)).toEqual({ provider: "acp", acpProviderId: "opencode" });
   });
 
-  it("recovers unanimous historical ownership on primary miss for all consumers and resume", async () => {
+  it("recovers unanimous historical ownership for reads, but refuses missing-current Codex resume", async () => {
     const provider = stub("codex", "historical-codex");
     vi.mocked(provider.parseSessionMessages).mockReturnValue([{ type: "text", role: "assistant", content: "historical Codex" } as never]);
     setSessionProvidersForTesting([stub("claude-code", "unrelated"), provider]);
@@ -257,25 +262,8 @@ describe("review regressions: authoritative transcript consumers", () => {
     expect(JSON.stringify(await readTool("multi-review"))).toContain("historical Codex");
     expect(readFinalAssistantText("multi-review")).toBe("historical Codex");
     expect(chatFileService.getChat("multi-review")!.metadata).toBe(metadata);
-    const adapter = new MockAgentProvider({
-      events: [
-        { type: "session_started", sessionId: "missing-current" },
-        { type: "result", status: "success" },
-      ],
-    });
-    setAgentProviderForTesting(adapter, "codex");
-    const emitter = await sendMessage({ chatId: "multi-review", prompt: "offline replay" });
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("resume timed out")), 10000);
-      emitter.on("event", (event: StreamEvent) => {
-        if (event.type === "done" || event.type === "error") {
-          clearTimeout(timer);
-          if (event.type === "error") reject(new Error(JSON.stringify(event)));
-          else resolve();
-        }
-      });
-    });
-    expect(JSON.parse(chatFileService.getChat("multi-review")!.metadata!).provider).toBe("codex");
+    await expect(sendMessage({ chatId: "multi-review", prompt: "offline replay" })).rejects.toThrow(/read-only/);
+    expect(chatFileService.getChat("multi-review")!.metadata).toBe(metadata);
   });
 
   it("rejects conflicting historical providers without defaulting, executing or mutating", async () => {

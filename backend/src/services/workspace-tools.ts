@@ -86,7 +86,8 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
         'those files back. `worktree.disposition` is "quarantined", "kept" (nothing was touched) or "partial" (acted on and now ' +
         "inconsistent — `worktree.state` says what was found). A worktree is never force-removed and a local (non-worktree) directory " +
         "is never removed at all; when a gate refuses, the reasons come back as `worktree.blockers`. Archiving is not deleting: chat " +
-        "records and their logs stay.",
+        "records and their logs stay. Check outcome first: refused means NO archive/cascade occurred. Native ownership release cannot " +
+        "be verified with exec; incomplete discovery may conservatively refuse even unrelated workspaces. Reasons are in worktree.blockers.",
       {
         workspaceId: z.string().describe("Workspace id (opaque — from list_workspaces; never a path)"),
       },
@@ -181,7 +182,10 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
         "any record's, since no single record identifies the row.",
       {
         cwd: z.string().describe("Absolute path of the existing directory. It must exist, and must not be a git worktree."),
-        name: z.string().optional().describe("Label for the workspace. Defaults to the directory's last path segment — which is what the sidebar shows anyway."),
+        name: z
+          .string()
+          .optional()
+          .describe("Label for the workspace. Defaults to the directory's last path segment — which is what the sidebar shows anyway."),
       },
       async (args) => {
         try {

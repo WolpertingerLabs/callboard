@@ -1,6 +1,7 @@
 import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
 import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
@@ -515,6 +516,7 @@ export function respondToPermission(
  * CLI session, whose execution the server doesn't own).
  */
 export function stopSession(chatId: string): boolean {
+  if (nativeAgentForChat(chatId, true)) return false;
   const info = sessionRegistry.get(chatId);
   if (info && info.abortController) {
     info.abortController.abort();
@@ -563,6 +565,7 @@ export type SessionStopOutcome =
  * unregistering it would only hide that from the UI.
  */
 export async function stopSessionAndWait(chatId: string, timeoutMs: number = SESSION_TEARDOWN_TIMEOUT_MS): Promise<SessionStopOutcome> {
+  if (nativeAgentForChat(chatId, true)) return "unstoppable";
   const info = sessionRegistry.get(chatId);
   if (!info) return "not-running";
   // CLI sessions carry no abort controller: the server did not spawn them.
@@ -912,6 +915,7 @@ const DEFAULT_MAX_NUDGES = 3;
  * and emits a "chat_created" event so the frontend can navigate.
  */
 export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitter> {
+  if (opts.chatId) assertNativeAgentControllable(opts.chatId);
   const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
   const isNewChat = !opts.chatId;
   // A job step or cron action authored before the OpenRouter harness was removed
@@ -941,28 +945,34 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // Existing chat flow — check file storage first, then fall back to filesystem.
     // CLI-created conversations only exist as JSONL files in ~/.claude/projects/
     // and won't have a record in data/chats/ until they're first used from the UI.
-    let chat = chatFileService.getChat(opts.chatId);
+    const storedChat = chatFileService.getChat(opts.chatId);
+    const expectedContext = chatContextFingerprint(storedChat);
+    let chat = storedChat;
     if (!chat) {
-      // Filesystem fallback: find the session log and create a file storage record
-      // so that subsequent interactions (permission tracking, metadata updates) work.
+      // Discovery is read-only until all awaited validation and freshness
+      // checks succeed; concurrent adoption must still be detected.
       const fsChat = findChat(opts.chatId, false);
       if (!fsChat) throw new Error("Chat not found");
       if (fsChat._provider_resolution_error) throw new Error(fsChat._provider_resolution_error);
-      log.debug(`Chat ${opts.chatId} found via filesystem fallback, creating file storage record`);
-      chat = chatFileService.upsertChat(fsChat.id, fsChat.folder, fsChat.session_id, { metadata: fsChat.metadata });
+      chat = fsChat;
     }
+    if (!chat) throw new Error("Chat not found");
     folder = chat.folder;
     resumeSessionId = chat.session_id;
     // Legacy stored records also need resolver provenance before resuming. Reads
     // remain immutable; only this write path pins inferred routing.
-    const expectedContext = chatContextFingerprint(chat);
     const storedMetadata = parseChatMetadata(chat.metadata);
     const needsProvenance = storedMetadata.provider == null || (storedMetadata.provider === "acp" && !storedMetadata.acpProviderId);
     const resolvedChat = needsProvenance ? findChat(opts.chatId, false) : null;
     if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
     initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
+    const ownershipExpectation = { sessionId: chat.session_id, provider: initialMetadata.provider };
     await assertReasoningEffort({ ...initialMetadata, cwd: folder });
     assertChatContextUnchanged(expectedContext, chatFileService.getChat(chat.id));
+    assertNativeAgentControllable(opts.chatId, ownershipExpectation);
+    if (!storedChat) {
+      chat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: chat.metadata });
+    }
     const routing: Record<string, unknown> = {};
     if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;
     if (!storedMetadata.acpProviderId && initialMetadata.acpProviderId) routing.acpProviderId = initialMetadata.acpProviderId;

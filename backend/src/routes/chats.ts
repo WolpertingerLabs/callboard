@@ -1,4 +1,11 @@
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
+import {
+  nativeMetadata,
+  refreshNativeMetadata,
+  assertNativeAgentControllable,
+  withNativeCodexChats,
+  createLifecycleBudget,
+} from "../services/codex-native-agents.js";
 import { Router } from "express";
 import type { Request } from "express";
 import { existsSync } from "fs";
@@ -383,7 +390,7 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
-  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of each chat's card: 'all' (default, no scoping), 'active' (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or 'inactive' (the complement: chats on a CLOSED card's tree, plus chats that are on no card at all). Sessions with no stored record carry no membership and are excluded by either non-default value." } */
+  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of each chat's card: 'all' (default, no scoping), 'active' (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or 'inactive' (the complement: chats on a CLOSED card's tree, plus chats that are on no card at all). Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record." } */
   /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'Back-compatible alias for cardLifecycle=active, kept for persisted prefs and older client bundles. Ignored when cardLifecycle is given.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields" } */
@@ -467,7 +474,7 @@ chatsRouter.get("/", (req, res) => {
     // pagination + the lineage-append pass below) and for the card-lifecycle
     // filter, which walks it to pull in the descendants of card members.
     // One metadata parse per chat, memoized root resolution.
-    const lineageIndex = includeLineage || scopedByCardLifecycle ? buildLineageIndex(fileChats) : null;
+    const lineageIndex = includeLineage || scopedByCardLifecycle ? buildLineageIndex(withNativeCodexChats(fileChats)) : null;
 
     /**
      * Chat ids the card-lifecycle filter admits. Membership is derived from
@@ -476,8 +483,8 @@ chatsRouter.get("/", (req, res) => {
      * whether its card is open, closed or hidden. Null when the filter is off.
      *
      * `active` is the old `cardsOnly` set exactly: chats whose root is an
-     * open, visible card. `inactive` is its complement over chats that HAVE a
-     * record — a closed card's tree, a hidden card's tree, and chats whose
+     * open, visible card. `inactive` is its complement over the enriched
+     * lineage (including discovered native Codex descendants) — a closed card's tree, a hidden card's tree, and chats whose
      * root is not a card at all (triggered or job-step roots). That last group
      * belongs in "inactive" rather than nowhere: with 804 of 805 cards closed
      * on the data dir this was diagnosed against, a filter that also hid every
@@ -496,7 +503,7 @@ chatsRouter.get("/", (req, res) => {
         }
       }
       cardScopedChatIds = new Set<string>();
-      for (const chat of fileChats) {
+      for (const chat of lineageIndex.byId.values()) {
         const onActiveCard = openRootIds.has(lineageIndex.existingRootIdOf(chat.id));
         if (onActiveCard === (cardLifecycleFilter === "active")) cardScopedChatIds.add(chat.id);
       }
@@ -535,14 +542,13 @@ chatsRouter.get("/", (req, res) => {
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
 
-    // Card membership is decided from the file record alone, so the
-    // lifecycle filter runs BEFORE augmentation — augmentSession reads the
-    // session log for a preview, which is the expensive part. A session with
-    // no stored record can't carry membership and is dropped here.
+    // Root card eligibility comes from stored records; native descendants
+    // inherit membership through the enriched lineage index. Filter before
+    // replay/preview enrichment, including sessions with no persisted chat.
     const paginatedSessions = cardScopedChatIds
       ? discoveredSessions.filter((s) => {
           const fileChat = fileChatsBySessionId.get(s.sessionId);
-          return !!fileChat && cardScopedChatIds!.has(fileChat.id);
+          return cardScopedChatIds!.has(fileChat?.id ?? s.sessionId);
         })
       : discoveredSessions;
 
@@ -556,7 +562,8 @@ chatsRouter.get("/", (req, res) => {
     /**
      * Build a response row for a discovered session.
      *
-     * Deliberately does no session-log I/O: `needsPostFilter` over-fetches
+     * Deliberately does no lifecycle/transcript replay (only bounded cached
+     * native metadata reads): `needsPostFilter` over-fetches
      * every session (the triggered/bookmarked flags live in chat-file metadata,
      * and lineage/cards need the whole list to walk), so this runs thousands of
      * times per request while ~20 rows are returned. The one expensive part —
@@ -596,7 +603,14 @@ chatsRouter.get("/", (req, res) => {
               if (!sessionIds.includes(s.sessionId)) {
                 sessionIds.push(s.sessionId);
               }
-              return withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId);
+              return JSON.stringify(
+                nativeMetadata(
+                  s.filePath,
+                  s.sessionId,
+                  parseChatMetadata(withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId)),
+                  false,
+                ),
+              );
             } catch {
               return withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
             }
@@ -613,7 +627,14 @@ chatsRouter.get("/", (req, res) => {
           displayFolder: s.displayFolder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
-          metadata: withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId),
+          metadata: JSON.stringify(
+            nativeMetadata(
+              s.filePath,
+              s.sessionId,
+              parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId)),
+              false,
+            ),
+          ),
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
           // Add git information
@@ -942,7 +963,14 @@ chatsRouter.get("/", (req, res) => {
 
     // Last step, once the returned set is final: one preview read per row that
     // ships, instead of one per session discovered.
-    chatsFromLogs = chatsFromLogs.map((chat: any) => attachJobNeedsYou(attachPreview(chat)));
+    const lifecycleBudget = createLifecycleBudget();
+    chatsFromLogs = chatsFromLogs.map((chat: any) => {
+      const enriched = {
+        ...chat,
+        metadata: refreshNativeMetadata(chat.session_log_path ?? "", chat.session_id, chat.metadata, lifecycleBudget),
+      };
+      return attachJobNeedsYou(attachPreview(enriched));
+    });
 
     const responseData = { chats: chatsFromLogs, hasMore, total, windowRows };
     chatListCache.set(cacheKey, { data: responseData, createdAt: Date.now() });
@@ -1336,7 +1364,7 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
     clearListCaches();
-    res.json(updatedChat);
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
   } catch (err: any) {
     log.error(`Error toggling bookmark: ${err}`);
     res.status(500).json({ error: "Failed to toggle bookmark", details: err.message });
@@ -1530,7 +1558,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
     clearListCaches();
-    res.json(updatedChat);
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
   } catch (err: any) {
     log.error(`Error updating permissions: ${err}`);
     res.status(500).json({ error: "Failed to update permissions", details: err.message });
@@ -1562,7 +1590,7 @@ chatsRouter.patch("/:id/read", (req, res) => {
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
     clearListCaches();
-    res.json(updatedChat);
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
   } catch (err: any) {
     log.error(`Error marking chat as read: ${err}`);
     res.status(500).json({ error: "Failed to mark chat as read", details: err.message });
@@ -1603,7 +1631,7 @@ chatsRouter.patch("/:id/summon", (req, res) => {
     sessionRegistry.clearSummon(chat.id);
     sessionRegistry.notifyMetadata(chat.id, { summon: null });
 
-    res.json(updatedChat);
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
   } catch (err: any) {
     log.error(`Error dismissing summon: ${err}`);
     res.status(500).json({ error: "Failed to dismiss summon", details: err.message });
@@ -1613,6 +1641,11 @@ chatsRouter.patch("/:id/summon", (req, res) => {
 // Delete a chat (deletes both file storage metadata and native session files)
 chatsRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Chats']
+  try {
+    assertNativeAgentControllable(req.params.id);
+  } catch (error) {
+    return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
+  }
   // #swagger.summary = 'Delete a chat'
   // #swagger.description = 'Delete a chat from file storage and its session log from the provider\'s native storage.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */

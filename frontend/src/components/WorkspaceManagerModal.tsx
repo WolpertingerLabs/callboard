@@ -408,7 +408,11 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
         swept.length > 0
           ? ` The retention sweep also permanently deleted ${swept.length} trash entr${swept.length === 1 ? "y" : "ies"} past the ${retentionDays}-day window: ${swept.join(", ")}.`
           : "";
-      if (disposition === "quarantined") {
+      if (result.outcome === "refused" || result.workspace.status !== "archived") {
+        setError(
+          `Archive refused for “${workspace.name}”. No chats were stopped or records archived; the directory was not moved. ${blockers.map((b) => b.detail).join(" ")}`,
+        );
+      } else if (disposition === "quarantined") {
         setNotice(`Archived “${workspace.name}”. Its worktree is in ${trashPath} and can be restored from the Trash tab.${sweepNote}`);
       } else if (disposition === "partial") {
         setError(

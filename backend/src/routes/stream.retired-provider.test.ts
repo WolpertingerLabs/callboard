@@ -43,6 +43,12 @@ vi.mock("../services/claude.js", () => ({
   getPendingRequest: () => null,
   RetiredProviderError: FakeRetiredProviderError,
 }));
+// This unit test stubs execution and has no rollout files. Native ownership is
+// exercised by codex-native-management.test.ts, not by these retired-provider fixtures.
+vi.mock("../services/codex-native-agents.js", async (original) => ({
+  ...(await original<typeof import("../services/codex-native-agents.js")>()),
+  assertNativeAgentControllable: () => {},
+}));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMetadata: () => {} } }));
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {

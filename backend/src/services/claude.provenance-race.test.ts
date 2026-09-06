@@ -35,7 +35,7 @@ describe("sendMessage provenance validation concurrency", () => {
     async (field) => {
       const id = "low-level-race-" + ++counter;
       const logPath = join(dir, id + ".jsonl");
-      writeFileSync(logPath, "{}\n");
+      writeFileSync(logPath, JSON.stringify({ type: "session_meta", payload: { id, cwd: dir, source: "exec" } }) + "\n");
       setSessionProvidersForTesting([
         {
           kind: "codex",
@@ -66,7 +66,7 @@ describe("sendMessage provenance validation concurrency", () => {
 it("preserves unrelated concurrent metadata when low-level resume pins inferred routing", async () => {
   const id = "low-level-merge-" + ++counter;
   const logPath = join(dir, id + ".jsonl");
-  writeFileSync(logPath, "{}\n");
+  writeFileSync(logPath, JSON.stringify({ type: "session_meta", payload: { id, cwd: dir, source: "exec" } }) + "\n");
   setSessionProvidersForTesting([
     {
       kind: "codex",

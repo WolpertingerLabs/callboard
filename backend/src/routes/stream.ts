@@ -1,5 +1,6 @@
 import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
+import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
@@ -408,6 +409,12 @@ streamRouter.post("/:id/message", async (req, res) => {
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
   try {
+    assertNativeAgentControllable(req.params.id);
+  } catch (error) {
+    return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
+  }
+
+  try {
     // ── Branch drift guard ──────────────────────────────────────
     // If the git branch changed since the last message in this chat,
     // block unless the client explicitly acknowledges.
@@ -424,6 +431,7 @@ streamRouter.post("/:id/message", async (req, res) => {
         .status(410)
         .json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be resumed.", code: "retired_provider" });
     }
+    const ownershipExpectation = { sessionId: chatRecord.session_id, provider: meta.provider };
     // Validate the merged configuration before any metadata changes. Clearing
     // effort permits recovery from stale saved overrides without weakening it.
     if (model !== undefined || effort !== undefined) {
@@ -443,6 +451,12 @@ streamRouter.post("/:id/message", async (req, res) => {
     // and then write settings onto another. Unrelated metadata may still merge.
     const fresh = chatFileService.getChat(chatRecord.id);
     assertChatContextUnchanged(expectedContext, fresh);
+    // Retain validated provenance even if the unpersisted rollout disappears.
+    try {
+      assertNativeAgentControllable(req.params.id, ownershipExpectation);
+    } catch (error) {
+      return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
+    }
     const currentGitInfo = getGitInfo(chatRecord.folder);
     const currentBranch = currentGitInfo.branch;
 
@@ -839,6 +853,11 @@ streamRouter.post("/:id/stop", (req, res) => {
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID (or a new chat\'s clientTrackingId)' } */
   /* #swagger.responses[200] = { description: "{ stopped: true } when a live web session was cancelled; { stopped: false } when there was nothing to stop (already finished, or a CLI session the server does not control)" } */
   const chatId = req.params.id;
+  try {
+    assertNativeAgentStoppable(chatId);
+  } catch (error) {
+    return res.status(409).json({ stopped: false, error: "native_child_read_only", message: (error as Error).message });
+  }
   const stopped = stopSession(chatId);
   // Worth an info line: this is a deliberate user cancellation, and the run's
   // own "ended: aborted" log lands right after it.

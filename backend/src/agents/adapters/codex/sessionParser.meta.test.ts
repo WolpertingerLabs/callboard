@@ -1,21 +1,7 @@
-/**
- * `readCodexSessionMeta` — the memo and the head fast path.
- *
- * Discovery asks every rollout for its `cwd` on every chat-list request, and
- * the `cwd` lives inside the file. Two things make that cheap, and both can
- * fail silently:
- *
- *  - a **memo** keyed on the file's `mtimeMs`/`size`, whose failure mode is a
- *    stale answer after the rollout changes, and
- *  - a **head fast path** that reads the leading scalars of the `session_meta`
- *    line without parsing `base_instructions` (a quarter-megabyte blob on real
- *    rollouts), whose failure mode is a wrong or missing field on a shape it
- *    didn't anticipate.
- *
- * The memo tests pin mtimes to fixed Dates so `mtimeMs` is an exact integer and
- * "same version" vs "new version" is decided, not raced. The fast-path tests
- * pair each accelerated shape with a shape that must fall back, and assert the
- * same answer either way.
+/** Complete, bounded first-record metadata and replacement-aware memoization.
+ * Incomplete prefixes cannot establish root ownership; inherited later metadata
+ * cannot repair a torn first record. Same-size restored-mtime rewrites must
+ * invalidate cached lineage via ctime/device/inode evidence.
  */
 import { linkSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,10 +53,7 @@ function metaLine(cwd: string, blobSize = 16): unknown {
 const userLine = (text: string) => ({ type: "response_item", payload: { type: "message", role: "user", content: text } });
 
 describe("readCodexSessionMeta — memoization", () => {
-  it("serves an unchanged file from the memo instead of re-reading it", () => {
-    // Both cwds are the same byte length, so the rewrite below changes only the
-    // content — same size, and the mtime is stamped back to T0. If the memo
-    // were not consulted, the second read would report "/p/bbbb".
+  it("invalidates a same-size rewrite even when mtime is restored", () => {
     writeRollout([metaLine("/p/aaaa")]);
     expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/aaaa");
 
@@ -80,7 +63,7 @@ describe("readCodexSessionMeta — memoization", () => {
     expect(after.size).toBe(before.size);
     expect(after.mtimeMs).toBe(before.mtimeMs);
 
-    expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/aaaa");
+    expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/bbbb");
   });
 
   it("re-reads after a rollout is appended to", () => {
@@ -123,7 +106,7 @@ describe("readCodexSessionMeta — memoization", () => {
   });
 });
 
-describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
+describe("readCodexSessionMeta — bounded complete records", () => {
   it("reads the scalars past a base_instructions blob far larger than the head window", () => {
     // 256 KB of system prompt — bigger than the 8 KB the fast path reads, and
     // representative of real rollouts (line 1 averages ~234 KB on this device).
@@ -146,7 +129,7 @@ describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
     expect(readCodexSessionMeta(filePath)?.cwd).toBe(cwd);
   });
 
-  it("falls back to the full scan when the payload opens with a nested value", () => {
+  it("uses the bounded complete-record fallback when the payload opens with a nested value", () => {
     // No leading scalars to slice off, so the fast path declines — the answer
     // must still be right.
     writeRollout([
@@ -159,9 +142,9 @@ describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
     expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/nested-first");
   });
 
-  it("falls back to the full scan when session_meta is not the first line", () => {
+  it("refuses later metadata when the first record is not session_meta", () => {
     writeRollout([userLine("stray leading line"), metaLine("/p/second-line", 32 * 1024)]);
-    expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/second-line");
+    expect(readCodexSessionMeta(filePath)).toBeNull();
   });
 
   it("falls back when the meta line is longer than the head window", () => {
@@ -177,28 +160,15 @@ describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
     expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/far");
   });
 
-  it("reads the meta of a rollout whose first line is still being written", () => {
-    // A rollout captured mid-flush: the scalars are on disk but the trailing
-    // `base_instructions` blob is truncated, so the line as a whole is not
-    // valid JSON. Reading the leading scalars answers anyway, which keeps a
-    // live session in the sidebar instead of dropping it until the write lands.
-    //
-    // This is also the case that pins the fast path down: a reader that parses
-    // the whole line before answering can only return null here, so the test
-    // fails if the head scan stops being the thing that answers.
+  it("refuses metadata whose first line is still being written", () => {
     const truncated = JSON.stringify(metaLine("/p/mid-flush", 64)).slice(0, -40);
     expect(() => JSON.parse(truncated)).toThrow();
     writeFileSync(filePath, truncated, "utf-8");
     utimesSync(filePath, T0, T0);
-    expect(readCodexSessionMeta(filePath)).toEqual({
-      id: THREAD_ID,
-      cwd: "/p/mid-flush",
-      timestamp: "2026-06-14T17:03:58.000Z",
-      cliVersion: "0.139.0",
-    });
+    expect(readCodexSessionMeta(filePath)).toBeNull();
   });
 
-  it("falls back to the full scan when a nested value precedes the fields it wants", () => {
+  it("uses the bounded complete-record fallback when a nested value precedes the fields it wants", () => {
     // The shape Codex will plausibly ship next: `git` is already in this
     // corpus, just always after `cwd`. Move it in front and the head scan stops
     // there — with a prefix that parses cleanly and is missing everything the
@@ -228,11 +198,8 @@ describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
     });
   });
 
-  it("still takes the fast path when the nested value sits after every field it wants", () => {
-    // The corpus's other real shape: `git` present, but past `cli_version`. The
-    // guard above is keyed on the fields actually collected, not on "there was
-    // a nested value", so this one must still be answered from the head — which
-    // the truncation pins, since the line as a whole cannot be parsed at all.
+  it("refuses truncated trailing objects even after every wanted scalar", () => {
+    // Trailing native ownership fields could be beyond the truncated object.
     const line = {
       timestamp: "2026-06-14T17:03:58.000Z",
       type: "session_meta",
@@ -249,12 +216,7 @@ describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
     expect(() => JSON.parse(truncated)).toThrow();
     writeFileSync(filePath, truncated, "utf-8");
     utimesSync(filePath, T0, T0);
-    expect(readCodexSessionMeta(filePath)).toEqual({
-      id: THREAD_ID,
-      cwd: "/p/git-late",
-      timestamp: "2026-06-14T17:03:58.000Z",
-      cliVersion: "0.139.0",
-    });
+    expect(readCodexSessionMeta(filePath)).toBeNull();
   });
 
   it("returns null when no line is a session_meta", () => {
@@ -262,30 +224,14 @@ describe("readCodexSessionMeta — head fast path and its fallbacks", () => {
     expect(readCodexSessionMeta(filePath)).toBeNull();
   });
 
-  it("skips a torn leading line and still finds the meta", () => {
+  it("does not substitute inherited metadata after a torn leading line", () => {
     writeFileSync(filePath, `{"type":"response_item","payl\n${JSON.stringify(metaLine("/p/torn", 32 * 1024))}\n`, "utf-8");
     utimesSync(filePath, T0, T0);
-    expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/torn");
+    expect(readCodexSessionMeta(filePath)).toBeNull();
   });
 });
 
-/**
- * The bound, and what it drops when it bites.
- *
- * Discovery re-walks every rollout on every chat-list request, in a stable
- * newest-first order — a *cyclic* access pattern. Above the bound that is the
- * one pattern an oldest-out policy (FIFO, and LRU with it) cannot survive: the
- * entry it evicts is the one the next pass asks for first, so the hit rate is
- * 0% and the memo buys nothing for exactly the users with the most rollouts.
- * These tests walk a corpus larger than the bound twice and assert the second
- * walk is still served from the memo.
- *
- * The corpus is 4200 *paths* over one inode: the memo keys on the path, so hard
- * links give a corpus bigger than the bound without writing one. Rewriting the
- * single inode in place — same byte length, mtime stamped back — then flips the
- * answer for every path that is NOT memoized, so on the second walk "/p/aaaa"
- * means hit and "/p/bbbb" means miss.
- */
+/** Rewrites must invalidate even a corpus larger than the bounded cache. */
 describe("readCodexSessionMeta — the memo's bound", () => {
   /** `count` paths sharing one inode, in a stable order. */
   function linkFarm(count: number, cwd: string): string[] {
@@ -310,29 +256,22 @@ describe("readCodexSessionMeta — the memo's bound", () => {
     expect(after.mtimeMs).toBe(before.mtimeMs);
   }
 
-  it("still serves nearly the whole corpus on a re-walk above the bound", () => {
+  it("invalidates rewritten shared inodes above the cache bound", () => {
     const paths = linkFarm(META_CACHE_MAX + 104, "/p/aaaa");
     for (const p of paths) expect(readCodexSessionMeta(p)?.cwd).toBe("/p/aaaa");
 
     flip("/p/bbbb");
     const second = paths.map((p) => readCodexSessionMeta(p)?.cwd);
 
-    // Pass 1 filled the memo at path MAX-1 and then rotated a single slot, so
-    // paths 0…MAX-2 are still resident — the newest rollouts, which is the page
-    // the sidebar shows. Oldest-out would have evicted precisely these, and
-    // every entry here would read "/p/bbbb".
-    const hits = second.filter((cwd) => cwd === "/p/aaaa").length;
-    expect(hits).toBeGreaterThanOrEqual(META_CACHE_MAX - 1);
-    expect(new Set(second.slice(0, META_CACHE_MAX - 1))).toEqual(new Set(["/p/aaaa"]));
-    // And the bound still holds: the tail past it is not memoized.
+    expect(new Set(second)).toEqual(new Set(["/p/bbbb"]));
     expect(second.at(-1)).toBe("/p/bbbb");
   });
 
-  it("evicts nothing at all below the bound", () => {
+  it("invalidates rewritten shared inodes below the cache bound", () => {
     const paths = linkFarm(META_CACHE_MAX - 8, "/p/aaaa");
     for (const p of paths) expect(readCodexSessionMeta(p)?.cwd).toBe("/p/aaaa");
 
     flip("/p/bbbb");
-    expect(new Set(paths.map((p) => readCodexSessionMeta(p)?.cwd))).toEqual(new Set(["/p/aaaa"]));
+    expect(new Set(paths.map((p) => readCodexSessionMeta(p)?.cwd))).toEqual(new Set(["/p/bbbb"]));
   });
 });

@@ -423,6 +423,19 @@ export class ChatFileService {
 
   // Save chat to file (uses session_id as filename)
   private saveChat(chat: Chat): void {
+    // Identity and lineage (including inferred pointers and their provenance)
+    // are durable: stored-only board/MCP consumers need them without discovery.
+    // Observed lifecycle/control presentation remains transient.
+    try {
+      const metadata = JSON.parse(chat.metadata || "{}");
+      if (metadata.provider === "codex" && metadata.nativeAgent && typeof metadata.nativeAgent === "object") {
+        const native = { ...metadata.nativeAgent };
+        for (const key of ["lifecycle", "evidence", "management", "controlNote"]) delete native[key];
+        chat.metadata = JSON.stringify({ ...metadata, nativeAgent: native });
+      }
+    } catch {
+      /* Preserve legacy malformed metadata unchanged. */
+    }
     const filepath = join(chatsDir, `${chat.session_id}.json`);
     writeFileSync(filepath, JSON.stringify(chat, null, 2));
     invalidateRecord(chat.session_id);

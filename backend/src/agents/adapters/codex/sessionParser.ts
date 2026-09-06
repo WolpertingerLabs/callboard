@@ -201,7 +201,10 @@ interface RolloutLine {
   payload?: Record<string, unknown>;
 }
 
-interface SessionMeta {
+export interface SessionMeta {
+  isNativeThread?: true;
+  nativeAgent?: { parentThreadId: string; nickname?: string; agentPath?: string; role?: string; depth?: number };
+  historyStartOrdinal?: number;
   id?: string;
   cwd?: string;
   timestamp?: string;
@@ -259,11 +262,14 @@ function readRolloutLines(filePath: string): RolloutLine[] {
   const lines: RolloutLine[] = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed) {
+      lines.push({});
+      continue;
+    }
     try {
       lines.push(JSON.parse(trimmed) as RolloutLine);
     } catch {
-      /* skip a torn / partially-written line */
+      lines.push({}); // Preserve physical ordinals across malformed lines.
     }
   }
   return lines;
@@ -307,90 +313,6 @@ function readHead(filePath: string, maxBytes: number): string | null {
   }
 }
 
-/** What {@link scanFlatHead} found: the leading scalars, and where they stopped. */
-interface FlatHead {
-  /** Members appearing before the object's first nested object/array value. */
-  scalars: Record<string, unknown>;
-  /** The key whose value is that first nested value, when there is one. */
-  nestedKey?: string;
-  /** Index of the `{` / `[` that opens it. */
-  nestedStart?: number;
-}
-
-/**
- * Read the *leading scalar members* of the JSON object starting at `open`,
- * without parsing whatever comes after the first nested value.
- *
- * Why this exists: a rollout's `session_meta` payload ends with
- * `base_instructions.text` — the agent's entire system prompt. On a real device
- * that makes line 1 average **234 KB**, while the four fields discovery wants
- * (`id`, `cwd`, `timestamp`, `cli_version`) live in its first ~250 bytes. So
- * reading only the head of the *file* isn't enough; the expensive part is
- * `JSON.parse` on a quarter-megabyte line, once per rollout, on every
- * chat-list request.
- *
- * This walks the raw text with a string-aware scanner, stops at the first `{`
- * or `[`, and hands the flat prefix it collected to the real `JSON.parse` —
- * so the values are parsed by the parser, not by a regex. It is an accelerator,
- * never a second parser: anything it doesn't recognise returns `null` and the
- * caller falls back to parsing the line in full.
- */
-function scanFlatHead(raw: string, open: number): FlatHead | null {
-  if (raw[open] !== "{") return null;
-  let inString = false;
-  let escaped = false;
-  /** Index of the comma closing the last complete member. */
-  let lastComma = -1;
-  /** Raw (still-escaped) text of the most recently read key. */
-  let lastKey: string | null = null;
-  let stringStart = -1;
-  /** The next string to complete is a key, not a value. */
-  let expectKey = true;
-
-  for (let i = open + 1; i < raw.length; i++) {
-    const ch = raw[i]!;
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === "\\") escaped = true;
-      else if (ch === '"') {
-        inString = false;
-        if (expectKey) {
-          lastKey = raw.slice(stringStart, i);
-          expectKey = false;
-        }
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      stringStart = i + 1;
-      continue;
-    }
-    if (ch === ",") {
-      lastComma = i;
-      expectKey = true;
-      continue;
-    }
-    if (ch === "}") {
-      // Wholly flat object — no nested value to stop at.
-      const scalars = parseObject(raw.slice(open, i + 1));
-      return scalars ? { scalars } : null;
-    }
-    if (ch === "{" || ch === "[") {
-      // A nested value starts here. Everything up to the comma that closed the
-      // previous member is a complete flat object once we re-close the brace.
-      if (lastComma < 0 || lastKey === null) return null;
-      const scalars = parseObject(raw.slice(open, lastComma) + "}");
-      if (!scalars) return null;
-      // `lastKey` is the raw, still-escaped text between the key's quotes;
-      // round-tripping it through the parser is how it gets unescaped.
-      const key = Object.keys(parseObject(`{"${lastKey}":0}`) ?? {})[0];
-      return { scalars, ...(key !== undefined && { nestedKey: key }), nestedStart: i };
-    }
-  }
-  return null; // ran off the end of the head — caller falls back
-}
-
 function parseObject(text: string): Record<string, unknown> | null {
   try {
     const value = JSON.parse(text) as unknown;
@@ -400,70 +322,42 @@ function parseObject(text: string): Record<string, unknown> | null {
   }
 }
 
-/**
- * Bytes of a rollout to read when trying the fast path. Comfortably larger than
- * any observed `session_meta` scalar prefix (~250 bytes) with room for the
- * outer wrapper; a rollout that doesn't yield its meta within this falls back
- * to the full scan.
- */
-const META_HEAD_BYTES = 8192;
-
-/** The `session_meta.payload` members {@link buildSessionMeta} reads. */
-const WANTED_META_KEYS = ["id", "cwd", "timestamp", "cli_version"] as const;
-
-/**
- * Fast path for {@link readCodexSessionMeta}: pull the meta out of the file's
- * first 8 KB using {@link scanFlatHead}. Returns `undefined` (not `null`) when
- * the head isn't recognisable, which means "fall back", as distinct from the
- * `null` that means "this rollout has no session_meta".
- */
-function readSessionMetaFromHead(filePath: string): SessionMeta | undefined {
-  const head = readHead(filePath, META_HEAD_BYTES);
-  if (!head) return undefined;
-  const open = head.indexOf("{");
-  if (open < 0) return undefined;
-
-  const outer = scanFlatHead(head, open);
-  // `session_meta` is line 1 of a rollout. If line 1 is something else, this
-  // isn't a shape the fast path can rule on — let the full scan decide.
-  if (!outer || outer.scalars.type !== "session_meta") return undefined;
-  if (outer.nestedKey !== "payload" || outer.nestedStart === undefined) return undefined;
-
-  const payload = scanFlatHead(head, outer.nestedStart);
-  if (!payload) return undefined;
-  // When the scan stopped at a nested value, `scalars` is a PREFIX of the
-  // payload — everything after that value is unread. Answering from a prefix
-  // that is missing a field we want would not look like a failure: the shape is
-  // still perfectly recognisable, so the fast path would confidently report
-  // `cwd: ""` for every rollout the day a Codex release emits its `git` object
-  // (or any other new nested member) ahead of `cwd`. Downstream that hides
-  // ignored folders' sessions, collapses every Codex chat into one empty-path
-  // sidebar row, and — because `cli_version` is lost the same way — silences
-  // `checkCliVersion`, the drift alarm that exists to warn about exactly this.
-  // So a partial prefix is not an answer; it's a fall-back to the full scan.
-  //
-  // A wholly flat payload (no `nestedKey`) went through `JSON.parse` entire, so
-  // there is nothing unread and no guard to apply. The remaining prefix-shaped
-  // gap is a key duplicated on BOTH sides of the nested value, where the scan
-  // keeps the first and `JSON.parse` would keep the last — no JSON serialiser
-  // emits duplicate keys, and the scan is an accelerator for files Codex wrote.
-  if (payload.nestedKey !== undefined && !WANTED_META_KEYS.every((key) => key in payload.scalars)) return undefined;
-  return buildSessionMeta(payload.scalars);
-}
-
 function buildSessionMeta(payload: Record<string, unknown>): SessionMeta {
   const meta: SessionMeta = {};
   if (typeof payload.id === "string") meta.id = payload.id;
   if (typeof payload.cwd === "string") meta.cwd = payload.cwd;
   if (typeof payload.timestamp === "string") meta.timestamp = payload.timestamp;
   if (typeof payload.cli_version === "string") meta.cliVersion = payload.cli_version;
+  const source = payload.source as { subagent?: { thread_spawn?: Record<string, unknown> } } | undefined;
+  const spawn = source?.subagent?.thread_spawn;
+  if (spawn || payload.thread_source === "subagent") meta.isNativeThread = true;
+  const parent = spawn?.parent_thread_id;
+  const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+  if (
+    typeof parent === "string" &&
+    uuid.test(parent) &&
+    meta.id &&
+    uuid.test(meta.id) &&
+    parent !== meta.id &&
+    (!payload.parent_thread_id || payload.parent_thread_id === parent)
+  ) {
+    meta.nativeAgent = {
+      parentThreadId: parent,
+      ...(typeof spawn?.agent_nickname === "string" && { nickname: spawn.agent_nickname }),
+      ...(typeof spawn?.agent_path === "string" && { agentPath: spawn.agent_path }),
+      ...(typeof spawn?.agent_role === "string" && { role: spawn.agent_role }),
+      ...(typeof spawn?.depth === "number" && { depth: spawn.depth }),
+    };
+    if (Number.isSafeInteger(payload.subagent_history_start_ordinal) && Number(payload.subagent_history_start_ordinal) >= 1)
+      meta.historyStartOrdinal = Number(payload.subagent_history_start_ordinal);
+  }
   checkCliVersion(meta.cliVersion);
   return meta;
 }
 
 /**
  * Memo for {@link readCodexSessionMeta}, keyed by path and invalidated by the
- * file's `mtimeMs`/`size`.
+ * file's device/inode, nanosecond ctime/mtime, and size.
  *
  * `session_meta` is line 1 and a resume only ever *appends*, so the meta itself
  * is immutable — but keying on the stat means a rewritten rollout (a seeded
@@ -493,7 +387,7 @@ function buildSessionMeta(payload: Record<string, unknown>): SessionMeta {
  * evicted, so the policy is invisible until it is the only thing that matters.
  */
 export const META_CACHE_MAX = 4096;
-const metaCache = new Map<string, { mtimeMs: number; size: number; meta: SessionMeta | null }>();
+const metaCache = new Map<string, { key: string; meta: SessionMeta | null }>();
 /** Key of the newest insertion — the one eviction takes when the memo is full. */
 let metaCacheNewest: string | null = null;
 
@@ -504,20 +398,28 @@ export function clearCodexSessionMetaCache(): void {
 }
 
 /**
- * Read just the `session_meta` (first matching line) of a rollout. Used by the
+ * Read just the `session_meta` (complete first record) of a rollout. Used by the
  * provider for discovery (folder, sort timestamp) and id resolution without
  * parsing the whole transcript.
  *
  * Memoized per file version — discovery asks this of every rollout on every
  * chat-list request, and the answer only changes when the file does.
  */
+function readBoundedSessionMeta(filePath: string): SessionMeta | undefined {
+  // A malformed/huge metadata line must not turn discovery into a whole-log scan.
+  const small = parseObject(readHead(filePath, 8192)?.split("\n")[0] ?? "");
+  if (small?.type === "session_meta") return buildSessionMeta((small.payload ?? {}) as Record<string, unknown>);
+  const head = readHead(filePath, 1024 * 1024);
+  const line = parseObject(head?.split("\n")[0] ?? "");
+  if (line?.type === "session_meta") return buildSessionMeta((line.payload ?? {}) as Record<string, unknown>);
+  return undefined;
+}
+
 export function readCodexSessionMeta(filePath: string): SessionMeta | null {
-  let mtimeMs = -1;
-  let size = -1;
+  let key: string;
   try {
-    const st = statSync(filePath);
-    mtimeMs = st.mtimeMs;
-    size = st.size;
+    const st = statSync(filePath, { bigint: true });
+    key = `${st.dev}:${st.ino}:${st.ctimeNs}:${st.mtimeNs}:${st.size}`;
   } catch {
     // Unreadable/missing: answer "no meta", the same thing the scan would have
     // answered before there was a cache, without memoizing anything for a file
@@ -526,15 +428,9 @@ export function readCodexSessionMeta(filePath: string): SessionMeta | null {
   }
 
   const cached = metaCache.get(filePath);
-  if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.meta;
+  if (cached && cached.key === key) return cached.meta;
 
-  const meta =
-    readSessionMetaFromHead(filePath) ??
-    scanRolloutLines(filePath, (line) => {
-      if (line.type !== "session_meta") return undefined;
-      return buildSessionMeta(line.payload ?? {});
-    }) ??
-    null;
+  const meta = readBoundedSessionMeta(filePath) ?? null;
 
   // Refreshing an entry already held doesn't grow the map, so it evicts nothing.
   if (metaCache.size >= META_CACHE_MAX && !metaCache.has(filePath)) {
@@ -546,7 +442,7 @@ export function readCodexSessionMeta(filePath: string): SessionMeta | null {
       if (!oldest.done) metaCache.delete(oldest.value);
     }
   }
-  metaCache.set(filePath, { mtimeMs, size, meta });
+  metaCache.set(filePath, { key, meta });
   metaCacheNewest = filePath;
   return meta;
 }
@@ -570,7 +466,12 @@ function checkCliVersion(cliVersion: string | undefined): void {
  * line/item types and skip the rest.
  */
 export function parseCodexRollout(filePath: string): ParsedMessage[] {
-  const lines = readRolloutLines(filePath);
+  const rawLines = readRolloutLines(filePath);
+  const ownMeta = readCodexSessionMeta(filePath);
+  if (!ownMeta && rawLines.some((line) => line.type === "session_meta")) return []; // Ambiguous fork headers cannot authorize inherited-history display.
+  // Fork rollouts copy historical events (including session_meta and terminal events).
+  // The installed CLI records the first child-local ordinal. Without it, fail closed.
+  const lines = ownMeta?.isNativeThread ? (ownMeta.historyStartOrdinal === undefined ? [] : rawLines.slice(ownMeta.historyStartOrdinal)) : rawLines;
   const messages: ParsedMessage[] = [];
   // Version-gate off the meta line even when a caller skips readCodexSessionMeta.
   const meta = lines.find((l) => l.type === "session_meta");
@@ -936,6 +837,8 @@ export function extractText(content: unknown): string {
  * does, returning the first genuine `user` message's text.
  */
 export function readFirstUserPrompt(filePath: string): string | null {
+  const meta = readCodexSessionMeta(filePath);
+  if (meta?.nativeAgent) return meta.nativeAgent.nickname || meta.nativeAgent.agentPath || null;
   return (
     scanRolloutLines(filePath, (line) => {
       if (line.type !== "response_item") return undefined;
