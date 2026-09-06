@@ -52,6 +52,7 @@ vi.mock("child_process", async (importOriginal) => {
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-workspace-service-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
+process.env.CODEX_HOME = join(tmpRoot, "codex");
 
 const { checkWorktreeClean } = await import("../utils/git.js");
 const childProcess = await import("child_process");

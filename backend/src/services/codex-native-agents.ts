@@ -1,6 +1,6 @@
 /** Read-only exec-owned Codex threads. No process control is available in the exec SDK. */
-import { basename } from "node:path";
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { basename, relative, resolve, sep, isAbsolute } from "node:path";
+import { closeSync, openSync, readSync, statSync, realpathSync } from "node:fs";
 import { CodexSessionProvider } from "../agents/adapters/codex/CodexSessionProvider.js";
 import { readCodexSessionMeta, extractThreadIdFromFilename } from "../agents/adapters/codex/sessionParser.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
@@ -24,9 +24,14 @@ export function nativeAgentForChat(chatId: string) {
   if (meta.provider && meta.provider !== "codex") return null;
   const sessionId = stored?.session_id ?? chatId;
   const resolved = new CodexSessionProvider().resolveSession(sessionId);
-  if (!resolved) return null;
+  const fallback = { parentThreadId: "unverified parent (inspect the owning Codex thread)", sessionId, logPath: resolved?.logPath ?? "" };
+  // Persisted native ownership survives missing logs. Incomplete metadata cannot
+  // establish root ownership either, including filesystem-only threads.
+  if (meta.nativeAgent && meta.provider === "codex" && !resolved) return fallback;
+  if (!resolved) return meta.provider === "codex" ? fallback : null;
   const session = readCodexSessionMeta(resolved.logPath);
-  if (session?.id !== sessionId || !session.isNativeThread) return null;
+  if (!session || session.id !== sessionId) return fallback;
+  if (!session.isNativeThread) return meta.nativeAgent && meta.provider === "codex" ? fallback : null;
   return { parentThreadId: "unverified parent (inspect the owning Codex thread)", ...session.nativeAgent, sessionId, logPath: resolved.logPath };
 }
 
@@ -57,7 +62,12 @@ function currentLifecycle(evidence: LifecycleEvidence, now: number): NativeLifec
 }
 
 /** Bounded replay; the ordinal, NOT timestamps, separates copied fork history. */
-export function readNativeLifecycle(logPath: string, now = Date.now()): NativeLifecycle {
+export interface LifecycleBudget {
+  remainingBytes: number;
+}
+export const createLifecycleBudget = (): LifecycleBudget => ({ remainingBytes: 8 * 1024 * 1024 });
+
+export function readNativeLifecycle(logPath: string, now = Date.now(), budget?: LifecycleBudget): NativeLifecycle {
   const meta = readCodexSessionMeta(logPath);
   if (!meta?.nativeAgent || meta.historyStartOrdinal === undefined) return "unknown";
   let fd: number | undefined;
@@ -67,6 +77,8 @@ export function readNativeLifecycle(logPath: string, now = Date.now()): NativeLi
     const cached = lifecycleCache.get(logPath);
     if (cached?.key === key) return currentLifecycle(cached, now);
     if (stat.size > 4 * 1024 * 1024) return "unknown"; // Never read an arbitrarily large log for status.
+    if (budget && stat.size + 1 > budget.remainingBytes) return "unknown";
+    if (budget) budget.remainingBytes -= stat.size + 1;
     fd = openSync(logPath, "r");
     const buf = Buffer.alloc(stat.size + 1);
     const n = readSync(fd, buf, 0, buf.length, 0);
@@ -107,7 +119,7 @@ export function readNativeLifecycle(logPath: string, now = Date.now()): NativeLi
 }
 
 /** Additive, transient metadata: explicit Callboard parentage/title always win. */
-export function nativeMetadata(logPath: string, sessionId: string, existing: Record<string, unknown> = {}, includeLifecycle = true) {
+export function nativeMetadata(logPath: string, sessionId: string, existing: Record<string, unknown> = {}, includeLifecycle = true, budget?: LifecycleBudget) {
   if (extractThreadIdFromFilename(basename(logPath)) !== sessionId || (existing.provider && existing.provider !== "codex")) return existing;
   const meta = readCodexSessionMeta(logPath);
   if (meta?.id !== sessionId || !meta.nativeAgent) return existing;
@@ -125,7 +137,7 @@ export function nativeMetadata(logPath: string, sessionId: string, existing: Rec
       ...native,
       management: "read-only",
       controlNote: NATIVE_CONTROL_NOTE,
-      lifecycle: includeLifecycle ? readNativeLifecycle(logPath) : "unknown",
+      lifecycle: includeLifecycle ? readNativeLifecycle(logPath, Date.now(), budget) : "unknown",
       evidence: "bounded rollout replay; active means recent activity, not process liveness",
     },
   };
@@ -155,4 +167,78 @@ export function withNativeCodexChats(stored: Chat[]): Chat[] {
     });
   }
   return [...result.values()];
+}
+
+/** Destructive operations need release evidence, not recent activity or registry absence.
+ * Exec has no verified native-child ownership-release signal. Even a completed
+ * turn is insufficient. Unknown/partial discovery is therefore a refusal too.
+ */
+export function nativeWorkspaceEvidence() {
+  return { stored: chatFileService.getAllChats(), evidence: new CodexSessionProvider().ownershipEvidence() };
+}
+
+export function nativeWorkspaceReleaseBlockers(workspaceId: string, cwd: string, snapshot = nativeWorkspaceEvidence()): string[] {
+  const { stored, evidence } = snapshot;
+  const blockers: string[] = evidence.complete ? [] : ["Codex discovery was incomplete; native ownership release cannot be established"];
+  const linked = new Set(stored.filter((chat) => chat.workspaceId === workspaceId).flatMap((chat) => [chat.id, chat.session_id]));
+  const records = stored.map((chat) => ({
+    id: chat.session_id,
+    folder: chat.folder,
+    parent: parseMetadata(chat.metadata).parentChatId ?? (parseMetadata(chat.metadata).nativeAgent as { parentThreadId?: string } | undefined)?.parentThreadId,
+    native: !!parseMetadata(chat.metadata).nativeAgent,
+  }));
+  for (const session of evidence.sessions) {
+    if (!session.meta || session.meta.id !== session.threadId) {
+      blockers.push(`Cannot establish native ownership or cwd for Codex thread ${session.threadId}`);
+      continue;
+    }
+    records.push({
+      id: session.threadId,
+      folder: session.meta.cwd ?? "",
+      parent: session.meta.nativeAgent?.parentThreadId,
+      native: !!session.meta.isNativeThread,
+    });
+  }
+  // Descendants may work in a different directory; explicit workspace lineage
+  // is still relevant. A visited set makes corrupt cycles finite.
+  const children = new Map<string, string[]>();
+  const addEdge = (parent: string, child: string) => {
+    const group = children.get(parent) ?? [];
+    group.push(child);
+    children.set(parent, group);
+  };
+  for (const record of records) if (typeof record.parent === "string") addEdge(record.parent, record.id);
+  for (const chat of stored)
+    if (chat.id !== chat.session_id) {
+      addEdge(chat.id, chat.session_id);
+      addEdge(chat.session_id, chat.id);
+    }
+  const queue = [...linked];
+  for (let i = 0; i < queue.length; i++)
+    for (const child of children.get(queue[i]) ?? [])
+      if (!linked.has(child)) {
+        linked.add(child);
+        queue.push(child);
+      }
+  for (const record of records) {
+    if (!record.native) continue;
+    if (linked.has(record.id) || sameOrNestedDirectory(record.folder, cwd))
+      blockers.push(
+        `Native Codex thread ${record.id}: exec cannot establish ownership release; ask its owning parent to close it and reconcile its native session evidence before removing this workspace`,
+      );
+  }
+  return [...new Set(blockers)];
+}
+
+function sameOrNestedDirectory(folder: string, cwd: string): boolean {
+  if (!folder) return true; // Unknown cwd cannot establish safe release.
+  const canonical = (path: string) => {
+    try {
+      return realpathSync.native(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  const relativePath = relative(canonical(cwd), canonical(folder));
+  return relativePath === "" || (!relativePath.startsWith(".." + sep) && relativePath !== ".." && !isAbsolute(relativePath));
 }

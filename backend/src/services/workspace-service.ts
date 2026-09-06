@@ -1,3 +1,4 @@
+import { nativeWorkspaceReleaseBlockers, nativeWorkspaceEvidence, assertNativeAgentControllable } from "./codex-native-agents.js";
 /**
  * Workspace lifecycle — the phase that actually stops using a directory.
  *
@@ -155,6 +156,7 @@ function repoPathNamesSameRepo(recorded: string, resolvedMainRepo: string): bool
 // at N=44, roughly 1,900 parses on a synchronous route.
 
 interface RemovalContext {
+  nativeOwnership?: ReturnType<typeof nativeWorkspaceEvidence>;
   /**
    * Every active workspace, read once. The ref-count is a filter over this.
    * Lazy: a listing that asks for no verdict never consults the ref-count, and
@@ -276,6 +278,9 @@ export function evaluateWorktreeRemoval(workspace: Workspace, ctx: RemovalContex
   if (!workspace.repoPath) {
     add("no-repo-path", `No main repo recorded for ${cwd}`);
   }
+
+  for (const detail of nativeWorkspaceReleaseBlockers(workspace.id, cwd, (ctx.nativeOwnership ??= nativeWorkspaceEvidence())))
+    add("session-still-running", detail);
 
   // ── Reality: does the record still describe what is on disk? ──
   const exists = existsSync(cwd);
@@ -542,6 +547,11 @@ export function getWorkspaceWithRemovability(id: string, opts?: ListingOptions):
  * archiving a workspace with no live chats stays cheap.
  */
 async function interruptChat(chatId: string): Promise<"not-running" | "stopped" | "unstoppable" | "timeout"> {
+  try {
+    assertNativeAgentControllable(chatId);
+  } catch {
+    return "unstoppable";
+  }
   if (!sessionRegistry.get(chatId)) return "not-running";
   try {
     const { stopSessionAndWait } = await import("./claude.js");
@@ -610,6 +620,21 @@ function isPartialState(state: WorktreeInspection): boolean {
 export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResult | null> {
   const existing = getWorkspace(id);
   if (!existing) return null;
+
+  // Refuse before interrupting any root, mutating bookkeeping, or quarantining.
+  // Filesystem-only children are not in chatsForWorkspace/the registry.
+  const nativeBlockers = nativeWorkspaceReleaseBlockers(id, existing.cwd);
+  if (nativeBlockers.length)
+    return {
+      workspace: existing,
+      chats: [],
+      worktree: {
+        removed: false,
+        disposition: "kept",
+        path: resolve(existing.cwd),
+        blockers: nativeBlockers.map((detail) => ({ code: "session-still-running" as const, detail })),
+      },
+    };
 
   // 1. Cascade. Stop anything still running — and *wait* for it, because step 3
   //    may move the directory those sessions are working in. Then mark the

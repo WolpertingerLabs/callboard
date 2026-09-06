@@ -1,4 +1,4 @@
-import { withNativeCodexChats, readNativeLifecycle } from "./codex-native-agents.js";
+import { withNativeCodexChats, readNativeLifecycle, createLifecycleBudget, type LifecycleBudget } from "./codex-native-agents.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { hasPendingRequest } from "./claude.js";
@@ -118,9 +118,11 @@ function chatStatus(chat: Chat): "ongoing" | "waiting" | "stopped" {
   return "stopped";
 }
 
-function toNode(chat: Chat, meta: ChatMeta): ChatTreeNode {
+function toNode(chat: Chat, meta: ChatMeta, budget?: LifecycleBudget): ChatTreeNode {
   const native = meta.nativeAgent as ChatTreeNode["nativeAgent"];
-  const nativeAgent = native ? { ...native, lifecycle: chat.session_log_path ? readNativeLifecycle(chat.session_log_path) : ("unknown" as const) } : undefined;
+  const nativeAgent = native
+    ? { ...native, lifecycle: chat.session_log_path ? readNativeLifecycle(chat.session_log_path, Date.now(), budget) : ("unknown" as const) }
+    : undefined;
   const rawTitle = (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || null;
   const title = typeof rawTitle === "string" ? rawTitle.replace(/\s+/g, " ").trim().slice(0, 120) : null;
   return {
@@ -362,10 +364,11 @@ export function buildChatTree(chatId: string): ChatTreeResponse | null {
   const rootId = index.existingRootIdOf(target.id);
   const root = byId.get(rootId) ?? target;
 
+  const budget = createLifecycleBudget();
   const visited = new Set<string>();
   const build = (chat: Chat, depth: number): ChatTreeNode => {
     visited.add(chat.id);
-    const node = toNode(chat, parseMeta(chat));
+    const node = toNode(chat, parseMeta(chat), budget);
     if (depth >= MAX_LINEAGE_DEPTH) return node;
     const children = (childrenByParent.get(chat.id) || [])
       .filter((c) => !visited.has(c.id))
@@ -385,7 +388,7 @@ export function buildChatTree(chatId: string): ChatTreeResponse | null {
         seen.add(parent);
         const chat = byId.get(parent);
         if (!chat) break;
-        const node = toNode(chat, parseMeta(chat));
+        const node = toNode(chat, parseMeta(chat), budget);
         ancestors.unshift({ chatId: chat.id, title: node.title, role: node.role });
         parent = index.parentIdOf(parent);
       }

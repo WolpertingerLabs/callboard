@@ -22,7 +22,7 @@
  * @see plans/codex-adapter-job.md (Step 9 session-provider)
  * @see plans/codex-spike-findings.md §5 (rollout format)
  */
-import { existsSync, mkdirSync, readdirSync, lstatSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
+import { mkdirSync, opendirSync, lstatSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import type { HandoffTurn } from "../../handoff.js";
@@ -85,6 +85,12 @@ export function resetCodexSdkDriftWarning(): void {
 
 export class CodexSessionProvider implements SessionProvider {
   readonly kind = "codex" as const;
+  discoveryIncomplete = false;
+
+  ownershipEvidence() {
+    const entries = this.listRollouts();
+    return { complete: !this.discoveryIncomplete, sessions: entries.map((entry) => ({ ...entry, meta: readCodexSessionMeta(entry.filePath) })) };
+  }
 
   constructor() {
     this.checkSdkVersionOnce();
@@ -151,8 +157,14 @@ export class CodexSessionProvider implements SessionProvider {
    * by mtime DESC so discovery/search get newest-first for free.
    */
   private listRollouts(): RolloutEntry[] {
+    this.discoveryIncomplete = false;
     const root = resolveCodexSessionsRoot();
-    if (!existsSync(root)) return [];
+    try {
+      lstatSync(root);
+    } catch (error) {
+      this.discoveryIncomplete = (error as NodeJS.ErrnoException).code !== "ENOENT";
+      return [];
+    }
     const entries: RolloutEntry[] = [];
 
     // Three fixed levels of date dirs (YYYY/MM/DD), then files. Walking by
@@ -160,28 +172,45 @@ export class CodexSessionProvider implements SessionProvider {
     // a user might drop under sessions/ and avoids descending arbitrarily deep.
     let remainingEntries = 20_000;
     const safeReaddir = (dir: string): string[] => {
-      if (remainingEntries <= 0) return [];
-      try {
-        const names = readdirSync(dir).sort().reverse().slice(0, remainingEntries);
-        remainingEntries -= names.length;
+      const names: string[] = [];
+      if (remainingEntries <= 0) {
+        this.discoveryIncomplete = true;
         return names;
-      } catch {
-        return [];
       }
+      let handle;
+      try {
+        handle = opendirSync(dir, { bufferSize: 32 });
+        while (remainingEntries > 0) {
+          const entry = handle.readSync();
+          if (!entry) return names;
+          names.push(entry.name);
+          remainingEntries--;
+        }
+        this.discoveryIncomplete = true;
+      } catch {
+        this.discoveryIncomplete = true;
+      } finally {
+        try {
+          handle?.closeSync();
+        } catch {
+          this.discoveryIncomplete = true;
+        }
+      }
+      return names;
     };
 
     for (const yyyy of safeReaddir(root)) {
       if (!/^\d{4}$/.test(yyyy)) continue;
       const yPath = join(root, yyyy);
-      if (!isDir(yPath)) continue;
+      if (!this.isRolloutDirectory(yPath)) continue;
       for (const mm of safeReaddir(yPath)) {
         if (!/^\d{2}$/.test(mm)) continue;
         const mPath = join(yPath, mm);
-        if (!isDir(mPath)) continue;
+        if (!this.isRolloutDirectory(mPath)) continue;
         for (const dd of safeReaddir(mPath)) {
           if (!/^\d{2}$/.test(dd)) continue;
           const dPath = join(mPath, dd);
-          if (!isDir(dPath)) continue;
+          if (!this.isRolloutDirectory(dPath)) continue;
           for (const file of safeReaddir(dPath)) {
             const threadId = extractThreadIdFromFilename(file);
             if (!threadId) continue;
@@ -190,9 +219,13 @@ export class CodexSessionProvider implements SessionProvider {
             try {
               stat = lstatSync(filePath);
             } catch {
+              this.discoveryIncomplete = true;
               continue;
             }
-            if (!stat.isFile()) continue;
+            if (!stat.isFile()) {
+              this.discoveryIncomplete = true;
+              continue;
+            }
             entries.push({ threadId, filePath, stat });
           }
         }
@@ -201,6 +234,17 @@ export class CodexSessionProvider implements SessionProvider {
 
     entries.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime());
     return entries;
+  }
+
+  private isRolloutDirectory(path: string): boolean {
+    try {
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) this.discoveryIncomplete = true;
+      return stat.isDirectory();
+    } catch {
+      this.discoveryIncomplete = true;
+      return false;
+    }
   }
 
   /** Locate the rollout file for a thread id, or null when not on disk. */
@@ -444,12 +488,4 @@ export class CodexSessionProvider implements SessionProvider {
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0");
-}
-
-function isDir(path: string): boolean {
-  try {
-    return lstatSync(path).isDirectory();
-  } catch {
-    return false;
-  }
 }

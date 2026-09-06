@@ -6,6 +6,22 @@ import { CodexSessionProvider } from "../agents/adapters/codex/CodexSessionProvi
 import { parseCodexRollout, readCodexSessionMeta } from "../agents/adapters/codex/sessionParser.js";
 import { assertNativeAgentControllable, nativeMetadata, readNativeLifecycle, withNativeCodexChats } from "./codex-native-agents.js";
 
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, readSync: vi.fn(fs.readSync) };
+});
+vi.mock("./workspace-store.js", async (original) => ({
+  ...(await original<typeof import("./workspace-store.js")>()),
+  archiveWorkspace: vi.fn(() => {
+    throw new Error("must not archive");
+  }),
+}));
+vi.mock("../utils/worktree-trash.js", async (original) => ({
+  ...(await original<typeof import("../utils/worktree-trash.js")>()),
+  quarantineDirectory: vi.fn(() => {
+    throw new Error("must not quarantine");
+  }),
+}));
 const state = vi.hoisted(() => ({ home: "", chats: [] as import("./chat-file-service.js").Chat[] }));
 vi.mock("./agent-settings.js", () => ({ getAgentSettings: () => ({ codexHome: state.home }) }));
 vi.mock("./chat-file-service.js", () => ({
@@ -16,7 +32,18 @@ vi.mock("./chat-file-service.js", () => ({
   },
 }));
 vi.mock("../utils/paths.js", async (original) => ({ ...(await original<typeof import("../utils/paths.js")>()), isIgnoredProjectFolder: () => false }));
-vi.mock("./claude.js", () => ({ hasPendingRequest: () => false }));
+vi.mock("./claude.js", () => ({
+  hasPendingRequest: () => false,
+  getActiveSession: () => null,
+  getPendingRequest: () => null,
+  stopSessionAndWait: vi.fn(() => {
+    throw new Error("must not interrupt owner");
+  }),
+}));
+vi.mock("../agents/factory.js", async (original) => ({
+  ...(await original<typeof import("../agents/factory.js")>()),
+  getSessionProviders: () => [new CodexSessionProvider()],
+}));
 const { buildChatTree } = await import("./chat-lineage.js");
 const ROOT = "01a0767f-671a-75f0-ab44-238e2fa5785c";
 const CHILD = "01a07680-3128-7461-bc19-d727bd8dc379";
@@ -159,4 +186,224 @@ describe("native Codex replay", () => {
     rollout(ROOT, null);
     expect(() => assertNativeAgentControllable(ROOT)).not.toThrow();
   });
+});
+
+it("requires complete metadata when native ownership follows a large unrelated object", async () => {
+  const path = rollout();
+  const original = JSON.parse((await import("node:fs")).readFileSync(path, "utf8").split("\n")[0]);
+  const { id, cwd, timestamp, cli_version, ...tail } = original.payload;
+  writeFileSync(
+    path,
+    JSON.stringify({ type: "session_meta", payload: { id, cwd, timestamp, cli_version, base_instructions: { text: "x".repeat(9000) }, ...tail } }) + "\n",
+  );
+  expect(readCodexSessionMeta(path)?.nativeAgent?.parentThreadId).toBe(ROOT);
+  expect(() => assertNativeAgentControllable(CHILD)).toThrow("read-only");
+  writeFileSync(
+    path,
+    JSON.stringify({ type: "session_meta", payload: { id, cwd, timestamp, cli_version, base_instructions: { text: "x".repeat(1024 * 1024) }, ...tail } }) +
+      "\n",
+  );
+  expect(readCodexSessionMeta(path)).toBeNull();
+  expect(() => assertNativeAgentControllable(CHILD)).toThrow("read-only");
+});
+
+it("invalidates native lineage and boundary on restored-mtime equal-length rewrites", async () => {
+  const fs = await import("node:fs");
+  const path = rollout();
+  const before = fs.statSync(path);
+  expect(readCodexSessionMeta(path)?.nativeAgent?.parentThreadId).toBe(ROOT);
+  writeFileSync(
+    path,
+    fs.readFileSync(path, "utf8").replaceAll(ROOT, SIBLING).replace('"subagent_history_start_ordinal":4', '"subagent_history_start_ordinal":5'),
+  );
+  fs.utimesSync(path, before.atime, before.mtime);
+  expect(readCodexSessionMeta(path)).toMatchObject({ nativeAgent: { parentThreadId: SIBLING }, historyStartOrdinal: 5 });
+});
+
+it("reports missing stored-native rollout unknown through the actual MCP handler", async () => {
+  state.chats = [
+    {
+      id: CHILD,
+      session_id: CHILD,
+      folder: "/tmp/repo",
+      session_log_path: null,
+      created_at: "",
+      updated_at: "",
+      metadata: JSON.stringify({ provider: "codex", nativeAgent: { parentThreadId: ROOT } }),
+    },
+  ];
+  const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
+  const result = await buildCallboardToolsSpec()
+    .tools.find((tool) => tool.name === "get_session_status")!
+    .handler({ chatId: CHILD });
+  expect(JSON.stringify(result)).toContain("unknown");
+  expect(JSON.stringify(result)).not.toContain('"status":"complete"');
+  expect(() => assertNativeAgentControllable(CHILD)).toThrow("read-only");
+}, 30000);
+
+it("bounds aggregate lifecycle replay and preserves native collaboration after the fork cutoff", async () => {
+  const { createLifecycleBudget } = await import("./codex-native-agents.js");
+  const path = rollout(CHILD, ROOT, [
+    { type: "response_item", payload: { type: "agent_message", content: "local collaboration", author: ROOT, recipient: CHILD } },
+    event("task_complete"),
+  ]);
+  const budget = createLifecycleBudget();
+  budget.remainingBytes = 0;
+  expect(readNativeLifecycle(path, NOW, budget)).toBe("unknown");
+  expect(JSON.stringify(parseCodexRollout(path))).not.toContain("INHERITED");
+  expect(JSON.stringify(parseCodexRollout(path))).toContain("local collaboration");
+});
+
+it("includes unpersisted native descendants in both card lifecycle scopes", async () => {
+  rollout(ROOT, null);
+  rollout();
+  state.chats = [
+    {
+      id: ROOT,
+      session_id: ROOT,
+      folder: "/tmp/repo",
+      session_log_path: null,
+      created_at: "",
+      updated_at: "",
+      metadata: JSON.stringify({ provider: "codex", card: { lifecycle: "open" } }),
+    },
+  ];
+  const { chatsRouter } = await import("../routes/chats.js");
+  const handler = (chatsRouter as any).stack.find((layer: any) => layer.route?.path === "/" && layer.route.methods.get).route.stack[0].handle;
+  const list = (cardLifecycle: string) => {
+    let data: any;
+    const res = {
+      json: (value: unknown) => {
+        data = value;
+      },
+      status: () => res,
+    };
+    handler({ query: { cached: "false", cardLifecycle, limit: "50", includeLineage: "true" } }, res);
+    return data;
+  };
+  expect(list("active").chats.map((chat: any) => chat.id)).toContain(CHILD);
+  expect(list("inactive").chats.map((chat: any) => chat.id)).not.toContain(CHILD);
+  state.chats[0].metadata = JSON.stringify({ provider: "codex", card: { lifecycle: "closed" } });
+  expect(list("inactive").chats.map((chat: any) => chat.id)).toContain(CHILD);
+  expect(list("active").chats.map((chat: any) => chat.id)).not.toContain(CHILD);
+}, 30000);
+
+it("does not replay discarded excludeTriggered rows before pagination", async () => {
+  rollout(ROOT, null);
+  for (const id of [CHILD, SIBLING, LEAF]) rollout(id, ROOT, [message("x".repeat(2 * 1024 * 1024)), event("task_complete")]);
+  const { chatsRouter } = await import("../routes/chats.js");
+  const handler = (chatsRouter as any).stack.find((layer: any) => layer.route?.path === "/" && layer.route.methods.get).route.stack[0].handle;
+  const fs = await import("node:fs");
+  vi.mocked(fs.readSync).mockClear();
+  let data: any;
+  const res = {
+    json: (value: unknown) => {
+      data = value;
+    },
+    status: () => res,
+  };
+  handler({ query: { cached: "false", excludeTriggered: "true", limit: "1" } }, res);
+  expect(data.chats).toHaveLength(1);
+  expect(vi.mocked(fs.readSync).mock.calls.filter((args) => Number((args as unknown[])[3]) > 1024 * 1024).length).toBeLessThanOrEqual(1);
+}, 30000);
+
+it.each(["filesystem-only", "stored-missing", "linked-descendant"])(
+  "refuses workspace archive without native release evidence: %s",
+  async (mode) => {
+    const { createWorkspace, getWorkspace, archiveWorkspace: markArchived } = await import("./workspace-store.js");
+    const { archiveWorkspace, evaluateWorktreeRemoval } = await import("./workspace-service.js");
+    const { quarantineDirectory } = await import("../utils/worktree-trash.js");
+    const cwd = join(state.home, "never-created-worktree");
+    const workspace = createWorkspace({
+      cwd,
+      repoPath: join(state.home, "no-repo"),
+      isolation: "worktree",
+      worktree: { owned: true, mode: "branch-off", branch: "test", baseBranch: "main" },
+    });
+    if (mode === "filesystem-only") rollout(CHILD, ROOT, [event("task_complete")], { cwd });
+    else if (mode === "stored-missing")
+      state.chats = [
+        {
+          id: CHILD,
+          session_id: CHILD,
+          folder: cwd,
+          workspaceId: workspace.id,
+          session_log_path: null,
+          created_at: "",
+          updated_at: "",
+          metadata: JSON.stringify({ provider: "codex", nativeAgent: { parentThreadId: ROOT } }),
+        },
+      ];
+    else {
+      state.chats = [
+        {
+          id: ROOT,
+          session_id: ROOT,
+          folder: cwd,
+          workspaceId: workspace.id,
+          session_log_path: null,
+          created_at: "",
+          updated_at: "",
+          metadata: '{"provider":"codex"}',
+        },
+      ];
+      rollout(CHILD, ROOT, [event("task_complete")], { cwd: "/different/child/cwd" });
+      rollout(LEAF, CHILD);
+    }
+    const result = await archiveWorkspace(workspace.id);
+    expect(result?.worktree.removed).toBe(false);
+    expect(result?.worktree.blockers.some((reason) => reason.detail.includes("ownership release"))).toBe(true);
+    expect(evaluateWorktreeRemoval(workspace).blockers.some((reason) => reason.detail.includes("ownership release"))).toBe(true);
+    expect(markArchived).not.toHaveBeenCalled();
+    expect(quarantineDirectory).not.toHaveBeenCalled();
+    expect(getWorkspace(workspace.id)?.status).not.toBe("archived");
+  },
+  30000,
+);
+
+it("bounds directory enumeration itself and refuses incomplete ownership discovery", async () => {
+  const fs = await import("node:fs");
+  mkdirSync(join(state.home, "sessions"), { recursive: true });
+  let reads = 0;
+  let closed = false;
+  const spy = vi.spyOn(fs, "opendirSync").mockReturnValue({
+    readSync: () => {
+      reads++;
+      return { name: `junk-${reads}` };
+    },
+    closeSync: () => {
+      closed = true;
+    },
+  } as any);
+  try {
+    const provider = new CodexSessionProvider();
+    expect(provider.ownershipEvidence().complete).toBe(false);
+    expect(reads).toBe(20_000);
+    expect(closed).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it("invalidates metadata when an equal-size file replaces the cached inode", async () => {
+  const fs = await import("node:fs");
+  const path = rollout();
+  const before = fs.statSync(path);
+  expect(readCodexSessionMeta(path)?.nativeAgent?.parentThreadId).toBe(ROOT);
+  const replacement = path + ".replacement";
+  writeFileSync(replacement, fs.readFileSync(path, "utf8").replaceAll(ROOT, SIBLING));
+  fs.utimesSync(replacement, before.atime, before.mtime);
+  fs.renameSync(replacement, path);
+  expect(readCodexSessionMeta(path)?.nativeAgent?.parentThreadId).toBe(SIBLING);
+});
+
+it("shares the aggregate replay budget across multiple uncached native logs", async () => {
+  const { createLifecycleBudget } = await import("./codex-native-agents.js");
+  const budget = createLifecycleBudget();
+  const states = [CHILD, SIBLING, LEAF].map((id) => {
+    const path = rollout(id, ROOT, [message("x".repeat(3 * 1024 * 1024)), event("task_complete")]);
+    return readNativeLifecycle(path, NOW, budget);
+  });
+  expect(states).toEqual(["complete", "complete", "unknown"]);
+  expect(budget.remainingBytes).toBeGreaterThanOrEqual(0);
 });
