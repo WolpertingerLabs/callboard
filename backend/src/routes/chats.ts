@@ -640,7 +640,12 @@ chatsRouter.get("/", (req, res) => {
           return {};
         }
       })();
-      const listed = JSON.parse(chat.metadata || "{}");
+      let listed;
+      try {
+        listed = JSON.parse(chat.metadata || "{}");
+      } catch {
+        return chat;
+      }
       if ((stored && original.provider == null) || listed.provider === "acp") {
         const resolved = findChat(chat.id, false);
         if (resolved) {

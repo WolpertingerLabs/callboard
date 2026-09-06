@@ -24,7 +24,10 @@ vi.mock("../services/reasoning-capabilities.js", () => ({
 
 let parentChat: any;
 
-vi.mock("../utils/chat-lookup.js", () => ({ findChat: () => parentChat }));
+vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/chat-lookup.js")>()),
+  findChat: () => parentChat,
+}));
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
     // walkToRootId validates the parent's stored root before stamping the
