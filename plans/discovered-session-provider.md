@@ -37,3 +37,7 @@
 - Final full run: `npx vitest run --maxWorkers=2` — 273 files passed / 3 skipped; 4,354 tests passed / 32 skipped. The first review full run exposed two outdated full-module mocks and a malformed-metadata list regression; fixed both, retained the existing regression test, and reran successfully.
 - Final `npm run build` and `npm run lint:all` pass; lint reports 940 warnings / zero errors. Existing Swagger comment-parser and frontend chunk-size warnings remain. Changed-file lint also passes.
 - No paid calls or live session interaction. Main rebases at clean milestones have been trivial. Duplicate vendor-less ACP identities intentionally remain unreadable/unresumable until an explicit vendor is supplied; no mtime-based ownership inference is retained.
+
+### Post-#412 integration validation
+- Final-delivery rebase incorporated main commit `37960ac` (#412). Its attributed inter-agent context handling and message limiting remain intact in `read_session_messages`; the new test stub now supplies its required provider kind.
+- Post-rebase focused suite: 66 tests passed. Post-rebase full suite: 276 files passed / 3 skipped; 4,367 tests passed / 32 skipped (`--maxWorkers=2`). Build and full lint pass again (940 warnings, zero errors).
