@@ -157,6 +157,11 @@ export class ComputerUseService {
     this.check(s, ref);
     if (s.state !== "ready" || s.leaseId !== ref.leaseId || s.controller.actorId !== p.actorId || s.controller.role !== p.role) fail("lease_conflict");
   }
+  private observer(s: Session, p: Readonly<Principal>): void {
+    // Generation is public status, not permission to see a human's private screen.
+    // Also deny during handoff, before the new controller is installed.
+    if (s.state !== "ready" || (p.role === "agent" && s.controller.role === "human")) fail("lease_conflict");
+  }
   private snapshot(s: Session): SessionStatus {
     return {
       sessionId: s.id,
@@ -253,19 +258,23 @@ export class ComputerUseService {
     work: (signal: AbortSignal) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
-    this.check(s, ref);
+    const check = () => {
+      this.check(s, ref);
+      if (op === "observe") this.observer(s, p);
+    };
+    check();
     await this.allowed(p, op, s.target, s);
-    this.check(s, ref);
+    check();
     if (s.pending >= this.maxQueue) fail("queue_full");
     s.pending++;
     const result = s.tail.then(async () => {
-      this.check(s, ref);
+      check();
       await this.allowed(p, op, s.target, s);
-      this.check(s, ref);
+      check();
       const value = await this.bounded(s, work, signal);
-      this.check(s, ref);
+      check();
       await this.allowed(p, op, s.target, s);
-      this.check(s, ref);
+      check();
       if (signal?.aborted) fail("cancelled");
       return value;
     });
@@ -387,6 +396,8 @@ export class ComputerUseService {
       ref,
       "observe",
       async (sig) => {
+        this.check(s, ref);
+        this.observer(s, p);
         const f = await s.driver!.observe(sig);
         if (
           !Number.isInteger(f.width) ||
@@ -415,9 +426,11 @@ export class ComputerUseService {
       signal,
     );
     this.check(s, ref);
+    this.observer(s, p);
     this.emit(s, "observed");
     await this.allowed(p, "observe", s.target, s);
     this.check(s, ref);
+    this.observer(s, p);
     if (signal?.aborted) fail("cancelled");
     s.frame = { width: frame.width, height: frame.height };
     if (s.controller.actorId === p.actorId && s.controller.role === p.role) s.fresh = true;

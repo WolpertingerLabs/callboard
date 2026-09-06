@@ -45,7 +45,7 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
         available: true,
         kind: "browser",
         capabilities: ["screenshot", "pointer", "keyboard", "navigation", "persistent-session"],
-        reason: "Executable found; launch/runtime qualification occurs on open",
+        reason: "Executable found; sandbox support and launch/runtime qualification occur on open",
       };
     } catch {
       return {
@@ -82,17 +82,28 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
       };
       signal.addEventListener("abort", abortOpen, { once: true });
       try {
-        context = await chromium.launchPersistentContext(profile, {
-          headless: config.headless ?? true,
-          executablePath: config.executablePath,
-          viewport: config.viewport,
-          deviceScaleFactor: 1,
-          acceptDownloads: false,
-          serviceWorkers: "block",
-          permissions: [],
-          timeout: 25000,
-          args: ["--disable-background-networking", "--disable-component-update", "--disable-extensions"],
-        });
+        context = await chromium
+          .launchPersistentContext(profile, {
+            // Playwright otherwise defaults to --no-sandbox. Never weaken this on failure.
+            chromiumSandbox: true,
+            headless: config.headless ?? true,
+            executablePath: config.executablePath,
+            viewport: config.viewport,
+            deviceScaleFactor: 1,
+            acceptDownloads: false,
+            serviceWorkers: "block",
+            permissions: [],
+            timeout: 25000,
+            args: ["--disable-background-networking", "--disable-component-update", "--disable-extensions"],
+          })
+          .catch(() => {
+            if (signal.aborted) throw new ComputerUseError("cancelled");
+            // Do not expose raw browser diagnostics (paths, environment, or page data).
+            throw new ComputerUseError(
+              "unsupported",
+              "Sandboxed Chromium launch failed. Provision a supported browser and its OS libraries; on Linux use a non-root user and permit Chromium's sandbox (user namespaces/seccomp or a supported sandbox helper). No unsandboxed fallback is permitted.",
+            );
+          });
         // Abort while launching may precede context creation; always close the late context.
         if (signal.aborted || closed) {
           await context.close();

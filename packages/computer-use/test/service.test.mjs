@@ -413,3 +413,127 @@ test("hung/mismatched probe fails closed; browser target identity is snapshotted
   assert.match((await headless.probe()).reason, /DISPLAY|OS|driver/);
   await assert.rejects(headless.open({ sessionId: "headless", signal: new AbortController().signal }), error("unsupported"));
 });
+
+test("human ownership blocks agent capture even with current public generation; human viewer and explicit resume work", async (t) => {
+  const { service: s, calls } = setup();
+  t.after(() => s.dispose());
+  const l = await s.open(agent, "browser");
+  await s.observe(human, ref(l)); // Authenticated viewer may observe agent-controlled work.
+  const h = await s.takeover(human, ref(l));
+  const publicRef = ref(s.status(agent, h.sessionId)[0]);
+  const before = calls.observe;
+  for (const p of [agent, { ...agent, actorId: "new-agent" }]) {
+    await assert.rejects(s.observe(p, publicRef), error("lease_conflict"));
+  }
+  const tool = getToolDefinitions(s, agent).find((d) => d.name === "computer_observe");
+  const result = await tool.handler(publicRef);
+  assert.equal(result.isError, true);
+  assert.equal(
+    result.content.some((c) => c.type === "image"),
+    false,
+  );
+  assert.equal(calls.observe, before);
+  assert.equal(s.status(human)[0].state, "ready"); // Denial must not fence the human's session.
+  await s.observe(human, publicRef);
+  await s.observe({ ...human, actorId: "second-authenticated-viewer" }, publicRef);
+  const resumed = await s.resume(human, lease(h));
+  assert.equal(resumed.observation.frame.data, frame.data);
+  await assert.rejects(s.observe(agent, publicRef), error("stale_generation"));
+  const normal = await s.observe(agent, ref(resumed));
+  assert.equal(normal.frame.data, frame.data);
+  await s.act(agent, action(resumed, "after-explicit-return"));
+});
+
+test("takeover fences queued and in-flight screenshots, including new-generation requests during handoff", async (t) => {
+  const entered = Promise.withResolvers(),
+    settle = Promise.withResolvers(),
+    aborted = Promise.withResolvers();
+  let captures = 0;
+  const { service: s } = setup(
+    {},
+    {
+      observe: async (signal) => {
+        captures++;
+        signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+        entered.resolve();
+        await settle.promise; // Deliberately ignore abort to simulate a late physical capture.
+        return frame;
+      },
+    },
+  );
+  t.after(async () => {
+    settle.resolve();
+    await s.dispose();
+  });
+  const l = await s.open(agent, "browser");
+  const tool = getToolDefinitions(s, agent).find((d) => d.name === "computer_observe");
+  const inflight = tool.handler(ref(l));
+  await entered.promise;
+  const queued = assert.rejects(s.observe(agent, ref(l)), (e) => ["stale_generation", "cancelled"].includes(e.code));
+  await delay(0); // Let the second request join the serialized queue.
+  const takeover = s.takeover(human, ref(l));
+  await aborted.promise;
+  const starting = s.status(agent, l.sessionId)[0];
+  assert.equal(starting.state, "starting");
+  await assert.rejects(s.observe(agent, ref(starting)), error("lease_conflict"));
+  settle.resolve();
+  const h = await takeover;
+  await queued;
+  const result = await inflight;
+  assert.equal(result.isError, true);
+  assert.equal(
+    result.content.some((c) => c.type === "image"),
+    false,
+  );
+  assert.equal(captures, 1); // Queued and new-generation calls never reached capture.
+  await s.observe(human, ref(h));
+  assert.equal(captures, 2);
+});
+
+test("takeover during final asynchronous authorization discards an already captured frame", async (t) => {
+  const entered = Promise.withResolvers(),
+    settle = Promise.withResolvers();
+  let observations = 0;
+  const { service: s, calls } = setup({
+    authorize: async (request) => {
+      // enqueue, dequeue, queue delivery, then final observe delivery.
+      if (request.operation === "observe" && request.principal.role === "agent" && ++observations === 4) {
+        entered.resolve();
+        await settle.promise;
+      }
+      return "allow";
+    },
+  });
+  t.after(async () => {
+    settle.resolve();
+    await s.dispose();
+  });
+  const l = await s.open(agent, "browser");
+  const rejected = assert.rejects(s.observe(agent, ref(l)), error("stale_generation"));
+  await entered.promise;
+  assert.equal(calls.observe, 1);
+  const h = await s.takeover(human, ref(l));
+  settle.resolve();
+  await rejected;
+  await s.observe(human, ref(h));
+});
+
+test("MCP discards a service frame if takeover completes before image serialization", async (t) => {
+  const { service: s } = setup();
+  t.after(() => s.dispose());
+  const l = await s.open(agent, "browser");
+  const observe = s.observe.bind(s);
+  s.observe = async (...args) => {
+    const result = await observe(...args);
+    await s.takeover(human, ref(l));
+    return result;
+  };
+  const result = await getToolDefinitions(s, agent)
+    .find((d) => d.name === "computer_observe")
+    .handler(ref(l));
+  assert.equal(result.isError, true);
+  assert.equal(
+    result.content.some((c) => c.type === "image"),
+    false,
+  );
+});

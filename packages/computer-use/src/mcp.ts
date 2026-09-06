@@ -33,6 +33,7 @@ export function getToolDefinitions(service: ComputerUseService, principal: Princ
           const current = service.status(p, metadata.sessionId)[0];
           if (!current || current.state !== "ready" || current.generation !== metadata.generation || current.expiresAt <= Date.now())
             throw new ComputerUseError("stale_generation");
+          if (p.role === "agent" && current.controller === "human") throw new ComputerUseError("lease_conflict");
           return {
             content: [
               {

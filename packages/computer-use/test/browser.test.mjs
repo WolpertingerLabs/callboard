@@ -9,16 +9,11 @@ const ref = (l) => ({ sessionId: l.sessionId, generation: l.generation });
 const action = (l, id, a) => ({ ...ref(l), leaseId: l.leaseId, actionId: id, action: a });
 test("actual disposable Chromium: navigation, persistent form input, screenshot, human handoff, isolation and stop", async (t) => {
   const executablePath = process.env.COMPUTER_USE_TEST_CHROMIUM;
-  if (executablePath) {
-    try {
-      await access(executablePath);
-    } catch {
-      return t.skip("Configured test Chromium executable missing");
-    }
-  }
+  if (!executablePath) return t.skip("Live sandboxed Chromium smoke requires explicit COMPUTER_USE_TEST_CHROMIUM; not runtime-qualified");
+  await access(executablePath);
   const driver = createBrowserDriver({ executablePath, network: "unrestricted", viewport: { width: 640, height: 480 } });
   const probe = await driver.probe();
-  if (!probe.available) return t.skip(probe.reason);
+  assert.equal(probe.available, true, probe.reason);
   const inputs = [];
   const http = createServer((req, res) => {
     if (req.url.startsWith("/report")) {
@@ -31,11 +26,17 @@ test("actual disposable Chromium: navigation, persistent form input, screenshot,
       `<html><body style="margin:0;background:white"><input id="x" style="position:absolute;left:10px;top:10px;width:200px;height:40px" oninput="localStorage.value=this.value;fetch('/report?value='+encodeURIComponent(this.value))"><script>document.querySelector('input').value=localStorage.value||'';fetch('/report?value='+encodeURIComponent(document.querySelector('input').value))</script></body></html>`,
     );
   });
-  await new Promise((r) => http.listen(0, "127.0.0.1", r));
-  const url = `http://127.0.0.1:${http.address().port}`;
   const s = new ComputerUseService({ targets: [{ id: "browser", enabled: true, driver }], authorize: () => "allow" });
   try {
-    let l = await s.open(p, "browser");
+    let l;
+    try {
+      l = await s.open(p, "browser");
+    } catch (error) {
+      t.diagnostic(`SANDBOXED_BROWSER_UNAVAILABLE: ${error.message}; live smoke did not pass`);
+      throw error;
+    }
+    await new Promise((r) => http.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${http.address().port}`;
     assert.equal(l.kind, "browser");
     await s.observe(p, ref(l));
     await s.act(p, action(l, "nav", { type: "navigate", url }));
@@ -71,7 +72,7 @@ test("actual disposable Chromium: navigation, persistent form input, screenshot,
     await assert.rejects(s.observe(p, ref(l)), (e) => e.code === "stopped");
   } finally {
     await s.dispose();
-    await new Promise((r) => http.close(r));
+    if (http.listening) await new Promise((r) => http.close(r));
   }
 });
 test("browser import/probe never downloads and kind is never desktop", async () => {
