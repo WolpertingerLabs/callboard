@@ -24,6 +24,7 @@ const perms = (over: Partial<DefaultPermissions> = {}): DefaultPermissions => ({
   fileWrite: "allow",
   codeExecution: "allow",
   webAccess: "allow",
+  computerControl: "deny",
   ...over,
 });
 
@@ -229,7 +230,7 @@ describe("the two-pass rule", () => {
     { kind: "fetch", name: "web_search", expected: "webAccess" },
     { kind: "edit", name: "search_replace", expected: "fileWrite" },
   ] as const;
-  const readAllowed = perms({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask" });
+  const readAllowed = perms({ fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" });
 
   it.each(divergent)("prompts for $name instead of silently executing it", async ({ kind, name, expected }) => {
     const seen: string[] = [];

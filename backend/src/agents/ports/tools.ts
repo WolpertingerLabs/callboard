@@ -15,14 +15,18 @@ import type { z } from "zod";
  * Mirrors MCP's content-block discriminated union so adapter translation is
  * an identity map for current engines.
  */
-export type ToolContentBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+export type ToolContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
 /** Structured result returned by a tool handler. */
 export interface ToolCallResult {
   content: ToolContentBlock[];
   isError?: boolean;
+}
+
+/** Per-call transport cancellation; never an authorization principal. */
+export interface ToolCallContext {
+  signal?: AbortSignal;
+  toolCallId?: string;
 }
 
 /**
@@ -34,7 +38,7 @@ export interface ToolDefinition<TShape extends z.ZodRawShape = z.ZodRawShape> {
   name: string;
   description: string;
   inputSchema: TShape;
-  handler: (args: z.output<z.ZodObject<TShape>>) => Promise<ToolCallResult>;
+  handler: (args: z.output<z.ZodObject<TShape>>, context?: ToolCallContext) => Promise<ToolCallResult>;
 }
 
 /**
@@ -67,7 +71,7 @@ export function defineTool<TShape extends z.ZodRawShape>(
   name: string,
   description: string,
   inputSchema: TShape,
-  handler: (args: z.output<z.ZodObject<TShape>>) => Promise<ToolCallResult>,
+  handler: (args: z.output<z.ZodObject<TShape>>, context?: ToolCallContext) => Promise<ToolCallResult>,
 ): ToolDefinition<TShape> {
   return { name, description, inputSchema, handler };
 }

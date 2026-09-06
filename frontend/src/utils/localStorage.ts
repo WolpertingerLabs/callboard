@@ -1,3 +1,4 @@
+import { normalizePermissions } from "shared/types/permissions.js";
 import type { DefaultPermissions } from "../api";
 import { resolveCardLifecycle, type CardLifecycleFilter } from "../types/chatFilters";
 import type { EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
@@ -136,17 +137,11 @@ function isCallboardWorkspacePath(path: string): boolean {
   return path.includes("/.callboard/agent-workspaces/") || path.endsWith("/.callboard/agent-workspaces");
 }
 
-const DEFAULT_PERMISSIONS: DefaultPermissions = {
-  fileRead: "ask",
-  fileWrite: "ask",
-  codeExecution: "ask",
-  webAccess: "ask",
-};
-
 function getStorageData(): LocalStorageData {
   try {
     const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    return stored ? JSON.parse(stored) : {};
+    const parsed: unknown = stored ? JSON.parse(stored) : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as LocalStorageData) : {};
   } catch {
     return {};
   }
@@ -162,15 +157,12 @@ function setStorageData(data: LocalStorageData): void {
 
 export function getDefaultPermissions(): DefaultPermissions {
   const data = getStorageData();
-  if (data.defaultPermissions) {
-    return data.defaultPermissions;
-  }
-  return DEFAULT_PERMISSIONS;
+  return normalizePermissions(data.defaultPermissions);
 }
 
 export function saveDefaultPermissions(permissions: DefaultPermissions): void {
   const data = getStorageData();
-  data.defaultPermissions = permissions;
+  data.defaultPermissions = normalizePermissions(permissions);
   setStorageData(data);
 }
 

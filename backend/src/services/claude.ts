@@ -2,6 +2,7 @@ import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capab
 import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
+import { beginComputerUseTurn, buildComputerUseToolsSpec } from "./computer-use-tools.js";
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
@@ -724,6 +725,12 @@ export function buildCanUseTool(
       try {
         const { decision, category } = toolPermissionPolicy.decide(toolName);
         log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, decision=${decision}`);
+        // A scoped computer grant/approval belongs to the service, not the SDK's
+        // generic per-tool prompt. This only admits the transport call; the
+        // service still denies unenabled targets and checks every action/frame.
+        if (category === "computerControl" && decision === "ask") {
+          return { behavior: "allow", updatedInput: input };
+        }
         if (decision === "allow") {
           return { behavior: "allow", updatedInput: input };
         }
@@ -1308,6 +1315,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // Build MCP servers map: start with configured servers, add Callboard agent tools if this is an agent session
   const mcpServers: Record<string, any> = mcpOpts ? { ...mcpOpts.mcpServers } : {};
   const allowedTools: string[] = mcpOpts ? [...mcpOpts.allowedTools] : [];
+  const endComputerUseTurn = beginComputerUseTurn(() => trackingId, abortController.signal);
+  // All harnesses proxy these tools through the same package MCP service.
+  // Importing/registering the surface does not start a browser or desktop.
+  try {
+    const server = agentProvider.buildToolServer(buildComputerUseToolsSpec(() => trackingId));
+    if (server) {
+      mcpServers["computer_use"] = server;
+      allowedTools.push("mcp__computer_use__*");
+    }
+  } catch (error) {
+    log.warn(`Computer-control tool registration unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
 
   // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
   try {
@@ -2512,6 +2531,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // whose entry was taken over by a replacement would leave the row up.
       heldPromptRef.current?.close();
       endHoldActivity();
+      endComputerUseTurn();
       // This run's query is done with — drop the handle so a late stop on a
       // replacement session can never close it a second time.
       activeQuery = null;

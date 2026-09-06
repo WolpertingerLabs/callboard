@@ -55,6 +55,7 @@
  * @see plans/acp-adapter.md (Permissions — "The two-pass rule")
  * @see ../adapters/acp/permissionAdapter.ts (the reference implementation)
  */
+import { isComputerControlToolName } from "./computerControl.js";
 import type { AgentProviderKind } from "../ports/AgentProvider.js";
 import type { PermissionCategory } from "./ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../adapters/claude-code/permissionAdapter.js";
@@ -75,7 +76,7 @@ export type ToolCategorizer = (toolName: string) => PermissionCategory | null;
  * one thing it must not be is another provider's map, which is the mistake this
  * registry exists to make unrepresentable.
  */
-const gateEverything: ToolCategorizer = () => "codeExecution";
+const gateEverything: ToolCategorizer = (name) => (isComputerControlToolName(name) ? "computerControl" : "codeExecution");
 
 /**
  * The registry. Exhaustive by type: omitting a kind will not compile.

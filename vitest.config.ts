@@ -15,11 +15,7 @@ export default defineConfig({
       reporter: ["text", "html", "lcov", "json-summary"],
       reportsDirectory: "./coverage",
       // Only measure first-party source in the three workspaces.
-      include: [
-        "shared/src/**/*.{ts,tsx}",
-        "backend/src/**/*.{ts,tsx}",
-        "frontend/src/**/*.{ts,tsx}",
-      ],
+      include: ["shared/src/**/*.{ts,tsx}", "backend/src/**/*.{ts,tsx}", "frontend/src/**/*.{ts,tsx}"],
       exclude: [
         "**/node_modules/**",
         "**/dist/**",
@@ -44,7 +40,7 @@ export default defineConfig({
         test: {
           name: "node",
           environment: "node",
-          exclude: ["**/node_modules/**", "**/dist/**", "frontend/**"],
+          exclude: ["**/node_modules/**", "**/dist/**", "frontend/**", "packages/computer-use/test/**"],
           // Runs before each test file is imported, so module-level constants
           // like paths.ts's DATA_DIR resolve to the scratch dir. See the file.
           setupFiles: ["./vitest.setup.node.ts"],

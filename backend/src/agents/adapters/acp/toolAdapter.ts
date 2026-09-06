@@ -29,6 +29,8 @@
  * @see ./mcp-server-shim.ts (the stdio frontend the agent spawns)
  * @see ../codex/toolAdapter.ts (same mechanism, different consumer)
  */
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import net from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -73,10 +75,14 @@ export function isAcpToolServerHandle(value: unknown): value is AcpToolServerHan
  * union, so only `isError` needs forwarding.
  */
 function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
-  server.registerTool(def.name, { description: def.description, inputSchema: def.inputSchema }, async (args: unknown) => {
-    const result = await def.handler(args as never);
-    return { content: result.content, ...(result.isError ? { isError: true } : {}) };
-  });
+  server.registerTool(
+    def.name,
+    { description: def.description, inputSchema: def.inputSchema },
+    async (args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
+      const result = await def.handler(args as never, { signal: extra.signal, toolCallId: String(extra.requestId) });
+      return { content: result.content, ...(result.isError ? { isError: true } : {}) };
+    },
+  );
 }
 
 /** One MCP server per socket connection — servers own their transport 1:1. */
@@ -108,7 +114,15 @@ function allocateSocketPath(): { dir: string; socketPath: string } {
 export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
   const { dir, socketPath } = allocateSocketPath();
 
+  let closed = false;
+  let closing: Promise<void> | undefined;
+  const sockets = new Set<net.Socket>();
   const netServer = net.createServer((socket) => {
+    if (closed) {
+      socket.destroy();
+      return;
+    }
+    sockets.add(socket);
     socket.on("error", (err) => {
       log.warn(`acp tool socket error (${spec.name}): ${err.message}`);
     });
@@ -119,6 +133,7 @@ export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
       socket.destroy();
     });
     socket.once("close", () => {
+      sockets.delete(socket);
       void server.close().catch(() => {
         /* best-effort: the transport is already gone */
       });
@@ -136,16 +151,18 @@ export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
     log.debug(`acp tool server listening for ${spec.name} (${spec.tools.length} tools) at ${socketPath}`);
   });
 
-  let closed = false;
   return {
     name: spec.name,
     version: spec.version,
     socketPath,
     toAcpMcpServer: () => acpStdioServer(spec.name, socketPath),
     close: () =>
-      new Promise<void>((resolve) => {
+      (closing ??= new Promise<void>((resolve) => {
         if (closed) return resolve();
         closed = true;
+        // Only turn-local relays are owned here, never the persistent MCP service.
+        // net.Server.close alone waits indefinitely for clients/pending calls.
+        for (const socket of sockets) socket.destroy();
         netServer.close(() => {
           try {
             rmSync(dir, { recursive: true, force: true });
@@ -155,7 +172,7 @@ export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
           log.debug(`acp tool server closed for ${spec.name}`);
           resolve();
         });
-      }),
+      })),
   };
 }
 

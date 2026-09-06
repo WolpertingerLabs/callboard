@@ -21,16 +21,13 @@ import { builtinModules } from "node:module";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Directories whose compiled output is published (root `files` entries).
-const SHIPPED_ROOTS = ["backend/dist", "bin"];
+const SHIPPED_ROOTS = ["backend/dist", "packages/computer-use/dist", "bin"];
 
 // Mirrors the negations in root `files` — keep the two in sync.
-const isExcluded = (path) =>
-  /\.d\.ts$/.test(path) ||
-  /\.test\.[cm]?js$/.test(path) ||
-  /(^|\/)__fixtures__\//.test(path) ||
-  /(^|\/)swagger\.js$/.test(path);
+const isExcluded = (path) => /\.d\.ts$/.test(path) || /\.test\.[cm]?js$/.test(path) || /(^|\/)__fixtures__\//.test(path) || /(^|\/)swagger\.js$/.test(path);
 
 // Workspace-internal specifier: rewritten to a relative path at build time.
+// computer-use is deliberately not exempt: a surviving bare workspace import is a broken artifact.
 const INTERNAL = new Set(["shared"]);
 
 const BUILTINS = new Set(builtinModules);
@@ -191,7 +188,7 @@ function collectImports() {
 function main() {
   const rootPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
   const backendPkg = JSON.parse(readFileSync(join(ROOT, "backend/package.json"), "utf-8"));
-  const declared = rootPkg.dependencies ?? {};
+  const declared = { ...rootPkg.dependencies, ...rootPkg.optionalDependencies };
   const backendDeps = backendPkg.dependencies ?? {};
 
   const errors = [];

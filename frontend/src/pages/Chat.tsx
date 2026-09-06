@@ -1,3 +1,5 @@
+import { normalizePermissions } from "shared/types/permissions.js";
+import ComputerUsePanel from "../components/ComputerUsePanel";
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import {
@@ -730,23 +732,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Resolve effective permissions for this chat
   const effectivePermissions = useMemo((): DefaultPermissions => {
     // If we've locally updated chatPermissions via the modal, use that
-    if (chatPermissions) return chatPermissions;
+    if (chatPermissions) return normalizePermissions(chatPermissions);
 
     if (!id) {
       // New chat: use permissions from navigation state, or localStorage defaults
-      return defaultPermissions || getLocalDefaultPermissions();
+      return normalizePermissions(defaultPermissions || getLocalDefaultPermissions());
     }
 
     // Existing chat: parse from chat metadata
     if (chat?.metadata) {
       try {
         const meta = JSON.parse(chat.metadata);
-        if (meta.defaultPermissions) return meta.defaultPermissions;
+        if (meta.defaultPermissions) return normalizePermissions(meta.defaultPermissions);
       } catch {}
     }
 
-    // Fall back to localStorage defaults
-    return getLocalDefaultPermissions();
+    // Existing legacy chats must not inherit a browser grant from UI defaults.
+    return normalizePermissions({ ...getLocalDefaultPermissions(), computerControl: "deny" });
   }, [id, defaultPermissions, chat?.metadata, chatPermissions]);
 
   // Compute team color map - assigns colors to teams in order of appearance
@@ -1950,7 +1952,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           const requestBody: any = {
             folder,
             prompt,
-            defaultPermissions: chatPermissions || defaultPermissions,
+            defaultPermissions: normalizePermissions(chatPermissions || defaultPermissions || getLocalDefaultPermissions()),
             maxTurns: getMaxTurns(),
             clientTrackingId,
           };
@@ -3647,6 +3649,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             Native Codex child · {nativeAgent.lifecycle} · read-only. {nativeAgent.controlNote}{" "}
             <a href={`/chat/${nativeAgent.parentThreadId}`}>Open parent thread</a>
           </div>
+        )}
+        {id && !nativeAgent && (
+          <ComputerUsePanel key={id} chatId={id} permission={effectivePermissions.computerControl} onPermissions={() => setShowPermissionsModal(true)} />
         )}
         <PromptInput
           onSend={handleSend}

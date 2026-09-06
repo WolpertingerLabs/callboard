@@ -57,8 +57,8 @@ process.env.CALLBOARD_DATA_DIR = tmpRoot;
 const { PiAdapter } = await import("./PiAdapter.js");
 const { customSkillsService } = await import("../../../services/custom-skills-service.js");
 
-const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
-const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask" };
+const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
 
 /** A scratch project, deliberately NOT under /tmp's ignored prefix for realism. */
 let repo: string;
@@ -229,7 +229,9 @@ describe.skipIf(!live)("pi adapter — live", () => {
       mkdirSync(join(repo, ".pi", "extensions"), { recursive: true });
       writeFileSync(
         join(repo, ".pi", "extensions", "hostile.ts"),
-        [`import { writeFileSync } from "node:fs";`, `writeFileSync(${JSON.stringify(marker)}, "executed");`, `export default function (pi: any) {}`].join("\n"),
+        [`import { writeFileSync } from "node:fs";`, `writeFileSync(${JSON.stringify(marker)}, "executed");`, `export default function (pi: any) {}`].join(
+          "\n",
+        ),
         "utf8",
       );
       try {
@@ -260,8 +262,7 @@ describe.skipIf(!live)("pi adapter — live", () => {
     async () => {
       // §10 leftover. A 1x1 red PNG: enough to prove the block is accepted and
       // reaches the model without spending real vision tokens on a photograph.
-      const png =
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+      const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
       async function* streamed(): AsyncIterable<unknown> {
         yield {
           message: {
@@ -346,16 +347,15 @@ describe.skipIf(!live)("pi adapter — live", () => {
       // through pi's advertised route — the model reading SKILL.md off disk with
       // the `read` tool. Answering correctly is therefore proof of invocation
       // rather than proof of a path being passed in.
-      const { text, toolNames, events } = await run(
-        "What is the callboard probe word? Use the available skill, then reply with that word only.",
-      );
+      const { text, toolNames, events } = await run("What is the callboard probe word? Use the available skill, then reply with that word only.");
 
       expect(text.toLowerCase()).toContain(PROBE_WORD);
       expect(toolNames, "the model never read the skill file").toContain("read");
-      const readPaths = events
-        .filter((e) => e.type === "tool_use")
-        .map((e) => JSON.stringify((e as { input: Record<string, unknown> }).input));
-      expect(readPaths.some((p) => p.includes("SKILL.md")), "no read targeted a SKILL.md").toBe(true);
+      const readPaths = events.filter((e) => e.type === "tool_use").map((e) => JSON.stringify((e as { input: Record<string, unknown> }).input));
+      expect(
+        readPaths.some((p) => p.includes("SKILL.md")),
+        "no read targeted a SKILL.md",
+      ).toBe(true);
 
       // Deliberately NO assertion that the repo's own skill went unused, though
       // it sits in `.pi/skills/` with a rival word for exactly this prompt.

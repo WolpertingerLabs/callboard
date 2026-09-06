@@ -43,7 +43,11 @@
     "!**/*.js.map",
     "!**/*.d.ts.map",
     "!**/__fixtures__",
-    "!backend/dist/swagger.*"
+    "!backend/dist/swagger.*",
+    "packages/computer-use/dist",
+    "packages/computer-use/package.json",
+    "packages/computer-use/README.md",
+    "packages/computer-use/LICENSE"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -54,7 +58,8 @@
   "workspaces": [
     "shared",
     "backend",
-    "frontend"
+    "frontend",
+    "packages/computer-use"
   ],
   "scripts": {
     "dev": "CALLBOARD_DATA_DIR=$HOME/.callboard-dev concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
@@ -63,7 +68,7 @@
     "swagger": "tsx backend/src/swagger.ts",
     "prebuild": "npm run swagger",
     "clean": "rm -rf shared/dist backend/dist frontend/dist shared/tsconfig.tsbuildinfo backend/tsconfig.tsbuildinfo frontend/tsconfig.tsbuildinfo",
-    "build": "npm run build:shared && npm run build:backend && npm run build:frontend",
+    "build": "npm run build:shared && npm run build:computer-use && npm run build:backend && npm run build:frontend && node scripts/rewrite-shared-imports.mjs",
     "postbuild": "node scripts/rewrite-shared-imports.mjs",
     "build:shared": "npm -w shared run build",
     "build:backend": "npm -w callboard-backend run build",
@@ -75,8 +80,8 @@
     "lint:all": "eslint . --ext .js,.jsx,.ts,.tsx",
     "lint:all:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test": "npm run test:computer-use && vitest run",
+    "test:coverage": "npm run test:computer-use && vitest run --coverage",
     "test:watch": "vitest",
     "prepare": "npm run build",
     "prepublishOnly": "npm run drawlatch:check && npm run lint:all && npm run clean && npm run build && npm test && npm run deps:check",
@@ -89,7 +94,9 @@
     "drawlatch:local": "node scripts/drawlatch-switch.cjs local && npm install",
     "drawlatch:prod": "node scripts/drawlatch-switch.cjs prod && npm install",
     "drawlatch:which": "node scripts/drawlatch-switch.cjs which",
-    "drawlatch:check": "node scripts/drawlatch-switch.cjs check"
+    "drawlatch:check": "node scripts/drawlatch-switch.cjs check",
+    "build:computer-use": "npm -w @wolpertingerlabs/computer-use run build",
+    "test:computer-use": "npm -w @wolpertingerlabs/computer-use test"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
@@ -132,5 +139,8 @@
   },
   "overrides": {
     "shell-quote": "1.8.4"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.55.0"
   }
 }

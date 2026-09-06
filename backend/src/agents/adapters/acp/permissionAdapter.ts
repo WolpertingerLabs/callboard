@@ -69,6 +69,7 @@
  * @see plans/acp-adapter.md (Permissions — "The two-pass rule")
  * @see ../codex/permissionAdapter.ts (the other foreign-vocabulary bridge)
  */
+import { isComputerControlToolName } from "../../permissions/computerControl.js";
 import type { PermissionOption, PermissionOptionKind, RequestPermissionRequest, RequestPermissionResponse, ToolKind } from "@agentclientprotocol/sdk";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { decidePermission, type PermissionCategory, type PermissionDecision } from "../../permissions/ToolPermissionPolicy.js";
@@ -209,6 +210,7 @@ export function isToolIdentifier(value: string): boolean {
  * also easier to keep true than two.
  */
 export function categorizeAcpToolName(name: string): PermissionCategory | null {
+  if (isComputerControlToolName(name)) return "computerControl";
   const label = name.trim();
   if (!isToolIdentifier(label)) return MOST_RESTRICTIVE_CATEGORY;
 

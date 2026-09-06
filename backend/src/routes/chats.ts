@@ -27,7 +27,7 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import type { ParsedMessage } from "shared/types/index.js";
+import { normalizePermissions, type ParsedMessage } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
@@ -1529,7 +1529,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
   /* #swagger.responses[400] = { description: "Invalid request body" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   const { defaultPermissions } = req.body;
-  if (!defaultPermissions || typeof defaultPermissions !== "object") {
+  if (!defaultPermissions || typeof defaultPermissions !== "object" || Array.isArray(defaultPermissions)) {
     return res.status(400).json({ error: "defaultPermissions must be an object" });
   }
 
@@ -1539,6 +1539,10 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     if (!validLevels.includes(defaultPermissions[key])) {
       return res.status(400).json({ error: `${key} must be one of: allow, ask, deny` });
     }
+  }
+
+  if (Object.hasOwn(defaultPermissions, "computerControl") && !validLevels.includes(defaultPermissions.computerControl)) {
+    return res.status(400).json({ error: "computerControl must be one of: allow, ask, deny" });
   }
 
   try {
@@ -1551,7 +1555,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
       meta = parseChatMetadata(chat.metadata);
     } catch {}
 
-    meta.defaultPermissions = defaultPermissions;
+    meta.defaultPermissions = normalizePermissions(defaultPermissions);
     const updatedMetadata = JSON.stringify(meta);
 
     // Upsert: creates file storage record if it only existed on filesystem

@@ -69,12 +69,7 @@ describe("importedPackages", () => {
 
   it("ignores a require written inside a doc comment", () => {
     // The exact shape that blocked the publish.
-    const source = [
-      "/**",
-      ' * ## Why this is not `require("<pkg>/package.json").version`',
-      " */",
-      "export const version = readVersion();",
-    ].join("\n");
+    const source = ["/**", ' * ## Why this is not `require("<pkg>/package.json").version`', " */", "export const version = readVersion();"].join("\n");
     expect([...importedPackages(source)]).toEqual([]);
   });
 
@@ -94,7 +89,11 @@ describe("importedPackages", () => {
   });
 
   it("still finds an import after a comment that mentions a quote", () => {
-    const source = "// don't do this\nimport { sdk } from \"@agentclientprotocol/sdk\";";
+    const source = '// don\'t do this\nimport { sdk } from "@agentclientprotocol/sdk";';
     expect([...importedPackages(source)]).toEqual(["@agentclientprotocol/sdk"]);
   });
+});
+
+it("does not exempt an unrewritten computer-use workspace import from publication checks", () => {
+  expect([...importedPackages('const service = await import("@wolpertingerlabs/computer-use");')]).toEqual(["@wolpertingerlabs/computer-use"]);
 });

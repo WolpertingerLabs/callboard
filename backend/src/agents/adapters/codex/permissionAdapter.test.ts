@@ -9,12 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
-import {
-  defaultApprovalForSandbox,
-  hasAnyAsk,
-  mapPermissionsToCodex,
-  resolveSandboxMode,
-} from "./permissionAdapter.js";
+import { defaultApprovalForSandbox, hasAnyAsk, mapPermissionsToCodex, resolveSandboxMode } from "./permissionAdapter.js";
 
 /** Build a DefaultPermissions, defaulting every unspecified axis to "deny". */
 function perms(overrides: Partial<DefaultPermissions> = {}): DefaultPermissions {
@@ -23,6 +18,7 @@ function perms(overrides: Partial<DefaultPermissions> = {}): DefaultPermissions 
     fileWrite: "deny",
     codeExecution: "deny",
     webAccess: "deny",
+    computerControl: "deny",
     ...overrides,
   };
 }
@@ -41,9 +37,7 @@ describe("resolveSandboxMode", () => {
   });
 
   it("codeExecution + fileWrite allow → danger-full-access", () => {
-    expect(resolveSandboxMode(perms({ fileWrite: "allow", codeExecution: "allow" }))).toBe(
-      "danger-full-access",
-    );
+    expect(resolveSandboxMode(perms({ fileWrite: "allow", codeExecution: "allow" }))).toBe("danger-full-access");
   });
 
   it("exec allow WITHOUT write stays read-only (no codex tier for exec-only)", () => {
@@ -74,12 +68,9 @@ describe("hasAnyAsk", () => {
     expect(hasAnyAsk(perms({ fileWrite: "allow", codeExecution: "allow" }))).toBe(false);
   });
 
-  it.each<keyof DefaultPermissions>(["fileRead", "fileWrite", "codeExecution", "webAccess"])(
-    "true when %s is 'ask'",
-    (axis) => {
-      expect(hasAnyAsk(perms({ [axis]: "ask" as PermissionLevel }))).toBe(true);
-    },
-  );
+  it.each<keyof DefaultPermissions>(["fileRead", "fileWrite", "codeExecution", "webAccess"])("true when %s is 'ask'", (axis) => {
+    expect(hasAnyAsk(perms({ [axis]: "ask" as PermissionLevel }))).toBe(true);
+  });
 });
 
 describe("mapPermissionsToCodex — plan table rows", () => {
@@ -106,20 +97,17 @@ describe("mapPermissionsToCodex — plan table rows", () => {
 
   it("all allow → danger-full-access + never", () => {
     expect(
-      mapPermissionsToCodex(
-        perms({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" }),
-      ),
+      mapPermissionsToCodex(perms({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" })),
     ).toEqual({ sandboxMode: "danger-full-access", approvalPolicy: "never" });
   });
 
   it("any 'ask' forces on-request even at the danger-full-access tier", () => {
     // write+exec allowed (→ danger-full-access) but webAccess is "ask": the ask
     // pins approval to on-request rather than never.
-    expect(
-      mapPermissionsToCodex(
-        perms({ fileWrite: "allow", codeExecution: "allow", webAccess: "ask" }),
-      ),
-    ).toEqual({ sandboxMode: "danger-full-access", approvalPolicy: "on-request" });
+    expect(mapPermissionsToCodex(perms({ fileWrite: "allow", codeExecution: "allow", webAccess: "ask" }))).toEqual({
+      sandboxMode: "danger-full-access",
+      approvalPolicy: "on-request",
+    });
   });
 
   it("fileWrite ask → read-only + on-request (sandbox unchanged, approval on-request)", () => {

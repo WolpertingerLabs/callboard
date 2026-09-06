@@ -1,0 +1,66 @@
+.computer-use-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 6px 0;
+  background: var(--surface);
+  font-size: 12px;
+}
+.computer-use-heading {
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.computer-use-body {
+  padding: 0 12px 12px;
+  max-height: 65vh;
+  overflow: auto;
+}
+.computer-use-body p {
+  margin: 8px 0;
+  line-height: 1.5;
+}
+.computer-use-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+}
+.computer-use-body button,
+.computer-use-body select,
+.computer-use-body input {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  color: var(--text);
+  background: var(--bg);
+  max-width: 100%;
+}
+.computer-use-body button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.computer-use-body fieldset {
+  border: 1px solid var(--border);
+  margin-top: 8px;
+  min-width: 0;
+}
+.computer-use-body form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.computer-use-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+}
+.computer-use-frame small {
+  display: block;
+  margin: 4px 0;
+  color: var(--text-muted);
+}

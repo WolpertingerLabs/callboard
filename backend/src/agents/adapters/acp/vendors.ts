@@ -187,10 +187,14 @@ export const OPENCODE_CONFIG_CONTENT_ENV = "OPENCODE_CONFIG_CONTENT";
  * began.
  */
 export function openCodePermissionConfig(permissions: DefaultPermissions | null): string {
+  // Deliberately FOUR built-in axes: a disabled managed service must not disable
+  // OpenCode's unrelated task tool. Managed tools authorize at the service on
+  // every call, including vendor-internal children with ambiguous identity.
   const axes: Array<keyof DefaultPermissions> = ["fileRead", "fileWrite", "codeExecution", "webAccess"];
   const allAllowed = !!permissions && axes.every((axis) => permissions[axis] === "allow");
-  if (allAllowed) return JSON.stringify({ permission: { "*": "allow" } });
-  return JSON.stringify({ permission: { "*": "ask", task: "deny" } });
+  const managed = { "computer_use_*": "allow", "mcp__computer_use__*": "allow", "cu_*": "allow" };
+  if (allAllowed) return JSON.stringify({ permission: { "*": "allow", ...managed } });
+  return JSON.stringify({ permission: { "*": "ask", task: "deny", ...managed } });
 }
 
 /**

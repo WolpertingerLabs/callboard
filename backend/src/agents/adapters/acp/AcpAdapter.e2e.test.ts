@@ -99,9 +99,9 @@ const textOf = (events: AgentEvent[]): string =>
     .map((e) => e.content)
     .join("");
 
-const allowAll: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
-const denyExec: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "deny", webAccess: "allow" };
-const askExec: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "ask", webAccess: "allow" };
+const allowAll: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+const denyExec: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "deny", webAccess: "allow", computerControl: "deny" };
+const askExec: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "ask", webAccess: "allow", computerControl: "deny" };
 
 describe("AcpAdapter end-to-end against a conformant ACP agent", () => {
   it(

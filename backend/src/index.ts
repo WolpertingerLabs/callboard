@@ -1,3 +1,6 @@
+import { computerUseRouter } from "./routes/computer-use.js";
+import { shutdownComputerUse } from "./services/computer-use.js";
+import { closeComputerUseConnections } from "./services/computer-use-tools.js";
 import dotenv from "dotenv";
 import { spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
@@ -208,6 +211,7 @@ app.get("/api/docs", (_req, res) => {
 
 app.use("/api/chats", chatsRouter);
 app.use("/api/chats", streamRouter);
+app.use("/api/computer-use", computerUseRouter);
 app.use("/api/images", imagesRouter);
 app.use("/api/chats", imagesRouter);
 app.use("/api/queue", queueRouter);
@@ -565,6 +569,8 @@ app.listen(PORT, () => {
 // Graceful shutdown
 async function gracefulShutdown(signal: string) {
   log.info(`${signal} received, shutting down gracefully`);
+  await closeComputerUseConnections();
+  await shutdownComputerUse().catch((error) => log.warn(`Computer-control shutdown: ${error instanceof Error ? error.message : "failed"}`));
   shutdownScheduler();
   shutdownJobRunner();
   shutdownDebounce();

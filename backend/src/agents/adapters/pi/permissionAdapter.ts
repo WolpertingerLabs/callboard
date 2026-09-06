@@ -52,13 +52,8 @@
  * @see plans/pi-spike-findings.md (§2 — project trust; §3 — the gate, measured)
  * @see ../cline/permissionAdapter.ts (the closest precedent)
  */
-import type {
-  ExtensionAPI,
-  ExtensionFactory,
-  ToolCallEvent,
-  ToolCallEventResult,
-  CreateAgentSessionServicesOptions,
-} from "@earendil-works/pi-coding-agent";
+import { isComputerControlToolName } from "../../permissions/computerControl.js";
+import type { ExtensionAPI, ExtensionFactory, ToolCallEvent, ToolCallEventResult, CreateAgentSessionServicesOptions } from "@earendil-works/pi-coding-agent";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { decidePermission, type PermissionCategory } from "../../permissions/ToolPermissionPolicy.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -264,6 +259,7 @@ export function isPiToolIdentifier(value: string): boolean {
  * `permissions/categorizers.ts` requires (Phase 3 registers it there).
  */
 export function categorizePiToolName(toolName: string): PermissionCategory | null {
+  if (isComputerControlToolName(toolName)) return "computerControl";
   const trimmed = toolName.trim();
   if (!isPiToolIdentifier(trimmed)) return MOST_RESTRICTIVE_CATEGORY;
 

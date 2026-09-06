@@ -6,9 +6,11 @@
  * map. The neutral allow/deny/ask *decision* lives in the port via
  * {@link ToolPermissionPolicy}.
  */
+import { isComputerControlToolName } from "../../permissions/computerControl.js";
 import type { PermissionCategory } from "../../permissions/ToolPermissionPolicy.js";
 
 export function categorizeClaudeTool(toolName: string): PermissionCategory | null {
+  if (isComputerControlToolName(toolName)) return "computerControl";
   // File read (read-only)
   if (["Read", "Glob", "Grep"].includes(toolName)) return "fileRead";
 

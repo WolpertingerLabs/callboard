@@ -52,6 +52,7 @@ export default function Chat({ agent }: { agent: AgentConfig }) {
       fileWrite: "allow",
       codeExecution: "allow",
       webAccess: "allow",
+      computerControl: "deny",
     };
 
     // Fetch compiled identity prompt

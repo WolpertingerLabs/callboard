@@ -165,8 +165,8 @@ async function catalogFor(opts: { cwd: string; openRouterApiKey?: string }): Pro
   }
 }
 
-const allowAll: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
-const askWrites: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask" };
+const allowAll: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+const askWrites: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
 
 describeLive("OpenCode over ACP (live)", () => {
   it(

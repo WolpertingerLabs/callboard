@@ -31,6 +31,8 @@
  * @see plans/codex-adapter-job.md (Step 6 tool-bridge — "Codex is an MCP client")
  * @see ./mcp-server-shim.ts (the stdio frontend Codex actually spawns)
  */
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
 import net from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -113,8 +115,8 @@ function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
       description: `${def.description} [Codex exec identity: this Callboard tool server is bound to the owning root chat. Native subagents inherit it but must not use implicit-current-chat operations as child-local operations.]`,
       inputSchema: def.inputSchema,
     },
-    async (args: unknown) => {
-      const result = await def.handler(args as never);
+    async (args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
+      const result = await def.handler(args as never, { signal: extra.signal, toolCallId: String(extra.requestId) });
       return {
         content: result.content,
         ...(result.isError ? { isError: true } : {}),
@@ -155,7 +157,15 @@ function allocateSocketPath(): { dir: string; socketPath: string } {
 export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandle {
   const { dir, socketPath } = allocateSocketPath();
 
+  let closed = false;
+  let closing: Promise<void> | undefined;
+  const sockets = new Set<net.Socket>();
   const netServer = net.createServer((socket) => {
+    if (closed) {
+      socket.destroy();
+      return;
+    }
+    sockets.add(socket);
     socket.on("error", (err) => {
       log.warn(`codex tool socket error (${spec.name}): ${err.message}`);
     });
@@ -166,6 +176,7 @@ export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandl
       socket.destroy();
     });
     socket.once("close", () => {
+      sockets.delete(socket);
       void server.close().catch(() => {
         /* best-effort: the transport is already gone */
       });
@@ -183,16 +194,18 @@ export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandl
     log.debug(`codex tool server listening for ${spec.name} (${spec.tools.length} tools) at ${socketPath}`);
   });
 
-  let closed = false;
   return {
     name: spec.name,
     version: spec.version,
     socketPath,
     toMcpServerConfig: () => shimSpawnConfig(socketPath),
     close: () =>
-      new Promise<void>((resolve) => {
+      (closing ??= new Promise<void>((resolve) => {
         if (closed) return resolve();
         closed = true;
+        // Only turn-local relays are owned here, never the persistent MCP service.
+        // net.Server.close alone waits indefinitely for clients/pending calls.
+        for (const socket of sockets) socket.destroy();
         netServer.close(() => {
           try {
             rmSync(dir, { recursive: true, force: true });
@@ -202,7 +215,7 @@ export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandl
           log.debug(`codex tool server closed for ${spec.name}`);
           resolve();
         });
-      }),
+      })),
   };
 }
 

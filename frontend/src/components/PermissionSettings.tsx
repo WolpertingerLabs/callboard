@@ -1,3 +1,4 @@
+import { normalizePermissions } from "shared/types/permissions.js";
 import { DefaultPermissions, PermissionLevel } from "../api";
 
 interface PermissionSettingsProps {
@@ -77,6 +78,7 @@ function PermissionRow({
 }
 
 export default function PermissionSettings({ permissions, onChange, title, provider }: PermissionSettingsProps) {
+  permissions = normalizePermissions(permissions);
   const updatePermission = (category: keyof DefaultPermissions, level: PermissionLevel) => {
     onChange({
       ...permissions,
@@ -147,6 +149,14 @@ export default function PermissionSettings({ permissions, onChange, title, provi
           applies to any Callboard tool categorised as web access.
         </div>
       )}
+
+      <PermissionRow
+        label="Browser & Computer Control"
+        description="Controls Callboard's browser and desktop tools. Agents with unrestricted code execution may still run their own automation."
+        category="computerControl"
+        permissions={permissions}
+        onUpdate={updatePermission}
+      />
 
       <div
         style={{

@@ -49,8 +49,8 @@ beforeEach(() => {
   capturedServicesOptions = null;
 });
 
-const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
-const ALL_DENY: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny" };
+const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+const ALL_DENY: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny", computerControl: "deny" };
 
 /** Run one turn and collect every event the query yielded. */
 async function run(script: FakeScript, options: Record<string, unknown> = {}): Promise<AgentEvent[]> {
@@ -144,7 +144,10 @@ describe("tool calls", () => {
   });
 
   it("blocks a denied tool and surfaces the reason as an error result", async () => {
-    const events = await run({ toolCalls: [{ ...readCall, toolName: "bash", output: "SHOULD NOT RUN" }], text: "done" }, { pi: { getPermissions: () => ALL_DENY } });
+    const events = await run(
+      { toolCalls: [{ ...readCall, toolName: "bash", output: "SHOULD NOT RUN" }], text: "done" },
+      { pi: { getPermissions: () => ALL_DENY } },
+    );
     const result = events.find((e) => e.type === "tool_result");
     expect(result).toMatchObject({ isError: true });
     expect((result as { content: string }).content).toContain("Auto-denied by default codeExecution policy");
