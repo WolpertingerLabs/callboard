@@ -7,11 +7,12 @@ import type { AnyToolDefinition, ToolServerSpec } from "../../ports/tools.js";
 const turns = new Map<string, { tools: Map<string, AnyToolDefinition>; signal: AbortSignal }>();
 export function bindManagedClineTools(sessionId: string, specs: ToolServerSpec[], signal: AbortSignal): { specs: ToolServerSpec[]; release: () => void } {
   const tools = new Map<string, AnyToolDefinition>();
-  for (const spec of specs) for (const def of spec.tools) {
-    if (!isComputerControlToolName(def.name)) continue;
-    if (tools.has(def.name)) throw new Error(`Duplicate managed tool: ${def.name}`);
-    tools.set(def.name, def);
-  }
+  for (const spec of specs)
+    for (const def of spec.tools) {
+      if (!isComputerControlToolName(def.name)) continue;
+      if (tools.has(def.name)) throw new Error(`Duplicate managed tool: ${def.name}`);
+      tools.set(def.name, def);
+    }
   const turn = { tools, signal };
   if (turns.has(sessionId)) throw new Error("Managed Cline turn is already active");
   turns.set(sessionId, turn);
@@ -34,6 +35,8 @@ export function bindManagedClineTools(sessionId: string, specs: ToolServerSpec[]
         };
       }),
     })),
-    release: () => { if (turns.get(sessionId) === turn) turns.delete(sessionId); },
+    release: () => {
+      if (turns.get(sessionId) === turn) turns.delete(sessionId);
+    },
   };
 }

@@ -176,12 +176,23 @@ export default function ComputerUsePanel({
         const result = await client.observe(chatId, session.id, controller.signal);
         if (alive && ticket === sequence.current) setObservation({ ...result, sessionId: session.id, controller: session.controller });
       } catch {
-        if (alive) { setObservation(null); setPreview(false); }
-      } finally { inFlight = false; }
+        if (alive) {
+          setObservation(null);
+          setPreview(false);
+        }
+      } finally {
+        inFlight = false;
+      }
     };
-    const timer = window.setInterval(() => { void capture(); }, 1000);
+    const timer = window.setInterval(() => {
+      void capture();
+    }, 1000);
     void capture();
-    return () => { alive = false; controller.abort(); window.clearInterval(timer); };
+    return () => {
+      alive = false;
+      controller.abort();
+      window.clearInterval(timer);
+    };
   }, [preview, expanded, denied, active, session, busy, chatId]);
 
   const hideScreenshot = () => {
@@ -269,13 +280,32 @@ export default function ComputerUsePanel({
             </p>
           )}
           {error && <p role="alert">{error}</p>}
-          {status?.sessions.filter((item) => pending(item) && item.id !== session?.id).map((item) => (
-            <aside key={item.id} aria-label="Pending computer approval">
-              <p>{item.reason ?? `Approve access to ${item.targetLabel ?? item.kind}`}</p>
-              <button disabled={busy || denied} onClick={() => void run("Request approved", async (signal) => { await client.control(chatId, item.id, "approve", item.generation, signal); })}>Confirm request</button>
-              <button onClick={() => void run("Request denied", async (signal) => { await client.control(chatId, item.id, "revoke", item.generation, signal); })}>Deny request</button>
-            </aside>
-          ))}
+          {status?.sessions
+            .filter((item) => pending(item) && item.id !== session?.id)
+            .map((item) => (
+              <aside key={item.id} aria-label="Pending computer approval">
+                <p>{item.reason ?? `Approve access to ${item.targetLabel ?? item.kind}`}</p>
+                <button
+                  disabled={busy || denied}
+                  onClick={() =>
+                    void run("Request approved", async (signal) => {
+                      await client.control(chatId, item.id, "approve", item.generation, signal);
+                    })
+                  }
+                >
+                  Confirm request
+                </button>
+                <button
+                  onClick={() =>
+                    void run("Request denied", async (signal) => {
+                      await client.control(chatId, item.id, "revoke", item.generation, signal);
+                    })
+                  }
+                >
+                  Deny request
+                </button>
+              </aside>
+            ))}
           {!!status?.sessions.length && (
             <label>
               Session{" "}
@@ -328,7 +358,10 @@ export default function ComputerUsePanel({
                 <button disabled={session.state === "revoked"} onClick={() => control("revoke")}>
                   Revoke
                 </button>
-                <label><input type="checkbox" checked={preview} disabled={denied || !active} onChange={(event) => setPreview(event.target.checked)} /> Live preview (1 fps)</label>
+                <label>
+                  <input type="checkbox" checked={preview} disabled={denied || !active} onChange={(event) => setPreview(event.target.checked)} /> Live preview
+                  (1 fps)
+                </label>
                 <button onClick={hideScreenshot}>Hide screenshot</button>
               </div>
               {!frame && <p>No current screenshot. Refresh explicitly after enable, approval, takeover or a state change.</p>}

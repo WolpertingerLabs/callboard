@@ -75,10 +75,14 @@ export function isAcpToolServerHandle(value: unknown): value is AcpToolServerHan
  * union, so only `isError` needs forwarding.
  */
 function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
-  server.registerTool(def.name, { description: def.description, inputSchema: def.inputSchema }, async (args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
-    const result = await def.handler(args as never, { signal: extra.signal, toolCallId: String(extra.requestId) });
-    return { content: result.content, ...(result.isError ? { isError: true } : {}) };
-  });
+  server.registerTool(
+    def.name,
+    { description: def.description, inputSchema: def.inputSchema },
+    async (args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
+      const result = await def.handler(args as never, { signal: extra.signal, toolCallId: String(extra.requestId) });
+      return { content: result.content, ...(result.isError ? { isError: true } : {}) };
+    },
+  );
 }
 
 /** One MCP server per socket connection — servers own their transport 1:1. */
@@ -114,7 +118,10 @@ export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
   let closing: Promise<void> | undefined;
   const sockets = new Set<net.Socket>();
   const netServer = net.createServer((socket) => {
-    if (closed) { socket.destroy(); return; }
+    if (closed) {
+      socket.destroy();
+      return;
+    }
     sockets.add(socket);
     socket.on("error", (err) => {
       log.warn(`acp tool socket error (${spec.name}): ${err.message}`);
@@ -150,7 +157,7 @@ export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
     socketPath,
     toAcpMcpServer: () => acpStdioServer(spec.name, socketPath),
     close: () =>
-      closing ??= new Promise<void>((resolve) => {
+      (closing ??= new Promise<void>((resolve) => {
         if (closed) return resolve();
         closed = true;
         // Only turn-local relays are owned here, never the persistent MCP service.
@@ -165,7 +172,7 @@ export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
           log.debug(`acp tool server closed for ${spec.name}`);
           resolve();
         });
-      }),
+      })),
   };
 }
 

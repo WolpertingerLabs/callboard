@@ -58,11 +58,20 @@ describe("buildClineTools", () => {
 
 describe("renderToolResult", () => {
   it("joins text blocks", () => {
-    expect(renderToolResult({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] })).toBe("a\nb");
+    expect(
+      renderToolResult({
+        content: [
+          { type: "text", text: "a" },
+          { type: "text", text: "b" },
+        ],
+      }),
+    ).toBe("a\nb");
   });
 
   it("preserves images in the supported model-facing array", () => {
-    expect(renderToolResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }] })).toEqual([{ type: "image", data: "AAAA", mediaType: "image/png" }]);
+    expect(renderToolResult({ content: [{ type: "image", data: "AAAA", mimeType: "image/png" }] })).toEqual([
+      { type: "image", data: "AAAA", mediaType: "image/png" },
+    ]);
   });
 
   it("throws with the payload when the tool reported an error", () => {

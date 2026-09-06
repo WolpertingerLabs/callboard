@@ -196,7 +196,9 @@ describe("the OpenCode preset", () => {
     // OpenCode 1.18.13 never forwards a child session's permission requests to
     // its ACP client, so a subagent's first tool call blocks the whole turn
     // forever. `task` is the only route to a child session.
-    expect(injectedConfig({ fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "allow", computerControl: "deny" }).permission.task).toBe("deny");
+    expect(injectedConfig({ fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "allow", computerControl: "deny" }).permission.task).toBe(
+      "deny",
+    );
   });
 
   it("stops asking entirely when every axis is `allow`", () => {

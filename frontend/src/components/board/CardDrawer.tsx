@@ -389,7 +389,6 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
             {closed ? <ArchiveRestore size={14} /> : <Archive size={14} />}
             {closed ? "Reopen" : "Close card"}
           </button>
-
         </div>
       </div>
     </>
@@ -401,15 +400,7 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
  * tag chip (or an "add" affordance); editing is an input with autocomplete
  * from the other cards' categories. Saving blank clears the category.
  */
-function CategorySection({
-  category,
-  categories,
-  onPatch,
-}: {
-  category?: string;
-  categories: string[];
-  onPatch: (patch: CardPatch) => Promise<boolean>;
-}) {
+function CategorySection({ category, categories, onPatch }: { category?: string; categories: string[]; onPatch: (patch: CardPatch) => Promise<boolean> }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(category ?? "");
   const [saving, setSaving] = useState(false);
@@ -555,7 +546,10 @@ function MetadataSection({ metadata, onPatch }: { metadata?: Record<string, stri
               fontSize: 12,
             }}
           >
-            <span title={key} style={{ color: "var(--text-muted)", flexShrink: 0, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <span
+              title={key}
+              style={{ color: "var(--text-muted)", flexShrink: 0, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
               {key}
             </span>
             <div style={{ flex: 1, minWidth: 0, color: "var(--text)" }}>
@@ -604,7 +598,11 @@ function MetadataValue({ value, onSave }: { value: string; onSave: (value: strin
         >
           {value}
         </a>
-        <button onClick={() => setEditing(true)} title="Edit value" style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)", flexShrink: 0 }}>
+        <button
+          onClick={() => setEditing(true)}
+          title="Edit value"
+          style={{ ...ICON_BUTTON, display: "flex", alignItems: "center", padding: 2, color: "var(--text-muted)", flexShrink: 0 }}
+        >
           <Pencil size={10} />
         </button>
       </div>
@@ -628,7 +626,15 @@ function MetadataValue({ value, onSave }: { value: string; onSave: (value: strin
 }
 
 /** Key + value inputs for a new entry, with client-side empty/duplicate rejection. */
-function AddMetadataField({ existingKeys, onAdd, onCancel }: { existingKeys: string[]; onAdd: (key: string, value: string) => Promise<void>; onCancel: () => void }) {
+function AddMetadataField({
+  existingKeys,
+  onAdd,
+  onCancel,
+}: {
+  existingKeys: string[];
+  onAdd: (key: string, value: string) => Promise<void>;
+  onCancel: () => void;
+}) {
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);

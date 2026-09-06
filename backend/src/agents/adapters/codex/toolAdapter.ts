@@ -161,7 +161,10 @@ export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandl
   let closing: Promise<void> | undefined;
   const sockets = new Set<net.Socket>();
   const netServer = net.createServer((socket) => {
-    if (closed) { socket.destroy(); return; }
+    if (closed) {
+      socket.destroy();
+      return;
+    }
     sockets.add(socket);
     socket.on("error", (err) => {
       log.warn(`codex tool socket error (${spec.name}): ${err.message}`);
@@ -197,7 +200,7 @@ export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandl
     socketPath,
     toMcpServerConfig: () => shimSpawnConfig(socketPath),
     close: () =>
-      closing ??= new Promise<void>((resolve) => {
+      (closing ??= new Promise<void>((resolve) => {
         if (closed) return resolve();
         closed = true;
         // Only turn-local relays are owned here, never the persistent MCP service.
@@ -212,7 +215,7 @@ export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandl
           log.debug(`codex tool server closed for ${spec.name}`);
           resolve();
         });
-      }),
+      })),
   };
 }
 

@@ -75,10 +75,13 @@ function translateToolDef(def: AnyToolDefinition): AgentTool {
 /** Text-only results retain their historical string form; images use the SDK's
  * supported multimodal array, which its gateway serializes as media content. */
 export function renderToolResult(result: ToolCallResult): ToolResultContent["content"] {
-  const content = result.content.map((block) => block.type === "image"
-    ? { type: "image" as const, data: block.data, mediaType: block.mimeType }
-    : { type: "text" as const, text: block.text });
-  const text = content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  const content = result.content.map((block) =>
+    block.type === "image" ? { type: "image" as const, data: block.data, mediaType: block.mimeType } : { type: "text" as const, text: block.text },
+  );
+  const text = content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
   if (result.isError) throw new Error(text || "Tool call failed");
   return content.some((block) => block.type === "image") ? content : text;
 }

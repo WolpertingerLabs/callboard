@@ -191,7 +191,28 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
  */
 const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly string[]]> = [
   ["codeExecution", ["bash", "sh", "shell", "exec", "execute", "run", "terminal", "command", "spawn", "eval", "script", "process", "kill"]],
-  ["fileWrite", ["write", "edit", "create", "delete", "remove", "move", "rename", "patch", "apply", "mkdir", "replace", "insert", "append", "update", "modify", "save", "touch"]],
+  [
+    "fileWrite",
+    [
+      "write",
+      "edit",
+      "create",
+      "delete",
+      "remove",
+      "move",
+      "rename",
+      "patch",
+      "apply",
+      "mkdir",
+      "replace",
+      "insert",
+      "append",
+      "update",
+      "modify",
+      "save",
+      "touch",
+    ],
+  ],
   ["webAccess", ["fetch", "http", "https", "web", "browse", "url", "download", "upload", "curl", "request"]],
   ["fileRead", ["read", "glob", "grep", "search", "find", "list", "cat", "view", "stat"]],
 ];

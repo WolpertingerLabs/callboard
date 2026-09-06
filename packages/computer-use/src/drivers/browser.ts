@@ -30,6 +30,14 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
   const network = config.network ?? "offline";
   if (!["offline", "unrestricted", "externally-confined"].includes(network)) throw new ComputerUseError("invalid_request");
   const probe: Driver["probe"] = async () => {
+    if (!["linux", "darwin", "win32"].includes(process.platform) || !["x64", "arm64"].includes(process.arch)) {
+      return {
+        available: false,
+        kind: "browser",
+        capabilities: [],
+        reason: `Unsupported Chromium platform ${process.platform}/${process.arch}; configure a qualified external driver`,
+      };
+    }
     try {
       const { chromium } = await import("playwright");
       await access(config.executablePath ?? chromium.executablePath());

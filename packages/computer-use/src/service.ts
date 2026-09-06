@@ -5,7 +5,6 @@ import {
   type ActionRequest,
   type Authorizer,
   type DriverSession,
-  type Frame,
   type Lease,
   type LeaseRef,
   type Observation,
@@ -214,9 +213,8 @@ export class ComputerUseService {
     epochSignal.addEventListener("abort", abort, { once: true });
     external?.addEventListener("abort", abort, { once: true });
     if (epochSignal.aborted || external?.aborted) controller.abort();
-    let timer: NodeJS.Timeout | undefined;
     let timeout = false;
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       timeout = true;
       controller.abort();
     }, this.timeout);

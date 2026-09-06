@@ -12,7 +12,9 @@ export function buildClaudeCodeToolServer(spec: ToolServerSpec): ReturnType<type
   return createSdkMcpServer({
     name: spec.name,
     version: spec.version,
-    tools: spec.tools.map((def) => tool(def.name, def.description, def.inputSchema, async (args, extra) => ({ ...await def.handler(args as never, claudeToolCallContext(extra)) }))),
+    tools: spec.tools.map((def) =>
+      tool(def.name, def.description, def.inputSchema, async (args, extra) => ({ ...(await def.handler(args as never, claudeToolCallContext(extra))) })),
+    ),
   });
 }
 

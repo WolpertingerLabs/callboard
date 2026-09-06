@@ -15,9 +15,7 @@ import type { z } from "zod";
  * Mirrors MCP's content-block discriminated union so adapter translation is
  * an identity map for current engines.
  */
-export type ToolContentBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+export type ToolContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
 /** Structured result returned by a tool handler. */
 export interface ToolCallResult {

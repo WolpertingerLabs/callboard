@@ -46,12 +46,7 @@ export interface CodexPermissionMapping {
 /** True when any built-in axis asks. computerControl is independently service-
  * gated and must not widen the sandbox or duplicate its scoped approval. */
 export function hasAnyAsk(perms: DefaultPermissions): boolean {
-  const levels: PermissionLevel[] = [
-    perms.fileRead,
-    perms.fileWrite,
-    perms.codeExecution,
-    perms.webAccess,
-  ];
+  const levels: PermissionLevel[] = [perms.fileRead, perms.fileWrite, perms.codeExecution, perms.webAccess];
   return levels.some((level) => level === "ask");
 }
 

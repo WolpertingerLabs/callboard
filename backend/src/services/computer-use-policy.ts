@@ -12,9 +12,9 @@ export interface ComputerUsePolicy {
 
 /** Never fall back to a previously allowed snapshot when metadata cannot be read. */
 export function readComputerUsePolicy(value: unknown): ComputerUsePolicy {
-  const source = value && typeof value === "object" ? value as Partial<DefaultPermissions> : {};
+  const source = value && typeof value === "object" ? (value as Partial<DefaultPermissions>) : {};
   const level = (key: keyof ComputerUsePolicy): PermissionLevel => {
-    const candidate = (source as Record<string, unknown>)[key];
+    const candidate = Object.hasOwn(source, key) ? (source as Record<string, unknown>)[key] : undefined;
     return candidate === "allow" || candidate === "ask" ? candidate : "deny";
   };
   return {

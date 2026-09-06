@@ -144,7 +144,10 @@ describe("tool calls", () => {
   });
 
   it("blocks a denied tool and surfaces the reason as an error result", async () => {
-    const events = await run({ toolCalls: [{ ...readCall, toolName: "bash", output: "SHOULD NOT RUN" }], text: "done" }, { pi: { getPermissions: () => ALL_DENY } });
+    const events = await run(
+      { toolCalls: [{ ...readCall, toolName: "bash", output: "SHOULD NOT RUN" }], text: "done" },
+      { pi: { getPermissions: () => ALL_DENY } },
+    );
     const result = events.find((e) => e.type === "tool_result");
     expect(result).toMatchObject({ isError: true });
     expect((result as { content: string }).content).toContain("Auto-denied by default codeExecution policy");

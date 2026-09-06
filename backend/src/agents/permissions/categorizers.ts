@@ -76,7 +76,7 @@ export type ToolCategorizer = (toolName: string) => PermissionCategory | null;
  * one thing it must not be is another provider's map, which is the mistake this
  * registry exists to make unrepresentable.
  */
-const gateEverything: ToolCategorizer = (name) => isComputerControlToolName(name) ? "computerControl" : "codeExecution";
+const gateEverything: ToolCategorizer = (name) => (isComputerControlToolName(name) ? "computerControl" : "codeExecution");
 
 /**
  * The registry. Exhaustive by type: omitting a kind will not compile.

@@ -53,13 +53,7 @@
  * @see ../cline/permissionAdapter.ts (the closest precedent)
  */
 import { isComputerControlToolName } from "../../permissions/computerControl.js";
-import type {
-  ExtensionAPI,
-  ExtensionFactory,
-  ToolCallEvent,
-  ToolCallEventResult,
-  CreateAgentSessionServicesOptions,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionFactory, ToolCallEvent, ToolCallEventResult, CreateAgentSessionServicesOptions } from "@earendil-works/pi-coding-agent";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { decidePermission, type PermissionCategory } from "../../permissions/ToolPermissionPolicy.js";
 import { createLogger } from "../../../utils/logger.js";

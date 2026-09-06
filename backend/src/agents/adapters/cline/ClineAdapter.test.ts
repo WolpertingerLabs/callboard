@@ -104,7 +104,12 @@ describe("a Cline turn, end to end", () => {
 
 describe("the gate, as the runtime sees it", () => {
   it("is consulted for every tool call", async () => {
-    const { fake } = await drain({ toolCalls: [{ toolName: "read_files", toolCallId: "t1" }, { toolName: "run_commands", toolCallId: "t2" }] });
+    const { fake } = await drain({
+      toolCalls: [
+        { toolName: "read_files", toolCallId: "t1" },
+        { toolName: "run_commands", toolCallId: "t2" },
+      ],
+    });
     expect(fake.approvals).toEqual([
       { toolName: "read_files", approved: true },
       { toolName: "run_commands", approved: true },
@@ -117,7 +122,12 @@ describe("the gate, as the runtime sees it", () => {
    * still runs.
    */
   it("refuses the tool the policy denies and allows the one it does not", async () => {
-    core.current = new FakeClineCore({ toolCalls: [{ toolName: "read_files", toolCallId: "t1" }, { toolName: "run_commands", toolCallId: "t2" }] });
+    core.current = new FakeClineCore({
+      toolCalls: [
+        { toolName: "read_files", toolCallId: "t1" },
+        { toolName: "run_commands", toolCallId: "t2" },
+      ],
+    });
     const adapter = new ClineAdapter();
     const query = adapter.query({
       prompt: "go",
@@ -221,7 +231,6 @@ describe("the second message", () => {
 });
 
 describe("lifecycle", () => {
-
   /**
    * `dispose()` is instance-wide and irreversible — one chat closing must not
    * tear down every other live Cline chat in the backend.

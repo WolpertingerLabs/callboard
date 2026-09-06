@@ -1328,7 +1328,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     log.warn(`Computer-control tool registration unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
   }
 
-
   // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
   try {
     const spec = buildCallboardToolsSpec(

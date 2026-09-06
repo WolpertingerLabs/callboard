@@ -27,12 +27,11 @@ function makePolicy(perms: DefaultPermissions | null, categorize: (tool: string)
   return new ToolPermissionPolicy(categorize, () => perms);
 }
 
-function make(canUseTool: {
-  emitter?: EventEmitter;
-  policy: ToolPermissionPolicy;
-  trackingId?: string;
-  hookAskOverride?: { reason: string };
-}): { emitter: EventEmitter; trackingId: string; canUseTool: CanUseTool } {
+function make(canUseTool: { emitter?: EventEmitter; policy: ToolPermissionPolicy; trackingId?: string; hookAskOverride?: { reason: string } }): {
+  emitter: EventEmitter;
+  trackingId: string;
+  canUseTool: CanUseTool;
+} {
   const emitter = canUseTool.emitter ?? new EventEmitter();
   const trackingId = canUseTool.trackingId ?? `test-${Math.random().toString(36).slice(2)}`;
   const fn = buildCanUseTool(emitter, canUseTool.policy, () => trackingId, canUseTool.hookAskOverride);
