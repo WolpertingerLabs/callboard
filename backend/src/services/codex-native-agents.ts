@@ -94,22 +94,28 @@ export interface LifecycleBudget {
 }
 export const createLifecycleBudget = (): LifecycleBudget => ({ remainingBytes: 8 * 1024 * 1024 });
 
-export function readNativeLifecycle(logPath: string, now = Date.now(), budget?: LifecycleBudget): NativeLifecycle {
-  const meta = readCodexSessionMeta(logPath, budget);
-  if (!meta?.nativeAgent || meta.historyStartOrdinal === undefined) return "unknown";
+export function readNativeLifecycle(logPath: string, now = Date.now(), budget?: LifecycleBudget, expectedSessionId?: string): NativeLifecycle {
   let fd: number | undefined;
   try {
-    const stat = statSync(logPath);
-    const key = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+    const versionOf = (stat: import("node:fs").BigIntStats) => `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}`;
+    const stat = statSync(logPath, { bigint: true });
+    const key = versionOf(stat);
+    const meta = readCodexSessionMeta(logPath, budget);
+    if (!meta?.nativeAgent || meta.historyStartOrdinal === undefined) return "unknown";
+    // Check before cache hits too: a stored path is not proof of thread identity.
+    if (expectedSessionId && (meta.id !== expectedSessionId || extractThreadIdFromFilename(basename(logPath)) !== expectedSessionId)) return "unknown";
+    // Bind the verified metadata, cached evidence and replay to one file version.
+    if (versionOf(statSync(logPath, { bigint: true })) !== key) return "unknown";
     const cached = lifecycleCache.get(logPath);
     if (cached?.key === key) return currentLifecycle(cached, now);
-    if (stat.size > 4 * 1024 * 1024) return "unknown"; // Never read an arbitrarily large log for status.
-    if (budget && stat.size + 1 > budget.remainingBytes) return "unknown";
-    if (budget) budget.remainingBytes -= stat.size + 1;
+    const size = Number(stat.size);
+    if (size > 4 * 1024 * 1024) return "unknown"; // Never read an arbitrarily large log for status.
+    if (budget && size + 1 > budget.remainingBytes) return "unknown";
+    if (budget) budget.remainingBytes -= size + 1;
     fd = openSync(logPath, "r");
-    const buf = Buffer.alloc(stat.size + 1);
+    const buf = Buffer.alloc(size + 1);
     const n = readSync(fd, buf, 0, buf.length, 0);
-    if (n !== stat.size) return "unknown"; // A growing/replaced file isn't a stable replay.
+    if (n !== size) return "unknown"; // A growing/replaced file isn't a stable replay.
     const lines = buf.toString("utf8", 0, n).split("\n");
     let status: NativeLifecycle = "unknown";
     let timestamp = 0;
@@ -131,8 +137,7 @@ export function readNativeLifecycle(logPath: string, now = Date.now(), budget?: 
       else if (status === "error" && (event === "token_count" || event === "item_completed")) status = "active";
       if (status === "active") timestamp = Date.parse(line.timestamp);
     }
-    const after = statSync(logPath);
-    if (`${after.mtimeMs}:${after.ctimeMs}:${after.size}` !== key) return "unknown";
+    if (versionOf(statSync(logPath, { bigint: true })) !== key) return "unknown";
     const evidence = { key, status, timestamp };
     if (lifecycleCache.size >= 1024) lifecycleCache.delete(lifecycleCache.keys().next().value!);
     lifecycleCache.set(logPath, evidence);

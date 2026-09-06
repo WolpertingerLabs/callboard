@@ -31,12 +31,12 @@ const CHILD = "01a07680-3128-7461-bc19-d727bd8dc379";
 const SIBLING = "01a07680-69b7-7732-825c-83c54177ade8";
 const LEAF = "01a07680-bb60-70c3-b7b5-856e05c8f962";
 const chatsDir = join(scratch, "chats");
-function chat(id: string, meta: Record<string, unknown> = {}, sessionId = id) {
+function chat(id: string, meta: Record<string, unknown> = {}, sessionId = id, logPath: string | null = null) {
   const record: Chat = {
     id,
     session_id: sessionId,
     folder: "/scratch/repo",
-    session_log_path: null,
+    session_log_path: logPath,
     created_at: "2026-09-01T00:00:00.000Z",
     updated_at: "2026-09-01T00:00:00.000Z",
     metadata: JSON.stringify({ title: id, provider: "codex", ...meta }),
@@ -301,4 +301,127 @@ describe("filesystem-only native card membership", () => {
     expect(bytes).toBeLessThanOrEqual(16 * 1024 * 1024);
     expect(bytes).toBeGreaterThan(8 * 1024 * 1024);
   });
+});
+
+// Round-one independent reviewer probes, expanded across the real read/write surfaces.
+describe("native classification, parent namespace and lifecycle identity obligations", () => {
+  it.each(["collision", "missing", "ambiguous", "incompatible", "persisted-inferred", "inferred-no-rollout", "own-ambiguous"])(
+    "rejects %s ancestry without promoting native members or mutating any record",
+    async (kind) => {
+      let target = CHILD;
+      if (kind === "collision") chat(IMPL, { parentChatId: ROOT, provider: "claude-code" }, "different-primary-session");
+      if (kind === "missing") rmSync(join(chatsDir, `${IMPL}.json`));
+      if (kind === "ambiguous" || kind === "persisted-inferred") chat("duplicate-owner", { parentChatId: ROOT }, IMPL);
+      if (kind === "incompatible") chat(IMPL, { parentChatId: ROOT, provider: "claude-code" });
+      if (kind === "own-ambiguous") {
+        chat("duplicate-child-owner", {}, CHILD);
+        rmSync(join(chatsDir, `${IMPL}.json`));
+      }
+      if (kind === "persisted-inferred" || kind === "inferred-no-rollout") {
+        chat(CHILD, { parentChatId: IMPL, rootChatId: ROOT, nativeAgent: { parentThreadId: IMPL, inferredParentChatId: IMPL } });
+      } else if (kind !== "collision") {
+        // Legacy overlap with mapped ids: classification must survive rejected edges.
+        target = "mapped-child";
+        chat(target, {}, CHILD);
+      }
+      if (kind !== "inferred-no-rollout") rollout(CHILD);
+      rollout(SIBLING, CHILD);
+      rollout(LEAF, SIBLING);
+      const before = disk();
+      const targets = [...new Set([target, CHILD, SIBLING, LEAF])];
+      const board = await rest("get", "/");
+      expect(board.cards.flatMap((c: any) => c.memberChats.map((m: any) => m.chatId))).not.toEqual(expect.arrayContaining([target]));
+      expect((await mcp("list_cards")).cards.map((c: any) => c.cardId)).not.toContain(target);
+      for (const id of targets) {
+        expect((await rest("get", "/:id", id)).code).toBe(404);
+        expect((await mcp("get_card", { card_id: id })).error).toBeDefined();
+        expect((await rest("patch", "/:id", id, { title: "must not write" })).code).toBe(404);
+        expect((await mcp("update_card", { card_id: id, title: "must not write" })).error).toBeDefined();
+        expect((await mcp("set_card_metadata", { card_id: id, set: { denied: "yes" } })).error).toBeDefined();
+      }
+      const bulk = await rest("post", "/bulk-lifecycle", "", { ids: targets, lifecycle: "closed" });
+      expect(bulk.updated).toEqual([]);
+      expect(bulk.failed).toHaveLength(targets.length);
+      expect(disk()).toEqual(before);
+    },
+  );
+
+  it.each(["parent", "fork", "inferred-plus-fork"])("preserves genuinely explicit %s overrides and nested mapped aliases", async (kind) => {
+    chat("duplicate-owner", {}, IMPL);
+    const meta =
+      kind === "parent"
+        ? { parentChatId: ROOT }
+        : kind === "fork"
+          ? { forkedFrom: ROOT }
+          : { parentChatId: IMPL, forkedFrom: ROOT, nativeAgent: { parentThreadId: IMPL, inferredParentChatId: IMPL } };
+    chat("mapped-native", meta, CHILD);
+    rollout(CHILD);
+    rollout(SIBLING, CHILD);
+    rollout(LEAF, SIBLING);
+    const before = disk();
+    for (const id of ["mapped-native", CHILD, SIBLING, LEAF]) {
+      expect((await rest("get", "/:id", id)).card.id).toBe(ROOT);
+      expect((await mcp("get_card", { card_id: id })).card.id).toBe(ROOT);
+    }
+    expect(disk()).toEqual(before);
+    expect((await rest("patch", "/:id", CHILD, { title: "explicit root" })).card.id).toBe(ROOT);
+    expect((await mcp("set_card_metadata", { card_id: LEAF, set: { explicit: "yes" } })).cardId).toBe(ROOT);
+    expect((await mcp("update_card", { card_id: SIBLING, title: "explicit root" })).cardId).toBe(ROOT);
+    const bulk = await rest("post", "/bulk-lifecycle", "", { ids: [CHILD, LEAF], lifecycle: "closed" });
+    expect(bulk.failed).toEqual([]);
+    expect(bulk.updated.every((c: any) => c.id === ROOT)).toBe(true);
+    const after = disk();
+    for (const file of Object.keys(before).filter((file) => file !== `${ROOT}.json`)) expect(after[file]).toBe(before[file]);
+  });
+
+  it("preserves implicit root scope, ordinary orphan promotion, cycles and mixed bulk accounting", async () => {
+    rollout(CHILD, SIBLING);
+    rollout(SIBLING, CHILD);
+    rollout(LEAF);
+    expect((await mcp("get_card")).card.id).toBe(ROOT);
+    expect((await mcp("update_card", { title: "implicit root" })).cardId).toBe(ROOT);
+    chat("ordinary-orphan", { parentChatId: "deleted-parent" });
+    expect((await rest("patch", "/:id", "ordinary-orphan", { title: "orphan" })).card.id).toBe("ordinary-orphan");
+    const before = disk();
+    const bulk = await rest("post", "/bulk-lifecycle", "", { ids: [ROOT, LEAF, CHILD, "missing"], lifecycle: "closed" });
+    expect(bulk.updated).toHaveLength(2);
+    expect(bulk.failed).toHaveLength(2);
+    expect(Object.keys(disk())).toEqual(Object.keys(before));
+    expect(disk()[`${IMPL}.json`]).toBe(before[`${IMPL}.json`]);
+  });
+
+  it.each(["rewritten-header", "other-thread-path", "wrong-filename", "missing", "oversized", "non-native"])(
+    "reports unknown, never another thread's activity, for %s stored lifecycle evidence",
+    async (kind) => {
+      let path = rollout(CHILD, IMPL);
+      chat(CHILD, { parentChatId: ROOT, nativeAgent: { parentThreadId: IMPL, lifecycle: "active" } }, CHILD, path);
+      expect((await rest("get", "/:id", CHILD)).card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent.lifecycle).toBe("complete");
+      if (kind === "rewritten-header") rollout(CHILD, IMPL, "task_started", { id: SIBLING });
+      if (kind === "other-thread-path" || kind === "wrong-filename") {
+        rmSync(path);
+        path = rollout(SIBLING, "missing-parent", "task_started", kind === "wrong-filename" ? { id: CHILD } : {});
+        chat(CHILD, { parentChatId: ROOT, nativeAgent: { parentThreadId: IMPL } }, CHILD, path);
+      }
+      if (kind === "missing") rmSync(path);
+      if (kind === "oversized") rollout(CHILD, IMPL, "task_started", {}, 4 * 1024 * 1024);
+      if (kind === "non-native") rollout(CHILD, IMPL, "task_started", { source: "exec" });
+      const before = disk();
+      const assertUnknown = (card: any) => {
+        const member = card.memberChats.find((m: any) => m.chatId === CHILD);
+        expect(member.nativeAgent.lifecycle).toBe("unknown");
+        expect(member.status).toBe("unknown");
+        expect(card.rollup).toBe("idle");
+      };
+      assertUnknown((await rest("get", "/")).cards.find((c: any) => c.id === ROOT));
+      assertUnknown((await rest("get", "/:id", CHILD)).card);
+      assertUnknown((await mcp("get_card", { card_id: CHILD })).card);
+      expect((await mcp("list_cards")).cards.find((c: any) => c.cardId === ROOT).rollup).toBe("idle");
+      expect(disk()).toEqual(before);
+      assertUnknown((await rest("patch", "/:id", CHILD, { title: "root edit" })).card);
+      assertUnknown((await rest("post", "/bulk-lifecycle", "", { ids: [CHILD], lifecycle: "closed" })).updated[0]);
+      expect((await mcp("update_card", { card_id: CHILD, title: "root edit" })).cardId).toBe(ROOT);
+      expect((await mcp("set_card_metadata", { card_id: CHILD, set: { identity: "checked" } })).cardId).toBe(ROOT);
+      for (const file of Object.keys(before).filter((file) => file !== `${ROOT}.json`)) expect(disk()[file]).toBe(before[file]);
+    },
+  );
 });
