@@ -201,7 +201,11 @@ export class ComputerUseHost {
       throw controlError("denied", "Approval expired or its scope changed; enable the target again");
     if (pending.execute && pending.sessionId && pending.generation) {
       this.agentLease(chatId, pending.sessionId, pending.generation);
-      return pending.execute(id);
+      const result = await pending.execute(id);
+      if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) {
+        throw controlError("driver_error", "The approved action did not complete. Refresh session state before retrying; approval cannot be reused.");
+      }
+      return result;
     }
     return this.openApproved(chatId, pending.kind, current);
   }
@@ -355,7 +359,7 @@ export function getComputerUseHost(): Promise<ComputerUseHost> {
       ],
       authorize: (request) => host?.authorize(request) ?? "deny",
     });
-    const host = new ComputerUseHost(service, drivers);
+    const host: ComputerUseHost = new ComputerUseHost(service, drivers);
     return host;
   })().catch((error) => {
     hostPromise = undefined;

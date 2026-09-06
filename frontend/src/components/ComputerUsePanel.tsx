@@ -427,7 +427,7 @@ export default function ComputerUsePanel({
                   }}
                 >
                   <label>
-                    Text to type <input value={text} maxLength={10000} autoComplete="off" onChange={(event) => setText(event.target.value)} />
+                    Text to type <input value={text} maxLength={4096} autoComplete="off" onChange={(event) => setText(event.target.value)} />
                   </label>
                   <button disabled={!canAct || !text}>Type text</button>
                 </form>
@@ -448,6 +448,18 @@ export default function ComputerUsePanel({
             </>
           )}
           {busy && <p role="status">Waiting for server…</p>}
+          {!!status?.events?.length && (
+            <details>
+              <summary>Service events (memory only)</summary>
+              <ol>
+                {status.events.map((event, index) => (
+                  <li key={index}>
+                    {new Date(event.at).toLocaleTimeString()} · {event.type} · {event.sessionId} · generation {event.generation}
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
           {!!timeline.length && (
             <details>
               <summary>Viewer actions (this tab)</summary>

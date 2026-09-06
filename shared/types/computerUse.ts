@@ -20,6 +20,7 @@ export interface ComputerUseStatus {
   capabilities: ComputerUseCapability[];
   sessions: ComputerUseSession[];
   permission: PermissionLevel;
+  events?: { sessionId: string; generation: number; type: string; at: number }[];
 }
 export interface ComputerUseFrame {
   data: string;

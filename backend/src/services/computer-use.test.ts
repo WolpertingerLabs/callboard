@@ -20,7 +20,7 @@ function fixture(level = "allow") {
     open: async () => ({ observe, act, close: async () => {}, releaseInput: async () => {} }),
   };
   const service = new ComputerUseService({ targets: [{ id: "managed-browser", enabled: true, driver }], authorize: (request) => host.authorize(request) });
-  const host = new ComputerUseHost(service, { browser: driver, desktop: { ...driver, kind: "native-desktop" } }, () => current);
+  const host: ComputerUseHost = new ComputerUseHost(service, { browser: driver, desktop: { ...driver, kind: "native-desktop" } }, () => current);
   hosts.push(host);
   return {
     host,
@@ -78,6 +78,16 @@ describe("computer-use human grants", () => {
     await host.takeover("a", opened.id, opened.generation);
     await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "stale_generation" });
     expect(execute).not.toHaveBeenCalled();
+  });
+  it("does not report a failed MCP mutation as a successful human approval", async () => {
+    const { host } = fixture();
+    const opened = await host.open("a", "browser");
+    const approval = await host.requestAgentAction("a", opened.id, opened.generation, { type: "click", x: 1, y: 1 }, async () => ({
+      isError: true,
+      content: [],
+    }));
+    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "driver_error" });
+    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "denied" });
   });
   it("changed permissions invalidate pending session grants", async () => {
     const { host, change } = fixture("ask");

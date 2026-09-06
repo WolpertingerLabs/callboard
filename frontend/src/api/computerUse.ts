@@ -29,6 +29,17 @@ export function validateStatus(value: ComputerUseStatus): ComputerUseStatus {
     !Array.isArray(value.capabilities) ||
     !Array.isArray(value.sessions) ||
     !["allow", "ask", "deny"].includes(value.permission) ||
+    (value.events !== undefined &&
+      (!Array.isArray(value.events) ||
+        value.events.length > 100 ||
+        value.events.some(
+          (event) =>
+            !event ||
+            typeof event.sessionId !== "string" ||
+            typeof event.type !== "string" ||
+            !Number.isSafeInteger(event.generation) ||
+            !Number.isFinite(event.at),
+        ))) ||
     value.sessions.some(
       (session) =>
         !session ||
