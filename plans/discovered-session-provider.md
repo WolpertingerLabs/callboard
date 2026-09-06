@@ -31,3 +31,9 @@
 - Stored lookup uses historical `session_ids` only when the current log cannot resolve. Evidence must agree on kind and ACP vendor. Conflicts produce response-only `_provider_resolution_error`; HTTP reads return 409 and send rejects before persistence/execution. Unstored ambiguous ACP lookup returns not-found rather than inventing an owner.
 - List routing reconciliation runs only for returned legacy/ACP rows (after filtering/pagination), avoiding full-history resolver work on over-fetched rows. Read-only metadata stays unpersisted.
 - `readChatSessionMessages` consumes resolved chat routing; HTTP transcripts/handoff/title reads, MCP text reads and job final-text extraction no longer rediscover an owner independently. `readFinalAssistantText` is exported for direct regression testing of the production consumer.
+
+### Review validation results
+- Final focused route/consumer run: 75 tests passed (lookup/provider regressions, fork, title regeneration, job-status listing). Regressions execute the real HTTP handlers, MCP read handler, job final-text reader, and stubbed resume path.
+- Final full run: `npx vitest run --maxWorkers=2` — 273 files passed / 3 skipped; 4,354 tests passed / 32 skipped. The first review full run exposed two outdated full-module mocks and a malformed-metadata list regression; fixed both, retained the existing regression test, and reran successfully.
+- Final `npm run build` and `npm run lint:all` pass; lint reports 940 warnings / zero errors. Existing Swagger comment-parser and frontend chunk-size warnings remain. Changed-file lint also passes.
+- No paid calls or live session interaction. Main rebases at clean milestones have been trivial. Duplicate vendor-less ACP identities intentionally remain unreadable/unresumable until an explicit vendor is supplied; no mtime-based ownership inference is retained.
