@@ -198,6 +198,19 @@ describe("filesystem-only native card membership", () => {
     expect(disk()).toEqual(before);
   });
 
+  it("never promotes filesystem-only roots or stored native orphans when evidence disappears", async () => {
+    rollout(SIBLING, IMPL, "task_complete", { source: "exec" });
+    rollout(CHILD, SIBLING);
+    chat(LEAF, { nativeAgent: { parentThreadId: "missing-parent", lifecycle: "active" } });
+    const before = disk();
+    expect((await rest("get", "/")).cards.map((c: any) => c.chatCount)).toEqual([4]);
+    for (const id of [CHILD, SIBLING, LEAF]) {
+      expect((await rest("get", "/:id", id)).code).toBe(404);
+      expect((await mcp("update_card", { card_id: id, title: "no orphan" })).error).toBeDefined();
+    }
+    expect(disk()).toEqual(before);
+  });
+
   it("discovers new children immediately, rechecks activity freshness, and never persists transient lifecycle", async () => {
     expect((await rest("get", "/")).cards[0].chatCount).toBe(4);
     const path = rollout(CHILD, IMPL, "task_started");
