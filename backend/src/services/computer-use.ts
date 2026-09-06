@@ -344,7 +344,7 @@ export function getComputerUseHost(): Promise<ComputerUseHost> {
   return (hostPromise ??= (async () => {
     const pkg = await import("@wolpertingerlabs/computer-use");
     const drivers = {
-      browser: pkg.createBrowserDriver({ network: "unrestricted" }),
+      browser: pkg.createBrowserDriver({ network: "unrestricted", executablePath: process.env.CALLBOARD_BROWSER_EXECUTABLE }),
       desktop: pkg.createNativeDesktopDriver({
         enabled: true,
         display: process.env.CALLBOARD_NATIVE_DISPLAY ?? process.env.DISPLAY,

@@ -80,7 +80,7 @@
     "lint:all": "eslint . --ext .js,.jsx,.ts,.tsx",
     "lint:all:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown",
-    "test": "vitest run",
+    "test": "npm run test:computer-use && vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "prepare": "npm run build",
@@ -95,7 +95,8 @@
     "drawlatch:prod": "node scripts/drawlatch-switch.cjs prod && npm install",
     "drawlatch:which": "node scripts/drawlatch-switch.cjs which",
     "drawlatch:check": "node scripts/drawlatch-switch.cjs check",
-    "build:computer-use": "npm -w @wolpertingerlabs/computer-use run build"
+    "build:computer-use": "npm -w @wolpertingerlabs/computer-use run build",
+    "test:computer-use": "npm -w @wolpertingerlabs/computer-use test"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
