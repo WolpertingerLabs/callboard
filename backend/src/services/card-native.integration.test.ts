@@ -250,6 +250,14 @@ describe("filesystem-only native card membership", () => {
     vi.mocked(readSync).mockClear();
     expect((await rest("get", "/:id", "unrelated")).card.chatCount).toBe(1);
     expect(vi.mocked(readSync).mock.calls.every((args) => Number((args as unknown[])[3]) <= 8192)).toBe(true);
+    // Bulk responses also replay only the cards they actually return.
+    rollout(LEAF, "unrelated", "task_complete", {}, 3 * 1024 * 1024);
+    vi.mocked(readSync).mockClear();
+    const bulk = await rest("post", "/bulk-lifecycle", "", { ids: [CHILD], lifecycle: "closed" });
+    expect(bulk.updated[0].chatCount).toBe(6);
+    const replayCount = vi.mocked(readSync).mock.calls.filter((args) => Number((args as unknown[])[3]) > 1024 * 1024).length;
+    // At most the formerly budget-skipped member of the selected card; never LEAF.
+    expect(replayCount).toBeLessThanOrEqual(1);
   });
   it("preserves ignored discovery, retired member exclusion, and triggered-root eligibility", async () => {
     const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");

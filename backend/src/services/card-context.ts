@@ -85,9 +85,10 @@ export function createCardContext(stored = listChatsSnapshot()) {
       const position = chats.findIndex((item) => item.id === chat.id);
       chats[position] = chat;
     },
-    summaries(runs: JobRunListItem[], includeHidden = false, rootId?: string) {
+    summaries(runs: JobRunListItem[], includeHidden = false, rootId?: string | ReadonlySet<string>) {
       const budget = createLifecycleBudget();
-      const selected = rootId ? chats.filter((chat) => index.existingRootIdOf(chat.id) === rootId) : chats;
+      const rootIds = typeof rootId === "string" ? new Set([rootId]) : rootId;
+      const selected = rootIds ? chats.filter((chat) => rootIds.has(index.existingRootIdOf(chat.id))) : chats;
       return buildCardSummaries(
         selected,
         runs,

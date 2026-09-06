@@ -45,7 +45,7 @@ export const cardsRouter = Router();
  * lineage root. The rollup itself derives which roots are cards, so there is
  * no card list to pre-filter here.
  */
-function summarizeAll(includeHidden = false, context = createCardContext(), rootId?: string): CardSummary[] {
+function summarizeAll(includeHidden = false, context = createCardContext(), rootId?: string | ReadonlySet<string>): CardSummary[] {
   return context.summaries(listRuns({ withRoot: true }), includeHidden, rootId);
 }
 
@@ -170,7 +170,7 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     // write threw is reported as failed even though a different id did the
     // failing write. `updated.length + failed.length === ids.length` for any
     // batch of distinct ids — the invariant Board.tsx's merge depends on.
-    const summaryByRootId = new Map(summarizeAll(true, context).map((c) => [c.id, c]));
+    const summaryByRootId = new Map(summarizeAll(true, context, successfulRootIds).map((c) => [c.id, c]));
     const updated: CardSummary[] = [];
     for (const [id, rootChatId] of rootByRequestedId) {
       if (failedRootIds.has(rootChatId)) {
