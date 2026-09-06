@@ -57,3 +57,10 @@
 - All findAcpTranscript production callers are ACP resolve, parse, and delete. Delete now also accepts optional SessionRouting; HTTP deletion selects only the authoritative provider/vendor, rejects conflicts before mutations, and removes metadata only after native deletion succeeds. Missing unresolved chats return 404 rather than attempting every namespace.
 - ACP discovery/search enumerate transcripts directly (not the ambiguous-ID helper), so no new routing exception escapes their existing discovery contracts. Folder aggregation already catches discovery errors. No other production generic resolver/parser/delete callers remain. Native fork now guards the conflict before either native copy or cross-harness seeding.
 - Shared parseChatMetadata treats null, arrays, primitives and malformed JSON as empty objects. Lookup, metadata enrichment, list/detail transcript consumers and resume use the same normalization; read-only normalization does not rewrite stored records.
+
+### Second-review final validation
+- Rebased onto main `20a08d7` (#408), resolving import/resume conflicts by retaining metadata normalization, provider inference, and reasoning-effort validation before routing metadata updates. #412's attributed message handling remains intact.
+- Regenerated this worktree's shared build after the rebase. A test run overlapping the rebase and an initial focused run against stale shared output were discarded; neither is represented as a clean validation result.
+- Clean post-rebase focused run: 91 tests passed across seven suites (provider/real-route regressions, CLI watcher routing, card preview cache, fork, title regeneration, stream effort compatibility, and attributed MCP messages).
+- Clean post-rebase full run: `npx vitest run --maxWorkers=2` — 286 files passed / 3 skipped; 4,471 tests passed / 32 skipped.
+- Post-rebase `npm run build` and full lint pass; 950 lint warnings, zero errors. Existing Swagger comment-parser and bundle-size warnings remain. No live actions, paid calls, dependency/lockfile changes, server restarts, or merges.
