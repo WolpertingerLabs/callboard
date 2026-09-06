@@ -10,6 +10,7 @@ vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
 vi.mock("../agents/factory.js", () => ({
   getSessionProviders: () => [
     {
+      kind: "claude-code",
       resolveSession: () => true,
       parseSessionMessages: () => [
         { role: "assistant", type: "text", content: "Root answer" },
