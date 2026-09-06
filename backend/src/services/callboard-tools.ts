@@ -912,7 +912,7 @@ export function buildCallboardToolsSpec(
               prompt: promptIterable,
               folder: effectiveFolder,
               maxTurns: args.maxTurns ?? 200,
-              defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+              defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" },
               provider: providerModel.provider,
               ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),

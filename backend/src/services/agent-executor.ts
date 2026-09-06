@@ -139,6 +139,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
         fileWrite: "allow",
         codeExecution: "allow",
         webAccess: "allow",
+        computerControl: "deny",
       },
       ...(provider && { provider }),
       ...(provider === "acp" && acpProviderId && { acpProviderId }),

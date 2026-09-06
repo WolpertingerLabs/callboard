@@ -1,4 +1,5 @@
 import type { ReasoningCapability } from "shared/types/index.js";
+import { normalizePermissions } from "shared/types/permissions.js";
 import type {
   NotifiableChannel,
   ContactChannelAvailability,
@@ -350,7 +351,7 @@ export async function updateChatPermissions(id: string, permissions: DefaultPerm
   const res = await fetch(`${BASE}/chats/${id}/permissions`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ defaultPermissions: permissions }),
+    body: JSON.stringify({ defaultPermissions: normalizePermissions(permissions) }),
   });
   await assertOk(res, "Failed to update chat permissions");
   return res.json();
@@ -626,7 +627,7 @@ export async function createDraft(chatId: string | null, message: string, folder
       chat_id: chatId,
       user_message: message,
       ...(folder && { folder }),
-      ...(defaultPermissions && { defaultPermissions }),
+      ...(defaultPermissions && { defaultPermissions: normalizePermissions(defaultPermissions) }),
     }),
   });
   await assertOk(res, "Failed to save draft");

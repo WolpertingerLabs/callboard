@@ -1,4 +1,5 @@
 export type { PermissionLevel, DefaultPermissions } from "./permissions.js";
+export { normalizePermissions, mergePermissions } from "./permissions.js";
 
 export type { PluginCommand, PluginManifest, Plugin } from "./plugins.js";
 
@@ -200,3 +201,13 @@ export type {
 } from "./jobs.js";
 
 export * from "./reasoning.js";
+export type {
+  ComputerUseKind,
+  ComputerUseCapability,
+  ComputerUseSession,
+  ComputerUseStatus,
+  ComputerUseFrame,
+  ComputerUseObservation,
+  ComputerUseAction,
+  ComputerUseActionRequest,
+} from "./computerUse.js";

@@ -165,7 +165,7 @@ export function buildAgentToolsSpec(
               systemPrompt: fullSystemPrompt,
               agentAlias: args.targetAlias,
               maxTurns: args.maxTurns ?? 50,
-              defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+              defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" },
               provider: providerModel.provider,
               ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),

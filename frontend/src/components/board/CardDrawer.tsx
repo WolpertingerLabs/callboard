@@ -100,7 +100,7 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
       agentState = {
         agentAlias: recent.agentAlias,
         ...(systemPrompt && { systemPrompt }),
-        defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+        defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" },
       };
     }
 

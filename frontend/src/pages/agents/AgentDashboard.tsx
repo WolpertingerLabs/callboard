@@ -76,6 +76,7 @@ export default function AgentDashboard() {
       fileWrite: "allow",
       codeExecution: "allow",
       webAccess: "allow",
+      computerControl: "deny",
     };
 
     let systemPrompt: string | undefined;

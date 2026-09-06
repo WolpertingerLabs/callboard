@@ -1109,7 +1109,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     ...(systemPrompt && { systemPrompt }),
     ...(agentAlias && { agentAlias }),
     maxTurns: sessionFields?.maxTurns ?? (opts.advisory || step?.type === "notify" ? 40 : 200),
-    defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+    defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" },
     triggered: true,
     triggeredBy: "job",
     provider,

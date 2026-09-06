@@ -1,3 +1,4 @@
+import { normalizePermissions } from "shared/types/permissions.js";
 import { useState, useEffect } from "react";
 import { Shield, X } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
@@ -16,14 +17,14 @@ interface ChatPermissionsModalProps {
 }
 
 export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissions, onPermissionsChange, provider }: ChatPermissionsModalProps) {
-  const [localPermissions, setLocalPermissions] = useState<DefaultPermissions>(permissions);
+  const [localPermissions, setLocalPermissions] = useState<DefaultPermissions>(() => normalizePermissions(permissions));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Reset local state when modal opens with new permissions
   useEffect(() => {
     if (isOpen) {
-      setLocalPermissions(permissions);
+      setLocalPermissions(normalizePermissions(permissions));
       setError(null);
     }
   }, [isOpen, permissions]);
@@ -56,7 +57,8 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
     localPermissions.fileRead !== permissions.fileRead ||
     localPermissions.fileWrite !== permissions.fileWrite ||
     localPermissions.codeExecution !== permissions.codeExecution ||
-    localPermissions.webAccess !== permissions.webAccess;
+    localPermissions.webAccess !== permissions.webAccess ||
+    localPermissions.computerControl !== normalizePermissions(permissions).computerControl;
 
   return (
     <ModalOverlay onClose={onClose}>
