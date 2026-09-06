@@ -69,3 +69,19 @@ Preserve inferred parentChatId and nativeAgent.inferredParentChatId durably; the
 - Durable inferred pointer + provenance now survive save; lifecycle, evidence, management and controlNote still do not.
 - Actual read/bookmark persistence tests remove the rollout before stored-only walk/index/card-rollup and MCP card-target assertions. A mapped parent id differing from its session UUID yields one card; explicit MCP child targeting edits only the root card. Missing-parent fallback, later parent mapping, inferred reparenting, explicit override and bounded cycle semantics are covered without new hot-path IO.
 - Focused validation: 197 tests passed across 12 files (native boundaries/discovery, storage, lineage, card rollup/metadata/migration, MCP cards, reopen-card). Build passed; changed-file lint 0 errors/2 warnings; diff check clean. No local full rerun for this scoped persistence change, per coordinator; full CI remains required.
+
+## Final #413 integration plan
+Rebase onto merged provider-provenance work, preserving authoritative namespace routing, metadata normalization and fresh-context race checks. Compose native enrichment only after provider normalization; keep native guards before side effects and preserve lifecycle deferral, mapped durable lineage and archive refusal semantics. Audit actual POST/continue/low-level await boundaries, then run integrated focused tests, full tests (maxWorkers=2), build, full lint and diff checks on the settled tree. No live actions; final fetch/rebase and force-with-lease push only.
+
+### #413 conflict decisions and integration checks
+- Kept #413's authoritative provider/vendor resolution, normalized metadata, _provider_resolution_error guards, transcript consumer APIs, metadata-only routing repair, and fresh-context fingerprint checks. Applied native lookup/list enrichment to the normalized result, not in place of it.
+- Kept deletion routed to one authoritative namespace with metadata removed only after provider success, plus native refusal before mutation and provider-level fail-closed identity verification.
+- Retained native preflight before POST adoption/metadata and low-level sending/MCP callback registration. Recheck native rollout ownership after awaited POST/low-level reasoning validation as well as retaining #413's stored-context race rejection.
+- Kept metadata-only pre-pagination native enrichment and selected-row aggregate replay budgeting, durable inferred parent provenance and transient lifecycle, workspace refused-versus-archived outcome, #412 collaboration translation after the native ordinal cutoff, and #408 reasoning validation.
+- Updated the #413 Codex resume test fixture to use a verified standalone root rather than the deliberately native child; native child lookup coverage remains. Added actual native POST/continue/low-level side-effect tripwires and native ownership changes during awaited preflight. Focused integrated run: 323 tests passed across 20 files.
+
+### Final integrated validation on b907430b4a4b63993e69395a0bfd7f28e8842ebd
+- Focused provider/parser/native/actual POST/async-context/lookup: 323 tests passed (20 files); explicit workspace/board/MCP-card/stop/UI pass: 187 tests passed (7 files).
+- Full settled-tree suite: 291 files passed, 3 skipped; 4,552 tests passed, 32 skipped, maxWorkers=2.
+- Build passed (existing Swagger/Vite warnings). Full lint: 0 errors, 970 warnings. Both working diff and origin/main diff checks passed.
+- Logs: /tmp/410-integrated-focused.log, /tmp/410-integrated-lifecycle.log, /tmp/410-integrated-full.log, /tmp/410-integrated-build.log, /tmp/410-integrated-lintall.log. No live chats/processes were controlled; no servers restarted or packages published.

@@ -103,7 +103,11 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       return {
         ...fileChat,
         ...(routingError && { _provider_resolution_error: routingError }),
-        metadata: refreshNativeMetadata(resolved?.logPath ?? "", fileChat.session_id, resolved ? withSessionProvider(fileChat.metadata, resolved.provider, resolved.acpProviderId) : fileChat.metadata),
+        metadata: refreshNativeMetadata(
+          resolved?.logPath ?? "",
+          fileChat.session_id,
+          resolved ? withSessionProvider(fileChat.metadata, resolved.provider, resolved.acpProviderId) : fileChat.metadata,
+        ),
         // Keep original folder (may be a worktree) — logs are stored under this path
         folder: fileChat.folder,
         displayFolder: mainRepoPath,
@@ -136,7 +140,13 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       displayFolder: resolved.displayFolder,
       session_id: id,
       session_log_path: resolved.logPath,
-      metadata: JSON.stringify(nativeMetadata(resolved.logPath, id, parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [id] }), resolved.provider, resolved.acpProviderId)))),
+      metadata: JSON.stringify(
+        nativeMetadata(
+          resolved.logPath,
+          id,
+          parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [id] }), resolved.provider, resolved.acpProviderId)),
+        ),
+      ),
       created_at: st.birthtime.toISOString(),
       updated_at: st.mtime.toISOString(),
       ...(includeGitInfo && {

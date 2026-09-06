@@ -15,7 +15,7 @@ process.env.CALLBOARD_DATA_DIR = scratch;
 state.home = join(scratch, "codex");
 const { chatFileService } = await import("./chat-file-service.js");
 const { sessionRegistry } = await import("./session-registry.js");
-const { stopSession, stopSessionAndWait } = await import("./claude.js");
+const { stopSession, stopSessionAndWait, sendMessage } = await import("./claude.js");
 const { assertNativeAgentControllable, nativeMetadata } = await import("./codex-native-agents.js");
 const { CodexSessionProvider } = await import("../agents/adapters/codex/CodexSessionProvider.js");
 const { findChat } = await import("../utils/chat-lookup.js");
@@ -87,6 +87,56 @@ describe("native caller boundaries with real storage and registry", () => {
     });
     expect(await stopSessionAndWait(ROOT, 100)).toBe("stopped");
     expect(second.signal.aborted).toBe(true);
+  });
+  it("actual native POST and MCP continue reject before adoption, metadata or callbacks", async () => {
+    rollout(CHILD, true);
+    const callbacks = await import("./session-callbacks.js");
+    const callback = vi.spyOn(callbacks, "registerCompletionCallback");
+    const adopt = vi.spyOn(chatFileService, "upsertChat");
+    const update = vi.spyOn(chatFileService, "updateChatMetadata");
+    try {
+      const response = await request(streamRouter, "/:id/message", "post", CHILD, { prompt: "offline", model: "gpt-5.5", effort: "high" });
+      expect(response.status).toHaveBeenCalledWith(409);
+      const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
+      const result = await buildCallboardToolsSpec(() => ROOT)
+        .tools.find((tool) => tool.name === "continue_chat")!
+        .handler({ chatId: CHILD, prompt: "offline", onComplete: true });
+      expect(JSON.stringify(result)).toContain("read-only");
+      await expect(sendMessage({ chatId: CHILD, prompt: "offline" })).rejects.toThrow("read-only");
+      expect(adopt).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(callback).not.toHaveBeenCalled();
+      expect(chatFileService.getChat(CHILD)).toBeNull();
+    } finally {
+      callback.mockRestore();
+      adopt.mockRestore();
+      update.mockRestore();
+    }
+  });
+  it.each(["http", "low-level"])("rechecks native ownership after awaited %s preflight, before metadata repair", async (entry) => {
+    rollout(CHILD, false);
+    chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata: '{"provider":"codex"}' });
+    const reasoning = await import("./reasoning-capabilities.js");
+    const validate = vi.spyOn(reasoning, "assertReasoningEffort").mockImplementationOnce(async () => {
+      rollout(CHILD, true);
+    });
+    const update = vi.spyOn(chatFileService, "updateChatMetadata");
+    const adopt = vi.spyOn(chatFileService, "upsertChat");
+    try {
+      if (entry === "http") {
+        const result = await request(streamRouter, "/:id/message", "post", CHILD, { prompt: "offline", model: "gpt-5.5" });
+        expect(result.status).toHaveBeenCalledWith(409);
+      } else {
+        await expect(sendMessage({ chatId: CHILD, prompt: "offline" })).rejects.toThrow("read-only");
+      }
+      expect(validate).toHaveBeenCalledOnce();
+      expect(update).not.toHaveBeenCalled();
+      expect(adopt).not.toHaveBeenCalled();
+    } finally {
+      validate.mockRestore();
+      update.mockRestore();
+      adopt.mockRestore();
+    }
   });
   it("positive native identity wins even over a registered controller", async () => {
     rollout(CHILD, true);

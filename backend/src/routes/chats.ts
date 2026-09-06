@@ -603,7 +603,14 @@ chatsRouter.get("/", (req, res) => {
               if (!sessionIds.includes(s.sessionId)) {
                 sessionIds.push(s.sessionId);
               }
-              return JSON.stringify(nativeMetadata(s.filePath, s.sessionId, parseChatMetadata(withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId))), false);
+              return JSON.stringify(
+                nativeMetadata(
+                  s.filePath,
+                  s.sessionId,
+                  parseChatMetadata(withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId)),
+                  false,
+                ),
+              );
             } catch {
               return withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
             }
@@ -620,7 +627,14 @@ chatsRouter.get("/", (req, res) => {
           displayFolder: s.displayFolder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
-          metadata: JSON.stringify(nativeMetadata(s.filePath, s.sessionId, parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId))), false),
+          metadata: JSON.stringify(
+            nativeMetadata(
+              s.filePath,
+              s.sessionId,
+              parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId)),
+              false,
+            ),
+          ),
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
           // Add git information

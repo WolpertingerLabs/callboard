@@ -967,6 +967,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
     await assertReasoningEffort({ ...initialMetadata, cwd: folder });
     assertChatContextUnchanged(expectedContext, chatFileService.getChat(chat.id));
+    assertNativeAgentControllable(opts.chatId);
     const routing: Record<string, unknown> = {};
     if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;
     if (!storedMetadata.acpProviderId && initialMetadata.acpProviderId) routing.acpProviderId = initialMetadata.acpProviderId;

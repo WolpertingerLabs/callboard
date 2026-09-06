@@ -44,6 +44,11 @@ writeFileSync(
     payload: { id: child, cwd: dir, source: { subagent: { thread_spawn: { parent_thread_id: root, depth: 1 } } } },
   }) + "\n",
 );
+// Resume provenance uses a standalone root, never an exec-owned native child.
+writeFileSync(
+  join(logs, `rollout-2026-09-06T10-00-00-${root}.jsonl`),
+  JSON.stringify({ type: "session_meta", payload: { id: root, cwd: dir, source: "exec" } }) + "\n",
+);
 const codex = new CodexSessionProvider();
 
 function stub(kind: SessionProvider["kind"], id: string, acpProviderId?: string): SessionProvider {
@@ -155,10 +160,10 @@ describe("filesystem provider provenance", () => {
     { stored: false, kind: "claude-code" as const },
     { stored: true, kind: "claude-code" as const },
   ])("persists inferred routing on resume ($kind, legacy stored record: $stored)", async ({ stored, kind }) => {
-    const id = kind === "codex" && !stored ? child : "resume-" + kind + (stored ? "-stored" : "");
+    const id = kind === "codex" && !stored ? root : "resume-" + kind + (stored ? "-stored" : "");
     const vendor = kind === "acp" ? "opencode" : undefined;
     const legacyClaude = stored && kind === "claude-code";
-    setSessionProvidersForTesting(legacyClaude ? [] : id === child ? [codex] : [stub(kind, id, vendor)]);
+    setSessionProvidersForTesting(legacyClaude ? [] : id === root ? [codex] : [stub(kind, id, vendor)]);
     if (stored) chatFileService.upsertChat(id, dir, id, { metadata: '{"title":"keep"}' });
     const adapter = new MockAgentProvider({
       events: [

@@ -450,6 +450,12 @@ streamRouter.post("/:id/message", async (req, res) => {
     // and then write settings onto another. Unrelated metadata may still merge.
     const fresh = chatFileService.getChat(chatRecord.id);
     assertChatContextUnchanged(expectedContext, fresh);
+    // Rollout ownership can change independently of the stored routing fields.
+    try {
+      assertNativeAgentControllable(req.params.id);
+    } catch (error) {
+      return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
+    }
     const currentGitInfo = getGitInfo(chatRecord.folder);
     const currentBranch = currentGitInfo.branch;
 
