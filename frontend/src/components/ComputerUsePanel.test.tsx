@@ -1,3 +1,4 @@
+import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerUseStatus } from "shared/types/computerUse.js";
@@ -13,6 +14,7 @@ const observation = {
   frameId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
   frame: { data: "AA==", mimeType: "image/png" as const, width: 1000, height: 500 },
 };
+const manualInput = () => screen.getByRole("group", { name: /Manual input/ }) as HTMLFieldSetElement;
 const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
 async function expand() {
   fireEvent.click(button("▸ Browser & Computer Control"));
@@ -167,7 +169,7 @@ describe("ComputerUsePanel", () => {
     await screen.findByRole("alert");
     expect(button("Stop").disabled).toBe(false);
     expect(button("Revoke").disabled).toBe(false);
-    expect(button("Enable").disabled).toBe(true);
+    await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
     expect(screen.queryByRole("img")).toBeNull();
   });
 
@@ -214,7 +216,7 @@ describe("ComputerUsePanel", () => {
     expect(screen.queryByRole("img")).toBeNull();
   });
 
-  it("hiding the screenshot cancels late captures without resuming the agent", async () => {
+  it("hiding the screenshot discards late captures without resuming the agent", async () => {
     let resolve!: (value: typeof observation) => void;
     vi.mocked(client.observe).mockReturnValue(
       new Promise((done) => {
@@ -259,4 +261,200 @@ it("uses the new capture token after an action and clears stale-frame errors wit
   await screen.findByText("stale_frame: capture again");
   expect(screen.queryByRole("img")).toBeNull();
   expect(client.action).toHaveBeenCalledTimes(2);
+});
+
+// Real service queue/token semantics; the route does not forward fetch abort to
+// service.observe, so deliberately ignore the client signal in this fixture.
+async function serviceViewer(holdSecondCapture = false) {
+  const owner = { ownerId: "viewer-regression", actorId: "agent", role: "agent" as const };
+  const human = { ...owner, actorId: "human", role: "human" as const };
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let captures = 0;
+  const mutation = vi.fn(async () => {});
+  const driver: Driver = {
+    kind: "browser",
+    probe: async () => ({ kind: "browser", available: true, capabilities: ["screenshot"] }),
+    open: async () => ({
+      observe: async () => {
+        if (++captures === 2 && holdSecondCapture) await held;
+        return { data: "AA==", mimeType: "image/png", width: 1000, height: 500, capturedAt: Date.now() };
+      },
+      act: mutation,
+      close: async () => {},
+      releaseInput: async () => {},
+    }),
+  };
+  const service = new ComputerUseService({ authorize: () => "allow", targets: [{ id: "browser", enabled: true, driver }] });
+  const opened = await service.open(owner, "browser");
+  const lease = await service.takeover(human, { sessionId: opened.sessionId, generation: opened.generation });
+  const ref = { sessionId: lease.sessionId, generation: lease.generation };
+  vi.mocked(client.status).mockImplementation(async () => ({
+    permission: "allow",
+    capabilities: [{ kind: "browser", available: true }],
+    sessions: service.status(human).map((item) => ({
+      id: item.sessionId,
+      kind: "browser",
+      state: item.state,
+      controller: item.controller === "none" ? null : item.controller,
+      generation: item.generation,
+    })),
+  }));
+  vi.mocked(client.observe).mockImplementation(async () => service.observe(human, ref));
+  vi.mocked(client.action).mockImplementation(async (_chat, _id, request) => {
+    try {
+      return await service.act(human, {
+        ...ref,
+        leaseId: lease.leaseId,
+        frameId: request.frameId,
+        actionId: request.requestId,
+        action: request.action as Parameters<typeof service.act>[1]["action"],
+      });
+    } catch (error) {
+      // The HTTP adapter exposes a message rather than structured service codes.
+      throw new Error((error as { code: string }).code);
+    }
+  });
+  vi.mocked(client.control).mockImplementation(async (_chat, id, operation) => {
+    if (operation === "stop") await service.stop(human, id);
+    else if (operation === "revoke") await service.revoke(human, id);
+  });
+  return { service, human, ref, mutation, release, captureCount: () => captures };
+}
+
+it.each(["pause", "hide", "remount"] as const)("fences a pending preview through %s before acquiring new manual authority", async (mode) => {
+  const fixture = await serviceViewer(true);
+  let view = render(<ComputerUsePanel chatId="real-preview" permission="allow" />);
+  try {
+    await expand();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await waitFor(() => expect(fixture.captureCount()).toBe(2));
+    expect(manualInput().disabled).toBe(true);
+    expect(screen.getByText(/Capturing screenshot… Manual input is paused/)).toBeTruthy();
+    fireEvent.click(button("Enter"));
+    expect(client.action).not.toHaveBeenCalled();
+    expect(button("Stop").disabled).toBe(false);
+    expect(button("Revoke").disabled).toBe(false);
+
+    if (mode === "pause") fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    else if (mode === "hide") fireEvent.click(button("Hide screenshot"));
+    else {
+      view.unmount();
+      view = render(<ComputerUsePanel chatId="real-preview" permission="allow" />);
+      await expand();
+    }
+    fireEvent.click(button("Refresh screenshot"));
+    expect(vi.mocked(client.observe).mock.calls[1][2]?.aborted).toBe(false);
+    // No new HTTP observation may overtake the accepted held capture.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(client.observe).toHaveBeenCalledTimes(2);
+    expect(manualInput().disabled).toBe(true);
+    await act(async () => {
+      fixture.release();
+    });
+    await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    expect(fixture.captureCount()).toBe(3);
+    fireEvent.click(button("Enter"));
+    await waitFor(() => expect(fixture.mutation).toHaveBeenCalledTimes(1));
+    expect(fixture.service.status(fixture.human)[0].state).toBe("ready");
+    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
+  } finally {
+    fixture.release();
+    view.unmount();
+    await fixture.service.dispose();
+  }
+});
+
+it("recovers a real stale-frame rejection without denying authorized refresh or replaying the action", async () => {
+  const fixture = await serviceViewer();
+  const view = render(<ComputerUsePanel chatId="real-stale" permission="allow" />);
+  try {
+    await expand();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    // A second human viewer supersedes the displayed token without changing the lease.
+    await fixture.service.observe(fixture.human, fixture.ref);
+    fireEvent.click(button("Enter"));
+    await screen.findByText("stale_frame");
+    await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
+    expect(fixture.mutation).not.toHaveBeenCalled();
+    expect(client.action).toHaveBeenCalledTimes(1);
+    expect(fixture.service.status(fixture.human)[0].state).toBe("ready");
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.queryByText(/Computer control is denied/)).toBeNull();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    fireEvent.click(button("Enter"));
+    await waitFor(() => expect(fixture.mutation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
+  } finally {
+    view.unmount();
+    await fixture.service.dispose();
+  }
+});
+
+it.each(["stop", "revoke"] as const)("keeps emergency %s immediate while an accepted preview is held", async (operation) => {
+  const fixture = await serviceViewer(true);
+  const view = render(<ComputerUsePanel chatId="real-emergency" permission="allow" />);
+  try {
+    await expand();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await waitFor(() => expect(fixture.captureCount()).toBe(2));
+    fireEvent.click(button(operation === "stop" ? "Stop" : "Revoke"));
+    await waitFor(() => expect(fixture.service.status(fixture.human)[0].state).toBe(operation === "stop" ? "stopped" : "revoked"));
+    expect(fixture.mutation).not.toHaveBeenCalled();
+    await act(async () => {
+      fixture.release();
+    });
+    await waitFor(() => expect(button("Retry status").disabled).toBe(false));
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(button("Refresh screenshot").disabled).toBe(true);
+  } finally {
+    fixture.release();
+    view.unmount();
+    await fixture.service.dispose();
+  }
+});
+
+it("does not dispatch an unaccepted queued preview after the new panel closes", async () => {
+  const fixture = await serviceViewer(true);
+  let view = render(<ComputerUsePanel chatId="real-queued-preview" permission="allow" />);
+  try {
+    await expand();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await waitFor(() => expect(fixture.captureCount()).toBe(2));
+    view.unmount();
+    view = render(<ComputerUsePanel chatId="real-queued-preview" permission="allow" />);
+    await expand();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    // The new preview is queued behind B, but has not reached the server.
+    expect(client.observe).toHaveBeenCalledTimes(2);
+    view.unmount();
+    await act(async () => {
+      fixture.release();
+    });
+    expect(client.observe).toHaveBeenCalledTimes(2);
+    expect(fixture.captureCount()).toBe(2);
+  } finally {
+    fixture.release();
+    view.unmount();
+    await fixture.service.dispose();
+  }
 });
