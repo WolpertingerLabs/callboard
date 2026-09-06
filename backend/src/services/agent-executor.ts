@@ -113,9 +113,8 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       return null;
     }
 
-    await assertReasoningEffort({ provider, model, effort });
-
     const workspacePath = getAgentWorkspacePath(agentAlias);
+    await assertReasoningEffort({ provider, model, effort, cwd: workspacePath });
     const fullSystemPrompt = compileSystemPrompt(config, workspacePath).prompt;
     const sendMessage = getSendMessage();
 

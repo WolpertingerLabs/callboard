@@ -94,14 +94,14 @@ let generation = 0;
 /** Handle for the periodic refresh started by {@link initOpenRouterModelsCache}. */
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
-async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
+async function fetchOpenRouterModels(endpoint?: string, previousModels: OpenRouterModelInfo[] = cache?.models ?? []): Promise<OpenRouterModelsCache> {
   try {
     // Shared with the utility completion client — see openrouter-endpoint.ts for
     // why the catalog and the completions must resolve the same host. Inside the
     // try so that a bad configured endpoint fails like any other fetch failure:
     // this function is contracted never to reject, since callers treat its
     // promise as the cache itself.
-    const url = resolveOpenRouterApiUrl("/models");
+    const url = endpoint ?? resolveOpenRouterApiUrl("/models");
     log.info(`Fetching OpenRouter models from ${url}...`);
 
     const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -146,7 +146,7 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
     // rejection here would strand `fetchPromise` non-null forever — the exact
     // never-refreshes bug this module exists to prevent.
     const message = err instanceof Error ? err.message : String(err);
-    const previous = cache?.models ?? [];
+    const previous = previousModels;
     log.error(`Failed to fetch OpenRouter models: ${message}${previous.length > 0 ? ` (keeping ${previous.length} cached)` : ""}`);
     return { models: previous, fetchedAt: Date.now(), ok: false };
   }
@@ -285,8 +285,49 @@ export function stopOpenRouterModelsRefresh(): void {
  * Get cached OpenRouter models, waiting for a fetch if the cache is cold or has
  * aged past {@link OPENROUTER_MODELS_TTL_MS}.
  */
-export async function getOpenRouterModelsAsync(): Promise<OpenRouterModelInfo[]> {
-  return (await ensureOpenRouterModels()).models;
+interface EndpointCatalog {
+  cache?: OpenRouterModelsCache;
+  inFlight?: Promise<OpenRouterModelsCache>;
+}
+
+// Execution endpoints are independent of the account-wide utility endpoint.
+// Invalidation/refresh of that utility catalog must never affect these entries.
+const endpointCatalogs = new Map<string, EndpointCatalog>();
+
+/** Explicit argument is an execution API root, e.g. https://host/api/v1.
+ * Omitted retains the existing account-wide utility catalog behavior.
+ * Failures carry forward only this endpoint's last successful models.
+ */
+export async function getOpenRouterModelsAsync(executionApiBaseUrl?: string): Promise<OpenRouterModelInfo[]> {
+  if (executionApiBaseUrl === undefined) return (await ensureOpenRouterModels()).models;
+  const base = executionApiBaseUrl.trim().replace(/\/+$/, "");
+  // Do not accidentally fall back to the unrelated utility catalog for a bad
+  // explicit execution URL. Offline/unknown capabilities are the safe answer.
+  try {
+    const url = new URL(base);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return [];
+  } catch {
+    return [];
+  }
+  const endpoint = `${base}/models`;
+  let entry = endpointCatalogs.get(endpoint);
+  if (!entry) {
+    entry = {};
+    endpointCatalogs.set(endpoint, entry);
+  }
+  if (entry.cache && isFresh(entry.cache)) return entry.cache.models;
+  if (!entry.inFlight) {
+    const ownedEntry = entry;
+    ownedEntry.inFlight = fetchOpenRouterModels(endpoint, ownedEntry.cache?.models ?? [])
+      .then((result) => {
+        ownedEntry.cache = result;
+        return result;
+      })
+      .finally(() => {
+        ownedEntry.inFlight = undefined;
+      });
+  }
+  return (await entry.inFlight!).models;
 }
 
 /**
@@ -302,7 +343,13 @@ export async function getOpenRouterModelsAsync(): Promise<OpenRouterModelInfo[]>
  * what actually bounds this path's staleness; the kick here just narrows the
  * window when a read lands before the timer does.
  */
-export function getOpenRouterModelsSnapshot(): OpenRouterModelInfo[] {
+export function getOpenRouterModelsSnapshot(executionApiBaseUrl?: string): OpenRouterModelInfo[] {
+  if (executionApiBaseUrl !== undefined) {
+    const endpoint = `${executionApiBaseUrl.trim().replace(/\/+$/, "")}/models`;
+    const entry = endpointCatalogs.get(endpoint);
+    if (!entry?.cache || !isFresh(entry.cache)) void getOpenRouterModelsAsync(executionApiBaseUrl);
+    return entry?.cache?.models ?? [];
+  }
   checkCacheEndpoint();
   if (!cache || !isFresh(cache)) void ensureOpenRouterModels();
   return cache?.models ?? [];
@@ -369,6 +416,7 @@ export function resetOpenRouterModelsCacheForTesting(): void {
   fetchPromise = null;
   stopOpenRouterModelsRefresh();
   cacheEndpoint = undefined;
+  endpointCatalogs.clear();
 }
 
 /**

@@ -47,7 +47,7 @@ import {
 } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
-import { isCodexRoutedThroughOpenRouter, detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
+import { detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
@@ -951,7 +951,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     folder = chat.folder;
     resumeSessionId = chat.session_id;
     initialMetadata = JSON.parse(chat.metadata || "{}");
-    await assertReasoningEffort(initialMetadata);
+    await assertReasoningEffort({ ...initialMetadata, cwd: folder });
     // Recover agentAlias from chat metadata when not explicitly provided.
     // This ensures Callboard tools are re-injected when resuming an agent session.
     if (!opts.agentAlias && initialMetadata.agentAlias) {
@@ -1533,7 +1533,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // block, keyed from OPENROUTER_API_KEY. Credentials may come from the stored
     // key or from an ambient OpenRouter setup — see isCodexRoutedThroughOpenRouter
     // for why the env case additionally requires an explicit endpoint override.
-    const useOpenRouter = isCodexRoutedThroughOpenRouter(agentSettings);
+    const reasoningTarget = await resolveReasoningTarget(
+      { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, cwd: folder },
+      agentSettings,
+    );
+    const useOpenRouter = reasoningTarget.injectedOpenRouter;
     // Routing requested with no credentials anywhere — no stored key and no
     // ambient OpenRouter setup — is a misconfiguration rather than a silent
     // fallback onto codexAuthMode.
@@ -1559,10 +1563,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // reads codexOpenRouterModel (an OR slug), native Codex reads codexModel (a
     // bare CLI slug). Sharing one field made toggling lossy — see the
     // AgentSettings doc-comment on codexOpenRouterModel.
-    const requestedModel = resolveReasoningTarget(
-      { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined },
-      agentSettings,
-    ).model;
+    const requestedModel = reasoningTarget.model;
     // Per-chat reasoning effort, read back out of metadata — maps onto Codex's
     // modelReasoningEffort in the optionsAdapter.
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
@@ -1587,7 +1588,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(requestedModel && { model: requestedModel }),
       ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
       ...(chatEffort && { reasoningEffort: chatEffort }),
-      reasoningRoute: resolveReasoningTarget({ provider: "codex", model: requestedModel }, agentSettings).route === "openrouter" ? "openrouter" : "native",
+      reasoningRoute: reasoningTarget.route === "openrouter" ? "openrouter" : reasoningTarget.route === "codex" ? "native" : "unknown",
       ...(permissions && { permissions }),
     };
     log.info(
@@ -1680,9 +1681,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // cross-harness alias, resolved through the same registry as every other
     // harness so `planner` lands on whatever the user pointed the `cline` target
     // at.
-    const clineModel = resolveReasoningTarget(
-      { provider: "cline", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined },
-      agentSettings,
+    const clineModel = (
+      await resolveReasoningTarget({ provider: "cline", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined }, agentSettings)
     ).model;
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
     queryOpts.options.cline = {
@@ -1714,9 +1714,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // own explicitly named field. `PiAdapter.assertPiResumePath` throws if a value
   // that is not an absolute `.jsonl` path ever reaches it.
   if (providerKind === "pi") {
-    const piModel = resolveReasoningTarget(
-      { provider: "pi", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined },
-      agentSettings,
+    const piModel = (
+      await resolveReasoningTarget({ provider: "pi", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined }, agentSettings)
     ).model;
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
 

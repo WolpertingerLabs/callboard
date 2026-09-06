@@ -498,6 +498,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         {chatMode === "claude-code" ? (
           <>
             <ProviderConfigPicker
+              cwd={displayPath || undefined}
               provider={provider}
               onProviderChange={setProvider}
               acpProviders={acpProviders}

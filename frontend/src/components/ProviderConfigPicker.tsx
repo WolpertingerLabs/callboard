@@ -12,6 +12,8 @@ export type ProviderConfigPickerMode = "panel" | "inline";
 
 interface ProviderConfigPickerProps {
   provider: AgentProviderKind;
+  /** Actual execution directory, used for project-scoped runtime settings. */
+  cwd?: string;
   onProviderChange: (provider: AgentProviderKind) => void;
   effort: EffortLevel | undefined;
   onEffortChange: (effort: EffortLevel | undefined) => void;
@@ -107,6 +109,7 @@ interface ProviderConfigPickerProps {
  */
 export default function ProviderConfigPicker({
   provider,
+  cwd,
   onProviderChange,
   effort,
   onEffortChange,
@@ -143,12 +146,12 @@ export default function ProviderConfigPicker({
   const selectedModel = provider === "codex" ? codexModel : provider === "cline" ? clineModel : provider === "pi" ? piModel : claudeModel;
   // Key the result as well as cancelling the request: a changed selection must
   // never render the previous model's tiers, even for the frame before effects.
-  const capabilityKey = JSON.stringify([provider, selectedModel ?? "", clineProviderId, codexUseOpenRouter, claudeCodeUseOpenRouter]);
+  const capabilityKey = JSON.stringify([provider, selectedModel ?? "", cwd, clineProviderId, codexUseOpenRouter, claudeCodeUseOpenRouter]);
   const [result, setResult] = useState<{ key: string; capability: Awaited<ReturnType<typeof getReasoningCapability>> }>();
   useEffect(() => {
     if (!showEffort) return;
     let cancelled = false;
-    getReasoningCapability(provider, selectedModel ?? "")
+    getReasoningCapability(provider, selectedModel ?? "", cwd)
       .then((capability) => {
         if (!cancelled) setResult({ key: capabilityKey, capability });
       })
@@ -168,7 +171,7 @@ export default function ProviderConfigPicker({
     return () => {
       cancelled = true;
     };
-  }, [capabilityKey, provider, selectedModel, showEffort]);
+  }, [capabilityKey, provider, selectedModel, showEffort, cwd]);
   const capability = result?.key === capabilityKey ? result.capability : undefined;
   const efforts = capability?.efforts ?? [];
   const legacyNone = effort === "none" && capability?.legacySummaryNone === true;
@@ -210,7 +213,7 @@ export default function ProviderConfigPicker({
           cursor: "pointer",
         }}
       >
-        <option value="">{capability?.defaultEffort ? `(default: ${capability.defaultEffort})` : "(default)"}</option>
+        <option value="">(default)</option>
         {legacyNone && <option value="none">none (legacy: hide summaries; default effort)</option>}
         {unsupported && (
           <option value={effort} disabled>

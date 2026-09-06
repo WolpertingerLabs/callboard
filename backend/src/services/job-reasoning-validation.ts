@@ -21,6 +21,10 @@ export async function assertJobReasoningEfforts(raw: unknown): Promise<void> {
         provider: (step.provider ?? defaults.provider ?? "claude-code") as string,
         model: (step.model ?? defaults.model) as string | undefined,
         effort: step.effort,
+        cwd:
+          typeof (step.folder ?? defaults.folder) === "string" && !String(step.folder ?? defaults.folder).includes("{{")
+            ? ((step.folder ?? defaults.folder) as string)
+            : undefined,
       });
     } catch (error) {
       throw new JobValidationError([`Step "${String(step.id)}": ${(error as Error).message}`]);

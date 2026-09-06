@@ -1,7 +1,7 @@
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { agentExists } from "../services/agent-file-service.js";
+import { agentExists, getAgentWorkspacePath } from "../services/agent-file-service.js";
 import { listCronJobs, getCronJob, createCronJob, updateCronJob, deleteCronJob } from "../services/agent-cron-jobs.js";
 import { scheduleJob, cancelJob } from "../services/cron-scheduler.js";
 import { executeAgent } from "../services/agent-executor.js";
@@ -87,7 +87,7 @@ agentCronJobsRouter.post("/", async (req: Request, res: Response): Promise<void>
 
   const cronAction: CronAction = action || { type: "start_session" };
   try {
-    await assertReasoningEffort(cronAction);
+    await assertReasoningEffort({ ...cronAction, cwd: getAgentWorkspacePath(alias) });
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
     return;
@@ -133,7 +133,7 @@ agentCronJobsRouter.put("/:jobId", async (req: Request, res: Response): Promise<
 
   if (safeUpdates.action !== undefined) {
     try {
-      await assertReasoningEffort(safeUpdates.action);
+      await assertReasoningEffort({ ...safeUpdates.action, cwd: getAgentWorkspacePath(alias) });
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });
       return;

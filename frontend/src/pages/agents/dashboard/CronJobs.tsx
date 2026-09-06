@@ -216,6 +216,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
+  const [clineProviderId, setClineProviderId] = useState("");
   useEffect(() => {
     // `refresh` rather than the cached default, because what this gates is not a
     // chat the user is about to watch start. A stale `codexConfigured: true`
@@ -228,6 +229,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         setCodexConfigured(info.codexConfigured ?? false);
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
         setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
+        setClineProviderId(info.clineProviderId ?? "");
       })
       .catch(() => {
         setCodexConfigured(false);
@@ -407,13 +409,22 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     setConfigError(null);
     setEditSaving(true);
     try {
+      // This editor owns model/provider/effort, prompt and completion only.
+      // Preserve execution folder, maxTurns, action type and future fields.
+      const preservedAction = { ...jobs.find((job) => job.id === editingJobId)?.action };
+      delete preservedAction.provider;
+      delete preservedAction.model;
+      delete preservedAction.effort;
+      delete preservedAction.prompt;
+      delete preservedAction.requireExplicitCompletion;
       const updated = await updateAgentCronJob(agent.alias, editingJobId, {
         name: editName.trim(),
         schedule: editSchedule.trim(),
         type: editType,
         description: editDescription.trim(),
         action: {
-          type: "start_session",
+          ...preservedAction,
+          type: preservedAction.type ?? "start_session",
           prompt: editPrompt.trim() || undefined,
           ...(editProvider !== "claude-code" && { provider: editProvider }),
           ...(editProvider === "claude-code" && editClaudeModel.trim() && { model: editClaudeModel.trim() }),
@@ -500,6 +511,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           >
             {configError && <div role="alert">{configError}</div>}
             <ProviderConfigPicker
+              cwd={agent.workspacePath}
               provider={editProvider}
               onProviderChange={setEditProvider}
               effort={editEffort}
@@ -508,6 +520,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               onClaudeModelChange={setEditClaudeModel}
               codexModel={editCodexModel}
               onCodexModelChange={setEditCodexModel}
+              clineProviderId={clineProviderId}
               clineModel={editClineModel}
               onClineModelChange={setEditClineModel}
               piModel={editPiModel}
@@ -901,6 +914,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               </button>
             )}
             <button
+              aria-label={`Edit ${job.name}`}
               onClick={() => startEditing(job)}
               style={{
                 display: "flex",
@@ -1032,6 +1046,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           >
             {configError && <div role="alert">{configError}</div>}
             <ProviderConfigPicker
+              cwd={agent.workspacePath}
               provider={formProvider}
               onProviderChange={setFormProvider}
               effort={formEffort}
@@ -1040,6 +1055,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               onClaudeModelChange={setFormClaudeModel}
               codexModel={formCodexModel}
               onCodexModelChange={setFormCodexModel}
+              clineProviderId={clineProviderId}
               clineModel={formClineModel}
               onClineModelChange={setFormClineModel}
               piModel={formPiModel}

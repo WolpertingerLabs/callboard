@@ -1,3 +1,4 @@
+import { getAgentSettings } from "../services/agent-settings.js";
 /**
  * pi API — the providers and models the embedded `@earendil-works/pi-coding-agent`
  * runtime can route to.
@@ -46,6 +47,6 @@ piRouter.get("/models", async (req, res) => {
   const providerId = typeof req.query.providerId === "string" ? req.query.providerId.trim() : "";
   if (!providerId) return res.status(400).json({ error: "providerId is required" });
 
-  const models = await getPiModels(providerId);
+  const models = await getPiModels(providerId, getAgentSettings().piBaseUrl?.trim() || "https://openrouter.ai/api/v1");
   return res.json({ providerId, models });
 });

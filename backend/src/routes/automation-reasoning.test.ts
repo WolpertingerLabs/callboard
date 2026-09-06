@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
 const stubs = vi.hoisted(() => ({ validate: vi.fn(async (_input: unknown) => {}), create: vi.fn(), update: vi.fn() }));
 vi.mock("../services/reasoning-capabilities.js", () => ({ assertReasoningEffort: stubs.validate }));
-vi.mock("../services/agent-file-service.js", () => ({ agentExists: () => true, getAgent: () => ({}) }));
+vi.mock("../services/agent-file-service.js", () => ({ agentExists: () => true, getAgentWorkspacePath: () => "/agent-workspace", getAgent: () => ({}) }));
 vi.mock("../services/agent-cron-jobs.js", () => ({
   listCronJobs: () => [],
   getCronJob: () => ({}),
@@ -65,10 +65,10 @@ describe.each([
     expect(stubs.update).not.toHaveBeenCalled();
   });
   it("preserves validated max", async () => {
-    const action = { type: "start_session", provider: "codex", model: "luna", effort: "max" };
+    const action = { type: "start_session", provider: "codex", model: "luna", effort: "max", folder: "/ignored-legacy-folder" };
     const result = await request("post", action);
     expect(result.status).toBe(201);
-    expect(stubs.validate).toHaveBeenCalledWith(action);
+    expect(stubs.validate).toHaveBeenCalledWith({ ...action, cwd: "/agent-workspace" });
     expect(stubs.create.mock.calls[0][1].action).toEqual(action);
   });
 });

@@ -157,7 +157,7 @@ describe("model-aware effort validation before writes", () => {
     expect(response.status).toBe(400);
     expect(response.json?.error).toContain("ultra");
     expect(metadataWrites).toEqual([]);
-    expect(validateEffort).toHaveBeenCalledWith({ provider: "codex", model: "luna", effort: "ultra" });
+    expect(validateEffort).toHaveBeenCalledWith({ cwd: chatRecord!.folder, provider: "codex", model: "luna", effort: "ultra" });
   });
   it.each(["max", "ultra"])("persists validated %s verbatim", async (effort) => {
     setChat({ provider: "codex", model: "astra" });
@@ -167,7 +167,7 @@ describe("model-aware effort validation before writes", () => {
   it("clears stale efforts explicitly while changing models", async () => {
     setChat({ provider: "codex", model: "astra", effort: "ultra" });
     await post({ model: "luna", effort: "" });
-    expect(validateEffort).toHaveBeenCalledWith({ provider: "codex", model: "luna", effort: "" });
+    expect(validateEffort).toHaveBeenCalledWith({ cwd: chatRecord!.folder, provider: "codex", model: "luna", effort: "" });
     expect(metadataWrites).toContainEqual({ effort: undefined });
   });
 });

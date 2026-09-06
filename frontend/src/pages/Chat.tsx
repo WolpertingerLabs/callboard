@@ -3598,6 +3598,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     control matching the chat's pinned provider renders. */}
               <ProviderConfigPicker
                 provider={composerProvider}
+                cwd={chat?.folder || folder || undefined}
                 onProviderChange={() => {}}
                 showProviderToggle={false}
                 mode="inline"

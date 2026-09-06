@@ -472,3 +472,80 @@ it("invalidates capabilities immediately when the configured gateway changes", a
   mockResolveUrl.mockImplementation((path: string) => `https://openrouter.ai/api/v1${path}`);
   vi.unstubAllGlobals();
 });
+
+describe("execution endpoint scoped catalogs", () => {
+  beforeEach(() => {
+    resetOpenRouterModelsCacheForTesting();
+    vi.useFakeTimers();
+    mockResolveUrl.mockReturnValue("https://utility.invalid/v1/models");
+  });
+  afterEach(() => {
+    resetOpenRouterModelsCacheForTesting();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    mockResolveUrl.mockImplementation((path: string) => `https://openrouter.ai/api/v1${path}`);
+  });
+  it("isolates utility and independent custom execution endpoints including utility changes", async () => {
+    const fetcher = vi.fn(async (url: string) => modelsBody(url));
+    vi.stubGlobal("fetch", fetcher);
+    expect((await getOpenRouterModelsAsync())[0].id).toBe("https://utility.invalid/v1/models");
+    expect((await getOpenRouterModelsAsync("https://codex.invalid/api/v1/"))[0].id).toBe("https://codex.invalid/api/v1/models");
+    expect((await getOpenRouterModelsAsync("https://pi.invalid/v1"))[0].id).toBe("https://pi.invalid/v1/models");
+    mockResolveUrl.mockReturnValue("https://new-utility.invalid/v1/models");
+    await getOpenRouterModelsAsync();
+    await refreshOpenRouterModelsCache();
+    const count = fetcher.mock.calls.length;
+    expect((await getOpenRouterModelsAsync("https://codex.invalid/api/v1"))[0].id).toBe("https://codex.invalid/api/v1/models");
+    expect(fetcher).toHaveBeenCalledTimes(count);
+  });
+  it("single-flights per endpoint and cannot carry another endpoint forward on failure", async () => {
+    let resolve!: (response: Response) => void;
+    const fetcher = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((r) => {
+            resolve = r;
+          }),
+      )
+      .mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetcher);
+    const first = getOpenRouterModelsAsync("https://first.invalid/v1");
+    const second = getOpenRouterModelsAsync("https://first.invalid/v1/");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await getOpenRouterModelsAsync("https://second.invalid/v1")).toEqual([]);
+    resolve(modelsBody("first-only"));
+    expect(await first).toEqual(await second);
+    vi.advanceTimersByTime(OPENROUTER_MODELS_TTL_MS);
+    expect((await getOpenRouterModelsAsync("https://first.invalid/v1"))[0].id).toBe("first-only");
+    const count = fetcher.mock.calls.length;
+    await getOpenRouterModelsAsync("https://first.invalid/v1");
+    expect(fetcher).toHaveBeenCalledTimes(count);
+    vi.advanceTimersByTime(OPENROUTER_MODELS_RETRY_MS);
+    await getOpenRouterModelsAsync("https://first.invalid/v1");
+    expect(fetcher).toHaveBeenCalledTimes(count + 1);
+    expect(await getOpenRouterModelsAsync("https://second.invalid/v1")).toEqual([]);
+  });
+  it("fails closed for malformed explicit roots rather than using utility settings", async () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    for (const base of ["", "not-a-url", "file:///tmp/catalog", "https://user:pass@host/v1", "https://host/v1?token=x"]) {
+      expect(await getOpenRouterModelsAsync(base)).toEqual([]);
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+it("explicit snapshots warm and refresh only their own execution catalog", async () => {
+  resetOpenRouterModelsCacheForTesting();
+  const fetcher = vi.fn().mockResolvedValueOnce(modelsBody("custom-only"));
+  vi.stubGlobal("fetch", fetcher);
+  expect(getOpenRouterModelsSnapshot("https://custom.invalid/v1/")).toEqual([]);
+  await getOpenRouterModelsAsync("https://custom.invalid/v1");
+  expect(getOpenRouterModelsSnapshot("https://custom.invalid/v1").map((m) => m.id)).toEqual(["custom-only"]);
+  expect(getOpenRouterModelsSnapshot("garbage")).toEqual([]);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher.mock.calls[0][0]).toBe("https://custom.invalid/v1/models");
+  resetOpenRouterModelsCacheForTesting();
+  vi.unstubAllGlobals();
+});

@@ -110,7 +110,7 @@ streamRouter.post("/new/message", async (req, res) => {
   if (!folder) return res.status(400).json({ error: "folder is required" });
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
   try {
-    await assertReasoningEffort({ provider: isRoutableProvider(provider) ? provider : undefined, model, effort });
+    await assertReasoningEffort({ provider: isRoutableProvider(provider) ? provider : undefined, model, effort, cwd: folder });
   } catch (error) {
     return res.status(400).json({ error: (error as Error).message });
   }
@@ -421,6 +421,7 @@ streamRouter.post("/:id/message", async (req, res) => {
     if (model !== undefined || effort !== undefined) {
       try {
         await assertReasoningEffort({
+          cwd: chatRecord.folder,
           provider: meta.provider,
           model: typeof model === "string" ? model.trim() || undefined : meta.model,
           effort: effort !== undefined ? effort : meta.effort,

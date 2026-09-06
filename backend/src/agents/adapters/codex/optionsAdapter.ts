@@ -113,7 +113,7 @@ export interface CodexOptionsExtras {
    */
   reasoningEffort?: EffortLevel;
   /** Effective wire route, including ambient configuration without injection. */
-  reasoningRoute?: "openrouter" | "native";
+  reasoningRoute?: "openrouter" | "native" | "unknown";
 }
 
 /**
@@ -386,6 +386,9 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // additionally sets the Codex effort tier (below). Default (unset) ⇒ summaries
   // on at Codex's own effort.
   const reasoningEffort = extras.reasoningEffort;
+  if (extras.reasoningRoute === "unknown" && reasoningEffort) {
+    throw new Error("Codex execution route is unknown; clear the reasoning effort or configure a known endpoint before sending an explicit effort.");
+  }
   if (
     (extras.useOpenRouter || extras.reasoningRoute === "openrouter") &&
     reasoningEffort &&

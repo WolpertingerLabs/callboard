@@ -869,7 +869,7 @@ export function buildCallboardToolsSpec(
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
-            await assertReasoningEffort({ ...providerModel, effort: args.effort });
+            await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: args.folder });
 
             // Resolve effective folder based on branch configuration
             const branchResult = resolveBranch({

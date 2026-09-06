@@ -136,7 +136,7 @@ export function buildAgentToolsSpec(
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
-            await assertReasoningEffort({ ...providerModel, effort: args.effort });
+            await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: getAgentWorkspacePath(args.targetAlias) });
 
             // 3. Compile target agent's identity and workspace context
             const workspacePath = getAgentWorkspacePath(args.targetAlias);
@@ -288,7 +288,7 @@ export function buildAgentToolsSpec(
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
-            await assertReasoningEffort({ ...providerModel, effort: args.effort });
+            await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: getAgentWorkspacePath(args.targetAlias) });
 
             // 2. Execute the agent using the shared helper (linked into the
             // caller's chat parentage tree when the calling chat is resolvable)

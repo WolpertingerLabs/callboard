@@ -23,12 +23,13 @@ afterEach(() => {
 });
 
 describe("model-aware reasoning picker", () => {
-  it("offers catalog max/ultra and describes the default", async () => {
+  it("offers catalog max/ultra without claiming catalog recommendation is the runtime default", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(capability(["low", "medium", "max", "ultra"]))));
     render(<ProviderConfigPicker {...base} codexModel="gpt-6-astra" />);
     expect(await screen.findByRole("option", { name: "ultra" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "max" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "(default: medium)" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "(default)" })).toBeTruthy();
+    expect(screen.queryByText("(default: medium)")).toBeNull();
     expect(screen.queryByRole("option", { name: "none" })).toBeNull();
     expect(fetch).toHaveBeenCalledWith("/api/codex/reasoning?provider=codex&model=gpt-6-astra", expect.anything());
   });
@@ -91,6 +92,18 @@ describe("model-aware reasoning picker", () => {
     expect(screen.queryByRole("option", { name: "ultra" })).toBeNull();
     fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "max" } });
     expect(base.onEffortChange).toHaveBeenCalledWith("max");
+  });
+
+  it("re-resolves when the execution folder changes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response(capability(["max"])));
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<ProviderConfigPicker {...base} cwd="/native-project" />);
+    await screen.findByRole("option", { name: "max" });
+    fetchMock.mockResolvedValue(response(capability(["low"], { route: "openrouter" })));
+    rerender(<ProviderConfigPicker {...base} cwd="/router-project" />);
+    expect(screen.queryByRole("option", { name: "max" })).toBeNull();
+    await screen.findByRole("option", { name: "low" });
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/codex/reasoning?provider=codex&model=&cwd=%2Frouter-project", expect.anything());
   });
 
   it("retains max, ultra and future persisted values for validation rather than downgrading", () => {

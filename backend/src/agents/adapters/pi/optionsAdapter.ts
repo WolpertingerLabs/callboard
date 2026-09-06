@@ -1,3 +1,4 @@
+import { assertPiModelReasoningEffort } from "./modelCatalog.js";
 /**
  * Options adapter: callboard run options → pi's session construction inputs.
  *
@@ -279,6 +280,7 @@ export interface BuildPiSessionInput {
  */
 export function buildPiSessionOptions(input: BuildPiSessionInput): Omit<CreateAgentSessionFromServicesOptions, "services" | "sessionManager"> {
   const { pi, model, customTools, filters } = input;
+  assertPiModelReasoningEffort(model, pi.effort);
 
   if (!model) {
     // Not thrown: pi resolves its own default when no model is given, and a hard

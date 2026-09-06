@@ -1,7 +1,7 @@
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { agentExists, getAgent } from "../services/agent-file-service.js";
+import { agentExists, getAgent, getAgentWorkspacePath } from "../services/agent-file-service.js";
 import { appendActivity } from "../services/agent-activity.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "../services/agent-triggers.js";
 import { backtestFilter } from "../services/trigger-dispatcher.js";
@@ -139,7 +139,7 @@ agentTriggersRouter.post("/", async (req: Request, res: Response): Promise<void>
 
   const cronAction: CronAction = action || { type: "start_session" };
   try {
-    await assertReasoningEffort(cronAction);
+    await assertReasoningEffort({ ...cronAction, cwd: getAgentWorkspacePath(alias) });
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
     return;
@@ -191,7 +191,7 @@ agentTriggersRouter.put("/:triggerId", async (req: Request, res: Response): Prom
 
   if (updates.action !== undefined) {
     try {
-      await assertReasoningEffort(updates.action);
+      await assertReasoningEffort({ ...updates.action, cwd: getAgentWorkspacePath(alias) });
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });
       return;

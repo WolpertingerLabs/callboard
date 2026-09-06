@@ -15,7 +15,7 @@
 - Initial official documentation tool retrieval failed with expired tool authentication; use public HTTP retrieval if further research is required, without changing credentials.
 
 ## Validation/results
-Pending implementation.
+Initial implementation and review-round results are recorded below.
 
 ## Implemented design
 - `shared/types/reasoning.ts` is the serializable capability contract plus conservative pure catalog interpretation. Storage vocabulary includes max/ultra/persistent, but native options require live catalog advertisement; SDK membership alone never adds a choice. Cline/pi adapters explicitly refuse those additional strings.
@@ -28,7 +28,7 @@ Pending implementation.
 ## Transport verification and limitations
 - Actual installed SDK → CLI → isolated loopback HTTP test (fake HOME/CODEX_HOME/key, no model calls) verifies `reasoning.effort: "none"` and `"max"`. OR `none` uses `CodexOptions.config.model_reasoning_effort = "none"`, because the typed SDK ThreadOption omits it. Native saved `none` still sets only `model_reasoning_summary = "none"`. Adapter unit tests protect this distinction and native max/ultra.
 - The same wire probe shows **unset Codex OR effort emits medium** for an unknown OR slug. `config: null` cannot suppress this (SDK rejects null; TOML has no null), and disabling reasoning-summary support does not remove the effort. Therefore the UI deliberately does not label OR `default_effort` as the transport's default: clearing delegates to the harness configuration/default, not necessarily the gateway. `default_enabled: false` is preserved as catalog data but does not imply that clearing disables reasoning. Explicit supported `none` is the verified off control. Nonreasoning/dynamic OR entries expose no explicit efforts; the existing CLI implicit-default behavior remains a transport limitation.
-- When a model is left entirely to opaque CLI/runtime configuration (no resolvable settings default), or catalog discovery is unavailable, only default is offered (plus compatibility for saved native summary-none). No guessed model ID or effort is substituted. Select an explicit known model to enable discovery. Pi's unspecified runtime model is intentionally not guessed.
+- When model/config discovery is unavailable, only default is offered. The native CLI config/read projection can now discover its configured model; no model ID is guessed. Pi's unspecified runtime model remains intentionally unknown. Saved native summary-none is compatible only when the route is verified native.
 - Public HTTP retrieval of both official source pages succeeded after the documentation tool's expired-token failure. OR docs confirm absent/null semantics and mandatory reasoning; App Server docs recommend model-specific supported reasoning discovery.
 
 ## Verification
@@ -39,3 +39,27 @@ Pending implementation.
 - Final `npm test -- --maxWorkers=4`: **278 passed files, 3 skipped; 4381 passed tests, 32 skipped** (281 files / 4413 tests total).
 - Full `npm run lint:all` equivalent (`npx eslint . --ext .js,.jsx,.ts,.tsx`): **0 errors, 933 warnings** (existing warning baseline/style debt).
 - `npm run build`: shared/backend/frontend production builds pass; existing swagger annotation warning and Vite large-chunk warning remain. No lockfile changes.
+
+
+## PR #408 — review round 1
+Read both independent reports (backend `01a0768b-23bb-7920-8e2e-718a7f9e2912`, UI `01a0768b-2d0c-7271-9979-336cfd5aaba3`) and reproduced/covered all six findings:
+1. **Effective Codex route:** replaced ambient readiness scanning in capability resolution with the installed CLI's App Server `config/read`. The CLI merges/filters user, project and supported profile layers; Callboard reads only active provider/base URL/model fields, never reads auth.json or logs raw config/stderr/credential fields. SDK `baseUrl` is mirrored as `--config openai_base_url=...`, ahead of ambient env; active custom providers retain their own endpoint. Explicit Callboard provider injection remains authoritative. Unknown/private non-OR routes and malformed/unreadable config fail conservatively. Inactive blocks/comments, quoted active provider IDs, API overrides, trusted project model settings, changes between reads and private endpoints have regressions. There is no handwritten TOML parser and no new dependency.
+2. **Endpoint catalogs:** reasoning catalogs now use the actual execution API root with independent per-endpoint cache/single-flight/TTL/retry. Utility `openRouterBaseUrl` cannot change native Codex OR capabilities. Cline/pi endpoint overrides use their own scope; invalid roots fail closed and custom OR roots are fetched independently. Pi synthesis also uses its execution scope, not utility metadata.
+3. **Pi downgrade:** OR efforts additionally intersect the actual resolved pi model map. Execution checks the actual model before SDK session creation, preventing the SDK clamp from silently lowering xhigh. Real installed-SDK tests prove `openai/o3` xhigh would clamp to high and is now rejected, and cover synthesized models.
+4. **Cron Cline:** system-info's `clineProviderId` reaches both create/edit pickers, with rendered request regression.
+5. **Triggers:** create/edit now use the shared provider/model/effort picker, retain action type and fields outside the editor's ownership, allow explicit effort clearing, retain unsupported values visibly, and show server validation errors. Rendered payload tests cover unchanged native ultra, creation, clearing and non-owned fields. Cron edit was given the same non-owned-field preservation. Legacy action.folder is retained but is not used for capability cwd: cron/trigger execution uses the agent workspace, so validation and both forms use that same workspace.
+6. **Native default label:** `(default)` no longer claims the catalog recommendation is the effective execution effort. A native loopback regression sets CLI config effort low and verifies a cleared override sends low rather than the catalog's medium recommendation. `defaultEffort` in the shared capability is documented as a catalog recommendation only.
+
+Additional official reference: https://developers.openai.com/codex/config-basic/ — CLI precedence and trusted project layering. The installed CLI filters endpoint overrides out of project config but admits model/effort; tests follow its returned configuration rather than recreating those rules.
+
+### Review-round limitations
+- CLI config/read runs locally, bounded to five seconds and single-flight only while pending (completed reads are not cached, so config edits cannot leave a stale route). Failure/unsupported CLI config-read yields unknown capabilities rather than guessing native. Private endpoints are not assumed to accept native Codex efforts: explicit OR routing plus that endpoint's metadata is required to offer OR efforts.
+- Execution cwd is passed from composer/folder chat and automation agent workspaces when known, and revalidated in backend execution. The agent-mode new-chat list has no selected agent yet, so its picker cannot supply an agent-specific cwd until selection; execution still validates the selected workspace. Profile configuration follows the CLI invocation actually used by the installed SDK; Callboard does not invent an unpassed `--profile`.
+- Clearing still delegates to harness configuration; it is not a promise to use the gateway/catalog suggested effort. OR none remains actual `reasoning.effort: none`, while native saved none remains summary-only.
+
+### Review-round verification
+- Consolidated full suite: `npm test -- --maxWorkers=4` — **281 files passed, 3 skipped; 4411 tests passed, 32 skipped** (284 files / 4443 tests total).
+- Final automation cwd parity/payload rerun after matching the executor's agent-workspace semantics: **12 tests passed**. All six reviewed findings have regression coverage, including the actual installed CLI config/read and SDK/loopback transport tests.
+- `npm run build`: passes (shared/backend/frontend). Existing Swagger annotation and Vite chunk-size warnings remain.
+- `npm run lint:all`: **0 errors, 933 warnings**. Changed-file lint: **0 errors, 157 warnings**. No dependency/lockfile changes.
+- Scoped catalog discovery makes unauthenticated `/models` requests, as before; auth-protected or offline private catalog endpoints remain unknown rather than borrowing another endpoint's capabilities or forwarding unrelated credentials.

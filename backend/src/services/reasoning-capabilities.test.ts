@@ -4,10 +4,15 @@ vi.mock("./agent-settings.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./agent-settings.js")>()),
   getAgentSettings: () => mocks.settings,
 }));
-vi.mock("../agents/adapters/codex/codexAuth.js", () => ({
-  isCodexRoutedThroughOpenRouter: () => mocks.injected,
-  detectCodexOpenRouterEnv: () => mocks.ambient,
+vi.mock("./codex-execution-route.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./codex-execution-route.js")>()),
+  resolveCodexExecutionRoute: async () => ({
+    route: mocks.injected || mocks.ambient ? "openrouter" : "codex",
+    endpoint: mocks.injected || mocks.ambient ? "https://openrouter.ai/api/v1" : "https://api.openai.com/v1",
+    injectedOpenRouter: mocks.injected,
+  }),
 }));
+vi.mock("../agents/adapters/pi/modelCatalog.js", () => ({ getPiModelReasoningEfforts: async () => ["none", "minimal", "low", "medium", "high"] }));
 vi.mock("./codex-models.js", () => ({ getCodexModelsAsync: mocks.native }));
 vi.mock("./openrouter-models.js", () => ({ getOpenRouterModelsAsync: mocks.or }));
 import { assertReasoningEffort, resolveReasoningCapability, resolveReasoningTarget } from "./reasoning-capabilities.js";
@@ -29,13 +34,13 @@ describe("effective reasoning resolution", () => {
     });
     await expect(assertReasoningEffort({ provider: "codex", effort: "ultra" })).resolves.toBeUndefined();
   });
-  it("resolves override aliases and missing alias targets through execution defaults", () => {
+  it("resolves override aliases and missing alias targets through execution defaults", async () => {
     mocks.settings.modelAliases = [
       { name: "fast", targets: { codex: "override" } },
       { name: "other", targets: { pi: "elsewhere" } },
     ];
-    expect(resolveReasoningTarget({ provider: "codex", model: "FAST" }).model).toBe("override");
-    expect(resolveReasoningTarget({ provider: "codex", model: "other" }).model).toBe("native");
+    expect((await resolveReasoningTarget({ provider: "codex", model: "FAST" })).model).toBe("override");
+    expect((await resolveReasoningTarget({ provider: "codex", model: "other" })).model).toBe("native");
   });
   it("uses OR defaults only on injected routing and never offers ultra", async () => {
     mocks.injected = true;
@@ -48,7 +53,7 @@ describe("effective reasoning resolution", () => {
   });
   it("ambient routing changes capabilities without changing execution's model default", async () => {
     mocks.ambient = true;
-    expect(resolveReasoningTarget({ provider: "codex" })).toMatchObject({ route: "openrouter", model: "native" });
+    expect(await resolveReasoningTarget({ provider: "codex" })).toMatchObject({ route: "openrouter", model: "native" });
     await expect(assertReasoningEffort({ provider: "codex", effort: "none" })).rejects.toThrow("not supported");
   });
   it("unknown/offline models allow default but reject explicit tiers, preserving native legacy summary none", async () => {
@@ -72,13 +77,13 @@ describe("effective reasoning resolution", () => {
   });
 });
 
-it("recognizes Cline/pi explicit OpenRouter base URL routing, not unrelated keys", () => {
+it("recognizes Cline/pi explicit OpenRouter base URL routing, not unrelated keys", async () => {
   mocks.settings.clineProviderId = "openai-native";
   mocks.settings.clineBaseUrl = "https://openrouter.ai/api/v1";
   mocks.settings.piProviderId = "openai";
   mocks.settings.piBaseUrl = "https://openrouter.ai/api/v1";
-  expect(resolveReasoningTarget({ provider: "cline" }).route).toBe("openrouter");
-  expect(resolveReasoningTarget({ provider: "pi" }).route).toBe("openrouter");
+  expect((await resolveReasoningTarget({ provider: "cline" })).route).toBe("openrouter");
+  expect((await resolveReasoningTarget({ provider: "pi" })).route).toBe("openrouter");
 });
 
 it("does not label gateway defaults as Codex CLI defaults", async () => {
@@ -87,4 +92,15 @@ it("does not label gateway defaults as Codex CLI defaults", async () => {
   const capability = await resolveReasoningCapability({ provider: "codex" });
   expect(capability.defaultEffort).toBeUndefined();
   expect(capability.message).toContain("not the gateway default");
+});
+
+it("scopes Codex capabilities to execution's official endpoint rather than utility configuration", async () => {
+  mocks.injected = true;
+  mocks.settings.openRouterBaseUrl = "https://unrelated.example/v1";
+  await resolveReasoningCapability({ provider: "codex" });
+  expect(mocks.or).toHaveBeenLastCalledWith("https://openrouter.ai/api/v1");
+});
+it("rejects OR Pi xhigh when its actual SDK model would clamp to high", async () => {
+  await expect(assertReasoningEffort({ provider: "pi", model: "vendor/routed", effort: "xhigh" })).rejects.toThrow("not supported");
+  await expect(assertReasoningEffort({ provider: "pi", model: "vendor/routed", effort: "high" })).resolves.toBeUndefined();
 });

@@ -13,6 +13,7 @@ export interface ReasoningCapability {
   model?: string;
   status: "known" | "unknown";
   efforts: string[];
+  /** Catalog recommendation only; cleared overrides leave runtime config authoritative. */
   defaultEffort?: string;
   message?: string;
 }

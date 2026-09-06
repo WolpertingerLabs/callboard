@@ -1,6 +1,6 @@
 /** Model/route resolution shared by execution, API validation and the picker. */
 import { getAgentSettings, resolveSessionModel } from "./agent-settings.js";
-import { isCodexRoutedThroughOpenRouter, detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
+import { resolveCodexExecutionRoute, safeApiRoot } from "./codex-execution-route.js";
 import { getCodexModelsAsync } from "./codex-models.js";
 import { getOpenRouterModelsAsync } from "./openrouter-models.js";
 import {
@@ -14,23 +14,20 @@ export interface ReasoningRequest {
   provider?: string;
   model?: string;
   effort?: unknown;
+  cwd?: string;
+  folder?: string;
 }
 
 /** Exactly the defaults/alias namespace passed to each execution adapter. */
-export function resolveReasoningTarget(input: ReasoningRequest, settings = getAgentSettings()) {
+export async function resolveReasoningTarget(input: ReasoningRequest, settings = getAgentSettings()) {
   const provider = input.provider ?? "claude-code";
-  const injectedOpenRouter = provider === "codex" && isCodexRoutedThroughOpenRouter(settings);
+  const codexRoute = provider === "codex" ? await resolveCodexExecutionRoute(settings, input.cwd ?? input.folder) : undefined;
+  const injectedOpenRouter = codexRoute?.injectedOpenRouter ?? false;
   const providerId =
     provider === "cline" ? settings.clineProviderId?.trim() || "anthropic" : provider === "pi" ? settings.piProviderId?.trim() || "openrouter" : provider;
   const configuredBaseUrl = provider === "cline" ? settings.clineBaseUrl : provider === "pi" ? settings.piBaseUrl : undefined;
-  let gatewayEndpoint = false;
-  try {
-    gatewayEndpoint = !!configuredBaseUrl && new URL(configuredBaseUrl).hostname === "openrouter.ai";
-  } catch {
-    /* Adapter validates malformed URLs. */
-  }
-  const route =
-    gatewayEndpoint || (provider === "codex" && (injectedOpenRouter || detectCodexOpenRouterEnv())) || providerId === "openrouter" ? "openrouter" : providerId;
+  const endpoint = codexRoute?.endpoint ?? safeApiRoot(configuredBaseUrl?.trim() || (providerId === "openrouter" ? "https://openrouter.ai/api/v1" : undefined));
+  const route = codexRoute?.route ?? (providerId === "openrouter" || (endpoint && new URL(endpoint).hostname === "openrouter.ai") ? "openrouter" : providerId);
   const fallback =
     provider === "codex"
       ? injectedOpenRouter
@@ -43,12 +40,12 @@ export function resolveReasoningTarget(input: ReasoningRequest, settings = getAg
           : undefined;
   const model =
     provider === "codex" || provider === "cline" || provider === "pi" ? resolveSessionModel(input.model, fallback, provider, settings) : input.model;
-  return { provider, providerId, route, model };
+  return { provider, providerId, route, endpoint, model: model ?? codexRoute?.model, injectedOpenRouter };
 }
 
 const ADAPTER_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 export async function resolveReasoningCapability(input: ReasoningRequest): Promise<ReasoningCapability> {
-  const target = resolveReasoningTarget(input);
+  const target = await resolveReasoningTarget(input);
   const { provider, route } = target;
   let { model } = target;
   if (provider === "cline" && !model) {
@@ -67,13 +64,21 @@ export async function resolveReasoningCapability(input: ReasoningRequest): Promi
     message: "Model-specific reasoning capabilities are unavailable. Choose a model with known capabilities or clear the effort to use the runtime default.",
   };
   if (!["codex", "cline", "pi"].includes(provider)) return { ...unknown, status: "known", message: "This harness does not expose reasoning effort." };
+  if (route === "unknown") return unknown;
   if (!model) return { ...unknown, ...(provider === "codex" && route !== "openrouter" ? { legacySummaryNone: true } : {}) };
   if (route === "openrouter") {
-    const entry = (await getOpenRouterModelsAsync()).find((m) => m.id === model);
+    if (!target.endpoint) return unknown;
+    const entry = (await getOpenRouterModelsAsync(target.endpoint)).find((m) => m.id === model);
     let capability: ReasoningCapability = { ...openRouterReasoningCapability(entry), provider, route, model };
     // Codex sends gateway none through config passthrough (verified on loopback);
     // the typed SDK ThreadOption omits it. Other adapters have native off knobs.
     capability = restrictReasoningCapability(capability, provider === "codex" ? ["none", "minimal", "low", "medium", "high", "xhigh", "max"] : ADAPTER_EFFORTS);
+    if (provider === "pi") {
+      const { getPiModelReasoningEfforts } = await import("../agents/adapters/pi/modelCatalog.js");
+      const levels = await getPiModelReasoningEfforts(target.providerId, model, entry ?? null);
+      if (!levels) return unknown;
+      capability = restrictReasoningCapability(capability, levels);
+    }
     if (provider === "codex") {
       // The CLI supplies its own effort even when ThreadOptions omit one.
       // Loopback verified medium for an unknown OR slug; config can override it.

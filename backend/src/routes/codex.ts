@@ -24,6 +24,7 @@ codexRouter.get("/reasoning", async (req, res) => {
   try {
     res.json(
       await resolveReasoningCapability({
+        cwd: typeof req.query.cwd === "string" ? req.query.cwd : undefined,
         provider: typeof req.query.provider === "string" ? req.query.provider : undefined,
         model: typeof req.query.model === "string" ? req.query.model : undefined,
       }),
