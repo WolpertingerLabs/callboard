@@ -5,13 +5,20 @@ Extraction-ready Node 22+ / TypeScript library and standard MCP stdio executable
 ## Install / build
 
 ```sh
-npm install @wolpertingerlabs/computer-use
 # From this package's source directory (independent of any monorepo):
 npm install --ignore-scripts
 npm run build
 npm test
 npm pack
 ```
+
+The independent package has not been established as published on npm. From a separate consumer directory, install the tarball produced above:
+
+```sh
+npm install /absolute/path/to/wolpertingerlabs-computer-use-0.1.0.tgz
+```
+
+A registry command such as `npm install @wolpertingerlabs/computer-use` applies **only after separate registry publication**; inclusion in Callboard does not publish this package.
 
 Playwright is an **optional**, lazily imported dependency. Browser binaries must already be provisioned by the operator; import/probe never downloads them. Removing Playwright does not prevent importing the core or using a native driver. Published files include JS, declarations, README and MIT license. No root workspace configuration is required.
 
@@ -142,6 +149,8 @@ npm test
 # Opt in to the existing operator-provisioned Chromium executable for actual smoke:
 COMPUTER_USE_TEST_CHROMIUM=/absolute/path/to/chrome npm test
 ```
+
+**Qualification status:** earlier successful Chromium/Callboard smoke results used the pre-security-fix, unsandboxed implementation. They do not qualify the current sandbox-enforced driver. The current sandboxed live smoke could not run on the build host; live sandboxed operation remains unqualified.
 
 The smoke test uses only a disposable isolated browser and local fixture HTTP server. It tests actual pixels, navigation, persistent form state, human input/resume and cross-owner profile isolation. It skips with an explicit unqualified reason unless `COMPUTER_USE_TEST_CHROMIUM` is supplied; it never installs browsers. When opted in, missing prerequisites or sandboxed launch failure **fail** the smoke rather than counting as a pass or retrying without a sandbox. Launch failure is labelled `SANDBOXED_BROWSER_UNAVAILABLE` and occurs before the fixture HTTP listener starts. Mock launch tests verify mandatory sandbox options, sanitized failure, profile cleanup and absence of fallback; they are not live browser qualification. Fake-driver tests cover policy, identity, lease/generation races, human-takeover screen privacy at capture/queue/delivery boundaries, queued cancellation, revocation before image delivery, TTL, and native incompatibility. Real MCP in-memory initialize/list/call and actual stdio subprocess discovery are tested. No tests capture/control a live native desktop. Native apps, GPU/Wayland/macOS/Windows, five harness/model vision routes, durable host policy, crash watchdogs and artistic workflows remain **unqualified**.
 

@@ -148,7 +148,7 @@ A zero exit from npm is not the same claim as "the engine is installed", so the 
 ### In a chat
 
 - **Watch it work** — streaming responses with thinking, tool calls, and permission prompts, on whichever engine the chat runs
-- **Gate tools** — set `allow` / `ask` / `deny` per chat on four axes: file read, file write, code execution, web access
+- **Gate tools** — set `allow` / `ask` / `deny` per chat on five axes: file read, file write, code execution, web access, and Browser & Computer Control
 - **Attach images** — drag and drop PNG, JPEG, GIF or WebP, up to 10 MB each
 - **Start on a branch** — pick a base branch, name a new one (or have one generated from your prompt), and optionally run the chat in its own git worktree
 - **Read the diff** — the chat's working tree, file by file, without leaving the tab
@@ -159,6 +159,28 @@ A zero exit from npm is not the same claim as "the engine is installed", so the 
 - **Switch model mid-chat** — and pick a reasoning effort on the harnesses that have one
 - **See what the agent renders** — images, audio, video and PDFs pushed into the transcript, plus versioned HTML/SVG **canvases** an agent can create and then update in place
 
+### Browser & Computer Control (preview)
+
+Existing chats continue normally: this feature does not automatically open a browser or control a desktop. In a chat, expand **Browser & Computer Control**, open **Chat permissions**, and explicitly change its fifth permission from **Deny** to **Ask** or **Allow**. Missing legacy values and new child/job defaults deny managed access, including screenshots.
+
+> Controls Callboard's browser and desktop tools. Agents with unrestricted code execution may still run their own automation.
+
+Choose **Managed browser** or **Native desktop (service host)** and click **Enable**; Ask also requires scoped approval. Browser permission does not authorize desktop control. **Every model-requested GUI mutation currently requires a separate human confirmation, even with Allow.** Approvals expire and bind one action to one captured frame; refresh and request a new approval if the frame becomes stale.
+
+**Provision the service host first:**
+
+- **Browser:** install the optional Playwright runtime and provision compatible Chromium plus its OS libraries separately; Callboard never downloads browsers automatically. Set `CALLBOARD_BROWSER_EXECUTABLE=/absolute/path/to/chrome` in the service environment to select an existing executable, or provision Playwright's expected executable. Profiles are isolated and disposable. Web Access must be Allow. **Chromium sandboxing is mandatory**: Linux needs a non-root user and OS support for Chromium's sandbox (user namespaces/seccomp or a supported sandbox helper). There is no unsandboxed fallback. An executable-found probe does not prove sandboxed launch works.
+- **Native desktop:** the built-in driver targets an existing **Linux X11** session, requiring reachable local display access, `/usr/bin/xdotool` (XTEST) and ImageMagick's `/usr/bin/import`. Configure `CALLBOARD_NATIVE_DISPLAY=:0` for the intended local display, or the service's `DISPLAY`. The original four permission axes must all be Allow: a pixel driver cannot enforce narrower OS file, code or network authority. This is not an OS isolation boundary.
+- Missing dependencies, inaccessible displays and unsupported targets fail unavailable rather than silently falling back or breaking ordinary chats. Built-in native macOS, Windows and Wayland/XWayland control is unavailable; headless hosts have no native desktop to control.
+
+**Viewer and privacy:** refresh screenshots explicitly or opt into Live preview. Take over before manual input; agent capture and input are blocked during human control. Each input consumes its frame, so refresh before the next action. **Resume** explicitly restores agent control and captures a fresh agent-visible frame—remove sensitive windows first. Stop/Revoke fence queued and future access; native applications remain open. Previously delivered model images cannot be recalled. Events are memory-only, and hard-crash input recovery is not yet supervised.
+
+Tools operate on the **service host**, not the machine viewing this page. A separately installed authenticated helper would be needed for another machine; that helper is not included in this preview.
+
+Claude Code, Codex, Cline, pi and OpenCode via ACP share the MCP execution/authorization service; Cline/pi use host bridges. Offline image-serialization tests do not qualify arbitrary models or provider routes. Live sandboxed-browser operation on the current build host, native desktop workflows, and Aseprite/Blender artwork/export scenarios remain unqualified; this is not a promise of autonomous drawing or modeling.
+
+See the [standalone package guide](packages/computer-use/README.md) for contracts, prerequisites, limitations and source/tarball use.
+
 ### Around the work
 
 - **Workspaces** — a workspace is a `cwd` plus its git isolation. Start a chat in a worktree and Callboard records one; from the workspace manager you can rename it, archive it (with the worktree removed and quarantined in a trash you can restore from), or **adopt** worktrees Callboard didn't create. Several workspaces may share one checkout — that is a supported state, not a bug
@@ -168,7 +190,7 @@ A zero exit from npm is not the same claim as "the engine is installed", so the 
 - **Model aliases** — one name (`planner`, `worker`) that resolves to a different concrete model per harness, accepted anywhere a model is configured: new chats, per-chat overrides, provider defaults, cron actions, job steps
 - **Plugins & MCP** — register directories to scan and Callboard discovers Claude Code plugin marketplaces under them, along with the slash commands, hooks and MCP servers each plugin carries. Toggle plugins per directory
 - **Themes** — every colour in the UI is a CSS variable, in a light and a dark set. Custom themes live as files in `~/.callboard/themes/`, and an agent can generate one for you
-- **API keys** — mint `cbk_` bearer tokens under Settings → Account to drive the REST API from scripts. They authenticate every route a session cookie does, except minting more keys
+- **API keys** — mint `cbk_` bearer tokens under Settings → Account to drive the REST API from scripts. They do not authorize human-only operations such as minting more keys or using the computer-control viewer/control plane
 
 ## Agents
 
@@ -180,7 +202,7 @@ Agents are created from the UI. Each agent has a name, emoji, personality, role,
 
 - **A workspace** at `~/.callboard/agent-workspaces/<alias>/` with scaffold files that teach it how to maintain memory, take notes, and work proactively — `CLAUDE.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `MEMORY.md`
 - **A two-tier memory system** — daily journal files at `memory/YYYY-MM-DD.md` for running notes, and a curated long-term `MEMORY.md` distilled over time
-- **Tool permissions** — agents default to full access (file read/write, code execution, web access) but you can restrict per session
+- **Tool permissions** — agents default to allow on the original four axes (file read/write, code execution, web access), but you can restrict per session. Browser & Computer Control defaults to deny
 - **A caller identity** for the connection proxy, chosen per proxy mode, which decides which external APIs it can reach
 
 An agent can be switched off outright (`enabled: false`), which suppresses its crons, its triggers and its sessions at once.
