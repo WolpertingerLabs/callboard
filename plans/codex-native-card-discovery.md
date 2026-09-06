@@ -20,3 +20,11 @@ Review especially conservative root anchoring and alias handling, shared context
 
 ## Validation
 Results recorded below after final clean rebase/validation.
+
+### Final validation (2026-09-06)
+- Local dependencies: `npm ci --ignore-scripts`; no shared node_modules symlink or lockfile changes.
+- Focused card/parser/provider/native/UI run: 11 files / 185 tests passed (`--maxWorkers=2`). After self-review fixes, `npx vitest run backend/src/services/card-native.integration.test.ts backend/src/routes/cards.bulk-lifecycle.test.ts backend/src/routes/cards.reopen-accounting.test.ts --maxWorkers=2`: 3 files / 25 tests passed, including all 10 new filesystem/handler cases.
+- Final `npx vitest run --maxWorkers=2`: **292 files passed, 3 skipped; 4,577 tests passed, 32 skipped** (156.14 s). Earlier iteration: 4,576 passed; the final run includes the explicit-provider regression and bulk-response budget fix.
+- `npm run build`: passed (existing Swagger annotation / frontend chunk-size warnings). Changed-file ESLint: **0 errors, 41 warnings**; full lint not run. Working/base `git diff --check`: clean.
+- Self-review corrected native orphan promotion, stale-native/explicit-provider precedence, native-member cleanup writes, and unrelated-card lifecycle replay in bulk responses. All explicit REST/MCP card mutation routes now share root resolution; internal reopen-on-send remains behind existing native execution guards.
+- Repeated clean fetch/rebases retained base `3f836fbf64bcc15896028fbc6af3a5e73b920f4b`. Logs: `/tmp/416-full-final.log`, `/tmp/416-build-final.log`, `/tmp/416-lint-final.log`, `/tmp/416-bulk-final.log`. Independent review and exact-head CI remain root's pre-merge gates; this implementation does not merge or deploy.
