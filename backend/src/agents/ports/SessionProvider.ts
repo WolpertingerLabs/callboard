@@ -16,6 +16,14 @@ import type { ParsedMessage } from "shared/types/index.js";
 import type { AgentProviderKind } from "./AgentProvider.js";
 import type { HandoffTurn } from "../handoff.js";
 
+/** Optional authoritative routing for providers that share a kind across vendors. */
+export interface SessionRouting {
+  acpProviderId?: string;
+}
+
+/** Ownership is ambiguous; callers must not silently route to a default engine. */
+export class SessionRoutingError extends Error {}
+
 // ── Discovery types ─────────────────────────────────────────────────
 
 /** A discovered session entry from the provider's native storage. */
@@ -114,7 +122,7 @@ export interface SessionProvider {
    * Returns richer data than just a path so callers don't need to know
    * provider-specific path encoding/decoding conventions.
    */
-  resolveSession(sessionId: string): ResolvedSession | null;
+  resolveSession(sessionId: string, routing?: SessionRouting): ResolvedSession | null;
 
   /**
    * Find child/subagent session files for a given parent session.
@@ -131,7 +139,7 @@ export interface SessionProvider {
    * The sessionIds array supports multi-session chats (where one chat
    * spans multiple session IDs due to resumed sessions).
    */
-  parseSessionMessages(sessionIds: string[]): ParsedMessage[];
+  parseSessionMessages(sessionIds: string[], routing?: SessionRouting): ParsedMessage[];
 
   /**
    * Extract a short preview string from a session log (e.g. first user

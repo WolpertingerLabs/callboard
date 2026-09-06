@@ -23,6 +23,7 @@ import { unlinkSync } from "node:fs";
 import type { ParsedMessage } from "shared/types/index.js";
 import type {
   DiscoverResult,
+  SessionRouting,
   ResolvedSession,
   SessionProvider,
   SessionSearchFilters,
@@ -77,8 +78,8 @@ export class AcpSessionProvider implements SessionProvider {
 
   // ── Resolution ──────────────────────────────────────────────────────
 
-  resolveSession(sessionId: string): ResolvedSession | null {
-    const entry = findAcpTranscript(sessionId);
+  resolveSession(sessionId: string, routing?: SessionRouting): ResolvedSession | null {
+    const entry = findAcpTranscript(sessionId, routing?.acpProviderId);
     if (!entry) return null;
     const folder = readAcpTranscriptCwd(entry.filePath);
     return { logPath: entry.filePath, folder, displayFolder: folder, acpProviderId: entry.providerId };
@@ -92,10 +93,10 @@ export class AcpSessionProvider implements SessionProvider {
 
   // ── Reading ─────────────────────────────────────────────────────────
 
-  parseSessionMessages(sessionIds: string[]): ParsedMessage[] {
+  parseSessionMessages(sessionIds: string[], routing?: SessionRouting): ParsedMessage[] {
     const all: ParsedMessage[] = [];
     for (const sessionId of sessionIds) {
-      const entry = findAcpTranscript(sessionId);
+      const entry = findAcpTranscript(sessionId, routing?.acpProviderId);
       if (!entry) continue;
       all.push(...parseAcpTranscript(entry.filePath));
     }

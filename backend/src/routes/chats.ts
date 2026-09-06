@@ -7,7 +7,7 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory, resolveSlashCommandContent } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, type GitInfo } from "../utils/git.js";
-import { withSessionProvider, findChat } from "../utils/chat-lookup.js";
+import { readChatSessionMessages, withSessionProvider, findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { isCardEligible, cardLifecycleOf, rawCardFields } from "../services/card-fields.js";
@@ -539,6 +539,7 @@ chatsRouter.get("/", (req, res) => {
     // Which provider discovered each session log, so a deferred preview read
     // can go straight to its owner. Keyed by path because that is all a
     // finished row still carries by the time the preview is read.
+    const fileChatsById = new Map(fileChats.map((chat) => [chat.id, chat]));
     const providerKindByLogPath = new Map<string, string>();
     for (const s of discoveredSessions) providerKindByLogPath.set(s.filePath, s.providerKind);
 
@@ -628,6 +629,42 @@ chatsRouter.get("/", (req, res) => {
      * reading it last is a reordering of I/O, not of rows.
      */
     const attachPreview = (chat: any) => {
+      // Reconcile only returned legacy/ACP rows, not the over-fetched list.
+      // A discovered historical log alone cannot establish a multi-session
+      // chat's owner, and an ACP ID may exist under multiple vendor directories.
+      const stored = fileChatsById.get(chat.id);
+      const original = (() => {
+        try {
+          return JSON.parse(stored?.metadata || "{}");
+        } catch {
+          return {};
+        }
+      })();
+      const listed = JSON.parse(chat.metadata || "{}");
+      if ((stored && original.provider == null) || listed.provider === "acp") {
+        const resolved = findChat(chat.id, false);
+        if (resolved) {
+          const routing = JSON.parse(resolved.metadata || "{}");
+          if (original.provider == null) delete listed.provider;
+          if (!original.acpProviderId) delete listed.acpProviderId;
+          if (routing.provider != null) listed.provider = routing.provider;
+          if (routing.acpProviderId) listed.acpProviderId = routing.acpProviderId;
+          chat = {
+            ...chat,
+            metadata: JSON.stringify(listed),
+            session_log_path: resolved.session_log_path,
+            ...(resolved._provider_resolution_error && { _provider_resolution_error: resolved._provider_resolution_error }),
+          };
+        } else if (listed.provider === "acp") {
+          delete listed.acpProviderId;
+          chat = {
+            ...chat,
+            metadata: JSON.stringify(listed),
+            session_log_path: null,
+            _provider_resolution_error: "ACP session is missing or has ambiguous vendor ownership",
+          };
+        }
+      }
       const logPath = chat.session_log_path;
       if (typeof logPath !== "string" || !logPath) return chat;
       let meta: any;
@@ -1154,7 +1191,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
       // Cross-harness (or a same-harness provider with no native fork): read
       // the history through the SOURCE provider's parser, then write it into
       // the TARGET's native format as conversational turns.
-      const history = truncateAtCutoff(provider.parseSessionMessages(sessionIds), timestamp);
+      const history = truncateAtCutoff(readChatSessionMessages(chat, sessionIds), timestamp);
       const turns = buildHandoffTurns(history, providerKind, targetKind);
       forked = turns.length > 0 ? targetProvider.seedSession(turns, { folder: chat.folder, newSessionId }) : null;
     } else {
@@ -1389,9 +1426,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
     const sessionIds: string[] = Array.isArray(meta.session_ids) ? [...meta.session_ids] : [];
     if (chat.session_id && !sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
-    const providerKind = meta.provider || "claude-code";
-    const provider = getSessionProviders().find((p) => p.kind === providerKind) || getSessionProviders()[0];
-    const messages = sessionIds.length > 0 && provider ? provider.parseSessionMessages(sessionIds) : [];
+    const messages = sessionIds.length > 0 ? readChatSessionMessages(chat, sessionIds) : [];
 
     const transcript = condenseTranscript(transcriptForTitle(messages));
     if (!transcript) {
@@ -1660,13 +1695,11 @@ chatsRouter.get("/:id/messages", (req, res) => {
   const sessionIds: string[] = meta.session_ids || [];
   if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
-  // Determine which provider to use (from metadata, default to claude-code)
-  const providerKind = meta.provider || "claude-code";
-  const provider = getSessionProviders().find((p) => p.kind === providerKind) || getSessionProviders()[0];
-
-  // Delegate full message parsing (including subagent merging) to the provider
-  const allMessages = provider.parseSessionMessages(sessionIds);
-  res.json(allMessages);
+  try {
+    res.json(readChatSessionMessages(chat, sessionIds));
+  } catch (err) {
+    res.status(409).json({ error: (err as Error).message });
+  }
 });
 
 // Get slash commands and plugins for a chat

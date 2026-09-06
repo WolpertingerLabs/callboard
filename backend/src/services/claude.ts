@@ -945,6 +945,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // so that subsequent interactions (permission tracking, metadata updates) work.
       const fsChat = findChat(opts.chatId, false);
       if (!fsChat) throw new Error("Chat not found");
+      if (fsChat._provider_resolution_error) throw new Error(fsChat._provider_resolution_error);
       log.debug(`Chat ${opts.chatId} found via filesystem fallback, creating file storage record`);
       chat = chatFileService.upsertChat(fsChat.id, fsChat.folder, fsChat.session_id, { metadata: fsChat.metadata });
     }
@@ -954,7 +955,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // remain immutable; only this write path pins inferred routing.
     const storedMetadata = JSON.parse(chat.metadata || "{}");
     const needsProvenance = storedMetadata.provider == null || (storedMetadata.provider === "acp" && !storedMetadata.acpProviderId);
-    initialMetadata = needsProvenance ? JSON.parse(findChat(opts.chatId, false)?.metadata || chat.metadata || "{}") : storedMetadata;
+    const resolvedChat = needsProvenance ? findChat(opts.chatId, false) : null;
+    if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
+    initialMetadata = needsProvenance ? JSON.parse(resolvedChat?.metadata || chat.metadata || "{}") : storedMetadata;
     await assertReasoningEffort({ ...initialMetadata, cwd: folder });
     const routing: Record<string, unknown> = {};
     if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;

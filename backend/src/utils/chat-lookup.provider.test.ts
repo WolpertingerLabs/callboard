@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionProvider } from "../agents/ports/SessionProvider.js";
@@ -23,6 +23,8 @@ const { AcpSessionProvider } = await import("../agents/adapters/acp/AcpSessionPr
 const { AcpTranscriptWriter } = await import("../agents/adapters/acp/transcript.js");
 const { MockAgentProvider } = await import("../agents/adapters/mock/MockAgentProvider.js");
 const { sendMessage } = await import("../services/claude.js");
+const { buildCallboardToolsSpec } = await import("../services/callboard-tools.js");
+const { readFinalAssistantText } = await import("../services/job-runner.js");
 const { chatsRouter } = await import("../routes/chats.js");
 
 const child = "01a07680-3128-7461-bc19-d727bd8dc379";
@@ -175,5 +177,112 @@ describe("filesystem provider provenance", () => {
     expect(query.mock.calls[0][0].options.resume).toBe(id);
     expect(JSON.parse(chatFileService.getChat(id)!.metadata!).provider).toBe(legacyClaude ? undefined : kind);
     if (vendor) expect(JSON.parse(chatFileService.getChat(id)!.metadata!).acpProviderId).toBe(vendor);
+  });
+});
+
+describe("review regressions: authoritative transcript consumers", () => {
+  const readTool = (chatId: string) =>
+    buildCallboardToolsSpec(undefined, undefined, { includeJobTools: false })
+      .tools.find((t) => t.name === "read_session_messages")!
+      .handler({ chatId });
+
+  it("honors explicit Claude routing in the HTTP route, actual MCP handler and job final-text consumer", async () => {
+    const claude = stub("claude-code", "unrelated-owner");
+    const other = stub("codex", "wrong-resolver");
+    vi.mocked(claude.parseSessionMessages).mockReturnValue([{ type: "text", role: "assistant", content: "authoritative Claude" } as never]);
+    vi.mocked(other.parseSessionMessages).mockReturnValue([{ type: "text", role: "assistant", content: "WRONG Codex" } as never]);
+    setSessionProvidersForTesting([other, claude]);
+    chatFileService.upsertChat("explicit-consumer", dir, "wrong-resolver", { metadata: '{"provider":"claude-code"}' });
+    expect(JSON.stringify(await request("/:id/messages", "explicit-consumer"))).toContain("authoritative Claude");
+    expect(JSON.stringify(await readTool("explicit-consumer"))).toContain("authoritative Claude");
+    expect(readFinalAssistantText("explicit-consumer")).toBe("authoritative Claude");
+    expect(other.parseSessionMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects ambiguous ACP IDs, but resolves and reads an explicit vendor regardless of mtime", async () => {
+    for (const vendor of ["opencode", "gemini"]) {
+      const writer = new AcpTranscriptWriter(vendor, "duplicate-review", dir);
+      writer.writeHeader();
+      writer.writeUserMessage("user " + vendor);
+      writer.writeEvent({ type: "text", content: "assistant " + vendor });
+      utimesSync(writer.filePath!, new Date(vendor === "gemini" ? 2000 : 1000), new Date(vendor === "gemini" ? 2000 : 1000));
+    }
+    const provider = new AcpSessionProvider();
+    setSessionProvidersForTesting([provider]);
+    expect(() => provider.resolveSession("duplicate-review")).toThrow(/Ambiguous ACP/);
+    expect(() => provider.parseSessionMessages(["duplicate-review"])).toThrow(/Ambiguous ACP/);
+    expect(findChat("duplicate-review", false)).toBeNull();
+    const rows = (await request("/")).chats.filter((c: any) => c.id === "duplicate-review");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(JSON.parse(row.metadata).acpProviderId).toBeUndefined();
+      expect(row._provider_resolution_error).toMatch(/ambiguous/);
+    }
+    await expect(sendMessage({ chatId: "duplicate-review", prompt: "do not execute" })).rejects.toThrow(/Chat not found/);
+    expect(chatFileService.getChat("duplicate-review")).toBeNull();
+
+    chatFileService.upsertChat("ambiguous-stored", dir, "duplicate-review", { metadata: '{"provider":"acp"}' });
+    expect(findChat("ambiguous-stored", false)._provider_resolution_error).toMatch(/Ambiguous ACP/);
+    expect(await request("/:id/messages", "ambiguous-stored")).toMatchObject({ error: expect.stringMatching(/Ambiguous ACP/) });
+    await expect(sendMessage({ chatId: "ambiguous-stored", prompt: "do not execute" })).rejects.toThrow(/Ambiguous ACP/);
+    expect(chatFileService.getChat("ambiguous-stored")!.metadata).toBe('{"provider":"acp"}');
+
+    chatFileService.upsertChat("explicit-vendor", dir, "duplicate-review", { metadata: '{"provider":"acp","acpProviderId":"opencode"}' });
+    expect(findChat("explicit-vendor", false).session_log_path).toContain("/opencode/");
+    const http = JSON.stringify(await request("/:id/messages", "explicit-vendor"));
+    const tool = JSON.stringify(await readTool("explicit-vendor"));
+    expect(http).toContain("assistant opencode");
+    expect(tool).toContain("assistant opencode");
+    expect(http + tool).not.toContain("gemini");
+    expect(readFinalAssistantText("explicit-vendor")).toBe("assistant opencode");
+    expect(JSON.parse(chatFileService.getChat("explicit-vendor")!.metadata!)).toEqual({ provider: "acp", acpProviderId: "opencode" });
+  });
+
+  it("recovers unanimous historical ownership on primary miss for all consumers and resume", async () => {
+    const provider = stub("codex", "historical-codex");
+    vi.mocked(provider.parseSessionMessages).mockReturnValue([{ type: "text", role: "assistant", content: "historical Codex" } as never]);
+    setSessionProvidersForTesting([stub("claude-code", "unrelated"), provider]);
+    const metadata = JSON.stringify({ title: "keep", session_ids: ["historical-codex", "missing-current"] });
+    chatFileService.upsertChat("multi-review", dir, "missing-current", { metadata });
+    expect(JSON.parse(findChat("multi-review", false).metadata).provider).toBe("codex");
+    expect(JSON.parse((await request("/")).chats.find((c: any) => c.id === "multi-review").metadata).provider).toBe("codex");
+    expect(JSON.parse((await request("/:id", "multi-review")).metadata).provider).toBe("codex");
+    expect(JSON.stringify(await request("/:id/messages", "multi-review"))).toContain("historical Codex");
+    expect(JSON.stringify(await readTool("multi-review"))).toContain("historical Codex");
+    expect(readFinalAssistantText("multi-review")).toBe("historical Codex");
+    expect(chatFileService.getChat("multi-review")!.metadata).toBe(metadata);
+    const adapter = new MockAgentProvider({
+      events: [
+        { type: "session_started", sessionId: "missing-current" },
+        { type: "result", status: "success" },
+      ],
+    });
+    setAgentProviderForTesting(adapter, "codex");
+    const emitter = await sendMessage({ chatId: "multi-review", prompt: "offline replay" });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("resume timed out")), 10000);
+      emitter.on("event", (event: StreamEvent) => {
+        if (event.type === "done" || event.type === "error") {
+          clearTimeout(timer);
+          if (event.type === "error") reject(new Error(JSON.stringify(event)));
+          else resolve();
+        }
+      });
+    });
+    expect(JSON.parse(chatFileService.getChat("multi-review")!.metadata!).provider).toBe("codex");
+  });
+
+  it("rejects conflicting historical providers without defaulting, executing or mutating", async () => {
+    setSessionProvidersForTesting([stub("codex", "old-codex-conflict"), stub("pi", "old-pi-conflict")]);
+    const metadata = JSON.stringify({ session_ids: ["old-codex-conflict", "old-pi-conflict", "absent"] });
+    chatFileService.upsertChat("conflict-review", dir, "absent", { metadata });
+    expect(findChat("conflict-review", false)._provider_resolution_error).toMatch(/Conflicting provider/);
+    const rows = (await request("/")).chats.filter((c: any) => c.id === "conflict-review");
+    for (const row of rows) expect(row._provider_resolution_error).toMatch(/Conflicting provider/);
+    expect(await request("/:id/messages", "conflict-review")).toMatchObject({ error: expect.stringMatching(/Conflicting provider/) });
+    expect(JSON.stringify(await readTool("conflict-review"))).toContain("Conflicting provider");
+    expect(readFinalAssistantText("conflict-review")).toBe("");
+    await expect(sendMessage({ chatId: "conflict-review", prompt: "do not execute" })).rejects.toThrow(/Conflicting provider/);
+    expect(chatFileService.getChat("conflict-review")!.metadata).toBe(metadata);
   });
 });

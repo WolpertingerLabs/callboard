@@ -19,6 +19,7 @@ import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import { TASK_LIST_TOOLS } from "shared/types/index.js";
 import type { AgentEvent } from "../../ports/events.js";
+import { SessionRoutingError } from "../../ports/SessionProvider.js";
 import { CumulativeCounter } from "../cumulativeCounter.js";
 import { isSafePathSegment, resolveAcpSessionsRoot, type AcpTranscriptEntry, type AcpTranscriptHeader, type AcpTranscriptLine } from "./transcript.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -85,9 +86,11 @@ export function listAcpTranscripts(): AcpTranscriptFile[] {
 }
 
 /** Locate a session's transcript by id across every provider directory. */
-export function findAcpTranscript(sessionId: string): AcpTranscriptFile | null {
+export function findAcpTranscript(sessionId: string, providerId?: string): AcpTranscriptFile | null {
   if (!isSafePathSegment(sessionId)) return null;
-  return listAcpTranscripts().find((t) => t.sessionId === sessionId) ?? null;
+  const matches = listAcpTranscripts().filter((t) => t.sessionId === sessionId && (providerId === undefined || t.providerId === providerId));
+  if (matches.length > 1) throw new SessionRoutingError(`Ambiguous ACP vendor for session "${sessionId}"; explicit acpProviderId required`);
+  return matches[0] ?? null;
 }
 
 /** Parse every well-formed line of a transcript, skipping the rest. */
