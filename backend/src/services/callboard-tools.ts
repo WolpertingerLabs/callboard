@@ -1,5 +1,5 @@
 import { assertReasoningEffort } from "./reasoning-capabilities.js";
-import type { EffortLevel } from "shared";
+import type { CardLifecycle, EffortLevel } from "shared";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat, readNativeLifecycle, NATIVE_CONTROL_NOTE } from "./codex-native-agents.js";
 import { z } from "zod";
@@ -228,8 +228,8 @@ export function buildCallboardToolsSpec(
     return context.resolve(targetId) ?? { error: `Card "${targetId}" not found — its lineage root is missing or not a card root (triggered or job-step chat)` };
   };
 
-  const cardSummaries = (includeHidden = false, context = createCardContext(), rootId?: string) =>
-    context.summaries(listRuns({ withRoot: true }), includeHidden, rootId);
+  const cardSummaries = (includeHidden = false, context = createCardContext(), rootId?: string, lifecycle?: CardLifecycle) =>
+    context.summaries(listRuns({ withRoot: true }), includeHidden, rootId, lifecycle);
 
   return {
     name: "callboard-tools",
@@ -511,8 +511,7 @@ export function buildCallboardToolsSpec(
           lifecycle: z.enum(["open", "closed"]).optional().describe("Only cards in this lifecycle (default: all)"),
         },
         async (args) => {
-          const cards = cardSummaries()
-            .filter((c) => !args.lifecycle || c.lifecycle === args.lifecycle)
+          const cards = cardSummaries(false, undefined, undefined, args.lifecycle)
             .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
             .map((c) => ({
               cardId: c.id,

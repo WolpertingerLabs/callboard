@@ -2,7 +2,7 @@
  * One bounded metadata walk serves all targets (including bulk edits). Lifecycle
  * is evaluated only for returned members, under one response-wide byte budget.
  */
-import type { Chat, JobRunListItem } from "shared";
+import type { CardLifecycle, Chat, JobRunListItem } from "shared";
 import { CodexSessionProvider } from "../agents/adapters/codex/CodexSessionProvider.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { buildLineageIndex } from "./chat-lineage.js";
@@ -60,7 +60,6 @@ export function createCardContext(stored = listChatsSnapshot()) {
       });
       verifiedParents.set(id, entry.meta.nativeAgent.parentThreadId);
       if (!chat) syntheticParents.set(entry.threadId, id);
-      else if (owners.length === 1 && !storedById.has(entry.threadId)) nativeAliases.set(entry.threadId, id);
     }
   }
 
@@ -110,6 +109,14 @@ export function createCardContext(stored = listChatsSnapshot()) {
     stored.filter((chat) => index.existingRootIdOf(chat.id) === chat.id && isCardEligible(chat) && !isNative(corpus.get(chat.id))).map((chat) => chat.id),
   );
   const chats = [...corpus.values()].filter((chat) => roots.has(index.existingRootIdOf(chat.id)));
+  // Aliases describe accepted current ownership, not this poll's discovery hits.
+  // Durable native membership survives a missing/budget-omitted rollout. Preserve
+  // ordinary chat-ID precedence and never alias ambiguous or non-native owners.
+  for (const chat of chats) {
+    if (isNative(chat) && bySession.get(chat.session_id)?.id === chat.id && !storedById.has(chat.session_id)) {
+      nativeAliases.set(chat.session_id, chat.id);
+    }
+  }
   return {
     resolve(id: string): { rootChatId: string } | null {
       if (!id || /[/\\\0]/.test(id) || id === "." || id === "..") return null;
@@ -128,7 +135,7 @@ export function createCardContext(stored = listChatsSnapshot()) {
       const position = chats.findIndex((item) => item.id === chat.id);
       chats[position] = chat;
     },
-    summaries(runs: JobRunListItem[], includeHidden = false, rootId?: string | ReadonlySet<string>) {
+    summaries(runs: JobRunListItem[], includeHidden = false, rootId?: string | ReadonlySet<string>, lifecycle?: CardLifecycle) {
       const budget = createLifecycleBudget();
       const rootIds = typeof rootId === "string" ? new Set([rootId]) : rootId;
       const selected = rootIds ? chats.filter((chat) => rootIds.has(index.existingRootIdOf(chat.id))) : chats;
@@ -139,7 +146,7 @@ export function createCardContext(stored = listChatsSnapshot()) {
           ...ROLLUP_DEPS,
           nativeLifecycleOf: (chat) => (chat.session_log_path ? readNativeLifecycle(chat.session_log_path, Date.now(), budget, chat.session_id) : "unknown"),
         },
-        { includeHidden },
+        { includeHidden, lifecycle },
       );
     },
   };

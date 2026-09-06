@@ -335,7 +335,7 @@ export function buildCardSummaries(
   chats: Chat[],
   allRuns: JobRunListItem[],
   deps: RollupDeps = ROLLUP_DEPS,
-  opts: { includeHidden?: boolean } = {},
+  opts: { includeHidden?: boolean; lifecycle?: Card["lifecycle"] } = {},
 ): CardSummary[] {
   const { existingRootIdOf } = buildLineageIndex(chats);
 
@@ -351,6 +351,8 @@ export function buildCardSummaries(
     // otherwise untitled root does not produce an "Untitled" card face.
     const card = cardFieldsFromChat(chat, () => deps.previewOf(chat.session_id, chat.metadata));
     if (card.hidden && !opts.includeHidden) continue;
+    // Select returned roots before member projection spends lifecycle IO.
+    if (opts.lifecycle && card.lifecycle !== opts.lifecycle) continue;
     cardsByRoot.set(chat.id, card);
   }
 
