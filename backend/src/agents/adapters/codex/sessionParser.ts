@@ -405,17 +405,26 @@ export function clearCodexSessionMetaCache(): void {
  * Memoized per file version — discovery asks this of every rollout on every
  * chat-list request, and the answer only changes when the file does.
  */
-function readBoundedSessionMeta(filePath: string): SessionMeta | undefined {
+export interface MetadataReadBudget {
+  remainingBytes: number;
+}
+
+function readBoundedSessionMeta(filePath: string, budget?: MetadataReadBudget): SessionMeta | undefined {
+  const headRead = (size: number) => {
+    if (budget && budget.remainingBytes < size) return null;
+    if (budget) budget.remainingBytes -= size;
+    return readHead(filePath, size);
+  };
   // A malformed/huge metadata line must not turn discovery into a whole-log scan.
-  const small = parseObject(readHead(filePath, 8192)?.split("\n")[0] ?? "");
+  const small = parseObject(headRead(8192)?.split("\n")[0] ?? "");
   if (small?.type === "session_meta") return buildSessionMeta((small.payload ?? {}) as Record<string, unknown>);
-  const head = readHead(filePath, 1024 * 1024);
+  const head = headRead(1024 * 1024);
   const line = parseObject(head?.split("\n")[0] ?? "");
   if (line?.type === "session_meta") return buildSessionMeta((line.payload ?? {}) as Record<string, unknown>);
   return undefined;
 }
 
-export function readCodexSessionMeta(filePath: string): SessionMeta | null {
+export function readCodexSessionMeta(filePath: string, budget?: MetadataReadBudget): SessionMeta | null {
   let key: string;
   try {
     const st = statSync(filePath, { bigint: true });
@@ -430,7 +439,10 @@ export function readCodexSessionMeta(filePath: string): SessionMeta | null {
   const cached = metaCache.get(filePath);
   if (cached && cached.key === key) return cached.meta;
 
-  const meta = readBoundedSessionMeta(filePath) ?? null;
+  const beforeBudget = budget?.remainingBytes;
+  const meta = readBoundedSessionMeta(filePath, budget) ?? null;
+  // Budget exhaustion is transient, not evidence of malformed metadata.
+  if (!meta && budget && (budget.remainingBytes < 1024 * 1024 || beforeBudget! < 8192)) return null;
 
   // Refreshing an entry already held doesn't grow the map, so it evicts nothing.
   if (metaCache.size >= META_CACHE_MAX && !metaCache.has(filePath)) {

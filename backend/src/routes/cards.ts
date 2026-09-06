@@ -25,14 +25,12 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { CardPatch, CardSummary } from "shared";
-import { buildCardSummaries } from "../services/card-rollup.js";
-import { listChatsSnapshot } from "../services/chats-snapshot.js";
-import { patchCardFields, isCardEligible, clearCardFieldsOn, CardFieldError } from "../services/card-fields.js";
+import { createCardContext } from "../services/card-context.js";
+import { patchCardFields, clearCardFieldsOn, CardFieldError } from "../services/card-fields.js";
 import { CARD_CATEGORY_MAX } from "shared";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { listRuns } from "../services/job-store.js";
-import { walkToRootId } from "../services/chat-lineage.js";
 import { clearListCaches } from "../services/list-caches.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { createLogger } from "../utils/logger.js";
@@ -47,36 +45,8 @@ export const cardsRouter = Router();
  * lineage root. The rollup itself derives which roots are cards, so there is
  * no card list to pre-filter here.
  */
-function summarizeAll(includeHidden = false): CardSummary[] {
-  return buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }), undefined, { includeHidden });
-}
-
-/**
- * Resolve an `:id` param to the root chat whose card it names. Any chat id in
- * a lineage tree names that tree's card — the same resolution the MCP setters
- * use — because agents and the UI both know member chat ids far more often
- * than root ids. Returns null when the chat does not exist, or when the
- * resolved root does not qualify as a card root (a job-step or triggered
- * chat is never a card).
- */
-function resolveCardRootChat(id: string): { rootChatId: string } | null {
-  // Chat records are filenames. The old card store guarded route ids before
-  // joining them to its directory; keep that boundary now that card ids flow
-  // through chatFileService instead, whose generic lookup also serves trusted
-  // internal callers and therefore does not impose a route-level policy.
-  if (!id || id.includes("/") || id.includes("\\") || id.includes("\0") || id === "." || id === "..") return null;
-  const chat = chatFileService.getChat(id);
-  if (!chat) return null;
-  const rootChatId = walkToRootId(id);
-  // The root itself must be a card root — a step chat's stamped rootChatId
-  // can name a chat that has since been deleted, in which case getChat below
-  // fails and this degrades to "not found", which is the honest answer.
-  const rootChat = chatFileService.getChat(rootChatId);
-  // walkToRootId may promote an orphan whose parent was deleted. Such a
-  // record still carries a dangling parent pointer, so eligibility (manual,
-  // non-job chat) — not raw "has no parent field" — is the right guard.
-  if (!rootChat || !isCardEligible(rootChat)) return null;
-  return { rootChatId };
+function summarizeAll(includeHidden = false, context = createCardContext(), rootId?: string): CardSummary[] {
+  return context.summaries(listRuns({ withRoot: true }), includeHidden, rootId);
 }
 
 cardsRouter.get("/", (_req: Request, res: Response) => {
@@ -164,8 +134,9 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     const rootByRequestedId = new Map<string, string>();
     const failed: { id: string; error: string }[] = [];
     const seenRoots = new Set<string>();
+    const context = createCardContext();
     for (const id of ids as string[]) {
-      const root = resolveCardRootChat(id);
+      const root = context.resolve(id);
       if (!root) {
         failed.push({ id, error: "Card not found" });
         continue;
@@ -184,6 +155,8 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     for (const { id, rootChatId } of writeOrder) {
       try {
         patchCardFields(rootChatId, { lifecycle });
+        const rootChat = chatFileService.getChat(rootChatId);
+        if (rootChat) context.replaceRoot(rootChat);
         successfulRootIds.add(rootChatId);
       } catch (err: any) {
         log.error(`Error updating card ${rootChatId} in bulk lifecycle: ${err}`);
@@ -197,7 +170,7 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     // write threw is reported as failed even though a different id did the
     // failing write. `updated.length + failed.length === ids.length` for any
     // batch of distinct ids — the invariant Board.tsx's merge depends on.
-    const summaryByRootId = new Map(summarizeAll(true).map((c) => [c.id, c]));
+    const summaryByRootId = new Map(summarizeAll(true, context).map((c) => [c.id, c]));
     const updated: CardSummary[] = [];
     for (const [id, rootChatId] of rootByRequestedId) {
       if (failedRootIds.has(rootChatId)) {
@@ -213,7 +186,7 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
         continue;
       }
       updated.push(summary);
-      clearRedirectedMemberCard(id, rootChatId);
+      if (!context.isNativeTarget(id)) clearRedirectedMemberCard(id, rootChatId);
     }
     if (updated.length > 0) {
       // Once for the batch, same reason as the single-card patch: a lifecycle
@@ -237,11 +210,12 @@ cardsRouter.get("/:id", (req: Request, res: Response) => {
   // #swagger.description = 'id is the card\'s root chat id; any member chat id of the tree resolves to the same card.'
   /* #swagger.responses[404] = { description: "Card not found" } */
   try {
-    const root = resolveCardRootChat(req.params.id);
+    const context = createCardContext();
+    const root = context.resolve(req.params.id);
     if (!root) return res.status(404).json({ error: "Card not found" });
     // Hidden is a board-listing concern, not deletion. A direct id remains
     // readable/editable so callers can inspect or unhide an opted-out card.
-    const card = summarizeAll(true).find((c) => c.id === root.rootChatId);
+    const card = summarizeAll(true, context, root.rootChatId).find((c) => c.id === root.rootChatId);
     if (!card) return res.status(404).json({ error: "Card not found" });
     res.json({ card });
   } catch (err: any) {
@@ -299,11 +273,12 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     if (metadataError) return res.status(400).json({ error: metadataError });
   }
   try {
-    const root = resolveCardRootChat(req.params.id);
+    const context = createCardContext();
+    const root = context.resolve(req.params.id);
     if (!root) return res.status(404).json({ error: "Card not found" });
     const card = patchCardFields(root.rootChatId, patch as CardPatch);
     if (!card) return res.status(404).json({ error: "Card not found" });
-    clearRedirectedMemberCard(req.params.id, root.rootChatId);
+    if (!context.isNativeTarget(req.params.id)) clearRedirectedMemberCard(req.params.id, root.rootChatId);
     // A lifecycle flip changes which chats the sidebar's cards-only filter
     // admits, and that list is cached by query string — drop it so the next
     // poll reflects the close/reopen instead of serving the old membership.
@@ -312,7 +287,9 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     // includeHidden keeps the CardResponse shape stable when this very patch
     // opts the card out of the list. Returning raw Card fields here would drop
     // rollup/member fields from an endpoint typed as CardSummary.
-    const summary = summarizeAll(true).find((c) => c.id === card.id);
+    const rootChat = chatFileService.getChat(card.id);
+    if (rootChat) context.replaceRoot(rootChat);
+    const summary = summarizeAll(true, context, card.id).find((c) => c.id === card.id);
     if (!summary) throw new Error(`Updated card "${card.id}" was missing from the chat snapshot`);
     res.json({ card: summary });
   } catch (err: any) {

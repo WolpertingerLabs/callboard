@@ -36,6 +36,12 @@ function card(memberChats: CardMemberChat[]): CardSummary {
 }
 
 describe("cardFolders", () => {
+  it("counts native unknown members without treating them as live", () => {
+    const folders = cardFolders(card([member({ chatId: "native", folder: "/scratch", status: "unknown" })]));
+    expect(folders[0].chatCount).toBe(1);
+    expect(folders[0].live).toBeUndefined();
+  });
+
   it("collapses every member of one folder into a single entry — the 97% case", () => {
     const folders = cardFolders(
       card([

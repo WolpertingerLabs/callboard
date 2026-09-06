@@ -1,3 +1,4 @@
+import type { NativeCodexAgent } from "./chat.js";
 /**
  * Cards — the board-facing projection of a lineage tree.
  *
@@ -104,10 +105,12 @@ export type CardPendingKind = "permission" | "question" | "plan";
 
 /** Compact member-chat row for board tiles/drawer. */
 export interface CardMemberChat {
+  /** Native lifecycle is evidence, not process liveness; controls remain parent-owned. */
+  nativeAgent?: NativeCodexAgent;
   chatId: string;
   title: string | null;
   folder: string;
-  status: "ongoing" | "waiting" | "stopped";
+  status: "ongoing" | "waiting" | "stopped" | "unknown";
   /** Set when status === "waiting": the kind of input the chat is blocked on. */
   pendingKind?: CardPendingKind;
   chatStatus?: string;

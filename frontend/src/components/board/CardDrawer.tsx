@@ -36,6 +36,7 @@ const CHAT_STATUS_COLORS: Record<string, string> = {
   ongoing: "var(--board-rollup-active)",
   waiting: "var(--board-rollup-needs-you)",
   stopped: "var(--board-rollup-idle)",
+  unknown: "var(--board-rollup-idle)",
 };
 
 /** Icon/text buttons must set a background — the global button reset leaves
@@ -288,7 +289,14 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
                     minWidth: 0,
                   }}
                 >
-                  <span title={chat.status} style={{ width: 7, height: 7, borderRadius: "50%", background: CHAT_STATUS_COLORS[chat.status], flexShrink: 0 }} />
+                  <span
+                    title={
+                      chat.nativeAgent
+                        ? `Native: ${chat.nativeAgent.lifecycle} (recent activity, not process liveness). ${chat.nativeAgent.controlNote}`
+                        : chat.status
+                    }
+                    style={{ width: 7, height: 7, borderRadius: "50%", background: CHAT_STATUS_COLORS[chat.status], flexShrink: 0 }}
+                  />
                   <span
                     style={{
                       fontSize: 12,

@@ -95,7 +95,7 @@ export interface LifecycleBudget {
 export const createLifecycleBudget = (): LifecycleBudget => ({ remainingBytes: 8 * 1024 * 1024 });
 
 export function readNativeLifecycle(logPath: string, now = Date.now(), budget?: LifecycleBudget): NativeLifecycle {
-  const meta = readCodexSessionMeta(logPath);
+  const meta = readCodexSessionMeta(logPath, budget);
   if (!meta?.nativeAgent || meta.historyStartOrdinal === undefined) return "unknown";
   let fd: number | undefined;
   try {
@@ -153,12 +153,13 @@ export function nativeMetadata(
   includeLifecycle = true,
   budget?: LifecycleBudget,
   parentChats?: ReadonlyMap<string, Chat>,
+  verifiedMeta?: ReturnType<typeof readCodexSessionMeta>,
 ) {
   // Persisted lifecycle is a snapshot, never current evidence.
   if (existing.provider === "codex" && existing.nativeAgent && typeof existing.nativeAgent === "object")
     existing = { ...existing, nativeAgent: { ...existing.nativeAgent, lifecycle: "unknown", management: "read-only", controlNote: NATIVE_CONTROL_NOTE } };
   if (extractThreadIdFromFilename(basename(logPath)) !== sessionId || (existing.provider && existing.provider !== "codex")) return existing;
-  const meta = readCodexSessionMeta(logPath);
+  const meta = verifiedMeta ?? readCodexSessionMeta(logPath);
   if (meta?.id !== sessionId || !meta.nativeAgent) return existing;
   const native = meta.nativeAgent;
   const priorNative = existing.nativeAgent as Record<string, unknown> | undefined;

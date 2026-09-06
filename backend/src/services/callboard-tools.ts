@@ -21,10 +21,9 @@ import { getUserContact } from "./user-contact.js";
 import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
-import { buildChatTree, getParentChatId, walkToRootId } from "./chat-lineage.js";
-import { patchCardFields, isCardEligible, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX, CARD_STATUS_MAX } from "./card-fields.js";
-import { buildCardSummaries } from "./card-rollup.js";
-import { listChatsSnapshot } from "./chats-snapshot.js";
+import { buildChatTree, getParentChatId } from "./chat-lineage.js";
+import { patchCardFields, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX, CARD_STATUS_MAX } from "./card-fields.js";
+import { createCardContext } from "./card-context.js";
 import { listRuns } from "./job-store.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { CARD_CATEGORY_MAX, CONTACT_CHANNEL_CONNECTIONS } from "shared";
@@ -223,23 +222,14 @@ export function buildCallboardToolsSpec(
    * far more often than root ids) or, by default, the calling chat's
    * lineage root.
    */
-  const resolveCardTarget = (cardId: string | undefined): { rootChatId?: string; error?: string } => {
+  const resolveCardTarget = (cardId: string | undefined, context = createCardContext()): { rootChatId?: string; error?: string } => {
     const targetId = cardId ?? (getChatId ? getChatId() : undefined);
     if (!targetId) return { error: "Chat context not available — pass card_id explicitly" };
-    if (targetId.includes("/") || targetId.includes("\\") || targetId.includes("\0") || targetId === "." || targetId === "..") {
-      return { error: `Card "${targetId}" not found` };
-    }
-    if (!chatFileService.getChat(targetId)) return { error: `Card "${targetId}" not found` };
-    const rootChatId = walkToRootId(targetId);
-    const rootChat = chatFileService.getChat(rootChatId);
-    if (!rootChat || !isCardEligible(rootChat)) {
-      return { error: `Chat "${targetId}" has no card — its lineage root is not a card root (triggered or job-step chat)` };
-    }
-    return { rootChatId };
+    return context.resolve(targetId) ?? { error: `Card "${targetId}" not found — its lineage root is missing or not a card root (triggered or job-step chat)` };
   };
 
-  /** Full board rollup, shared by list_cards and get_card. */
-  const cardSummaries = (includeHidden = false) => buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }), undefined, { includeHidden });
+  const cardSummaries = (includeHidden = false, context = createCardContext(), rootId?: string) =>
+    context.summaries(listRuns({ withRoot: true }), includeHidden, rootId);
 
   return {
     name: "callboard-tools",
@@ -526,6 +516,8 @@ export function buildCallboardToolsSpec(
             .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
             .map((c) => ({
               cardId: c.id,
+              chatCount: c.chatCount,
+              rollup: c.rollup,
               title: c.title,
               emoji: c.emoji,
               lifecycle: c.lifecycle,
@@ -548,15 +540,18 @@ export function buildCallboardToolsSpec(
           card_id: z.string().optional().describe("The card id (default: the current chat's lineage root)"),
         },
         async (args) => {
-          const target = resolveCardTarget(args.card_id);
+          const context = createCardContext();
+          const target = resolveCardTarget(args.card_id, context);
           if (target.error || !target.rootChatId) return error(target.error ?? "Card not found");
-          const card = cardSummaries(true).find((c) => c.id === target.rootChatId);
+          const card = cardSummaries(true, context, target.rootChatId).find((c) => c.id === target.rootChatId);
           if (!card) return error(`Card "${target.rootChatId}" not found`);
           // memberChats come off the rollup, already newest-first — an agent
           // reads memberChats[0] as "the chat this card is on right now",
           // and any other ordering would make that an arbitrary member.
           const memberChats = card.memberChats.map((m) => ({
             chatId: m.chatId,
+            status: m.status,
+            ...(m.nativeAgent && { nativeAgent: m.nativeAgent }),
             title: m.title,
             ...(m.chatStatus && { chatStatus: m.chatStatus }),
             ...(m.jobRunId && { jobRunId: m.jobRunId }),
