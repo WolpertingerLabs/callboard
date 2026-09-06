@@ -152,7 +152,7 @@ export default function ChatTreeIndicator({ chatId, folder, compact }: Props) {
                 }}
               >
                 <span
-                  title={`Status: ${node.status}`}
+                  title={`Status: ${node.nativeAgent?.lifecycle ?? node.status}`}
                   style={{
                     width: 7,
                     height: 7,
@@ -189,6 +189,7 @@ export default function ChatTreeIndicator({ chatId, folder, compact }: Props) {
                   }}
                 >
                   {node.title || node.folder.split("/").pop() || node.chatId}
+                  {node.nativeAgent && <small title={node.nativeAgent.controlNote}> · {node.nativeAgent.lifecycle} · read-only</small>}
                 </span>
               </div>
             );

@@ -201,7 +201,21 @@ export interface ChatTreeAncestor {
   role?: string;
 }
 
+export interface NativeCodexAgent {
+  parentThreadId: string;
+  nickname?: string;
+  agentPath?: string;
+  role?: string;
+  depth?: number;
+  lifecycle: "active" | "complete" | "unknown" | "error" | "interrupted";
+  management: "read-only";
+  controlNote: string;
+  evidence?: string;
+}
+
 export interface ChatTreeNode {
+  /** Additive: old clients retain the existing coarse status field. */
+  nativeAgent?: NativeCodexAgent;
   chatId: string;
   title: string | null;
   /** Free-form role label (e.g. "subagent", "monitor", "router", "fork"). */

@@ -1,3 +1,4 @@
+import { withNativeCodexChats } from "./codex-native-agents.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { hasPendingRequest } from "./claude.js";
@@ -126,7 +127,8 @@ function toNode(chat: Chat, meta: ChatMeta): ChatTreeNode {
     ...(typeof meta.chatRole === "string" && meta.chatRole && { role: meta.chatRole }),
     provider: typeof meta.provider === "string" && meta.provider ? meta.provider : "claude-code",
     ...(typeof meta.acpProviderId === "string" && meta.acpProviderId && { acpProviderId: meta.acpProviderId }),
-    status: chatStatus(chat),
+    status: (meta.nativeAgent as { lifecycle?: string } | undefined)?.lifecycle === "active" ? "ongoing" : chatStatus(chat),
+    ...(meta.nativeAgent ? { nativeAgent: meta.nativeAgent as ChatTreeNode["nativeAgent"] } : {}),
     ...(typeof meta.chatStatus === "string" && meta.chatStatus && { chatStatus: meta.chatStatus }),
     ...(typeof meta.chatStatusEmoji === "string" && meta.chatStatusEmoji && { chatStatusEmoji: meta.chatStatusEmoji }),
     folder: chat.folder,
@@ -325,25 +327,7 @@ export function paginateTreeRows<T>(
  * root or has no lineage).
  */
 export function getAncestors(chatId: string): ChatTreeAncestor[] {
-  const ancestors: ChatTreeAncestor[] = [];
-  const visited = new Set<string>([chatId]);
-  let chat = chatFileService.getChat(chatId);
-  for (let depth = 0; chat && depth < MAX_LINEAGE_DEPTH; depth++) {
-    const parentId = getParentChatId(parseMeta(chat));
-    if (!parentId || visited.has(parentId)) break;
-    const parent = chatFileService.getChat(parentId);
-    if (!parent) break;
-    visited.add(parentId);
-    const parentMeta = parseMeta(parent);
-    const node = toNode(parent, parentMeta);
-    ancestors.unshift({
-      chatId: parent.id,
-      title: node.title,
-      ...(node.role && { role: node.role }),
-    });
-    chat = parent;
-  }
-  return ancestors;
+  return buildChatTree(chatId)?.ancestors ?? [];
 }
 
 /**
@@ -356,10 +340,9 @@ export function getAncestors(chatId: string): ChatTreeAncestor[] {
  * GET /api/chats.
  */
 export function buildChatTree(chatId: string): ChatTreeResponse | null {
-  const target = chatFileService.getChat(chatId);
+  const allChats = withNativeCodexChats(chatFileService.getAllChats());
+  const target = allChats.find((chat) => chat.id === chatId || chat.session_id === chatId);
   if (!target) return null;
-
-  const allChats = chatFileService.getAllChats();
   const byId = new Map<string, Chat>();
   for (const chat of allChats) byId.set(chat.id, chat);
 
@@ -373,7 +356,8 @@ export function buildChatTree(chatId: string): ChatTreeResponse | null {
     childrenByParent.set(parentId, group);
   }
 
-  const rootId = walkToRootId(target.id);
+  const index = buildLineageIndex(allChats);
+  const rootId = index.existingRootIdOf(target.id);
   const root = byId.get(rootId) ?? target;
 
   const visited = new Set<string>();
@@ -391,7 +375,20 @@ export function buildChatTree(chatId: string): ChatTreeResponse | null {
   return {
     targetChatId: target.id,
     rootChatId: root.id,
-    ancestors: getAncestors(target.id),
+    ancestors: (() => {
+      const ancestors: ChatTreeAncestor[] = [];
+      const seen = new Set([target.id]);
+      let parent = index.parentIdOf(target.id);
+      while (parent && !seen.has(parent) && ancestors.length < MAX_LINEAGE_DEPTH) {
+        seen.add(parent);
+        const chat = byId.get(parent);
+        if (!chat) break;
+        const node = toNode(chat, parseMeta(chat));
+        ancestors.unshift({ chatId: chat.id, title: node.title, role: node.role });
+        parent = index.parentIdOf(parent);
+      }
+      return ancestors;
+    })(),
     tree: build(root, 0),
   };
 }

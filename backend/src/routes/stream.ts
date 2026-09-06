@@ -1,5 +1,6 @@
 import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
+import { assertNativeAgentControllable } from "../services/codex-native-agents.js";
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
@@ -406,6 +407,12 @@ streamRouter.post("/:id/message", async (req, res) => {
   const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort, requireExplicitCompletion } = req.body;
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
+
+  try {
+    assertNativeAgentControllable(req.params.id);
+  } catch (error) {
+    return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
+  }
 
   try {
     // ── Branch drift guard ──────────────────────────────────────
@@ -839,6 +846,11 @@ streamRouter.post("/:id/stop", (req, res) => {
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID (or a new chat\'s clientTrackingId)' } */
   /* #swagger.responses[200] = { description: "{ stopped: true } when a live web session was cancelled; { stopped: false } when there was nothing to stop (already finished, or a CLI session the server does not control)" } */
   const chatId = req.params.id;
+  try {
+    assertNativeAgentControllable(chatId);
+  } catch (error) {
+    return res.status(409).json({ stopped: false, error: "native_child_read_only", message: (error as Error).message });
+  }
   const stopped = stopSession(chatId);
   // Worth an info line: this is a deliberate user cancellation, and the run's
   // own "ended: aborted" log lands right after it.

@@ -1,4 +1,5 @@
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
+import { nativeMetadata, assertNativeAgentControllable, withNativeCodexChats } from "../services/codex-native-agents.js";
 import { Router } from "express";
 import type { Request } from "express";
 import { existsSync } from "fs";
@@ -467,7 +468,7 @@ chatsRouter.get("/", (req, res) => {
     // pagination + the lineage-append pass below) and for the card-lifecycle
     // filter, which walks it to pull in the descendants of card members.
     // One metadata parse per chat, memoized root resolution.
-    const lineageIndex = includeLineage || scopedByCardLifecycle ? buildLineageIndex(fileChats) : null;
+    const lineageIndex = includeLineage || scopedByCardLifecycle ? buildLineageIndex(withNativeCodexChats(fileChats)) : null;
 
     /**
      * Chat ids the card-lifecycle filter admits. Membership is derived from
@@ -596,7 +597,7 @@ chatsRouter.get("/", (req, res) => {
               if (!sessionIds.includes(s.sessionId)) {
                 sessionIds.push(s.sessionId);
               }
-              return withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId);
+              return JSON.stringify(nativeMetadata(s.filePath, s.sessionId, parseChatMetadata(withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId))));
             } catch {
               return withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
             }
@@ -613,7 +614,7 @@ chatsRouter.get("/", (req, res) => {
           displayFolder: s.displayFolder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
-          metadata: withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId),
+          metadata: JSON.stringify(nativeMetadata(s.filePath, s.sessionId, parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId)))),
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
           // Add git information
@@ -1613,6 +1614,11 @@ chatsRouter.patch("/:id/summon", (req, res) => {
 // Delete a chat (deletes both file storage metadata and native session files)
 chatsRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Chats']
+  try {
+    assertNativeAgentControllable(req.params.id);
+  } catch (error) {
+    return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
+  }
   // #swagger.summary = 'Delete a chat'
   // #swagger.description = 'Delete a chat from file storage and its session log from the provider\'s native storage.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */

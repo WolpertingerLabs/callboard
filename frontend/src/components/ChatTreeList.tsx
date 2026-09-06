@@ -178,7 +178,7 @@ function TreeNodeRow({
           />
         )}
         <span
-          title={`Status: ${node.status}`}
+          title={`Status: ${node.nativeAgent?.lifecycle ?? node.status}`}
           style={{
             width: 7,
             height: 7,
@@ -216,6 +216,7 @@ function TreeNodeRow({
           }}
         >
           {node.title || folderName}
+          {node.nativeAgent && <small title={node.nativeAgent.controlNote}> · {node.nativeAgent.lifecycle} · read-only</small>}
         </span>
         <span style={{ fontSize: 10, color: "var(--chatlist-item-time-text)", flexShrink: 0, whiteSpace: "nowrap" }}>{time}</span>
       </div>

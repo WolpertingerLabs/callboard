@@ -92,11 +92,7 @@ export interface CodexToolServerHandle {
 export function isCodexToolServerHandle(value: unknown): value is CodexToolServerHandle {
   if (!value || typeof value !== "object") return false;
   const v = value as Partial<CodexToolServerHandle>;
-  return (
-    typeof v.socketPath === "string" &&
-    typeof v.toMcpServerConfig === "function" &&
-    typeof v.close === "function"
-  );
+  return typeof v.socketPath === "string" && typeof v.toMcpServerConfig === "function" && typeof v.close === "function";
 }
 
 /**
@@ -111,7 +107,12 @@ export function isCodexToolServerHandle(value: unknown): value is CodexToolServe
 function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
   server.registerTool(
     def.name,
-    { description: def.description, inputSchema: def.inputSchema },
+    {
+      // Exec's MCP requests do not carry a verified caller thread id. Children
+      // inherit this socket config; never advertise its bound identity as local.
+      description: `${def.description} [Codex exec identity: this Callboard tool server is bound to the owning root chat. Native subagents inherit it but must not use implicit-current-chat operations as child-local operations.]`,
+      inputSchema: def.inputSchema,
+    },
     async (args: unknown) => {
       const result = await def.handler(args as never);
       return {

@@ -547,6 +547,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // resume it: POST /message answers 410. So the model/effort popover is hidden
   // rather than offering Anthropic models for a chat that never ran on one.
   const isRetiredHarness = rawChatProvider === "openrouter";
+  const nativeAgent = useMemo(() => {
+    try {
+      return JSON.parse(chat?.metadata || "{}").nativeAgent as import("shared/types/chat.js").NativeCodexAgent | undefined;
+    } catch {
+      return undefined;
+    }
+  }, [chat?.metadata]);
 
   // Which ACP vendor, for chats on the ACP kind. Read from metadata rather than
   // derived from `chatProvider`, because the kind alone does not name a harness.
@@ -2330,7 +2337,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // timeout fired — the server-side session is still running and can be aborted
   // via the /stop API regardless of frontend connection state.
   // CLI sessions are excluded because the server doesn't control their execution.
-  const canStop = (streaming || globalSessionActive?.type === "web") && !stopping;
+  const canStop = !nativeAgent && (streaming || globalSessionActive?.type === "web") && !stopping;
 
   const handleReconnect = useCallback(async () => {
     setNetworkError(null);
@@ -3635,9 +3642,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             onRelease={handleReleaseActivity}
           />
         )}
+        {nativeAgent && (
+          <div role="status" style={{ padding: 12 }}>
+            Native Codex child · {nativeAgent.lifecycle} · read-only. {nativeAgent.controlNote}{" "}
+            <a href={`/chat/${nativeAgent.parentThreadId}`}>Open parent thread</a>
+          </div>
+        )}
         <PromptInput
           onSend={handleSend}
-          disabled={!id && streaming}
+          disabled={!!nativeAgent || (!id && streaming)}
           sendBlockedReason={sendBlockedReason}
           onSaveDraft={handleSaveDraft}
           slashCommands={allSlashCommands}

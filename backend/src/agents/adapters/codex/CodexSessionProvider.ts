@@ -13,9 +13,8 @@
  * Discovery walks the dated dir tree and parses the trailing UUID — it does NOT
  * assume a flat `sessions/*.jsonl` layout.
  *
- * Codex has no subagent rollouts (a sub-thread, if Codex ever spawns one, gets
- * its own top-level rollout), so {@link findSubagentFiles} returns `[]` and
- * subagent inlining is a no-op — matching the spike's "one file == one thread".
+ * Native subagents have their own rollouts, linked by verified session metadata.
+ * Discovery returns direct children; transcripts are never inlined into parents.
  *
  * `$CODEX_HOME` resolution lives in {@link resolveCodexHome}, shared with the
  * write side so the read/write paths never diverge.
@@ -23,7 +22,7 @@
  * @see plans/codex-adapter-job.md (Step 9 session-provider)
  * @see plans/codex-spike-findings.md §5 (rollout format)
  */
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, lstatSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import type { HandoffTurn } from "../../handoff.js";
@@ -159,21 +158,28 @@ export class CodexSessionProvider implements SessionProvider {
     // Three fixed levels of date dirs (YYYY/MM/DD), then files. Walking by
     // depth (rather than a recursive glob) keeps us robust to unrelated files
     // a user might drop under sessions/ and avoids descending arbitrarily deep.
+    let remainingEntries = 20_000;
     const safeReaddir = (dir: string): string[] => {
+      if (remainingEntries <= 0) return [];
       try {
-        return readdirSync(dir);
+        const names = readdirSync(dir).sort().reverse().slice(0, remainingEntries);
+        remainingEntries -= names.length;
+        return names;
       } catch {
         return [];
       }
     };
 
     for (const yyyy of safeReaddir(root)) {
+      if (!/^\d{4}$/.test(yyyy)) continue;
       const yPath = join(root, yyyy);
       if (!isDir(yPath)) continue;
       for (const mm of safeReaddir(yPath)) {
+        if (!/^\d{2}$/.test(mm)) continue;
         const mPath = join(yPath, mm);
         if (!isDir(mPath)) continue;
         for (const dd of safeReaddir(mPath)) {
+          if (!/^\d{2}$/.test(dd)) continue;
           const dPath = join(mPath, dd);
           if (!isDir(dPath)) continue;
           for (const file of safeReaddir(dPath)) {
@@ -182,7 +188,7 @@ export class CodexSessionProvider implements SessionProvider {
             const filePath = join(dPath, file);
             let stat: Stats;
             try {
-              stat = statSync(filePath);
+              stat = lstatSync(filePath);
             } catch {
               continue;
             }
@@ -257,9 +263,14 @@ export class CodexSessionProvider implements SessionProvider {
 
   // ── Subagent files ──────────────────────────────────────────────────
 
-  findSubagentFiles(_sessionId: string): SubagentFile[] {
-    // Codex writes one rollout per thread with no nested subagent logs.
-    return [];
+  findSubagentFiles(sessionId: string): SubagentFile[] {
+    if (!isValidThreadId(sessionId)) return [];
+    return this.listRollouts()
+      .filter((entry) => {
+        const meta = readCodexSessionMeta(entry.filePath);
+        return meta?.id === entry.threadId && meta.nativeAgent?.parentThreadId === sessionId && !isIgnoredProjectFolder(meta.cwd ?? "");
+      })
+      .map((entry) => ({ agentId: entry.threadId, filePath: entry.filePath }));
   }
 
   // ── Message parsing ─────────────────────────────────────────────────
@@ -422,6 +433,7 @@ export class CodexSessionProvider implements SessionProvider {
     }
     const entry = this.findRollout(sessionId);
     if (!entry) return;
+    if (readCodexSessionMeta(entry.filePath)?.isNativeThread) throw new Error("Native Codex child is read-only; ask its parent thread to close it.");
     try {
       unlinkSync(entry.filePath);
     } catch (err) {
@@ -436,7 +448,7 @@ function pad2(n: number): string {
 
 function isDir(path: string): boolean {
   try {
-    return statSync(path).isDirectory();
+    return lstatSync(path).isDirectory();
   } catch {
     return false;
   }

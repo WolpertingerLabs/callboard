@@ -1,6 +1,7 @@
 import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
 import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
@@ -515,6 +516,7 @@ export function respondToPermission(
  * CLI session, whose execution the server doesn't own).
  */
 export function stopSession(chatId: string): boolean {
+  if (nativeAgentForChat(chatId)) return false;
   const info = sessionRegistry.get(chatId);
   if (info && info.abortController) {
     info.abortController.abort();
@@ -563,6 +565,7 @@ export type SessionStopOutcome =
  * unregistering it would only hide that from the UI.
  */
 export async function stopSessionAndWait(chatId: string, timeoutMs: number = SESSION_TEARDOWN_TIMEOUT_MS): Promise<SessionStopOutcome> {
+  if (nativeAgentForChat(chatId)) return "unstoppable";
   const info = sessionRegistry.get(chatId);
   if (!info) return "not-running";
   // CLI sessions carry no abort controller: the server did not spawn them.
@@ -912,6 +915,7 @@ const DEFAULT_MAX_NUDGES = 3;
  * and emits a "chat_created" event so the frontend can navigate.
  */
 export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitter> {
+  if (opts.chatId) assertNativeAgentControllable(opts.chatId);
   const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
   const isNewChat = !opts.chatId;
   // A job step or cron action authored before the OpenRouter harness was removed

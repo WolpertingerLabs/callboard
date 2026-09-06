@@ -201,7 +201,10 @@ interface RolloutLine {
   payload?: Record<string, unknown>;
 }
 
-interface SessionMeta {
+export interface SessionMeta {
+  isNativeThread?: true;
+  nativeAgent?: { parentThreadId: string; nickname?: string; agentPath?: string; role?: string; depth?: number };
+  historyStartOrdinal?: number;
   id?: string;
   cwd?: string;
   timestamp?: string;
@@ -259,11 +262,14 @@ function readRolloutLines(filePath: string): RolloutLine[] {
   const lines: RolloutLine[] = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed) {
+      lines.push({});
+      continue;
+    }
     try {
       lines.push(JSON.parse(trimmed) as RolloutLine);
     } catch {
-      /* skip a torn / partially-written line */
+      lines.push({}); // Preserve physical ordinals across malformed lines.
     }
   }
   return lines;
@@ -420,6 +426,8 @@ const WANTED_META_KEYS = ["id", "cwd", "timestamp", "cli_version"] as const;
 function readSessionMetaFromHead(filePath: string): SessionMeta | undefined {
   const head = readHead(filePath, META_HEAD_BYTES);
   if (!head) return undefined;
+  const firstLine = parseObject(head.split("\n")[0] ?? "");
+  if (firstLine?.type === "session_meta") return buildSessionMeta((firstLine.payload ?? {}) as Record<string, unknown>);
   const open = head.indexOf("{");
   if (open < 0) return undefined;
 
@@ -448,6 +456,8 @@ function readSessionMetaFromHead(filePath: string): SessionMeta | undefined {
   // keeps the first and `JSON.parse` would keep the last — no JSON serialiser
   // emits duplicate keys, and the scan is an accelerator for files Codex wrote.
   if (payload.nestedKey !== undefined && !WANTED_META_KEYS.every((key) => key in payload.scalars)) return undefined;
+  // Native metadata includes nested source.thread_spawn; never answer from its scalar prefix.
+  if (payload.scalars.parent_thread_id || payload.scalars.thread_source === "subagent" || payload.nestedKey === "source") return undefined;
   return buildSessionMeta(payload.scalars);
 }
 
@@ -457,6 +467,29 @@ function buildSessionMeta(payload: Record<string, unknown>): SessionMeta {
   if (typeof payload.cwd === "string") meta.cwd = payload.cwd;
   if (typeof payload.timestamp === "string") meta.timestamp = payload.timestamp;
   if (typeof payload.cli_version === "string") meta.cliVersion = payload.cli_version;
+  const source = payload.source as { subagent?: { thread_spawn?: Record<string, unknown> } } | undefined;
+  const spawn = source?.subagent?.thread_spawn;
+  if (spawn || payload.thread_source === "subagent") meta.isNativeThread = true;
+  const parent = spawn?.parent_thread_id;
+  const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+  if (
+    typeof parent === "string" &&
+    uuid.test(parent) &&
+    meta.id &&
+    uuid.test(meta.id) &&
+    parent !== meta.id &&
+    (!payload.parent_thread_id || payload.parent_thread_id === parent)
+  ) {
+    meta.nativeAgent = {
+      parentThreadId: parent,
+      ...(typeof spawn?.agent_nickname === "string" && { nickname: spawn.agent_nickname }),
+      ...(typeof spawn?.agent_path === "string" && { agentPath: spawn.agent_path }),
+      ...(typeof spawn?.agent_role === "string" && { role: spawn.agent_role }),
+      ...(typeof spawn?.depth === "number" && { depth: spawn.depth }),
+    };
+    if (Number.isSafeInteger(payload.subagent_history_start_ordinal) && Number(payload.subagent_history_start_ordinal) >= 1)
+      meta.historyStartOrdinal = Number(payload.subagent_history_start_ordinal);
+  }
   checkCliVersion(meta.cliVersion);
   return meta;
 }
@@ -511,6 +544,16 @@ export function clearCodexSessionMetaCache(): void {
  * Memoized per file version — discovery asks this of every rollout on every
  * chat-list request, and the answer only changes when the file does.
  */
+function readBoundedSessionMeta(filePath: string): SessionMeta | undefined {
+  // A malformed/huge metadata line must not turn discovery into a whole-log scan.
+  const head = readHead(filePath, 1024 * 1024);
+  for (const raw of head?.split("\n") ?? []) {
+    const line = parseObject(raw);
+    if (line?.type === "session_meta") return buildSessionMeta((line.payload ?? {}) as Record<string, unknown>);
+  }
+  return undefined;
+}
+
 export function readCodexSessionMeta(filePath: string): SessionMeta | null {
   let mtimeMs = -1;
   let size = -1;
@@ -528,13 +571,7 @@ export function readCodexSessionMeta(filePath: string): SessionMeta | null {
   const cached = metaCache.get(filePath);
   if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.meta;
 
-  const meta =
-    readSessionMetaFromHead(filePath) ??
-    scanRolloutLines(filePath, (line) => {
-      if (line.type !== "session_meta") return undefined;
-      return buildSessionMeta(line.payload ?? {});
-    }) ??
-    null;
+  const meta = readSessionMetaFromHead(filePath) ?? readBoundedSessionMeta(filePath) ?? null;
 
   // Refreshing an entry already held doesn't grow the map, so it evicts nothing.
   if (metaCache.size >= META_CACHE_MAX && !metaCache.has(filePath)) {
@@ -570,7 +607,11 @@ function checkCliVersion(cliVersion: string | undefined): void {
  * line/item types and skip the rest.
  */
 export function parseCodexRollout(filePath: string): ParsedMessage[] {
-  const lines = readRolloutLines(filePath);
+  const rawLines = readRolloutLines(filePath);
+  const ownMeta = readCodexSessionMeta(filePath);
+  // Fork rollouts copy historical events (including session_meta and terminal events).
+  // The installed CLI records the first child-local ordinal. Without it, fail closed.
+  const lines = ownMeta?.isNativeThread ? (ownMeta.historyStartOrdinal === undefined ? [] : rawLines.slice(ownMeta.historyStartOrdinal)) : rawLines;
   const messages: ParsedMessage[] = [];
   // Version-gate off the meta line even when a caller skips readCodexSessionMeta.
   const meta = lines.find((l) => l.type === "session_meta");
@@ -936,6 +977,8 @@ export function extractText(content: unknown): string {
  * does, returning the first genuine `user` message's text.
  */
 export function readFirstUserPrompt(filePath: string): string | null {
+  const meta = readCodexSessionMeta(filePath);
+  if (meta?.nativeAgent) return meta.nativeAgent.nickname || meta.nativeAgent.agentPath || null;
   return (
     scanRolloutLines(filePath, (line) => {
       if (line.type !== "response_item") return undefined;

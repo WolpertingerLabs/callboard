@@ -275,12 +275,7 @@ describe("ChatTreeList active-first sections", () => {
 
   // A group whose root's card is open, plus a lone row on each side of the
   // split. Listed inactive-first so any reordering is visible.
-  const STRADDLING = [
-    makeChat("solo-none"),
-    makeChat("root"),
-    makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
-    makeChat("solo-open"),
-  ];
+  const STRADDLING = [makeChat("solo-none"), makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" }), makeChat("solo-open")];
 
   it("files a group that straddles both buckets once, in its header row's section", () => {
     const { container } = renderSectioned(STRADDLING);
@@ -296,11 +291,7 @@ describe("ChatTreeList active-first sections", () => {
     // the whole group is Inactive even though solo-open is Active.
     const soloOpenOnly = new Map([["solo-open", { lifecycle: "open" as const }]]);
     const { container } = renderSectioned(
-      [
-        makeChat("solo-open"),
-        makeChat("root"),
-        makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
-      ],
+      [makeChat("solo-open"), makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" })],
       true,
       soloOpenOnly,
     );
@@ -376,4 +367,23 @@ describe("ChatTreeList active-first sections", () => {
       expect(outline(container)).toEqual(["Active", "Inactive", "chat solo-none"]);
     });
   });
+});
+
+it("labels a native child unknown and read-only rather than completed", async () => {
+  mockGetChatTree.mockResolvedValue(
+    makeTree(
+      makeNode("root", "Root", {
+        children: [
+          makeNode("child-1", "Pasteur", {
+            provider: "codex",
+            nativeAgent: { parentThreadId: "root", management: "read-only", lifecycle: "unknown", controlNote: "Ask parent to manage this child" },
+          }),
+        ],
+      }),
+    ),
+  );
+  renderTree({ refreshToken: 0 });
+  await expandGroup();
+  expect(await screen.findByText(/unknown · read-only/)).toBeTruthy();
+  expect(screen.getByTitle("Ask parent to manage this child")).toBeTruthy();
 });
