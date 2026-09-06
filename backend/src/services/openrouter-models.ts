@@ -30,6 +30,7 @@
  * Mirrors the cache shape of {@link ./sdk-info.ts}.
  */
 import type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "shared/types/index.js";
+import { parseOpenRouterReasoning } from "shared/types/reasoning.js";
 import { getAgentSettings } from "./agent-settings.js";
 import { resolveOpenRouterApiUrl } from "./openrouter-endpoint.js";
 import { createLogger } from "../utils/logger.js";
@@ -69,6 +70,7 @@ interface OpenRouterModelsCache {
 
 // Raw shape of the relevant fields from OpenRouter's /models response.
 interface RawOpenRouterModel {
+  reasoning?: unknown;
   id?: string;
   name?: string;
   supported_parameters?: string[];
@@ -78,6 +80,7 @@ interface RawOpenRouterModel {
 }
 
 let cache: OpenRouterModelsCache | null = null;
+let cacheEndpoint: string | undefined;
 let fetchPromise: Promise<OpenRouterModelsCache> | null = null;
 
 /**
@@ -91,14 +94,14 @@ let generation = 0;
 /** Handle for the periodic refresh started by {@link initOpenRouterModelsCache}. */
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
-async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
+async function fetchOpenRouterModels(endpoint?: string, previousModels: OpenRouterModelInfo[] = cache?.models ?? []): Promise<OpenRouterModelsCache> {
   try {
     // Shared with the utility completion client — see openrouter-endpoint.ts for
     // why the catalog and the completions must resolve the same host. Inside the
     // try so that a bad configured endpoint fails like any other fetch failure:
     // this function is contracted never to reject, since callers treat its
     // promise as the cache itself.
-    const url = resolveOpenRouterApiUrl("/models");
+    const url = endpoint ?? resolveOpenRouterApiUrl("/models");
     log.info(`Fetching OpenRouter models from ${url}...`);
 
     const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -110,6 +113,7 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
 
     const models: OpenRouterModelInfo[] = raw
       // Keep only models that advertise tool calling.
+      .filter((m) => m !== null && typeof m === "object")
       .filter((m) => Array.isArray(m.supported_parameters) && m.supported_parameters.includes("tools"))
       .filter((m): m is RawOpenRouterModel & { id: string } => typeof m.id === "string" && m.id.length > 0)
       .map((m) => {
@@ -118,7 +122,9 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
         // Prefer the former and fall back, so a model routed to a shorter
         // backend does not advertise a window it will reject.
         const contextLength = m.top_provider?.context_length ?? m.context_length;
+        const reasoning = parseOpenRouterReasoning(m.reasoning);
         return {
+          ...(reasoning ? { reasoning } : {}),
           id: m.id,
           name: m.name || m.id,
           promptPrice: m.pricing?.prompt ?? "0",
@@ -140,7 +146,7 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
     // rejection here would strand `fetchPromise` non-null forever — the exact
     // never-refreshes bug this module exists to prevent.
     const message = err instanceof Error ? err.message : String(err);
-    const previous = cache?.models ?? [];
+    const previous = previousModels;
     log.error(`Failed to fetch OpenRouter models: ${message}${previous.length > 0 ? ` (keeping ${previous.length} cached)` : ""}`);
     return { models: previous, fetchedAt: Date.now(), ok: false };
   }
@@ -163,7 +169,24 @@ function isFresh(entry: OpenRouterModelsCache): boolean {
  * and refresh on the one after, quietly doubling the period. Forcing still
  * shares an in-flight fetch, so a tick during a slow fetch is free.
  */
+/** Never serve capabilities from another gateway after a settings change. */
+function checkCacheEndpoint(): void {
+  let endpoint: string;
+  try {
+    endpoint = resolveOpenRouterApiUrl("/models");
+  } catch {
+    endpoint = "invalid-endpoint";
+  }
+  if (cacheEndpoint !== undefined && endpoint !== cacheEndpoint) {
+    generation++;
+    cache = null;
+    fetchPromise = null;
+  }
+  cacheEndpoint = endpoint;
+}
+
 function ensureOpenRouterModels(opts?: { force?: boolean }): Promise<OpenRouterModelsCache> {
+  checkCacheEndpoint();
   if (!opts?.force && cache && isFresh(cache)) return Promise.resolve(cache);
   if (!fetchPromise) {
     const gen = generation;
@@ -262,8 +285,49 @@ export function stopOpenRouterModelsRefresh(): void {
  * Get cached OpenRouter models, waiting for a fetch if the cache is cold or has
  * aged past {@link OPENROUTER_MODELS_TTL_MS}.
  */
-export async function getOpenRouterModelsAsync(): Promise<OpenRouterModelInfo[]> {
-  return (await ensureOpenRouterModels()).models;
+interface EndpointCatalog {
+  cache?: OpenRouterModelsCache;
+  inFlight?: Promise<OpenRouterModelsCache>;
+}
+
+// Execution endpoints are independent of the account-wide utility endpoint.
+// Invalidation/refresh of that utility catalog must never affect these entries.
+const endpointCatalogs = new Map<string, EndpointCatalog>();
+
+/** Explicit argument is an execution API root, e.g. https://host/api/v1.
+ * Omitted retains the existing account-wide utility catalog behavior.
+ * Failures carry forward only this endpoint's last successful models.
+ */
+export async function getOpenRouterModelsAsync(executionApiBaseUrl?: string): Promise<OpenRouterModelInfo[]> {
+  if (executionApiBaseUrl === undefined) return (await ensureOpenRouterModels()).models;
+  const base = executionApiBaseUrl.trim().replace(/\/+$/, "");
+  // Do not accidentally fall back to the unrelated utility catalog for a bad
+  // explicit execution URL. Offline/unknown capabilities are the safe answer.
+  try {
+    const url = new URL(base);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) return [];
+  } catch {
+    return [];
+  }
+  const endpoint = `${base}/models`;
+  let entry = endpointCatalogs.get(endpoint);
+  if (!entry) {
+    entry = {};
+    endpointCatalogs.set(endpoint, entry);
+  }
+  if (entry.cache && isFresh(entry.cache)) return entry.cache.models;
+  if (!entry.inFlight) {
+    const ownedEntry = entry;
+    ownedEntry.inFlight = fetchOpenRouterModels(endpoint, ownedEntry.cache?.models ?? [])
+      .then((result) => {
+        ownedEntry.cache = result;
+        return result;
+      })
+      .finally(() => {
+        ownedEntry.inFlight = undefined;
+      });
+  }
+  return (await entry.inFlight!).models;
 }
 
 /**
@@ -279,7 +343,14 @@ export async function getOpenRouterModelsAsync(): Promise<OpenRouterModelInfo[]>
  * what actually bounds this path's staleness; the kick here just narrows the
  * window when a read lands before the timer does.
  */
-export function getOpenRouterModelsSnapshot(): OpenRouterModelInfo[] {
+export function getOpenRouterModelsSnapshot(executionApiBaseUrl?: string): OpenRouterModelInfo[] {
+  if (executionApiBaseUrl !== undefined) {
+    const endpoint = `${executionApiBaseUrl.trim().replace(/\/+$/, "")}/models`;
+    const entry = endpointCatalogs.get(endpoint);
+    if (!entry?.cache || !isFresh(entry.cache)) void getOpenRouterModelsAsync(executionApiBaseUrl);
+    return entry?.cache?.models ?? [];
+  }
+  checkCacheEndpoint();
   if (!cache || !isFresh(cache)) void ensureOpenRouterModels();
   return cache?.models ?? [];
 }
@@ -327,14 +398,9 @@ export function getLatestAnthropicRoleModels(models?: OpenRouterModelInfo[]): { 
  * Drops the cached models rather than carrying them forward: they describe the
  * host we just stopped pointing at.
  *
- * **Currently has no production callers** — don't go hunting for one. Nothing
- * invalidates on a base-URL change today; the TTL just corrects it within the
- * hour. Two consequences of that, both pre-existing: a URL change is served
- * stale until the next refresh, and the carry-forward in
- * {@link fetchOpenRouterModels} is host-blind, so a private proxy that is down
- * at an hour boundary keeps serving whatever host answered last. Wiring this
- * into the settings-update path fixes both, and the generation counter it bumps
- * is already here for when someone does.
+ * Reads also invalidate automatically when the resolved endpoint changes, so
+ * neither an old successful fetch nor carry-forward failure can leak another
+ * gateway's reasoning capabilities into the current route.
  */
 export function refreshOpenRouterModelsCache(): Promise<OpenRouterModelsCache> {
   generation++;
@@ -349,6 +415,8 @@ export function resetOpenRouterModelsCacheForTesting(): void {
   cache = null;
   fetchPromise = null;
   stopOpenRouterModelsRefresh();
+  cacheEndpoint = undefined;
+  endpointCatalogs.clear();
 }
 
 /**

@@ -199,12 +199,15 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [formSkipIfRunning, setFormSkipIfRunning] = useState(false);
   const [formRequireCompletion, setFormRequireCompletion] = useState(false);
   const [formSaving, setFormSaving] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
   // Provider config — defaults to "claude-code" so existing behavior is
   // preserved for crons created without picking. Empty model = use the
   // global default; undefined effort = use the model default.
   const [formProvider, setFormProvider] = useState<AgentProviderKind>("claude-code");
   const [formClaudeModel, setFormClaudeModel] = useState<string>("");
   const [formCodexModel, setFormCodexModel] = useState<string>("");
+  const [formClineModel, setFormClineModel] = useState("");
+  const [formPiModel, setFormPiModel] = useState("");
   const [formEffort, setFormEffort] = useState<EffortLevel | undefined>(undefined);
 
   // System-info fetch — drives whether the Codex option is enabled in
@@ -213,6 +216,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
   const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
   const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
+  const [clineProviderId, setClineProviderId] = useState("");
   useEffect(() => {
     // `refresh` rather than the cached default, because what this gates is not a
     // chat the user is about to watch start. A stale `codexConfigured: true`
@@ -225,6 +229,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         setCodexConfigured(info.codexConfigured ?? false);
         setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
         setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
+        setClineProviderId(info.clineProviderId ?? "");
       })
       .catch(() => {
         setCodexConfigured(false);
@@ -254,6 +259,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [editProvider, setEditProvider] = useState<AgentProviderKind>("claude-code");
   const [editClaudeModel, setEditClaudeModel] = useState<string>("");
   const [editCodexModel, setEditCodexModel] = useState<string>("");
+  const [editClineModel, setEditClineModel] = useState("");
+  const [editPiModel, setEditPiModel] = useState("");
   const [editEffort, setEditEffort] = useState<EffortLevel | undefined>(undefined);
 
   const loadJobs = () => {
@@ -307,6 +314,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     e.preventDefault();
     if (!formName.trim() || !formSchedule.trim() || !formDescription.trim()) return;
 
+    setConfigError(null);
     setFormSaving(true);
     try {
       const job = await createAgentCronJob(agent.alias, {
@@ -324,10 +332,12 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           // omitting keeps stored JSON tidy. The model field holds whichever
           // provider's selection applies: a Codex slug or an Anthropic
           // alias/ID for claude-code.
-          ...(formProvider === "codex" && { provider: formProvider }),
+          ...(formProvider !== "claude-code" && { provider: formProvider }),
           ...(formProvider === "claude-code" && formClaudeModel.trim() && { model: formClaudeModel.trim() }),
           ...(formProvider === "codex" && formCodexModel.trim() && { model: formCodexModel.trim() }),
-          ...(formProvider === "codex" && formEffort && { effort: formEffort }),
+          ...(formProvider === "cline" && formClineModel.trim() && { model: formClineModel.trim() }),
+          ...(formProvider === "pi" && formPiModel.trim() && { model: formPiModel.trim() }),
+          ...(["codex", "cline", "pi"].includes(formProvider) && formEffort && { effort: formEffort }),
           ...(formRequireCompletion && { requireExplicitCompletion: true }),
         },
         ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
@@ -348,9 +358,11 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setFormProvider("claude-code");
       setFormClaudeModel("");
       setFormCodexModel("");
+      setFormClineModel("");
+      setFormPiModel("");
       setFormEffort(undefined);
-    } catch {
-      // ignore
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : "Could not save cron configuration");
     } finally {
       setFormSaving(false);
     }
@@ -381,6 +393,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     setEditProvider(jobProvider);
     setEditClaudeModel(jobProvider === "claude-code" && (stored as string) !== "openrouter" ? (job.action?.model ?? "") : "");
     setEditCodexModel(jobProvider === "codex" ? (job.action?.model ?? "") : "");
+    setEditClineModel(jobProvider === "cline" ? (job.action?.model ?? "") : "");
+    setEditPiModel(jobProvider === "pi" ? (job.action?.model ?? "") : "");
     setEditEffort(job.action?.effort);
   };
 
@@ -392,20 +406,32 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     e.preventDefault();
     if (!editingJobId || !editName.trim() || !editSchedule.trim() || !editDescription.trim()) return;
 
+    setConfigError(null);
     setEditSaving(true);
     try {
+      // This editor owns model/provider/effort, prompt and completion only.
+      // Preserve execution folder, maxTurns, action type and future fields.
+      const preservedAction = { ...jobs.find((job) => job.id === editingJobId)?.action };
+      delete preservedAction.provider;
+      delete preservedAction.model;
+      delete preservedAction.effort;
+      delete preservedAction.prompt;
+      delete preservedAction.requireExplicitCompletion;
       const updated = await updateAgentCronJob(agent.alias, editingJobId, {
         name: editName.trim(),
         schedule: editSchedule.trim(),
         type: editType,
         description: editDescription.trim(),
         action: {
-          type: "start_session",
+          ...preservedAction,
+          type: preservedAction.type ?? "start_session",
           prompt: editPrompt.trim() || undefined,
-          ...(editProvider === "codex" && { provider: editProvider }),
+          ...(editProvider !== "claude-code" && { provider: editProvider }),
           ...(editProvider === "claude-code" && editClaudeModel.trim() && { model: editClaudeModel.trim() }),
           ...(editProvider === "codex" && editCodexModel.trim() && { model: editCodexModel.trim() }),
-          ...(editProvider === "codex" && editEffort && { effort: editEffort }),
+          ...(editProvider === "cline" && editClineModel.trim() && { model: editClineModel.trim() }),
+          ...(editProvider === "pi" && editPiModel.trim() && { model: editPiModel.trim() }),
+          ...(["codex", "cline", "pi"].includes(editProvider) && editEffort && { effort: editEffort }),
           ...(editRequireCompletion && { requireExplicitCompletion: true }),
         },
         quietHours: editQHEnabled ? { enabled: true, start: editQHStart, end: editQHEnd } : { enabled: false, start: editQHStart, end: editQHEnd },
@@ -413,8 +439,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       });
       setJobs((prev) => prev.map((j) => (j.id === editingJobId ? updated : j)));
       setEditingJobId(null);
-    } catch {
-      // ignore
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : "Could not save cron configuration");
     } finally {
       setEditSaving(false);
     }
@@ -483,7 +509,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               background: "var(--bg)",
             }}
           >
+            {configError && <div role="alert">{configError}</div>}
             <ProviderConfigPicker
+              cwd={agent.workspacePath}
               provider={editProvider}
               onProviderChange={setEditProvider}
               effort={editEffort}
@@ -492,6 +520,11 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               onClaudeModelChange={setEditClaudeModel}
               codexModel={editCodexModel}
               onCodexModelChange={setEditCodexModel}
+              clineProviderId={clineProviderId}
+              clineModel={editClineModel}
+              onClineModelChange={setEditClineModel}
+              piModel={editPiModel}
+              onPiModelChange={setEditPiModel}
               codexConfigured={codexConfigured}
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}
@@ -881,6 +914,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               </button>
             )}
             <button
+              aria-label={`Edit ${job.name}`}
               onClick={() => startEditing(job)}
               style={{
                 display: "flex",
@@ -1010,7 +1044,9 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               background: "var(--bg)",
             }}
           >
+            {configError && <div role="alert">{configError}</div>}
             <ProviderConfigPicker
+              cwd={agent.workspacePath}
               provider={formProvider}
               onProviderChange={setFormProvider}
               effort={formEffort}
@@ -1019,6 +1055,11 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               onClaudeModelChange={setFormClaudeModel}
               codexModel={formCodexModel}
               onCodexModelChange={setFormCodexModel}
+              clineProviderId={clineProviderId}
+              clineModel={formClineModel}
+              onClineModelChange={setFormClineModel}
+              piModel={formPiModel}
+              onPiModelChange={setFormPiModel}
               codexConfigured={codexConfigured}
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}

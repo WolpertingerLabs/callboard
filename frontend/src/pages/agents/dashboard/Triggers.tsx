@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 // useOutletContext removed — agent is now passed as a prop
 import { Plus, Zap, Play, Pause, Trash2, X, Search, ChevronDown, ChevronRight, Info, Pencil, Moon, Timer } from "lucide-react";
+import ProviderConfigPicker from "../../../components/ProviderConfigPicker";
+import type { AgentProviderKind, EffortLevel } from "../../../utils/localStorage";
 import ModalOverlay from "../../../components/ModalOverlay";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import {
+  getSystemInfo,
   getAgentTriggers,
   createAgentTrigger,
   updateAgentTrigger,
@@ -51,6 +54,39 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
   const [formDebounceMaxWait, setFormDebounceMaxWait] = useState<number | "">(""); // seconds, empty = no ceiling
   const [formRequireCompletion, setFormRequireCompletion] = useState(false);
   const [formSaving, setFormSaving] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [formProvider, setFormProvider] = useState<AgentProviderKind>("claude-code");
+  const [formModels, setFormModels] = useState<Partial<Record<AgentProviderKind, string>>>({});
+  const [formEffort, setFormEffort] = useState<EffortLevel | undefined>();
+  const [originalAction, setOriginalAction] = useState<Trigger["action"] | null>(null);
+  const [systemInfo, setSystemInfo] = useState<Awaited<ReturnType<typeof getSystemInfo>> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getSystemInfo({ refresh: true })
+      .then((info) => {
+        if (!cancelled) setSystemInfo(info);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const changeModel = (provider: AgentProviderKind, model: string) => setFormModels((models) => ({ ...models, [provider]: model }));
+  const buildAction = (): Trigger["action"] => {
+    // The form owns only these configuration fields. Preserve folder,
+    // maxTurns, action type and future fields instead of replacing the action.
+    const action: Trigger["action"] = { ...(originalAction ?? { type: "start_session" }) };
+    action.prompt = formPrompt.trim() || undefined;
+    action.requireExplicitCompletion = formRequireCompletion;
+    if (formProvider !== (originalAction?.provider ?? "claude-code") || originalAction?.provider) action.provider = formProvider;
+    const model = formModels[formProvider]?.trim();
+    if (model) action.model = model;
+    else delete action.model;
+    if (["codex", "cline", "pi"].includes(formProvider) && formEffort) action.effort = formEffort;
+    else delete action.effort; // Replacement action deliberately clears a saved override.
+    return action;
+  };
 
   // Backtest state
   const [backtestResults, setBacktestResults] = useState<BacktestResult | null>(null);
@@ -123,6 +159,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
     e.preventDefault();
     if (!formName.trim()) return;
 
+    setConfigError(null);
     setFormSaving(true);
     try {
       const trigger = await createAgentTrigger(agent.alias, {
@@ -130,7 +167,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
         description: formDescription.trim(),
         status: "active",
         filter: buildFilter(),
-        action: { type: "start_session", prompt: formPrompt.trim() || undefined, ...(formRequireCompletion && { requireExplicitCompletion: true }) },
+        action: buildAction(),
         triggerCount: 0,
         ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
         ...(formDebounceEnabled && {
@@ -144,14 +181,19 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
       setTriggers((prev) => [...prev, trigger]);
       setShowForm(false);
       resetForm();
-    } catch {
-      // ignore
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : "Could not save trigger configuration");
     } finally {
       setFormSaving(false);
     }
   };
 
   const resetForm = () => {
+    setConfigError(null);
+    setOriginalAction(null);
+    setFormProvider("claude-code");
+    setFormModels({});
+    setFormEffort(undefined);
     setFormName("");
     setFormDescription("");
     setFormSource("");
@@ -186,13 +228,14 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
     e.preventDefault();
     if (!formName.trim() || !editingTriggerId) return;
 
+    setConfigError(null);
     setFormSaving(true);
     try {
       const updated = await updateAgentTrigger(agent.alias, editingTriggerId, {
         name: formName.trim(),
         description: formDescription.trim(),
         filter: buildFilter(),
-        action: { type: "start_session", prompt: formPrompt.trim() || undefined, ...(formRequireCompletion && { requireExplicitCompletion: true }) },
+        action: buildAction(),
         quietHours: formQHEnabled ? { enabled: true, start: formQHStart, end: formQHEnd } : { enabled: false, start: formQHStart, end: formQHEnd },
         debounce: formDebounceEnabled
           ? { enabled: true, windowMs: formDebounceWindow * 1000, ...(formDebounceMaxWait !== "" && { maxWaitMs: formDebounceMaxWait * 1000 }) }
@@ -201,14 +244,20 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
       setTriggers((prev) => prev.map((t) => (t.id === editingTriggerId ? updated : t)));
       setShowForm(false);
       resetForm();
-    } catch {
-      // ignore
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : "Could not save trigger configuration");
     } finally {
       setFormSaving(false);
     }
   };
 
   const startEditing = (trigger: Trigger) => {
+    setConfigError(null);
+    setOriginalAction(trigger.action);
+    const provider = trigger.action.provider ?? "claude-code";
+    setFormProvider(provider);
+    setFormModels({ [provider]: trigger.action.model ?? "" });
+    setFormEffort(trigger.action.effort);
     setEditingTriggerId(trigger.id);
     setFormName(trigger.name);
     setFormDescription(trigger.description);
@@ -506,6 +555,30 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
               style={{ ...inputStyle, resize: "vertical", minHeight: 80, fontFamily: "var(--font-mono)", fontSize: 13 }}
             />
           </div>
+
+          {configError && <div role="alert">{configError}</div>}
+          <ProviderConfigPicker
+            cwd={agent.workspacePath}
+            provider={formProvider}
+            onProviderChange={setFormProvider}
+            effort={formEffort}
+            onEffortChange={setFormEffort}
+            claudeModel={formModels["claude-code"] ?? ""}
+            onClaudeModelChange={(model) => changeModel("claude-code", model)}
+            codexModel={formModels.codex ?? ""}
+            onCodexModelChange={(model) => changeModel("codex", model)}
+            clineModel={formModels.cline ?? ""}
+            onClineModelChange={(model) => changeModel("cline", model)}
+            clineProviderId={systemInfo?.clineProviderId ?? ""}
+            piModel={formModels.pi ?? ""}
+            onPiModelChange={(model) => changeModel("pi", model)}
+            codexConfigured={systemInfo?.codexConfigured}
+            codexUseOpenRouter={Boolean(systemInfo?.codexUseOpenRouter)}
+            claudeCodeUseOpenRouter={Boolean(systemInfo?.claudeCodeUseOpenRouter)}
+            onOpenApiSettings={() => {
+              window.location.href = "/settings/api";
+            }}
+          />
 
           {/* Require explicit completion */}
           <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>

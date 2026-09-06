@@ -1,3 +1,4 @@
+import type { ReasoningCapability } from "shared/types/index.js";
 import type {
   NotifiableChannel,
   ContactChannelAvailability,
@@ -2525,4 +2526,22 @@ export async function restoreTrashEntry(entry: string): Promise<TrashRestoreResu
   if (res.status === 409) return res.json();
   await assertOk(res, "Failed to restore trash entry");
   return res.json();
+}
+
+/** Resolved by the same backend routing/model defaults used for execution. */
+export async function getReasoningCapability(provider: string, model: string, cwd?: string): Promise<ReasoningCapability> {
+  const params = new URLSearchParams({ provider, model });
+  if (cwd) params.set("cwd", cwd);
+  const res = await fetch(`${BASE}/codex/reasoning?${params}`, { credentials: "include" });
+  await assertOk(res, "Failed to get reasoning capabilities");
+  const data = await res.json();
+  if (
+    !data ||
+    !Array.isArray(data.efforts) ||
+    !data.efforts.every((effort: unknown) => typeof effort === "string") ||
+    (data.status !== "known" && data.status !== "unknown")
+  ) {
+    throw new Error("Invalid reasoning capability response");
+  }
+  return data;
 }

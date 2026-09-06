@@ -1,3 +1,4 @@
+import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 /**
  * Codex Models Service — caches the live Codex model catalog reported by the
  * installed Codex CLI.
@@ -211,7 +212,7 @@ async function fetchCodexModels(): Promise<CodexModelsCache> {
     const args = [...argsPrefix, "debug", "models"];
     log.info(`Fetching Codex models via ${[command, ...args].join(" ")}...`);
 
-    const env = { ...process.env, ...getApiEnvOverrides() };
+    const env = { ...sanitizeInheritedAgentEnv(process.env), ...getApiEnvOverrides() };
     const { stdout } = await execFileAsync(command, args, {
       env,
       timeout: REFRESH_TIMEOUT_MS,

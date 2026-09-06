@@ -1,3 +1,4 @@
+import { getOpenRouterModelsSnapshot } from "../../../services/openrouter-models.js";
 /**
  * One pi turn, as a callboard {@link AgentQuery}.
  *
@@ -174,7 +175,11 @@ export class PiAgentQuery implements AgentQuery {
       : SessionManager.create(cwd, this.opts.sessionDir, { id: sessionId });
 
     const providerId = pi.providerId?.trim() || DEFAULT_PI_PROVIDER_ID;
-    const model = findPiModel(runtime, providerId, pi.model ?? "");
+    const scopedOrInfo =
+      providerId === "openrouter"
+        ? (getOpenRouterModelsSnapshot(pi.baseUrl?.trim() || "https://openrouter.ai/api/v1").find((entry) => entry.id === pi.model?.trim()) ?? null)
+        : null;
+    const model = findPiModel(runtime, providerId, pi.model ?? "", scopedOrInfo);
 
     const { session } = await createAgentSessionFromServices({
       services,
@@ -307,7 +312,7 @@ export class PiAgentQuery implements AgentQuery {
   }
 
   async supportedModels(): Promise<PiModelOption[]> {
-    return getPiModels(this.opts.pi.providerId?.trim() || DEFAULT_PI_PROVIDER_ID);
+    return getPiModels(this.opts.pi.providerId?.trim() || DEFAULT_PI_PROVIDER_ID, this.opts.pi.baseUrl?.trim() || "https://openrouter.ai/api/v1");
   }
 
   /**

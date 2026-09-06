@@ -1,3 +1,4 @@
+import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { Router } from "express";
 import type { Request } from "express";
 import { existsSync } from "fs";
@@ -442,7 +443,13 @@ chatsRouter.get("/", (req, res) => {
      */
     const rawLifecycle = typeof req.query.cardLifecycle === "string" ? req.query.cardLifecycle : undefined;
     const cardLifecycleFilter: "all" | "active" | "inactive" =
-      rawLifecycle === "active" || rawLifecycle === "inactive" ? rawLifecycle : rawLifecycle === "all" ? "all" : req.query.cardsOnly === "true" ? "active" : "all";
+      rawLifecycle === "active" || rawLifecycle === "inactive"
+        ? rawLifecycle
+        : rawLifecycle === "all"
+          ? "all"
+          : req.query.cardsOnly === "true"
+            ? "active"
+            : "all";
     const scopedByCardLifecycle = cardLifecycleFilter !== "all";
 
     // Lineage index over file-storage chats — built for the tree view (row
@@ -1028,7 +1035,7 @@ chatsRouter.post("/", (req, res) => {
 });
 
 // Fork a chat: copy session history up to a message into a new chat
-chatsRouter.post("/:id/fork", (req, res) => {
+chatsRouter.post("/:id/fork", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Fork a chat'
   // #swagger.description = 'Create a new chat whose session history is a copy of this chat up to and including the message at the given timestamp. The forked chat is not auto-started — the user sends the next message. The fork inherits the original chat's card membership through the parentage tree (its root). Pass `provider` to hand the conversation to a different harness: the history is translated into that harness native session format, with tool calls flattened to text summaries.'
@@ -1116,6 +1123,21 @@ chatsRouter.post("/:id/fork", (req, res) => {
   }
   const isHandoff = targetKind !== providerKind;
 
+  // Model / effort for the new chat. A handoff cannot inherit the source's:
+  // model ids and effort scales are per-harness ("claude-opus-5" means
+  // nothing to Codex), so on a switch they come from the request or are left
+  // unset for the target's defaults. Same-harness forks inherit as before.
+  const requestedModel = typeof req.body.model === "string" && req.body.model.trim() ? req.body.model.trim() : undefined;
+  const requestedEffort = typeof req.body.effort === "string" && req.body.effort.trim() ? req.body.effort.trim() : undefined;
+  const model = requestedModel ?? (isHandoff ? undefined : meta.model);
+  const effort = req.body.effort !== undefined ? requestedEffort : isHandoff ? undefined : meta.effort;
+
+  try {
+    await assertReasoningEffort({ provider: targetKind, model, effort: req.body.effort !== undefined ? req.body.effort : effort, cwd: chat.folder });
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
+  }
+
   const sessionIds: string[] = meta.session_ids || [];
   if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
@@ -1152,15 +1174,6 @@ chatsRouter.post("/:id/fork", (req, res) => {
   }
   baseTitle = baseTitle ? baseTitle.replace(/\s+/g, " ").trim() : null;
 
-  // Model / effort for the new chat. A handoff cannot inherit the source's:
-  // model ids and effort scales are per-harness ("claude-opus-5" means
-  // nothing to Codex), so on a switch they come from the request or are left
-  // unset for the target's defaults. Same-harness forks inherit as before.
-  const requestedModel = typeof req.body.model === "string" && req.body.model.trim() ? req.body.model.trim() : undefined;
-  const requestedEffort = typeof req.body.effort === "string" && req.body.effort.trim() ? req.body.effort.trim() : undefined;
-  const model = requestedModel ?? (isHandoff ? undefined : meta.model);
-  const effort = requestedEffort ?? (isHandoff ? undefined : meta.effort);
-
   const forkMeta = {
     session_ids: [newSessionId],
     title: baseTitle
@@ -1185,7 +1198,7 @@ chatsRouter.post("/:id/fork", (req, res) => {
     // absent provider already lands on claude-code).
     ...(targetKind !== "claude-code" && { provider: targetKind }),
     // Effort is meaningful only to the reasoning-capable harnesses.
-    ...(effort && targetKind === "codex" && { effort }),
+    ...(effort && { effort }),
     // Model is honored by all three: `stream.ts` persists `metadata.model`
     // for any provider, and each harness's config block reads it (Codex's
     // per-chat override wins over the global codexModel default). Note

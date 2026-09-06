@@ -1,3 +1,4 @@
+import { assertPiModelReasoningEffort } from "./modelCatalog.js";
 /**
  * Options adapter: callboard run options → pi's session construction inputs.
  *
@@ -114,6 +115,8 @@ export function resolvePiAgentDir(): string {
  * provider's own error is the honest answer if the model refuses.
  */
 export function translateThinkingLevel(effort: EffortLevel | undefined): { thinkingLevel?: PiThinkingLevel } {
+  if (effort === "max" || effort === "ultra" || effort === "persistent")
+    throw new Error(`Reasoning effort "${effort}" is not supported by this adapter. Choose a supported effort or clear it.`);
   if (!effort) return {};
   if (effort === "none") return { thinkingLevel: "off" };
   return { thinkingLevel: effort satisfies PiThinkingLevel };
@@ -277,6 +280,7 @@ export interface BuildPiSessionInput {
  */
 export function buildPiSessionOptions(input: BuildPiSessionInput): Omit<CreateAgentSessionFromServicesOptions, "services" | "sessionManager"> {
   const { pi, model, customTools, filters } = input;
+  assertPiModelReasoningEffort(model, pi.effort);
 
   if (!model) {
     // Not thrown: pi resolves its own default when no model is given, and a hard

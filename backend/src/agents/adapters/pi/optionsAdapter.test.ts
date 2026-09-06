@@ -56,7 +56,7 @@ describe("buildPiSessionOptions", () => {
   });
 
   it("carries the thinking level from the effort axis", () => {
-    expect(buildPiSessionOptions({ ...base, pi: { effort: "high" } }).thinkingLevel).toBe("high");
+    expect(buildPiSessionOptions({ ...base, model: { reasoning: true } as never, pi: { effort: "high" } }).thinkingLevel).toBe("high");
   });
 
   it("includes customTools only when there are some", () => {
@@ -79,12 +79,32 @@ describe("buildPiSessionOptions", () => {
 
   it("never sets a tool allowlist without being asked to", () => {
     // An accidental empty allowlist would leave the model with no tools at all.
-    expect(buildPiSessionOptions({ ...base, pi: { effort: "low" } }).tools).toBeUndefined();
+    expect(buildPiSessionOptions({ ...base, model: { reasoning: true } as never, pi: { effort: "low" } }).tools).toBeUndefined();
   });
 });
 
 describe("DEFAULT_PI_PROVIDER_ID", () => {
   it("is openrouter — the provider pi is native to", () => {
     expect(DEFAULT_PI_PROVIDER_ID).toBe("openrouter");
+  });
+});
+
+describe("SDK thinking clamp defense", () => {
+  const base = { pi: {}, customTools: [], filters: {} };
+  it("rejects an explicit effort when no model resolves", () => {
+    expect(() => buildPiSessionOptions({ ...base, pi: { effort: "high" } })).toThrow("no model resolved");
+  });
+  it("rejects xhigh on a reasoning model without an SDK map instead of clamping to high", () => {
+    expect(() => buildPiSessionOptions({ ...base, model: { reasoning: true } as never, pi: { effort: "xhigh" } })).toThrow("xhigh");
+  });
+  it("accepts xhigh only with an explicit SDK mapping", () => {
+    expect(
+      buildPiSessionOptions({ ...base, model: { reasoning: true, thinkingLevelMap: { xhigh: "xhigh" } } as never, pi: { effort: "xhigh" } }).thinkingLevel,
+    ).toBe("xhigh");
+  });
+  it("rejects explicit null mappings", () => {
+    expect(() => buildPiSessionOptions({ ...base, model: { reasoning: true, thinkingLevelMap: { high: null } } as never, pi: { effort: "high" } })).toThrow(
+      "high",
+    );
   });
 });

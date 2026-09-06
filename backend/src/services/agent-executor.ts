@@ -1,3 +1,4 @@
+import { assertReasoningEffort } from "./reasoning-capabilities.js";
 /**
  * Shared agent execution helper.
  *
@@ -113,6 +114,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
     }
 
     const workspacePath = getAgentWorkspacePath(agentAlias);
+    await assertReasoningEffort({ provider, model, effort, cwd: workspacePath });
     const fullSystemPrompt = compileSystemPrompt(config, workspacePath).prompt;
     const sendMessage = getSendMessage();
 

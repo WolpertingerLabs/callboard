@@ -1,0 +1,79 @@
+# Model-aware reasoning effort
+
+## Implementation plan
+1. Trace execution routing, model aliases and configured/environment defaults before adding a backend capability resolver. The UI and validation consume one serializable contract; no API-key-presence routing heuristics.
+2. Preserve OpenRouter reasoning metadata (including absent versus null versus empty supported efforts) in the existing catalog/cache. Intersect advertised capabilities with the actual adapter transport vocabulary, conservatively withholding unknown capabilities.
+3. Discover native Codex efforts/default from the live debug catalog. Keep legacy native `none` as summary suppression, not reasoning disabled. Verify OpenRouter disable semantics against installed transport with local tests before exposing it.
+4. Integrate the shared picker with asynchronous route/model resolution, stale-response protection and visible invalid saved selections. Preserve max/ultra through persistence and API schemas; do not widen Cline/pi SDK inputs.
+5. Validate explicit updates before mutation and defend execution of stale settings across chats, cron and jobs using execution's resolved model and route. Never downgrade an unsupported level silently.
+6. Add focused catalog/resolver/adapter/API/UI regressions, run build and relevant/full checks where feasible, document limitations. Commit, fetch/rebase at clean milestones and before completion. No publishing, merging, credentials changes or server restart.
+
+## Sources and decisions
+- https://learn.chatgpt.com/docs/app-server#list-models-modellist — model-specific reasoning discovery, rather than a harness-wide enum.
+- https://openrouter.ai/docs/guides/best-practices/reasoning-tokens — per-model `reasoning` metadata; gateway vocabulary none/minimal/low/medium/high/xhigh/max. Explicit null permits all gateway efforts, omission exposes no effort selector, empty permits none; mandatory excludes none. `supported_parameters` alone is insufficient.
+- User-provided installed CLI/SDK baseline is 0.153.4. Catalog, not SDK union, determines advertised native levels. No hand-maintained model-ID mappings or stronger-to-weaker translation.
+- Initial official documentation tool retrieval failed with expired tool authentication; use public HTTP retrieval if further research is required, without changing credentials.
+
+## Validation/results
+Initial implementation and review-round results are recorded below.
+
+## Implemented design
+- `shared/types/reasoning.ts` is the serializable capability contract plus conservative pure catalog interpretation. Storage vocabulary includes max/ultra/persistent, but native options require live catalog advertisement; SDK membership alone never adds a choice. Cline/pi adapters explicitly refuse those additional strings.
+- `reasoning-capabilities.ts` shares `resolveReasoningTarget` with actual Codex/Cline/pi execution. It resolves model aliases and mode-specific settings defaults with `resolveSessionModel`, distinguishes injected Codex OR routing from ambient OR routing, and does not mistake an unrelated key for routing. Cline/pi provider IDs and explicit OpenRouter base URLs determine their route.
+- `/api/codex/reasoning` serves the contract for all reasoning harnesses. Every shared picker keys async results by provider/model/config, discards stale responses, displays unsupported persisted values rather than defaulting them, and offers explicit clearing. No new native summary-only `none` choice is advertised; saved native `none` remains visibly labelled and supported.
+- Native model discovery retains the existing live Codex catalog. OR uses parsed reasoning metadata and the existing bounded TTL/retry/single-flight cache, now invalidated on endpoint changes. Last-good data is retained for same-endpoint transient failure, never borrowed from a previous endpoint.
+- Cline preserves its SDK `supportsReasoning` flag; pi preserves model-specific thinking-level maps and null exclusions. OR capabilities are intersected with each adapter's transport vocabulary; max is not passed into Cline/pi simply because Codex accepts it.
+- Explicit effort validation occurs before mutations in chat create/update/fork, cron/trigger config, job create/update/import/tools and session-start tools. Execution revalidates saved settings in `sendMessage`/agent execution; stale unsupported choices fail with model/route, supported choices and clearing instructions. Job effort forwarding and job-default model resolution are now consistent with validation.
+
+## Transport verification and limitations
+- Actual installed SDK → CLI → isolated loopback HTTP test (fake HOME/CODEX_HOME/key, no model calls) verifies `reasoning.effort: "none"` and `"max"`. OR `none` uses `CodexOptions.config.model_reasoning_effort = "none"`, because the typed SDK ThreadOption omits it. Native saved `none` still sets only `model_reasoning_summary = "none"`. Adapter unit tests protect this distinction and native max/ultra.
+- The same wire probe shows **unset Codex OR effort emits medium** for an unknown OR slug. `config: null` cannot suppress this (SDK rejects null; TOML has no null), and disabling reasoning-summary support does not remove the effort. Therefore the UI deliberately does not label OR `default_effort` as the transport's default: clearing delegates to the harness configuration/default, not necessarily the gateway. `default_enabled: false` is preserved as catalog data but does not imply that clearing disables reasoning. Explicit supported `none` is the verified off control. Nonreasoning/dynamic OR entries expose no explicit efforts; the existing CLI implicit-default behavior remains a transport limitation.
+- When model/config discovery is unavailable, only default is offered. The native CLI config/read projection can now discover its configured model; no model ID is guessed. Pi's unspecified runtime model remains intentionally unknown. Saved native summary-none is compatible only when the route is verified native.
+- Public HTTP retrieval of both official source pages succeeded after the documentation tool's expired-token failure. OR docs confirm absent/null semantics and mandatory reasoning; App Server docs recommend model-specific supported reasoning discovery.
+
+## Verification
+- Dependency installation: `npm ci --ignore-scripts --include=dev`; lockfile unchanged, no shared-worktree node_modules/dist symlinks.
+- Focused tests include metadata malformed/absent/null/empty/mandatory, native max/ultra, OR vocabulary, route/alias/settings resolution, API pre-mutation validation, jobs and automation, adapter/wire behavior, persisted values, clear/model/provider transitions and stale frontend responses.
+- Frontend suite: 76 files / 1107 tests passed during implementation; additional picker tests also passed.
+- Initial concurrent full-suite run had a job-runner hook timeout and a test observing a mid-run source edit; targeted rerun passed 30/30. Final full suite runs with four workers after edits settle (results below).
+- Final `npm test -- --maxWorkers=4`: **278 passed files, 3 skipped; 4381 passed tests, 32 skipped** (281 files / 4413 tests total).
+- Full `npm run lint:all` equivalent (`npx eslint . --ext .js,.jsx,.ts,.tsx`): **0 errors, 933 warnings** (existing warning baseline/style debt).
+- `npm run build`: shared/backend/frontend production builds pass; existing swagger annotation warning and Vite large-chunk warning remain. No lockfile changes.
+
+
+## PR #408 — review round 1
+Read both independent reports (backend `01a0768b-23bb-7920-8e2e-718a7f9e2912`, UI `01a0768b-2d0c-7271-9979-336cfd5aaba3`) and reproduced/covered all six findings:
+1. **Effective Codex route:** replaced ambient readiness scanning in capability resolution with the installed CLI's App Server `config/read`. The CLI merges/filters user, project and supported profile layers; Callboard reads only active provider/base URL/model fields, never reads auth.json or logs raw config/stderr/credential fields. SDK `baseUrl` is mirrored as `--config openai_base_url=...`, ahead of ambient env; active custom providers retain their own endpoint. Explicit Callboard provider injection remains authoritative. Unknown/private non-OR routes and malformed/unreadable config fail conservatively. Inactive blocks/comments, quoted active provider IDs, API overrides, trusted project model settings, changes between reads and private endpoints have regressions. There is no handwritten TOML parser and no new dependency.
+2. **Endpoint catalogs:** reasoning catalogs now use the actual execution API root with independent per-endpoint cache/single-flight/TTL/retry. Utility `openRouterBaseUrl` cannot change native Codex OR capabilities. Cline/pi endpoint overrides use their own scope; invalid roots fail closed and custom OR roots are fetched independently. Pi synthesis also uses its execution scope, not utility metadata.
+3. **Pi downgrade:** OR efforts additionally intersect the actual resolved pi model map. Execution checks the actual model before SDK session creation, preventing the SDK clamp from silently lowering xhigh. Real installed-SDK tests prove `openai/o3` xhigh would clamp to high and is now rejected, and cover synthesized models.
+4. **Cron Cline:** system-info's `clineProviderId` reaches both create/edit pickers, with rendered request regression.
+5. **Triggers:** create/edit now use the shared provider/model/effort picker, retain action type and fields outside the editor's ownership, allow explicit effort clearing, retain unsupported values visibly, and show server validation errors. Rendered payload tests cover unchanged native ultra, creation, clearing and non-owned fields. Cron edit was given the same non-owned-field preservation. Legacy action.folder is retained but is not used for capability cwd: cron/trigger execution uses the agent workspace, so validation and both forms use that same workspace.
+6. **Native default label:** `(default)` no longer claims the catalog recommendation is the effective execution effort. A native loopback regression sets CLI config effort low and verifies a cleared override sends low rather than the catalog's medium recommendation. `defaultEffort` in the shared capability is documented as a catalog recommendation only.
+
+Additional official reference: https://developers.openai.com/codex/config-basic/ — CLI precedence and trusted project layering. The installed CLI filters endpoint overrides out of project config but admits model/effort; tests follow its returned configuration rather than recreating those rules.
+
+### Review-round limitations
+- CLI config/read runs locally, bounded to five seconds and single-flight only while pending (completed reads are not cached, so config edits cannot leave a stale route). Failure/unsupported CLI config-read yields unknown capabilities rather than guessing native. Private endpoints are not assumed to accept native Codex efforts: explicit OR routing plus that endpoint's metadata is required to offer OR efforts.
+- Execution cwd is passed from composer/folder chat and automation agent workspaces when known, and revalidated in backend execution. The agent-mode new-chat list has no selected agent yet, so its picker cannot supply an agent-specific cwd until selection; execution still validates the selected workspace. Profile configuration follows the CLI invocation actually used by the installed SDK; Callboard does not invent an unpassed `--profile`.
+- Clearing still delegates to harness configuration; it is not a promise to use the gateway/catalog suggested effort. OR none remains actual `reasoning.effort: none`, while native saved none remains summary-only.
+
+### Review-round verification
+- Consolidated full suite: `npm test -- --maxWorkers=4` — **281 files passed, 3 skipped; 4411 tests passed, 32 skipped** (284 files / 4443 tests total).
+- Final automation cwd parity/payload rerun after matching the executor's agent-workspace semantics: **12 tests passed**. All six reviewed findings have regression coverage, including the actual installed CLI config/read and SDK/loopback transport tests.
+- `npm run build`: passes (shared/backend/frontend). Existing Swagger annotation and Vite chunk-size warnings remain.
+- `npm run lint:all`: **0 errors, 933 warnings**. Changed-file lint: **0 errors, 157 warnings**. No dependency/lockfile changes.
+- Scoped catalog discovery makes unauthenticated `/models` requests, as before; auth-protected or offline private catalog endpoints remain unknown rather than borrowing another endpoint's capabilities or forwarding unrelated credentials.
+
+## PR #408 — review round 2
+Read the latest backend and UI reports in the existing review sessions. Original round-1 fixes were confirmed; addressed the four remaining findings:
+1. **Daemon environment isolation:** config/read now applies `sanitizeInheritedAgentEnv(process.env)` before intentional API overrides, exactly like execution. The adjacent live Codex model-catalog subprocess now applies the same policy, so the other discovery path cannot leak those daemon variables either. A real fake-CLI subprocess regression verifies sentinel AUTH_PASSWORD_HASH/AUTH_PASSWORD_SALT/PORT are absent while configured CODEX_HOME, API base and intentional fake API key remain; catalog invocation has its own regression.
+2. **Fork cwd parity:** fork preflight passes inherited `chat.folder`. The regression rejects global-model ultra but permits the trusted-project context and verifies ultra is retained on the created fork.
+3. **Job cwd parity/deferred templates:** `resolveJobSessionFolder` is shared by preflight and the runner: step folder → defaults folder → selected step/defaults agent workspace → homedir. The runner still interpolates with actual run context. Preflight never uses daemon cwd for an unresolved folder template: it validates vocabulary, non-Codex context-independent capabilities, and safely known explicit OR injection; native Codex project-dependent capability checks wait for `sendMessage` with the resolved execution folder. Regressions cover both alias sources, folder overrides, home fallback, templated folder deferral, unknown vocabulary, and known OR route rejection. Existing runner template/interpolation/error regressions exercise the shared helper.
+4. **Hidden trigger effort:** trigger serialization includes effort only for Codex/Cline/pi. Rendered create and edit regressions verify switching Codex ultra → Claude sends no effort, and toggling back can recover staged ultra without an invisible incompatible payload.
+
+### Round-2 verification
+- Final full suite: `npm test -- --maxWorkers=4` — **281 files passed, 3 skipped; 4424 tests passed, 32 skipped** (284 files / 4456 tests total).
+- `npm run build`: passes. Full lint: **0 errors, 933 warnings**; changed-file lint: **0 errors, 90 warnings**. Existing warning baseline remains.
+- Focused rendered automation suite: 16 passed; targeted backend fork/job/catalog regressions: 51 passed, in addition to the actual config-read subprocess regression in the full suite.
+- All four round-2 findings are addressed. Native Codex checks that depend on an unresolved folder template are intentionally deferred until actual execution; no substitute daemon cwd is consulted. No changes to dependencies, lockfile, credentials, or the running server.
+- Final clean-milestone fetch advanced main to `37960ac` (#412); all three implementation commits rebased without conflict. Rechecked the rebased integration: **284 files passed, 3 skipped; 4437 tests passed, 32 skipped** (287 files / 4469 tests total). Production build passed again; full lint remained **0 errors, 933 warnings**.

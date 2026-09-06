@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { getReasoningCapability } from "../api";
 import type { AgentProviderKind, EffortLevel } from "../utils/localStorage";
 import OpenRouterModelSelector from "./OpenRouterModelSelector";
 import ClaudeModelSelector from "./ClaudeModelSelector";
@@ -10,6 +12,8 @@ export type ProviderConfigPickerMode = "panel" | "inline";
 
 interface ProviderConfigPickerProps {
   provider: AgentProviderKind;
+  /** Actual execution directory, used for project-scoped runtime settings. */
+  cwd?: string;
   onProviderChange: (provider: AgentProviderKind) => void;
   effort: EffortLevel | undefined;
   onEffortChange: (effort: EffortLevel | undefined) => void;
@@ -105,6 +109,7 @@ interface ProviderConfigPickerProps {
  */
 export default function ProviderConfigPicker({
   provider,
+  cwd,
   onProviderChange,
   effort,
   onEffortChange,
@@ -138,6 +143,41 @@ export default function ProviderConfigPicker({
   // `thinkingLevel`).
   const showEffort = provider === "codex" || provider === "cline" || provider === "pi";
 
+  const selectedModel = provider === "codex" ? codexModel : provider === "cline" ? clineModel : provider === "pi" ? piModel : claudeModel;
+  // Key the result as well as cancelling the request: a changed selection must
+  // never render the previous model's tiers, even for the frame before effects.
+  const capabilityKey = JSON.stringify([provider, selectedModel ?? "", cwd, clineProviderId, codexUseOpenRouter, claudeCodeUseOpenRouter]);
+  const [result, setResult] = useState<{ key: string; capability: Awaited<ReturnType<typeof getReasoningCapability>> }>();
+  useEffect(() => {
+    if (!showEffort) return;
+    let cancelled = false;
+    getReasoningCapability(provider, selectedModel ?? "", cwd)
+      .then((capability) => {
+        if (!cancelled) setResult({ key: capabilityKey, capability });
+      })
+      .catch(() => {
+        if (!cancelled)
+          setResult({
+            key: capabilityKey,
+            capability: {
+              provider,
+              route: "unknown",
+              status: "unknown",
+              efforts: [],
+              message: "Reasoning capabilities unavailable. Clear the override to use the runtime default.",
+            },
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [capabilityKey, provider, selectedModel, showEffort, cwd]);
+  const capability = result?.key === capabilityKey ? result.capability : undefined;
+  const efforts = capability?.efforts ?? [];
+  const legacyNone = effort === "none" && capability?.legacySummaryNone === true;
+  const unsupported = effort !== undefined && !efforts.includes(effort) && !legacyNone;
+  const routedCodexViaOpenRouter = capability ? capability.route === "openrouter" : codexUseOpenRouter;
+
   // The reasoning-effort selector, shared by each provider's control row. Only
   // one provider's row renders at a time, so the element id never collides.
   const effortControl = showEffort ? (
@@ -157,6 +197,10 @@ export default function ProviderConfigPicker({
       <select
         id={inline ? "inlineEffort" : "newChatEffort"}
         value={effort ?? ""}
+        ref={(node) => {
+          node?.setCustomValidity(unsupported ? "Choose a supported reasoning effort or clear this override." : "");
+        }}
+        aria-invalid={unsupported || undefined}
         onChange={(e) => onEffortChange(e.target.value === "" ? undefined : (e.target.value as EffortLevel))}
         style={{
           width: "100%",
@@ -170,20 +214,35 @@ export default function ProviderConfigPicker({
         }}
       >
         <option value="">(default)</option>
-        <option value="none">none</option>
-        <option value="minimal">minimal</option>
-        <option value="low">low</option>
-        <option value="medium">medium</option>
-        <option value="high">high</option>
-        <option value="xhigh">xhigh</option>
+        {legacyNone && <option value="none">none (legacy: hide summaries; default effort)</option>}
+        {unsupported && (
+          <option value={effort} disabled>
+            {effort} ({capability ? "unsupported / unverified" : "checking…"})
+          </option>
+        )}
+        {efforts.map((level) => (
+          <option key={level} value={level}>
+            {level}
+          </option>
+        ))}
       </select>
-      {!inline && (
-        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-          {provider === "codex"
-            ? "How hard the Codex model reasons. “none” hides reasoning summaries."
-            : "Maps to each provider’s native thinking parameter. Non-reasoning models ignore this."}
-        </div>
-      )}
+      <div role={unsupported && capability ? "alert" : "status"} style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+        {!capability
+          ? "Loading reasoning capabilities…"
+          : unsupported
+            ? `Saved effort “${effort}” is not supported or verified for this model and route. Choose a supported level or clear it.`
+            : (capability.message ??
+              (efforts.length === 0
+                ? "No effort selection available; runtime default applies."
+                : !inline
+                  ? "Efforts supported by the selected model and route."
+                  : ""))}
+        {effort !== undefined && (
+          <button type="button" onClick={() => onEffortChange(undefined)}>
+            Clear effort
+          </button>
+        )}
+      </div>
     </div>
   ) : null;
 
@@ -250,7 +309,7 @@ export default function ProviderConfigPicker({
             >
               Model
             </label>
-            {codexUseOpenRouter ? (
+            {routedCodexViaOpenRouter ? (
               <OpenRouterModelSelector
                 id={inline ? "inlineCodexModel" : "newChatCodexModel"}
                 value={codexModel ?? ""}
@@ -268,7 +327,7 @@ export default function ProviderConfigPicker({
             )}
             {!inline && (
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                {codexUseOpenRouter
+                {routedCodexViaOpenRouter
                   ? "Optional — an OpenRouter slug (openai/* recommended). Leave empty to use the global default from Settings → API."
                   : "Optional — a Codex model slug. Leave empty to use the global default from Settings → API."}
               </div>

@@ -19,6 +19,12 @@ const TOOL_PROVIDER_KINDS = ROUTABLE_PROVIDER_KINDS satisfies readonly UiAgentPr
  * schema object: `{ ...providerModelSchema, ...other fields }`.
  */
 export const providerModelSchema = {
+  effort: z
+    .string()
+    .optional()
+    .describe(
+      "Explicit model-specific reasoning effort (e.g. max or ultra when advertised). Validated against the effective route and model; omit for its default. Never inherited across sessions.",
+    ),
   provider: z
     .enum(TOOL_PROVIDER_KINDS)
     .optional()

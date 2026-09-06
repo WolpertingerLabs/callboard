@@ -1,3 +1,4 @@
+import type { OpenRouterModelInfo } from "shared";
 /**
  * pi model catalog — what models the configured provider will route to.
  *
@@ -60,6 +61,7 @@ export interface PiModelOption {
   value: string;
   displayName: string;
   description: string;
+  reasoningEfforts?: string[];
 }
 
 /** How long a catalog read is served before the next read revalidates it. */
@@ -316,8 +318,8 @@ export async function listPiProviderIds(): Promise<string[]> {
  * refresh in the background — the same stale-while-revalidate trade this file
  * already makes for pi's own catalog.
  */
-function overlayOpenRouterModels(options: PiModelOption[]): PiModelOption[] {
-  const orModels = getOpenRouterModelsSnapshot();
+function overlayOpenRouterModels(options: PiModelOption[], baseUrl = "https://openrouter.ai/api/v1"): PiModelOption[] {
+  const orModels = getOpenRouterModelsSnapshot(baseUrl);
   if (orModels.length === 0) return options;
   const piIds = new Set(options.map((o) => o.value));
   const extras = orModels
@@ -345,7 +347,7 @@ function overlayOpenRouterModels(options: PiModelOption[]): PiModelOption[] {
  * installed package version and no refresh here can move it. See
  * {@link overlayOpenRouterModels}.
  */
-export async function getPiModels(providerId: string): Promise<PiModelOption[]> {
+export async function getPiModels(providerId: string, baseUrl = "https://openrouter.ai/api/v1"): Promise<PiModelOption[]> {
   const id = providerId.trim();
   if (!id) return [];
 
@@ -364,7 +366,7 @@ export async function getPiModels(providerId: string): Promise<PiModelOption[]> 
     revalidateIfStale();
 
     const cached = _cache.get(id);
-    if (cached) return id === "openrouter" ? overlayOpenRouterModels(cached) : cached;
+    if (cached) return id === "openrouter" ? overlayOpenRouterModels(cached, baseUrl) : cached;
 
     const options = runtime
       .getModels(id)
@@ -372,10 +374,11 @@ export async function getPiModels(providerId: string): Promise<PiModelOption[]> 
         value: model.id,
         displayName: model.name || model.id,
         description: describeModel(model),
+        reasoningEfforts: piModelReasoningEfforts(model),
       }))
       .sort((a, b) => a.value.localeCompare(b.value));
     if (options.length > 0) _cache.set(id, options);
-    return id === "openrouter" ? overlayOpenRouterModels(options) : options;
+    return id === "openrouter" ? overlayOpenRouterModels(options, baseUrl) : options;
   } catch (err) {
     log.warn(`could not list models for pi provider "${id}": ${err instanceof Error ? err.message : String(err)}`);
     return [];
@@ -436,11 +439,11 @@ const PI_DEFAULT_MAX_TOKENS = 16_384;
  * while omitting vision that is there only declines to attach an image. A pi
  * upgrade that bundles the model replaces all of this with the real definition.
  */
-function synthesizeOpenRouterModel(runtime: ModelRuntime, modelId: string): ReturnType<ModelRegistry["find"]> {
+function synthesizeOpenRouterModel(runtime: ModelRuntime, modelId: string, metadata?: OpenRouterModelInfo | null): ReturnType<ModelRegistry["find"]> {
   const template = runtime.getModels("openrouter")[0];
   if (!template) return undefined;
 
-  const info = getOpenRouterModelsSnapshot().find((m) => m.id === modelId);
+  const info = metadata === undefined ? getOpenRouterModelsSnapshot("https://openrouter.ai/api/v1").find((m) => m.id === modelId) : metadata;
   const perMillion = (price: string | undefined): number => {
     const n = Number(price);
     return Number.isFinite(n) ? n * 1_000_000 : 0;
@@ -475,7 +478,12 @@ function synthesizeOpenRouterModel(runtime: ModelRuntime, modelId: string): Retu
  * OpenRouter's one-URL-routes-everything to synthesize against, so guessing a
  * transport would trade a wrong model for a broken one.
  */
-export function findPiModel(runtime: ModelRuntime, providerId: string, modelId: string): ReturnType<ModelRegistry["find"]> {
+export function findPiModel(
+  runtime: ModelRuntime,
+  providerId: string,
+  modelId: string,
+  openRouterInfo?: OpenRouterModelInfo | null,
+): ReturnType<ModelRegistry["find"]> {
   const provider = providerId.trim();
   const model = modelId.trim();
   if (!provider || !model) return undefined;
@@ -483,7 +491,7 @@ export function findPiModel(runtime: ModelRuntime, providerId: string, modelId: 
   if (found) return found;
 
   if (provider === "openrouter") {
-    const synthesized = synthesizeOpenRouterModel(runtime, model);
+    const synthesized = synthesizeOpenRouterModel(runtime, model, openRouterInfo);
     if (synthesized) {
       log.debug(`pi model "openrouter/${model}" is newer than the bundled catalog — routing it through OpenRouter directly`);
       return synthesized;
@@ -534,4 +542,44 @@ export function clearPiModelCacheForTesting(): void {
  */
 export function getPiCatalogStatsForTesting(): { revalidations: number; lastRefreshOk: boolean } {
   return { revalidations: _revalidations, lastRefreshOk: _lastRefreshOk };
+}
+
+/** Mirrors pi-ai getSupportedThinkingLevels, before the adapter intersection.
+ * Off is Callboard's none; null mappings explicitly prohibit a level.
+ */
+export function piModelReasoningEfforts(model: { reasoning?: boolean; thinkingLevelMap?: Partial<Record<string, unknown>> }): string[] {
+  if (!model.reasoning) return ["none"];
+  return ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    .filter((level) => {
+      const mapped = model.thinkingLevelMap?.[level];
+      return mapped !== null && ((level !== "xhigh" && level !== "max") || mapped !== undefined);
+    })
+    .map((level) => (level === "off" ? "none" : level));
+}
+
+/** SDK-side intersection, independent of any unrelated utility catalog scope.
+ * Pass the model metadata fetched for the actual route; null means unavailable.
+ * Bundled models retain their SDK maps, synthesized models have no xhigh/max map.
+ */
+export async function getPiModelReasoningEfforts(
+  providerId: string,
+  modelId: string,
+  openRouterInfo: OpenRouterModelInfo | null = null,
+): Promise<string[] | undefined> {
+  try {
+    const model = findPiModel(await getCatalogRuntime(), providerId, modelId, openRouterInfo);
+    return model ? piModelReasoningEfforts(model) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reject before pi can clamp an explicit effort to a different SDK tier. */
+export function assertPiModelReasoningEffort(model: Parameters<typeof piModelReasoningEfforts>[0] | undefined, effort: string | undefined): void {
+  if (!effort) return;
+  if (!model || !piModelReasoningEfforts(model).includes(effort)) {
+    throw new Error(
+      `Pi cannot express reasoning effort "${effort}" for the resolved model. Clear the effort or choose one of: ${model ? piModelReasoningEfforts(model).join(", ") : "no model resolved"}.`,
+    );
+  }
 }

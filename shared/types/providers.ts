@@ -21,13 +21,14 @@ export type UiAgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "p
  * where they originated, and reused by every reasoning-capable harness — each
  * adapter translates them onto its own knob (Codex `modelReasoningEffort`,
  * Cline `thinking`/`reasoningEffort`, pi `thinkingLevel`). Non-reasoning models
- * silently ignore it.
+ * must validate it against the resolved model and transport capabilities.
  *
  * `undefined` (no value persisted) means "don't send a reasoning payload";
- * `"none"` means "explicitly request no reasoning". Both produce the same
- * runtime behavior on most models but are kept distinct for UI clarity.
+ * `"none"` requests no reasoning on supported gateway routes. Legacy native
+ * Codex `"none"` only suppresses summaries and keeps the default effort.
+ * Values in this union are storage vocabulary, not a promise of model support.
  */
-export type EffortLevel = "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
+export type EffortLevel = "persistent" | "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none";
 
 /**
  * The per-run knobs that travel together: provider + (if OR) model + effort.

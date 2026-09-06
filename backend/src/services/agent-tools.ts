@@ -1,3 +1,5 @@
+import { assertReasoningEffort } from "./reasoning-capabilities.js";
+import type { EffortLevel } from "shared";
 /**
  * Custom Callboard Agent Tools — tool-server spec for agent sessions.
  *
@@ -134,6 +136,7 @@ export function buildAgentToolsSpec(
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
+            await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: getAgentWorkspacePath(args.targetAlias) });
 
             // 3. Compile target agent's identity and workspace context
             const workspacePath = getAgentWorkspacePath(args.targetAlias);
@@ -166,6 +169,7 @@ export function buildAgentToolsSpec(
               provider: providerModel.provider,
               ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
+              ...(args.effort && { effort: args.effort as EffortLevel }),
               ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-consult" }),
             });
 
@@ -244,6 +248,7 @@ export function buildAgentToolsSpec(
                     // What the target agent ran on, and how the model was
                     // chosen — see start_chat_session for the rationale.
                     ...(providerModel.model && { model: providerModel.model }),
+                    ...(args.effort && { effort: args.effort as EffortLevel }),
                     modelSource: providerModel.modelSource,
                     ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
                     response,
@@ -283,6 +288,7 @@ export function buildAgentToolsSpec(
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
+            await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: getAgentWorkspacePath(args.targetAlias) });
 
             // 2. Execute the agent using the shared helper (linked into the
             // caller's chat parentage tree when the calling chat is resolvable)
@@ -295,6 +301,7 @@ export function buildAgentToolsSpec(
               provider: providerModel.provider,
               ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
+              ...(args.effort && { effort: args.effort as EffortLevel }),
               ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-deploy" }),
             });
 
@@ -320,6 +327,7 @@ export function buildAgentToolsSpec(
                     // What the spawned agent session will run, and how the
                     // model was chosen — see start_chat_session for the rationale.
                     ...(providerModel.model && { model: providerModel.model }),
+                    ...(args.effort && { effort: args.effort as EffortLevel }),
                     modelSource: providerModel.modelSource,
                     ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
                   }),

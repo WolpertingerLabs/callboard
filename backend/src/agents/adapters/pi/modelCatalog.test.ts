@@ -21,10 +21,18 @@ process.env.PI_OFFLINE = "1";
 const getOpenRouterModelsSnapshot = vi.fn();
 
 vi.mock("../../../services/openrouter-models.js", () => ({
-  getOpenRouterModelsSnapshot: () => getOpenRouterModelsSnapshot(),
+  getOpenRouterModelsSnapshot: (baseUrl?: string) => getOpenRouterModelsSnapshot(baseUrl),
 }));
 
-const { getPiModels, listPiProviderIds, clearPiModelCacheForTesting, getPiCatalogStatsForTesting, PI_CATALOG_TTL_MS } = await import("./modelCatalog.js");
+const {
+  getPiModelReasoningEfforts,
+  piModelReasoningEfforts,
+  getPiModels,
+  listPiProviderIds,
+  clearPiModelCacheForTesting,
+  getPiCatalogStatsForTesting,
+  PI_CATALOG_TTL_MS,
+} = await import("./modelCatalog.js");
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -142,4 +150,45 @@ describe("listPiProviderIds", () => {
     expect(ids).toEqual([...ids].sort());
     expect(new Set(ids).size).toBe(ids.length);
   });
+});
+
+it("preserves pi thinking-level map restrictions instead of offering all tiers", () => {
+  expect(piModelReasoningEfforts({ reasoning: false })).toEqual(["none"]);
+  expect(piModelReasoningEfforts({ reasoning: true })).toEqual(["none", "minimal", "low", "medium", "high"]);
+  expect(piModelReasoningEfforts({ reasoning: true, thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" } })).toEqual([
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
+});
+
+describe("actual model SDK reasoning restrictions", () => {
+  it("intersects the bundled o3 model rather than treating all gateway tiers as SDK tiers", async () => {
+    const efforts = await getPiModelReasoningEfforts("openrouter", "openai/o3", null);
+    expect(efforts).toEqual(["none", "minimal", "low", "medium", "high"]);
+  });
+  it("does not borrow unrelated utility metadata for synthesized models", async () => {
+    getOpenRouterModelsSnapshot.mockReturnValue([{ id: "vendor/unbundled-scope-test", supportedParameters: ["reasoning"] }]);
+    expect(await getPiModelReasoningEfforts("openrouter", "vendor/unbundled-scope-test", null)).toEqual(["none"]);
+    expect(getOpenRouterModelsSnapshot).not.toHaveBeenCalled();
+  });
+  it("synthesized reasoning models cannot express unmapped xhigh/max", async () => {
+    expect(
+      await getPiModelReasoningEfforts("openrouter", "vendor/unbundled-scope-test", {
+        id: "vendor/unbundled-scope-test",
+        name: "Test",
+        contextLength: 1000,
+        promptPrice: "0",
+        completionPrice: "0",
+        supportedParameters: ["reasoning"],
+      }),
+    ).toEqual(["none", "minimal", "low", "medium", "high"]);
+  });
+});
+
+it("scopes the pi overlay independently of the utility catalog", async () => {
+  await getPiModels("openrouter", "http://localhost:9876/api/v1");
+  expect(getOpenRouterModelsSnapshot).toHaveBeenCalledWith("http://localhost:9876/api/v1");
 });
