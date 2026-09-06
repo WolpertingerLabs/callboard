@@ -311,7 +311,7 @@ describe("native classification, parent namespace and lifecycle identity obligat
       let target = CHILD;
       if (kind === "collision") chat(IMPL, { parentChatId: ROOT, provider: "claude-code" }, "different-primary-session");
       if (kind === "missing") rmSync(join(chatsDir, `${IMPL}.json`));
-      if (kind === "ambiguous" || kind === "persisted-inferred") chat("duplicate-owner", { parentChatId: ROOT }, IMPL);
+      if (kind === "ambiguous" || kind === "persisted-inferred" || kind === "inferred-no-rollout") chat("duplicate-owner", { parentChatId: ROOT }, IMPL);
       if (kind === "incompatible") chat(IMPL, { parentChatId: ROOT, provider: "claude-code" });
       if (kind === "own-ambiguous") {
         chat("duplicate-child-owner", {}, CHILD);
@@ -372,6 +372,20 @@ describe("native classification, parent namespace and lifecycle identity obligat
     expect(bulk.updated.every((c: any) => c.id === ROOT)).toBe(true);
     const after = disk();
     for (const file of Object.keys(before).filter((file) => file !== `${ROOT}.json`)) expect(after[file]).toBe(before[file]);
+  });
+
+  it("revalidates durable inferred session identity without requiring the child's missing rollout", async () => {
+    rmSync(join(chatsDir, `${IMPL}.json`));
+    chat("mapped-parent", { parentChatId: ROOT }, IMPL);
+    chat(CHILD, { parentChatId: IMPL, nativeAgent: { parentThreadId: IMPL, inferredParentChatId: IMPL } });
+    const before = disk();
+    const card = (await rest("get", "/:id", CHILD)).card;
+    expect(card.id).toBe(ROOT);
+    expect(card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent.lifecycle).toBe("unknown");
+    expect((await mcp("get_card", { card_id: CHILD })).card.id).toBe(ROOT);
+    expect(disk()).toEqual(before);
+    expect((await mcp("set_card_metadata", { card_id: CHILD, set: { durable: "yes" } })).cardId).toBe(ROOT);
+    expect(disk()[`${CHILD}.json`]).toBe(before[`${CHILD}.json`]);
   });
 
   it("preserves implicit root scope, ordinary orphan promotion, cycles and mixed bulk accounting", async () => {

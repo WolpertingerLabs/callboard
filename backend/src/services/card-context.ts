@@ -77,7 +77,17 @@ export function createCardContext(stored = listChatsSnapshot()) {
     delete meta.parentChatId; // Includes legacy persisted inferred pointers.
     if (!explicitFork) {
       delete meta.rootChatId; // A stamp cannot bypass rejected inferred ancestry.
-      const parentSession = verifiedParents.get(id);
+      // Durable inferred lineage survives a missing child log, but its parent
+      // SESSION identity must still resolve unambiguously today. Never trust
+      // the persisted inferred CHAT pointer itself as current parent evidence.
+      const durableParent =
+        typeof prior.parentChatId === "string" &&
+        !!prior.parentChatId &&
+        prior.nativeAgent?.inferredParentChatId === prior.parentChatId &&
+        typeof prior.nativeAgent?.parentThreadId === "string"
+          ? prior.nativeAgent.parentThreadId
+          : undefined;
+      const parentSession = verifiedParents.get(id) ?? durableParent;
       const owners = parentSession ? ownersBySession.get(parentSession) : undefined;
       const owner = owners?.length === 1 ? owners[0] : undefined;
       const provider = parseChatMetadata(owner?.metadata).provider;
