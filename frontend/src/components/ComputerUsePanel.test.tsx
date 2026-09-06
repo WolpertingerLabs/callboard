@@ -97,6 +97,33 @@ describe("ComputerUsePanel", () => {
     expect(screen.queryByRole("img")).toBeNull();
   });
 
+  it.each(["browser", "native"] as const)("ties the %s takeover privacy warning to Resume agent", async (kind) => {
+    status.sessions[0].kind = kind;
+    if (kind === "native") status.capabilities[1].available = true;
+    render(<ComputerUsePanel chatId="c1" permission="allow" />);
+    await expand();
+    if (kind === "native") fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    expect(button("Resume agent").hasAttribute("aria-describedby")).toBe(false);
+    expect(screen.queryByText(/Resuming immediately captures/)).toBeNull();
+
+    fireEvent.click(button("Take over"));
+    await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
+    const resume = button("Resume agent");
+    const warning = screen.getByText(/Resuming immediately captures/);
+    expect(warning.getAttribute("role")).toBe("note");
+    expect(resume.getAttribute("aria-describedby")).toBe(warning.id);
+    expect(warning.textContent).toContain("new agent-visible screenshot");
+    expect(warning.textContent).toContain(kind === "native" ? "full native desktop on the service host" : "managed browser page");
+    expect(warning.textContent).not.toContain(kind === "native" ? "managed browser page" : "full native desktop");
+    expect(warning.textContent).toContain("Remove sensitive windows or content from that target first");
+    expect(warning.textContent).toContain("Previewing during takeover does not itself send those images to the agent");
+    expect(client.observe).not.toHaveBeenCalled();
+
+    fireEvent.click(resume);
+    await waitFor(() => expect(screen.queryByText(/Resuming immediately captures/)).toBeNull());
+    expect(button("Resume agent").hasAttribute("aria-describedby")).toBe(false);
+  });
+
   it("offers explicit scoped approval for ask and clears revoked screenshots", async () => {
     status.permission = "ask";
     status.sessions[0].state = "awaiting_approval";

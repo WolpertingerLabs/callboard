@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession, ComputerUseStatus } from "shared/types/computerUse.js";
 import type { PermissionLevel } from "shared/types/permissions.js";
 import { computerUseClient as client } from "../api/computerUse";
@@ -26,6 +26,7 @@ export default function ComputerUsePanel({
   permission?: PermissionLevel;
   onPermissions?: () => void;
 }) {
+  const resumePrivacyId = useId();
   const [expanded, setExpanded] = useState(false);
   const [preview, setPreview] = useState(false);
   const [status, setStatus] = useState<ComputerUseStatus | null>(null);
@@ -349,9 +350,16 @@ export default function ComputerUsePanel({
                 <button disabled={busy || denied || !active || human} onClick={() => control("takeover")}>
                   Take over
                 </button>
-                <button disabled={busy || denied || !human} onClick={() => control("resume")}>
+                <button disabled={busy || denied || !human} aria-describedby={human ? resumePrivacyId : undefined} onClick={() => control("resume")}>
                   Resume agent
                 </button>
+                {human && (
+                  <p id={resumePrivacyId} role="note">
+                    Resuming immediately captures a new agent-visible screenshot of{" "}
+                    {session.kind === "native" ? "the full native desktop on the service host" : "the managed browser page"}. Remove sensitive windows or
+                    content from that target first. Previewing during takeover does not itself send those images to the agent.
+                  </p>
+                )}
                 <button disabled={terminal(session)} onClick={() => control("stop")}>
                   Stop
                 </button>
