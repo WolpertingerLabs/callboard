@@ -73,6 +73,10 @@ describe("native Codex collaboration", () => {
       expect(collaborationArguments(`collaboration.${name}`, undefined, args)).toContain(encrypted);
       expect(collaborationArguments(name, undefined, args)).toBe(args);
       expect(collaborationArguments(name, "unrelated", args)).toBe(args);
+      for (const namespace of ["ordinary", "", null, 0]) {
+        expect(collaborationArguments(`collaboration.${name}`, namespace, args)).toBe(args);
+      }
+      expect(collaborationArguments(`collaboration.${name}`, "collaboration", args)).toContain(encrypted);
     }
     expect(collaborationArguments("other", "collaboration", args)).toBe(args);
     for (const value of ["plain instructions", "gAAAA short text", `prefix ${opaque}`, "[]", "null"]) {
@@ -109,12 +113,19 @@ describe("native Codex collaboration", () => {
           { type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 10, output_tokens: 2 } } } },
           item({ type: "message", role: "user", content: opaque }),
           item({ type: "function_call", name: "spawn_agent", namespace: "other", arguments: JSON.stringify({ message: opaque }), call_id: "ordinary" }),
+          item({
+            type: "function_call",
+            name: "collaboration.send_message",
+            namespace: "ordinary",
+            arguments: JSON.stringify({ message: opaque }),
+            call_id: "conflicting",
+          }),
         ]
           .map((line) => JSON.stringify(line))
           .join("\n"),
       );
       const messages = parseCodexRollout(file);
-      expect(messages).toHaveLength(5);
+      expect(messages).toHaveLength(6);
       expect(messages[0]).toMatchObject({
         toolName: "collaboration.spawn_agent",
         toolNamespace: "collaboration",
@@ -128,6 +139,12 @@ describe("native Codex collaboration", () => {
       expect(messages[3]?.content).toBe(opaque);
       expect(messages[4]).toMatchObject({ toolName: "spawn_agent", toolNamespace: "other" });
       expect(messages[4]?.content).toContain(opaque);
+      expect(messages[5]).toMatchObject({
+        toolName: "collaboration.send_message",
+        toolNamespace: "ordinary",
+        toolUseId: "conflicting",
+        content: JSON.stringify({ message: opaque }),
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -27,3 +27,8 @@ Installed `@openai/codex-sdk` package and bundled `codex-cli --version` both rep
 - Full `npx vitest run --maxWorkers=2`: **274 files passed, 3 skipped; 4345 tests passed, 32 skipped** (247.73s). Final string/unknown-block edge test was added after that run began and validated separately above.
 - `npm run build` passed, including shared/backend/frontend and import rewriting; existing Vite large-chunk warning only. Changed-file ESLint: zero errors (19 pre-existing warnings in callboard-tools.ts); full `npm run lint:all`: zero errors, 930 warnings. `git diff --check` passed.
 - Rebased origin/main at initial clean state and after implementation commit; final fetch/rebase repeated before push. No paid model requests, live-chat interactions, servers, credentials, lineage/status/discovery changes or other worktrees were involved.
+
+## Review revision: explicit namespace authority
+- Fix P2: an explicit non-collaboration namespace must override a collaboration-prefixed tool name; permit qualified-name fallback only when namespace is absent (`undefined`). Preserve malformed/null/empty explicit namespace values conservatively.
+- Add helper matrix and durable parser coverage for conflicting names/namespaces; verify supported SDK MCP started/updated/completed events preserve ordinary arguments/results despite collaboration-like tool names. Run focused tests, build, changed-file lint, then commit, fetch/rebase and push for re-review.
+- Revision validation: 20 focused test files / 302 tests passed; `npm run build` passed (existing Vite large-chunk warning); changed-file ESLint and `git diff --check` passed with no findings. Full suite deferred to requested post-push CI; no live model calls.

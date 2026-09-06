@@ -11,7 +11,9 @@ function isOpaqueMessage(value: unknown): value is string {
 /** Only native collaboration tools' documented message argument is protected. */
 export function collaborationArguments(name: string, namespace: unknown, content: string): string {
   const bare = name.startsWith("collaboration.") ? name.slice("collaboration.".length) : name;
-  if (namespace !== "collaboration" && !name.startsWith("collaboration.")) return content;
+  // An explicit namespace is authoritative, even when the tool's own name
+  // resembles a qualified native tool. Only absent namespaces allow fallback.
+  if (namespace === undefined ? !name.startsWith("collaboration.") : namespace !== "collaboration") return content;
   if (!["spawn_agent", "send_message", "followup_task"].includes(bare)) return content;
   try {
     const input: unknown = JSON.parse(content);
