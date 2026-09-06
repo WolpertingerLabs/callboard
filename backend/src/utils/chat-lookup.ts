@@ -6,14 +6,38 @@ import { createLogger } from "./logger.js";
 
 const log = createLogger("chat-lookup");
 
-/**
- * Resolve a session ID to its log path and folder info by iterating
- * all registered session providers.
- */
-function resolveSessionAcrossProviders(sessionId: string): { logPath: string; folder: string; displayFolder: string } | null {
+/** Enrich response metadata without mutating storage or overriding explicit routing. */
+export function withSessionProvider(metadata: string | null | undefined, provider: string, acpProviderId?: string): string {
+  let meta;
+  try {
+    const parsed = JSON.parse(metadata || "{}");
+    meta = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    meta = {};
+  }
+  // Explicit routing (including unknown/retired values) is authoritative.
+  const owner = meta.provider ?? provider;
+  return JSON.stringify({
+    ...meta,
+    provider: owner,
+    ...(owner === "acp" && provider === "acp" && acpProviderId && !meta.acpProviderId && { acpProviderId }),
+  });
+}
+
+/** Resolve only within the explicit owner, or discover ownership for legacy records. */
+function resolveSessionAcrossProviders(sessionId: string, metadata?: string | null) {
+  let explicitProvider;
+  try {
+    explicitProvider = JSON.parse(metadata || "{}").provider;
+  } catch {}
   for (const provider of getSessionProviders()) {
-    const resolved = provider.resolveSession(sessionId);
-    if (resolved) return resolved;
+    if (explicitProvider != null && provider.kind !== explicitProvider) continue;
+    try {
+      const resolved = provider.resolveSession(sessionId);
+      if (resolved && statSync(resolved.logPath).isFile()) return { ...resolved, provider: provider.kind };
+    } catch {
+      // Stale discovery entries must not hide stored records or other providers.
+    }
   }
   return null;
 }
@@ -37,7 +61,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
 
     if (fileChat) {
       log.debug(`findChat — found in file storage: id=${id}`);
-      const resolved = resolveSessionAcrossProviders(fileChat.session_id);
+      const resolved = resolveSessionAcrossProviders(fileChat.session_id, fileChat.metadata);
       // Use original folder for git info (correct branch for worktrees)
       let gitInfo: { isGitRepo: boolean; branch?: string } = { isGitRepo: false };
       if (includeGitInfo) {
@@ -49,6 +73,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       const { mainRepoPath } = resolveWorktreeToMainRepoCached(fileChat.folder);
       return {
         ...fileChat,
+        metadata: resolved ? withSessionProvider(fileChat.metadata, resolved.provider, resolved.acpProviderId) : fileChat.metadata,
         // Keep original folder (may be a worktree) — logs are stored under this path
         folder: fileChat.folder,
         displayFolder: mainRepoPath,
@@ -81,7 +106,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       displayFolder: resolved.displayFolder,
       session_id: id,
       session_log_path: resolved.logPath,
-      metadata: JSON.stringify({ session_ids: [id] }),
+      metadata: withSessionProvider(JSON.stringify({ session_ids: [id] }), resolved.provider, resolved.acpProviderId),
       created_at: st.birthtime.toISOString(),
       updated_at: st.mtime.toISOString(),
       ...(includeGitInfo && {

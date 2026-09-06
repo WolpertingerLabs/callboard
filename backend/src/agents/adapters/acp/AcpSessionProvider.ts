@@ -64,6 +64,7 @@ export class AcpSessionProvider implements SessionProvider {
         const folder = readAcpTranscriptCwd(e.filePath);
         return {
           sessionId: e.sessionId,
+          acpProviderId: e.providerId,
           folder,
           displayFolder: folder,
           filePath: e.filePath,
@@ -80,7 +81,7 @@ export class AcpSessionProvider implements SessionProvider {
     const entry = findAcpTranscript(sessionId);
     if (!entry) return null;
     const folder = readAcpTranscriptCwd(entry.filePath);
-    return { logPath: entry.filePath, folder, displayFolder: folder };
+    return { logPath: entry.filePath, folder, displayFolder: folder, acpProviderId: entry.providerId };
   }
 
   findSubagentFiles(_sessionId: string): SubagentFile[] {

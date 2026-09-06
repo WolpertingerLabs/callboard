@@ -20,6 +20,8 @@ import type { HandoffTurn } from "../handoff.js";
 
 /** A discovered session entry from the provider's native storage. */
 export interface DiscoveredSession {
+  /** ACP vendor identity when evidenced by native storage; never a guessed default. */
+  acpProviderId?: string;
   sessionId: string;
   /** The working directory this session was run in. */
   folder: string;
@@ -38,6 +40,8 @@ export interface DiscoverResult {
 
 /** Result of resolving a session ID to its native storage location. */
 export interface ResolvedSession {
+  /** ACP vendor identity when evidenced by native storage; never a guessed default. */
+  acpProviderId?: string;
   /** Absolute path to the session log file. */
   logPath: string;
   /** The working directory this session was run in (may be a worktree). */

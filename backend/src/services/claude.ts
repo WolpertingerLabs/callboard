@@ -950,8 +950,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
     folder = chat.folder;
     resumeSessionId = chat.session_id;
-    initialMetadata = JSON.parse(chat.metadata || "{}");
+    // Legacy stored records also need resolver provenance before resuming. Reads
+    // remain immutable; only this write path pins inferred routing.
+    const storedMetadata = JSON.parse(chat.metadata || "{}");
+    const needsProvenance = storedMetadata.provider == null || (storedMetadata.provider === "acp" && !storedMetadata.acpProviderId);
+    initialMetadata = needsProvenance ? JSON.parse(findChat(opts.chatId, false)?.metadata || chat.metadata || "{}") : storedMetadata;
     await assertReasoningEffort({ ...initialMetadata, cwd: folder });
+    const routing: Record<string, unknown> = {};
+    if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;
+    if (!storedMetadata.acpProviderId && initialMetadata.acpProviderId) routing.acpProviderId = initialMetadata.acpProviderId;
+    if (Object.keys(routing).length) chatFileService.updateChatMetadata(opts.chatId, routing);
     // Recover agentAlias from chat metadata when not explicitly provided.
     // This ensures Callboard tools are re-injected when resuming an agent session.
     if (!opts.agentAlias && initialMetadata.agentAlias) {

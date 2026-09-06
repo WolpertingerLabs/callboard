@@ -7,7 +7,7 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory, resolveSlashCommandContent } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, type GitInfo } from "../utils/git.js";
-import { findChat } from "../utils/chat-lookup.js";
+import { withSessionProvider, findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { isCardEligible, cardLifecycleOf, rawCardFields } from "../services/card-fields.js";
@@ -139,7 +139,7 @@ function getFirstUserMessage(filePath: string, maxLength: number = 200, provider
 /**
  * A discovered session plus the provider that discovered it. The tag is what
  * lets the list route send a preview read to one provider instead of trying all
- * five; it is route-local bookkeeping and never reaches the response body.
+ * five, and supplies routing metadata when the stored record has none.
  */
 type DiscoveredSession = {
   sessionId: string;
@@ -149,6 +149,7 @@ type DiscoveredSession = {
   createdAt: Date;
   updatedAt: Date;
   providerKind: string;
+  acpProviderId?: string;
 };
 
 /**
@@ -584,9 +585,9 @@ chatsRouter.get("/", (req, res) => {
               if (!sessionIds.includes(s.sessionId)) {
                 sessionIds.push(s.sessionId);
               }
-              return JSON.stringify({ ...meta, session_ids: sessionIds });
+              return withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId);
             } catch {
-              return JSON.stringify({ session_ids: [s.sessionId] });
+              return withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
             }
           })(),
           _augmented_from_file: true,
@@ -601,7 +602,7 @@ chatsRouter.get("/", (req, res) => {
           displayFolder: s.displayFolder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
-          metadata: JSON.stringify({ session_ids: [s.sessionId] }),
+          metadata: withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId),
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
           // Add git information

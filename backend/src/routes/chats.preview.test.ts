@@ -201,6 +201,7 @@ describe("GET /api/chats preview reads", () => {
     fileChats = [chat("claude-code-meta", { agentAlias: "forge", cardId: "card-1", triggered: false })];
     const body = await listChats({ limit: "10", offset: "0" });
     expect(JSON.parse(body.chats[0].metadata)).toEqual({
+      provider: "claude-code",
       agentAlias: "forge",
       cardId: "card-1",
       triggered: false,
