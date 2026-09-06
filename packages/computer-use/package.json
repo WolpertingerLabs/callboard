@@ -1,0 +1,16 @@
+{
+  "name": "@wolpertingerlabs/computer-use",
+  "version": "0.1.0",
+  "description": "Provider-neutral, deny-by-default browser and native computer control service and MCP server",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./contracts": { "types": "./dist/contracts.d.ts", "import": "./dist/contracts.js" } },
+  "bin": { "computer-use-mcp": "dist/cli.js" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": { "build": "tsc -p tsconfig.json", "test": "npm run build && node --test test/*.test.mjs", "prepack": "npm run build" },
+  "dependencies": { "@modelcontextprotocol/sdk": "^1.25.2", "zod": "^3.25.76" },
+  "optionalDependencies": { "playwright": "^1.55.0" },
+  "devDependencies": { "@types/node": "^22.18.0", "typescript": "^5.9.2" },
+  "publishConfig": { "access": "public" }
+}
