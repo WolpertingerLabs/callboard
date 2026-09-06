@@ -14,7 +14,8 @@ import { join } from "path";
 import { fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
-import { findChatForStatus } from "../utils/chat-lookup.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { findChatForStatus, withSessionProvider } from "../utils/chat-lookup.js";
 import { beginSSE, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
@@ -405,12 +406,17 @@ streamRouter.post("/:id/message", async (req, res) => {
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
 
-  // ── Branch drift guard ──────────────────────────────────────
-  // If the git branch changed since the last message in this chat,
-  // block unless the client explicitly acknowledges.
-  const chatRecord = chatFileService.getChat(req.params.id);
-  if (chatRecord) {
-    const meta = JSON.parse(chatRecord.metadata || "{}");
+  try {
+    // ── Branch drift guard ──────────────────────────────────────
+    // If the git branch changed since the last message in this chat,
+    // block unless the client explicitly acknowledges.
+    const storedChat = chatFileService.getChat(req.params.id);
+    const storedMeta = parseChatMetadata(storedChat?.metadata);
+    const needsProvenance = !storedChat || storedMeta.provider == null || (storedMeta.provider === "acp" && !storedMeta.acpProviderId);
+    const chatRecord = needsProvenance ? (findChatForStatus(req.params.id) ?? storedChat) : storedChat;
+    if (!chatRecord) return res.status(404).json({ error: "Chat not found" });
+    if (chatRecord._provider_resolution_error) return res.status(409).json({ error: chatRecord._provider_resolution_error });
+    const meta = parseChatMetadata(chatRecord.metadata);
     if (isRetiredProvider(meta.provider)) {
       return res
         .status(410)
@@ -443,6 +449,17 @@ streamRouter.post("/:id/message", async (req, res) => {
       });
     }
 
+    // Adopt/repair only after preflight succeeds. In particular, malformed
+    // legacy JSON must not cause updateChatMetadata to silently drop the
+    // validated effort/model. Merge fresh fields and preserve explicit routing.
+    if (needsProvenance) {
+      const fresh = chatFileService.getChat(req.params.id);
+      const metadata = JSON.stringify(fresh ? parseChatMetadata(fresh.metadata) : meta);
+      chatFileService.upsertChat(chatRecord.id, chatRecord.folder, chatRecord.session_id, {
+        metadata: meta.provider != null ? withSessionProvider(metadata, meta.provider, meta.acpProviderId) : metadata,
+      });
+    }
+
     // Update lastBranch to current (after check passes)
     if (currentBranch) {
       chatFileService.updateChatMetadata(req.params.id, { lastBranch: currentBranch });
@@ -461,10 +478,8 @@ streamRouter.post("/:id/message", async (req, res) => {
     if (typeof effort === "string") {
       chatFileService.updateChatMetadata(req.params.id, { effort: effort.trim() || undefined });
     }
-  }
-  // ── End branch drift guard ──────────────────────────────────
+    // ── End branch drift guard ──────────────────────────────────
 
-  try {
     const imageMetadata = imageIds?.length ? loadImageBuffers(imageIds) : [];
 
     if (imageIds?.length) {

@@ -64,3 +64,16 @@
 - Clean post-rebase focused run: 91 tests passed across seven suites (provider/real-route regressions, CLI watcher routing, card preview cache, fork, title regeneration, stream effort compatibility, and attributed MCP messages).
 - Clean post-rebase full run: `npx vitest run --maxWorkers=2` — 286 files passed / 3 skipped; 4,471 tests passed / 32 skipped.
 - Post-rebase `npm run build` and full lint pass; 950 lint warnings, zero errors. Existing Swagger comment-parser and bundle-size warnings remain. No live actions, paid calls, dependency/lockfile changes, server restarts, or merges.
+
+## Third-review scoped plan
+- Resolve POST /:id/message context using the same missing-provenance rules as sendMessage; normalize metadata before retirement, effort and branch-drift checks. Reject routing conflicts before all writes or execution.
+- After successful preflight, persist resolved/normalized context when first adopting a filesystem session or repairing legacy metadata, so effort/model writes and execution use the validated owner. Keep explicit metadata authoritative.
+- Test the actual POST handler with resolver-backed fixtures and stubbed execution/capability validation: inferred Codex effort, explicit routing/vendor, invalid JSON containers, filesystem adoption, and conflict/validation failures without mutation. Audit adjacent route-level metadata/routing reads; preserve #408/#412.
+- Run focused route/effort/provenance tests, build, changed-file lint and diff checks; no repeated local full suite requested. Rebase only at clean milestones and push the reviewed head.
+
+### Third-review implementation and validation
+- POST preflight now uses normalized metadata and the same missing-provider/vendor resolution gate as sendMessage. Conflicts return 409 before validation or writes; explicit provider/vendor metadata is not overridden. The preflight is inside the existing HTTP error boundary.
+- Successful preflight adopts filesystem records or repairs legacy metadata before saving effort/model, preventing malformed JSON from silently discarding validated settings. Rejected validation and branch drift do not repair/persist anything.
+- Actual POST-handler tests cover inferred Codex + high effort, explicit Claude/ACP routing, null/malformed/array/primitive metadata, filesystem adoption, and conflict/validation/drift no-mutation cases. Execution and capability seams are local stubs; routing discovery and metadata storage are real.
+- Adjacent audit: stream.ts has no remaining raw stored-metadata JSON parsing; its other JSON.parse calls process guarded log lines. New-chat preflight uses explicit request routing, not stored/discovered context. Sibling chat fork/title/transcript reads already use normalized resolved metadata and conflict guards from prior fixes.
+- Validation: 99 targeted tests passed across 11 stream/effort/provenance suites; npm run build passed; changed-file ESLint passed (11 warnings, zero errors); git diff --check passed. No repeated local full suite, as requested. Existing build warnings remain; no live actions or paid calls.
