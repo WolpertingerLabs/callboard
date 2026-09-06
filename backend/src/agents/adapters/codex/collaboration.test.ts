@@ -60,6 +60,12 @@ describe("native Codex collaboration", () => {
     expect(translateCollaborationMessage(payload("Body mentions FINAL_ANSWER")).collaboration?.kind).toBeUndefined();
   });
 
+  it("handles legacy strings and unknown text blocks only within native agent context", () => {
+    expect(translateCollaborationMessage(payload(opaque)).content).toBe(encrypted);
+    expect(translateCollaborationMessage(payload([{ type: "future_text", text: "Still readable" }])).content).toBe("Still readable");
+    expect(translateCollaborationMessage(payload([])).content).toBe("[Collaboration content unavailable]");
+  });
+
   it("limits opaque argument replacement to native message fields", () => {
     const args = JSON.stringify({ task_name: "example", message: opaque, other: opaque });
     for (const name of ["spawn_agent", "send_message", "followup_task"]) {

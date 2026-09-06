@@ -20,3 +20,10 @@
 
 ## Live transport limitation
 Installed `@openai/codex-sdk` package and bundled `codex-cli --version` both report **0.153.4**. `dist/index.d.ts` defines AgentMessageItem as `{id, type: "agent_message", text}` (root output). Its ThreadItem union contains AgentMessageItem, ReasoningItem, CommandExecutionItem, FileChangeItem, McpToolCallItem, WebSearchItem, TodoListItem and ErrorItem; **no native collaboration events**. The existing live root-message translation is therefore unchanged, not conflated with durable replies. Native collaboration appears when the durable rollout is parsed/refetched, including Chat.tsx's existing end-of-run getMessages refetch or reopening the chat. This does not introduce a new mid-turn transport/watch/poll mechanism; no promise of instantaneous inter-agent live updates is made.
+
+## Validation results
+- Worktree-local `NODE_ENV=development npm ci --ignore-scripts --include=dev` completed; lockfile unchanged (npm reported 38 existing dependency vulnerabilities; no unrelated upgrades attempted).
+- Focused Codex/parser/live-adapter/handoff/UI/formatting/read-session tests: **20 files, 300 tests passed**. Additional final edge-case test: collaboration suite **7 tests passed**.
+- Full `npx vitest run --maxWorkers=2`: **274 files passed, 3 skipped; 4345 tests passed, 32 skipped** (247.73s). Final string/unknown-block edge test was added after that run began and validated separately above.
+- `npm run build` passed, including shared/backend/frontend and import rewriting; existing Vite large-chunk warning only. Changed-file ESLint: zero errors (19 pre-existing warnings in callboard-tools.ts); full `npm run lint:all`: zero errors, 930 warnings. `git diff --check` passed.
+- Rebased origin/main at initial clean state and after implementation commit; final fetch/rebase repeated before push. No paid model requests, live-chat interactions, servers, credentials, lineage/status/discovery changes or other worktrees were involved.
