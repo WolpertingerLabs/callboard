@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionProvider } from "../agents/ports/SessionProvider.js";
@@ -15,6 +15,12 @@ vi.mock("../services/quick-completion.js", () => ({
   generateBranchName: async () => null,
   quickCompletion: async () => ({ text: "" }),
 }));
+const { SessionRoutingError } = await import("../agents/ports/SessionProvider.js");
+const { findSessionLogPath } = await import("./session-log.js");
+const { ROLLUP_DEPS, resetPreviewCache } = await import("../services/card-rollup.js");
+const { resetChatsSnapshot } = await import("../services/chats-snapshot.js");
+const { cardsRouter } = await import("../routes/cards.js");
+const { streamRouter } = await import("../routes/stream.js");
 const { findChat, withSessionProvider } = await import("./chat-lookup.js");
 const { chatFileService } = await import("../services/chat-file-service.js");
 const { setSessionProvidersForTesting, setAgentProviderForTesting } = await import("../agents/factory.js");
@@ -284,5 +290,156 @@ describe("review regressions: authoritative transcript consumers", () => {
     expect(readFinalAssistantText("conflict-review")).toBe("");
     await expect(sendMessage({ chatId: "conflict-review", prompt: "do not execute" })).rejects.toThrow(/Conflicting provider/);
     expect(chatFileService.getChat("conflict-review")!.metadata).toBe(metadata);
+  });
+});
+
+describe("second-review regressions: safe optional consumers", () => {
+  async function invoke(router: unknown, path: string, method: string, id?: string, body: unknown = {}) {
+    const handler = (router as any).stack.find((l: any) => l.route?.path === path && l.route.methods[method]).route.stack[0].handle;
+    return new Promise<{ code: number; body: any }>((resolve, reject) => {
+      let code = 200;
+      const res = {
+        status: (value: number) => {
+          code = value;
+          return res;
+        },
+        json: (body: unknown) => resolve({ code, body }),
+      };
+      Promise.resolve(handler({ params: { id }, query: { cached: "false" }, body }, res)).catch(reject);
+    });
+  }
+
+  function sse(id: string) {
+    const handler = (streamRouter as any).stack.find((l: any) => l.route?.path === "/:id/stream" && l.route.methods.get).route.stack[0].handle;
+    const frames: string[] = [];
+    const close: (() => void)[] = [];
+    const end = vi.fn();
+    try {
+      handler(
+        { params: { id }, headers: {}, on: (_: string, callback: () => void) => close.push(callback) },
+        { writeHead: vi.fn(), write: (frame: string) => frames.push(frame), end },
+      );
+    } finally {
+      for (const callback of close) callback();
+    }
+    return { frames: frames.join(""), end };
+  }
+
+  it("keeps ambiguous previews/log lookup/SSE local while honoring pinned board and stream vendors", async () => {
+    const paths: Record<string, string> = {};
+    for (const vendor of ["opencode", "gemini"]) {
+      const writer = new AcpTranscriptWriter(vendor, "board-duplicate", dir);
+      writer.writeHeader();
+      writer.writeUserMessage("preview " + vendor);
+      paths[vendor] = writer.filePath!;
+    }
+    setSessionProvidersForTesting([new AcpSessionProvider()]);
+    resetPreviewCache();
+    expect(findSessionLogPath("board-duplicate")).toBeNull();
+    expect(ROLLUP_DEPS.previewOf("board-duplicate")).toBeNull();
+    for (const vendor of ["opencode", "gemini"]) {
+      const metadata = JSON.stringify({ provider: "acp", acpProviderId: vendor });
+      chatFileService.upsertChat("board-pinned", dir, "board-duplicate", { metadata });
+      resetChatsSnapshot();
+      const board = await invoke(cardsRouter, "/", "get");
+      expect(board.code).toBe(200);
+      expect(board.body.cards.find((card: any) => card.id === "board-pinned").title).toBe("preview " + vendor);
+      expect(findSessionLogPath("board-duplicate", metadata)).toBe(paths[vendor]);
+      expect(ROLLUP_DEPS.previewOf("board-duplicate", metadata)).toBe("preview " + vendor);
+    }
+    chatFileService.upsertChat("board-ambiguous", dir, "board-duplicate", { metadata: '{"provider":"acp"}' });
+    resetChatsSnapshot();
+    const board = await invoke(cardsRouter, "/", "get");
+    expect(board.code).toBe(200);
+    const ambiguous = sse("board-ambiguous");
+    expect(ambiguous.frames).toContain("message_error");
+    expect(ambiguous.end).toHaveBeenCalledOnce();
+    // Completion marker in only the pinned vendor: a wrong-vendor watch would
+    // not finish synchronously. All watchers are cleaned up even on failure.
+    writeFileSync(paths.opencode, '{"type":"summary"}\n', { flag: "a" });
+    chatFileService.upsertChat("board-pinned", dir, "board-duplicate", { metadata: '{"provider":"acp","acpProviderId":"opencode"}' });
+    const pinned = sse("board-pinned");
+    expect(pinned.frames).toContain("message_complete");
+    expect(pinned.end).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a resolver/preview failure crash the board or silently choose another owner", async () => {
+    const provider = stub("codex", "broken-preview");
+    provider.getSessionPreview = () => {
+      throw new Error("bad preview");
+    };
+    setSessionProvidersForTesting([provider]);
+    resetPreviewCache();
+    chatFileService.upsertChat("broken-preview", dir, "broken-preview", { metadata: '{"provider":"codex"}' });
+    resetChatsSnapshot();
+    expect((await invoke(cardsRouter, "/", "get")).code).toBe(200);
+    expect((await invoke(chatsRouter, "/", "get")).code).toBe(200);
+    provider.resolveSession = () => {
+      throw new SessionRoutingError("Ambiguous resolver");
+    };
+    expect(findSessionLogPath("broken-preview")).toBeNull();
+  });
+
+  it.each(["null", "[]", '["not metadata"]', "42", "true", '"primitive"', "{broken"])(
+    "normalizes legacy metadata %s without mutating reads",
+    async (metadata) => {
+      const id = "metadata-" + Buffer.from(metadata).toString("hex");
+      setSessionProvidersForTesting([stub("codex", id)]);
+      chatFileService.upsertChat(id, dir, id, { metadata });
+      const list = await invoke(chatsRouter, "/", "get");
+      expect(list.code).toBe(200);
+      expect(JSON.parse(list.body.chats.find((c: any) => c.id === id).metadata).provider).toBe("codex");
+      const detail = await invoke(chatsRouter, "/:id", "get", id);
+      expect(detail.code).toBe(200);
+      expect(JSON.parse(detail.body.metadata).provider).toBe("codex");
+      expect((await invoke(chatsRouter, "/:id/messages", "get", id)).code).toBe(200);
+      expect(chatFileService.getChat(id)!.metadata).toBe(metadata);
+    },
+  );
+
+  it.each([undefined, "codex"])("rejects conflicting provenance before native/handoff fork side effects (target %s)", async (target) => {
+    const claude = stub("claude-code", "fork-old-claude");
+    const codex = stub("codex", "fork-old-codex");
+    claude.forkSession = vi.fn(() => ({ logPath: "/must-not-write" }));
+    codex.seedSession = vi.fn(() => ({ logPath: "/must-not-write" }));
+    setSessionProvidersForTesting([claude, codex]);
+    const metadata = '{"session_ids":["fork-old-claude","fork-old-codex"]}';
+    chatFileService.upsertChat("fork-conflict", dir, "fork-missing", { metadata });
+    const result = await invoke(chatsRouter, "/:id/fork", "post", "fork-conflict", {
+      timestamp: "2026-09-06T00:00:00.000Z",
+      ...(target && { provider: target }),
+    });
+    expect(result.code).toBe(409);
+    expect(claude.forkSession).not.toHaveBeenCalled();
+    expect(codex.seedSession).not.toHaveBeenCalled();
+    expect(chatFileService.getChat("fork-conflict")!.metadata).toBe(metadata);
+  });
+
+  it.each([false, true])("uses 409 only for routing errors (routing: %s)", async (routing) => {
+    const provider = stub("codex", "parser-status");
+    provider.parseSessionMessages = () => {
+      throw routing ? new SessionRoutingError("ambiguous") : new Error("parser exploded");
+    };
+    setSessionProvidersForTesting([provider]);
+    const result = await invoke(chatsRouter, "/:id/messages", "get", "parser-status");
+    expect(result.code).toBe(routing ? 409 : 500);
+  });
+
+  it("refuses ambiguous deletion before metadata removal and deletes only the explicit ACP namespace", async () => {
+    const paths: Record<string, string> = {};
+    for (const vendor of ["opencode", "gemini"]) {
+      const writer = new AcpTranscriptWriter(vendor, "delete-duplicate", dir);
+      writer.writeHeader();
+      paths[vendor] = writer.filePath!;
+    }
+    setSessionProvidersForTesting([new AcpSessionProvider()]);
+    chatFileService.upsertChat("delete-duplicate", dir, "delete-duplicate", { metadata: '{"provider":"acp"}' });
+    expect((await invoke(chatsRouter, "/:id", "delete", "delete-duplicate")).code).toBe(409);
+    expect(chatFileService.getChat("delete-duplicate")).not.toBeNull();
+    expect(existsSync(paths.opencode) && existsSync(paths.gemini)).toBe(true);
+    chatFileService.upsertChat("delete-duplicate", dir, "delete-duplicate", { metadata: '{"provider":"acp","acpProviderId":"opencode"}' });
+    expect((await invoke(chatsRouter, "/:id", "delete", "delete-duplicate")).code).toBe(200);
+    expect(existsSync(paths.opencode)).toBe(false);
+    expect(existsSync(paths.gemini)).toBe(true);
   });
 });

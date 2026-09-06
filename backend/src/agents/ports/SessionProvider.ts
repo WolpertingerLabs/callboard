@@ -159,7 +159,7 @@ export interface SessionProvider {
    * Called by DELETE /chats/:id after callboard's own metadata is
    * cleaned up. No-op if the session is not found.
    */
-  deleteSessionFiles(sessionId: string): void;
+  deleteSessionFiles(sessionId: string, routing?: SessionRouting): void;
 
   /**
    * Fork a session at a point in time: copy the native session log(s) up

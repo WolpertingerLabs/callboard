@@ -1,3 +1,4 @@
+import { parseChatMetadata } from "./chat-metadata.js";
 import { statSync } from "fs";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "./git.js";
@@ -9,13 +10,7 @@ const log = createLogger("chat-lookup");
 
 /** Enrich response metadata without mutating storage or overriding explicit routing. */
 export function withSessionProvider(metadata: string | null | undefined, provider: string, acpProviderId?: string): string {
-  let meta;
-  try {
-    const parsed = JSON.parse(metadata || "{}");
-    meta = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    meta = {};
-  }
+  const meta = parseChatMetadata(metadata);
   // Explicit routing (including unknown/retired values) is authoritative.
   const owner = meta.provider ?? provider;
   return JSON.stringify({
@@ -27,7 +22,7 @@ export function withSessionProvider(metadata: string | null | undefined, provide
 
 /** Resolve only within the explicit owner, rejecting conflicting resolver evidence. */
 function resolveSessionAcrossProviders(sessionId: string, metadata?: string | null) {
-  const meta = parseMetadata(metadata);
+  const meta = parseChatMetadata(metadata);
   const matches = [];
   for (const provider of getSessionProviders()) {
     if (meta.provider != null && provider.kind !== meta.provider) continue;
@@ -43,19 +38,11 @@ function resolveSessionAcrossProviders(sessionId: string, metadata?: string | nu
   return matches[0] ?? null;
 }
 
-function parseMetadata(metadata?: string | null) {
-  try {
-    return JSON.parse(metadata || "{}") || {};
-  } catch {
-    return {};
-  }
-}
-
 /** Primary evidence wins; on primary miss, all recorded IDs must agree. */
 function resolveStoredSession(sessionId: string, metadata?: string | null) {
   const primary = resolveSessionAcrossProviders(sessionId, metadata);
   if (primary) return primary;
-  const meta = parseMetadata(metadata);
+  const meta = parseChatMetadata(metadata);
   const ids = Array.isArray(meta.session_ids) ? meta.session_ids : [];
   const evidence = [...new Set<string>(ids.filter((id: unknown) => typeof id === "string" && id !== sessionId))]
     .map((id) => resolveSessionAcrossProviders(id, metadata))
@@ -68,7 +55,7 @@ function resolveStoredSession(sessionId: string, metadata?: string | null) {
 /** Consume a findChat result without re-discovering (and overriding) its owner. */
 export function readChatSessionMessages(chat: { metadata?: string | null; session_id?: string; _provider_resolution_error?: string }, sessionIds?: string[]) {
   if (chat._provider_resolution_error) throw new SessionRoutingError(chat._provider_resolution_error);
-  const meta = parseMetadata(chat.metadata);
+  const meta = parseChatMetadata(chat.metadata);
   const ids: string[] = sessionIds ?? (Array.isArray(meta.session_ids) ? [...meta.session_ids] : []);
   if (!sessionIds && chat.session_id && !ids.includes(chat.session_id)) ids.push(chat.session_id);
   const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));

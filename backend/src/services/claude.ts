@@ -1,4 +1,5 @@
 import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
@@ -953,11 +954,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     resumeSessionId = chat.session_id;
     // Legacy stored records also need resolver provenance before resuming. Reads
     // remain immutable; only this write path pins inferred routing.
-    const storedMetadata = JSON.parse(chat.metadata || "{}");
+    const storedMetadata = parseChatMetadata(chat.metadata);
     const needsProvenance = storedMetadata.provider == null || (storedMetadata.provider === "acp" && !storedMetadata.acpProviderId);
     const resolvedChat = needsProvenance ? findChat(opts.chatId, false) : null;
     if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
-    initialMetadata = needsProvenance ? JSON.parse(resolvedChat?.metadata || chat.metadata || "{}") : storedMetadata;
+    initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
     await assertReasoningEffort({ ...initialMetadata, cwd: folder });
     const routing: Record<string, unknown> = {};
     if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;

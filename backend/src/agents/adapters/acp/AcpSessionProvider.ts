@@ -159,12 +159,12 @@ export class AcpSessionProvider implements SessionProvider {
 
   // ── Deletion ────────────────────────────────────────────────────────
 
-  deleteSessionFiles(sessionId: string): void {
+  deleteSessionFiles(sessionId: string, routing?: SessionRouting): void {
     if (!isSafePathSegment(sessionId)) {
       log.warn(`Refused deleteSessionFiles for unsafe sessionId="${sessionId}"`);
       return;
     }
-    const entry = findAcpTranscript(sessionId);
+    const entry = findAcpTranscript(sessionId, routing?.acpProviderId);
     if (!entry) return;
     try {
       unlinkSync(entry.filePath);

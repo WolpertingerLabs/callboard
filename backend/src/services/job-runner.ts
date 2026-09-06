@@ -18,6 +18,7 @@ import { resolveJobSessionFolder } from "./job-session-folder.js";
  * injected via setJobRunnerDeps() — the same lazy pattern the other
  * services use to break the circular import.
  */
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import type { EventEmitter } from "events";
 import { existsSync } from "fs";
 import type {
@@ -1881,7 +1882,7 @@ export function readFinalAssistantText(chatId: string): string {
   try {
     const chat = findChat(chatId, false);
     if (!chat) return "";
-    const meta = JSON.parse(chat.metadata || "{}");
+    const meta = parseChatMetadata(chat.metadata);
     const sessionIds: string[] = meta.session_ids || [];
     if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 

@@ -530,13 +530,13 @@ streamRouter.get("/:id/stream", (req, res) => {
 
   // No web session - check if we can watch CLI session
   const chat = findChatForStatus(chatId);
-  if (!chat?.session_id) {
+  if (!chat?.session_id || chat._provider_resolution_error) {
     sendSSE(res, { type: "message_error", content: "No active session found" });
     res.end();
     return;
   }
 
-  const logPath = findSessionLogPath(chat.session_id);
+  const logPath = findSessionLogPath(chat.session_id, chat.metadata);
   if (!logPath || !existsSync(logPath)) {
     sendSSE(res, { type: "message_error", content: "Session log not found" });
     res.end();

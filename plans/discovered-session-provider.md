@@ -41,3 +41,19 @@
 ### Post-#412 integration validation
 - Final-delivery rebase incorporated main commit `37960ac` (#412). Its attributed inter-agent context handling and message limiting remain intact in `read_session_messages`; the new test stub now supplies its required provider kind.
 - Post-rebase focused suite: 66 tests passed. Post-rebase full suite: 276 files passed / 3 skipped; 4,367 tests passed / 32 skipped (`--maxWorkers=2`). Build and full lint pass again (940 warnings, zero errors).
+
+## Second-review plan
+- Audit every production resolveSession/findAcpTranscript caller and related discovery/preview/delete paths. Provide nonthrowing, routing-aware best-effort log resolution for board, stream and CLI watcher; retain strict ambiguity errors for execution/transcript operations.
+- Include provider/vendor in preview cache identity and pass snapshot metadata rather than re-reading stored chats. Preview failures must remain local.
+- Reject routing conflicts before either native fork or handoff and any fork side effects.
+- Centralize metadata normalization to plain non-null objects; cover null, arrays, primitives and malformed JSON in list/detail/read/resume paths.
+- Reserve HTTP 409 for SessionRoutingError; ordinary transcript failures return 500. Exercise actual card/stream/fork/message consumers and broad affected tests, then full tests/build/lint before rebase/push.
+
+### Resolver/throwing-API consumer audit
+- Strict chat-lookup resolves with provider/vendor, catches routing ambiguity into response-only conflicts, and normalizes all metadata. readChatSessionMessages remains the sole production generic transcript-parser caller (HTTP messages/title/handoff, MCP reader, job final-text); routing errors remain strict, ordinary HTTP parser failures are 500.
+- resolveSessionLog / findSessionLogPath are explicitly best-effort: preserve supplied routing and return null on ambiguity/resolver failure. All callers audited: card preview caching, SSE CLI fallback, CLI watcher scan, and CLI watcher stopped-web-session preseed. Both watcher paths now pass metadata; SSE also exits on a lookup conflict before establishing watchers.
+- Card previews use snapshot metadata, never a second chat-storage read. Cache keys include provider/vendor. Resolver and preview exceptions stay local; list/fork-title preview calls also isolate preview failures. Existing missing/empty preview cache behavior remains covered.
+- Remaining direct resolver caller is the explicitly selected Pi runtime resume path in claude.ts; it never calls ACP and intentionally propagates execution failures rather than selecting another provider.
+- All findAcpTranscript production callers are ACP resolve, parse, and delete. Delete now also accepts optional SessionRouting; HTTP deletion selects only the authoritative provider/vendor, rejects conflicts before mutations, and removes metadata only after native deletion succeeds. Missing unresolved chats return 404 rather than attempting every namespace.
+- ACP discovery/search enumerate transcripts directly (not the ambiguous-ID helper), so no new routing exception escapes their existing discovery contracts. Folder aggregation already catches discovery errors. No other production generic resolver/parser/delete callers remain. Native fork now guards the conflict before either native copy or cross-harness seeding.
+- Shared parseChatMetadata treats null, arrays, primitives and malformed JSON as empty objects. Lookup, metadata enrichment, list/detail transcript consumers and resume use the same normalization; read-only normalization does not rewrite stored records.

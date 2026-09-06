@@ -1,5 +1,6 @@
 import { assertReasoningEffort } from "./reasoning-capabilities.js";
 import type { EffortLevel } from "shared";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
@@ -1180,7 +1181,7 @@ export function buildCallboardToolsSpec(
             if (chat._provider_resolution_error) throw new Error(chat._provider_resolution_error);
 
             // Get all session IDs for this chat
-            const meta = JSON.parse(chat.metadata || "{}");
+            const meta = parseChatMetadata(chat.metadata);
             const sessionIds: string[] = meta.session_ids || [];
             if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 

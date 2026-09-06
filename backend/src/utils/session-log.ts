@@ -11,18 +11,33 @@
  *
  * @see plans/agent-abstraction-layer.md
  */
+import { parseChatMetadata } from "./chat-metadata.js";
 import { getSessionProviders } from "../agents/factory.js";
 
 /**
- * Find the session log file across all registered providers.
- * Returns the first matching path, or null if not found.
+ * Best-effort resolution for previews and watchers. Honors explicit routing;
+ * ambiguity or resolver errors are a local miss, never an exception or a
+ * reason to try a different owner. Unlike strict chat lookup, this does not
+ * establish execution provenance.
  */
-export function findSessionLogPath(sessionId: string): string | null {
+export function resolveSessionLog(sessionId: string, metadata?: string | null) {
+  const meta = parseChatMetadata(metadata);
+  const matches = [];
   for (const provider of getSessionProviders()) {
-    const resolved = provider.resolveSession(sessionId);
-    if (resolved) return resolved.logPath;
+    if (meta.provider != null && meta.provider !== provider.kind) continue;
+    try {
+      const resolved = provider.resolveSession(sessionId, { acpProviderId: meta.acpProviderId });
+      if (resolved) matches.push({ provider, ...resolved });
+    } catch {
+      return null;
+    }
   }
-  return null;
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** Nonthrowing best-effort log lookup; metadata supplies authoritative routing. */
+export function findSessionLogPath(sessionId: string, metadata?: string | null): string | null {
+  return resolveSessionLog(sessionId, metadata)?.logPath ?? null;
 }
 
 /**

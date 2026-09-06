@@ -123,7 +123,7 @@ async function scan(): Promise<void> {
       const existing = sessionRegistry.get(chat.id);
       if (existing?.type === "web") continue;
 
-      const logPath = findSessionLogPath(chat.session_id);
+      const logPath = findSessionLogPath(chat.session_id, chat.metadata);
       if (!logPath || !(await fileExists(logPath))) continue;
 
       let stats;
@@ -234,7 +234,7 @@ export function initCliWatcher(): void {
     const chat = chatFileService.getChat(chatId);
     if (!chat?.session_id) return;
 
-    const logPath = findSessionLogPath(chat.session_id);
+    const logPath = findSessionLogPath(chat.session_id, chat.metadata);
     if (!logPath) return;
 
     // Use async stat for pre-seeding too
