@@ -25,6 +25,12 @@ export interface ToolCallResult {
   isError?: boolean;
 }
 
+/** Per-call transport cancellation; never an authorization principal. */
+export interface ToolCallContext {
+  signal?: AbortSignal;
+  toolCallId?: string;
+}
+
 /**
  * A tool definition bound to a Zod raw-shape input schema.
  * The handler is typed against `z.output<z.ZodObject<TShape>>` so
@@ -34,7 +40,7 @@ export interface ToolDefinition<TShape extends z.ZodRawShape = z.ZodRawShape> {
   name: string;
   description: string;
   inputSchema: TShape;
-  handler: (args: z.output<z.ZodObject<TShape>>) => Promise<ToolCallResult>;
+  handler: (args: z.output<z.ZodObject<TShape>>, context?: ToolCallContext) => Promise<ToolCallResult>;
 }
 
 /**
@@ -67,7 +73,7 @@ export function defineTool<TShape extends z.ZodRawShape>(
   name: string,
   description: string,
   inputSchema: TShape,
-  handler: (args: z.output<z.ZodObject<TShape>>) => Promise<ToolCallResult>,
+  handler: (args: z.output<z.ZodObject<TShape>>, context?: ToolCallContext) => Promise<ToolCallResult>,
 ): ToolDefinition<TShape> {
   return { name, description, inputSchema, handler };
 }

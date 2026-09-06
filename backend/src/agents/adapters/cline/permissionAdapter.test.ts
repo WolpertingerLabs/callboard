@@ -20,7 +20,7 @@ import {
   SPAWN_AGENT_TOOL,
 } from "./permissionAdapter.js";
 
-const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
+const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
 
 function approvalRequest(toolName: string, input: unknown = {}): ToolApprovalRequest {
   return {

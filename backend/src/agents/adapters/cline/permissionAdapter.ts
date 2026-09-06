@@ -59,6 +59,7 @@
  * @see ../acp/permissionAdapter.ts (the reference implementation of the rule)
  * @see ../openrouter/permissionAdapter.ts (the closed-tool-set precedent)
  */
+import { isComputerControlToolName } from "../../permissions/computerControl.js";
 import { ALL_DEFAULT_TOOL_NAMES, TEAM_TOOL_NAMES, type ToolApprovalRequest, type ToolApprovalResult, type ToolPolicy } from "@cline/sdk";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { decidePermission, type PermissionCategory } from "../../permissions/ToolPermissionPolicy.js";
@@ -221,6 +222,7 @@ export function isClineToolIdentifier(value: string): boolean {
  * `| null` only to satisfy the shared `ToolCategorizer` signature.
  */
 export function categorizeClineToolName(toolName: string): PermissionCategory | null {
+  if (isComputerControlToolName(toolName)) return "computerControl";
   const trimmed = toolName.trim();
   if (!isClineToolIdentifier(trimmed)) return MOST_RESTRICTIVE_CATEGORY;
 

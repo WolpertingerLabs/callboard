@@ -43,7 +43,8 @@ export interface CodexPermissionMapping {
   approvalPolicy: ApprovalMode;
 }
 
-/** True when any of the four permission axes is set to "ask". */
+/** True when any built-in axis asks. computerControl is independently service-
+ * gated and must not widen the sandbox or duplicate its scoped approval. */
 export function hasAnyAsk(perms: DefaultPermissions): boolean {
   const levels: PermissionLevel[] = [
     perms.fileRead,

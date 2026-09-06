@@ -25,7 +25,7 @@ vi.mock("@cline/sdk", async (importOriginal) => {
 const { ClineAdapter } = await import("./ClineAdapter.js");
 const { disposeClineCore } = await import("./ClineAgentQuery.js");
 
-const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
+const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
 
 let dataDir: string;
 

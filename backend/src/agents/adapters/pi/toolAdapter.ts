@@ -152,7 +152,7 @@ function translateToolDef(def: AnyToolDefinition): PiToolDefinition {
     label: def.name,
     description: def.description,
     parameters: toolParametersFromShape(def.inputSchema) as PiToolDefinition["parameters"],
-    execute: async (_toolCallId: string, params: unknown) => {
+    execute: async (toolCallId: string, params: unknown, signal?: AbortSignal) => {
       // Second line of defence, for the Zod constructs JSON Schema cannot carry.
       // Throwing is how pi is told a call failed — the loop catches it and sets
       // `isError` on `tool_execution_end`.
@@ -167,7 +167,7 @@ function translateToolDef(def: AnyToolDefinition): PiToolDefinition {
       // wraps it into an error result, so the model sees the message and can
       // adjust. Catching it here to return a value would report the failure as a
       // success.
-      return renderToolResult(await def.handler(parsed.data as never));
+      return renderToolResult(await def.handler(parsed.data as never, { signal, toolCallId }));
     },
   } as PiToolDefinition;
 }
@@ -178,7 +178,7 @@ function translateToolDef(def: AnyToolDefinition): PiToolDefinition {
  * Content is very nearly an identity map, which is a genuine improvement over
  * the Cline bridge: pi's `ImageContent` is `{ type: "image", data, mimeType }` —
  * exactly callboard's own image block — so an image-returning tool survives
- * intact instead of being flattened to an `[image:<mime>]` placeholder.
+ * intact. Host handlers proxying MCP make this an MCP-backed custom-tool bridge.
  *
  * **`isError` throws rather than being returned.** `AgentToolResult` has no such
  * field; returning one would record a failed tool as a success. See the header.

@@ -185,7 +185,7 @@ describe("the OpenCode preset", () => {
     // Load-bearing. OpenCode defaults most permissions to `allow` and then never
     // sends session/request_permission, which would leave callboard rendering a
     // permission UI that governs nothing.
-    expect(injectedConfig({ fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "allow" })).toMatchObject({
+    expect(injectedConfig({ fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "allow", computerControl: "deny" })).toMatchObject({
       permission: { "*": "ask" },
     });
     // No policy at all is the same case: nothing is known to be allowed.
@@ -196,15 +196,15 @@ describe("the OpenCode preset", () => {
     // OpenCode 1.18.13 never forwards a child session's permission requests to
     // its ACP client, so a subagent's first tool call blocks the whole turn
     // forever. `task` is the only route to a child session.
-    expect(injectedConfig({ fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "allow" }).permission.task).toBe("deny");
+    expect(injectedConfig({ fileRead: "allow", fileWrite: "ask", codeExecution: "allow", webAccess: "allow", computerControl: "deny" }).permission.task).toBe("deny");
   });
 
   it("stops asking entirely when every axis is `allow`", () => {
     // The round trip decides nothing here — callboard would auto-allow every
     // call — and making it happen is what exposes the subagent deadlock. So the
     // gate is expressed to OpenCode directly and `task` stays usable.
-    const config = injectedConfig({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" });
-    expect(config).toEqual({ permission: { "*": "allow" } });
+    const config = injectedConfig({ fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" });
+    expect(config).toMatchObject({ permission: { "*": "allow" } });
     expect(config.permission.task).toBeUndefined();
   });
 

@@ -52,6 +52,7 @@
  * @see plans/pi-spike-findings.md (§2 — project trust; §3 — the gate, measured)
  * @see ../cline/permissionAdapter.ts (the closest precedent)
  */
+import { isComputerControlToolName } from "../../permissions/computerControl.js";
 import type {
   ExtensionAPI,
   ExtensionFactory,
@@ -264,6 +265,7 @@ export function isPiToolIdentifier(value: string): boolean {
  * `permissions/categorizers.ts` requires (Phase 3 registers it there).
  */
 export function categorizePiToolName(toolName: string): PermissionCategory | null {
+  if (isComputerControlToolName(toolName)) return "computerControl";
   const trimmed = toolName.trim();
   if (!isPiToolIdentifier(trimmed)) return MOST_RESTRICTIVE_CATEGORY;
 

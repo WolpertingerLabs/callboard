@@ -15,20 +15,10 @@
  * closures — the same property the Claude Code and OpenRouter adapters enjoy.
  * That is one of the three reasons the plan chose the SDK over `cline --acp`.
  *
- * ## The two impedance mismatches
- *
- * 1. **Schema shape.** Callboard tools carry a `ZodRawShape` (a bare object of
- *    field schemas); Cline's `createTool` wants a complete Zod type. Wrap in
- *    `z.object()`.
- * 2. **Result shape.** Callboard returns `{ content: ToolContentBlock[],
- *    isError? }`; Cline's `execute` returns a value the runtime records as the
- *    tool's output. Flatten to a single string, and signal failure by throwing —
- *    the same convention `openrouter/toolAdapter.ts` uses, and what surfaces as
- *    `content_end.error` on the event stream.
- *
- * Images become a stable `[image:<mime>]` placeholder. Callboard's current tools
- * all return text/JSON, so nothing is lost in practice; revisit if an
- * image-returning tool lands.
+ * Custom-tool bridge, not native MCP registration. Host-provided handlers may
+ * proxy the common MCP service; this adapter owns only schema/result/context
+ * translation. Cline 0.0.82's gateway recognizes text/image arrays as content,
+ * with image `mediaType` (not MCP's `mimeType`). Never stringify those bytes.
  *
  * ## Naming is load-bearing
  *
@@ -42,6 +32,7 @@
  * @see ../openrouter/toolAdapter.ts (the in-process precedent)
  */
 import { z } from "zod";
+import type { ToolResultContent } from "@cline/shared";
 import { createTool, type AgentTool } from "@cline/sdk";
 import type { AnyToolDefinition, ToolCallResult, ToolServerSpec } from "../../ports/tools.js";
 
@@ -72,25 +63,22 @@ function translateToolDef(def: AnyToolDefinition): AgentTool {
     // SDK's own `zodToJsonSchema`, which needs a fully-shaped Zod type rather
     // than the raw shape callboard's `defineTool` stores.
     inputSchema: z.object(def.inputSchema),
-    execute: async (input: unknown) => {
-      const result = await def.handler(input as never);
+    retryable: false,
+    maxRetries: 0,
+    execute: async (input: unknown, context) => {
+      const result = await def.handler(input as never, { signal: context.signal, toolCallId: context.toolCallId });
       return renderToolResult(result);
     },
   }) as AgentTool;
 }
 
-/**
- * Flatten a callboard {@link ToolCallResult} into a value Cline's runtime can
- * record.
- *
- * Success → a single string. Error → throw with the same stringified payload, so
- * the runtime surfaces it as a failed tool call (`content_end.error`) and the
- * model sees the message rather than a silent empty result.
- */
-export function renderToolResult(result: ToolCallResult): string {
-  const text = (result?.content ?? [])
-    .map((block) => (block.type === "text" ? block.text : `[image:${block.mimeType}]`))
-    .join("\n");
-  if (result?.isError) throw new Error(text || "Tool call failed");
-  return text;
+/** Text-only results retain their historical string form; images use the SDK's
+ * supported multimodal array, which its gateway serializes as media content. */
+export function renderToolResult(result: ToolCallResult): ToolResultContent["content"] {
+  const content = result.content.map((block) => block.type === "image"
+    ? { type: "image" as const, data: block.data, mediaType: block.mimeType }
+    : { type: "text" as const, text: block.text });
+  const text = content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  if (result.isError) throw new Error(text || "Tool call failed");
+  return content.some((block) => block.type === "image") ? content : text;
 }

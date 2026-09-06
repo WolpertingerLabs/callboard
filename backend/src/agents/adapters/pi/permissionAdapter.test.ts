@@ -27,9 +27,9 @@ import {
 import { buildPiServicesOptions } from "./optionsAdapter.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 
-const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" };
-const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask" };
-const ALL_DENY: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny" };
+const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
+const ALL_DENY: DefaultPermissions = { fileRead: "deny", fileWrite: "deny", codeExecution: "deny", webAccess: "deny", computerControl: "deny" };
 
 function toolCall(toolName: string, input: Record<string, unknown> = {}): ToolCallEvent {
   return { type: "tool_call", toolCallId: "call-1", toolName, input } as ToolCallEvent;

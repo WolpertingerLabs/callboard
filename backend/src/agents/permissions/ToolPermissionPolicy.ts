@@ -15,14 +15,18 @@ export type PermissionDecision = "allow" | "deny" | "ask";
 
 /**
  * Pure function: given a category (or null) and the user's default-permission
- * settings, return the decision. `null` / missing settings collapse to "ask"
- * so the caller prompts the user.
+ * settings, return the decision. Unknown tools / missing built-in settings ask.
+ * Managed computer control delegates scoped approval to the authoritative service.
  */
 export function decidePermission(category: PermissionCategory | null, defaultPermissions: DefaultPermissions | null): PermissionDecision {
-  if (!category || !defaultPermissions) return "ask";
-  const policy = defaultPermissions[category];
+  if (!category) return "ask";
+  const policy = defaultPermissions?.[category];
   if (policy === "allow") return "allow";
   if (policy === "deny") return "deny";
+  // Scoped approval is owned by the managed service, which sees the principal.
+  // Generic harness prompts cannot approve scope and would duplicate its ask.
+  // Explicit deny remains an additional defense; this allow grants no authority.
+  if (category === "computerControl") return "allow";
   return "ask";
 }
 

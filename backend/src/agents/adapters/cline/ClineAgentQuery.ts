@@ -52,6 +52,7 @@
  * @see plans/cline-adapter.md
  * @see plans/cline-spike-findings.md (§5 — abort ≠ stop ≠ dispose)
  */
+import { bindManagedClineTools } from "./managedToolBindings.js";
 import { ClineCore, isSessionNotFoundError, type CoreSessionEvent, type Message } from "@cline/sdk";
 import type { AgentQuery } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
@@ -221,14 +222,6 @@ export class ClineAgentQuery implements AgentQuery {
     const queue = new EventQueue<CoreSessionEvent>();
     const unsubscribe = core.subscribe((event) => queue.push(event));
 
-    // Every callboard tool, and the policy entries that gate them, are derived
-    // from ONE list. Splitting the two — building tools here and policies from a
-    // separately-maintained constant — is how a tool ends up registered with no
-    // policy entry, which `ToolPolicy`'s defaults turn into an ungated tool.
-    const bundles = this.opts.toolSpecs.map(buildClineTools);
-    const extraTools = bundles.flatMap((b) => b.tools);
-    const extraToolNames = bundles.flatMap((b) => b.names);
-
     const permissionCtx: ClinePermissionContext = { ...this.opts.permissions, signal: this.abort.signal };
     const accounting: ClineTurnAccounting = {};
 
@@ -237,6 +230,22 @@ export class ClineAgentQuery implements AgentQuery {
     // Before the turn, not after: this is the message the turn is answering, and
     // the reader relies on wire order to pair the two.
     transcript.writeUserMessage(prompt);
+
+    // Every callboard tool, and the policy entries that gate them, are derived
+    // from ONE list. Splitting the two — building tools here and policies from a
+    // separately-maintained constant — is how a tool ends up registered with no
+    // policy entry, which `ToolPolicy`'s defaults turn into an ungated tool.
+    const managedBinding = bindManagedClineTools(sessionId, this.opts.toolSpecs, this.abort.signal);
+    let bundles: ReturnType<typeof buildClineTools>[];
+    try {
+      bundles = managedBinding.specs.map(buildClineTools);
+    } catch (error) {
+      managedBinding.release();
+      unsubscribe();
+      throw error;
+    }
+    const extraTools = bundles.flatMap((b) => b.tools);
+    const extraToolNames = bundles.flatMap((b) => b.names);
 
     // Settled when the turn's own promise resolves or rejects, so the loop below
     // knows the stream has no more to give. The events are drained first: the
@@ -285,6 +294,7 @@ export class ClineAgentQuery implements AgentQuery {
         turnError = err;
       })
       .finally(() => {
+        managedBinding.release();
         turnSettled = true;
         queue.close();
       });
