@@ -11,3 +11,11 @@
 - Shared metadata enrichment preserves explicit provider/vendor values; lookup limits resolution to an explicit owner and tolerates missing/stale resolver paths. Missing provider is inferred only from successful resolution (or list discovery), not ID shape.
 - Reads only enrich response copies. Resume pins only the missing routing fields through the metadata merge API, preserving unrelated stored fields. Unknown ACP vendor remains unset, so execution cannot silently pick another vendor.
 - Tests use a local native-child-shaped rollout plus scripted providers. No referenced live sessions or paid calls are used.
+
+## Validation
+- Isolated install: `NODE_ENV=development npm ci --ignore-scripts --include=dev`; lockfile unchanged.
+- Installed Codex CLI and SDK both report 0.153.4; ACP SDK is 1.4.0.
+- Focused lookup/list/resume/ACP tests: 70 passed before the final legacy-Claude control was added; the final full run includes that control.
+- Final full run: `npx vitest run --maxWorkers=2` — 273 files passed, 3 skipped; 4,350 tests passed, 32 skipped. The first run exposed one old exact-metadata expectation in job-status rows; updated it for the intended provider field, then reran the full suite successfully.
+- `npm run build` passes. Existing Swagger comment-parser and frontend chunk-size warnings remain.
+- Changed-file ESLint passes; full lint passes with warnings only. No live model calls, server restarts, or transcript/parentage changes.
