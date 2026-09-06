@@ -198,6 +198,7 @@ describe("GET /api/chats needs-you election", () => {
 
     const body = await listChats({ limit: "10", offset: "0" });
     expect(metaOf(body, "only")).toEqual({
+      provider: "claude-code",
       jobRunId: "run-1",
       jobStepId: "build",
       agentAlias: "forge",

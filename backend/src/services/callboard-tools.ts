@@ -1,5 +1,6 @@
 import { assertReasoningEffort } from "./reasoning-capabilities.js";
 import type { EffortLevel } from "shared";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
@@ -9,7 +10,7 @@ import { createCanvas, updateCanvas, readCanvas } from "./canvas-service.js";
 import { chatFileService } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getActiveSession } from "./claude.js";
-import { findChat } from "../utils/chat-lookup.js";
+import { readChatSessionMessages, findChat } from "../utils/chat-lookup.js";
 import { getSessionProviders } from "../agents/factory.js";
 import { resolveBranch } from "../utils/git.js";
 import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
@@ -77,15 +78,13 @@ function getSendMessage(): MessageSender {
 
 // ─── Helper: read session JSONL and extract text messages ───────────
 
-function readSessionMessages(sessionId: string, limit: number = 50): string[] {
+function readSessionMessages(chat: Parameters<typeof readChatSessionMessages>[0], sessionId: string, limit: number = 50): string[] {
   // Route through the session-provider abstraction so this works for any
   // provider's transcript format (Claude Code JSONL, Codex rollout,
   // etc.) instead of hand-parsing one provider's on-disk schema.
-  const provider = getSessionProviders().find((p) => p.resolveSession(sessionId));
-  if (!provider) return [];
 
   try {
-    const messages = provider.parseSessionMessages([sessionId]);
+    const messages = readChatSessionMessages(chat, [sessionId]);
     const textMessages: string[] = [];
     for (const msg of messages) {
       if (msg.type === "system" && msg.subtype === "agent_message") {
@@ -1179,15 +1178,17 @@ export function buildCallboardToolsSpec(
               return { content: [{ type: "text" as const, text: `Session "${args.chatId}" not found` }] };
             }
 
+            if (chat._provider_resolution_error) throw new Error(chat._provider_resolution_error);
+
             // Get all session IDs for this chat
-            const meta = JSON.parse(chat.metadata || "{}");
+            const meta = parseChatMetadata(chat.metadata);
             const sessionIds: string[] = meta.session_ids || [];
             if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
             // Read messages from all sessions
             const allMessages: string[] = [];
             for (const sid of sessionIds) {
-              allMessages.push(...readSessionMessages(sid, args.limit || 50));
+              allMessages.push(...readSessionMessages(chat, sid, args.limit || 50));
             }
 
             const messages = allMessages.slice(-(args.limit || 50));

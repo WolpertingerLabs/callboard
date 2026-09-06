@@ -7,7 +7,9 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory, resolveSlashCommandContent } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, type GitInfo } from "../utils/git.js";
-import { findChat } from "../utils/chat-lookup.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
+import { readChatSessionMessages, withSessionProvider, findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { isCardEligible, cardLifecycleOf, rawCardFields } from "../services/card-fields.js";
@@ -104,7 +106,7 @@ function isCardHidden(chat: { metadata?: string | null }): boolean {
 /** The `provider` a chat record names, or undefined when absent/unparseable. */
 function readProvider(chat: { metadata?: string | null }): unknown {
   try {
-    return JSON.parse(chat.metadata || "{}").provider;
+    return parseChatMetadata(chat.metadata).provider;
   } catch {
     return undefined;
   }
@@ -125,13 +127,21 @@ function getFirstUserMessage(filePath: string, maxLength: number = 200, provider
   const providers = getSessionProviders();
   const owner = providerKind ? providers.find((p) => p.kind === providerKind) : undefined;
   if (owner) {
-    const preview = owner.getSessionPreview(filePath, maxLength);
-    if (preview) return preview;
+    try {
+      const preview = owner.getSessionPreview(filePath, maxLength);
+      if (preview) return preview;
+    } catch {
+      /* A missing/broken preview must not fail a list request. */
+    }
   }
   for (const provider of providers) {
     if (provider === owner) continue;
-    const preview = provider.getSessionPreview(filePath, maxLength);
-    if (preview) return preview;
+    try {
+      const preview = provider.getSessionPreview(filePath, maxLength);
+      if (preview) return preview;
+    } catch {
+      /* Keep preview failures local. */
+    }
   }
   return null;
 }
@@ -139,7 +149,7 @@ function getFirstUserMessage(filePath: string, maxLength: number = 200, provider
 /**
  * A discovered session plus the provider that discovered it. The tag is what
  * lets the list route send a preview read to one provider instead of trying all
- * five; it is route-local bookkeeping and never reaches the response body.
+ * five, and supplies routing metadata when the stored record has none.
  */
 type DiscoveredSession = {
   sessionId: string;
@@ -149,6 +159,7 @@ type DiscoveredSession = {
   createdAt: Date;
   updatedAt: Date;
   providerKind: string;
+  acpProviderId?: string;
 };
 
 /**
@@ -318,7 +329,7 @@ chatsRouter.get("/folders", async (req, res) => {
           // the record is absent — once per such row, on a route the sidebar
           // polls every 15 seconds.
           const storedChat = chatFileService.getChatBySessionId(sessionId);
-          return storedChat ? JSON.parse(storedChat.metadata || "{}") : {};
+          return storedChat ? parseChatMetadata(storedChat.metadata) : {};
         },
         isOngoing: (sessionId) => sessionRegistry.has(sessionId),
         isWaiting: (sessionId) => hasPendingRequest(sessionId),
@@ -413,7 +424,7 @@ chatsRouter.get("/", (req, res) => {
 
       // Also index by session_ids in metadata
       try {
-        const meta = JSON.parse(chat?.metadata || "{}");
+        const meta = parseChatMetadata(chat?.metadata);
         if (Array.isArray(meta.session_ids)) {
           for (const sid of meta.session_ids) {
             fileChatsBySessionId.set(sid, chat);
@@ -499,7 +510,7 @@ chatsRouter.get("/", (req, res) => {
      */
     const isBookmarked = (chat: { metadata?: string | null } | undefined): boolean => {
       try {
-        return JSON.parse(chat?.metadata || "{}").bookmarked === true;
+        return parseChatMetadata(chat?.metadata).bookmarked === true;
       } catch {
         return false;
       }
@@ -538,6 +549,7 @@ chatsRouter.get("/", (req, res) => {
     // Which provider discovered each session log, so a deferred preview read
     // can go straight to its owner. Keyed by path because that is all a
     // finished row still carries by the time the preview is read.
+    const fileChatsById = new Map(fileChats.map((chat) => [chat.id, chat]));
     const providerKindByLogPath = new Map<string, string>();
     for (const s of discoveredSessions) providerKindByLogPath.set(s.filePath, s.providerKind);
 
@@ -579,14 +591,14 @@ chatsRouter.get("/", (req, res) => {
           // attachPreview, for the rows this request actually returns)
           metadata: (() => {
             try {
-              const meta = JSON.parse(fileChat.metadata || "{}");
+              const meta = parseChatMetadata(fileChat.metadata);
               const sessionIds = Array.isArray(meta.session_ids) ? meta.session_ids : [];
               if (!sessionIds.includes(s.sessionId)) {
                 sessionIds.push(s.sessionId);
               }
-              return JSON.stringify({ ...meta, session_ids: sessionIds });
+              return withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId);
             } catch {
-              return JSON.stringify({ session_ids: [s.sessionId] });
+              return withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
             }
           })(),
           _augmented_from_file: true,
@@ -601,7 +613,7 @@ chatsRouter.get("/", (req, res) => {
           displayFolder: s.displayFolder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
-          metadata: JSON.stringify({ session_ids: [s.sessionId] }),
+          metadata: withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId),
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
           // Add git information
@@ -627,11 +639,41 @@ chatsRouter.get("/", (req, res) => {
      * reading it last is a reordering of I/O, not of rows.
      */
     const attachPreview = (chat: any) => {
+      // Reconcile only returned legacy/ACP rows, not the over-fetched list.
+      // A discovered historical log alone cannot establish a multi-session
+      // chat's owner, and an ACP ID may exist under multiple vendor directories.
+      const stored = fileChatsById.get(chat.id);
+      const original = parseChatMetadata(stored?.metadata);
+      const listed = parseChatMetadata(chat.metadata);
+      if ((stored && original.provider == null) || listed.provider === "acp") {
+        const resolved = findChat(chat.id, false);
+        if (resolved) {
+          const routing = parseChatMetadata(resolved.metadata);
+          if (original.provider == null) delete listed.provider;
+          if (!original.acpProviderId) delete listed.acpProviderId;
+          if (routing.provider != null) listed.provider = routing.provider;
+          if (routing.acpProviderId) listed.acpProviderId = routing.acpProviderId;
+          chat = {
+            ...chat,
+            metadata: JSON.stringify(listed),
+            session_log_path: resolved.session_log_path,
+            ...(resolved._provider_resolution_error && { _provider_resolution_error: resolved._provider_resolution_error }),
+          };
+        } else if (listed.provider === "acp") {
+          delete listed.acpProviderId;
+          chat = {
+            ...chat,
+            metadata: JSON.stringify(listed),
+            session_log_path: null,
+            _provider_resolution_error: "ACP session is missing or has ambiguous vendor ownership",
+          };
+        }
+      }
       const logPath = chat.session_log_path;
       if (typeof logPath !== "string" || !logPath) return chat;
       let meta: any;
       try {
-        meta = JSON.parse(chat.metadata || "{}");
+        meta = parseChatMetadata(chat.metadata);
       } catch {
         meta = {};
       }
@@ -715,7 +757,7 @@ chatsRouter.get("/", (req, res) => {
     const survivesTriggeredFilter = (chat: any): boolean => {
       let meta: any;
       try {
-        meta = JSON.parse(chat.metadata || "{}");
+        meta = parseChatMetadata(chat.metadata);
       } catch {
         return true;
       }
@@ -748,7 +790,7 @@ chatsRouter.get("/", (req, res) => {
         // relative with no session in the window, and that bypasses the
         // normalisation augmentSession would otherwise have done. Without this
         // catch a single corrupt record 500s the whole chat list.
-        meta = JSON.parse(chat.metadata || "{}");
+        meta = parseChatMetadata(chat.metadata);
       } catch {
         return chat;
       }
@@ -1067,10 +1109,11 @@ chatsRouter.post("/:id/fork", async (req, res) => {
 
   const chat = findChat(req.params.id, false) as any;
   if (!chat) return res.status(404).json({ error: "Chat not found" });
+  if (chat._provider_resolution_error) return res.status(409).json({ error: chat._provider_resolution_error });
 
   let meta: Record<string, any> = {};
   try {
-    meta = JSON.parse(chat.metadata || "{}");
+    meta = parseChatMetadata(chat.metadata);
   } catch {}
 
   // Chats stamped with a removed harness are refused by name before the guard
@@ -1153,7 +1196,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
       // Cross-harness (or a same-harness provider with no native fork): read
       // the history through the SOURCE provider's parser, then write it into
       // the TARGET's native format as conversational turns.
-      const history = truncateAtCutoff(provider.parseSessionMessages(sessionIds), timestamp);
+      const history = truncateAtCutoff(readChatSessionMessages(chat, sessionIds), timestamp);
       const turns = buildHandoffTurns(history, providerKind, targetKind);
       forked = turns.length > 0 ? targetProvider.seedSession(turns, { folder: chat.folder, newSessionId }) : null;
     } else {
@@ -1170,7 +1213,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   // user-message preview so the fork is distinguishable in the chat list.
   let baseTitle: string | null = meta.title || null;
   if (!baseTitle && chat.session_log_path) {
-    baseTitle = provider.getSessionPreview(chat.session_log_path, 60);
+    baseTitle = getFirstUserMessage(chat.session_log_path, 60, providerKind);
   }
   baseTitle = baseTitle ? baseTitle.replace(/\s+/g, " ").trim() : null;
 
@@ -1283,7 +1326,7 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
     // Parse existing metadata and update bookmarked flag
     let meta: Record<string, any> = {};
     try {
-      meta = JSON.parse(chat.metadata || "{}");
+      meta = parseChatMetadata(chat.metadata);
     } catch {}
 
     meta.bookmarked = bookmarked;
@@ -1370,7 +1413,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
   try {
     let meta: Record<string, any> = {};
     try {
-      meta = JSON.parse(chat.metadata || "{}");
+      meta = parseChatMetadata(chat.metadata);
     } catch {}
 
     // Refused by name, exactly as the fork route above does it: the provider
@@ -1388,9 +1431,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
     const sessionIds: string[] = Array.isArray(meta.session_ids) ? [...meta.session_ids] : [];
     if (chat.session_id && !sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
-    const providerKind = meta.provider || "claude-code";
-    const provider = getSessionProviders().find((p) => p.kind === providerKind) || getSessionProviders()[0];
-    const messages = sessionIds.length > 0 && provider ? provider.parseSessionMessages(sessionIds) : [];
+    const messages = sessionIds.length > 0 ? readChatSessionMessages(chat, sessionIds) : [];
 
     const transcript = condenseTranscript(transcriptForTitle(messages));
     if (!transcript) {
@@ -1409,7 +1450,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
     const fresh = (findChat(req.params.id, false) as any) ?? chat;
     let freshMeta: Record<string, any> = {};
     try {
-      freshMeta = JSON.parse(fresh.metadata || "{}");
+      freshMeta = parseChatMetadata(fresh.metadata);
     } catch {}
 
     // Upsert rather than updateChatMetadata: the latter is a read-merge-write
@@ -1479,7 +1520,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     // Parse existing metadata and update permissions
     let meta: Record<string, any> = {};
     try {
-      meta = JSON.parse(chat.metadata || "{}");
+      meta = parseChatMetadata(chat.metadata);
     } catch {}
 
     meta.defaultPermissions = defaultPermissions;
@@ -1511,7 +1552,7 @@ chatsRouter.patch("/:id/read", (req, res) => {
     // Parse existing metadata and set lastReadAt
     let meta: Record<string, any> = {};
     try {
-      meta = JSON.parse(chat.metadata || "{}");
+      meta = parseChatMetadata(chat.metadata);
     } catch {}
 
     meta.lastReadAt = new Date().toISOString();
@@ -1548,7 +1589,7 @@ chatsRouter.patch("/:id/summon", (req, res) => {
     // Parse existing metadata and clear summon
     let meta: Record<string, any> = {};
     try {
-      meta = JSON.parse(chat.metadata || "{}");
+      meta = parseChatMetadata(chat.metadata);
     } catch {}
 
     meta.summon = null;
@@ -1580,17 +1621,15 @@ chatsRouter.delete("/:id", (req, res) => {
     // Find the chat (checks file storage + filesystem)
     const chat = findChat(req.params.id, false);
 
-    // Delete the JSON metadata file from /data/chats/ if it exists
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+    if (chat._provider_resolution_error) return res.status(409).json({ error: chat._provider_resolution_error });
+    const meta = parseChatMetadata(chat.metadata);
+    const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));
+    // Delete only the authoritative namespace, and only then remove metadata.
+    // A routing failure must not partially delete a stored chat.
+    if (provider) provider.deleteSessionFiles(chat.session_id, { acpProviderId: meta.acpProviderId });
     const fileChat = chatFileService.getChat(req.params.id);
-    if (fileChat) {
-      chatFileService.deleteChat(fileChat.session_id);
-    }
-
-    // Delete native session files via the session provider
-    const sessionId = chat?.session_id || req.params.id;
-    for (const provider of getSessionProviders()) {
-      provider.deleteSessionFiles(sessionId);
-    }
+    if (fileChat) chatFileService.deleteChat(fileChat.session_id);
 
     clearListCaches();
     // A chat is now also board state: deleting a root removes a card, and
@@ -1599,6 +1638,7 @@ chatsRouter.delete("/:id", (req, res) => {
     sessionRegistry.notifyMetadata(fileChat?.id ?? req.params.id, { cardEvent: "updated" });
     res.json({ ok: true });
   } catch (err: any) {
+    if (err instanceof SessionRoutingError) return res.status(409).json({ error: err.message });
     log.error(`Error deleting chat: ${err}`);
     res.status(500).json({ error: "Failed to delete chat", details: err.message });
   }
@@ -1655,17 +1695,17 @@ chatsRouter.get("/:id/messages", (req, res) => {
   if (!chat.session_id) return res.json([]);
 
   // Collect all session IDs from metadata + current
-  const meta = JSON.parse(chat.metadata || "{}");
+  const meta = parseChatMetadata(chat.metadata);
   const sessionIds: string[] = meta.session_ids || [];
   if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
-  // Determine which provider to use (from metadata, default to claude-code)
-  const providerKind = meta.provider || "claude-code";
-  const provider = getSessionProviders().find((p) => p.kind === providerKind) || getSessionProviders()[0];
-
-  // Delegate full message parsing (including subagent merging) to the provider
-  const allMessages = provider.parseSessionMessages(sessionIds);
-  res.json(allMessages);
+  try {
+    res.json(readChatSessionMessages(chat, sessionIds));
+  } catch (err) {
+    if (err instanceof SessionRoutingError) return res.status(409).json({ error: err.message });
+    log.error(`Error reading messages: ${err}`);
+    res.status(500).json({ error: "Failed to read messages" });
+  }
 });
 
 // Get slash commands and plugins for a chat

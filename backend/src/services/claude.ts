@@ -1,4 +1,6 @@
 import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
@@ -945,13 +947,26 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // so that subsequent interactions (permission tracking, metadata updates) work.
       const fsChat = findChat(opts.chatId, false);
       if (!fsChat) throw new Error("Chat not found");
+      if (fsChat._provider_resolution_error) throw new Error(fsChat._provider_resolution_error);
       log.debug(`Chat ${opts.chatId} found via filesystem fallback, creating file storage record`);
       chat = chatFileService.upsertChat(fsChat.id, fsChat.folder, fsChat.session_id, { metadata: fsChat.metadata });
     }
     folder = chat.folder;
     resumeSessionId = chat.session_id;
-    initialMetadata = JSON.parse(chat.metadata || "{}");
+    // Legacy stored records also need resolver provenance before resuming. Reads
+    // remain immutable; only this write path pins inferred routing.
+    const expectedContext = chatContextFingerprint(chat);
+    const storedMetadata = parseChatMetadata(chat.metadata);
+    const needsProvenance = storedMetadata.provider == null || (storedMetadata.provider === "acp" && !storedMetadata.acpProviderId);
+    const resolvedChat = needsProvenance ? findChat(opts.chatId, false) : null;
+    if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
+    initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
     await assertReasoningEffort({ ...initialMetadata, cwd: folder });
+    assertChatContextUnchanged(expectedContext, chatFileService.getChat(chat.id));
+    const routing: Record<string, unknown> = {};
+    if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;
+    if (!storedMetadata.acpProviderId && initialMetadata.acpProviderId) routing.acpProviderId = initialMetadata.acpProviderId;
+    if (Object.keys(routing).length) chatFileService.updateChatMetadata(chat.id, routing, { normalizeLegacy: true });
     // Recover agentAlias from chat metadata when not explicitly provided.
     // This ensures Callboard tools are re-injected when resuming an agent session.
     if (!opts.agentAlias && initialMetadata.agentAlias) {

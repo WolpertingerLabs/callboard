@@ -18,6 +18,7 @@ import { resolveJobSessionFolder } from "./job-session-folder.js";
  * injected via setJobRunnerDeps() — the same lazy pattern the other
  * services use to break the circular import.
  */
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import type { EventEmitter } from "events";
 import { existsSync } from "fs";
 import type {
@@ -61,8 +62,7 @@ import { announcedApprovalChat, clearApprovalParked, isApprovalAnnounced, markAp
 import { registerEphemeralEventListener, unregisterEphemeralEventListener } from "./trigger-dispatcher.js";
 import { getAgent, getAgentWorkspacePath } from "./agent-file-service.js";
 import { compileSystemPrompt } from "./claude-compiler.js";
-import { getSessionProviders } from "../agents/factory.js";
-import { findChat, findChatIdByJobExecutionKey } from "../utils/chat-lookup.js";
+import { readChatSessionMessages, findChat, findChatIdByJobExecutionKey } from "../utils/chat-lookup.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("job-runner");
@@ -1878,18 +1878,16 @@ function announceApprovalChange(run: JobRun, chatId: string | undefined): void {
 }
 
 /** Last assistant text from a step chat — the unstructured-output fallback. */
-function readFinalAssistantText(chatId: string): string {
+export function readFinalAssistantText(chatId: string): string {
   try {
     const chat = findChat(chatId, false);
     if (!chat) return "";
-    const meta = JSON.parse(chat.metadata || "{}");
+    const meta = parseChatMetadata(chat.metadata);
     const sessionIds: string[] = meta.session_ids || [];
     if (!sessionIds.includes(chat.session_id)) sessionIds.push(chat.session_id);
 
     for (const sid of [...sessionIds].reverse()) {
-      const provider = getSessionProviders().find((p) => p.resolveSession(sid));
-      if (!provider) continue;
-      const messages = provider.parseSessionMessages([sid]);
+      const messages = readChatSessionMessages(chat, [sid]);
       for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
         if (msg.type === "text" && msg.role === "assistant" && msg.content) return msg.content;

@@ -26,7 +26,8 @@ import { buildLineageIndex } from "./chat-lineage.js";
 import { cardFieldsFromChat, isCardEligible } from "./card-fields.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest } from "./claude.js";
-import { getSessionProviders } from "../agents/factory.js";
+import { resolveSessionLog } from "../utils/session-log.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { listActivities } from "./chat-activity.js";
 import { listPendingForParent } from "./session-callbacks.js";
@@ -48,7 +49,7 @@ export interface RollupDeps {
    * "Untitled chat" on the board. Null when the session log can't be found
    * or has no user message yet.
    */
-  previewOf: (sessionId: string) => string | null;
+  previewOf: (sessionId: string, metadata?: string | null) => string | null;
 }
 
 const PENDING_KIND_BY_EVENT: Record<string, CardPendingKind> = {
@@ -58,7 +59,7 @@ const PENDING_KIND_BY_EVENT: Record<string, CardPendingKind> = {
 };
 
 /**
- * Previews by session ID — hits AND misses.
+ * Previews by session ID and explicit provider/vendor — hits AND misses.
  *
  * Caching only the hits is what made `GET /api/cards` a ~1.6 s freeze of the
  * whole daemon. Measured on an 8,322-record data dir: the rollup calls
@@ -87,7 +88,7 @@ const PENDING_KIND_BY_EVENT: Record<string, CardPendingKind> = {
  *     one request, see {@link UNRESOLVED_RECHECK_BUDGET_PER_SEC}.
  *
  * Bounded by the chat corpus, like the snapshot's own index: keys are session
- * ids that appear in it, and nothing else is ever inserted.
+ * ids and their routing metadata that appear in it. Nothing else is inserted.
  */
 type PreviewEntry =
   | { kind: "hit"; preview: string }
@@ -141,8 +142,10 @@ function claimRecheckBudget(now: number): boolean {
  * Resolve a session's preview through the cache above. Returns null for both
  * shapes of miss; the caller cannot tell them apart and does not need to.
  */
-function cachedPreviewOf(sessionId: string, now: number = Date.now()): string | null {
-  const cached = previewCache.get(sessionId);
+function cachedPreviewOf(sessionId: string, metadata?: string | null, now: number = Date.now()): string | null {
+  const meta = parseChatMetadata(metadata);
+  const cacheKey = JSON.stringify([sessionId, meta.provider, meta.acpProviderId]);
+  const cached = previewCache.get(cacheKey);
   if (cached) {
     if (cached.kind === "hit") return cached.preview;
     if (cached.kind === "unresolved") {
@@ -159,12 +162,17 @@ function cachedPreviewOf(sessionId: string, now: number = Date.now()): string | 
     }
   }
 
-  for (const provider of getSessionProviders()) {
-    const resolved = provider.resolveSession(sessionId);
-    if (!resolved) continue;
-    const preview = provider.getSessionPreview(resolved.logPath);
+  const resolved = resolveSessionLog(sessionId, metadata);
+  if (resolved) {
+    let preview;
+    try {
+      preview = resolved.provider.getSessionPreview(resolved.logPath);
+    } catch {
+      // A bad preview must not take down an entire board response.
+      return null;
+    }
     if (preview) {
-      previewCache.set(sessionId, { kind: "hit", preview });
+      previewCache.set(cacheKey, { kind: "hit", preview });
       return preview;
     }
     // Same caching rule as chats-snapshot.ts: an entry whose mtime tick has
@@ -175,17 +183,17 @@ function cachedPreviewOf(sessionId: string, now: number = Date.now()): string | 
     try {
       const stats = statSync(resolved.logPath, { bigint: true });
       if (isMtimeSettled(stats.mtimeNs, now)) {
-        previewCache.set(sessionId, { kind: "empty", logPath: resolved.logPath, mtimeNs: stats.mtimeNs, size: stats.size });
+        previewCache.set(cacheKey, { kind: "empty", logPath: resolved.logPath, mtimeNs: stats.mtimeNs, size: stats.size });
       } else {
-        previewCache.delete(sessionId);
+        previewCache.delete(cacheKey);
       }
     } catch {
-      previewCache.delete(sessionId);
+      previewCache.delete(cacheKey);
     }
     return null;
   }
 
-  previewCache.set(sessionId, { kind: "unresolved", checkedAt: now });
+  previewCache.set(cacheKey, { kind: "unresolved", checkedAt: now });
   return null;
 }
 
@@ -215,7 +223,7 @@ export const ROLLUP_DEPS: RollupDeps = {
     };
   },
   awaitingChildrenOf: (chatId) => listPendingForParent(chatId).length,
-  previewOf: (sessionId) => cachedPreviewOf(sessionId),
+  previewOf: (sessionId, metadata) => cachedPreviewOf(sessionId, metadata),
 };
 
 /** Run statuses that count as "the job is still going" for the rollup. */
@@ -236,7 +244,10 @@ function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberC
   // metadata.preview is only stamped by the chats route at response time, so
   // raw file-storage records won't have it — previewOf reads the session log.
   const rawTitle =
-    (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || deps.previewOf(chat.session_id) || null;
+    (typeof meta.title === "string" && meta.title) ||
+    (typeof meta.preview === "string" && meta.preview) ||
+    deps.previewOf(chat.session_id, chat.metadata) ||
+    null;
   const title = typeof rawTitle === "string" ? rawTitle.replace(/\s+/g, " ").trim().slice(0, 120) : null;
   // A pending request outranks "ongoing": the session may still be
   // registered while it sits blocked on user input, and blocked-on-you is
@@ -324,7 +335,7 @@ export function buildCardSummaries(
     // Raw file records do not carry metadata.preview. Use the same immutable
     // first-user-message fallback as the member row so a CLI-created or
     // otherwise untitled root does not produce an "Untitled" card face.
-    const card = cardFieldsFromChat(chat, () => deps.previewOf(chat.session_id));
+    const card = cardFieldsFromChat(chat, () => deps.previewOf(chat.session_id, chat.metadata));
     if (card.hidden && !opts.includeHidden) continue;
     cardsByRoot.set(chat.id, card);
   }

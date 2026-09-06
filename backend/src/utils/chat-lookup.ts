@@ -1,21 +1,66 @@
+import { parseChatMetadata } from "./chat-metadata.js";
 import { statSync } from "fs";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "./git.js";
 import { getSessionProviders } from "../agents/factory.js";
+import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("chat-lookup");
 
-/**
- * Resolve a session ID to its log path and folder info by iterating
- * all registered session providers.
- */
-function resolveSessionAcrossProviders(sessionId: string): { logPath: string; folder: string; displayFolder: string } | null {
+/** Enrich response metadata without mutating storage or overriding explicit routing. */
+export function withSessionProvider(metadata: string | null | undefined, provider: string, acpProviderId?: string): string {
+  const meta = parseChatMetadata(metadata);
+  // Explicit routing (including unknown/retired values) is authoritative.
+  const owner = meta.provider ?? provider;
+  return JSON.stringify({
+    ...meta,
+    provider: owner,
+    ...(owner === "acp" && provider === "acp" && acpProviderId && !meta.acpProviderId && { acpProviderId }),
+  });
+}
+
+/** Resolve only within the explicit owner, rejecting conflicting resolver evidence. */
+function resolveSessionAcrossProviders(sessionId: string, metadata?: string | null) {
+  const meta = parseChatMetadata(metadata);
+  const matches = [];
   for (const provider of getSessionProviders()) {
-    const resolved = provider.resolveSession(sessionId);
-    if (resolved) return resolved;
+    if (meta.provider != null && provider.kind !== meta.provider) continue;
+    try {
+      const resolved = provider.resolveSession(sessionId, { acpProviderId: meta.acpProviderId });
+      if (resolved && statSync(resolved.logPath).isFile()) matches.push({ ...resolved, provider: provider.kind });
+    } catch (err) {
+      if (err instanceof SessionRoutingError) throw err;
+      // Stale discovery entries must not hide stored records or other providers.
+    }
   }
-  return null;
+  if (matches.length > 1) throw new SessionRoutingError(`Conflicting providers for session "${sessionId}"`);
+  return matches[0] ?? null;
+}
+
+/** Primary evidence wins; on primary miss, all recorded IDs must agree. */
+function resolveStoredSession(sessionId: string, metadata?: string | null) {
+  const primary = resolveSessionAcrossProviders(sessionId, metadata);
+  if (primary) return primary;
+  const meta = parseChatMetadata(metadata);
+  const ids = Array.isArray(meta.session_ids) ? meta.session_ids : [];
+  const evidence = [...new Set<string>(ids.filter((id: unknown) => typeof id === "string" && id !== sessionId))]
+    .map((id) => resolveSessionAcrossProviders(id, metadata))
+    .filter((entry) => entry !== null);
+  const owners = new Set(evidence.map((entry) => JSON.stringify([entry.provider, entry.acpProviderId])));
+  if (owners.size > 1) throw new SessionRoutingError("Conflicting provider provenance across recorded sessions");
+  return evidence[0] ?? null;
+}
+
+/** Consume a findChat result without re-discovering (and overriding) its owner. */
+export function readChatSessionMessages(chat: { metadata?: string | null; session_id?: string; _provider_resolution_error?: string }, sessionIds?: string[]) {
+  if (chat._provider_resolution_error) throw new SessionRoutingError(chat._provider_resolution_error);
+  const meta = parseChatMetadata(chat.metadata);
+  const ids: string[] = sessionIds ?? (Array.isArray(meta.session_ids) ? [...meta.session_ids] : []);
+  if (!sessionIds && chat.session_id && !ids.includes(chat.session_id)) ids.push(chat.session_id);
+  const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));
+  if (!provider) return [];
+  return meta.acpProviderId ? provider.parseSessionMessages(ids, { acpProviderId: meta.acpProviderId }) : provider.parseSessionMessages(ids);
 }
 
 /**
@@ -37,7 +82,14 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
 
     if (fileChat) {
       log.debug(`findChat — found in file storage: id=${id}`);
-      const resolved = resolveSessionAcrossProviders(fileChat.session_id);
+      let resolved;
+      let routingError: string | undefined;
+      try {
+        resolved = resolveStoredSession(fileChat.session_id, fileChat.metadata);
+      } catch (err) {
+        if (!(err instanceof SessionRoutingError)) throw err;
+        routingError = err.message;
+      }
       // Use original folder for git info (correct branch for worktrees)
       let gitInfo: { isGitRepo: boolean; branch?: string } = { isGitRepo: false };
       if (includeGitInfo) {
@@ -49,6 +101,8 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       const { mainRepoPath } = resolveWorktreeToMainRepoCached(fileChat.folder);
       return {
         ...fileChat,
+        ...(routingError && { _provider_resolution_error: routingError }),
+        metadata: resolved ? withSessionProvider(fileChat.metadata, resolved.provider, resolved.acpProviderId) : fileChat.metadata,
         // Keep original folder (may be a worktree) — logs are stored under this path
         folder: fileChat.folder,
         displayFolder: mainRepoPath,
@@ -81,7 +135,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       displayFolder: resolved.displayFolder,
       session_id: id,
       session_log_path: resolved.logPath,
-      metadata: JSON.stringify({ session_ids: [id] }),
+      metadata: withSessionProvider(JSON.stringify({ session_ids: [id] }), resolved.provider, resolved.acpProviderId),
       created_at: st.birthtime.toISOString(),
       updated_at: st.mtime.toISOString(),
       ...(includeGitInfo && {

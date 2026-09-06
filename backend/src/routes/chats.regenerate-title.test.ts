@@ -48,7 +48,10 @@ const upsertChat = vi.fn((id: string, folder: string, sessionId: string, updates
 }));
 const notifyMetadata = vi.fn();
 
-vi.mock("../utils/chat-lookup.js", () => ({ findChat: () => chat }));
+vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/chat-lookup.js")>()),
+  findChat: () => chat,
+}));
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: { upsertChat: (...args: any[]) => (upsertChat as any)(...args), getChat: () => chat },
 }));
