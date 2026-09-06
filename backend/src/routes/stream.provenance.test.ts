@@ -36,7 +36,7 @@ let executionMetadata: Record<string, unknown>;
 let counter = 0;
 function provider(kind: SessionProvider["kind"], id: string): SessionProvider {
   const logPath = join(dir, id + ".jsonl");
-  writeFileSync(logPath, "{}\n");
+  writeFileSync(logPath, JSON.stringify({ type: "session_meta", payload: { id, cwd: dir, source: "exec" } }) + "\n");
   return {
     kind,
     resolveSession: vi.fn((sid: string) => (sid === id ? { logPath, folder: dir, displayFolder: dir } : null)),

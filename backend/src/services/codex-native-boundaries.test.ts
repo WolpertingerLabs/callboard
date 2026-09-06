@@ -138,6 +138,120 @@ describe("native caller boundaries with real storage and registry", () => {
       adopt.mockRestore();
     }
   });
+  it("historical Codex provenance refuses a missing primary before POST/send/continue writes or callbacks", async () => {
+    rollout(ROOT); // Completed historical root is provider evidence, not current identity.
+    const metadata = JSON.stringify({ title: "legacy", session_ids: [ROOT] });
+    chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata });
+    expect(JSON.parse(findChat(CHILD, false).metadata).provider).toBe("codex");
+    const callbacks = await import("./session-callbacks.js");
+    const callback = vi.spyOn(callbacks, "registerCompletionCallback");
+    const adopt = vi.spyOn(chatFileService, "upsertChat");
+    const update = vi.spyOn(chatFileService, "updateChatMetadata");
+    const reasoning = await import("./reasoning-capabilities.js");
+    const validate = vi.spyOn(reasoning, "assertReasoningEffort");
+    try {
+      const result = await request(streamRouter, "/:id/message", "post", CHILD, { prompt: "offline", model: "gpt-5.5", effort: "high" });
+      expect(result.status).toHaveBeenCalledWith(409);
+      await expect(sendMessage({ chatId: CHILD, prompt: "offline" })).rejects.toThrow("read-only");
+      const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
+      const spec = buildCallboardToolsSpec(() => ROOT);
+      const continuation = await spec.tools.find((tool) => tool.name === "continue_chat")!.handler({ chatId: CHILD, prompt: "offline", onComplete: true });
+      expect(JSON.stringify(continuation)).toContain("read-only");
+      const status = await spec.tools.find((tool) => tool.name === "get_session_status")!.handler({ chatId: CHILD });
+      expect(JSON.parse((status.content[0] as { text: string }).text)).toMatchObject({ chatId: CHILD, status: "unknown" });
+      expect(adopt).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(callback).not.toHaveBeenCalled();
+      expect(validate).not.toHaveBeenCalled();
+      expect(chatFileService.getChat(CHILD)!.metadata).toBe(metadata);
+      // Cancellation of an actual owned root remains independent of disk uncertainty.
+      const abortController = new AbortController();
+      sessionRegistry.register(CHILD, { type: "web", abortController, emitter: new EventEmitter() });
+      expect((await request(streamRouter, "/:id/stop", "post", CHILD)).data).toEqual({ stopped: true });
+      expect(abortController.signal.aborted).toBe(true);
+    } finally {
+      callback.mockRestore();
+      adopt.mockRestore();
+      update.mockRestore();
+      validate.mockRestore();
+    }
+  });
+  it("keeps an owned controller cancellable through ambiguous historical provenance without weakening native identity", async () => {
+    const logPath = rollout(ROOT);
+    chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata: JSON.stringify({ session_ids: [ROOT] }) });
+    const { setSessionProvidersForTesting } = await import("../agents/factory.js");
+    setSessionProvidersForTesting([
+      new CodexSessionProvider(),
+      {
+        kind: "claude-code",
+        resolveSession: (id: string) => (id === ROOT ? { logPath, folder: scratch, displayFolder: scratch } : null),
+      } as import("../agents/ports/SessionProvider.js").SessionProvider,
+    ]);
+    try {
+      expect(() => assertNativeAgentControllable(CHILD)).toThrow("Conflicting");
+      const controller = new AbortController();
+      sessionRegistry.register(CHILD, { type: "web", abortController: controller, emitter: new EventEmitter() });
+      expect(stopSession(CHILD)).toBe(true);
+      expect(controller.signal.aborted).toBe(true);
+      rollout(CHILD, true);
+      const nativeController = new AbortController();
+      sessionRegistry.register(CHILD, { type: "web", abortController: nativeController, emitter: new EventEmitter() });
+      expect(stopSession(CHILD)).toBe(false);
+      expect(nativeController.signal.aborted).toBe(false);
+    } finally {
+      setSessionProvidersForTesting(null);
+    }
+  });
+  it("explicit non-Codex routing remains authoritative over historical Codex evidence", () => {
+    rollout(ROOT);
+    chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata: JSON.stringify({ provider: "claude-code", session_ids: [ROOT] }) });
+    expect(() => assertNativeAgentControllable(CHILD)).not.toThrow();
+    expect(JSON.parse(findChat(CHILD, false).metadata).provider).toBe("claude-code");
+  });
+  it("does not adopt an unpersisted root that becomes native during low-level validation", async () => {
+    rollout(CHILD, false);
+    const reasoning = await import("./reasoning-capabilities.js");
+    const validate = vi.spyOn(reasoning, "assertReasoningEffort").mockImplementationOnce(async () => {
+      rollout(CHILD, true);
+    });
+    const callbacks = await import("./session-callbacks.js");
+    const callback = vi.spyOn(callbacks, "registerCompletionCallback");
+    const adopt = vi.spyOn(chatFileService, "upsertChat");
+    const update = vi.spyOn(chatFileService, "updateChatMetadata");
+    const unregister = vi.spyOn(sessionRegistry, "unregister");
+    try {
+      await expect(sendMessage({ chatId: CHILD, prompt: "offline" })).rejects.toThrow("read-only");
+      expect(validate).toHaveBeenCalledOnce();
+      expect(adopt).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(callback).not.toHaveBeenCalled();
+      expect(unregister).not.toHaveBeenCalled();
+      expect(chatFileService.getChat(CHILD)).toBeNull();
+      expect(existsSync(join(scratch, "chats", CHILD + ".json"))).toBe(false);
+    } finally {
+      validate.mockRestore();
+      callback.mockRestore();
+      adopt.mockRestore();
+      update.mockRestore();
+      unregister.mockRestore();
+    }
+  });
+  it("does not replace a concurrently adopted filesystem root after low-level validation", async () => {
+    rollout(CHILD, false);
+    const reasoning = await import("./reasoning-capabilities.js");
+    const validate = vi.spyOn(reasoning, "assertReasoningEffort").mockImplementationOnce(async () => {
+      chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata: '{"provider":"codex","title":"concurrent"}' });
+    });
+    const adopt = vi.spyOn(chatFileService, "upsertChat");
+    try {
+      await expect(sendMessage({ chatId: CHILD, prompt: "offline" })).rejects.toThrow("Chat context changed");
+      expect(adopt).toHaveBeenCalledOnce(); // Only the concurrent actor.
+      expect(JSON.parse(chatFileService.getChat(CHILD)!.metadata).title).toBe("concurrent");
+    } finally {
+      validate.mockRestore();
+      adopt.mockRestore();
+    }
+  });
   it("positive native identity wins even over a registered controller", async () => {
     rollout(CHILD, true);
     const abortController = new AbortController();

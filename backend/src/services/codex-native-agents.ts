@@ -1,3 +1,5 @@
+import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
+import { resolveSessionContext } from "../utils/session-provenance.js";
 /** Read-only exec-owned Codex threads. No process control is available in the exec SDK. */
 import { basename, relative, resolve, sep, isAbsolute } from "node:path";
 import { closeSync, openSync, readSync, statSync, realpathSync } from "node:fs";
@@ -21,15 +23,27 @@ function parseMetadata(raw?: string | null): Record<string, unknown> {
 
 export function nativeAgentForChat(chatId: string, allowOwnedCancellation = false) {
   const stored = chatFileService.getChat(chatId);
-  const meta = parseMetadata(stored?.metadata);
-  if (meta.provider && meta.provider !== "codex") return null;
+  const explicit = parseMetadata(stored?.metadata);
+  if (explicit.provider != null && explicit.provider !== "codex") return null;
   const sessionId = stored?.session_id ?? chatId;
-  const resolved = new CodexSessionProvider().resolveSession(sessionId);
-  const fallback = { parentThreadId: "unverified parent (inspect the owning Codex thread)", sessionId, logPath: resolved?.logPath ?? "" };
   const owned = sessionRegistry.get(chatId);
+  const ownedRoot = allowOwnedCancellation && owned?.type === "web" && !!owned.abortController && !explicit.nativeAgent;
+  let context;
+  try {
+    context = resolveSessionContext(sessionId, stored?.metadata);
+  } catch (error) {
+    // Ambiguous historical routing cannot take away an actual owned controller.
+    // Still inspect positive current native evidence before allowing cancellation.
+    if (!(error instanceof SessionRoutingError) || !ownedRoot) throw error;
+    context = { current: new CodexSessionProvider().resolveSession(sessionId), metadata: stored?.metadata };
+  }
+  const meta = parseMetadata(context.metadata);
+  if (meta.provider != null && meta.provider !== "codex") return null;
+  // Never use historical provenance as the current identity or lifecycle.
+  const resolved = context.current;
+  const fallback = { parentThreadId: "unverified parent (inspect the owning Codex thread)", sessionId, logPath: resolved?.logPath ?? "" };
   // A server-created web controller proves control of this execution, NOT that
   // a disk thread is safe to resume. Positive native evidence still wins.
-  const ownedRoot = allowOwnedCancellation && owned?.type === "web" && !!owned.abortController && !meta.nativeAgent;
   // Persisted native ownership survives missing logs. Incomplete metadata cannot
   // establish root ownership either, including filesystem-only threads.
   if (meta.nativeAgent && meta.provider === "codex" && !resolved) return fallback;
@@ -49,15 +63,6 @@ export function assertNativeAgentStoppable(chatId: string): void {
 export function assertNativeAgentControllable(chatId: string): void {
   const native = nativeAgentForChat(chatId);
   if (native) throw new Error(`${NATIVE_CONTROL_NOTE} Parent thread: ${native.parentThreadId}`);
-  const stored = chatFileService.getChat(chatId);
-  const metadata = parseMetadata(stored?.metadata);
-  if (metadata.nativeAgent && metadata.provider === "codex") throw new Error(NATIVE_CONTROL_NOTE);
-  if (metadata.provider === "codex") {
-    const resolved = new CodexSessionProvider().resolveSession(stored!.session_id);
-    const meta = resolved && readCodexSessionMeta(resolved.logPath);
-    if (!meta || meta.id !== stored!.session_id)
-      throw new Error("Cannot verify Codex thread ownership from its rollout; refusing direct resume. Inspect the owning Codex thread first.");
-  }
 }
 
 interface LifecycleEvidence {

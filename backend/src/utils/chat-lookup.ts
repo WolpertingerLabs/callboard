@@ -8,50 +8,8 @@ import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("chat-lookup");
-
-/** Enrich response metadata without mutating storage or overriding explicit routing. */
-export function withSessionProvider(metadata: string | null | undefined, provider: string, acpProviderId?: string): string {
-  const meta = parseChatMetadata(metadata);
-  // Explicit routing (including unknown/retired values) is authoritative.
-  const owner = meta.provider ?? provider;
-  return JSON.stringify({
-    ...meta,
-    provider: owner,
-    ...(owner === "acp" && provider === "acp" && acpProviderId && !meta.acpProviderId && { acpProviderId }),
-  });
-}
-
-/** Resolve only within the explicit owner, rejecting conflicting resolver evidence. */
-function resolveSessionAcrossProviders(sessionId: string, metadata?: string | null) {
-  const meta = parseChatMetadata(metadata);
-  const matches = [];
-  for (const provider of getSessionProviders()) {
-    if (meta.provider != null && provider.kind !== meta.provider) continue;
-    try {
-      const resolved = provider.resolveSession(sessionId, { acpProviderId: meta.acpProviderId });
-      if (resolved && statSync(resolved.logPath).isFile()) matches.push({ ...resolved, provider: provider.kind });
-    } catch (err) {
-      if (err instanceof SessionRoutingError) throw err;
-      // Stale discovery entries must not hide stored records or other providers.
-    }
-  }
-  if (matches.length > 1) throw new SessionRoutingError(`Conflicting providers for session "${sessionId}"`);
-  return matches[0] ?? null;
-}
-
-/** Primary evidence wins; on primary miss, all recorded IDs must agree. */
-function resolveStoredSession(sessionId: string, metadata?: string | null) {
-  const primary = resolveSessionAcrossProviders(sessionId, metadata);
-  if (primary) return primary;
-  const meta = parseChatMetadata(metadata);
-  const ids = Array.isArray(meta.session_ids) ? meta.session_ids : [];
-  const evidence = [...new Set<string>(ids.filter((id: unknown) => typeof id === "string" && id !== sessionId))]
-    .map((id) => resolveSessionAcrossProviders(id, metadata))
-    .filter((entry) => entry !== null);
-  const owners = new Set(evidence.map((entry) => JSON.stringify([entry.provider, entry.acpProviderId])));
-  if (owners.size > 1) throw new SessionRoutingError("Conflicting provider provenance across recorded sessions");
-  return evidence[0] ?? null;
-}
+export { withSessionProvider } from "./session-provenance.js";
+import { withSessionProvider, resolveSessionAcrossProviders, resolveSessionContext } from "./session-provenance.js";
 
 /** Consume a findChat result without re-discovering (and overriding) its owner. */
 export function readChatSessionMessages(chat: { metadata?: string | null; session_id?: string; _provider_resolution_error?: string }, sessionIds?: string[]) {
@@ -83,10 +41,12 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
 
     if (fileChat) {
       log.debug(`findChat — found in file storage: id=${id}`);
+      let context;
       let resolved;
       let routingError: string | undefined;
       try {
-        resolved = resolveStoredSession(fileChat.session_id, fileChat.metadata);
+        context = resolveSessionContext(fileChat.session_id, fileChat.metadata);
+        resolved = context.provenance;
       } catch (err) {
         if (!(err instanceof SessionRoutingError)) throw err;
         routingError = err.message;
@@ -103,11 +63,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       return {
         ...fileChat,
         ...(routingError && { _provider_resolution_error: routingError }),
-        metadata: refreshNativeMetadata(
-          resolved?.logPath ?? "",
-          fileChat.session_id,
-          resolved ? withSessionProvider(fileChat.metadata, resolved.provider, resolved.acpProviderId) : fileChat.metadata,
-        ),
+        metadata: refreshNativeMetadata(context?.current?.logPath ?? "", fileChat.session_id, context?.metadata ?? fileChat.metadata),
         // Keep original folder (may be a worktree) — logs are stored under this path
         folder: fileChat.folder,
         displayFolder: mainRepoPath,
