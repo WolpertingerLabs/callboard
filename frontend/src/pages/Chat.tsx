@@ -3650,7 +3650,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             <a href={`/chat/${nativeAgent.parentThreadId}`}>Open parent thread</a>
           </div>
         )}
-        {id && !nativeAgent && <ComputerUsePanel key={id} chatId={id} permission={effectivePermissions.computerControl} onPermissions={() => setShowPermissionsModal(true)} />}
+        {id && !nativeAgent && (
+          <ComputerUsePanel key={id} chatId={id} permission={effectivePermissions.computerControl} onPermissions={() => setShowPermissionsModal(true)} />
+        )}
         <PromptInput
           onSend={handleSend}
           disabled={!!nativeAgent || (!id && streaming)}

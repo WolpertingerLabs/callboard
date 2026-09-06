@@ -2,6 +2,10 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
+import { assertNativeAgentControllable } from "./codex-native-agents.js";
+import { chatContextFingerprint } from "../utils/chat-context.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { resolveSessionContext } from "../utils/session-provenance.js";
 import { chatFileService } from "./chat-file-service.js";
 import { computerUseScopeError, readComputerUsePolicy, type ComputerTargetKind, type ComputerUsePolicy } from "./computer-use-policy.js";
 
@@ -19,8 +23,20 @@ export function loadComputerUsePolicy(chatId: string): HostPolicy {
     throw controlError("denied", "Chat permission metadata is unreadable");
   }
   if (!metadata || typeof metadata !== "object" || metadata.archived === true) throw controlError("denied", "Chat is unavailable");
+  let routing: Record<string, unknown>;
+  try {
+    // Use main's current/historical provenance rules; never treat an inherited
+    // native-child MCP identity or ambiguous namespace as independently owned.
+    routing = parseChatMetadata(resolveSessionContext(chat.session_id, chat.metadata).metadata);
+    assertNativeAgentControllable(chatId, { sessionId: chat.session_id, provider: routing.provider });
+  } catch {
+    throw controlError(
+      "denied",
+      "Chat ownership or provider provenance is unverified or parent-owned. Use the owning parent thread for native Codex children.",
+    );
+  }
   const policy = readComputerUsePolicy(metadata.defaultPermissions);
-  return { policy, signature: JSON.stringify([policy, metadata.provider, metadata.model, metadata.acpProviderId]) };
+  return { policy, signature: JSON.stringify([policy, chatContextFingerprint(chat), routing.provider, routing.acpProviderId]) };
 }
 export function controlError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });

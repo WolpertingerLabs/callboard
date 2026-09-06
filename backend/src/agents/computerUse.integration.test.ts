@@ -50,7 +50,9 @@ for (const engine of ["claude-code", "codex", "acp"] as const)
         tools: [defineTool("cu_observe", "fixture", {}, async () => ({ content }))],
       });
       try {
-        expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["cu_observe"]);
+        const listed = (await client.listTools()).tools;
+        expect(listed.map((tool) => tool.name)).toEqual(["cu_observe"]);
+        if (engine === "codex") expect(listed[0].description).toContain("bound to the owning root chat");
         expect((await client.callTool({ name: "cu_observe", arguments: {} })).content).toEqual(content);
       } finally {
         await client.close();
