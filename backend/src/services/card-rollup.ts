@@ -33,6 +33,7 @@ import { listActivities } from "./chat-activity.js";
 import { listPendingForParent } from "./session-callbacks.js";
 
 export interface RollupDeps {
+  nativeLifecycleOf?: (chat: Chat) => NonNullable<CardMemberChat["nativeAgent"]>["lifecycle"];
   isSessionActive: (chatId: string, sessionId: string) => boolean;
   /** The kind of input a chat is blocked on, or undefined when not waiting. */
   pendingKindOf: (chatId: string, sessionId: string) => CardPendingKind | undefined;
@@ -243,22 +244,35 @@ function parseMeta(chat: Chat): ChatMeta {
 function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberChat {
   // metadata.preview is only stamped by the chats route at response time, so
   // raw file-storage records won't have it — previewOf reads the session log.
+  const native = meta.provider === "codex" ? (meta.nativeAgent as CardMemberChat["nativeAgent"]) : undefined;
+  const nativeAgent = native ? { ...native, lifecycle: deps.nativeLifecycleOf?.(chat) ?? ("unknown" as const) } : undefined;
   const rawTitle =
     (typeof meta.title === "string" && meta.title) ||
     (typeof meta.preview === "string" && meta.preview) ||
-    deps.previewOf(chat.session_id, chat.metadata) ||
+    (!nativeAgent && deps.previewOf(chat.session_id, chat.metadata)) ||
     null;
   const title = typeof rawTitle === "string" ? rawTitle.replace(/\s+/g, " ").trim().slice(0, 120) : null;
   // A pending request outranks "ongoing": the session may still be
   // registered while it sits blocked on user input, and blocked-on-you is
   // the state the board must surface.
-  const pendingKind = deps.pendingKindOf(chat.id, chat.session_id);
-  const status = pendingKind ? "waiting" : deps.isSessionActive(chat.id, chat.session_id) ? "ongoing" : "stopped";
+  const pendingKind = nativeAgent ? undefined : deps.pendingKindOf(chat.id, chat.session_id);
+  const status = nativeAgent
+    ? nativeAgent.lifecycle === "active"
+      ? "ongoing"
+      : nativeAgent.lifecycle === "unknown"
+        ? "unknown"
+        : "stopped"
+    : pendingKind
+      ? "waiting"
+      : deps.isSessionActive(chat.id, chat.session_id)
+        ? "ongoing"
+        : "stopped";
   const lastReadAt = typeof meta.lastReadAt === "string" ? meta.lastReadAt : undefined;
-  const activity = deps.activityOf(chat.id, chat.session_id);
-  const awaitingChildren = deps.awaitingChildrenOf(chat.id);
+  const activity = nativeAgent ? undefined : deps.activityOf(chat.id, chat.session_id);
+  const awaitingChildren = nativeAgent ? 0 : deps.awaitingChildrenOf(chat.id);
   return {
     chatId: chat.id,
+    ...(nativeAgent && { nativeAgent }),
     title: title || null,
     folder: chat.folder,
     status,
@@ -321,7 +335,7 @@ export function buildCardSummaries(
   chats: Chat[],
   allRuns: JobRunListItem[],
   deps: RollupDeps = ROLLUP_DEPS,
-  opts: { includeHidden?: boolean } = {},
+  opts: { includeHidden?: boolean; lifecycle?: Card["lifecycle"] } = {},
 ): CardSummary[] {
   const { existingRootIdOf } = buildLineageIndex(chats);
 
@@ -337,6 +351,8 @@ export function buildCardSummaries(
     // otherwise untitled root does not produce an "Untitled" card face.
     const card = cardFieldsFromChat(chat, () => deps.previewOf(chat.session_id, chat.metadata));
     if (card.hidden && !opts.includeHidden) continue;
+    // Select returned roots before member projection spends lifecycle IO.
+    if (opts.lifecycle && card.lifecycle !== opts.lifecycle) continue;
     cardsByRoot.set(chat.id, card);
   }
 
@@ -359,8 +375,7 @@ export function buildCardSummaries(
     // the rest of that tree. Old runs retain their historical rootChatId, so
     // fall back through latestChatId when that root no longer names a card.
     const rootId =
-      (run.rootChatId && cardsByRoot.has(run.rootChatId) ? run.rootChatId : undefined) ??
-      (run.latestChatId ? existingRootIdOf(run.latestChatId) : undefined);
+      (run.rootChatId && cardsByRoot.has(run.rootChatId) ? run.rootChatId : undefined) ?? (run.latestChatId ? existingRootIdOf(run.latestChatId) : undefined);
     if (!rootId || !cardsByRoot.has(rootId)) continue;
     const members = runsByRoot.get(rootId) ?? [];
     members.push(toMemberRun(run));

@@ -92,6 +92,22 @@ export class CodexSessionProvider implements SessionProvider {
     return { complete: !this.discoveryIncomplete, sessions: entries.map((entry) => ({ ...entry, meta: readCodexSessionMeta(entry.filePath) })) };
   }
 
+  /** Verified metadata-only corpus. One bounded walk, no previews or lifecycle replay.
+   * Duplicate thread files are ambiguous: neither version supplies lineage.
+   */
+  nativeDiscoveryEvidence() {
+    const entries = this.listRollouts();
+    const counts = new Map<string, number>();
+    for (const entry of entries) counts.set(entry.threadId, (counts.get(entry.threadId) ?? 0) + 1);
+    const budget = { remainingBytes: 16 * 1024 * 1024 };
+    return entries.flatMap((entry) => {
+      if (counts.get(entry.threadId) !== 1) return [];
+      const meta = readCodexSessionMeta(entry.filePath, budget);
+      if (!meta || meta.id !== entry.threadId || isIgnoredProjectFolder(meta.cwd ?? "")) return [];
+      return [{ ...entry, meta }];
+    });
+  }
+
   constructor() {
     this.checkSdkVersionOnce();
   }
