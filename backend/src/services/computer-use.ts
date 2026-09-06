@@ -42,6 +42,7 @@ interface Pending {
   sessionId?: string;
   generation?: number;
   action?: unknown;
+  frameId?: string;
   execute?: (id: string) => Promise<unknown>;
 }
 
@@ -145,8 +146,9 @@ export class ComputerUseHost {
           ...(pending.action
             ? {
                 requestedAction: pending.action,
+                requestedFrameId: pending.frameId,
                 parentSessionId: pending.sessionId,
-                reason: `Confirm one GUI action on session ${pending.sessionId}: ${JSON.stringify(pending.action)}. It may transmit data, change files, or execute code. Approval expires after two minutes.`,
+                reason: `Confirm one GUI action on session ${pending.sessionId}, frame ${pending.frameId}: ${JSON.stringify(pending.action)}. It may transmit data, change files, or execute code. Approval expires after two minutes.`,
               }
             : { reason: "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested." }),
           state: "pending_approval" as SessionStatus["state"],
@@ -201,6 +203,7 @@ export class ComputerUseHost {
       throw controlError("denied", "Approval expired or its scope changed; enable the target again");
     if (pending.execute && pending.sessionId && pending.generation) {
       this.agentLease(chatId, pending.sessionId, pending.generation);
+      this.service.assertFrame(controlPrincipal(chatId, "agent"), { sessionId: pending.sessionId, generation: pending.generation, frameId: pending.frameId! });
       const result = await pending.execute(id);
       if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) {
         throw controlError("driver_error", "The approved action did not complete. Refresh session state before retrying; approval cannot be reused.");
@@ -238,7 +241,7 @@ export class ComputerUseHost {
     const grant = this.grant(chatId, id);
     return this.service.observe(controlPrincipal(chatId, "human"), { sessionId: id, generation: grant.lease.generation });
   }
-  async action(chatId: string, id: string, action: unknown, generation: unknown) {
+  async action(chatId: string, id: string, action: unknown, generation: unknown, frameId: string) {
     const grant = this.grant(chatId, id);
     if (generation !== grant.lease.generation) throw controlError("stale_generation", "Refresh the viewer before acting");
     if (action && typeof action === "object" && (action as { type?: string }).type === "drag") {
@@ -251,6 +254,7 @@ export class ComputerUseHost {
         generation: grant.lease.generation,
         leaseId: grant.lease.leaseId,
         actionId: randomUUID(),
+        frameId,
         action: action as Action,
       }),
     );
@@ -291,9 +295,10 @@ export class ComputerUseHost {
     this.grants.delete(id);
     return this.presentation(result);
   }
-  async requestAgentAction(chatId: string, id: string, generation: number, action: unknown, execute: (id: string) => Promise<unknown>) {
+  async requestAgentAction(chatId: string, id: string, generation: number, frameId: string, action: unknown, execute: (id: string) => Promise<unknown>) {
     const grant = this.grant(chatId, id);
     this.agentLease(chatId, id, generation);
+    this.service.assertFrame(controlPrincipal(chatId, "agent"), { sessionId: id, generation, frameId });
     if (
       !action ||
       typeof action !== "object" ||
@@ -312,7 +317,8 @@ export class ComputerUseHost {
       expiresAt: Date.now() + 120_000,
       sessionId: id,
       generation,
-      action,
+      action: structuredClone(action),
+      frameId,
       execute,
     });
     return {

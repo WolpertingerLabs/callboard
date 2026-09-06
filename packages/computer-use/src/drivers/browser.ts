@@ -59,7 +59,7 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
   return {
     kind: "browser",
     probe,
-    async open({ signal }) {
+    async open({ signal, onTargetChanged }) {
       signal.throwIfAborted();
       const { chromium } = await import("playwright");
       const profile = await mkdtemp(join(tmpdir(), "computer-use-browser-"));
@@ -132,6 +132,8 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
         await context.routeWebSocket("**/*", (ws) => ws.close());
         active = context.pages()[0] ?? (await context.newPage());
         const configure = (page: Page) => {
+          page.on("framenavigated", () => onTargetChanged?.());
+          page.on("close", () => onTargetChanged?.());
           page.on("dialog", (dialog) => {
             void dialog.dismiss().catch(() => {});
           });
@@ -141,6 +143,7 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
         };
         configure(active);
         context.on("page", (page) => {
+          onTargetChanged?.();
           configure(page);
           active = page;
         });

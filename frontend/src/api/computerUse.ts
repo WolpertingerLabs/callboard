@@ -61,6 +61,8 @@ export function validateObservation(value: ComputerUseObservation): ComputerUseO
   const frame = value?.frame;
   if (
     !frame ||
+    typeof value.frameId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.frameId) ||
     !["image/png", "image/jpeg", "image/webp"].includes(frame.mimeType) ||
     typeof frame.data !== "string" ||
     frame.data.length > 28_000_000 ||

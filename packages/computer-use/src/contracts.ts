@@ -22,6 +22,7 @@ export type ErrorCode =
   | "approval_required"
   | "unsupported"
   | "not_found"
+  | "stale_frame"
   | "stale_generation"
   | "lease_conflict"
   | "stopped"
@@ -77,7 +78,7 @@ export interface Driver {
   /** Shared native input MUST share a lock domain, including across driver instances. */
   readonly lockDomain?: string;
   probe(): Promise<Probe>;
-  open(context: { sessionId: string; signal: AbortSignal }): Promise<DriverSession>;
+  open(context: { sessionId: string; signal: AbortSignal; onTargetChanged?: () => void }): Promise<DriverSession>;
 }
 export interface Target {
   readonly id: string;
@@ -100,6 +101,8 @@ export interface LeaseRef extends SessionRef {
   leaseId: string;
 }
 export interface ActionRequest extends LeaseRef {
+  /** Exact observation token; single-use and invalid after newer captures or known target changes. */
+  frameId: string;
   actionId: string;
   action: Action;
 }
@@ -115,6 +118,8 @@ export interface Lease extends SessionStatus {
   leaseId: string;
 }
 export interface Observation extends SessionRef {
+  /** Metadata paired with these pixels, never inferred from the control generation. */
+  frameId: string;
   frame: Frame;
 }
 /** Audit events deliberately omit pixels, URLs, text, and input payloads. */

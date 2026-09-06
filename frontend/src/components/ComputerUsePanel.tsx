@@ -221,7 +221,7 @@ export default function ComputerUsePanel({
         {
           action: value,
           expectedGeneration: session.generation,
-          frameId: frame.id,
+          frameId: observation!.frameId,
           requestId: crypto.randomUUID(),
         },
         signal,

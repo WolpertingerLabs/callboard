@@ -33,13 +33,13 @@ interface Principal {
 }
 interface SessionRef { sessionId: string; generation: number }
 interface LeaseRef extends SessionRef { leaseId: string }
-interface ActionRequest extends LeaseRef { actionId: string; action: Action }
+interface ActionRequest extends LeaseRef { frameId: string; actionId: string; action: Action }
 
 const service = new ComputerUseService({ targets, authorize });
 service.status(principal, sessionId?);             // SessionStatus[]; redacted, no leases
 await service.probe(principal, targetId);          // Probe
 await service.open(principal, targetId, signal?);  // Lease; observe before first act
-await service.observe(principal, sessionRef, signal?); // Observation { ...ref, frame }
+await service.observe(principal, sessionRef, signal?); // Observation { ...ref, frameId, frame }
 await service.act(principal, actionRequest, signal?);  // SessionStatus
 await service.takeover(humanPrincipal, sessionRef);    // Lease for that human actor
 await service.resume(humanPrincipal, humanLeaseRef);  // Lease & { observation }
@@ -51,7 +51,7 @@ const unsubscribe = service.subscribe(principal, event => {});
 
 `resume` restores the immutable original opener identity with a **new lease and generation**, and captures a fresh frame under that identity's current authorization before returning. Normally the host opens using an agent principal even when an authenticated user clicks Enable. Human observations/input use the same service; human input requires the human lease. `takeover`/`resume` are **trusted human control-plane APIs only**, never model tools. Keep lease IDs in authenticated controller state, not status listings or audit events. Opening a new MCP connection does not itself rotate an existing lease. Hosts must stop/revoke the old controller's sessions before retiring/rebinding its turn identity, or explicitly hand control through the human control plane; transport close alone is not a service revocation.
 
-A `Driver` has immutable `kind: 'browser' | 'native-desktop'`, `probe()`, `open({sessionId, signal})`, and an optional `lockDomain` (mandatory for native). `open` returns a `DriverSession` with `observe(signal)`, `act(action, signal)`, `releaseInput()`, and `close()`. Driver code is privileged trusted infrastructure, not a security sandbox. It must settle promptly on abort, release only its held input, never mutate after settlement, and preserve pre-existing native apps. Screenshot pixel coordinates must equal input coordinates. Share lock domains for any shared input device; separate native display screens do not imply independent keyboards.
+A `Driver` has immutable `kind: 'browser' | 'native-desktop'`, `probe()`, `open({sessionId, signal, onTargetChanged?})`, and an optional `lockDomain` (mandatory for native). `open` returns a `DriverSession` with `observe(signal)`, `act(action, signal)`, `releaseInput()`, and `close()`. Driver code is privileged trusted infrastructure, not a security sandbox. It must settle promptly on abort, release only its held input, never mutate after settlement, and preserve pre-existing native apps. Screenshot pixel coordinates must equal input coordinates. Share lock domains for any shared input device; separate native display screens do not imply independent keyboards.
 
 `Action` is a strict discriminated union: `click`, `move`, `drag`, `scroll`, `type`, `key`, `navigate` (browser only), `wait`. No arbitrary shell/eval, app launch, DOM evaluation, clipboard, upload/download API or host file paths. See the exported type for exact fields. Keys use e.g. `Control+a`, `Enter`, `ArrowDown`. Holds/waits are at most 2 seconds, text at most 4096 characters, pointer coordinates are checked against an authorized frame. Native scroll maps each 100 pixels to a wheel step. Native Unicode typing is conservative per-key input and may be slow/layout-dependent; it needs live target qualification.
 
@@ -129,7 +129,7 @@ One canonical tool surface, from `getToolDefinitions`:
 2. `computer_probe` — `{ targetId }`
 3. `computer_open` — `{ targetId }`
 4. `computer_observe` — `{ sessionId, generation }`
-5. `computer_act` — `{ sessionId, generation, leaseId, actionId, action }`
+5. `computer_act` — `{ sessionId, generation, leaseId, frameId, actionId, action }`
 6. `computer_stop` — `{ sessionId }`
 7. `computer_revoke` — `{ sessionId }`
 
@@ -144,3 +144,11 @@ COMPUTER_USE_TEST_CHROMIUM=/absolute/path/to/chrome npm test
 ```
 
 The smoke test uses only a disposable isolated browser and local fixture HTTP server. It tests actual pixels, navigation, persistent form state, human input/resume and cross-owner profile isolation. It skips with an explicit unqualified reason unless `COMPUTER_USE_TEST_CHROMIUM` is supplied; it never installs browsers. When opted in, missing prerequisites or sandboxed launch failure **fail** the smoke rather than counting as a pass or retrying without a sandbox. Launch failure is labelled `SANDBOXED_BROWSER_UNAVAILABLE` and occurs before the fixture HTTP listener starts. Mock launch tests verify mandatory sandbox options, sanitized failure, profile cleanup and absence of fallback; they are not live browser qualification. Fake-driver tests cover policy, identity, lease/generation races, human-takeover screen privacy at capture/queue/delivery boundaries, queued cancellation, revocation before image delivery, TTL, and native incompatibility. Real MCP in-memory initialize/list/call and actual stdio subprocess discovery are tested. No tests capture/control a live native desktop. Native apps, GPU/Wayland/macOS/Windows, five harness/model vision routes, durable host policy, crash watchdogs and artistic workflows remain **unqualified**.
+
+### Observation authority
+
+A generation is a **control-lease epoch**, not a screenshot token. Every observation returns an unguessable UUID `frameId` in its metadata (MCP still returns a separate image block). Actions require that exact ID. The service retains at most one actionable frame per session, bound to controller identity, generation and target/action revision, and rechecks it at execution after asynchronous authorization. A newer controller capture supersedes older tab coordinates. Passive human previews of agent-controlled work issue no agent action authority and do not replace its capture.
+
+Every action consumes its frame before driver dispatch, even if it partially fails. Observe again before the next action. Navigation, page creation/closure, frame navigation, takeover, resume and stop also invalidate old authority. Drivers should call `onTargetChanged` whenever they detect a target change. Human approvals bind the exact action and frame; a changed target or newer controlling capture makes the approval stale rather than permitting replay. Missing/legacy IDs fail closed; `stale_frame` means capture again and request a new approval, not retry the old mutation.
+
+Asynchronous external changes (animation, DOM updates, physical input and native app activity) cannot be perfectly detected from pixels. Re-observe after any suspected change; these tokens fence **known** revisions, not a promise that the screen cannot change between capture and input.

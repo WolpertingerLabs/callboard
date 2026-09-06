@@ -39,3 +39,5 @@ export const actionSchema = z.discriminatedUnion("type", [
 ]);
 export const refShape = { sessionId: z.string().uuid(), generation: z.number().int().positive() };
 export const leaseShape = { ...refShape, leaseId: z.string().uuid() };
+
+export const frameShape = { frameId: z.string().uuid() };

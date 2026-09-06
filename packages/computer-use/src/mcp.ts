@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ComputerUseError, type Principal } from "./contracts.js";
 import { ComputerUseService } from "./service.js";
-import { actionSchema, leaseShape, refShape } from "./validation.js";
+import { actionSchema, leaseShape, refShape, frameShape } from "./validation.js";
 
 export interface ToolDefinition {
   name: string;
@@ -70,8 +70,8 @@ export function getToolDefinitions(service: ComputerUseService, principal: Princ
     define("computer_observe", "Obtain an authorized fresh screenshot from an owner session.", refShape, (input, sig) => service.observe(p, input, sig)),
     define(
       "computer_act",
-      "One bounded input action using the current generation and exclusive lease; no shell/eval.",
-      { ...leaseShape, actionId: z.string().min(1).max(128), action: actionSchema },
+      "One bounded input action using the exact frameId from observe and current exclusive lease. Observe again after every action; no shell/eval.",
+      { ...leaseShape, ...frameShape, actionId: z.string().min(1).max(128), action: actionSchema },
       (input, sig) => service.act(p, input, sig),
     ),
     define("computer_stop", "Immediately fence session input/capture and detach. Native applications remain open.", { sessionId: z.string().uuid() }, (input) =>

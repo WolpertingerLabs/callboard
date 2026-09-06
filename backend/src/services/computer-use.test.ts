@@ -60,32 +60,50 @@ describe("computer-use human grants", () => {
   it("manual input requires human takeover and a matching generation", async () => {
     const { host, act } = fixture();
     const opened = await host.open("a", "browser");
-    await host.observe("a", opened.id);
-    await expect(host.action("a", opened.id, { type: "click", x: 1, y: 1 }, opened.generation)).rejects.toMatchObject({ code: "lease_conflict" });
+    const preview = await host.observe("a", opened.id);
+    await expect(host.action("a", opened.id, { type: "click", x: 1, y: 1 }, opened.generation, preview.frameId)).rejects.toMatchObject({
+      code: "lease_conflict",
+    });
     const taken = await host.takeover("a", opened.id, opened.generation);
-    await expect(host.action("a", opened.id, { type: "click", x: 1, y: 1 }, opened.generation)).rejects.toMatchObject({ code: "stale_generation" });
-    await host.action("a", opened.id, { type: "click", x: 1, y: 1 }, taken.generation);
+    await expect(host.action("a", opened.id, { type: "click", x: 1, y: 1 }, opened.generation, preview.frameId)).rejects.toMatchObject({
+      code: "stale_generation",
+    });
+    await host.action("a", opened.id, { type: "click", x: 1, y: 1 }, taken.generation, (await host.observe("a", opened.id)).frameId);
     expect(act).toHaveBeenCalledOnce();
     const resumed = await host.resume("a", opened.id, taken.generation);
     expect(resumed.controller).toBe("agent");
   });
   it("mutation approval is scoped, one-use, and invalidated by takeover", async () => {
-    const { host } = fixture();
+    const { host, service } = fixture();
     const opened = await host.open("a", "browser");
     const execute = vi.fn(async () => ({ done: true }));
-    const approval = await host.requestAgentAction("a", opened.id, opened.generation, { type: "click", x: 1, y: 1 }, execute);
+    const approval = await host.requestAgentAction(
+      "a",
+      opened.id,
+      opened.generation,
+      (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId,
+      { type: "click", x: 1, y: 1 },
+      execute,
+    );
     expect(execute).not.toHaveBeenCalled();
     await host.takeover("a", opened.id, opened.generation);
     await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "stale_generation" });
     expect(execute).not.toHaveBeenCalled();
   });
   it("does not report a failed MCP mutation as a successful human approval", async () => {
-    const { host } = fixture();
+    const { host, service } = fixture();
     const opened = await host.open("a", "browser");
-    const approval = await host.requestAgentAction("a", opened.id, opened.generation, { type: "click", x: 1, y: 1 }, async () => ({
-      isError: true,
-      content: [],
-    }));
+    const approval = await host.requestAgentAction(
+      "a",
+      opened.id,
+      opened.generation,
+      (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId,
+      { type: "click", x: 1, y: 1 },
+      async () => ({
+        isError: true,
+        content: [],
+      }),
+    );
     await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "driver_error" });
     await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "denied" });
   });
@@ -96,3 +114,29 @@ describe("computer-use human grants", () => {
     await expect(host.approve("a", pending.id)).rejects.toMatchObject({ code: "denied" });
   });
 });
+
+for (const level of ["allow", "ask"])
+  it(`frame-bound approvals remain visible under ${level} but cannot execute after another capture`, async () => {
+    const { host, service } = fixture(level);
+    let opened = await host.open("a", "browser");
+    if (level === "ask") opened = (await host.approve("a", opened.id)) as typeof opened;
+    const ref = { sessionId: opened.id, generation: opened.generation };
+    const frame = await service.observe(controlPrincipal("a", "agent"), ref);
+    const action = { type: "click", x: 1, y: 2 };
+    const execute = vi.fn(async () => ({}));
+    const approval = await host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, action, execute);
+    action.x = 90;
+    expect((await host.status("a")).sessions).toContainEqual(
+      expect.objectContaining({
+        id: approval.approvalId,
+        state: "pending_approval",
+        requestedFrameId: frame.frameId,
+        requestedAction: { type: "click", x: 1, y: 2 },
+        reason: expect.stringContaining(frame.frameId),
+      }),
+    );
+    await service.observe(controlPrincipal("a", "agent"), ref);
+    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "stale_frame" });
+    expect(execute).not.toHaveBeenCalled();
+    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "denied" });
+  });

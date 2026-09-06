@@ -16,7 +16,12 @@ const frame = {
 };
 const ref = (l) => ({ sessionId: l.sessionId, generation: l.generation });
 const lease = (l) => ({ ...ref(l), leaseId: l.leaseId });
-const action = (l, id = "a", a = { type: "click", x: 1, y: 2 }) => ({ ...lease(l), actionId: id, action: a });
+const action = (l, id = "a", a = { type: "click", x: 1, y: 2 }) => ({
+  ...lease(l),
+  frameId: l.frameId ?? l.observation?.frameId ?? "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+  actionId: id,
+  action: a,
+});
 function fake(overrides = {}) {
   const calls = { open: 0, observe: 0, act: 0, release: 0, close: 0 };
   return {
@@ -85,14 +90,14 @@ test("owner isolation, immutable identity, fresh observation and strict action v
   p.ownerId = "other";
   assert.deepEqual(s.status(other), []);
   await assert.rejects(s.observe(other, ref(opened)), error("not_found"));
-  await assert.rejects(s.act(agent, action(opened)), error("stale_generation"));
+  await assert.rejects(s.act(agent, action(opened)), error("stale_frame"));
   await s.dispose();
   assert.equal(calls.act, 0);
 });
 test("screenshot/input persistence, no replay or spoofed fields", async () => {
   const { service: s, calls } = setup();
   const l = await s.open(agent, "browser");
-  await s.observe(agent, ref(l));
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
   await s.act(agent, action(l));
   await assert.rejects(s.act(agent, action(l)), error("invalid_request"));
   const tools = getToolDefinitions(s, agent);
@@ -104,7 +109,7 @@ test("screenshot/input persistence, no replay or spoofed fields", async () => {
 test("generation and actor lease reject before dispatch", async () => {
   const { service: s, calls } = setup();
   const l = await s.open(agent, "browser");
-  await s.observe(agent, ref(l));
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
   await assert.rejects(s.act({ ...agent, actorId: "another" }, action(l)), error("lease_conflict"));
   await assert.rejects(s.act(agent, { ...action(l), generation: 50 }), error("stale_generation"));
   assert.equal(calls.act, 0);
@@ -175,11 +180,11 @@ test("subscriber cannot revoke synchronously and still receive a returned image"
 test("human takeover and resume use the same driver, fresh frame, exclusive new lease", async () => {
   const { service: s, calls } = setup();
   const l = await s.open(agent, "browser");
-  await s.observe(agent, ref(l));
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
   await assert.rejects(s.takeover(agent, ref(l)), error("denied"));
   const h = await s.takeover(human, ref(l));
   await assert.rejects(s.act(agent, action(l)), error("stale_generation"));
-  await s.observe(human, ref(h));
+  h.frameId = (await s.observe(human, ref(h))).frameId;
   await s.act(human, action(h, "human"));
   const resumed = await s.resume(human, lease(h));
   assert.equal(resumed.observation.frame.data, frame.data);
@@ -203,7 +208,7 @@ test("takeover cancels old action but waits physical settlement before granting 
     },
   );
   const l = await s.open(agent, "browser");
-  await s.observe(agent, ref(l));
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
   const a = s.act(agent, action(l));
   await started;
   const old = assert.rejects(a, error("cancelled"));
@@ -218,13 +223,13 @@ test("takeover cancels old action but waits physical settlement before granting 
   const h = await takeover;
   await old;
   assert.equal(h.state, "ready");
-  await s.observe(human, ref(h));
+  h.frameId = (await s.observe(human, ref(h))).frameId;
   await s.dispose();
 });
 test("priority stop idempotent and abort signal fences session", async () => {
   const { service: s } = setup();
   const l = await s.open(agent, "browser");
-  await s.observe(agent, ref(l));
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
   const ac = new AbortController();
   ac.abort();
   await assert.rejects(s.act(agent, action(l), ac.signal), error("cancelled"));
@@ -323,11 +328,19 @@ test("real MCP initialize/list/call preserves text + image and fixed manifest", 
       tools.some((t) => t.name.includes("grant") || t.name.includes("resume")),
       false,
     );
+    assert.ok(tools.find((t) => t.name === "computer_act").inputSchema.required.includes("frameId"));
     const opened = await client.callTool({ name: "computer_open", arguments: { targetId: "browser" } });
     const l = JSON.parse(opened.content[0].text);
     const image = await client.callTool({ name: "computer_observe", arguments: ref(l) });
     assert.equal(image.content[0].type, "text");
     assert.deepEqual(image.content[1], { type: "image", data: frame.data, mimeType: "image/png" });
+    l.frameId = JSON.parse(image.content[0].text).frameId;
+    assert.match(l.frameId, /^[0-9a-f-]{36}$/);
+    const legacy = { ...action(l) };
+    delete legacy.frameId;
+    assert.equal((await client.callTool({ name: "computer_act", arguments: legacy })).isError, true);
+    assert.equal((await client.callTool({ name: "computer_act", arguments: action(l, "fresh-mcp") })).isError, undefined);
+    assert.equal((await client.callTool({ name: "computer_act", arguments: action(l, "stale-mcp") })).isError, true);
     const denied = await client.callTool({ name: "computer_act", arguments: { ...action(l), principal: other } });
     assert.equal(denied.isError, true);
   } finally {
@@ -418,7 +431,7 @@ test("human ownership blocks agent capture even with current public generation; 
   const { service: s, calls } = setup();
   t.after(() => s.dispose());
   const l = await s.open(agent, "browser");
-  await s.observe(human, ref(l)); // Authenticated viewer may observe agent-controlled work.
+  l.frameId = (await s.observe(human, ref(l))).frameId; // Authenticated viewer may observe agent-controlled work.
   const h = await s.takeover(human, ref(l));
   const publicRef = ref(s.status(agent, h.sessionId)[0]);
   const before = calls.observe;
@@ -440,6 +453,7 @@ test("human ownership blocks agent capture even with current public generation; 
   assert.equal(resumed.observation.frame.data, frame.data);
   await assert.rejects(s.observe(agent, publicRef), error("stale_generation"));
   const normal = await s.observe(agent, ref(resumed));
+  resumed.frameId = normal.frameId;
   assert.equal(normal.frame.data, frame.data);
   await s.act(agent, action(resumed, "after-explicit-return"));
 });
@@ -486,7 +500,7 @@ test("takeover fences queued and in-flight screenshots, including new-generation
     false,
   );
   assert.equal(captures, 1); // Queued and new-generation calls never reached capture.
-  await s.observe(human, ref(h));
+  h.frameId = (await s.observe(human, ref(h))).frameId;
   assert.equal(captures, 2);
 });
 
@@ -496,8 +510,8 @@ test("takeover during final asynchronous authorization discards an already captu
   let observations = 0;
   const { service: s, calls } = setup({
     authorize: async (request) => {
-      // enqueue, dequeue, queue delivery, then final observe delivery.
-      if (request.operation === "observe" && request.principal.role === "agent" && ++observations === 4) {
+      // enqueue, dequeue, captured-frame check, queue delivery, final delivery.
+      if (request.operation === "observe" && request.principal.role === "agent" && ++observations === 5) {
         entered.resolve();
         await settle.promise;
       }
@@ -515,7 +529,7 @@ test("takeover during final asynchronous authorization discards an already captu
   const h = await s.takeover(human, ref(l));
   settle.resolve();
   await rejected;
-  await s.observe(human, ref(h));
+  h.frameId = (await s.observe(human, ref(h))).frameId;
 });
 
 test("MCP discards a service frame if takeover completes before image serialization", async (t) => {

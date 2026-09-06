@@ -20,7 +20,14 @@ test("browser always requests Chromium sandboxing and cleans its disposable prof
   let profile,
     options,
     closes = 0;
-  const page = { on() {} };
+  const pageEvents = new Map(),
+    contextEvents = new Map();
+  let changes = 0;
+  const page = {
+    on(name, callback) {
+      pageEvents.set(name, callback);
+    },
+  };
   t.mock.method(chromium, "launchPersistentContext", async (path, value) => {
     profile = path;
     options = value;
@@ -32,14 +39,22 @@ test("browser always requests Chromium sandboxing and cleans its disposable prof
       async route() {},
       async routeWebSocket() {},
       pages: () => [page],
-      on() {},
+      on(name, callback) {
+        contextEvents.set(name, callback);
+      },
       async close() {
         closes++;
       },
     };
   });
   const driver = createBrowserDriver({ executablePath: process.execPath });
-  const session = await driver.open({ sessionId: "fixture", signal: new AbortController().signal });
+  const session = await driver.open({
+    sessionId: "fixture",
+    signal: new AbortController().signal,
+    onTargetChanged: () => {
+      changes++;
+    },
+  });
   try {
     assert.equal(options.chromiumSandbox, true);
     assert.equal(
@@ -47,6 +62,10 @@ test("browser always requests Chromium sandboxing and cleans its disposable prof
       false,
     );
     assert.equal(options.ignoreDefaultArgs, undefined);
+    pageEvents.get("framenavigated")();
+    pageEvents.get("close")();
+    contextEvents.get("page")(page);
+    assert.equal(changes, 3); // Driver reports known navigation/closure/popup revisions.
   } finally {
     await session.close();
   }

@@ -141,7 +141,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
       ),
       defineTool(
         "cu_observe",
-        "Return a fresh screenshot to the model. Observe before acting, especially after human takeover. Coordinates use original screenshot pixels.",
+        "Return a fresh screenshot and frameId to the model. Pass that exact frameId to cu_action; observe again after every action or suspected target change. Coordinates use original screenshot pixels.",
         ref,
         (input, context?: Context) => call("computer_observe", input, context),
       ),
@@ -150,6 +150,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
         "Request one bounded GUI input. Human confirmation is required because pixel actions may send data or execute code. No shell/eval. Use cu_status/observe after confirmation.",
         {
           ...ref,
+          frameId: z.string().uuid().describe("Exact frameId returned by cu_observe; observe again after every action or target change."),
           action: z
             .record(z.string(), z.unknown())
             .describe(
@@ -160,11 +161,12 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
           try {
             const turn = currentTurn(getChatId());
             if (!turn || turn.signal.aborted) throw controlError("cancelled", "No active chat turn");
+            input = structuredClone(input); // Approval and execution retain the same immutable request snapshot.
             const host = await getComputerUseHost();
             return text(
-              await host.requestAgentAction(getChatId(), input.sessionId, input.generation, input.action, async (actionId) => {
+              await host.requestAgentAction(getChatId(), input.sessionId, input.generation, input.frameId, input.action, async (actionId) => {
                 const lease = host.agentLease(getChatId(), input.sessionId, input.generation);
-                return call("computer_act", { ...lease, actionId, action: input.action }, { signal: turn.signal }, turn.signal);
+                return call("computer_act", { ...lease, frameId: input.frameId, actionId, action: input.action }, { signal: turn.signal }, turn.signal);
               }),
             );
           } catch (error) {

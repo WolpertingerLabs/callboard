@@ -30,10 +30,19 @@ describe("computer-use HTTP adapter", () => {
     expect(() => validateStatus({ permission: "allow", capabilities: [{ kind: "native", available: "true" }], sessions: [] } as never)).toThrow();
   });
   it("rejects non-raster, malformed and unbounded frames", () => {
-    const good = { generation: 2, frame: { data: "AA==", mimeType: "image/png" as const, width: 10, height: 20 } };
+    const good = {
+      generation: 2,
+      frameId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+      frame: { data: "AA==", mimeType: "image/png" as const, width: 10, height: 20 },
+    };
     expect(validateObservation(good)).toBe(good);
+    for (const frameId of [undefined, "", "legacy", "x".repeat(4096)]) {
+      expect(() => validateObservation({ ...good, frameId } as typeof good)).toThrow("Invalid screenshot");
+    }
     for (const patch of [{ mimeType: "image/svg+xml" }, { width: 0 }, { height: 20000 }, { data: "data:bad" }]) {
-      expect(() => validateObservation({ ...good, frame: { ...good.frame, ...patch } } as typeof good)).toThrow("Invalid screenshot");
+      expect(() =>
+        validateObservation({ ...good, frameId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", frame: { ...good.frame, ...patch } } as typeof good),
+      ).toThrow("Invalid screenshot");
     }
   });
 });

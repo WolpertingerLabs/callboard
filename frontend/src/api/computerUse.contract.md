@@ -10,9 +10,9 @@ lease and stale-frame enforcement.
 
 - GET `/status`: `{ capabilities: [{ kind, available, reason? }], sessions, permission }`.
 - POST `/open`: `{ kind: "browser" | "native" }` → `{ session }`.
-- POST `/:sessionId/observe`: `{}` → `{ frame: { data, mimeType, width, height, id? }, generation }`.
+- POST `/:sessionId/observe`: `{}` → `{ frame: { data, mimeType, width, height }, frameId, generation }`.
   Data is raw base64 raster bytes, not a URL. Screenshots are never stored in localStorage.
-- POST `/:sessionId/action`: `{ action, expectedGeneration, frameId?, requestId }`.
+- POST `/:sessionId/action`: `{ action, expectedGeneration, frameId, requestId }`.
   See shared discriminated action union (click, move, drag, scroll, key, type, navigate).
   Pointer coordinates are screenshot pixels; the driver owns capture/DPI/native-coordinate transforms.
 - POST `/:sessionId/takeover|resume|stop|revoke|approve`: `{ expectedGeneration }`.
@@ -31,7 +31,7 @@ entry points navigate to it), so one viewer integration serves ordinary and agen
 The collapsed panel makes no requests. Expanding reads status only. Enable,
 approval, screenshot capture, takeover and resume are separate explicit clicks.
 While expanded, status refreshes every 3 seconds, without automatic captures.
-Manual input requires human control and a fresh same-generation screenshot;
+Manual input requires human control and the required frameId from a fresh same-generation screenshot;
 screenshots clear on hide/close/control changes/error/revoke. Emergency stop/revoke
 can supersede in-flight requests. The action list is local tab activity, not a
 claim of complete server audit history.
@@ -40,3 +40,5 @@ Capability availability must include server/runtime/engine readiness. This UI
 does not qualify models or platforms, install browsers/helpers, or substitute
 the viewer's machine for a native service-host target. Native availability on
 headless or unsupported hosts must be false with an actionable reason.
+
+The frameId is a UUID, not a lease generation or optional image label. Missing IDs return 400; stale IDs return 409. The viewer sends the exact ID paired with its displayed capture, then captures again after an action. A capture in another controlling tab supersedes the prior frame; subsequent captures cannot make an old ID valid again. Approval cards retain their exact frame/action snapshot. External asynchronous UI changes cannot be perfectly detected; re-observation remains necessary after suspected changes.

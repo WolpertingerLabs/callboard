@@ -51,7 +51,7 @@ function handle(fn: (req: Request) => Promise<unknown>) {
             ? 400
             : ["denied", "approval_required"].includes(code)
               ? 403
-              : ["lease_conflict", "stale_generation", "stopped", "revoked"].includes(code)
+              : ["lease_conflict", "stale_frame", "stale_generation", "stopped", "revoked"].includes(code)
                 ? 409
                 : 503;
       res.status(status).json({ code, error: value.code ? value.message : "Computer control is unavailable. Check the configured driver prerequisites." });
@@ -87,7 +87,10 @@ computerUseRouter.post(
   "/:chatId/:sessionId/action",
   handle(async (req) => {
     const { chatId, sessionId } = ids(req);
-    return (await getComputerUseHost()).action(chatId, sessionId, req.body?.action, req.body?.expectedGeneration ?? req.body?.generation);
+    const frameId = req.body?.frameId;
+    if (typeof frameId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(frameId))
+      throw Object.assign(new Error("A fresh observation frameId is required"), { code: "invalid_request" });
+    return (await getComputerUseHost()).action(chatId, sessionId, req.body?.action, req.body?.expectedGeneration ?? req.body?.generation, frameId);
   }),
 );
 for (const operation of ["approve", "takeover", "resume", "stop", "revoke"] as const) {

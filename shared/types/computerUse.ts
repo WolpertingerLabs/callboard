@@ -27,9 +27,9 @@ export interface ComputerUseFrame {
   mimeType: "image/png" | "image/jpeg" | "image/webp";
   width: number;
   height: number;
-  id?: string;
 }
 export interface ComputerUseObservation {
+  frameId: string;
   frame: ComputerUseFrame;
   generation: number;
 }
@@ -44,6 +44,6 @@ export type ComputerUseAction =
 export interface ComputerUseActionRequest {
   action: ComputerUseAction;
   expectedGeneration: number;
-  frameId?: string;
+  frameId: string;
   requestId: string;
 }

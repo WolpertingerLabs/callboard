@@ -17,7 +17,7 @@ import {
   type SessionStatus,
   type Target,
 } from "./contracts.js";
-import { actionSchema, leaseShape, refShape } from "./validation.js";
+import { actionSchema, leaseShape, refShape, frameShape } from "./validation.js";
 
 const domains = new Map<string, string>();
 const principalSchema = z.object({ ownerId: z.string().min(1).max(256), actorId: z.string().min(1).max(256), role: z.enum(["agent", "human"]) }).strict();
@@ -42,8 +42,8 @@ interface Session {
   tail: Promise<void>;
   pending: number;
   seen: Set<string>;
-  fresh: boolean;
-  frame?: { width: number; height: number };
+  revision: number;
+  frame?: { id: string; revision: number; generation: number; actorId: string; role: Principal["role"]; width: number; height: number };
   timer?: NodeJS.Timeout;
   cleanup?: Promise<void>;
   inflight?: Promise<unknown>;
@@ -190,11 +190,36 @@ export class ComputerUseService {
   private fence(s: Session, state: SessionStatus["state"]): void {
     s.generation++;
     s.state = state;
-    s.fresh = false;
-    s.frame = undefined;
+    this.invalidateFrame(s);
     s.abort.abort();
     clearTimeout(s.timer);
     this.emit(s, state === "revoked" ? "revoked" : state === "failed" ? "failed" : "stopped");
+  }
+  private invalidateFrame(s: Session): void {
+    s.revision++;
+    s.frame = undefined;
+  }
+  /** Synchronous preflight for host approvals; act repeats this after async policy at dequeue. */
+  assertFrame(principal: Principal, ref: SessionRef & { frameId: string }): void {
+    const p = identity(principal);
+    const parsed = z
+      .object({ ...refShape, ...frameShape })
+      .strict()
+      .parse(ref);
+    const s = this.own(p, parsed.sessionId);
+    this.check(s, parsed);
+    const f = s.frame;
+    if (
+      !f ||
+      f.id !== parsed.frameId ||
+      f.revision !== s.revision ||
+      f.generation !== s.generation ||
+      f.actorId !== p.actorId ||
+      f.role !== p.role ||
+      s.controller.actorId !== p.actorId ||
+      s.controller.role !== p.role
+    )
+      fail("stale_frame");
   }
   private cleanup(s: Session): Promise<void> {
     return (s.cleanup ??= (async () => {
@@ -237,7 +262,11 @@ export class ComputerUseService {
     try {
       return await Promise.race([pending, cancelled]);
     } catch (error) {
-      if (s.generation === generation && (s.state === "ready" || s.state === "starting")) {
+      if (
+        !(error instanceof ComputerUseError && error.code === "stale_frame") &&
+        s.generation === generation &&
+        (s.state === "ready" || s.state === "starting")
+      ) {
         this.fence(s, "failed");
         void this.cleanup(s);
       }
@@ -346,7 +375,7 @@ export class ComputerUseService {
       tail: Promise.resolve(),
       pending: 0,
       seen: new Set(),
-      fresh: false,
+      revision: 0,
     };
     this.sessions.set(id, s);
     const ref = { sessionId: id, generation: 1 };
@@ -357,7 +386,7 @@ export class ComputerUseService {
           const probe = await t.driver.probe();
           sig.throwIfAborted();
           if (!probe.available) throw new ComputerUseError("unsupported", probe.reason ?? "Target unavailable");
-          const driver = await t.driver.open({ sessionId: id, signal: sig });
+          const driver = await t.driver.open({ sessionId: id, signal: sig, onTargetChanged: () => this.invalidateFrame(s) });
           if (sig.aborted || s.generation !== ref.generation) {
             await driver.releaseInput();
             await driver.close();
@@ -390,7 +419,7 @@ export class ComputerUseService {
     const p = identity(principal);
     ref = z.object(refShape).strict().parse(ref);
     const s = this.own(p, ref.sessionId);
-    const frame = await this.queue(
+    const observation = await this.queue(
       p,
       s,
       ref,
@@ -398,6 +427,7 @@ export class ComputerUseService {
       async (sig) => {
         this.check(s, ref);
         this.observer(s, p);
+        const revision = s.revision;
         const f = await s.driver!.observe(sig);
         if (
           !Number.isInteger(f.width) ||
@@ -414,13 +444,25 @@ export class ComputerUseService {
           !["image/png", "image/jpeg"].includes(f.mimeType)
         )
           fail("driver_error");
+        await this.allowed(p, "observe", s.target, s);
+        this.check(s, ref);
+        this.observer(s, p);
+        if (sig.aborted) fail("cancelled");
+        if (revision !== s.revision) fail("stale_frame");
+        const frameId = randomUUID();
+        // Passive human previews cannot replace an agent's actionable capture.
+        if (s.controller.actorId === p.actorId && s.controller.role === p.role)
+          s.frame = { id: frameId, revision, generation: s.generation, actorId: p.actorId, role: p.role, width: f.width, height: f.height };
         return {
-          data: f.data,
-          mimeType: f.mimeType,
-          width: f.width,
-          height: f.height,
-          capturedAt: f.capturedAt,
-          ...(typeof f.url === "string" ? { url: f.url.slice(0, 4096) } : {}),
+          frameId,
+          frame: {
+            data: f.data,
+            mimeType: f.mimeType,
+            width: f.width,
+            height: f.height,
+            capturedAt: f.capturedAt,
+            ...(typeof f.url === "string" ? { url: f.url.slice(0, 4096) } : {}),
+          },
         };
       },
       signal,
@@ -432,14 +474,12 @@ export class ComputerUseService {
     this.check(s, ref);
     this.observer(s, p);
     if (signal?.aborted) fail("cancelled");
-    s.frame = { width: frame.width, height: frame.height };
-    if (s.controller.actorId === p.actorId && s.controller.role === p.role) s.fresh = true;
-    return { ...ref, frame };
+    return { ...ref, ...observation };
   }
   async act(principal: Principal, request: ActionRequest, signal?: AbortSignal): Promise<SessionStatus> {
     const p = identity(principal);
     request = z
-      .object({ ...leaseShape, actionId: z.string().min(1).max(128), action: actionSchema })
+      .object({ ...leaseShape, ...frameShape, actionId: z.string().min(1).max(128), action: actionSchema })
       .strict()
       .parse(request);
     const s = this.own(p, request.sessionId);
@@ -454,10 +494,13 @@ export class ComputerUseService {
       "act",
       async (sig) => {
         this.lease(s, p, request);
-        if (!s.fresh || !s.frame) fail("stale_generation");
+        this.assertFrame(p, { sessionId: request.sessionId, generation: request.generation, frameId: request.frameId });
+        const frame = s.frame!;
         const a = request.action;
-        if ("x" in a && (a.x >= s.frame.width || a.y >= s.frame.height)) fail("invalid_request");
-        if (a.type === "drag" && (a.toX >= s.frame.width || a.toY >= s.frame.height)) fail("invalid_request");
+        if ("x" in a && (a.x >= frame.width || a.y >= frame.height)) fail("invalid_request");
+        if (a.type === "drag" && (a.toX >= frame.width || a.toY >= frame.height)) fail("invalid_request");
+        // Consume before dispatch, including actions that partially mutate and then fail.
+        this.invalidateFrame(s);
         try {
           await s.driver!.act(a, sig);
         } finally {
@@ -484,8 +527,7 @@ export class ComputerUseService {
     s.abort.abort();
     s.abort = new AbortController();
     s.state = "starting";
-    s.fresh = false;
-    s.frame = undefined;
+    this.invalidateFrame(s);
     s.leaseId = randomUUID();
     const generation = s.generation;
     const prior = s.inflight;

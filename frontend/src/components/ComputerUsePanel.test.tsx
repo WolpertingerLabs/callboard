@@ -8,7 +8,11 @@ vi.mock("../api/computerUse", () => ({
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
 }));
 let status: ComputerUseStatus;
-const observation = { generation: 1, frame: { data: "AA==", mimeType: "image/png" as const, width: 1000, height: 500, id: "frame-1" } };
+const observation = {
+  generation: 1,
+  frameId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+  frame: { data: "AA==", mimeType: "image/png" as const, width: 1000, height: 500 },
+};
 const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
 async function expand() {
   fireEvent.click(button("▸ Browser & Computer Control"));
@@ -81,7 +85,7 @@ describe("ComputerUsePanel", () => {
         {
           action: { type: "type", text: "hello" },
           expectedGeneration: 1,
-          frameId: "frame-1",
+          frameId: observation.frameId,
           requestId: expect.any(String),
         },
         expect.any(AbortSignal),
@@ -205,4 +209,27 @@ describe("ComputerUsePanel", () => {
     expect(framePoint(260, 145, { left: 10, top: 20, width: 500, height: 250 }, 1000, 500)).toEqual({ x: 500, y: 250 });
     expect(framePoint(999, -10, { left: 10, top: 20, width: 500, height: 250 }, 1000, 500)).toEqual({ x: 999, y: 0 });
   });
+});
+
+it("uses the new capture token after an action and clears stale-frame errors without retrying", async () => {
+  status.sessions[0].controller = "human";
+  const nextFrameId = "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb";
+  vi.mocked(client.observe)
+    .mockResolvedValueOnce(observation)
+    .mockResolvedValue({ ...observation, frameId: nextFrameId });
+  render(<ComputerUsePanel chatId="c1" permission="allow" />);
+  await expand();
+  fireEvent.click(button("Refresh screenshot"));
+  await screen.findByRole("img");
+  fireEvent.click(button("Enter"));
+  await waitFor(() => expect(client.action).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(client.action).mock.calls[0][2].frameId).toBe(observation.frameId);
+  await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
+  vi.mocked(client.action).mockRejectedValueOnce(new Error("stale_frame: capture again"));
+  fireEvent.click(button("Enter"));
+  await waitFor(() => expect(client.action).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(client.action).mock.calls[1][2].frameId).toBe(nextFrameId);
+  await screen.findByText("stale_frame: capture again");
+  expect(screen.queryByRole("img")).toBeNull();
+  expect(client.action).toHaveBeenCalledTimes(2);
 });
