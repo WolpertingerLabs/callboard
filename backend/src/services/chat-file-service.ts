@@ -423,14 +423,14 @@ export class ChatFileService {
 
   // Save chat to file (uses session_id as filename)
   private saveChat(chat: Chat): void {
-    // Native identity is durable; observed lifecycle/control presentation and
-    // inferred parent pointers are not user-authored metadata.
+    // Identity and lineage (including inferred pointers and their provenance)
+    // are durable: stored-only board/MCP consumers need them without discovery.
+    // Observed lifecycle/control presentation remains transient.
     try {
       const metadata = JSON.parse(chat.metadata || "{}");
       if (metadata.provider === "codex" && metadata.nativeAgent && typeof metadata.nativeAgent === "object") {
         const native = { ...metadata.nativeAgent };
-        if (native.inferredParentChatId && metadata.parentChatId === native.inferredParentChatId && !metadata.forkedFrom) delete metadata.parentChatId;
-        for (const key of ["lifecycle", "evidence", "management", "controlNote", "inferredParentChatId"]) delete native[key];
+        for (const key of ["lifecycle", "evidence", "management", "controlNote"]) delete native[key];
         chat.metadata = JSON.stringify({ ...metadata, nativeAgent: native });
       }
     } catch {

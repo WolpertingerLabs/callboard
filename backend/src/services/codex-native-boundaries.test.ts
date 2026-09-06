@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response, Router } from "express";
@@ -120,6 +120,68 @@ describe("native caller boundaries with real storage and registry", () => {
     expect(nativeMetadata(file, CHILD, first).parentChatId).toBe("stored-root");
     expect(nativeMetadata(file, CHILD, { parentChatId: "explicit" }, false).parentChatId).toBe("explicit");
   });
+  it.each(["/:id/read", "/:id/bookmark"])("persists durable lineage through %s for stored-only board and MCP consumers", async (path) => {
+    chatFileService.upsertChat("stored-root", scratch, ROOT, { metadata: '{"provider":"codex"}' });
+    const file = rollout(CHILD, true);
+    const mutation = await request(chatsRouter, path, "patch", CHILD, { bookmarked: true });
+    expect(mutation.status).not.toHaveBeenCalled();
+    const child = chatFileService.getChat(CHILD)!;
+    const metadata = JSON.parse(child.metadata);
+    expect(metadata.parentChatId).toBe("stored-root");
+    expect(metadata.nativeAgent.inferredParentChatId).toBe("stored-root");
+    expect(metadata.nativeAgent.lifecycle).toBeUndefined();
+    // Prove these consumers require neither a rollout nor transient enrichment.
+    rmSync(file);
+    const { walkToRootId, buildLineageIndex } = await import("./chat-lineage.js");
+    const { isCardRoot } = await import("./card-fields.js");
+    const { buildCardSummaries } = await import("./card-rollup.js");
+    const snapshot = chatFileService.getAllChats();
+    expect(walkToRootId(CHILD)).toBe("stored-root");
+    expect(buildLineageIndex(snapshot).existingRootIdOf(CHILD)).toBe("stored-root");
+    expect(isCardRoot(child)).toBe(false);
+    const cards = buildCardSummaries(snapshot, [], {
+      isSessionActive: () => false,
+      pendingKindOf: () => undefined,
+      activityOf: () => undefined,
+      awaitingChildrenOf: () => 0,
+      previewOf: () => null,
+    });
+    expect(cards.map((card) => card.id)).toEqual(["stored-root"]);
+    const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
+    // Explicit target avoids implying that exec transports child-local MCP identity.
+    const result = await buildCallboardToolsSpec(() => ROOT)
+      .tools.find((tool) => tool.name === "set_card_metadata")!
+      .handler({ card_id: CHILD, set: { regression: "native-lineage" } });
+    expect(JSON.parse((result.content[0] as { text: string }).text).cardId).toBe("stored-root");
+    expect(JSON.parse(chatFileService.getChat("stored-root")!.metadata).card.metadata.regression).toBe("native-lineage");
+    expect(JSON.parse(chatFileService.getChat(CHILD)!.metadata).card).toBeUndefined();
+  });
+
+  it("remaps durable inferred lineage when a parent appears or changes, but preserves explicit parentage", async () => {
+    const { walkToRootId, buildLineageIndex } = await import("./chat-lineage.js");
+    const file = rollout(CHILD, true);
+    await request(chatsRouter, "/:id/read", "patch", CHILD);
+    expect(JSON.parse(chatFileService.getChat(CHILD)!.metadata).parentChatId).toBe(ROOT);
+    expect(walkToRootId(CHILD)).toBe(CHILD); // Missing parent: highest surviving node.
+    chatFileService.upsertChat("stored-root", scratch, ROOT, { metadata: '{"provider":"codex"}' });
+    await request(chatsRouter, "/:id/read", "patch", CHILD);
+    expect(JSON.parse(chatFileService.getChat(CHILD)!.metadata).parentChatId).toBe("stored-root");
+    const other = "01a07680-69b7-7732-825c-83c54177ade8";
+    chatFileService.upsertChat("other-root", scratch, other, { metadata: '{"provider":"codex"}' });
+    writeFileSync(file, readFileSync(file, "utf8").replaceAll(ROOT, other));
+    await request(chatsRouter, "/:id/read", "patch", CHILD);
+    expect(walkToRootId(CHILD)).toBe("other-root");
+    expect(JSON.parse(chatFileService.getChat(CHILD)!.metadata).nativeAgent.inferredParentChatId).toBe("other-root");
+    chatFileService.updateChatMetadata(CHILD, { parentChatId: "stored-root" });
+    await request(chatsRouter, "/:id/bookmark", "patch", CHILD, { bookmarked: true });
+    expect(walkToRootId(CHILD)).toBe("stored-root"); // Explicit override beats the changed native parent.
+    expect(JSON.parse(chatFileService.getChat(CHILD)!.metadata).nativeAgent.inferredParentChatId).toBeUndefined();
+    // Stored pointers retain existing bounded cycle semantics; no disk discovery.
+    chatFileService.updateChatMetadata("stored-root", { parentChatId: CHILD });
+    expect([CHILD, "stored-root"]).toContain(walkToRootId(CHILD));
+    expect([CHILD, "stored-root"]).toContain(buildLineageIndex(chatFileService.getAllChats()).existingRootIdOf(CHILD));
+  });
+
   it("read/bookmark mutations do not persist replay snapshots; missing-log detail is unknown", async () => {
     const file = rollout(CHILD, true);
     chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata: '{"provider":"codex"}' });

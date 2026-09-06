@@ -61,3 +61,11 @@ Separate verified Callboard-controller cancellation from conservative resume own
 - Full suite: 287 files passed, 3 skipped; 4,477 tests passed, 32 skipped (`npx vitest run --maxWorkers=2`).
 - `npm run build` passed (existing Swagger annotation and Vite chunk-size warnings). Changed-file lint: 0 errors, 178 warnings; full lint: 0 errors, 951 warnings. `git diff --check` passed.
 - Initial iteration exposed fixture typing, partial mock parent lookup, and malformed-metadata preservation regressions; all corrected before the clean full run. Final logs: /tmp/410-r3-finalfull.log, /tmp/410-r3-finalbuild.log, /tmp/410-r3-finallint.log, /tmp/410-r3-finallintall.log.
+
+## Third-review scoped follow-up: durable lineage
+Preserve inferred parentChatId and nativeAgent.inferredParentChatId durably; they represent lineage, not lifecycle evidence. Existing stored-record walkers/indexes/board/MCP targets can then consume mapped parent chat IDs without discovery or new filesystem reads. Keep lifecycle/control snapshots transient. Validate actual read/bookmark persistence through board and MCP consumers, explicit-parent precedence, remapping/reparenting of inferred pointers, missing parent and existing cycle behavior. Run focused relevant tests, build and changed lint; rely on CI for full suite per coordinator.
+
+### Third-review validation
+- Durable inferred pointer + provenance now survive save; lifecycle, evidence, management and controlNote still do not.
+- Actual read/bookmark persistence tests remove the rollout before stored-only walk/index/card-rollup and MCP card-target assertions. A mapped parent id differing from its session UUID yields one card; explicit MCP child targeting edits only the root card. Missing-parent fallback, later parent mapping, inferred reparenting, explicit override and bounded cycle semantics are covered without new hot-path IO.
+- Focused validation: 197 tests passed across 12 files (native boundaries/discovery, storage, lineage, card rollup/metadata/migration, MCP cards, reopen-card). Build passed; changed-file lint 0 errors/2 warnings; diff check clean. No local full rerun for this scoped persistence change, per coordinator; full CI remains required.
