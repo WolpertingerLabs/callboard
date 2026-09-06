@@ -145,7 +145,7 @@ export function createNativeDesktopDriver(options: NativeDesktopDriverOptions = 
         async observe(sig) {
           sig.throwIfAborted();
           if (closed) throw new ComputerUseError("stopped");
-          const png = await run("/usr/bin/import", ["-window", "root", "png:-"], sig);
+          const png = await run("/usr/bin/import", ["-silent", "-window", "root", "-strip", "png:-"], sig);
           sig.throwIfAborted();
           if (png.length < 24 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new ComputerUseError("driver_error", "Invalid PNG capture");
           return { data: png.toString("base64"), mimeType: "image/png", width: png.readUInt32BE(16), height: png.readUInt32BE(20), capturedAt: Date.now() };

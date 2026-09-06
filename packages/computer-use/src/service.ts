@@ -289,10 +289,21 @@ export class ComputerUseService {
     const p = identity(principal),
       t = this.target(targetId);
     await this.allowed(p, "probe", t);
+    let timer: NodeJS.Timeout | undefined;
     try {
-      return await t.driver.probe();
+      const result = await Promise.race([
+        t.driver.probe(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new ComputerUseError("timeout")), this.timeout);
+        }),
+      ]);
+      if (result.kind !== t.driver.kind || typeof result.available !== "boolean" || !Array.isArray(result.capabilities))
+        throw new ComputerUseError("driver_error");
+      return { ...result, kind: t.driver.kind, capabilities: [...result.capabilities] };
     } catch {
-      return { available: false, kind: t.driver.kind, reason: "Driver probe failed", capabilities: [] };
+      return { available: false, kind: t.driver.kind, reason: "Driver probe failed or timed out", capabilities: [] };
+    } finally {
+      clearTimeout(timer);
     }
   }
   async open(principal: Principal, targetId: string, signal?: AbortSignal): Promise<Lease> {

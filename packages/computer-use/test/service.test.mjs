@@ -395,3 +395,21 @@ test("MCP identity closure cannot be mutated and generation is checked at transp
   );
   await s.dispose();
 });
+
+test("hung/mismatched probe fails closed; browser target identity is snapshotted", async () => {
+  const f = fake();
+  f.driver.probe = () => new Promise(() => {});
+  const s = new ComputerUseService({ targets: [{ id: "b", enabled: true, driver: f.driver }], authorize: () => "allow", actionTimeoutMs: 100 });
+  f.driver.kind = "native-desktop";
+  const result = await s.probe(agent, "b");
+  assert.equal(result.kind, "browser");
+  assert.equal(result.available, false);
+  await s.dispose();
+  const headless = createNativeDesktopDriver({
+    enabled: true,
+    acknowledgeFullDesktopAccess: true,
+    permissions: { webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" },
+  });
+  assert.match((await headless.probe()).reason, /DISPLAY|OS|driver/);
+  await assert.rejects(headless.open({ sessionId: "headless", signal: new AbortController().signal }), error("unsupported"));
+});
