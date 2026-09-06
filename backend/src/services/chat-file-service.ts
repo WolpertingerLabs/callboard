@@ -3,6 +3,7 @@ import { join } from "path";
 import { randomUUID } from "node:crypto";
 import type { Chat } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
 import { isMtimeSettled } from "../utils/mtime-freshness.js";
 
@@ -363,15 +364,16 @@ export class ChatFileService {
   }
 
   // Update specific metadata fields on a chat (read-merge-write).
+  // normalizeLegacy opts into treating malformed/non-object legacy JSON as {}.
   // `touch: false` preserves updated_at — for view-only writes (board card
   // membership) that must not resurface a chat as unread or reorder it in
   // the sidebar.
-  updateChatMetadata(id: string, fields: Record<string, unknown>, opts?: { touch?: boolean }): boolean {
+  updateChatMetadata(id: string, fields: Record<string, unknown>, opts?: { touch?: boolean; normalizeLegacy?: boolean }): boolean {
     const chat = this.getChat(id);
     if (!chat) return false;
 
     try {
-      const meta = JSON.parse(chat.metadata || "{}");
+      const meta = opts?.normalizeLegacy ? parseChatMetadata(chat.metadata) : JSON.parse(chat.metadata || "{}");
       const merged = { ...meta, ...fields };
       chat.metadata = JSON.stringify(merged);
       if (opts?.touch !== false) chat.updated_at = new Date().toISOString();

@@ -14,6 +14,7 @@ import { join } from "path";
 import { fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
+import { assertChatContextUnchanged, chatContextFingerprint, ChatContextChangedError } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { findChatForStatus, withSessionProvider } from "../utils/chat-lookup.js";
 import { beginSSE, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
@@ -411,6 +412,7 @@ streamRouter.post("/:id/message", async (req, res) => {
     // If the git branch changed since the last message in this chat,
     // block unless the client explicitly acknowledges.
     const storedChat = chatFileService.getChat(req.params.id);
+    const expectedContext = chatContextFingerprint(storedChat);
     const storedMeta = parseChatMetadata(storedChat?.metadata);
     const needsProvenance = !storedChat || storedMeta.provider == null || (storedMeta.provider === "acp" && !storedMeta.acpProviderId);
     const chatRecord = needsProvenance ? (findChatForStatus(req.params.id) ?? storedChat) : storedChat;
@@ -436,6 +438,11 @@ streamRouter.post("/:id/message", async (req, res) => {
         return res.status(400).json({ error: (error as Error).message });
       }
     }
+    // Validation awaits may let another run rotate this chat or change its
+    // execution settings. Never repair an old identity or validate one owner
+    // and then write settings onto another. Unrelated metadata may still merge.
+    const fresh = chatFileService.getChat(chatRecord.id);
+    assertChatContextUnchanged(expectedContext, fresh);
     const currentGitInfo = getGitInfo(chatRecord.folder);
     const currentBranch = currentGitInfo.branch;
 
@@ -452,12 +459,12 @@ streamRouter.post("/:id/message", async (req, res) => {
     // Adopt/repair only after preflight succeeds. In particular, malformed
     // legacy JSON must not cause updateChatMetadata to silently drop the
     // validated effort/model. Merge fresh fields and preserve explicit routing.
-    if (needsProvenance) {
-      const fresh = chatFileService.getChat(req.params.id);
-      const metadata = JSON.stringify(fresh ? parseChatMetadata(fresh.metadata) : meta);
-      chatFileService.upsertChat(chatRecord.id, chatRecord.folder, chatRecord.session_id, {
-        metadata: meta.provider != null ? withSessionProvider(metadata, meta.provider, meta.acpProviderId) : metadata,
-      });
+    if (!fresh) {
+      // The original discovery snapshot is only valid for a still-absent record.
+      chatFileService.upsertChat(chatRecord.id, chatRecord.folder, chatRecord.session_id, { metadata: JSON.stringify(meta) });
+    } else if (needsProvenance) {
+      const routing = parseChatMetadata(withSessionProvider("{}", meta.provider, meta.acpProviderId));
+      chatFileService.updateChatMetadata(fresh.id, routing, { normalizeLegacy: true });
     }
 
     // Update lastBranch to current (after check passes)
@@ -506,6 +513,7 @@ streamRouter.post("/:id/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
+    if (err instanceof ChatContextChangedError) return res.status(409).json({ error: err.message, code: "chat_context_changed" });
     // A chat pinned to a removed harness is a client-state condition, not a
     // server fault — see sendRetiredProviderError. Logged at warn for the same
     // reason: nothing here needs fixing.

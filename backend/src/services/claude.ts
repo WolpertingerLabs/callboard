@@ -1,4 +1,5 @@
 import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
@@ -954,16 +955,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     resumeSessionId = chat.session_id;
     // Legacy stored records also need resolver provenance before resuming. Reads
     // remain immutable; only this write path pins inferred routing.
+    const expectedContext = chatContextFingerprint(chat);
     const storedMetadata = parseChatMetadata(chat.metadata);
     const needsProvenance = storedMetadata.provider == null || (storedMetadata.provider === "acp" && !storedMetadata.acpProviderId);
     const resolvedChat = needsProvenance ? findChat(opts.chatId, false) : null;
     if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
     initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
     await assertReasoningEffort({ ...initialMetadata, cwd: folder });
+    assertChatContextUnchanged(expectedContext, chatFileService.getChat(chat.id));
     const routing: Record<string, unknown> = {};
     if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;
     if (!storedMetadata.acpProviderId && initialMetadata.acpProviderId) routing.acpProviderId = initialMetadata.acpProviderId;
-    if (Object.keys(routing).length) chatFileService.updateChatMetadata(opts.chatId, routing);
+    if (Object.keys(routing).length) chatFileService.updateChatMetadata(chat.id, routing, { normalizeLegacy: true });
     // Recover agentAlias from chat metadata when not explicitly provided.
     // This ensures Callboard tools are re-injected when resuming an agent session.
     if (!opts.agentAlias && initialMetadata.agentAlias) {

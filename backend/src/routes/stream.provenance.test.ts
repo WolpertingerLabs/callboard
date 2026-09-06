@@ -165,3 +165,57 @@ describe("actual POST /:id/message provenance preflight", () => {
     expect(calls.execute).not.toHaveBeenCalled();
   });
 });
+
+describe("POST preflight concurrent context changes", () => {
+  it.each(["session", "folder", "provider", "acpProviderId", "model", "effort", "session_ids", "lastBranch", "deletion"])(
+    "rejects concurrent %s changes without stale writes",
+    async (field) => {
+      const id = "race-" + ++counter;
+      setSessionProvidersForTesting([provider("codex", id)]);
+      chatFileService.upsertChat(id, dir, id, { metadata: field === "acpProviderId" ? '{"provider":"acp","acpProviderId":"opencode"}' : "{}" });
+      let concurrent: string;
+      calls.validate.mockImplementationOnce(async () => {
+        if (field === "deletion") {
+          chatFileService.deleteChat(id);
+        } else if (field === "session") {
+          chatFileService.upsertChat(id, dir, id + "-rotated", { metadata: JSON.stringify({ title: "new session", session_ids: [id, id + "-rotated"] }) });
+        } else if (field === "folder") {
+          chatFileService.updateChat(id, { folder: dir + "/other" });
+        } else {
+          chatFileService.updateChatMetadata(id, { [field]: field === "session_ids" ? [id, "another"] : "changed" });
+        }
+        concurrent = JSON.stringify(chatFileService.getChat(id));
+      });
+      const response = await post(id, { effort: "high", model: "gpt-5.5" });
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({ code: "chat_context_changed" });
+      expect(response.streamed).toBe(false);
+      expect(calls.execute).not.toHaveBeenCalled();
+      expect(JSON.stringify(chatFileService.getChat(id))).toBe(concurrent!);
+    },
+  );
+
+  it("merges unrelated concurrent metadata without identity-bearing upsert", async () => {
+    const id = "merge-" + ++counter;
+    setSessionProvidersForTesting([provider("codex", id)]);
+    chatFileService.upsertChat(id, dir, id, { metadata: "{}" });
+    const upsert = vi.spyOn(chatFileService, "upsertChat");
+    calls.validate.mockImplementationOnce(async () => {
+      chatFileService.updateChatMetadata(id, { title: "concurrent title", bookmark: true });
+    });
+    expect((await post(id, { effort: "high" })).status).toBe(200);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(executionMetadata).toMatchObject({ provider: "codex", effort: "high", title: "concurrent title", bookmark: true });
+  });
+
+  it("does not adopt an obsolete discovery snapshot over a newly stored record", async () => {
+    const id = "adoption-race-" + ++counter;
+    setSessionProvidersForTesting([provider("codex", id)]);
+    calls.validate.mockImplementationOnce(async () => {
+      chatFileService.upsertChat(id, dir, id + "-new", { metadata: '{"provider":"codex","title":"new"}' });
+    });
+    expect((await post(id, { effort: "high" })).status).toBe(409);
+    expect(chatFileService.getChat(id)!.session_id).toBe(id + "-new");
+    expect(calls.execute).not.toHaveBeenCalled();
+  });
+});
