@@ -81,7 +81,7 @@
     "lint:all:fix": "eslint . --ext .js,.jsx,.ts,.tsx --fix",
     "prettier": "git diff --name-only HEAD | xargs -r npx prettier --write --ignore-unknown && git diff --name-only --cached HEAD | xargs -r npx prettier --write --ignore-unknown",
     "test": "npm run test:computer-use && vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "npm run test:computer-use && vitest run --coverage",
     "test:watch": "vitest",
     "prepare": "npm run build",
     "prepublishOnly": "npm run drawlatch:check && npm run lint:all && npm run clean && npm run build && npm test && npm run deps:check",
