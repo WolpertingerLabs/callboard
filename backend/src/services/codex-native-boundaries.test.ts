@@ -1,10 +1,12 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response, Router } from "express";
 
+// Keep real filesystem behavior while allowing a scoped EACCES injection.
+vi.mock("node:fs", async (original) => ({ ...(await original<typeof import("node:fs")>()) }));
 const state = vi.hoisted(() => ({ home: "" }));
 vi.mock("./agent-settings.js", async (original) => ({
   ...(await original<typeof import("./agent-settings.js")>()),
@@ -208,34 +210,59 @@ describe("native caller boundaries with real storage and registry", () => {
     expect(() => assertNativeAgentControllable(CHILD)).not.toThrow();
     expect(JSON.parse(findChat(CHILD, false).metadata).provider).toBe("claude-code");
   });
-  it("does not adopt an unpersisted root that becomes native during low-level validation", async () => {
-    rollout(CHILD, false);
-    const reasoning = await import("./reasoning-capabilities.js");
-    const validate = vi.spyOn(reasoning, "assertReasoningEffort").mockImplementationOnce(async () => {
-      rollout(CHILD, true);
-    });
-    const callbacks = await import("./session-callbacks.js");
-    const callback = vi.spyOn(callbacks, "registerCompletionCallback");
-    const adopt = vi.spyOn(chatFileService, "upsertChat");
-    const update = vi.spyOn(chatFileService, "updateChatMetadata");
-    const unregister = vi.spyOn(sessionRegistry, "unregister");
-    try {
-      await expect(sendMessage({ chatId: CHILD, prompt: "offline" })).rejects.toThrow("read-only");
-      expect(validate).toHaveBeenCalledOnce();
-      expect(adopt).not.toHaveBeenCalled();
-      expect(update).not.toHaveBeenCalled();
-      expect(callback).not.toHaveBeenCalled();
-      expect(unregister).not.toHaveBeenCalled();
-      expect(chatFileService.getChat(CHILD)).toBeNull();
-      expect(existsSync(join(scratch, "chats", CHILD + ".json"))).toBe(false);
-    } finally {
-      validate.mockRestore();
-      callback.mockRestore();
-      adopt.mockRestore();
-      update.mockRestore();
-      unregister.mockRestore();
-    }
-  });
+  it.each(["http", "low-level"].flatMap((entry) => ["disappeared", "unreadable", "oversized", "mismatched", "native"].map((change) => ({ entry, change }))))(
+    "refuses unpersisted $entry after current evidence becomes $change, without side effects",
+    async ({ entry, change }) => {
+      const file = rollout(CHILD, false);
+      const fs = await import("node:fs");
+      let restoreRead: (() => void) | undefined;
+      const reasoning = await import("./reasoning-capabilities.js");
+      const validate = vi.spyOn(reasoning, "assertReasoningEffort").mockImplementationOnce(async () => {
+        expect(chatFileService.getChat(CHILD)).toBeNull();
+        if (change === "disappeared") rmSync(file);
+        else if (change === "oversized") rollout(CHILD, false, { base_instructions: "x".repeat(1024 * 1024) });
+        else if (change === "mismatched") rollout(CHILD, false, { id: ROOT });
+        else if (change === "native") rollout(CHILD, true);
+        else {
+          appendFileSync(file, "\n"); // Invalidate cached metadata before injected read failure.
+          const open = fs.openSync;
+          const read = vi.spyOn(fs, "openSync").mockImplementation((path, flags, mode) => {
+            if (path === file) throw Object.assign(new Error("fixture read denied"), { code: "EACCES" });
+            return open(path, flags, mode);
+          });
+          restoreRead = () => read.mockRestore();
+        }
+      });
+      const callbacks = await import("./session-callbacks.js");
+      const callback = vi.spyOn(callbacks, "registerCompletionCallback");
+      const adopt = vi.spyOn(chatFileService, "upsertChat");
+      const update = vi.spyOn(chatFileService, "updateChatMetadata");
+      const unregister = vi.spyOn(sessionRegistry, "unregister");
+      try {
+        if (entry === "http") {
+          const result = await request(streamRouter, "/:id/message", "post", CHILD, { prompt: "offline", model: "gpt-5.5" });
+          expect(result.status).toHaveBeenCalledWith(409);
+          expect(result.status).not.toHaveBeenCalledWith(500);
+        } else {
+          await expect(sendMessage({ chatId: CHILD, prompt: "offline" })).rejects.toThrow("read-only");
+        }
+        expect(validate).toHaveBeenCalledOnce();
+        expect(adopt).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        expect(callback).not.toHaveBeenCalled();
+        expect(unregister).not.toHaveBeenCalled();
+        expect(chatFileService.getChat(CHILD)).toBeNull();
+        expect(existsSync(join(scratch, "chats", CHILD + ".json"))).toBe(false);
+      } finally {
+        restoreRead?.();
+        validate.mockRestore();
+        callback.mockRestore();
+        adopt.mockRestore();
+        update.mockRestore();
+        unregister.mockRestore();
+      }
+    },
+  );
   it("does not replace a concurrently adopted filesystem root after low-level validation", async () => {
     rollout(CHILD, false);
     const reasoning = await import("./reasoning-capabilities.js");

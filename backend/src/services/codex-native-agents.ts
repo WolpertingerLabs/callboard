@@ -21,16 +21,27 @@ function parseMetadata(raw?: string | null): Record<string, unknown> {
   }
 }
 
-export function nativeAgentForChat(chatId: string, allowOwnedCancellation = false) {
+export interface NativeOwnershipExpectation {
+  sessionId: string;
+  provider?: unknown;
+}
+
+export function nativeAgentForChat(chatId: string, allowOwnedCancellation = false, expected?: NativeOwnershipExpectation) {
   const stored = chatFileService.getChat(chatId);
   const explicit = parseMetadata(stored?.metadata);
-  if (explicit.provider != null && explicit.provider !== "codex") return null;
   const sessionId = stored?.session_id ?? chatId;
+  if (expected && sessionId !== expected.sessionId) throw new Error("Chat primary identity changed during ownership validation.");
+  if (expected?.provider === "codex" && explicit.provider != null && explicit.provider !== "codex")
+    throw new Error("Chat provider changed during ownership validation.");
+  if (explicit.provider != null && explicit.provider !== "codex") return null;
+  // A vanished log must not erase already-validated Codex provenance. Pin only
+  // routing, never the prior log: current identity/evidence is resolved afresh.
+  const routingMetadata = expected?.provider === "codex" && explicit.provider == null ? JSON.stringify({ ...explicit, provider: "codex" }) : stored?.metadata;
   const owned = sessionRegistry.get(chatId);
   const ownedRoot = allowOwnedCancellation && owned?.type === "web" && !!owned.abortController && !explicit.nativeAgent;
   let context;
   try {
-    context = resolveSessionContext(sessionId, stored?.metadata);
+    context = resolveSessionContext(sessionId, routingMetadata);
   } catch (error) {
     // Ambiguous historical routing cannot take away an actual owned controller.
     // Still inspect positive current native evidence before allowing cancellation.
@@ -60,8 +71,8 @@ export function assertNativeAgentStoppable(chatId: string): void {
   if (native) throw new Error(`${NATIVE_CONTROL_NOTE} Parent thread: ${native.parentThreadId}`);
 }
 
-export function assertNativeAgentControllable(chatId: string): void {
-  const native = nativeAgentForChat(chatId);
+export function assertNativeAgentControllable(chatId: string, expected?: NativeOwnershipExpectation): void {
+  const native = nativeAgentForChat(chatId, false, expected);
   if (native) throw new Error(`${NATIVE_CONTROL_NOTE} Parent thread: ${native.parentThreadId}`);
 }
 

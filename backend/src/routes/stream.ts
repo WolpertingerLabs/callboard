@@ -431,6 +431,7 @@ streamRouter.post("/:id/message", async (req, res) => {
         .status(410)
         .json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be resumed.", code: "retired_provider" });
     }
+    const ownershipExpectation = { sessionId: chatRecord.session_id, provider: meta.provider };
     // Validate the merged configuration before any metadata changes. Clearing
     // effort permits recovery from stale saved overrides without weakening it.
     if (model !== undefined || effort !== undefined) {
@@ -450,9 +451,9 @@ streamRouter.post("/:id/message", async (req, res) => {
     // and then write settings onto another. Unrelated metadata may still merge.
     const fresh = chatFileService.getChat(chatRecord.id);
     assertChatContextUnchanged(expectedContext, fresh);
-    // Rollout ownership can change independently of the stored routing fields.
+    // Retain validated provenance even if the unpersisted rollout disappears.
     try {
-      assertNativeAgentControllable(req.params.id);
+      assertNativeAgentControllable(req.params.id, ownershipExpectation);
     } catch (error) {
       return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
     }

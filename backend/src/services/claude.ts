@@ -966,9 +966,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const resolvedChat = needsProvenance ? findChat(opts.chatId, false) : null;
     if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
     initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
+    const ownershipExpectation = { sessionId: chat.session_id, provider: initialMetadata.provider };
     await assertReasoningEffort({ ...initialMetadata, cwd: folder });
     assertChatContextUnchanged(expectedContext, chatFileService.getChat(chat.id));
-    assertNativeAgentControllable(opts.chatId);
+    assertNativeAgentControllable(opts.chatId, ownershipExpectation);
     if (!storedChat) {
       chat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: chat.metadata });
     }
