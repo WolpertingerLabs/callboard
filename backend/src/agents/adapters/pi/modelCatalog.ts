@@ -60,6 +60,7 @@ export interface PiModelOption {
   value: string;
   displayName: string;
   description: string;
+  reasoningEfforts?: string[];
 }
 
 /** How long a catalog read is served before the next read revalidates it. */
@@ -372,6 +373,7 @@ export async function getPiModels(providerId: string): Promise<PiModelOption[]> 
         value: model.id,
         displayName: model.name || model.id,
         description: describeModel(model),
+        reasoningEfforts: piModelReasoningEfforts(model),
       }))
       .sort((a, b) => a.value.localeCompare(b.value));
     if (options.length > 0) _cache.set(id, options);
@@ -534,4 +536,17 @@ export function clearPiModelCacheForTesting(): void {
  */
 export function getPiCatalogStatsForTesting(): { revalidations: number; lastRefreshOk: boolean } {
   return { revalidations: _revalidations, lastRefreshOk: _lastRefreshOk };
+}
+
+/** Mirrors pi-ai getSupportedThinkingLevels, before the adapter intersection.
+ * Off is Callboard's none; null mappings explicitly prohibit a level.
+ */
+export function piModelReasoningEfforts(model: { reasoning?: boolean; thinkingLevelMap?: Partial<Record<string, unknown>> }): string[] {
+  if (!model.reasoning) return ["none"];
+  return ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    .filter((level) => {
+      const mapped = model.thinkingLevelMap?.[level];
+      return mapped !== null && ((level !== "xhigh" && level !== "max") || mapped !== undefined);
+    })
+    .map((level) => (level === "off" ? "none" : level));
 }

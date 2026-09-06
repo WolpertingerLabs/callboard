@@ -459,3 +459,27 @@ describe("translateCodexOptions — codexPathOverride (which binary the chat spa
     expect(threadOptions.workingDirectory).toBe("/work");
   });
 });
+
+describe("model-aware reasoning transport", () => {
+  it.each(["max", "ultra"] as const)("preserves native %s", (effort) => {
+    expect(translateCodexOptions({ codex: { reasoningEffort: effort } }).threadOptions.modelReasoningEffort).toBe(effort);
+  });
+  it("sends actual OpenRouter none through CLI config", () => {
+    const { codexOpts, threadOptions } = translateCodexOptions({ codex: { useOpenRouter: true, reasoningEffort: "none" } });
+    expect(codexOpts.config?.model_reasoning_effort).toBe("none");
+    expect(threadOptions.modelReasoningEffort).toBeUndefined();
+  });
+  it("handles ambient OR routing without injecting an unrelated provider", () => {
+    const { codexOpts } = translateCodexOptions({ codex: { reasoningRoute: "openrouter", reasoningEffort: "none" } });
+    expect(codexOpts.config?.model_reasoning_effort).toBe("none");
+    expect(codexOpts.config?.model_provider).toBeUndefined();
+  });
+  it("does not reinterpret native saved none as actual reasoning disabled", () => {
+    const { codexOpts } = translateCodexOptions({ codex: { reasoningEffort: "none" } });
+    expect(codexOpts.config?.model_reasoning_summary).toBe("none");
+    expect(codexOpts.config?.model_reasoning_effort).toBeUndefined();
+  });
+  it("refuses native-only ultra on OR", () => {
+    expect(() => translateCodexOptions({ codex: { useOpenRouter: true, reasoningEffort: "ultra" } })).toThrow("cannot be sent to OpenRouter");
+  });
+});

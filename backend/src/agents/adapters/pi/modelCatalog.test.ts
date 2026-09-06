@@ -24,7 +24,8 @@ vi.mock("../../../services/openrouter-models.js", () => ({
   getOpenRouterModelsSnapshot: () => getOpenRouterModelsSnapshot(),
 }));
 
-const { getPiModels, listPiProviderIds, clearPiModelCacheForTesting, getPiCatalogStatsForTesting, PI_CATALOG_TTL_MS } = await import("./modelCatalog.js");
+const { piModelReasoningEfforts, getPiModels, listPiProviderIds, clearPiModelCacheForTesting, getPiCatalogStatsForTesting, PI_CATALOG_TTL_MS } =
+  await import("./modelCatalog.js");
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -142,4 +143,16 @@ describe("listPiProviderIds", () => {
     expect(ids).toEqual([...ids].sort());
     expect(new Set(ids).size).toBe(ids.length);
   });
+});
+
+it("preserves pi thinking-level map restrictions instead of offering all tiers", () => {
+  expect(piModelReasoningEfforts({ reasoning: false })).toEqual(["none"]);
+  expect(piModelReasoningEfforts({ reasoning: true })).toEqual(["none", "minimal", "low", "medium", "high"]);
+  expect(piModelReasoningEfforts({ reasoning: true, thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" } })).toEqual([
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
 });

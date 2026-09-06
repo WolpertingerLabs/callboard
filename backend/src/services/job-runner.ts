@@ -335,7 +335,12 @@ function resumeRunAfterRestart(run: JobRun): void {
  * that already landed under that key resolves to the run it created rather
  * than a second one, which is what makes retrying a spawn safe.
  */
-export function spawnJobRun(jobId: string, inputs: Record<string, string>, parent?: RunParentLink, opts?: { rootChatId?: string; executionKey?: string }): JobRun {
+export function spawnJobRun(
+  jobId: string,
+  inputs: Record<string, string>,
+  parent?: RunParentLink,
+  opts?: { rootChatId?: string; executionKey?: string },
+): JobRun {
   if (opts?.executionKey) {
     // The terminal check is deliberate, and deliberately NOT shared with
     // findRunByExecutionKey, which returns terminal runs. The two callers want
@@ -1088,12 +1093,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   }
 
   const provider = sessionFields?.provider ?? defaults.provider ?? "claude-code";
-  // Per-step model only. The job-level default model was documented as an
-  // OpenRouter slug and applied only to OR steps; with that harness removed
-  // there is nothing left it could legitimately configure, and claude-code steps
-  // inherit the global Settings → API model unless the step sets one. A step
-  // still naming `provider: "openrouter"` is refused by `sendMessage`.
-  const model = sessionFields?.model;
+  const model = sessionFields?.model ?? defaults.model;
 
   const promptIterable = (async function* () {
     yield { type: "user" as const, message: { role: "user" as const, content: prompt } };
@@ -1115,6 +1115,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     triggeredBy: "job",
     provider,
     ...(model && { model }),
+    ...(sessionFields?.effort && { effort: sessionFields.effort }),
     jobContext: {
       runId,
       stepId,

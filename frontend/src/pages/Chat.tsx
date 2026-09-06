@@ -220,12 +220,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const agentAlias = (location.state as any)?.agentAlias as string | undefined;
   // Provider kind for NEW chats, set by NewChatPanel. Existing chats route
   // by chat metadata server-side; this value is only honored on creation.
-  const newChatProvider = (location.state as any)?.provider as "claude-code" | "codex" | "acp" | undefined;
+  const newChatProvider = (location.state as any)?.provider as AgentProviderKind | undefined;
   const newChatAcpProviderId = (location.state as any)?.acpProviderId as string | undefined;
   // Reasoning effort for NEW chats, set by NewChatPanel. Like the provider,
   // only honored on creation and persisted into chat metadata; the
   // existing-chat path recovers it from metadata server-side.
-  const newChatEffort = (location.state as any)?.effort as "xhigh" | "high" | "medium" | "low" | "minimal" | "none" | undefined;
+  const newChatEffort = (location.state as any)?.effort as EffortLevel | undefined;
   // Model for NEW chats, set by NewChatPanel — the harness's own model id. Like
   // the provider/effort, only honored on creation and persisted into metadata.
   const newChatModel = (location.state as any)?.model as string | undefined;
@@ -1953,7 +1953,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (activePluginIds.length > 0) {
             requestBody.activePlugins = activePluginIds;
           }
-          if (branchBoxShown && branchConfig && (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree || branchConfig.autoCreateBranch)) {
+          if (
+            branchBoxShown &&
+            branchConfig &&
+            (branchConfig.baseBranch || branchConfig.newBranch || branchConfig.useWorktree || branchConfig.autoCreateBranch)
+          ) {
             requestBody.branchConfig = {
               ...branchConfig,
               ...(forceBranchChangeRef.current && { forceBranchChange: true }),
@@ -1973,8 +1977,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatProvider === "acp" && newChatAcpProviderId) {
             requestBody.acpProviderId = newChatAcpProviderId;
           }
-          if (newChatEffort && newChatProvider === "codex") {
-            requestBody.effort = newChatEffort;
+          const newChatSelectedEffort = pendingEffort !== null ? pendingEffort : newChatEffort;
+          if (newChatSelectedEffort && ["codex", "cline", "pi"].includes(newChatProvider ?? "")) {
+            requestBody.effort = newChatSelectedEffort;
           }
           // Model applies to every provider — an Anthropic model alias/ID for
           // claude-code, that harness's own id otherwise. Prefer the composer's
@@ -2044,7 +2049,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // Per-chat reasoning effort. Same tri-state semantics as model:
           // `null` skips the field; `undefined` sends "" (clear override);
           // an EffortLevel sends the level.
-          if (pendingEffort !== null && chatProvider === "codex") {
+          if (pendingEffort !== null && ["codex", "cline", "pi"].includes(chatProvider)) {
             body.effort = pendingEffort ?? "";
           }
 
@@ -2127,6 +2132,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatModel,
       newChatRequireCompletion,
       pendingModel,
+      pendingEffort,
       chatProvider,
       readSSE,
       activePluginIds,
@@ -3605,6 +3611,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 onAcpModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 clineModel={pendingModel ?? currentModel}
                 onClineModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
+                piModel={pendingModel ?? currentModel}
+                onPiModelChange={(v) => setPendingModel(v === currentModel ? null : v)}
                 clineProviderId={clineProviderId}
                 // The chat's pinned vendor, so the selector offers that
                 // catalog rather than another vendor's.

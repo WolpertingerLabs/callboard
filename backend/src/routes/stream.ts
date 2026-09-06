@@ -1,3 +1,5 @@
+import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
+import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
@@ -28,7 +30,6 @@ const log = createLogger("stream");
 // the route boundary so we never persist garbage to chat metadata. Provider
 // values are narrowed with the shared `isRoutableProvider` guard (see
 // AgentProvider.ts) rather than a local copy of the routable-kinds set.
-const VALID_EFFORTS: ReadonlySet<string> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
 
 export const streamRouter = Router();
 
@@ -108,6 +109,11 @@ streamRouter.post("/new/message", async (req, res) => {
   );
   if (!folder) return res.status(400).json({ error: "folder is required" });
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
+  try {
+    await assertReasoningEffort({ provider: isRoutableProvider(provider) ? provider : undefined, model, effort });
+  } catch (error) {
+    return res.status(400).json({ error: (error as Error).message });
+  }
 
   // Check if folder exists
   if (!existsSync(folder)) {
@@ -237,13 +243,7 @@ streamRouter.post("/new/message", async (req, res) => {
       safeAcpProviderId = requested;
     }
 
-    // Effort forwarded only when paired with a reasoning-capable provider
-    // (codex → modelReasoningEffort, cline → Cline `thinking`/`reasoningEffort`,
-    // pi → `thinkingLevel`). On a claude-code chat it would be
-    // persisted to metadata for nothing and confuse future debugging.
-    const effortCapableProvider = safeProvider === "codex" || safeProvider === "cline" || safeProvider === "pi";
-    const safeEffort: EffortLevel | undefined =
-      effortCapableProvider && typeof effort === "string" && VALID_EFFORTS.has(effort) ? (effort as EffortLevel) : undefined;
+    const safeEffort = typeof effort === "string" && effort.trim() ? (effort.trim() as EffortLevel) : undefined;
 
     // Per-chat model override — honored for every provider. For claude-code an
     // Anthropic model alias or full ID; for codex/cline/pi that harness's slug.
@@ -392,7 +392,7 @@ streamRouter.post("/:id/message", async (req, res) => {
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
             model: { type: "string", description: "Model to persist for this chat. Claude Code chats: an Anthropic model alias (opus, sonnet, haiku, opusplan) or full model ID. Other harnesses: whatever model identifier that harness accepts. Empty string clears the per-chat override and reverts to the global default." },
-            effort: { type: "string", enum: ["xhigh", "high", "medium", "low", "minimal", "none"], description: "Reasoning-effort level to persist for this chat. Only honored for harnesses that take one (codex, cline, pi); ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
+            effort: { type: "string", enum: ["persistent", "ultra", "max", "xhigh", "high", "medium", "low", "minimal", "none", ""], description: "Reasoning-effort level to persist for this chat. Only honored for harnesses that take one (codex, cline, pi); ignored otherwise. Omit to leave the existing effort untouched; pass empty string to clear the per-chat override." },
             requireExplicitCompletion: { type: "boolean", description: "Override the explicit-completion requirement for this message only. Omit to inherit the persisted setting of the chat." }
           }
         }
@@ -411,6 +411,24 @@ streamRouter.post("/:id/message", async (req, res) => {
   const chatRecord = chatFileService.getChat(req.params.id);
   if (chatRecord) {
     const meta = JSON.parse(chatRecord.metadata || "{}");
+    if (isRetiredProvider(meta.provider)) {
+      return res
+        .status(410)
+        .json({ error: "This chat ran on the OpenRouter agent harness, which has been removed. It cannot be resumed.", code: "retired_provider" });
+    }
+    // Validate the merged configuration before any metadata changes. Clearing
+    // effort permits recovery from stale saved overrides without weakening it.
+    if (model !== undefined || effort !== undefined) {
+      try {
+        await assertReasoningEffort({
+          provider: meta.provider,
+          model: typeof model === "string" ? model.trim() || undefined : meta.model,
+          effort: effort !== undefined ? effort : meta.effort,
+        });
+      } catch (error) {
+        return res.status(400).json({ error: (error as Error).message });
+      }
+    }
     const currentGitInfo = getGitInfo(chatRecord.folder);
     const currentBranch = currentGitInfo.branch;
 
@@ -439,20 +457,8 @@ streamRouter.post("/:id/message", async (req, res) => {
       chatFileService.updateChatMetadata(req.params.id, { model: trimmed.length > 0 ? trimmed : undefined });
     }
 
-    // Same treatment for per-chat reasoning effort, for the harnesses that take
-    // one. Empty string clears the override (so the chat falls back to the model
-    // default); any other non-allowlisted value is silently dropped.
-    //
-    // `"openrouter"` was in this list until Phase 4 of the OR removal. It sits
-    // ahead of the `sendMessage` call that refuses such a chat, so it was still
-    // reachable — writing an effort value onto a chat that can never run again.
-    if (typeof effort === "string" && (meta.provider === "codex" || meta.provider === "cline" || meta.provider === "pi")) {
-      const trimmed = effort.trim();
-      if (trimmed.length === 0) {
-        chatFileService.updateChatMetadata(req.params.id, { effort: undefined });
-      } else if (VALID_EFFORTS.has(trimmed)) {
-        chatFileService.updateChatMetadata(req.params.id, { effort: trimmed });
-      }
+    if (typeof effort === "string") {
+      chatFileService.updateChatMetadata(req.params.id, { effort: effort.trim() || undefined });
     }
   }
   // ── End branch drift guard ──────────────────────────────────

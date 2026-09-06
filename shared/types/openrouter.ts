@@ -1,3 +1,13 @@
+/** Normalized optional per-model reasoning metadata from OpenRouter. */
+export interface OpenRouterReasoningInfo {
+  /** Omitted: no selector. Null: all gateway efforts. Empty: no efforts. */
+  supportedEfforts?: string[] | null;
+  defaultEffort?: string;
+  defaultEnabled?: boolean;
+  mandatory?: boolean;
+  supportsMaxTokens?: boolean;
+}
+
 /**
  * A tool-calling-capable model from OpenRouter's /models endpoint, trimmed to
  * what the model selector needs. Prices are the raw per-token USD strings as
@@ -20,6 +30,7 @@ export interface OpenRouterModelInfo {
    * whose catalog entry omitted the field.
    */
   supportedParameters: string[];
+  reasoning?: OpenRouterReasoningInfo;
   /**
    * Context window in tokens, from OpenRouter's `context_length`. Optional
    * because a catalog entry may omit it (every live entry carries one today,

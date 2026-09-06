@@ -17,6 +17,8 @@ import { EventEmitter } from "events";
 import type { Request, Response } from "express";
 
 /** Metadata merges the route performed, in order. */
+const validateEffort = vi.hoisted(() => vi.fn(async (_input: unknown) => {}));
+vi.mock("../services/reasoning-capabilities.js", () => ({ assertReasoningEffort: validateEffort }));
 let metadataWrites: Record<string, unknown>[] = [];
 /** Chat record the stubbed file service hands back. */
 let chatRecord: { id: string; folder: string; session_id: string; metadata: string } | null = null;
@@ -103,6 +105,7 @@ function setChat(meta: Record<string, unknown>) {
 
 beforeEach(() => {
   metadataWrites = [];
+  validateEffort.mockReset();
   setChat({ provider: "openrouter", lastBranch: "main" });
 });
 
@@ -143,5 +146,28 @@ describe("POST /:id/message on a removed harness", () => {
 
     expect(f.status).toBe(500);
     expect(f.json?.code).toBeUndefined();
+  });
+});
+
+describe("model-aware effort validation before writes", () => {
+  it("rejects an invalid merged model/effort before any metadata mutation", async () => {
+    setChat({ provider: "codex", model: "astra", effort: "ultra" });
+    validateEffort.mockRejectedValueOnce(new Error("ultra is unsupported on luna"));
+    const response = await post({ model: "luna" });
+    expect(response.status).toBe(400);
+    expect(response.json?.error).toContain("ultra");
+    expect(metadataWrites).toEqual([]);
+    expect(validateEffort).toHaveBeenCalledWith({ provider: "codex", model: "luna", effort: "ultra" });
+  });
+  it.each(["max", "ultra"])("persists validated %s verbatim", async (effort) => {
+    setChat({ provider: "codex", model: "astra" });
+    await post({ effort });
+    expect(metadataWrites).toContainEqual({ effort });
+  });
+  it("clears stale efforts explicitly while changing models", async () => {
+    setChat({ provider: "codex", model: "astra", effort: "ultra" });
+    await post({ model: "luna", effort: "" });
+    expect(validateEffort).toHaveBeenCalledWith({ provider: "codex", model: "luna", effort: "" });
+    expect(metadataWrites).toContainEqual({ effort: undefined });
   });
 });

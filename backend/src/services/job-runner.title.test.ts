@@ -32,6 +32,7 @@ let registry: Registry;
 
 let activeSessions: Set<string>;
 let sentTitles: Array<string | undefined>;
+let sentConfig: Array<{ model?: string; effort?: string }>;
 let chatCounter: number;
 let jobCounter: number;
 
@@ -44,12 +45,14 @@ async function load(dir: string): Promise<void> {
 
   activeSessions = new Set();
   sentTitles = [];
+  sentConfig = [];
   chatCounter = 0;
   jobCounter = 0;
 
   runner.setJobRunnerDeps({
     sendMessage: async (params) => {
       sentTitles.push(params.chatTitle);
+      sentConfig.push({ model: params.model, effort: params.effort });
       const chatId = `chat-${++chatCounter}`;
       activeSessions.add(chatId);
       const emitter = new EventEmitter();
@@ -122,5 +125,26 @@ describe("step chat titles", () => {
     endStep(runId, "a");
     await flush(() => sentTitles.length === 2);
     expect(sentTitles[1]).toBe("Deploy v2.3.1 — Second step");
+  });
+});
+
+describe("step reasoning overrides", () => {
+  it.each(["max", "ultra"])("forwards %s and the job default model without weakening", async (effort) => {
+    const jobId = makeJob({
+      defaults: { provider: "codex", model: "astra" },
+      steps: [{ id: "work", type: "agent", prompt: "Do it", effort }],
+    });
+    runner.spawnJobRun(jobId, {});
+    await flush(() => sentConfig.length === 1);
+    expect(sentConfig[0]).toEqual({ model: "astra", effort });
+  });
+  it("prefers the step model override", async () => {
+    const jobId = makeJob({
+      defaults: { provider: "codex", model: "astra" },
+      steps: [{ id: "work", type: "agent", prompt: "Do it", model: "luna", effort: "max" }],
+    });
+    runner.spawnJobRun(jobId, {});
+    await flush(() => sentConfig.length === 1);
+    expect(sentConfig[0]).toEqual({ model: "luna", effort: "max" });
   });
 });

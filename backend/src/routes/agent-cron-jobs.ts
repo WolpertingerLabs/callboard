@@ -1,3 +1,4 @@
+import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { agentExists } from "../services/agent-file-service.js";
@@ -57,7 +58,7 @@ agentCronJobsRouter.get("/:jobId", (req: Request, res: Response): void => {
 });
 
 /** POST /api/agents/:alias/cron-jobs — create a new cron job */
-agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
+agentCronJobsRouter.post("/", async (req: Request, res: Response): Promise<void> => {
   const alias = req.params.alias as string;
 
   if (!agentExists(alias)) {
@@ -85,6 +86,12 @@ agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
   }
 
   const cronAction: CronAction = action || { type: "start_session" };
+  try {
+    await assertReasoningEffort(cronAction);
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
+    return;
+  }
 
   const job = createCronJob(alias, {
     name: name.trim(),
@@ -106,7 +113,7 @@ agentCronJobsRouter.post("/", (req: Request, res: Response): void => {
 });
 
 /** PUT /api/agents/:alias/cron-jobs/:jobId — update a cron job */
-agentCronJobsRouter.put("/:jobId", (req: Request, res: Response): void => {
+agentCronJobsRouter.put("/:jobId", async (req: Request, res: Response): Promise<void> => {
   const alias = req.params.alias as string;
   const jobId = req.params.jobId as string;
 
@@ -122,6 +129,15 @@ agentCronJobsRouter.put("/:jobId", (req: Request, res: Response): void => {
   if (qhError) {
     res.status(400).json({ error: qhError });
     return;
+  }
+
+  if (safeUpdates.action !== undefined) {
+    try {
+      await assertReasoningEffort(safeUpdates.action);
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+      return;
+    }
   }
 
   const job = updateCronJob(alias, jobId, safeUpdates);
@@ -141,7 +157,7 @@ agentCronJobsRouter.put("/:jobId", (req: Request, res: Response): void => {
 });
 
 /** POST /api/agents/:alias/cron-jobs/:jobId/run — manually trigger a cron job */
-agentCronJobsRouter.post("/:jobId/run", (req: Request, res: Response): void => {
+agentCronJobsRouter.post("/:jobId/run", async (req: Request, res: Response): Promise<void> => {
   const alias = req.params.alias as string;
   const jobId = req.params.jobId as string;
 

@@ -1,3 +1,4 @@
+import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { agentExists, getAgent } from "../services/agent-file-service.js";
@@ -109,7 +110,7 @@ agentTriggersRouter.get("/:triggerId", (req: Request, res: Response): void => {
 });
 
 /** POST /api/agents/:alias/triggers — create a new trigger */
-agentTriggersRouter.post("/", (req: Request, res: Response): void => {
+agentTriggersRouter.post("/", async (req: Request, res: Response): Promise<void> => {
   const alias = req.params.alias as string;
 
   if (!agentExists(alias)) {
@@ -137,6 +138,12 @@ agentTriggersRouter.post("/", (req: Request, res: Response): void => {
   }
 
   const cronAction: CronAction = action || { type: "start_session" };
+  try {
+    await assertReasoningEffort(cronAction);
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
+    return;
+  }
 
   const trigger = createTrigger(alias, {
     name: name.trim(),
@@ -159,7 +166,7 @@ agentTriggersRouter.post("/", (req: Request, res: Response): void => {
 });
 
 /** PUT /api/agents/:alias/triggers/:triggerId — update a trigger */
-agentTriggersRouter.put("/:triggerId", (req: Request, res: Response): void => {
+agentTriggersRouter.put("/:triggerId", async (req: Request, res: Response): Promise<void> => {
   const alias = req.params.alias as string;
   const triggerId = req.params.triggerId as string;
 
@@ -180,6 +187,15 @@ agentTriggersRouter.put("/:triggerId", (req: Request, res: Response): void => {
   if (dbError) {
     res.status(400).json({ error: dbError });
     return;
+  }
+
+  if (updates.action !== undefined) {
+    try {
+      await assertReasoningEffort(updates.action);
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+      return;
+    }
   }
 
   const trigger = updateTrigger(alias, triggerId, updates);

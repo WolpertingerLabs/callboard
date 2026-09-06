@@ -1,3 +1,4 @@
+import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
 import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
@@ -922,6 +923,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         "Re-point it at another harness — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",
     );
   }
+  if (isNewChat) await assertReasoningEffort(opts);
   log.debug(`sendMessage — isNewChat=${isNewChat}, folder=${opts.folder || "n/a"}, chatId=${opts.chatId || "n/a"}`);
 
   // Resolve chat context: existing chat or new chat setup
@@ -949,6 +951,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     folder = chat.folder;
     resumeSessionId = chat.session_id;
     initialMetadata = JSON.parse(chat.metadata || "{}");
+    await assertReasoningEffort(initialMetadata);
     // Recover agentAlias from chat metadata when not explicitly provided.
     // This ensures Callboard tools are re-injected when resuming an agent session.
     if (!opts.agentAlias && initialMetadata.agentAlias) {
@@ -1556,12 +1559,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // reads codexOpenRouterModel (an OR slug), native Codex reads codexModel (a
     // bare CLI slug). Sharing one field made toggling lossy — see the
     // AgentSettings doc-comment on codexOpenRouterModel.
-    const requestedModel = resolveSessionModel(
-      typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
-      useOpenRouter ? agentSettings.codexOpenRouterModel : agentSettings.codexModel,
-      "codex",
+    const requestedModel = resolveReasoningTarget(
+      { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined },
       agentSettings,
-    );
+    ).model;
     // Per-chat reasoning effort, read back out of metadata — maps onto Codex's
     // modelReasoningEffort in the optionsAdapter.
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
@@ -1586,6 +1587,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(requestedModel && { model: requestedModel }),
       ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
       ...(chatEffort && { reasoningEffort: chatEffort }),
+      reasoningRoute: resolveReasoningTarget({ provider: "codex", model: requestedModel }, agentSettings).route === "openrouter" ? "openrouter" : "native",
       ...(permissions && { permissions }),
     };
     log.info(
@@ -1678,12 +1680,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // cross-harness alias, resolved through the same registry as every other
     // harness so `planner` lands on whatever the user pointed the `cline` target
     // at.
-    const clineModel = resolveSessionModel(
-      typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
-      agentSettings.clineModel,
-      "cline",
+    const clineModel = resolveReasoningTarget(
+      { provider: "cline", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined },
       agentSettings,
-    );
+    ).model;
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
     queryOpts.options.cline = {
       ...(agentSettings.clineProviderId?.trim() && { providerId: agentSettings.clineProviderId.trim() }),
@@ -1714,12 +1714,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // own explicitly named field. `PiAdapter.assertPiResumePath` throws if a value
   // that is not an absolute `.jsonl` path ever reaches it.
   if (providerKind === "pi") {
-    const piModel = resolveSessionModel(
-      typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
-      agentSettings.piModel,
-      "pi",
+    const piModel = resolveReasoningTarget(
+      { provider: "pi", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined },
       agentSettings,
-    );
+    ).model;
     const chatEffort = initialMetadata.effort as EffortLevel | undefined;
 
     // id → path. A chat whose session file has been removed resolves to nothing;

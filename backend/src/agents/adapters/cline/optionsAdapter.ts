@@ -71,6 +71,8 @@ export const DEFAULT_CLINE_PROVIDER_ID = "anthropic";
  * reasoning payload" semantics `shared/types/providers.ts` documents.
  */
 export function translateEffort(effort: EffortLevel | undefined): { thinking?: boolean; reasoningEffort?: ClineReasoningEffort } {
+  if (effort === "max" || effort === "ultra" || effort === "persistent")
+    throw new Error(`Reasoning effort "${effort}" is not supported by this adapter. Choose a supported effort or clear it.`);
   if (!effort) return {};
   if (effort === "none") return { thinking: false };
   return { thinking: true, reasoningEffort: effort satisfies ClineReasoningEffort };

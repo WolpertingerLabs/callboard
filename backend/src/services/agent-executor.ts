@@ -1,3 +1,4 @@
+import { assertReasoningEffort } from "./reasoning-capabilities.js";
 /**
  * Shared agent execution helper.
  *
@@ -111,6 +112,8 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       log.warn(`Agent "${agentAlias}" is disabled — skipping ${triggeredBy} execution`);
       return null;
     }
+
+    await assertReasoningEffort({ provider, model, effort });
 
     const workspacePath = getAgentWorkspacePath(agentAlias);
     const fullSystemPrompt = compileSystemPrompt(config, workspacePath).prompt;

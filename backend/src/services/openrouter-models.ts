@@ -30,6 +30,7 @@
  * Mirrors the cache shape of {@link ./sdk-info.ts}.
  */
 import type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "shared/types/index.js";
+import { parseOpenRouterReasoning } from "shared/types/reasoning.js";
 import { getAgentSettings } from "./agent-settings.js";
 import { resolveOpenRouterApiUrl } from "./openrouter-endpoint.js";
 import { createLogger } from "../utils/logger.js";
@@ -69,6 +70,7 @@ interface OpenRouterModelsCache {
 
 // Raw shape of the relevant fields from OpenRouter's /models response.
 interface RawOpenRouterModel {
+  reasoning?: unknown;
   id?: string;
   name?: string;
   supported_parameters?: string[];
@@ -78,6 +80,7 @@ interface RawOpenRouterModel {
 }
 
 let cache: OpenRouterModelsCache | null = null;
+let cacheEndpoint: string | undefined;
 let fetchPromise: Promise<OpenRouterModelsCache> | null = null;
 
 /**
@@ -110,6 +113,7 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
 
     const models: OpenRouterModelInfo[] = raw
       // Keep only models that advertise tool calling.
+      .filter((m) => m !== null && typeof m === "object")
       .filter((m) => Array.isArray(m.supported_parameters) && m.supported_parameters.includes("tools"))
       .filter((m): m is RawOpenRouterModel & { id: string } => typeof m.id === "string" && m.id.length > 0)
       .map((m) => {
@@ -118,7 +122,9 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModelsCache> {
         // Prefer the former and fall back, so a model routed to a shorter
         // backend does not advertise a window it will reject.
         const contextLength = m.top_provider?.context_length ?? m.context_length;
+        const reasoning = parseOpenRouterReasoning(m.reasoning);
         return {
+          ...(reasoning ? { reasoning } : {}),
           id: m.id,
           name: m.name || m.id,
           promptPrice: m.pricing?.prompt ?? "0",
@@ -163,7 +169,24 @@ function isFresh(entry: OpenRouterModelsCache): boolean {
  * and refresh on the one after, quietly doubling the period. Forcing still
  * shares an in-flight fetch, so a tick during a slow fetch is free.
  */
+/** Never serve capabilities from another gateway after a settings change. */
+function checkCacheEndpoint(): void {
+  let endpoint: string;
+  try {
+    endpoint = resolveOpenRouterApiUrl("/models");
+  } catch {
+    endpoint = "invalid-endpoint";
+  }
+  if (cacheEndpoint !== undefined && endpoint !== cacheEndpoint) {
+    generation++;
+    cache = null;
+    fetchPromise = null;
+  }
+  cacheEndpoint = endpoint;
+}
+
 function ensureOpenRouterModels(opts?: { force?: boolean }): Promise<OpenRouterModelsCache> {
+  checkCacheEndpoint();
   if (!opts?.force && cache && isFresh(cache)) return Promise.resolve(cache);
   if (!fetchPromise) {
     const gen = generation;
@@ -280,6 +303,7 @@ export async function getOpenRouterModelsAsync(): Promise<OpenRouterModelInfo[]>
  * window when a read lands before the timer does.
  */
 export function getOpenRouterModelsSnapshot(): OpenRouterModelInfo[] {
+  checkCacheEndpoint();
   if (!cache || !isFresh(cache)) void ensureOpenRouterModels();
   return cache?.models ?? [];
 }
@@ -327,14 +351,9 @@ export function getLatestAnthropicRoleModels(models?: OpenRouterModelInfo[]): { 
  * Drops the cached models rather than carrying them forward: they describe the
  * host we just stopped pointing at.
  *
- * **Currently has no production callers** — don't go hunting for one. Nothing
- * invalidates on a base-URL change today; the TTL just corrects it within the
- * hour. Two consequences of that, both pre-existing: a URL change is served
- * stale until the next refresh, and the carry-forward in
- * {@link fetchOpenRouterModels} is host-blind, so a private proxy that is down
- * at an hour boundary keeps serving whatever host answered last. Wiring this
- * into the settings-update path fixes both, and the generation counter it bumps
- * is already here for when someone does.
+ * Reads also invalidate automatically when the resolved endpoint changes, so
+ * neither an old successful fetch nor carry-forward failure can leak another
+ * gateway's reasoning capabilities into the current route.
  */
 export function refreshOpenRouterModelsCache(): Promise<OpenRouterModelsCache> {
   generation++;
@@ -349,6 +368,7 @@ export function resetOpenRouterModelsCacheForTesting(): void {
   cache = null;
   fetchPromise = null;
   stopOpenRouterModelsRefresh();
+  cacheEndpoint = undefined;
 }
 
 /**

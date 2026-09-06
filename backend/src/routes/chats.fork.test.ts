@@ -12,6 +12,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
 
+vi.mock("../services/reasoning-capabilities.js", () => ({
+  assertReasoningEffort: async ({ provider, effort }: { provider?: string; effort?: unknown }) => {
+    if (effort && provider === "claude-code") throw new Error("Reasoning effort is not supported for claude-code");
+  },
+}));
+
 let parentChat: any;
 
 vi.mock("../utils/chat-lookup.js", () => ({ findChat: () => parentChat }));
@@ -350,11 +356,12 @@ describe("POST /api/chats/:id/fork model and effort", () => {
     expect(res.meta.model).toBe("gpt-5.6");
   });
 
-  it("drops effort when the target harness has no reasoning control", async () => {
+  it("rejects effort when the target harness has no reasoning control", async () => {
     setParent({});
     const res = await fork({ provider: "claude-code", model: "opus", effort: "high" });
-    expect(res.meta.model).toBe("opus");
-    expect(res.meta).not.toHaveProperty("effort");
+    expect(res.code).toBe(400);
+    expect(calls.seedSession).toEqual([]);
+    expect(calls.forkSession).toEqual([]);
   });
 
   it("keeps model and effort on a same-harness fork", async () => {

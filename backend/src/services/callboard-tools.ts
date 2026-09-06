@@ -1,3 +1,5 @@
+import { assertReasoningEffort } from "./reasoning-capabilities.js";
+import type { EffortLevel } from "shared";
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
@@ -52,6 +54,7 @@ type MessageSender = (opts: {
   /** Which ACP vendor, when `provider` is `"acp"`. Ignored for every other kind. */
   acpProviderId?: string;
   model?: string;
+  effort?: EffortLevel;
   requireExplicitCompletion?: boolean;
   parentChatId?: string;
   chatRole?: string;
@@ -236,8 +239,7 @@ export function buildCallboardToolsSpec(
   };
 
   /** Full board rollup, shared by list_cards and get_card. */
-  const cardSummaries = (includeHidden = false) =>
-    buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }), undefined, { includeHidden });
+  const cardSummaries = (includeHidden = false) => buildCardSummaries(listChatsSnapshot(), listRuns({ withRoot: true }), undefined, { includeHidden });
 
   return {
     name: "callboard-tools",
@@ -867,6 +869,7 @@ export function buildCallboardToolsSpec(
             if (!providerModel.ok) {
               return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
             }
+            await assertReasoningEffort({ ...providerModel, effort: args.effort });
 
             // Resolve effective folder based on branch configuration
             const branchResult = resolveBranch({
@@ -913,6 +916,7 @@ export function buildCallboardToolsSpec(
               provider: providerModel.provider,
               ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
+              ...(args.effort && { effort: args.effort as EffortLevel }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
               ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),
               ...(workspaceId && { workspaceId }),
@@ -972,6 +976,7 @@ export function buildCallboardToolsSpec(
                     // that did NOT hold (cross-engine, non-alias) and pass an
                     // explicit model if it cares.
                     ...(providerModel.model && { model: providerModel.model }),
+                    ...(args.effort && { effort: args.effort as EffortLevel }),
                     modelSource: providerModel.modelSource,
                     ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
                     ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),

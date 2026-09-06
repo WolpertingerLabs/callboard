@@ -114,6 +114,8 @@ export function resolvePiAgentDir(): string {
  * provider's own error is the honest answer if the model refuses.
  */
 export function translateThinkingLevel(effort: EffortLevel | undefined): { thinkingLevel?: PiThinkingLevel } {
+  if (effort === "max" || effort === "ultra" || effort === "persistent")
+    throw new Error(`Reasoning effort "${effort}" is not supported by this adapter. Choose a supported effort or clear it.`);
   if (!effort) return {};
   if (effort === "none") return { thinkingLevel: "off" };
   return { thinkingLevel: effort satisfies PiThinkingLevel };

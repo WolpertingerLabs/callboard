@@ -272,29 +272,20 @@ export function saveDefaultPiModel(model: string): void {
   setStorageData(data);
 }
 
-const KNOWN_EFFORTS: ReadonlySet<EffortLevel> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
-
-/**
- * Last-selected reasoning effort. Returns `undefined` when nothing has been
- * stored — the New Chat dropdown surfaces this as the "(unset)" option, which
- * leaves the reasoning payload off the harness call entirely. Any stored value
- * not in {@link KNOWN_EFFORTS} (e.g. a forward-compat level from a newer build)
- * also degrades to `undefined`.
- */
+/** Preserve stored strings, including stale/future levels, so the picker can
+ * explain unsupported overrides rather than silently downgrading to default. */
 export function getDefaultOpenRouterEffort(): EffortLevel | undefined {
   const data = getStorageData();
   const stored = data.defaultOpenRouterEffort;
-  return stored && KNOWN_EFFORTS.has(stored) ? stored : undefined;
+  return typeof stored === "string" && stored.length > 0 ? stored : undefined;
 }
 
 export function saveDefaultOpenRouterEffort(effort: EffortLevel | undefined): void {
   const data = getStorageData();
   if (effort === undefined) {
     delete data.defaultOpenRouterEffort;
-  } else if (KNOWN_EFFORTS.has(effort)) {
-    data.defaultOpenRouterEffort = effort;
   } else {
-    return; // unknown value — leave existing state alone
+    data.defaultOpenRouterEffort = effort;
   }
   setStorageData(data);
 }

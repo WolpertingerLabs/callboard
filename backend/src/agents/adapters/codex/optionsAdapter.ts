@@ -112,6 +112,8 @@ export interface CodexOptionsExtras {
    * summaries on ("auto").
    */
   reasoningEffort?: EffortLevel;
+  /** Effective wire route, including ambient configuration without injection. */
+  reasoningRoute?: "openrouter" | "native";
 }
 
 /**
@@ -384,8 +386,20 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // additionally sets the Codex effort tier (below). Default (unset) ⇒ summaries
   // on at Codex's own effort.
   const reasoningEffort = extras.reasoningEffort;
+  if (
+    (extras.useOpenRouter || extras.reasoningRoute === "openrouter") &&
+    reasoningEffort &&
+    !["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(reasoningEffort)
+  ) {
+    throw new Error(
+      `Reasoning effort "${reasoningEffort}" cannot be sent to OpenRouter by the Codex transport. Clear it or select a supported effort. Native 'none' only hides summaries; it does not disable reasoning.`,
+    );
+  }
   codexOpts.config = {
     model_reasoning_summary: reasoningEffort === "none" ? "none" : "auto",
+    // Gateway none is an actual effort, unlike saved native summary-only none.
+    // SDK ThreadOptions omit it; CLI config passthrough emits reasoning.effort.
+    ...((extras.useOpenRouter || extras.reasoningRoute === "openrouter") && reasoningEffort === "none" ? { model_reasoning_effort: "none" } : {}),
   };
   // ── OpenRouter endpoint routing ──────────────────────────────────
   // Inject a custom config.toml model provider so the native Codex harness

@@ -1,3 +1,4 @@
+import { assertJobReasoningEfforts } from "../services/job-reasoning-validation.js";
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { JobRunStatus } from "shared";
@@ -147,10 +148,11 @@ jobsRouter.get("/:id/export", (req: Request, res: Response): void => {
   res.send(JSON.stringify(envelope, null, 2));
 });
 
-jobsRouter.post("/", (req: Request, res: Response): void => {
+jobsRouter.post("/", async (req: Request, res: Response): Promise<void> => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Create a job definition'
   try {
+    await assertJobReasoningEfforts(req.body);
     const job = createJob({ ...req.body, createdBy: { kind: "ui" } });
     res.status(201).json({ job });
   } catch (err: any) {
@@ -160,11 +162,12 @@ jobsRouter.post("/", (req: Request, res: Response): void => {
 
 // Import a job definition from an export envelope or a bare definition.
 // Single-segment "/import" does not collide with "POST /" or "POST /:id/spawn".
-jobsRouter.post("/import", (req: Request, res: Response): void => {
+jobsRouter.post("/import", async (req: Request, res: Response): Promise<void> => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Import a job definition (envelope or bare definition)'
   try {
     const { mode, ...rest } = req.body ?? {};
+    await assertJobReasoningEfforts(rest.job ?? rest);
     const job = importJobDefinition(rest, { mode, createdBy: { kind: "api" } });
     res.status(201).json({ job });
   } catch (err: any) {
@@ -179,10 +182,11 @@ jobsRouter.post("/import", (req: Request, res: Response): void => {
   }
 });
 
-jobsRouter.put("/:id", (req: Request, res: Response): void => {
+jobsRouter.put("/:id", async (req: Request, res: Response): Promise<void> => {
   // #swagger.tags = ['Jobs']
   // #swagger.summary = 'Update a job definition (full replacement, bumps version)'
   try {
+    await assertJobReasoningEfforts(req.body);
     res.json({ job: updateJob(req.params.id, req.body) });
   } catch (err: any) {
     sendError(res, err);

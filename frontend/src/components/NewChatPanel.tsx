@@ -237,7 +237,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         // The vendor travels with the kind — `provider: "acp"` alone does not
         // say which harness runs the chat, and the route rejects it without this.
         ...(effectiveProvider === "acp" && { acpProviderId }),
-        ...(effectiveProvider === "codex" && effort && { effort }),
+        ...(["codex", "cline", "pi"].includes(effectiveProvider) && effort && { effort }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
       },
@@ -285,6 +285,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         systemPrompt,
         agentAlias: agent.alias,
         provider: effectiveProvider,
+        ...(["codex", "cline", "pi"].includes(effectiveProvider) && effort && { effort }),
         ...(effectiveProvider === "acp" && { acpProviderId }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),

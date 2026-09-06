@@ -289,9 +289,7 @@ describe("periodic refresh", () => {
     // where checking freshness happens to work. Without this the test passes
     // against the bug.
     const LATENCY_MS = 5_000;
-    fetchMock.mockImplementation(
-      () => new Promise<Response>((resolve) => setTimeout(() => resolve(modelsBody("anthropic/claude-opus-4.8")), LATENCY_MS)),
-    );
+    fetchMock.mockImplementation(() => new Promise<Response>((resolve) => setTimeout(() => resolve(modelsBody("anthropic/claude-opus-4.8")), LATENCY_MS)));
 
     initOpenRouterModelsCache();
     await vi.advanceTimersByTimeAsync(LATENCY_MS);
@@ -431,4 +429,46 @@ describe("refresh", () => {
 
     expect(getOpenRouterModelsSnapshot()).toEqual([expect.objectContaining({ id: "newhost/model" })]);
   });
+});
+
+describe("reasoning metadata", () => {
+  beforeEach(() => resetOpenRouterModelsCacheForTesting());
+  afterEach(() => {
+    resetOpenRouterModelsCacheForTesting();
+    vi.unstubAllGlobals();
+  });
+  it("retains per-model metadata without inferring from supported_parameters", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [
+            { id: "absent", supported_parameters: ["tools", "reasoning"] },
+            { id: "null", supported_parameters: ["tools"], reasoning: { supported_efforts: null, mandatory: true } },
+            { id: "empty", supported_parameters: ["tools"], reasoning: { supported_efforts: [] } },
+            { id: "omitted", supported_parameters: ["tools"], reasoning: { default_enabled: true } },
+            null,
+          ],
+        }),
+      }),
+    );
+    const models = await getOpenRouterModelsAsync();
+    expect(models.find((m) => m.id === "absent")?.reasoning).toBeUndefined();
+    expect(models.find((m) => m.id === "null")?.reasoning).toEqual({ supportedEfforts: null, mandatory: true });
+    expect(models.find((m) => m.id === "empty")?.reasoning).toEqual({ supportedEfforts: [] });
+    expect(models.find((m) => m.id === "omitted")?.reasoning).toEqual({ defaultEnabled: true });
+  });
+});
+
+it("invalidates capabilities immediately when the configured gateway changes", async () => {
+  resetOpenRouterModelsCacheForTesting();
+  mockResolveUrl.mockReturnValue("https://gateway-one.invalid/models");
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(modelsBody("old/model")).mockRejectedValueOnce(new Error("offline")));
+  expect((await getOpenRouterModelsAsync()).map((m) => m.id)).toEqual(["old/model"]);
+  mockResolveUrl.mockReturnValue("https://gateway-two.invalid/models");
+  expect(await getOpenRouterModelsAsync()).toEqual([]);
+  resetOpenRouterModelsCacheForTesting();
+  mockResolveUrl.mockImplementation((path: string) => `https://openrouter.ai/api/v1${path}`);
+  vi.unstubAllGlobals();
 });

@@ -1,0 +1,90 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+const mocks = vi.hoisted(() => ({ settings: {} as Record<string, unknown>, injected: false, ambient: false, native: vi.fn(), or: vi.fn() }));
+vi.mock("./agent-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-settings.js")>()),
+  getAgentSettings: () => mocks.settings,
+}));
+vi.mock("../agents/adapters/codex/codexAuth.js", () => ({
+  isCodexRoutedThroughOpenRouter: () => mocks.injected,
+  detectCodexOpenRouterEnv: () => mocks.ambient,
+}));
+vi.mock("./codex-models.js", () => ({ getCodexModelsAsync: mocks.native }));
+vi.mock("./openrouter-models.js", () => ({ getOpenRouterModelsAsync: mocks.or }));
+import { assertReasoningEffort, resolveReasoningCapability, resolveReasoningTarget } from "./reasoning-capabilities.js";
+beforeEach(() => {
+  mocks.settings = { codexModel: "native", codexOpenRouterModel: "vendor/routed", clineModel: "cline-model", piModel: "vendor/routed" };
+  mocks.injected = false;
+  mocks.ambient = false;
+  mocks.native.mockResolvedValue([{ id: "native", defaultReasoningLevel: "medium", supportedReasoningLevels: ["low", "medium", "max", "ultra"] }]);
+  mocks.or.mockResolvedValue([{ id: "vendor/routed", reasoning: { supportedEfforts: null } }]);
+});
+describe("effective reasoning resolution", () => {
+  it("uses native defaults and live max/ultra despite unrelated OR credentials", async () => {
+    mocks.settings.openRouterApiKey = "unrelated";
+    expect(await resolveReasoningCapability({ provider: "codex" })).toMatchObject({
+      route: "codex",
+      model: "native",
+      efforts: ["low", "medium", "max", "ultra"],
+      defaultEffort: "medium",
+    });
+    await expect(assertReasoningEffort({ provider: "codex", effort: "ultra" })).resolves.toBeUndefined();
+  });
+  it("resolves override aliases and missing alias targets through execution defaults", () => {
+    mocks.settings.modelAliases = [
+      { name: "fast", targets: { codex: "override" } },
+      { name: "other", targets: { pi: "elsewhere" } },
+    ];
+    expect(resolveReasoningTarget({ provider: "codex", model: "FAST" }).model).toBe("override");
+    expect(resolveReasoningTarget({ provider: "codex", model: "other" }).model).toBe("native");
+  });
+  it("uses OR defaults only on injected routing and never offers ultra", async () => {
+    mocks.injected = true;
+    const capability = await resolveReasoningCapability({ provider: "codex" });
+    expect(capability).toMatchObject({ route: "openrouter", model: "vendor/routed" });
+    expect(capability.efforts).toContain("max");
+    expect(capability.efforts).not.toContain("ultra");
+    expect(capability.efforts).toContain("none");
+    await expect(assertReasoningEffort({ provider: "codex", effort: "ultra" })).rejects.toThrow("not supported");
+  });
+  it("ambient routing changes capabilities without changing execution's model default", async () => {
+    mocks.ambient = true;
+    expect(resolveReasoningTarget({ provider: "codex" })).toMatchObject({ route: "openrouter", model: "native" });
+    await expect(assertReasoningEffort({ provider: "codex", effort: "none" })).rejects.toThrow("not supported");
+  });
+  it("unknown/offline models allow default but reject explicit tiers, preserving native legacy summary none", async () => {
+    mocks.native.mockResolvedValue([]);
+    await expect(assertReasoningEffort({ provider: "codex" })).resolves.toBeUndefined();
+    await expect(assertReasoningEffort({ provider: "codex", effort: "max" })).rejects.toThrow("Clear the effort");
+    await expect(assertReasoningEffort({ provider: "codex", effort: "none" })).resolves.toBeUndefined();
+  });
+  it("Cline/pi OR settings intersect gateway tiers with adapter vocabulary", async () => {
+    mocks.settings.clineProviderId = "openrouter";
+    for (const provider of ["cline", "pi"]) {
+      const cap = await resolveReasoningCapability({ provider, model: "vendor/routed" });
+      expect(cap.route).toBe("openrouter");
+      expect(cap.efforts).not.toContain("max");
+      expect(cap.efforts).not.toContain("ultra");
+    }
+  });
+  it("rejects malformed explicit values and efforts on unsupported harnesses", async () => {
+    await expect(assertReasoningEffort({ provider: "codex", effort: {} })).rejects.toThrow("not supported");
+    await expect(assertReasoningEffort({ provider: "claude-code", effort: "high" })).rejects.toThrow("does not expose");
+  });
+});
+
+it("recognizes Cline/pi explicit OpenRouter base URL routing, not unrelated keys", () => {
+  mocks.settings.clineProviderId = "openai-native";
+  mocks.settings.clineBaseUrl = "https://openrouter.ai/api/v1";
+  mocks.settings.piProviderId = "openai";
+  mocks.settings.piBaseUrl = "https://openrouter.ai/api/v1";
+  expect(resolveReasoningTarget({ provider: "cline" }).route).toBe("openrouter");
+  expect(resolveReasoningTarget({ provider: "pi" }).route).toBe("openrouter");
+});
+
+it("does not label gateway defaults as Codex CLI defaults", async () => {
+  mocks.injected = true;
+  mocks.or.mockResolvedValue([{ id: "vendor/routed", reasoning: { supportedEfforts: null, defaultEffort: "high", defaultEnabled: false } }]);
+  const capability = await resolveReasoningCapability({ provider: "codex" });
+  expect(capability.defaultEffort).toBeUndefined();
+  expect(capability.message).toContain("not the gateway default");
+});

@@ -47,6 +47,7 @@ export interface ClineModelOption {
   value: string;
   displayName: string;
   description: string;
+  supportsReasoning?: boolean;
 }
 
 /** How long a provider's models are served before the next read re-reads them. */
@@ -167,6 +168,7 @@ export async function getClineModels(providerId: string): Promise<ClineModelOpti
           value: m.id,
           displayName: m.name || m.id,
           description: describeModel(m),
+          ...(typeof m.supportsReasoning === "boolean" ? { supportsReasoning: m.supportsReasoning } : {}),
         }))
         .sort((a, b) => a.value.localeCompare(b.value));
       if (options.length > 0) _cache.set(id, { options, readAt: Date.now() });
