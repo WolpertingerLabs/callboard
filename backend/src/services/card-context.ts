@@ -57,12 +57,14 @@ export function createCardContext(stored = listChatsSnapshot()) {
     });
   }
   const index = buildLineageIndex([...corpus.values()]);
+  const isNative = (chat?: Chat) => {
+    const meta = parseChatMetadata(chat?.metadata);
+    return meta.provider === "codex" && !!meta.nativeAgent;
+  };
   // A stored native record with lost parent evidence is not promoted to a
   // standalone card. Ordinary stored orphans retain historical promotion.
   const roots = new Set(
-    stored
-      .filter((chat) => index.existingRootIdOf(chat.id) === chat.id && isCardEligible(chat) && !parseChatMetadata(corpus.get(chat.id)?.metadata).nativeAgent)
-      .map((chat) => chat.id),
+    stored.filter((chat) => index.existingRootIdOf(chat.id) === chat.id && isCardEligible(chat) && !isNative(corpus.get(chat.id))).map((chat) => chat.id),
   );
   const chats = [...corpus.values()].filter((chat) => roots.has(index.existingRootIdOf(chat.id)));
   return {
@@ -75,7 +77,7 @@ export function createCardContext(stored = listChatsSnapshot()) {
     },
     isNativeTarget(id: string): boolean {
       const chat = corpus.get(nativeAliases.get(id) ?? id);
-      return !!chat && !!parseChatMetadata(chat.metadata).nativeAgent;
+      return isNative(chat);
     },
     /** Refresh only a successfully edited stored root, without repeating discovery. */
     replaceRoot(chat: Chat) {

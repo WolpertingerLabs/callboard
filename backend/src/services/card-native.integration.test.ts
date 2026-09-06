@@ -267,6 +267,14 @@ describe("filesystem-only native card membership", () => {
     saveIgnoredProjectDirPrefixes([]);
   });
 
+  it("honors explicit provider ownership over stale native metadata on stored roots", async () => {
+    chat("foreign-root", { provider: "claude-code", nativeAgent: { parentThreadId: IMPL } });
+    const result = await rest("get", "/:id", "foreign-root");
+    expect(result.card.id).toBe("foreign-root");
+    expect(result.card.memberChats[0].nativeAgent).toBeUndefined();
+    expect((await mcp("update_card", { card_id: "foreign-root", title: "Explicit owner" })).success).toBe(true);
+  });
+
   it("refuses ambiguous mapped parents and bounds aggregate cold metadata reads", async () => {
     chat("duplicate-owner", {}, IMPL);
     rollout(CHILD);
