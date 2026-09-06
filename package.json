@@ -68,7 +68,7 @@
     "swagger": "tsx backend/src/swagger.ts",
     "prebuild": "npm run swagger",
     "clean": "rm -rf shared/dist backend/dist frontend/dist shared/tsconfig.tsbuildinfo backend/tsconfig.tsbuildinfo frontend/tsconfig.tsbuildinfo",
-    "build": "npm run build:shared && npm run build:computer-use && npm run build:backend && npm run build:frontend",
+    "build": "npm run build:shared && npm run build:computer-use && npm run build:backend && npm run build:frontend && node scripts/rewrite-shared-imports.mjs",
     "postbuild": "node scripts/rewrite-shared-imports.mjs",
     "build:shared": "npm -w shared run build",
     "build:backend": "npm -w callboard-backend run build",

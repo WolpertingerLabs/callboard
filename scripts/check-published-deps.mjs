@@ -27,7 +27,8 @@ const SHIPPED_ROOTS = ["backend/dist", "packages/computer-use/dist", "bin"];
 const isExcluded = (path) => /\.d\.ts$/.test(path) || /\.test\.[cm]?js$/.test(path) || /(^|\/)__fixtures__\//.test(path) || /(^|\/)swagger\.js$/.test(path);
 
 // Workspace-internal specifier: rewritten to a relative path at build time.
-const INTERNAL = new Set(["shared", "@wolpertingerlabs/computer-use"]);
+// computer-use is deliberately not exempt: a surviving bare workspace import is a broken artifact.
+const INTERNAL = new Set(["shared"]);
 
 const BUILTINS = new Set(builtinModules);
 
