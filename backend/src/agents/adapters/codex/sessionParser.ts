@@ -34,6 +34,8 @@
  *      Responses-API item shapes in the rollout).
  *    - `"function_call_output"` / `"custom_tool_call_output"` → `tool_result`.
  *    - `"reasoning"` → `thinking`.
+ *    - `"agent_message"` → attributed system/agent_message context (not root
+ *      assistant output); protected blocks are explicit unavailable markers.
  *
  * Unknown line/item types are skipped silently — the rollout schema is
  * forward-compatible with additions, and so are we.
@@ -50,6 +52,8 @@ import { storeBase64Image } from "../../../services/image-storage.js";
 import { scanJsonlLines } from "../../../utils/jsonl-scan.js";
 import { createLogger } from "../../../utils/logger.js";
 import { DATA_DIR } from "../../../utils/paths.js";
+
+import { collaborationArguments, translateCollaborationMessage } from "./collaboration.js";
 
 const log = createLogger("codex-session-parser");
 
@@ -639,6 +643,9 @@ function translateResponseItem(payload: Record<string, unknown> | undefined, tim
   const ts = typeof timestamp === "string" ? timestamp : undefined;
 
   switch (itemType) {
+    case "agent_message":
+      return translateCollaborationMessage(payload, ts);
+
     case "message":
       return translateMessage(payload, ts);
 
@@ -657,8 +664,9 @@ function translateResponseItem(payload: Record<string, unknown> | undefined, tim
       return {
         role: "assistant",
         type: "tool_use",
-        toolName: name,
-        content,
+        toolName: payload.namespace === "collaboration" && !name.startsWith("collaboration.") ? `collaboration.${name}` : name,
+        ...(typeof payload.namespace === "string" && { toolNamespace: payload.namespace }),
+        content: collaborationArguments(name, payload.namespace, content),
         ...(callId && { toolUseId: callId }),
         ...(ts && { timestamp: ts }),
       };

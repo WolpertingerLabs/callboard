@@ -21,6 +21,12 @@
  *    future SDK version streams deltas, but for agent_message/reasoning it is a
  *    no-op there to avoid double-emitting the full text.
  *
+ * SDK 0.153.4's AgentMessageItem is { id, type: "agent_message", text }:
+ * it is the ROOT assistant answer, not a durable rollout's agent_message
+ * { author, recipient, content }. ThreadItem contains no native collaboration
+ * tool/reply event. Those are restored by sessionParser on durable refresh
+ * (including the UI's end-of-run refetch), not invented as live SDK events.
+ *
  * Tool-shaped items (`command_execution`, `file_change`, `mcp_tool_call`,
  * `web_search`) fan their lifecycle across two events: `item.started` →
  * `tool_use`, `item.completed` → `tool_result`, paired by the stable `item.id`

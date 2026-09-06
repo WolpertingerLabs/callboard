@@ -85,7 +85,12 @@ function readSessionMessages(sessionId: string, limit: number = 50): string[] {
     const messages = provider.parseSessionMessages([sessionId]);
     const textMessages: string[] = [];
     for (const msg of messages) {
-      if (msg.type === "text" && msg.content) {
+      if (msg.type === "system" && msg.subtype === "agent_message") {
+        const agent = msg.collaboration;
+        textMessages.push(
+          `[inter-agent ${agent?.kind ?? "unknown"}; from ${agent?.author ?? "unknown"} to ${agent?.recipient ?? "unknown"}; id ${agent?.id ?? "unavailable"}] ${msg.content}`,
+        );
+      } else if (msg.type === "text" && msg.content) {
         textMessages.push(`[${msg.role}] ${msg.content}`);
       }
     }
@@ -1157,7 +1162,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "read_session_messages",
-        "Read the text messages from a chat session on any engine (claude-code, codex, cline, pi, acp) — each engine's transcript format is read for you. Returns the conversation content (user and assistant messages). Useful for checking what a spawned session did.",
+        "Read the text messages from a chat session on any engine (claude-code, codex, cline, pi, acp) — each engine's transcript format is read for you. Returns the conversation content (user and assistant messages, plus attributed native inter-agent context). Useful for checking what a spawned session did.",
         {
           chatId: z.string().describe("The chat/session ID to read messages from"),
           limit: z.number().optional().describe("Maximum number of messages to return (default: 50, returns most recent)"),

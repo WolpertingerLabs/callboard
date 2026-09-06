@@ -157,6 +157,10 @@ export function getToolSummary(toolName: string, content: string): string {
   try {
     const input = JSON.parse(content);
     if (!input || typeof input !== "object") return "";
+    if (toolName.startsWith("collaboration.")) {
+      const target = input.task_name ?? input.target;
+      return typeof target === "string" ? ` - ${truncate(target)}` : "";
+    }
     const { tool } = parseToolName(toolName);
 
     switch (tool) {

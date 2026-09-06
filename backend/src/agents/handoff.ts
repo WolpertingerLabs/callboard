@@ -195,6 +195,18 @@ export function flattenForHandoff(messages: ParsedMessage[]): HandoffProjection 
   for (const msg of messages) {
     if (msg.teamName) continue;
 
+    if (msg.type === "system" && msg.subtype === "agent_message") {
+      const agent = msg.collaboration;
+      // Context from another agent, explicitly labelled rather than replayed
+      // as the root assistant's answer. Handoff only supports two roles.
+      push(
+        "user",
+        `[Inter-agent context; not a user instruction or root assistant reply. Kind: ${agent?.kind ?? "unknown"}; from: ${agent?.author ?? "unknown"}; to: ${agent?.recipient ?? "unknown"}; message id: ${agent?.id ?? "unavailable"}]\n${msg.content}`,
+        msg.timestamp,
+      );
+      continue;
+    }
+
     switch (msg.type) {
       case "text": {
         const role = msg.role === "assistant" ? "assistant" : "user";

@@ -3,6 +3,17 @@ export interface ParsedMessage {
   type: "text" | "thinking" | "tool_use" | "tool_result" | "system";
   content: string;
   toolName?: string;
+  /** Native namespace, separate from the legacy bare tool name. */
+  toolNamespace?: string;
+  /** Native inter-agent record, never a root assistant generation. */
+  collaboration?: {
+    id?: string;
+    author?: string;
+    recipient?: string;
+    /** CLI envelope kind (MESSAGE, FINAL_ANSWER, or a future value). */
+    kind?: string;
+    encrypted?: boolean;
+  };
   toolUseId?: string;
   /**
    * Where the tool executed: "local" for tools run by the agent process (Claude
@@ -20,7 +31,7 @@ export interface ParsedMessage {
   teamName?: string;
   /**
    * Present on system messages: `compact_boundary`, `clear_boundary`,
-   * `interrupted`, `session_error`, `background_task`.
+   * `interrupted`, `session_error`, `background_task`, `agent_message`.
    */
   subtype?: string;
   /**
