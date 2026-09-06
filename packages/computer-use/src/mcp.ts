@@ -32,6 +32,9 @@ export function getToolDefinitions(service:ComputerUseService,principal:Principa
 }
 export function createMcpServer(service:ComputerUseService,principal:Principal):McpServer {
  const server=new McpServer({name:'@wolpertingerlabs/computer-use',version:'0.1.0'});
- for(const tool of getToolDefinitions(service,principal))server.registerTool(tool.name,{description:tool.description,inputSchema:z.object(tool.inputSchema).strict()},(args,extra)=>tool.handler(args,{signal:extra.signal}));
+ // Erase heterogeneous Zod shape inference at the SDK boundary; handlers still
+ // validate every input against their concrete canonical schema.
+ const registrar=server as unknown as {registerTool(name:string,config:{description:string;inputSchema:unknown},handler:(args:unknown,extra:{signal:AbortSignal})=>Promise<CallToolResult>):void};
+ for(const tool of getToolDefinitions(service,principal))registrar.registerTool(tool.name,{description:tool.description,inputSchema:z.object(tool.inputSchema).strict()},(args,extra)=>tool.handler(args,{signal:extra.signal}));
  return server;
 }

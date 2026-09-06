@@ -5,7 +5,7 @@ vi.mock("../services/computer-use.js", () => ({ getComputerUseHost: vi.fn() }));
 import { requireControlOrigin } from "./computer-use.js";
 
 describe("computer control origin boundary", () => {
-  function run(method: string, headers: Record<string, string>) {
+  function run(method: string, headers: Record<string, string | undefined>) {
     const req = { method, get: (name: string) => headers[name] } as Request;
     const res = { setHeader: vi.fn(), status: vi.fn().mockReturnThis(), json: vi.fn() } as unknown as Response;
     const next = vi.fn(); requireControlOrigin(req, res, next); return { res, next };

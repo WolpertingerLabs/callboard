@@ -27,6 +27,7 @@ export default function ComputerUsePanel({
   onPermissions?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [preview, setPreview] = useState(false);
   const [status, setStatus] = useState<ComputerUseStatus | null>(null);
   const [kind, setKind] = useState<ComputerUseKind>("browser");
   const [selected, setSelected] = useState("");
@@ -160,7 +161,31 @@ export default function ComputerUsePanel({
     dragStart.current = null;
   }, [denied, active, session]);
 
+  // Preview is explicitly opt-in, human-only presentation. These frames are not
+  // added to model context; cu_observe is the separate model image path.
+  useEffect(() => {
+    if (!preview || !expanded || denied || !active || !session || busy) return;
+    const controller = new AbortController();
+    let alive = true;
+    let inFlight = false;
+    const capture = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const ticket = sequence.current;
+      try {
+        const result = await client.observe(chatId, session.id, controller.signal);
+        if (alive && ticket === sequence.current) setObservation({ ...result, sessionId: session.id, controller: session.controller });
+      } catch {
+        if (alive) { setObservation(null); setPreview(false); }
+      } finally { inFlight = false; }
+    };
+    const timer = window.setInterval(() => { void capture(); }, 1000);
+    void capture();
+    return () => { alive = false; controller.abort(); window.clearInterval(timer); };
+  }, [preview, expanded, denied, active, session, busy, chatId]);
+
   const hideScreenshot = () => {
+    setPreview(false);
     ++sequence.current;
     abort.current?.abort();
     setBusy(false);
@@ -244,6 +269,13 @@ export default function ComputerUsePanel({
             </p>
           )}
           {error && <p role="alert">{error}</p>}
+          {status?.sessions.filter((item) => pending(item) && item.id !== session?.id).map((item) => (
+            <aside key={item.id} aria-label="Pending computer approval">
+              <p>{item.reason ?? `Approve access to ${item.targetLabel ?? item.kind}`}</p>
+              <button disabled={busy || denied} onClick={() => void run("Request approved", async (signal) => { await client.control(chatId, item.id, "approve", item.generation, signal); })}>Confirm request</button>
+              <button onClick={() => void run("Request denied", async (signal) => { await client.control(chatId, item.id, "revoke", item.generation, signal); })}>Deny request</button>
+            </aside>
+          ))}
           {!!status?.sessions.length && (
             <label>
               Session{" "}
@@ -273,9 +305,9 @@ export default function ComputerUsePanel({
               </p>
               {session.reason && <p role="status">{session.reason}</p>}
               <div className="computer-use-controls">
-                {pending(session) && status?.permission === "ask" && (
+                {pending(session) && status?.permission !== "deny" && (
                   <button disabled={busy || denied} onClick={() => control("approve")}>
-                    Approve this session
+                    Approve this request
                   </button>
                 )}
                 <button
@@ -296,6 +328,7 @@ export default function ComputerUsePanel({
                 <button disabled={session.state === "revoked"} onClick={() => control("revoke")}>
                   Revoke
                 </button>
+                <label><input type="checkbox" checked={preview} disabled={denied || !active} onChange={(event) => setPreview(event.target.checked)} /> Live preview (1 fps)</label>
                 <button onClick={hideScreenshot}>Hide screenshot</button>
               </div>
               {!frame && <p>No current screenshot. Refresh explicitly after enable, approval, takeover or a state change.</p>}

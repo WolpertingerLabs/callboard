@@ -63,7 +63,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
       signal.throwIfAborted();
       if (!approvedSignal && currentTurn(chatId)?.token !== turn?.token) throw controlError("cancelled", "The chat turn changed");
       const content = Array.isArray(result.content) ? result.content : [];
-      return { content: content.flatMap((block) => {
+      return { content: content.flatMap<ToolCallResult["content"][number]>((block) => {
         if (block.type === "text" && typeof block.text === "string") return [{ type: "text" as const, text: block.text }];
         if (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") return [{ type: "image" as const, data: block.data, mimeType: block.mimeType }];
         return [];
@@ -82,7 +82,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
     defineTool("cu_observe", "Return a fresh screenshot to the model. Observe before acting, especially after human takeover. Coordinates use original screenshot pixels.", ref, (input, context?: Context) => call("computer_observe", input, context)),
     defineTool("cu_action", "Request one bounded GUI input. Human confirmation is required because pixel actions may send data or execute code. No shell/eval. Use cu_status/observe after confirmation.", { ...ref, action: z.record(z.string(), z.unknown()) }, async (input) => {
       try {
-        const turn = currentTurn(getChatId()); if ((!turn && !approvedSignal) || approvedSignal?.aborted || turn?.signal.aborted) throw controlError("cancelled", "No active chat turn");
+        const turn = currentTurn(getChatId()); if (!turn || turn.signal.aborted) throw controlError("cancelled", "No active chat turn");
         const host = await getComputerUseHost();
         return text(await host.requestAgentAction(getChatId(), input.sessionId, input.generation, input.action, async (actionId) => {
           const lease = host.agentLease(getChatId(), input.sessionId, input.generation);

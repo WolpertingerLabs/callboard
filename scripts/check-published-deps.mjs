@@ -191,7 +191,7 @@ function collectImports() {
 function main() {
   const rootPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
   const backendPkg = JSON.parse(readFileSync(join(ROOT, "backend/package.json"), "utf-8"));
-  const declared = rootPkg.dependencies ?? {};
+  const declared = { ...rootPkg.dependencies, ...rootPkg.optionalDependencies };
   const backendDeps = backendPkg.dependencies ?? {};
 
   const errors = [];

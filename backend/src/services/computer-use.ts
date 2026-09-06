@@ -81,7 +81,7 @@ export class ComputerUseHost {
       } catch { return { kind: kind === "browser" ? "browser" : "native", available: false, capabilities: [], reason: "Driver probe unavailable; install/configure the native prerequisites on the service host." }; }
     }));
     const sessions = this.service.status(controlPrincipal(chatId, "human")).map((session) => this.presentation(session));
-    for (const [id, pending] of this.pending) if (pending.chatId === chatId) sessions.push({ id, sessionId: id, kind: pending.kind === "browser" ? "browser" : "native", targetLabel: hostname(), target: hostname(), targetId: targetId(pending.kind), ...(pending.action ? { requestedAction: pending.action, parentSessionId: pending.sessionId } : {}), state: "pending_approval" as SessionStatus["state"], generation: 0, controller: null, expiresAt: pending.expiresAt });
+    for (const [id, pending] of this.pending) if (pending.chatId === chatId) sessions.push({ id, sessionId: id, kind: pending.kind === "browser" ? "browser" : "native", targetLabel: hostname(), target: hostname(), targetId: targetId(pending.kind), ...(pending.action ? { requestedAction: pending.action, parentSessionId: pending.sessionId, reason: `Confirm one GUI action on session ${pending.sessionId}: ${JSON.stringify(pending.action)}. It may transmit data, change files, or execute code. Approval expires after two minutes.` } : { reason: "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested." }), state: "pending_approval" as SessionStatus["state"], generation: 0, controller: null, expiresAt: pending.expiresAt });
     return { capabilities, sessions, permission: policy.computerControl, target: hostname(), platform: process.platform, events: this.events.get(chatId) ?? [], modelVision: "Runtime image delivery requires a tool/vision-capable configured model; live artistic/model qualification has not been established on this host." };
   }
   async open(chatId: string, kind: ComputerTargetKind) {
@@ -182,7 +182,12 @@ let hostPromise: Promise<ComputerUseHost> | undefined;
 export function getComputerUseHost(): Promise<ComputerUseHost> {
   return hostPromise ??= (async () => {
     const pkg = await import("@wolpertingerlabs/computer-use");
-    const drivers = { browser: pkg.createBrowserDriver({ network: "unrestricted" }), desktop: pkg.createNativeDesktopDriver() };
+    const drivers = { browser: pkg.createBrowserDriver({ network: "unrestricted" }), desktop: pkg.createNativeDesktopDriver({
+      enabled: true,
+      display: process.env.CALLBOARD_NATIVE_DISPLAY ?? process.env.DISPLAY,
+      acknowledgeFullDesktopAccess: true,
+      permissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" },
+    }) };
     let host: ComputerUseHost | undefined;
     const service = new pkg.ComputerUseService({ targets: [ { id: "managed-browser", enabled: true, driver: drivers.browser }, { id: "native-desktop", enabled: true, driver: drivers.desktop } ], authorize: (request) => host?.authorize(request) ?? "deny" });
     host = new ComputerUseHost(service, drivers); return host;

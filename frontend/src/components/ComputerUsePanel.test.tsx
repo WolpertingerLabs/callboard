@@ -99,7 +99,7 @@ describe("ComputerUsePanel", () => {
     render(<ComputerUsePanel chatId="c1" permission="ask" />);
     await expand();
     expect(button("Refresh screenshot").disabled).toBe(true);
-    fireEvent.click(button("Approve this session"));
+    fireEvent.click(button("Approve this request"));
     await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
     expect(client.control).toHaveBeenCalledWith("c1", "s1", "approve", 1, expect.any(AbortSignal));
     fireEvent.click(button("Refresh screenshot"));
