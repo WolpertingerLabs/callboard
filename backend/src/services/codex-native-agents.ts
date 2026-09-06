@@ -1,6 +1,6 @@
 /** Read-only exec-owned Codex threads. No process control is available in the exec SDK. */
 import { basename } from "node:path";
-import { closeSync, openSync, readSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { CodexSessionProvider } from "../agents/adapters/codex/CodexSessionProvider.js";
 import { readCodexSessionMeta, extractThreadIdFromFilename } from "../agents/adapters/codex/sessionParser.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
@@ -44,16 +44,33 @@ export function assertNativeAgentControllable(chatId: string): void {
   }
 }
 
+interface LifecycleEvidence {
+  status: NativeLifecycle;
+  timestamp: number;
+  key: string;
+}
+const lifecycleCache = new Map<string, LifecycleEvidence>();
+function currentLifecycle(evidence: LifecycleEvidence, now: number): NativeLifecycle {
+  if (evidence.status === "active" && (!Number.isFinite(evidence.timestamp) || now - evidence.timestamp > 30_000 || evidence.timestamp > now + 1000))
+    return "unknown";
+  return evidence.status;
+}
+
 /** Bounded replay; the ordinal, NOT timestamps, separates copied fork history. */
 export function readNativeLifecycle(logPath: string, now = Date.now()): NativeLifecycle {
   const meta = readCodexSessionMeta(logPath);
   if (!meta?.nativeAgent || meta.historyStartOrdinal === undefined) return "unknown";
   let fd: number | undefined;
   try {
+    const stat = statSync(logPath);
+    const key = `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`;
+    const cached = lifecycleCache.get(logPath);
+    if (cached?.key === key) return currentLifecycle(cached, now);
+    if (stat.size > 4 * 1024 * 1024) return "unknown"; // Never read an arbitrarily large log for status.
     fd = openSync(logPath, "r");
-    const buf = Buffer.alloc(4 * 1024 * 1024 + 1);
+    const buf = Buffer.alloc(stat.size + 1);
     const n = readSync(fd, buf, 0, buf.length, 0);
-    if (n === buf.length) return "unknown"; // Never report a terminal state from a truncated prefix.
+    if (n !== stat.size) return "unknown"; // A growing/replaced file isn't a stable replay.
     const lines = buf.toString("utf8", 0, n).split("\n");
     let status: NativeLifecycle = "unknown";
     let timestamp = 0;
@@ -72,11 +89,16 @@ export function readNativeLifecycle(logPath: string, now = Date.now()): NativeLi
       else if (event === "task_complete") status = "complete";
       else if (event === "turn_aborted") status = "interrupted";
       else if (event === "error") status = "error";
+      else if (status === "error" && (event === "token_count" || event === "item_completed")) status = "active";
       if (status === "active") timestamp = Date.parse(line.timestamp);
     }
-    // Recent local activity is evidence of activity, not proof a process survived a restart.
-    if (status === "active" && (!Number.isFinite(timestamp) || now - timestamp > 30_000 || timestamp > now + 1000)) return "unknown";
-    return status;
+    const after = statSync(logPath);
+    if (`${after.mtimeMs}:${after.ctimeMs}:${after.size}` !== key) return "unknown";
+    const evidence = { key, status, timestamp };
+    if (lifecycleCache.size >= 1024) lifecycleCache.delete(lifecycleCache.keys().next().value!);
+    lifecycleCache.set(logPath, evidence);
+    // Re-evaluate freshness even on cache hits; a restart/stale file proves no liveness.
+    return currentLifecycle(evidence, now);
   } catch {
     return "unknown";
   } finally {
@@ -85,21 +107,25 @@ export function readNativeLifecycle(logPath: string, now = Date.now()): NativeLi
 }
 
 /** Additive, transient metadata: explicit Callboard parentage/title always win. */
-export function nativeMetadata(logPath: string, sessionId: string, existing: Record<string, unknown> = {}) {
+export function nativeMetadata(logPath: string, sessionId: string, existing: Record<string, unknown> = {}, includeLifecycle = true) {
   if (extractThreadIdFromFilename(basename(logPath)) !== sessionId || (existing.provider && existing.provider !== "codex")) return existing;
   const meta = readCodexSessionMeta(logPath);
   if (meta?.id !== sessionId || !meta.nativeAgent) return existing;
   const native = meta.nativeAgent;
+  const parentChatId =
+    includeLifecycle && !existing.parentChatId && !existing.forkedFrom
+      ? (chatFileService.getChatBySessionId(native.parentThreadId)?.id ?? native.parentThreadId)
+      : native.parentThreadId;
   return {
     provider: "codex",
     title: native.nickname || native.agentPath,
-    ...(!existing.parentChatId && !existing.forkedFrom ? { parentChatId: native.parentThreadId, chatRole: native.role || "subagent" } : {}),
     ...existing,
+    ...(!existing.parentChatId && !existing.forkedFrom ? { parentChatId, chatRole: existing.chatRole || native.role || "subagent" } : {}),
     nativeAgent: {
       ...native,
       management: "read-only",
       controlNote: NATIVE_CONTROL_NOTE,
-      lifecycle: readNativeLifecycle(logPath),
+      lifecycle: includeLifecycle ? readNativeLifecycle(logPath) : "unknown",
       evidence: "bounded rollout replay; active means recent activity, not process liveness",
     },
   };
@@ -113,7 +139,7 @@ export function withNativeCodexChats(stored: Chat[]): Chat[] {
     const chat = bySession.get(entry.sessionId);
     const existing = parseMetadata(chat?.metadata);
     if (existing.provider && existing.provider !== "codex") continue;
-    const metadata = nativeMetadata(entry.filePath, entry.sessionId, existing);
+    const metadata = nativeMetadata(entry.filePath, entry.sessionId, existing, false);
     // Include roots as well so filesystem-only parent threads can anchor trees.
     const parentId = typeof metadata.parentChatId === "string" ? metadata.parentChatId : undefined;
     if (parentId && bySession.has(parentId) && !existing.parentChatId && !existing.forkedFrom) metadata.parentChatId = bySession.get(parentId)!.id;

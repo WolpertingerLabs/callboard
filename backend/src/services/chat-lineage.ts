@@ -1,4 +1,4 @@
-import { withNativeCodexChats } from "./codex-native-agents.js";
+import { withNativeCodexChats, readNativeLifecycle } from "./codex-native-agents.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { hasPendingRequest } from "./claude.js";
@@ -119,6 +119,8 @@ function chatStatus(chat: Chat): "ongoing" | "waiting" | "stopped" {
 }
 
 function toNode(chat: Chat, meta: ChatMeta): ChatTreeNode {
+  const native = meta.nativeAgent as ChatTreeNode["nativeAgent"];
+  const nativeAgent = native ? { ...native, lifecycle: chat.session_log_path ? readNativeLifecycle(chat.session_log_path) : ("unknown" as const) } : undefined;
   const rawTitle = (typeof meta.title === "string" && meta.title) || (typeof meta.preview === "string" && meta.preview) || null;
   const title = typeof rawTitle === "string" ? rawTitle.replace(/\s+/g, " ").trim().slice(0, 120) : null;
   return {
@@ -127,8 +129,8 @@ function toNode(chat: Chat, meta: ChatMeta): ChatTreeNode {
     ...(typeof meta.chatRole === "string" && meta.chatRole && { role: meta.chatRole }),
     provider: typeof meta.provider === "string" && meta.provider ? meta.provider : "claude-code",
     ...(typeof meta.acpProviderId === "string" && meta.acpProviderId && { acpProviderId: meta.acpProviderId }),
-    status: (meta.nativeAgent as { lifecycle?: string } | undefined)?.lifecycle === "active" ? "ongoing" : chatStatus(chat),
-    ...(meta.nativeAgent ? { nativeAgent: meta.nativeAgent as ChatTreeNode["nativeAgent"] } : {}),
+    status: nativeAgent?.lifecycle === "active" ? "ongoing" : chatStatus(chat),
+    ...(nativeAgent ? { nativeAgent } : {}),
     ...(typeof meta.chatStatus === "string" && meta.chatStatus && { chatStatus: meta.chatStatus }),
     ...(typeof meta.chatStatusEmoji === "string" && meta.chatStatusEmoji && { chatStatusEmoji: meta.chatStatusEmoji }),
     folder: chat.folder,

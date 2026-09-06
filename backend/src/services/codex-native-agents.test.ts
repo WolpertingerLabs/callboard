@@ -9,7 +9,11 @@ import { assertNativeAgentControllable, nativeMetadata, readNativeLifecycle, wit
 const state = vi.hoisted(() => ({ home: "", chats: [] as import("./chat-file-service.js").Chat[] }));
 vi.mock("./agent-settings.js", () => ({ getAgentSettings: () => ({ codexHome: state.home }) }));
 vi.mock("./chat-file-service.js", () => ({
-  chatFileService: { getChat: (id: string) => state.chats.find((chat) => chat.id === id) ?? null, getAllChats: () => state.chats },
+  chatFileService: {
+    getChat: (id: string) => state.chats.find((chat) => chat.id === id) ?? null,
+    getChatBySessionId: (id: string) => state.chats.find((chat) => chat.session_id === id) ?? null,
+    getAllChats: () => state.chats,
+  },
 }));
 vi.mock("../utils/paths.js", async (original) => ({ ...(await original<typeof import("../utils/paths.js")>()), isIgnoredProjectFolder: () => false }));
 vi.mock("./claude.js", () => ({ hasPendingRequest: () => false }));
@@ -78,8 +82,8 @@ describe("native Codex replay", () => {
     });
     expect(new CodexSessionProvider().findSubagentFiles(ROOT)).toEqual([{ agentId: CHILD, filePath: path }]);
   });
-  it("does not duplicate inherited history into child or parent transcripts", () => {
-    const path = rollout(CHILD, ROOT, [event("task_started"), message("child output"), event("task_complete")]);
+  it.each(["paginated", "full_context"])("does not duplicate inherited %s history into child transcripts", (history_mode) => {
+    const path = rollout(CHILD, ROOT, [event("task_started"), message("child output"), event("task_complete")], { history_mode });
     expect(JSON.stringify(parseCodexRollout(path))).toContain("child output");
     expect(JSON.stringify(parseCodexRollout(path))).not.toContain("INHERITED");
     expect(readNativeLifecycle(path, NOW)).toBe("complete");
@@ -145,6 +149,7 @@ describe("native Codex replay", () => {
     ];
     const child = withNativeCodexChats(state.chats).find((chat) => chat.id === CHILD)!;
     expect(JSON.parse(child.metadata!)).toMatchObject({ parentChatId: "stored-root" });
+    expect(nativeMetadata(path, CHILD)).toMatchObject({ parentChatId: "stored-root" });
   });
   it("refuses management even after completion or restart, without deleting the native log", () => {
     const path = rollout(CHILD, ROOT, [event("task_complete")]);
