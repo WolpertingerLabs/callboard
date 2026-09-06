@@ -1134,7 +1134,7 @@ export function buildCallboardToolsSpec(
         },
         async (args) => {
           try {
-            const native = nativeAgentForChat(args.chatId);
+            const native = nativeAgentForChat(args.chatId, true);
             if (native)
               return {
                 content: [

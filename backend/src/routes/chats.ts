@@ -1,5 +1,11 @@
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
-import { nativeMetadata, assertNativeAgentControllable, withNativeCodexChats, createLifecycleBudget } from "../services/codex-native-agents.js";
+import {
+  nativeMetadata,
+  refreshNativeMetadata,
+  assertNativeAgentControllable,
+  withNativeCodexChats,
+  createLifecycleBudget,
+} from "../services/codex-native-agents.js";
 import { Router } from "express";
 import type { Request } from "express";
 import { existsSync } from "fs";
@@ -945,12 +951,10 @@ chatsRouter.get("/", (req, res) => {
     // ships, instead of one per session discovered.
     const lifecycleBudget = createLifecycleBudget();
     chatsFromLogs = chatsFromLogs.map((chat: any) => {
-      const enriched = chat.session_log_path
-        ? {
-            ...chat,
-            metadata: JSON.stringify(nativeMetadata(chat.session_log_path, chat.session_id, JSON.parse(chat.metadata || "{}"), true, lifecycleBudget)),
-          }
-        : chat;
+      const enriched = {
+        ...chat,
+        metadata: refreshNativeMetadata(chat.session_log_path ?? "", chat.session_id, chat.metadata, lifecycleBudget),
+      };
       return attachJobNeedsYou(attachPreview(enriched));
     });
 
@@ -1346,7 +1350,7 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
     clearListCaches();
-    res.json(updatedChat);
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
   } catch (err: any) {
     log.error(`Error toggling bookmark: ${err}`);
     res.status(500).json({ error: "Failed to toggle bookmark", details: err.message });
@@ -1540,7 +1544,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
     clearListCaches();
-    res.json(updatedChat);
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
   } catch (err: any) {
     log.error(`Error updating permissions: ${err}`);
     res.status(500).json({ error: "Failed to update permissions", details: err.message });
@@ -1572,7 +1576,7 @@ chatsRouter.patch("/:id/read", (req, res) => {
     const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
 
     clearListCaches();
-    res.json(updatedChat);
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
   } catch (err: any) {
     log.error(`Error marking chat as read: ${err}`);
     res.status(500).json({ error: "Failed to mark chat as read", details: err.message });
@@ -1613,7 +1617,7 @@ chatsRouter.patch("/:id/summon", (req, res) => {
     sessionRegistry.clearSummon(chat.id);
     sessionRegistry.notifyMetadata(chat.id, { summon: null });
 
-    res.json(updatedChat);
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
   } catch (err: any) {
     log.error(`Error dismissing summon: ${err}`);
     res.status(500).json({ error: "Failed to dismiss summon", details: err.message });

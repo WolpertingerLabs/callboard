@@ -222,7 +222,7 @@ describe("checking every workspace at once", () => {
   it("fetches no verdicts on open, on tab switches, or after a mutation", async () => {
     renameWorkspace.mockResolvedValue({ ...workspace(), name: "Renamed" });
     archiveWorkspace.mockResolvedValue({
-      workspace: workspace(),
+      workspace: { ...workspace(), status: "archived" },
       chats: [],
       worktree: { removed: true, disposition: "quarantined", path: "/x", trashPath: "/trash/x", blockers: [] },
     });
@@ -338,7 +338,7 @@ describe("checking every workspace at once", () => {
    */
   it("dates the answer, and says so louder once something has changed underneath it", async () => {
     archiveWorkspace.mockResolvedValue({
-      workspace: workspace(),
+      workspace: { ...workspace(), status: "archived" },
       chats: [],
       worktree: { removed: true, disposition: "quarantined", path: "/x", trashPath: "/trash/x", blockers: [] },
     });
@@ -683,9 +683,28 @@ describe("the workspaces tab", () => {
    * every past-retention trash entry — including entries from workspaces the
    * user never touched. It was logged and never surfaced.
    */
+  it("announces refusal, not successful archive, when ownership release is unverifiable", async () => {
+    archiveWorkspace.mockResolvedValue({
+      outcome: "refused",
+      workspace: workspace(),
+      chats: [],
+      worktree: {
+        removed: false,
+        disposition: "kept",
+        path: "/x",
+        blockers: [{ code: "session-still-running", detail: "Native ownership release cannot be established" }],
+      },
+    });
+    open();
+    await archiveRow("/home/cybil/callboard.feat-clean");
+    click((await screen.findByText("Archive and move to trash")).closest("button"));
+    expect(await screen.findByText(/Archive refused.*No chats were stopped or records archived/)).toBeTruthy();
+    expect(screen.queryByText(/Archived the record/)).toBeNull();
+  });
+
   it("reports what the retention sweep deleted on the way out", async () => {
     archiveWorkspace.mockResolvedValue({
-      workspace: workspace(),
+      workspace: { ...workspace(), status: "archived" },
       chats: [],
       worktree: { removed: true, disposition: "quarantined", path: "/home/cybil/callboard.feat-clean", trashPath: "/trash/ws-clean-2026", blockers: [] },
       trashSweep: { removed: ["ws-old-2026-01-01", "ws-older-2025-12-01"] },

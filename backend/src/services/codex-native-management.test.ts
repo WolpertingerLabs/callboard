@@ -11,7 +11,11 @@ vi.mock("./codex-native-agents.js", () => ({
   assertNativeAgentControllable: (id: string) => {
     if (id === "native-child") throw new Error("Native child read-only; ask parent root");
   },
+  assertNativeAgentStoppable: (id: string) => {
+    if (id === "native-child") throw new Error("Native child read-only; ask parent root");
+  },
   nativeAgentForChat: (id: string) => (id === "native-child" ? { parentThreadId: "root", logPath: "/stub" } : null),
+  refreshNativeMetadata: (_path: string, _id: string, raw: string) => raw,
   nativeMetadata: (_path: string, _id: string, metadata: unknown) => metadata,
   withNativeCodexChats: (chats: unknown[]) => chats,
   readNativeLifecycle: () => "unknown",

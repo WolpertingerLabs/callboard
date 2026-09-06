@@ -259,7 +259,7 @@ it("includes unpersisted native descendants in both card lifecycle scopes", asyn
   rollout();
   state.chats = [
     {
-      id: ROOT,
+      id: "stored-root",
       session_id: ROOT,
       folder: "/tmp/repo",
       session_log_path: null,
@@ -282,6 +282,7 @@ it("includes unpersisted native descendants in both card lifecycle scopes", asyn
     return data;
   };
   expect(list("active").chats.map((chat: any) => chat.id)).toContain(CHILD);
+  expect(JSON.parse(list("active").chats.find((chat: any) => chat.id === CHILD).metadata).parentChatId).toBe("stored-root");
   expect(list("inactive").chats.map((chat: any) => chat.id)).not.toContain(CHILD);
   state.chats[0].metadata = JSON.stringify({ provider: "codex", card: { lifecycle: "closed" } });
   expect(list("inactive").chats.map((chat: any) => chat.id)).toContain(CHILD);
@@ -351,6 +352,23 @@ it.each(["filesystem-only", "stored-missing", "linked-descendant"])(
       rollout(LEAF, CHILD);
     }
     const result = await archiveWorkspace(workspace.id);
+    expect(result?.outcome).toBe("refused");
+    const { buildWorkspaceTools } = await import("./workspace-tools.js");
+    const toolResult = await buildWorkspaceTools()
+      .find((tool) => tool.name === "archive_workspace")!
+      .handler({ workspaceId: workspace.id });
+    expect(JSON.stringify(toolResult)).toContain("refused");
+    const { workspacesRouter } = await import("../routes/workspaces.js");
+    const handler = (workspacesRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/archive").route.stack[0].handle;
+    let httpResult: any;
+    const response = {
+      json: (data: unknown) => {
+        httpResult = data;
+      },
+      status: () => response,
+    };
+    await handler({ params: { id: workspace.id } }, response);
+    expect(httpResult.outcome).toBe("refused");
     expect(result?.worktree.removed).toBe(false);
     expect(result?.worktree.blockers.some((reason) => reason.detail.includes("ownership release"))).toBe(true);
     expect(evaluateWorktreeRemoval(workspace).blockers.some((reason) => reason.detail.includes("ownership release"))).toBe(true);

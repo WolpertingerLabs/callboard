@@ -1,6 +1,6 @@
 import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
-import { assertNativeAgentControllable } from "../services/codex-native-agents.js";
+import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
@@ -847,7 +847,7 @@ streamRouter.post("/:id/stop", (req, res) => {
   /* #swagger.responses[200] = { description: "{ stopped: true } when a live web session was cancelled; { stopped: false } when there was nothing to stop (already finished, or a CLI session the server does not control)" } */
   const chatId = req.params.id;
   try {
-    assertNativeAgentControllable(chatId);
+    assertNativeAgentStoppable(chatId);
   } catch (error) {
     return res.status(409).json({ stopped: false, error: "native_child_read_only", message: (error as Error).message });
   }

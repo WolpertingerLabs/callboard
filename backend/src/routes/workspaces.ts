@@ -224,7 +224,7 @@ workspacesRouter.post("/:id/rename", (req, res) => {
 workspacesRouter.post("/:id/archive", async (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'Archive a workspace'
-  // #swagger.description = 'Interrupt and archive the chats of the workspace, mark the workspace archived, and quarantine its git worktree only when Callboard created it, its identity token verifies, no other active workspace shares the directory, no session is running in it, it has no submodules, and it is clean (no uncommitted changes, no untracked files, no commits that exist nowhere else). Every one of those gates is evaluated HERE, server-side, from the record — the endpoint takes an id and nothing else, and a removability verdict fetched from GET /:id/removability is a UI affordance that this call neither reads nor trusts. Quarantine moves the directory to ~/.callboard/trash (ignored files included, nothing deleted) and prunes the worktree registration; restore with "git worktree add <path> <branch>" plus copying back untracked files. A worktree is never force-removed; refusals are returned as blockers.'
+  // #swagger.description = 'Interrupt and archive the chats of the workspace, mark the workspace archived, and quarantine its git worktree only when Callboard created it, its identity token verifies, no other active workspace shares the directory, no session is running in it, it has no submodules, and it is clean (no uncommitted changes, no untracked files, no commits that exist nowhere else). Every one of those gates is evaluated HERE, server-side, from the record — the endpoint takes an id and nothing else, and a removability verdict fetched from GET /:id/removability is a UI affordance that this call neither reads nor trusts. Quarantine moves the directory to ~/.callboard/trash (ignored files included, nothing deleted) and prunes the worktree registration; restore with "git worktree add <path> <branch>" plus copying back untracked files. A worktree is never force-removed. Check outcome first: refused means no chats were stopped or records archived; archived may still keep the directory. Native ownership release is unverifiable with exec, and incomplete discovery can conservatively block unrelated workspaces. Reasons are returned as worktree.blockers.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Workspace ID' } */
   /* #swagger.responses[200] = { description: "Archive result, including whether the worktree was removed and why not" } */
   /* #swagger.responses[404] = { description: "Workspace not found" } */
@@ -234,6 +234,8 @@ workspacesRouter.post("/:id/archive", async (req, res) => {
     }
     const result = await archiveWorkspace(req.params.id);
     if (!result) return res.status(404).json({ error: "Workspace not found" });
+    // HTTP success describes delivery of the result, not successful archive.
+    // outcome=refused leaves the workspace/chats untouched; inspect blockers.
     res.json(result);
   } catch (err: any) {
     log.error(`Error archiving workspace ${req.params.id}: ${err.message}`);

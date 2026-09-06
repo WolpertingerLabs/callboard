@@ -423,6 +423,19 @@ export class ChatFileService {
 
   // Save chat to file (uses session_id as filename)
   private saveChat(chat: Chat): void {
+    // Native identity is durable; observed lifecycle/control presentation and
+    // inferred parent pointers are not user-authored metadata.
+    try {
+      const metadata = JSON.parse(chat.metadata || "{}");
+      if (metadata.provider === "codex" && metadata.nativeAgent && typeof metadata.nativeAgent === "object") {
+        const native = { ...metadata.nativeAgent };
+        if (native.inferredParentChatId && metadata.parentChatId === native.inferredParentChatId && !metadata.forkedFrom) delete metadata.parentChatId;
+        for (const key of ["lifecycle", "evidence", "management", "controlNote", "inferredParentChatId"]) delete native[key];
+        chat.metadata = JSON.stringify({ ...metadata, nativeAgent: native });
+      }
+    } catch {
+      /* Preserve legacy malformed metadata unchanged. */
+    }
     const filepath = join(chatsDir, `${chat.session_id}.json`);
     writeFileSync(filepath, JSON.stringify(chat, null, 2));
     invalidateRecord(chat.session_id);

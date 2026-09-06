@@ -1,5 +1,5 @@
 import { parseChatMetadata } from "./chat-metadata.js";
-import { nativeMetadata } from "../services/codex-native-agents.js";
+import { nativeMetadata, refreshNativeMetadata } from "../services/codex-native-agents.js";
 import { statSync } from "fs";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "./git.js";
@@ -103,7 +103,7 @@ export function findChat(id: string, includeGitInfo: boolean = true): any | null
       return {
         ...fileChat,
         ...(routingError && { _provider_resolution_error: routingError }),
-        metadata: resolved ? JSON.stringify(nativeMetadata(resolved.logPath, fileChat.session_id, parseChatMetadata(withSessionProvider(fileChat.metadata, resolved.provider, resolved.acpProviderId)))) : fileChat.metadata,
+        metadata: refreshNativeMetadata(resolved?.logPath ?? "", fileChat.session_id, resolved ? withSessionProvider(fileChat.metadata, resolved.provider, resolved.acpProviderId) : fileChat.metadata),
         // Keep original folder (may be a worktree) — logs are stored under this path
         folder: fileChat.folder,
         displayFolder: mainRepoPath,

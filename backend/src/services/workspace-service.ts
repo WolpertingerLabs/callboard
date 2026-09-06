@@ -1,4 +1,4 @@
-import { nativeWorkspaceReleaseBlockers, nativeWorkspaceEvidence, assertNativeAgentControllable } from "./codex-native-agents.js";
+import { nativeWorkspaceReleaseBlockers, nativeWorkspaceEvidence, assertNativeAgentStoppable } from "./codex-native-agents.js";
 /**
  * Workspace lifecycle — the phase that actually stops using a directory.
  *
@@ -548,7 +548,7 @@ export function getWorkspaceWithRemovability(id: string, opts?: ListingOptions):
  */
 async function interruptChat(chatId: string): Promise<"not-running" | "stopped" | "unstoppable" | "timeout"> {
   try {
-    assertNativeAgentControllable(chatId);
+    assertNativeAgentStoppable(chatId);
   } catch {
     return "unstoppable";
   }
@@ -626,6 +626,7 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
   const nativeBlockers = nativeWorkspaceReleaseBlockers(id, existing.cwd);
   if (nativeBlockers.length)
     return {
+      outcome: "refused",
       workspace: existing,
       chats: [],
       worktree: {
@@ -671,6 +672,7 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
   }
 
   const result: ArchiveWorkspaceResult = {
+    outcome: "archived",
     workspace,
     chats,
     worktree: { removed: false, disposition: "kept", path: cwd, blockers },

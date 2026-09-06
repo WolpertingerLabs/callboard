@@ -516,7 +516,7 @@ export function respondToPermission(
  * CLI session, whose execution the server doesn't own).
  */
 export function stopSession(chatId: string): boolean {
-  if (nativeAgentForChat(chatId)) return false;
+  if (nativeAgentForChat(chatId, true)) return false;
   const info = sessionRegistry.get(chatId);
   if (info && info.abortController) {
     info.abortController.abort();
@@ -565,7 +565,7 @@ export type SessionStopOutcome =
  * unregistering it would only hide that from the UI.
  */
 export async function stopSessionAndWait(chatId: string, timeoutMs: number = SESSION_TEARDOWN_TIMEOUT_MS): Promise<SessionStopOutcome> {
-  if (nativeAgentForChat(chatId)) return "unstoppable";
+  if (nativeAgentForChat(chatId, true)) return "unstoppable";
   const info = sessionRegistry.get(chatId);
   if (!info) return "not-running";
   // CLI sessions carry no abort controller: the server did not spawn them.

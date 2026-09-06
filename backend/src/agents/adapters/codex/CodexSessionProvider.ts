@@ -477,7 +477,9 @@ export class CodexSessionProvider implements SessionProvider {
     }
     const entry = this.findRollout(sessionId);
     if (!entry) return;
-    if (readCodexSessionMeta(entry.filePath)?.isNativeThread) throw new Error("Native Codex child is read-only; ask its parent thread to close it.");
+    const meta = readCodexSessionMeta(entry.filePath);
+    if (!meta || meta.id !== sessionId) throw new Error("Cannot verify matching Codex root ownership; refusing deletion.");
+    if (meta.isNativeThread) throw new Error("Native Codex child is read-only; ask its parent thread to close it.");
     try {
       unlinkSync(entry.filePath);
     } catch (err) {

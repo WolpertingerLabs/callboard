@@ -3,6 +3,7 @@ import { basename, relative, resolve, sep, isAbsolute } from "node:path";
 import { closeSync, openSync, readSync, statSync, realpathSync } from "node:fs";
 import { CodexSessionProvider } from "../agents/adapters/codex/CodexSessionProvider.js";
 import { readCodexSessionMeta, extractThreadIdFromFilename } from "../agents/adapters/codex/sessionParser.js";
+import { sessionRegistry } from "./session-registry.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
 
 export type NativeLifecycle = "active" | "complete" | "unknown" | "error" | "interrupted";
@@ -18,21 +19,31 @@ function parseMetadata(raw?: string | null): Record<string, unknown> {
   }
 }
 
-export function nativeAgentForChat(chatId: string) {
+export function nativeAgentForChat(chatId: string, allowOwnedCancellation = false) {
   const stored = chatFileService.getChat(chatId);
   const meta = parseMetadata(stored?.metadata);
   if (meta.provider && meta.provider !== "codex") return null;
   const sessionId = stored?.session_id ?? chatId;
   const resolved = new CodexSessionProvider().resolveSession(sessionId);
   const fallback = { parentThreadId: "unverified parent (inspect the owning Codex thread)", sessionId, logPath: resolved?.logPath ?? "" };
+  const owned = sessionRegistry.get(chatId);
+  // A server-created web controller proves control of this execution, NOT that
+  // a disk thread is safe to resume. Positive native evidence still wins.
+  const ownedRoot = allowOwnedCancellation && owned?.type === "web" && !!owned.abortController && !meta.nativeAgent;
   // Persisted native ownership survives missing logs. Incomplete metadata cannot
   // establish root ownership either, including filesystem-only threads.
   if (meta.nativeAgent && meta.provider === "codex" && !resolved) return fallback;
-  if (!resolved) return meta.provider === "codex" ? fallback : null;
+  if (!resolved) return !ownedRoot && meta.provider === "codex" ? fallback : null;
   const session = readCodexSessionMeta(resolved.logPath);
-  if (!session || session.id !== sessionId) return fallback;
+  if (!session || session.id !== sessionId) return ownedRoot && !session?.isNativeThread ? null : fallback;
   if (!session.isNativeThread) return meta.nativeAgent && meta.provider === "codex" ? fallback : null;
   return { parentThreadId: "unverified parent (inspect the owning Codex thread)", ...session.nativeAgent, sessionId, logPath: resolved.logPath };
+}
+
+/** Cancellation only: never grants permission to resume, delete or archive. */
+export function assertNativeAgentStoppable(chatId: string): void {
+  const native = nativeAgentForChat(chatId, true);
+  if (native) throw new Error(`${NATIVE_CONTROL_NOTE} Parent thread: ${native.parentThreadId}`);
 }
 
 export function assertNativeAgentControllable(chatId: string): void {
@@ -119,22 +130,34 @@ export function readNativeLifecycle(logPath: string, now = Date.now(), budget?: 
 }
 
 /** Additive, transient metadata: explicit Callboard parentage/title always win. */
-export function nativeMetadata(logPath: string, sessionId: string, existing: Record<string, unknown> = {}, includeLifecycle = true, budget?: LifecycleBudget) {
+export function nativeMetadata(
+  logPath: string,
+  sessionId: string,
+  existing: Record<string, unknown> = {},
+  includeLifecycle = true,
+  budget?: LifecycleBudget,
+  parentChats?: ReadonlyMap<string, Chat>,
+) {
+  // Persisted lifecycle is a snapshot, never current evidence.
+  if (existing.provider === "codex" && existing.nativeAgent && typeof existing.nativeAgent === "object")
+    existing = { ...existing, nativeAgent: { ...existing.nativeAgent, lifecycle: "unknown", management: "read-only", controlNote: NATIVE_CONTROL_NOTE } };
   if (extractThreadIdFromFilename(basename(logPath)) !== sessionId || (existing.provider && existing.provider !== "codex")) return existing;
   const meta = readCodexSessionMeta(logPath);
   if (meta?.id !== sessionId || !meta.nativeAgent) return existing;
   const native = meta.nativeAgent;
-  const parentChatId =
-    includeLifecycle && !existing.parentChatId && !existing.forkedFrom
-      ? (chatFileService.getChatBySessionId(native.parentThreadId)?.id ?? native.parentThreadId)
-      : native.parentThreadId;
+  const priorNative = existing.nativeAgent as Record<string, unknown> | undefined;
+  const inferredParent = !existing.forkedFrom && (!existing.parentChatId || priorNative?.inferredParentChatId === existing.parentChatId);
+  const parentChatId = inferredParent
+    ? ((parentChats ? parentChats.get(native.parentThreadId) : chatFileService.getChatBySessionId(native.parentThreadId))?.id ?? native.parentThreadId)
+    : native.parentThreadId;
   return {
     provider: "codex",
     title: native.nickname || native.agentPath,
     ...existing,
-    ...(!existing.parentChatId && !existing.forkedFrom ? { parentChatId, chatRole: existing.chatRole || native.role || "subagent" } : {}),
+    ...(inferredParent ? { parentChatId, chatRole: existing.chatRole || native.role || "subagent" } : {}),
     nativeAgent: {
       ...native,
+      ...(inferredParent ? { inferredParentChatId: parentChatId } : {}),
       management: "read-only",
       controlNote: NATIVE_CONTROL_NOTE,
       lifecycle: includeLifecycle ? readNativeLifecycle(logPath, Date.now(), budget) : "unknown",
@@ -143,15 +166,22 @@ export function nativeMetadata(logPath: string, sessionId: string, existing: Rec
   };
 }
 
+/** Refresh response-only evidence, including legacy/missing-rollout records. */
+export function refreshNativeMetadata(logPath: string, sessionId: string, raw?: string | null, budget?: LifecycleBudget): string {
+  const existing = parseMetadata(raw);
+  const enriched = nativeMetadata(logPath, sessionId, existing, true, budget);
+  return enriched === existing ? (raw ?? "{}") : JSON.stringify(enriched);
+}
+
 /** One discovery pass, never recursive per child; no writes to stored records. */
 export function withNativeCodexChats(stored: Chat[]): Chat[] {
   const bySession = new Map(stored.map((chat) => [chat.session_id, chat]));
-  const result = new Map(stored.map((chat) => [chat.id, chat]));
+  const result = new Map(stored.map((chat) => [chat.id, { ...chat, metadata: refreshNativeMetadata("", chat.session_id, chat.metadata) }]));
   for (const entry of new CodexSessionProvider().discoverSessions({ limit: 10_000, offset: 0 }).sessions) {
     const chat = bySession.get(entry.sessionId);
     const existing = parseMetadata(chat?.metadata);
     if (existing.provider && existing.provider !== "codex") continue;
-    const metadata = nativeMetadata(entry.filePath, entry.sessionId, existing, false);
+    const metadata = nativeMetadata(entry.filePath, entry.sessionId, existing, false, undefined, bySession);
     // Include roots as well so filesystem-only parent threads can anchor trees.
     const parentId = typeof metadata.parentChatId === "string" ? metadata.parentChatId : undefined;
     if (parentId && bySession.has(parentId) && !existing.parentChatId && !existing.forkedFrom) metadata.parentChatId = bySession.get(parentId)!.id;

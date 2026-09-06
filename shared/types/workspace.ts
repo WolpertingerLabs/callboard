@@ -382,6 +382,8 @@ export interface WorktreeInspection {
 
 /** Result of the lifecycle archive (cascade + ref-counted worktree quarantine). */
 export interface ArchiveWorkspaceResult {
+  /** Refused means no cascade or archive occurred. Optional for older servers. */
+  outcome?: "archived" | "refused";
   workspace: Workspace;
   /** Chats that belonged to the workspace, and whether a live session was stopped. */
   chats: Array<{ chatId: string; interrupted: boolean }>;
