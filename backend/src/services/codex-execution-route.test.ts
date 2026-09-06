@@ -89,3 +89,48 @@ it("does not return URLs containing credentials or tokens", () => {
     routeFromCodexConfig({ model_provider: "openai", openai_base_url: "https://api.openai.com/v1" }, { OPENAI_BASE_URL: "https://openrouter.ai/api/v1" }).route,
   ).toBe("codex");
 });
+
+it("sanitizes daemon secrets before intentional API overrides reach a configured CLI", async () => {
+  vi.stubEnv("AUTH_PASSWORD_HASH", "sentinel-hash");
+  vi.stubEnv("AUTH_PASSWORD_SALT", "sentinel-salt");
+  vi.stubEnv("PORT", "sentinel-port");
+  vi.stubEnv("OPENAI_BASE_URL", "https://ambient.example/v1");
+  const wrapper = join(home, "probe-cli.cjs");
+  await writeFile(
+    wrapper,
+    `#!${process.execPath}
+const readline = require('node:readline');
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  const result = request.method === 'config/read' ? { config: { model_provider: 'openai', model: JSON.stringify({
+    hashPresent: 'AUTH_PASSWORD_HASH' in process.env,
+    saltPresent: 'AUTH_PASSWORD_SALT' in process.env,
+    portPresent: 'PORT' in process.env,
+    home: process.env.CODEX_HOME,
+    base: process.env.OPENAI_BASE_URL,
+    key: process.env.OPENAI_API_KEY
+  }) } } : {};
+  if (request.id) process.stdout.write(JSON.stringify({ id: request.id, result }) + '\\n');
+});
+`,
+    { mode: 0o700 },
+  );
+  const result = await resolveCodexExecutionRoute(
+    {
+      codexHome: home,
+      codexPathOverride: wrapper,
+      codexAuthMode: "api-key",
+      codexBaseUrl: "https://api.openai.com/v1",
+      codexApiKey: "sentinel-intentional-key",
+    },
+    home,
+  );
+  expect(JSON.parse(result.model!)).toEqual({
+    hashPresent: false,
+    saltPresent: false,
+    portPresent: false,
+    home,
+    base: "https://api.openai.com/v1",
+    key: "sentinel-intentional-key",
+  });
+});

@@ -11,9 +11,13 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
+const effortContexts = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/reasoning-capabilities.js", () => ({
-  assertReasoningEffort: async ({ provider, effort }: { provider?: string; effort?: unknown }) => {
+  assertReasoningEffort: async (input: { provider?: string; effort?: unknown; cwd?: string }) => {
+    const { provider, effort } = input;
+    effortContexts(input);
+    if (effort === "ultra" && input.cwd !== "/trusted-project") throw new Error("global base-model does not support ultra");
     if (effort && provider === "claude-code") throw new Error("Reasoning effort is not supported for claude-code");
   },
 }));
@@ -426,4 +430,12 @@ describe("POST /api/chats/:id/fork — cline and pi are handoff targets", () => 
     expect(turns[0].text).toContain("conversation_handoff");
     expect(turns.map((t) => t.text)).toContain("carried question");
   });
+});
+
+it("fork validates inherited ultra against its trusted project, not the global model", async () => {
+  setParent({ provider: "codex", effort: "ultra" }, { folder: "/trusted-project" });
+  const result = await fork();
+  expect(result.code).toBe(201);
+  expect(effortContexts).toHaveBeenLastCalledWith(expect.objectContaining({ provider: "codex", effort: "ultra", cwd: "/trusted-project" }));
+  expect(result.meta.effort).toBe("ultra");
 });

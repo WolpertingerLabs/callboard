@@ -80,6 +80,45 @@ describe("automation model-aware reasoning payloads", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/codex/reasoning?provider=codex&model=gpt-6-astra&cwd=%2Fproject", expect.anything());
   });
 
+  it("omits hidden effort when creating a Claude trigger after switching from Codex", async () => {
+    const { writes } = serve();
+    render(<Triggers agent={agent} />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Trigger" }));
+    fireEvent.change(screen.getByPlaceholderText("Trigger name"), { target: { value: "Claude event" } });
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    await selectEffort("ultra");
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
+    // Switching back keeps the staged choice; hiding it must not mutate state.
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    await screen.findByRole("option", { name: "ultra" });
+    expect((screen.getByLabelText("Reasoning effort") as HTMLSelectElement).value).toBe("ultra");
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Trigger" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].method).toBe("POST");
+    expect(writes[0].payload.action.provider ?? "claude-code").toBe("claude-code");
+    expect(writes[0].payload.action).not.toHaveProperty("effort");
+  });
+
+  it("removes saved Codex effort from an edited trigger when switching to Claude", async () => {
+    const { writes } = serve({ triggers: [savedTrigger] });
+    render(<Triggers agent={agent} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await screen.findByRole("option", { name: "ultra" });
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    await screen.findByRole("option", { name: "ultra" });
+    expect((screen.getByLabelText("Reasoning effort") as HTMLSelectElement).value).toBe("ultra");
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].method).toBe("PUT");
+    expect(writes[0].payload.action).toMatchObject({ provider: "claude-code", folder: "/special", maxTurns: 37 });
+    expect(writes[0].payload.action).not.toHaveProperty("effort");
+  });
+
   it("edits a trigger without losing unowned or future action fields and explicitly clears effort", async () => {
     const trigger = { ...savedTrigger, action: { ...savedTrigger.action, futureField: { retained: true } } };
     const { writes, fetchMock } = serve({ triggers: [trigger] });

@@ -1,4 +1,5 @@
 /** Ask the installed CLI to merge config layers; never guess TOML precedence. */
+import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -60,7 +61,7 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
     const endpoint = safeApiRoot(settings.codexOpenRouterBaseUrl?.trim() || OPENROUTER_CODEX_BASE_URL);
     return { route: endpoint ? "openrouter" : "unknown", endpoint, injectedOpenRouter };
   }
-  const env = { ...process.env, ...getApiEnvOverrides(settings) };
+  const env = { ...sanitizeInheritedAgentEnv(process.env), ...getApiEnvOverrides(settings) };
   const override = getCodexExecutablePath(settings);
   let command = override;
   let prefix: string[] = [];

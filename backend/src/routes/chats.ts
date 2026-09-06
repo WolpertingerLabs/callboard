@@ -1133,7 +1133,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   const effort = req.body.effort !== undefined ? requestedEffort : isHandoff ? undefined : meta.effort;
 
   try {
-    await assertReasoningEffort({ provider: targetKind, model, effort: req.body.effort !== undefined ? req.body.effort : effort });
+    await assertReasoningEffort({ provider: targetKind, model, effort: req.body.effort !== undefined ? req.body.effort : effort, cwd: chat.folder });
   } catch (error) {
     return res.status(400).json({ error: (error as Error).message });
   }

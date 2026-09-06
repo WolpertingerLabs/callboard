@@ -83,7 +83,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
     const model = formModels[formProvider]?.trim();
     if (model) action.model = model;
     else delete action.model;
-    if (formEffort) action.effort = formEffort;
+    if (["codex", "cline", "pi"].includes(formProvider) && formEffort) action.effort = formEffort;
     else delete action.effort; // Replacement action deliberately clears a saved override.
     return action;
   };

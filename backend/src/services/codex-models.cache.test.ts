@@ -20,13 +20,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * would exercise the fallback path. Re-attaching the symbol keeps the mock
  * honest about the shape the real API promises.
  */
-const runCodex = vi.fn<() => Promise<{ stdout: string; stderr: string }>>();
+const runCodex = vi.fn<(...args: unknown[]) => Promise<{ stdout: string; stderr: string }>>();
 
 vi.mock("node:child_process", () => {
   const execFile = (() => {
     throw new Error("codex-models must use the promisified form");
   }) as unknown as Record<symbol, unknown>;
-  execFile[Symbol.for("nodejs.util.promisify.custom")] = () => runCodex();
+  execFile[Symbol.for("nodejs.util.promisify.custom")] = (...args: unknown[]) => runCodex(...args);
   return { execFile };
 });
 
@@ -35,13 +35,7 @@ vi.mock("./agent-settings.js", () => ({
   getCodexExecutablePath: vi.fn(() => "/usr/bin/codex"),
 }));
 
-import {
-  CODEX_MODELS_RETRY_MS,
-  CODEX_MODELS_TTL_MS,
-  getCodexModelsAsync,
-  refreshCodexModelsCache,
-  resetCodexModelsCacheForTesting,
-} from "./codex-models.js";
+import { CODEX_MODELS_RETRY_MS, CODEX_MODELS_TTL_MS, getCodexModelsAsync, refreshCodexModelsCache, resetCodexModelsCacheForTesting } from "./codex-models.js";
 import { getCodexExecutablePath } from "./agent-settings.js";
 
 const mockCodexPath = vi.mocked(getCodexExecutablePath);
@@ -65,6 +59,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.useRealTimers();
   resetCodexModelsCacheForTesting();
 });
@@ -189,4 +184,17 @@ describe("refresh", () => {
 
     expect((await getCodexModelsAsync()).map((m) => m.id)).toEqual(["gpt-6"]);
   });
+});
+
+it("applies the execution environment policy to catalog discovery too", async () => {
+  vi.stubEnv("AUTH_PASSWORD_HASH", "sentinel-hash");
+  vi.stubEnv("AUTH_PASSWORD_SALT", "sentinel-salt");
+  vi.stubEnv("PORT", "sentinel-port");
+  vi.stubEnv("OPENAI_BASE_URL", "https://intended.example/v1");
+  await getCodexModelsAsync();
+  const env = (runCodex.mock.calls[0][2] as { env: NodeJS.ProcessEnv }).env;
+  expect(env).not.toHaveProperty("AUTH_PASSWORD_HASH");
+  expect(env).not.toHaveProperty("AUTH_PASSWORD_SALT");
+  expect(env).not.toHaveProperty("PORT");
+  expect(env.OPENAI_BASE_URL).toBe("https://intended.example/v1");
 });

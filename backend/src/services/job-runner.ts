@@ -1,3 +1,4 @@
+import { resolveJobSessionFolder } from "./job-session-folder.js";
 /**
  * Job runner — the deterministic state machine behind job runs.
  *
@@ -19,7 +20,6 @@
  */
 import type { EventEmitter } from "events";
 import { existsSync } from "fs";
-import { homedir } from "os";
 import type {
   AgentJobStep,
   ApprovalJobStep,
@@ -1077,15 +1077,14 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
 
   const agentAlias = sessionFields?.agentAlias ?? defaults.agentAlias;
   let systemPrompt: string | undefined;
-  let folder = sessionFields?.folder ?? defaults.folder;
+
   if (agentAlias) {
     const config = getAgent(agentAlias);
     if (!config) throw new Error(`agent "${agentAlias}" not found`);
     const workspacePath = getAgentWorkspacePath(agentAlias);
     systemPrompt = compileSystemPrompt(config, workspacePath).prompt;
-    folder = folder ?? workspacePath;
   }
-  folder = interpolate(folder ?? homedir(), buildRunContext(run));
+  const folder = interpolate(resolveJobSessionFolder(sessionFields ?? {}, defaults), buildRunContext(run));
   // A missing cwd makes Node's spawn blame the executable ("Claude Code
   // native binary ... exists but failed to launch"), so fail loudly here.
   if (!existsSync(folder)) {
