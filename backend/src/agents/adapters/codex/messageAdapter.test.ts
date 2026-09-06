@@ -231,6 +231,41 @@ describe("translateCodexEvent — tool items (started → tool_use, completed �
     ).toEqual({ type: "tool_result", callId: "m1", content: "one\ntwo", isError: false });
   });
 
+  it("preserves ordinary live MCP payloads with collaboration-qualified tool names", () => {
+    const input = { message: `gAAAA${"A".repeat(100)}==` };
+    // SDK 0.153.4 namespaces MCP tools by server; it exposes no native
+    // collaboration event. Test actual supported shapes, not rollout items.
+    for (const type of ["item.started", "item.updated"] as const) {
+      expect(
+        translateCodexEvent({
+          type,
+          item: {
+            id: "conflicting",
+            type: "mcp_tool_call",
+            server: "ordinary",
+            tool: "collaboration.send_message",
+            arguments: input,
+            status: "in_progress",
+          },
+        }),
+      ).toEqual({ type: "tool_use", toolName: "ordinary__collaboration.send_message", input, callId: "conflicting" });
+    }
+    expect(
+      translateCodexEvent({
+        type: "item.completed",
+        item: {
+          id: "conflicting",
+          type: "mcp_tool_call",
+          server: "ordinary",
+          tool: "collaboration.send_message",
+          arguments: input,
+          status: "completed",
+          result: { content: [{ type: "text", text: input.message }], structured_content: null },
+        },
+      }),
+    ).toEqual({ type: "tool_result", callId: "conflicting", content: input.message, isError: false });
+  });
+
   it("mcp_tool_call: an error payload yields an error tool_result with the message", () => {
     expect(
       translateCodexEvent({

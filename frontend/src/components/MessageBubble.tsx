@@ -560,6 +560,25 @@ export default function MessageBubble({ message, teamColorMap, onFork, forkCurre
     return <TodoList items={todoItems} />;
   }
 
+  if (message.type === "system" && message.subtype === "agent_message") {
+    const agent = message.collaboration;
+    const label =
+      agent?.kind === "FINAL_ANSWER" ? "Agent final result" : agent?.kind === "MESSAGE" ? "Agent message" : `Agent message (${agent?.kind ?? "unknown kind"})`;
+    return (
+      <div
+        className="msg-bubble"
+        style={{ position: "relative", margin: "12px 0", padding: "12px 16px", border: "1px solid var(--border)", borderRadius: 8, overflowWrap: "anywhere" }}
+      >
+        <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
+          {label} · {agent?.author ?? "Unknown agent"} → {agent?.recipient ?? "Unknown recipient"}
+        </div>
+        {agent?.id && <div style={{ color: "var(--text-muted)", fontSize: 11 }}>Message ID: {agent.id}</div>}
+        <MarkdownRenderer content={message.content} />
+        <MessageCopyButton text={message.content} />
+      </div>
+    );
+  }
+
   if (message.type === "system") {
     // Provider/API failure persisted on the session record (e.g. an upstream
     // gateway error with provider attempts and routing detail).
