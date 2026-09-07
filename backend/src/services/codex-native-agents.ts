@@ -201,18 +201,34 @@ export function refreshNativeMetadata(logPath: string, sessionId: string, raw?: 
   return enriched === existing ? (raw ?? "{}") : JSON.stringify(enriched);
 }
 
-/** One discovery pass, never recursive per child; no writes to stored records. */
+/** One discovery pass, never recursive per child; no writes to stored records.
+ *
+ * Synthetic (no stored record) entries are admitted only for native
+ * descendants and the filesystem-only parent threads that anchor them. Every
+ * other rollout without a record is an ordinary Codex CLI session, and those
+ * are no more a Callboard chat than a Claude CLI session without a record is.
+ */
 export function withNativeCodexChats(stored: Chat[]): Chat[] {
   const bySession = new Map(stored.map((chat) => [chat.session_id, chat]));
   const result = new Map(stored.map((chat) => [chat.id, { ...chat, metadata: refreshNativeMetadata("", chat.session_id, chat.metadata) }]));
-  for (const entry of new CodexSessionProvider().discoverSessions({ limit: 10_000, offset: 0 }).sessions) {
+  const sessions = new CodexSessionProvider().discoverSessions({ limit: 10_000, offset: 0 }).sessions;
+  const discovered: { entry: (typeof sessions)[number]; chat: Chat | undefined; metadata: Record<string, unknown> }[] = [];
+  /** Parent thread ids named by a discovered native child — the roots worth keeping without a record. */
+  const anchors = new Set<string>();
+  for (const entry of sessions) {
     const chat = bySession.get(entry.sessionId);
     const existing = parseMetadata(chat?.metadata);
     if (existing.provider && existing.provider !== "codex") continue;
     const metadata = nativeMetadata(entry.filePath, entry.sessionId, existing, false, undefined, bySession);
+    const native = metadata.nativeAgent as { parentThreadId?: string } | undefined;
+    if (typeof native?.parentThreadId === "string") anchors.add(native.parentThreadId);
     // Include roots as well so filesystem-only parent threads can anchor trees.
     const parentId = typeof metadata.parentChatId === "string" ? metadata.parentChatId : undefined;
     if (parentId && bySession.has(parentId) && !existing.parentChatId && !existing.forkedFrom) metadata.parentChatId = bySession.get(parentId)!.id;
+    discovered.push({ entry, chat, metadata });
+  }
+  for (const { entry, chat, metadata } of discovered) {
+    if (!chat && !metadata.nativeAgent && !anchors.has(entry.sessionId)) continue;
     result.set(chat?.id ?? entry.sessionId, {
       ...chat,
       id: chat?.id ?? entry.sessionId,

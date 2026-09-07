@@ -326,7 +326,22 @@ it("includes unpersisted native descendants in both card lifecycle scopes", asyn
   state.chats[0].metadata = JSON.stringify({ provider: "codex", card: { lifecycle: "closed" } });
   expect(list("inactive").chats.map((chat: any) => chat.id)).toContain(CHILD);
   expect(list("active").chats.map((chat: any) => chat.id)).not.toContain(CHILD);
+  // A Codex CLI session that was never a Callboard chat is not a card member
+  // in either scope, exactly like a Claude CLI session without a record.
+  rollout(SIBLING, null);
+  expect(list("inactive").chats.map((chat: any) => chat.id)).not.toContain(SIBLING);
+  expect(list("active").chats.map((chat: any) => chat.id)).not.toContain(SIBLING);
+  expect(list("all").chats.map((chat: any) => chat.id)).toContain(SIBLING); // still a discovered session
 }, 30000);
+
+it("admits synthetic entries only for native descendants and the filesystem-only parents that anchor them", () => {
+  rollout(ROOT, null); // anchors CHILD
+  rollout();
+  rollout(SIBLING, null); // an ordinary CLI session
+  expect(withNativeCodexChats([]).map((chat) => chat.id).sort()).toEqual([CHILD, ROOT].sort());
+  expect(buildChatTree(SIBLING)).toBeNull();
+  expect(buildChatTree(CHILD)?.rootChatId).toBe(ROOT);
+});
 
 it("does not replay discarded excludeTriggered rows before pagination", async () => {
   rollout(ROOT, null);
