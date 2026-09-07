@@ -185,7 +185,12 @@ export default function ProviderConfigPicker({
   const efforts = capability?.efforts ?? [];
   const legacyNone = effort === "none" && capability?.legacySummaryNone === true;
   const unsupported = effort !== undefined && !efforts.includes(effort) && !legacyNone;
-  const effortBlocked = showEffort && unsupported;
+  // Block callers only on a known answer. While the capability is still loading
+  // (every keystroke in a folder field re-keys the fetch, and the Codex probe
+  // takes up to ~1s) `unsupported` is merely "unverified"; the server validates
+  // fail-closed on creation anyway, so holding the button here only gets in
+  // the way of a supported effort.
+  const effortBlocked = showEffort && capability !== undefined && unsupported;
   useEffect(() => {
     onEffortValidityChange?.(effortBlocked);
   }, [effortBlocked, onEffortValidityChange]);

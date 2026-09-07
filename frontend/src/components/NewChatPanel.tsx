@@ -207,8 +207,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
   // Surface the picker's own validity message on the select and refuse to
   // create. `reportValidity` reads the `setCustomValidity` the picker set.
-  const refuseUnsupportedEffort = (): boolean => {
-    if (!effortBlocked) return false;
+  // The picker evaluated `displayPath`; a different directory may carry its own
+  // project config, so for one the server's fail-closed check decides instead.
+  const refuseUnsupportedEffort = (target: string = displayPath): boolean => {
+    if (!effortBlocked || target !== displayPath) return false;
     (document.getElementById("newChatEffort") as HTMLSelectElement | null)?.reportValidity();
     return true;
   };
@@ -216,7 +218,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const handleCreate = (dir?: string) => {
     const target = dir || folder.trim();
     if (!target) return;
-    if (refuseUnsupportedEffort()) return;
+    if (refuseUnsupportedEffort(target)) return;
 
     saveDefaultPermissions(defaultPermissions);
     addRecentDirectory(target);

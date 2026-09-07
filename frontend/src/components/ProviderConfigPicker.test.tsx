@@ -121,6 +121,21 @@ describe("model-aware reasoning picker", () => {
     await waitFor(() => expect(onEffortValidityChange).toHaveBeenLastCalledWith(false));
   });
 
+  it("does not block its caller while the capability is still loading", async () => {
+    // Every keystroke in a folder field re-keys the fetch and the Codex probe can
+    // take ~1s; an effort that is merely unverified must not hold up creation —
+    // the server validates fail-closed on /new/message regardless.
+    const onEffortValidityChange = vi.fn();
+    let resolveFetch!: (data: unknown) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => (resolveFetch = resolve))));
+    render(<ProviderConfigPicker {...base} effort="high" cwd="/typing" onEffortValidityChange={onEffortValidityChange} />);
+    expect(screen.getByRole("option", { name: /checking/ })).toBeTruthy();
+    expect(onEffortValidityChange).toHaveBeenCalledWith(false);
+    expect(onEffortValidityChange).not.toHaveBeenCalledWith(true);
+    resolveFetch(response(capability(["low"])));
+    await waitFor(() => expect(onEffortValidityChange).toHaveBeenLastCalledWith(true));
+  });
+
   it("retains max, ultra and future persisted values for validation rather than downgrading", () => {
     for (const effort of ["max", "ultra", "future"] as EffortLevel[]) {
       saveDefaultOpenRouterEffort(effort);
