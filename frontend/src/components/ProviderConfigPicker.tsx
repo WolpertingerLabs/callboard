@@ -17,6 +17,14 @@ interface ProviderConfigPickerProps {
   onProviderChange: (provider: AgentProviderKind) => void;
   effort: EffortLevel | undefined;
   onEffortChange: (effort: EffortLevel | undefined) => void;
+  /**
+   * Reports whether the current effort is unsupported (or still unverified) for
+   * the selected provider/model/route. The select flags this via
+   * `setCustomValidity`, but nothing submits a form here, so a caller that
+   * creates a chat on click must be told explicitly to hold off — otherwise a
+   * stale stored effort creates a chat that fails on its first message.
+   */
+  onEffortValidityChange?: (unsupported: boolean) => void;
   // Anthropic model for Claude Code chats (alias like "opus" or full ID like
   // "claude-sonnet-4-6"). Empty string = "use global default from Settings →
   // API". Kept separate from each other provider's model so toggling providers
@@ -113,6 +121,7 @@ export default function ProviderConfigPicker({
   onProviderChange,
   effort,
   onEffortChange,
+  onEffortValidityChange,
   claudeModel,
   onClaudeModelChange,
   codexModel,
@@ -176,6 +185,10 @@ export default function ProviderConfigPicker({
   const efforts = capability?.efforts ?? [];
   const legacyNone = effort === "none" && capability?.legacySummaryNone === true;
   const unsupported = effort !== undefined && !efforts.includes(effort) && !legacyNone;
+  const effortBlocked = showEffort && unsupported;
+  useEffect(() => {
+    onEffortValidityChange?.(effortBlocked);
+  }, [effortBlocked, onEffortValidityChange]);
   const routedCodexViaOpenRouter = capability ? capability.route === "openrouter" : codexUseOpenRouter;
 
   // The reasoning-effort selector, shared by each provider's control row. Only

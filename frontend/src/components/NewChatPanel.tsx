@@ -102,6 +102,12 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // each model's default behavior). Persisted in localStorage independently
   // of the provider so toggling back restores the prior selection.
   const [effort, setEffort] = useState<EffortLevel | undefined>(getDefaultOpenRouterEffort);
+  // True while the picker says `effort` is unsupported or unverified for the
+  // selected provider/model. The stored effort is restored verbatim (a stale
+  // level is the default state for anyone who changed model or route since), so
+  // creation must wait for a supported level or an explicit clear — the server
+  // rejects the first message otherwise.
+  const [effortBlocked, setEffortBlocked] = useState(false);
   // Anthropic model for Claude Code chats (alias or full ID). Empty string =
   // "use the global default from Settings → API". Stored separately from the
   // other providers' models so toggling restores each one's prior selection.
@@ -199,9 +205,18 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     setConfirmModal({ isOpen: false, path: "" });
   };
 
+  // Surface the picker's own validity message on the select and refuse to
+  // create. `reportValidity` reads the `setCustomValidity` the picker set.
+  const refuseUnsupportedEffort = (): boolean => {
+    if (!effortBlocked) return false;
+    (document.getElementById("newChatEffort") as HTMLSelectElement | null)?.reportValidity();
+    return true;
+  };
+
   const handleCreate = (dir?: string) => {
     const target = dir || folder.trim();
     if (!target) return;
+    if (refuseUnsupportedEffort()) return;
 
     saveDefaultPermissions(defaultPermissions);
     addRecentDirectory(target);
@@ -247,6 +262,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
   const handleAgentCreate = async (agent: AgentConfig) => {
     if (!agent?.workspacePath) return;
+    if (refuseUnsupportedEffort()) return;
 
     // Persist the provider/effort selection just like the folder path
     // (handleCreate) so the toggle remembers the user's choice regardless of
@@ -515,6 +531,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onPiModelChange={setPiModel}
               effort={effort}
               onEffortChange={setEffort}
+              onEffortValidityChange={setEffortBlocked}
               claudeModel={claudeModel}
               onClaudeModelChange={setClaudeModel}
               codexModel={codexModel}
@@ -692,9 +709,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                     </div>
                     <button
                       onClick={() => handleCreate()}
-                      disabled={!folder.trim()}
+                      disabled={!folder.trim() || effortBlocked}
+                      title={effortBlocked ? "Choose a supported reasoning effort or clear it first." : undefined}
                       style={{
-                        background: folder.trim() ? "var(--accent)" : "var(--border)",
+                        background: folder.trim() && !effortBlocked ? "var(--accent)" : "var(--border)",
                         color: "var(--text-on-accent)",
                         padding: "10px 16px",
                         borderRadius: 8,
@@ -729,6 +747,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
               onPiModelChange={setPiModel}
               effort={effort}
               onEffortChange={setEffort}
+              onEffortValidityChange={setEffortBlocked}
               claudeModel={claudeModel}
               onClaudeModelChange={setClaudeModel}
               codexModel={codexModel}

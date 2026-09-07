@@ -106,6 +106,21 @@ describe("model-aware reasoning picker", () => {
     expect(fetchMock).toHaveBeenLastCalledWith("/api/codex/reasoning?provider=codex&model=&cwd=%2Frouter-project", expect.anything());
   });
 
+  it("tells its caller when the saved effort must not be submitted, and when it may again", async () => {
+    // setCustomValidity alone is inert here: nothing submits a form, so a
+    // click-to-create caller has to be told explicitly to hold off.
+    const onEffortValidityChange = vi.fn();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(capability(["low", "max"]))));
+    const { rerender } = render(<ProviderConfigPicker {...base} effort={"ultra" as EffortLevel} onEffortValidityChange={onEffortValidityChange} />);
+    await screen.findByRole("alert");
+    expect(onEffortValidityChange).toHaveBeenLastCalledWith(true);
+    rerender(<ProviderConfigPicker {...base} effort="max" onEffortValidityChange={onEffortValidityChange} />);
+    await waitFor(() => expect(onEffortValidityChange).toHaveBeenLastCalledWith(false));
+    rerender(<ProviderConfigPicker {...base} effort={"ultra" as EffortLevel} provider="claude-code" onEffortValidityChange={onEffortValidityChange} />);
+    // No effort control for this harness, so nothing can be blocked by one.
+    await waitFor(() => expect(onEffortValidityChange).toHaveBeenLastCalledWith(false));
+  });
+
   it("retains max, ultra and future persisted values for validation rather than downgrading", () => {
     for (const effort of ["max", "ultra", "future"] as EffortLevel[]) {
       saveDefaultOpenRouterEffort(effort);
