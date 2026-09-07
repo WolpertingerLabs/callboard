@@ -167,7 +167,9 @@ Existing chats continue normally: this feature does not automatically open a bro
 
 > Controls Callboard's browser and desktop tools. Agents with unrestricted code execution may still run their own automation.
 
-Choose **Managed browser** or **Native desktop (service host)** and click **Enable**; Ask also requires scoped approval. Browser permission does not authorize desktop control. **Every model-requested GUI mutation currently requires a separate human confirmation, even with Allow.** Approvals expire and bind one action to one captured frame; refresh and request a new approval if the frame becomes stale.
+Choose **Managed browser** or **Native desktop (service host)** and click **Enable**; Ask also requires scoped approval. Browser permission does not authorize desktop control. **Every model-requested GUI mutation currently requires a separate human confirmation, even with Allow** — Allow only removes the extra approval click on Enable; it does not grant autonomous control. Approvals expire and bind one action to one captured frame; refresh and request a new approval if the frame becomes stale.
+
+On Codex, native subagents spawned by a chat share that chat's tool server and therefore its computer-control grant: their screenshots and action requests are authorized and audited as the parent chat, not as the child. Enable a target in a Codex chat only if you are comfortable with everything it spawns using it.
 
 **Provision the service host first:**
 

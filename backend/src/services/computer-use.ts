@@ -187,7 +187,10 @@ export class ComputerUseHost {
                 parentSessionId: pending.sessionId,
                 reason: `Confirm one GUI action on session ${pending.sessionId}, frame ${pending.frameId}: ${JSON.stringify(pending.action)}. It may transmit data, change files, or execute code. Approval expires after two minutes.`,
               }
-            : { reason: "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested." }),
+            : {
+                reason:
+                  "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested. Every agent action still needs a separate confirmation here, whatever the permission level. On Codex, native subagents spawned by this chat share this grant and act under this chat's identity.",
+              }),
           state: "pending_approval" as SessionStatus["state"],
           generation: 0,
           controller: null,
@@ -314,6 +317,7 @@ export class ComputerUseHost {
       generation: grant.lease.generation,
       leaseId: grant.lease.leaseId,
     });
+    grant.lease = lease;
     return this.presentation(grant.lease);
   }
   async stop(chatId: string, id: string, _generation?: unknown) {
@@ -333,7 +337,6 @@ export class ComputerUseHost {
     }
     const result = await this.service.revoke(controlPrincipal(chatId, "human"), id);
     this.grants.delete(id);
-    grant.lease = lease;
     return this.presentation(result);
   }
   async requestAgentAction(chatId: string, id: string, generation: number, frameId: string, action: unknown, execute: (id: string) => Promise<unknown>) {

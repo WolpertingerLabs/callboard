@@ -83,6 +83,16 @@ const failure = (error: unknown): ToolCallResult => ({
 });
 const text = (value: unknown): ToolCallResult => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
 
+/**
+ * Identity note: the spec is bound to the owning chat through `getChatId`, and
+ * every call is authorized and audited as `agent:<that chat>`. On Codex the
+ * tool server is a per-turn socket the parent's native subagents inherit, and
+ * exec requests carry no verified caller thread id (see
+ * `codex/toolAdapter.ts`), so a subagent's `cu_*` calls arrive — and are
+ * recorded — as the parent's. `assertNativeAgentControllable` only stops a
+ * child chat id from enabling a target on its own; it cannot see this path.
+ * The Enable approval text tells the granting human so (`ComputerUseHost.status`).
+ */
 export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSpec {
   type Context = { signal?: AbortSignal; toolCallId?: string };
   async function call(name: string, input: Record<string, unknown>, context?: Context, approvedSignal?: AbortSignal): Promise<ToolCallResult> {
@@ -147,7 +157,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
       ),
       defineTool(
         "cu_action",
-        "Request one bounded GUI input. Human confirmation is required because pixel actions may send data or execute code. No shell/eval. Use cu_status/observe after confirmation.",
+        "Request one bounded GUI input. A human must confirm every action in the Computer Control panel, whatever the chat's permission level, because pixel actions may send data or execute code. No shell/eval. Use cu_status/observe after confirmation.",
         {
           ...ref,
           frameId: z.string().uuid().describe("Exact frameId returned by cu_observe; observe again after every action or target change."),
