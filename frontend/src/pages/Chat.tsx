@@ -2743,7 +2743,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           <div className="chat-header-actions">
             {/* View mode switcher - Chat / Git diff / Debug / Job */}
             {viewModeSwitcher}
-            {computerChatId && <ComputerUseHeader controller={computerController} />}
+            {computerChatId && <ComputerUseHeader controller={computerController} viewOpen={viewMode === "computer"} />}
 
             {id && userMessageIndices.length > 1 && (
               <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
@@ -2978,7 +2978,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         )}
       </header>
 
-      {isMobile && computerChatId && <ComputerUseHeader controller={computerController} />}
+      {isMobile && computerChatId && <ComputerUseHeader controller={computerController} viewOpen={viewMode === "computer"} />}
 
       {/* Mobile: secondary action bar */}
       {isMobile && showMobileActions && (

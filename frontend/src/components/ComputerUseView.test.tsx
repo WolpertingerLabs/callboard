@@ -14,7 +14,7 @@ function Harness({ id = "c1" }: { id?: string }) {
   const [visible, setVisible] = useState(false);
   return (
     <>
-      <ComputerUseHeader controller={controller} />
+      <ComputerUseHeader controller={controller} viewOpen={visible} />
       <button onClick={() => setVisible(!visible)}>Switch view</button>
       {visible && id && !controller.stopping && (
         <ComputerUsePanel key={`${id}:${controller.viewerEpoch}`} chatId={id} permission="allow" dedicated controller={controller} />
@@ -150,12 +150,12 @@ it("fences old route discovery/actions and never sends an old controller stop to
   click("Stop computer control");
   vi.mocked(client.status).mockResolvedValue({ ...status, sessions: [] });
   view.rerender(<Harness id="c2" />);
-  await screen.findByText("Idle");
-  expectIdle();
+  await act(async () => {});
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
   await act(async () => resolveStatus({ ...status, sessions: [{ id: "late", kind: "native", controller: "agent", state: "active", generation: 1 }] }));
   expect(client.control).toHaveBeenCalledWith("c1", "late", "stop", 1);
   expect(vi.mocked(client.control).mock.calls.every(([id]) => id === "c1")).toBe(true);
-  expectIdle();
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
 });
 it("reports background status failure truthfully and keeps emergency stop available without any observation", async () => {
   vi.useFakeTimers();
@@ -182,10 +182,10 @@ it("does not let a late old-chat status response populate the new chat header", 
   const view = render(<Harness />);
   vi.mocked(client.status).mockResolvedValue({ ...status, sessions: [] });
   view.rerender(<Harness id="c2" />);
-  await screen.findByText("Idle");
-  expectIdle();
+  await act(async () => {});
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
   await act(async () => resolve(status));
-  expectIdle();
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
   expect(screen.queryByText(/1 active · 1 waiting/)).toBeNull();
 });
 
@@ -394,7 +394,8 @@ it.each(["open viewer", "closed viewer", "newer status error"] as const)(
       await act(async () => {
         await vi.advanceTimersByTimeAsync(3000);
       });
-      expect(screen.getByText("Last known")).toBeTruthy();
+      if (mode === "closed viewer") expect(screen.queryByText("Last known")).toBeNull();
+      else expect(screen.getByText("Last known")).toBeTruthy();
     }
     await act(async () => open.resolve({ session: openedSession }));
     expect(screen.getByText("Last known")).toBeTruthy();

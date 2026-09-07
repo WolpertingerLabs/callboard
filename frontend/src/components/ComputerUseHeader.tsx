@@ -3,7 +3,9 @@ import type { ComputerUseController } from "../hooks/useComputerUseController";
 import { isPending, isTerminal } from "../hooks/useComputerUseController";
 import "./ComputerUsePanel.css";
 
-export default function ComputerUseHeader({ controller }: { controller: ComputerUseController }) {
+export default function ComputerUseHeader({ controller, viewOpen = false }: { controller: ComputerUseController; viewOpen?: boolean }) {
+  // Explicit viewing offers emergency discovery without recording computer use.
+  if (!controller.hasUsage && !viewOpen) return null;
   const { status, statusError, stopping, stopError, stopAll } = controller;
   const sessions = status?.sessions.filter((session) => !isTerminal(session)) ?? [];
   const active = sessions.filter((session) => ["active", "ready", "running"].includes(session.state)).length;

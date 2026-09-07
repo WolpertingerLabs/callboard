@@ -19,7 +19,9 @@ it("allows wrapping at available pane width while protecting stop text and long 
         </div>
         <div className="chat-header-actions">
           <ComputerUseHeader
-            controller={{ status: null, statusError: "", stopping: false, stopError: "x".repeat(500), stopAll: async () => {} } as ComputerUseController}
+            controller={
+              { hasUsage: true, status: null, statusError: "", stopping: false, stopError: "x".repeat(500), stopAll: async () => {} } as ComputerUseController
+            }
           />
         </div>
       </header>

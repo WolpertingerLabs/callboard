@@ -138,3 +138,45 @@ it.each(["native child", "new chat"])("does not offer computer controls or polli
   expect(client.open).not.toHaveBeenCalled();
   if (fixture.native) expect((screen.getByLabelText("Composer") as HTMLTextAreaElement).disabled).toBe(true);
 });
+
+it.each([390, 1200])("keeps unused chat clean at %s px while Computer view offers offline Stop discovery without enabling", async (width) => {
+  Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+  vi.mocked(client.status).mockRejectedValue(new Error("offline"));
+  const { container } = mount();
+  await act(async () => {});
+  expect(container.querySelector(".computer-use-header")).toBeNull();
+  if (width === 390) fireEvent.click(screen.getByTitle("Show actions"));
+  fireEvent.click(await screen.findByRole("radio", { name: "Show computer control" }));
+  const reads = vi.mocked(client.status).mock.calls.length;
+  fireEvent.click(screen.getByRole("button", { name: "Stop computer control" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Stop computer control" }).hasAttribute("disabled")).toBe(false));
+  expect(vi.mocked(client.status).mock.calls.length).toBeGreaterThan(reads);
+  expect(screen.getAllByRole("alert").some((node) => node.textContent?.includes("Retry Stop"))).toBe(true);
+  fireEvent.click(screen.getByRole("radio", { name: "Show chat" }));
+  expect(container.querySelector(".computer-use-header")).toBeNull();
+  expect(client.open).not.toHaveBeenCalled();
+  expect(client.observe).not.toHaveBeenCalled();
+  expect(client.control).not.toHaveBeenCalled();
+  expect(client.action).not.toHaveBeenCalled();
+});
+
+it.each([390, 1200].flatMap((width) => (["checking", "deny", "ask", "allow"] as const).map((permission) => ({ width, permission }))))(
+  "hides unused $permission strip at $width px without hiding Computer entry",
+  async ({ width, permission }) => {
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+    if (permission === "checking") vi.mocked(client.status).mockReturnValue(new Promise(() => {}));
+    else vi.mocked(client.status).mockResolvedValue({ permission, capabilities: [], sessions: [] });
+    const { container } = mount();
+    await act(async () => {});
+    expect(container.querySelector(".computer-use-header")).toBeNull();
+    if (width === 390) fireEvent.click(screen.getByTitle("Show actions"));
+    fireEvent.click(await screen.findByRole("radio", { name: "Show computer control" }));
+    expect(screen.getByRole("button", { name: "Stop computer control" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "Show chat" }));
+    expect(container.querySelector(".computer-use-header")).toBeNull();
+    expect(client.open).not.toHaveBeenCalled();
+    expect(client.observe).not.toHaveBeenCalled();
+    expect(client.control).not.toHaveBeenCalled();
+    expect(client.action).not.toHaveBeenCalled();
+  },
+);

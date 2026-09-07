@@ -31,6 +31,7 @@ async function bounded<T>(request: Promise<T>): Promise<T> {
  */
 export function useComputerUseController(chatId: string | undefined) {
   const [snapshot, setSnapshot] = useState<{ chatId?: string; status: ComputerUseStatus | null; error: string }>({ status: null, error: "" });
+  const [usageChatId, setUsageChatId] = useState<string>();
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState("");
   const [viewerEpoch, setViewerEpoch] = useState(0);
@@ -52,21 +53,28 @@ export function useComputerUseController(chatId: string | undefined) {
   // differ: the host deletes them on approval, denial/cancel or expiration.
   const emergency = useRef(new Map<string, ComputerUseSession>());
   const terminalIds = useRef(new Set<string>());
-  const rememberEmergency = useCallback((response: unknown) => {
-    if (!response || typeof response !== "object") return;
-    const value = response as Partial<ComputerUseSession>;
-    if (typeof value.id !== "string" || typeof value.state !== "string") return;
-    if (isTerminal(value as ComputerUseSession)) {
-      terminalIds.current.add(value.id);
-      emergency.current.delete(value.id);
-      return;
-    }
-    if (terminalIds.current.has(value.id)) return; // Session IDs cannot be revived.
-    const previous = emergency.current.get(value.id);
-    if (!["browser", "native"].includes(value.kind ?? "") || !Number.isSafeInteger(value.generation) || value.generation! < 0) return;
-    if (!previous || value.generation! >= previous.generation)
-      emergency.current.set(value.id, { ...value, controller: value.controller ?? null } as ComputerUseSession);
-  }, []);
+  const rememberEmergency = useCallback(
+    (response: unknown) => {
+      if (!response || typeof response !== "object") return;
+      const value = response as Partial<ComputerUseSession>;
+      if (typeof value.id !== "string" || typeof value.state !== "string") return;
+      // Visibility follows valid ledger evidence, not display authority. Terminal
+      // history also counts, and later empty/error reads never erase this latch.
+      const validSession = ["browser", "native"].includes(value.kind ?? "") && Number.isSafeInteger(value.generation) && value.generation! >= 0;
+      if (validSession || emergency.current.has(value.id)) setUsageChatId(chatId);
+      if (isTerminal(value as ComputerUseSession)) {
+        terminalIds.current.add(value.id);
+        emergency.current.delete(value.id);
+        return;
+      }
+      if (terminalIds.current.has(value.id)) return; // Session IDs cannot be revived.
+      const previous = emergency.current.get(value.id);
+      if (!["browser", "native"].includes(value.kind ?? "") || !Number.isSafeInteger(value.generation) || value.generation! < 0) return;
+      if (!previous || value.generation! >= previous.generation)
+        emergency.current.set(value.id, { ...value, controller: value.controller ?? null } as ComputerUseSession);
+    },
+    [chatId],
+  );
   const retireRequest = useCallback((id: string) => {
     const entry = emergency.current.get(id);
     if (entry && isPendingRequest(entry)) {
@@ -199,6 +207,7 @@ export function useComputerUseController(chatId: string | undefined) {
     ++lifetime.current;
     mounted.current = true;
     known.current = null;
+    setUsageChatId(undefined);
     emergency.current.clear();
     terminalIds.current.clear();
     stopActive.current = false;
@@ -308,6 +317,16 @@ export function useComputerUseController(chatId: string | undefined) {
     }
   }, [chatId, readStatus, acceptResponse, rememberEmergency]);
   const visible = snapshot.chatId === chatId ? snapshot : { status: null, error: "" };
-  return { status: visible.status, statusError: visible.error, readStatus, beginMutation, stopAll, stopping, stopError, viewerEpoch };
+  return {
+    hasUsage: !!chatId && usageChatId === chatId,
+    status: visible.status,
+    statusError: visible.error,
+    readStatus,
+    beginMutation,
+    stopAll,
+    stopping,
+    stopError,
+    viewerEpoch,
+  };
 }
 export type ComputerUseController = ReturnType<typeof useComputerUseController>;
