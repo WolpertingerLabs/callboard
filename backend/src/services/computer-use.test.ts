@@ -140,3 +140,45 @@ for (const level of ["allow", "ask"])
     expect(execute).not.toHaveBeenCalled();
     await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "denied" });
   });
+
+// Viewer ledger contract: pending DTOs are consumable request IDs, not sessions.
+// Exercise the real host/package with only driver I/O faked.
+it("approval replaces the generation-zero target request with a different real session ID", async () => {
+  const { host } = fixture("ask");
+  const request = await host.open("a", "browser");
+  expect(request).toMatchObject({ generation: 0, state: "pending_approval" });
+  const opened = (await host.approve("a", request.id)) as { id: string; generation: number };
+  expect(opened.id).not.toBe(request.id);
+  expect(opened.generation).toBeGreaterThan(0);
+  expect((await host.status("a")).sessions.map((session) => session.id)).toEqual([opened.id]);
+  await expect(host.stop("a", request.id)).rejects.toMatchObject({ code: "not_found" });
+  await expect(host.stop("a", opened.id, opened.generation)).resolves.toMatchObject({ id: opened.id, state: "stopped" });
+});
+
+it.each(["approve", "expire", "revoke", "stop", "invalidated approval"] as const)(
+  "removes an action request on %s without treating its parent session as a request",
+  async (operation) => {
+    const { host, service, change } = fixture();
+    const opened = await host.open("a", "browser");
+    const frame = await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation });
+    const execute = vi.fn(async () => ({ done: true }));
+    const request = await host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "key", key: "Enter" }, execute);
+    expect((await host.status("a")).sessions).toContainEqual(expect.objectContaining({ id: request.approvalId, generation: 0, parentSessionId: opened.id }));
+    const now = vi.spyOn(Date, "now");
+    try {
+      if (operation === "expire") now.mockReturnValue(Date.now() + 120_001);
+      else if (operation === "invalidated approval") {
+        change("deny");
+        await expect(host.approve("a", request.approvalId)).rejects.toMatchObject({ code: "denied" });
+      } else await host[operation]("a", request.approvalId);
+      const sessions = (await host.status("a")).sessions;
+      expect(sessions.some((session) => session.id === request.approvalId)).toBe(false);
+      expect(sessions.find((session) => session.id === opened.id)?.generation).toBeGreaterThan(0);
+      if (operation !== "invalidated approval") expect(sessions.find((session) => session.id === opened.id)?.state).toBe("ready");
+      expect(execute).toHaveBeenCalledTimes(operation === "approve" ? 1 : 0);
+      await expect(host.stop("a", request.approvalId)).rejects.toMatchObject({ code: "not_found" });
+    } finally {
+      now.mockRestore();
+    }
+  },
+);
