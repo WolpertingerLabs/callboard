@@ -9,9 +9,12 @@ it("renders the fifth permission with the exact boundary note", () => {
   const onChange = vi.fn();
   render(<PermissionSettings permissions={normalizePermissions({ fileRead: "allow" })} onChange={onChange} />);
   const description = screen.getByText(/Controls Callboard's browser and desktop tools\./);
-  // Allow is not "no confirmations": it skips only the target-enable step.
-  expect(description.textContent).toContain("Allow only skips the confirmation when the agent enables a browser or desktop target");
-  expect(description.textContent).toContain("every individual action the agent takes still needs your confirmation");
+  // Allow is not "no confirmations", and the agent cannot enable a target at
+  // any level: Allow only lets the HUMAN's Enable click take effect at once.
+  expect(description.textContent).toContain("Only you can enable a target.");
+  expect(description.textContent).toContain("Allow lets your Enable click open it immediately; under Ask, Enable creates a request you confirm separately.");
+  expect(description.textContent).toContain("Every action the agent takes still needs your confirmation.");
+  expect(description.textContent).not.toMatch(/agent enables/);
   expect(description.textContent).toContain("Agents with unrestricted code execution may still run their own automation.");
   const row = screen.getByText("Browser & Computer Control").parentElement!.parentElement!;
   expect((within(row).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);

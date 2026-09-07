@@ -274,8 +274,9 @@ export default function ComputerUsePanel({
     <section className="computer-use-panel" aria-label="Browser & Computer Control">
       <div className="computer-use-body">
         <p>
-          Controls Callboard&apos;s browser and desktop tools. Allow only skips the confirmation when the agent enables a browser or desktop target; every
-          individual action the agent takes still needs your confirmation here. Agents with unrestricted code execution may still run their own automation.
+          Controls Callboard&apos;s browser and desktop tools. Only you can enable a target. Allow lets your Enable click open it immediately; under Ask,
+          Enable creates a request you confirm separately. Every action the agent takes still needs your confirmation here. Agents with unrestricted code
+          execution may still run their own automation.
         </p>
         <p>Tools run on the configured service target, not on this viewer&apos;s computer. Model visual capability is not established by this viewer.</p>
         <div className="computer-use-controls">
@@ -325,8 +326,8 @@ export default function ComputerUsePanel({
         )}
         {denied && (
           <p role="status">
-            Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Allow skips only the
-            target-enable confirmation; each agent action still asks you.
+            Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Allow only lets your Enable
+            click open a target without a separate confirmation; each agent action still asks you.
           </p>
         )}
         {!capability?.available && (
