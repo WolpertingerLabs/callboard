@@ -15,6 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { AnyToolDefinition, ToolDefinition, ToolServerSpec } from "../../ports/tools.js";
 import {
+  CODEX_TOOL_IDENTITY_NOTE,
   buildCodexToolServer,
   isCodexToolServerHandle,
   shimSpawnConfig,
@@ -134,6 +135,10 @@ describe("live connectivity (Codex ⇄ shim ⇄ in-process server over stdio)", 
       // The shim served the spec — both tools are visible to the client.
       const listed = await client.listTools();
       expect(listed.tools.map((t) => t.name).sort()).toEqual(["boom", "echo"]);
+      // Descriptions are the spec's own: the exec identity note is said once
+      // per session (server `instructions` + the instructions file), not per tool.
+      expect(listed.tools.map((t) => t.description).sort()).toEqual(["Always errors", "Echo a greeting"]);
+      expect(client.getInstructions()).toBe(CODEX_TOOL_IDENTITY_NOTE);
 
       // The actual round-trip: the call must execute the in-process handler.
       const result = await client.callTool({ name: "echo", arguments: { name: "codex" } });

@@ -35,7 +35,7 @@ import { join } from "node:path";
 import type { ApprovalMode, CodexOptions, ModelReasoningEffort, SandboxMode, ThreadOptions } from "@openai/codex-sdk";
 import type { DefaultPermissions, EffortLevel } from "shared/types/index.js";
 import { defaultApprovalForSandbox, hasAnyAsk, mapPermissionsToCodex } from "./permissionAdapter.js";
-import { isCodexToolServerHandle, type CodexMcpServerConfig, type CodexToolServerHandle } from "./toolAdapter.js";
+import { CODEX_TOOL_IDENTITY_NOTE, isCodexToolServerHandle, type CodexMcpServerConfig, type CodexToolServerHandle } from "./toolAdapter.js";
 import { OPENROUTER_CODEX_BASE_URL } from "../../../services/agent-settings.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -437,12 +437,6 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // Codex's ThreadOptions has no inline instructions field; the prompt rides in
   // via the CLI `model_instructions_file` config (`--config
   // model_instructions_file=<path>`), set on the client `config` bag.
-  const instructions = resolveCodexInstructions(opts.systemPrompt);
-  const instructionsFilePath = instructions ? writeInstructionsFile(instructions) : null;
-  if (instructionsFilePath) {
-    codexOpts.config = { ...codexOpts.config, model_instructions_file: instructionsFilePath };
-  }
-
   // ── callboard tools → Codex mcp_servers (the tool bridge) ────────
   // Codex connects OUT to MCP servers; each callboard tool bundle is hosted
   // in-process (buildCodexToolServer) and exposed to Codex as an `mcp_servers`
@@ -450,6 +444,17 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers);
   if (mcpServersConfig) {
     codexOpts.config = { ...codexOpts.config, mcp_servers: mcpServersConfig };
+  }
+
+  // A session with in-process tool servers gets the exec identity note once,
+  // here, rather than on every tool (see CODEX_TOOL_IDENTITY_NOTE). Only when
+  // there are instructions to append to: `model_instructions_file` REPLACES
+  // the CLI's built-in prompt, so a note-only file would be a regression.
+  const resolvedInstructions = resolveCodexInstructions(opts.systemPrompt);
+  const instructions = resolvedInstructions && toolServerHandles.length > 0 ? `${resolvedInstructions}\n\n${CODEX_TOOL_IDENTITY_NOTE}` : resolvedInstructions;
+  const instructionsFilePath = instructions ? writeInstructionsFile(instructions) : null;
+  if (instructionsFilePath) {
+    codexOpts.config = { ...codexOpts.config, model_instructions_file: instructionsFilePath };
   }
 
   // ── thread options (cwd, model, sandbox/approval) ────────────────
