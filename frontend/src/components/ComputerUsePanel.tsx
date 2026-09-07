@@ -46,13 +46,20 @@ export default function ComputerUsePanel({
   permission = "deny",
   onPermissions,
   controller,
+  provider,
 }: {
   chatId: string;
   permission?: PermissionLevel;
   onPermissions?: () => void;
   controller: ComputerUseController;
+  /** The chat's harness, when known. Only used for harness-specific grant notes. */
+  provider?: string;
 }) {
   const resumePrivacyId = useId();
+  const sharedGrantId = useId();
+  // Codex runs native subagents inside the parent's turn; the host authorizes
+  // them under the parent chat, so the grant a human approves here is theirs too.
+  const sharedGrantNote = provider === "codex" ? sharedGrantId : undefined;
   const [preview, setPreview] = useState(false);
   const { readStatus, beginMutation, status } = controller;
   const [kind, setKind] = useState<ComputerUseKind>("browser");
@@ -264,7 +271,10 @@ export default function ComputerUsePanel({
   return (
     <section className="computer-use-panel" aria-label="Browser & Computer Control">
       <div className="computer-use-body">
-        <p>Controls Callboard&apos;s browser and desktop tools. Agents with unrestricted code execution may still run their own automation.</p>
+        <p>
+          Controls Callboard&apos;s browser and desktop tools. Allow only skips the confirmation when the agent enables a browser or desktop target; every
+          individual action the agent takes still needs your confirmation here. Agents with unrestricted code execution may still run their own automation.
+        </p>
         <p>Tools run on the configured service target, not on this viewer&apos;s computer. Model visual capability is not established by this viewer.</p>
         <div className="computer-use-controls">
           <label>
@@ -276,6 +286,7 @@ export default function ComputerUsePanel({
           </label>
           <button
             disabled={busy || denied || capability?.available !== true}
+            aria-describedby={sharedGrantNote}
             onClick={() => {
               void run("Enable requested", async (signal) => {
                 const acceptResponse = beginMutation();
@@ -296,6 +307,12 @@ export default function ComputerUsePanel({
           </button>
           {onPermissions && <button onClick={onPermissions}>Chat permissions</button>}
         </div>
+        {sharedGrantNote && (
+          <p id={sharedGrantNote} role="note">
+            <strong>Codex:</strong> a grant you enable or approve here is shared with any native subagents the agent spawns during the turn, and their actions
+            are recorded under this chat&apos;s identity.
+          </p>
+        )}
         {(kind === "native" || session?.kind === "native") && (
           <p role="note">
             <strong>Same-machine native control:</strong> this targets the Callboard service host&apos;s existing desktop and applications. It requires a
@@ -303,7 +320,12 @@ export default function ComputerUsePanel({
             applications.
           </p>
         )}
-        {denied && <p role="status">Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status.</p>}
+        {denied && (
+          <p role="status">
+            Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Allow skips only the
+            target-enable confirmation; each agent action still asks you.
+          </p>
+        )}
         {!capability?.available && (
           <p role="status">
             {capability?.reason ??
@@ -318,6 +340,7 @@ export default function ComputerUsePanel({
               <p>{item.reason ?? `Approve access to ${item.targetLabel ?? item.kind}`}</p>
               <button
                 disabled={busy || denied}
+                aria-describedby={sharedGrantNote}
                 onClick={() =>
                   void run("Request approved", async (signal) => {
                     const acceptResponse = beginMutation(item);
@@ -371,7 +394,7 @@ export default function ComputerUsePanel({
             {session.reason && <p role="status">{session.reason}</p>}
             <div className="computer-use-controls">
               {pending(session) && status?.permission !== "deny" && (
-                <button disabled={busy || denied} onClick={() => control("approve")}>
+                <button disabled={busy || denied} aria-describedby={sharedGrantNote} onClick={() => control("approve")}>
                   Approve this request
                 </button>
               )}

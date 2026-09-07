@@ -152,7 +152,7 @@ export default function PermissionSettings({ permissions, onChange, title, provi
 
       <PermissionRow
         label="Browser & Computer Control"
-        description="Controls Callboard's browser and desktop tools. Agents with unrestricted code execution may still run their own automation."
+        description="Controls Callboard's browser and desktop tools. Allow only skips the confirmation when the agent enables a browser or desktop target; every individual action the agent takes still needs your confirmation. Agents with unrestricted code execution may still run their own automation."
         category="computerControl"
         permissions={permissions}
         onUpdate={updatePermission}

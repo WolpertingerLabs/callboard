@@ -26,11 +26,13 @@ const button = (name: string) => screen.getByRole("button", { name }) as HTMLBut
 function Viewer({
   chatId = "c1",
   permission,
+  provider,
   onPermissions,
   onRender,
 }: {
   chatId?: string;
   permission?: PermissionLevel;
+  provider?: string;
   onPermissions?: () => void;
   onRender?: (controller: ReturnType<typeof useComputerUseController>) => void;
 }) {
@@ -45,6 +47,7 @@ function Viewer({
           key={`${chatId}:${controller.viewerEpoch}`}
           chatId={chatId}
           permission={permission}
+          provider={provider}
           onPermissions={onPermissions}
           controller={controller}
         />
@@ -92,14 +95,41 @@ describe("ComputerUsePanel", () => {
     expect(screen.getByText(/Same-machine native control/)).toBeTruthy();
   });
 
-  it("keeps legacy/missing permission deny, with an actionable settings path", async () => {
+  it("keeps legacy/missing permission deny, with an actionable settings path that does not oversell Allow", async () => {
     const onPermissions = vi.fn();
     render(<Viewer onPermissions={onPermissions} />);
     await ready();
     expect(button("Enable").disabled).toBe(true);
     expect(button("Refresh screenshot").disabled).toBe(true);
+    const denied = screen.getByText(/Computer control is denied/);
+    expect(denied.textContent).toContain("Allow skips only the target-enable confirmation; each agent action still asks you.");
+    expect(screen.getByText(/Controls Callboard's browser and desktop tools/).textContent).toContain(
+      "every individual action the agent takes still needs your confirmation",
+    );
     fireEvent.click(button("Chat permissions"));
     expect(onPermissions).toHaveBeenCalled();
+  });
+
+  it.each(["codex", "claude-code", undefined])("explains the shared subagent grant only for Codex chats (%s)", async (provider) => {
+    status.permission = "ask";
+    status.sessions = [
+      status.sessions[0],
+      { id: "request", kind: "browser", state: "pending_approval", controller: null, generation: 0, reason: "Approve access to this target" },
+    ];
+    render(<Viewer permission="ask" provider={provider} />);
+    await ready();
+    const note = screen.queryByText(/shared with any native subagents/);
+    if (provider !== "codex") {
+      expect(note).toBeNull();
+      expect(button("Enable").hasAttribute("aria-describedby")).toBe(false);
+      expect(button("Confirm request").hasAttribute("aria-describedby")).toBe(false);
+      return;
+    }
+    expect(note!.getAttribute("role")).toBe("note");
+    expect(note!.textContent).toContain("recorded under this chat's identity");
+    // Both places a human grants access point at the same note.
+    expect(button("Enable").getAttribute("aria-describedby")).toBe(note!.id);
+    expect(button("Confirm request").getAttribute("aria-describedby")).toBe(note!.id);
   });
 
   it("requires takeover and a fresh frame, then sends fenced manual actions", async () => {

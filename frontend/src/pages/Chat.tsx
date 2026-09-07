@@ -3195,6 +3195,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               key={`${computerChatId}:${computerController.viewerEpoch}`}
               chatId={computerChatId}
               controller={computerController}
+              provider={chatProvider}
               permission={effectivePermissions.computerControl}
               onPermissions={() => setShowPermissionsModal(true)}
             />
