@@ -7,6 +7,16 @@
 }
 
 :root {
+  /* Native UA chrome — form controls, scrollbars, spinners, focus rings — is
+     painted from the browser's own palette, not from the variables below, and
+     that palette follows `color-scheme` and nothing else. Without this the
+     whole app renders its native widgets in light mode regardless of theme:
+     the collapsed "Browser & Computer Control" heading is a bare <button>, so
+     it fell through to the UA's `buttonface` (#efefef) and drew a light band
+     across the dark chat view. `index.html` sets data-theme before first
+     paint, so the pair below is resolved by the time anything is drawn. */
+  color-scheme: dark;
+
   /* Core palette */
   --bg: #0d1117;
   /* Background layers: main window (--bg) < sidebar/header < new-chat popout */
@@ -223,6 +233,9 @@
 
 /* Light mode overrides (applied via data-theme attribute on <html>) */
 [data-theme="light"] {
+  /* Overrides the `color-scheme: dark` on :root — see the note there. */
+  color-scheme: light;
+
   /* Core palette */
   --bg: #ffffff;
   /* Background layers: main window (--bg) < sidebar/header < new-chat popout */

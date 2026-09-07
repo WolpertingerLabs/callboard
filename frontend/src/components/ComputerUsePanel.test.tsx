@@ -1,3 +1,6 @@
+import { readFileSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -457,4 +460,38 @@ it("does not dispatch an unaccepted queued preview after the new panel closes", 
     view.unmount();
     await fixture.service.dispose();
   }
+});
+
+/**
+ * The collapsed heading's background is a CSS contract, not a component one.
+ *
+ * `index.css`'s global reset clears a button's border but not its background,
+ * so a `<button>` with no `background` declaration paints the user agent's
+ * `buttonface` — #efefef in Chrome. The heading is the full width of the panel
+ * and sits directly above the composer, so on a phone in dark mode that read as
+ * a light band of unstyled whitespace jammed into the chat view, with --text
+ * over it at roughly 1.1:1.
+ *
+ * jsdom applies no stylesheet and resolves no user-agent defaults, so there is
+ * nothing to assert on a rendered node — `getComputedStyle` reports the empty
+ * string either way, which is exactly what it reported while the bug was live.
+ * The stylesheet is what has to be checked, so the stylesheet is what is read.
+ */
+describe("the collapsed heading's stylesheet contract", () => {
+  // Not `new URL(..., import.meta.url)`: Vite rewrites that into an asset
+  // reference, and the http URL it returns is not openable by fs.
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ComputerUsePanel.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const heading = /\.computer-use-heading\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+  it("declares a background so the rule never falls through to buttonface", () => {
+    expect(heading).not.toBe("");
+    expect(/(^|;)\s*background(-color)?\s*:/.test(heading)).toBe(true);
+  });
+
+  it("takes the panel's own surface rather than painting a fill of its own", () => {
+    // `transparent` is the whole point: .computer-use-panel already sets
+    // `background: var(--surface)`, so the heading reads as that panel's header
+    // in either theme without naming a second colour that could drift from it.
+    expect(/(^|;)\s*background\s*:\s*transparent\s*(;|$)/.test(heading)).toBe(true);
+  });
 });
