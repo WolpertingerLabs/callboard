@@ -324,8 +324,10 @@ export function useComputerUseController(chatId: string | undefined) {
     readStatus,
     beginMutation,
     stopAll,
-    stopping,
-    stopError,
+    // The snapshot and stop state reset together for each controller lifetime.
+    // Mask old-route flags already during render, before that effect runs.
+    stopping: snapshot.chatId === chatId && stopping,
+    stopError: snapshot.chatId === chatId ? stopError : "",
     viewerEpoch,
   };
 }

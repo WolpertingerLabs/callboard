@@ -87,3 +87,15 @@ it.each([null, ...(["deny", "ask", "allow"] as const).map((permission) => ({ ...
     expect(control.beginMutation).not.toHaveBeenCalled();
   },
 );
+
+it.each([{ stopping: true }, { stopError: "Discovery failed. Retry Stop computer control." }])(
+  "keeps unused closed-view Stop uncertainty visible (%s)",
+  (uncertainty) => {
+    const control = controller({ hasUsage: false, status: null, ...uncertainty });
+    const { container, rerender } = render(<ComputerUseHeader controller={control} />);
+    expect(screen.getByRole("button", { name: "Stop computer control" })).toBeTruthy();
+    if (uncertainty.stopError) expect(screen.getByRole("alert").textContent).toContain("Retry Stop");
+    rerender(<ComputerUseHeader controller={{ ...control, stopping: false, stopError: "" }} />);
+    expect(container.innerHTML).toBe("");
+  },
+);
