@@ -299,6 +299,16 @@ const FIRST_LINE_INITIAL_BYTES = 8192;
 /** Subsequent reads double from here up to {@link FIRST_LINE_MAX_CHUNK_BYTES}. */
 const FIRST_LINE_GROWTH_BYTES = 64 * 1024;
 const FIRST_LINE_MAX_CHUNK_BYTES = 1024 * 1024;
+/**
+ * Hard cap on the first line. The largest header a real device has written is
+ * 1.4 MB, and a header is one JSON record with the agent prompt inside it, so
+ * 64 MB is not a size any rollout reaches — it is the point past which a file
+ * is corrupt or hostile, and reading it whole (a 96 MB single-line file cost
+ * 185 ms and +197 MB RSS) buys nothing. Past the cap the file is "no meta".
+ */
+export const FIRST_LINE_MAX_BYTES = 64 * 1024 * 1024;
+/** Paths already warned about for exceeding {@link FIRST_LINE_MAX_BYTES}; one line per file, not one per read. */
+const warnedOversizedFirstLine = new Set<string>();
 
 /** `readFirstLine` ran out of budget before reaching the end of the line — transient, not evidence about the file. */
 const BUDGET_EXHAUSTED = Symbol("budget-exhausted");
@@ -309,16 +319,18 @@ const BUDGET_EXHAUSTED = Symbol("budget-exhausted");
  * The line is read in growing chunks and the read stops at the first newline,
  * so a rollout pays for its `session_meta` and nothing after it — never a
  * whole-file slurp, and never a fixed 1 MB head that reads transcript the
- * caller does not want. There is no cap on the line itself: a `session_meta`
- * whose `base_instructions` runs past 1 MB (the uncapped agent prompt does
- * this today) is still the same one record, and a reader that gives up on it
- * makes the rollout invisible to discovery, un-resumable, and — because
- * "unreadable" used to be indistinguishable from "native child" — read-only.
+ * caller does not want. The only cap on the line is {@link FIRST_LINE_MAX_BYTES},
+ * far past any header: a `session_meta` whose `base_instructions` runs past
+ * 1 MB (the uncapped agent prompt does this today) is still the same one
+ * record, and a reader that gives up on it makes the rollout invisible to
+ * discovery, un-resumable, and — because "unreadable" used to be
+ * indistinguishable from "native child" — read-only.
  *
  * `budget` is charged for the bytes actually read (bounded by `size`, the
  * file's stat size, so a small rollout never costs a full chunk). Running out
  * mid-line returns {@link BUDGET_EXHAUSTED} so the caller can tell a spent
- * budget from a malformed file; `null` means the file could not be read.
+ * budget from a malformed file; `null` means the file could not be read, or
+ * that its first line ran past {@link FIRST_LINE_MAX_BYTES}.
  */
 function readFirstLine(filePath: string, size: number, budget?: MetadataReadBudget): string | null | typeof BUDGET_EXHAUSTED {
   let fd: number;
@@ -332,7 +344,14 @@ function readFirstLine(filePath: string, size: number, budget?: MetadataReadBudg
     let offset = 0;
     let chunkBytes = FIRST_LINE_INITIAL_BYTES;
     for (;;) {
-      let want = Math.min(chunkBytes, size - offset);
+      if (offset >= FIRST_LINE_MAX_BYTES) {
+        if (!warnedOversizedFirstLine.has(filePath)) {
+          warnedOversizedFirstLine.add(filePath);
+          log.warn(`Codex rollout ${filePath}: first line exceeds ${FIRST_LINE_MAX_BYTES} bytes with no newline; treating it as having no session_meta.`);
+        }
+        return null;
+      }
+      let want = Math.min(chunkBytes, size - offset, FIRST_LINE_MAX_BYTES - offset);
       if (budget) want = Math.min(want, budget.remainingBytes);
       if (want <= 0) return offset >= size ? Buffer.concat(chunks).toString("utf-8") : BUDGET_EXHAUSTED;
       const buf = Buffer.allocUnsafe(want);

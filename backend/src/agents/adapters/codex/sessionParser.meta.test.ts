@@ -3,11 +3,11 @@
  * cannot repair a torn first record. Same-size restored-mtime rewrites must
  * invalidate cached lineage via ctime/device/inode evidence.
  */
-import { linkSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync, appendFileSync } from "node:fs";
+import { closeSync, linkSync, mkdtempSync, openSync, rmSync, statSync, utimesSync, writeFileSync, writeSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { META_CACHE_MAX, clearCodexSessionMetaCache, parseCodexRollout, readCodexSessionMeta, readFirstUserPrompt } from "./sessionParser.js";
+import { FIRST_LINE_MAX_BYTES, META_CACHE_MAX, clearCodexSessionMetaCache, parseCodexRollout, readCodexSessionMeta, readFirstUserPrompt } from "./sessionParser.js";
 
 const THREAD_ID = "019ec7f2-cd5d-7823-b2d1-6683c42bfe32";
 /** Fixed so `statSync().mtimeMs` is an exact, reproducible integer. */
@@ -170,6 +170,24 @@ describe("readCodexSessionMeta — bounded complete records", () => {
     expect(JSON.stringify(parseCodexRollout(filePath))).toContain("build the barrel");
     expect(readFirstUserPrompt(filePath)).toBe("build the barrel");
   });
+
+  it("gives up on a first line past the hard cap instead of reading a corrupt file whole", () => {
+    // A 96 MB single-line file matching the rollout name pattern used to be
+    // read entirely (185 ms, +197 MB RSS). Past the cap it is "no meta".
+    const fd = openSync(filePath, "w");
+    try {
+      const chunk = Buffer.alloc(1024 * 1024, 0x78);
+      for (let written = 0; written < FIRST_LINE_MAX_BYTES + chunk.length; written += chunk.length) writeSync(fd, chunk);
+    } finally {
+      closeSync(fd);
+    }
+    utimesSync(filePath, T0, T0);
+    const budget = { remainingBytes: Number.MAX_SAFE_INTEGER, exhausted: 0 };
+    expect(readCodexSessionMeta(filePath, budget)).toBeNull();
+    expect(Number.MAX_SAFE_INTEGER - budget.remainingBytes).toBeLessThanOrEqual(FIRST_LINE_MAX_BYTES);
+    expect(budget.exhausted).toBe(0); // a capped line is a verdict, not a spent budget
+    expect(readCodexSessionMeta(filePath)).toBeNull(); // memoized: no second read
+  }, 30_000);
 
   it("reads the header and nothing after it, whatever the transcript weighs", () => {
     writeRollout([metaLine("/p/light", 64), ...Array.from({ length: 2000 }, (_, i) => userLine("x".repeat(2048) + i))]);
