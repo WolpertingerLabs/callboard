@@ -63,15 +63,15 @@ afterEach(() => {
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe("native caller boundaries with real storage and registry", () => {
-  it.each(["missing", "oversized"])("cancels an actual owned root with %s metadata; only a missing log blocks resuming it", async (kind) => {
+  it.each(["missing", "oversized"])("cancels and may resume an actual owned root with %s metadata", async (kind) => {
     chatFileService.upsertChat(ROOT, scratch, ROOT, { metadata: JSON.stringify({ provider: "codex" }) });
     if (kind === "oversized") rollout(ROOT, false, { base_instructions: "x".repeat(1024 * 1024) });
     const abortController = new AbortController();
     sessionRegistry.register(ROOT, { type: "web", abortController, emitter: new EventEmitter() });
-    // A header past 1 MB is still this root's own header; it neither hides
-    // the thread nor makes it look parent-owned.
-    if (kind === "missing") expect(() => assertNativeAgentControllable(ROOT)).toThrow();
-    else expect(() => assertNativeAgentControllable(ROOT)).not.toThrow();
+    // A header past 1 MB is still this root's own header, and an absent
+    // rollout with no stored native lineage is no header at all: neither
+    // makes the thread look parent-owned.
+    expect(() => assertNativeAgentControllable(ROOT)).not.toThrow();
     const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
     const status = await buildCallboardToolsSpec(() => ROOT)
       .tools.find((tool) => tool.name === "get_session_status")!
@@ -146,43 +146,28 @@ describe("native caller boundaries with real storage and registry", () => {
       adopt.mockRestore();
     }
   });
-  it("historical Codex provenance refuses a missing primary before POST/send/continue writes or callbacks", async () => {
+  it("historical Codex provenance with a missing primary is an ordinary root: not native, ordinary status, cancellable", async () => {
     rollout(ROOT); // Completed historical root is provider evidence, not current identity.
     const metadata = JSON.stringify({ title: "legacy", session_ids: [ROOT] });
     chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata });
     expect(JSON.parse(findChat(CHILD, false).metadata).provider).toBe("codex");
-    const callbacks = await import("./session-callbacks.js");
-    const callback = vi.spyOn(callbacks, "registerCompletionCallback");
-    const adopt = vi.spyOn(chatFileService, "upsertChat");
-    const update = vi.spyOn(chatFileService, "updateChatMetadata");
-    const reasoning = await import("./reasoning-capabilities.js");
-    const validate = vi.spyOn(reasoning, "assertReasoningEffort");
-    try {
-      const result = await request(streamRouter, "/:id/message", "post", CHILD, { prompt: "offline", model: "gpt-5.5", effort: "high" });
-      expect(result.status).toHaveBeenCalledWith(409);
-      await expect(sendMessage({ chatId: CHILD, prompt: "offline" })).rejects.toThrow("read-only");
-      const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
-      const spec = buildCallboardToolsSpec(() => ROOT);
-      const continuation = await spec.tools.find((tool) => tool.name === "continue_chat")!.handler({ chatId: CHILD, prompt: "offline", onComplete: true });
-      expect(JSON.stringify(continuation)).toContain("read-only");
-      const status = await spec.tools.find((tool) => tool.name === "get_session_status")!.handler({ chatId: CHILD });
-      expect(JSON.parse((status.content[0] as { text: string }).text)).toMatchObject({ chatId: CHILD, status: "unknown" });
-      expect(adopt).not.toHaveBeenCalled();
-      expect(update).not.toHaveBeenCalled();
-      expect(callback).not.toHaveBeenCalled();
-      expect(validate).not.toHaveBeenCalled();
-      expect(chatFileService.getChat(CHILD)!.metadata).toBe(metadata);
-      // Cancellation of an actual owned root remains independent of disk uncertainty.
-      const abortController = new AbortController();
-      sessionRegistry.register(CHILD, { type: "web", abortController, emitter: new EventEmitter() });
-      expect((await request(streamRouter, "/:id/stop", "post", CHILD)).data).toEqual({ stopped: true });
-      expect(abortController.signal.aborted).toBe(true);
-    } finally {
-      callback.mockRestore();
-      adopt.mockRestore();
-      update.mockRestore();
-      validate.mockRestore();
-    }
+    // The primary's rollout is absent (pruned sessions, a changed CODEX_HOME).
+    // That is no evidence of a parent; refusing it as "native child: read-only"
+    // misnamed the condition. The harness reports the missing thread itself
+    // when a resume is attempted.
+    expect(() => assertNativeAgentControllable(CHILD)).not.toThrow();
+    const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
+    const spec = buildCallboardToolsSpec(() => ROOT);
+    const status = await spec.tools.find((tool) => tool.name === "get_session_status")!.handler({ chatId: CHILD });
+    const parsed = JSON.parse((status.content[0] as { text: string }).text);
+    expect(parsed).toMatchObject({ chatId: CHILD, status: "complete" }); // the ordinary stored-and-idle reading
+    expect(JSON.stringify(parsed)).not.toContain("read-only");
+    expect(chatFileService.getChat(CHILD)!.metadata).toBe(metadata);
+    // Cancellation of an actual owned root remains independent of disk uncertainty.
+    const abortController = new AbortController();
+    sessionRegistry.register(CHILD, { type: "web", abortController, emitter: new EventEmitter() });
+    expect((await request(streamRouter, "/:id/stop", "post", CHILD)).data).toEqual({ stopped: true });
+    expect(abortController.signal.aborted).toBe(true);
   });
   it("keeps an owned controller cancellable through ambiguous historical provenance without weakening native identity", async () => {
     const logPath = rollout(ROOT);
@@ -216,15 +201,14 @@ describe("native caller boundaries with real storage and registry", () => {
     expect(() => assertNativeAgentControllable(CHILD)).not.toThrow();
     expect(JSON.parse(findChat(CHILD, false).metadata).provider).toBe("claude-code");
   });
-  it.each(["http", "low-level"].flatMap((entry) => ["disappeared", "mismatched", "native"].map((change) => ({ entry, change }))))(
+  it.each(["http", "low-level"].flatMap((entry) => ["mismatched", "native"].map((change) => ({ entry, change }))))(
     "refuses unpersisted $entry after current evidence becomes $change, without side effects",
     async ({ entry, change }) => {
-      const file = rollout(CHILD, false);
+      rollout(CHILD, false);
       const reasoning = await import("./reasoning-capabilities.js");
       const validate = vi.spyOn(reasoning, entry === "http" ? "assertReasoningEffort" : "assertStoredReasoningEffort").mockImplementationOnce(async () => {
         expect(chatFileService.getChat(CHILD)).toBeNull();
-        if (change === "disappeared") rmSync(file);
-        else if (change === "mismatched") rollout(CHILD, false, { id: ROOT });
+        if (change === "mismatched") rollout(CHILD, false, { id: ROOT });
         else rollout(CHILD, true);
       });
       const callbacks = await import("./session-callbacks.js");
@@ -256,12 +240,13 @@ describe("native caller boundaries with real storage and registry", () => {
       }
     },
   );
-  it.each(["unreadable", "oversized"])("does not mistake a root whose header becomes %s for a native child", async (change) => {
+  it.each(["unreadable", "oversized", "disappeared"])("does not mistake a root whose header becomes %s for a native child", async (change) => {
     const file = rollout(CHILD, false);
     const fs = await import("node:fs");
     let restoreRead: (() => void) | undefined;
     try {
       if (change === "oversized") rollout(CHILD, false, { base_instructions: "x".repeat(1024 * 1024) });
+      else if (change === "disappeared") rmSync(file);
       else {
         appendFileSync(file, "\n"); // Invalidate cached metadata before injected read failure.
         const open = fs.openSync;
@@ -275,7 +260,8 @@ describe("native caller boundaries with real storage and registry", () => {
       // gap on the header is not that. Deletion stays fail-closed regardless.
       expect(() => assertNativeAgentControllable(CHILD)).not.toThrow();
       if (change === "unreadable") expect(() => new CodexSessionProvider().deleteSessionFiles(CHILD)).toThrow("refusing deletion");
-      expect(existsSync(file)).toBe(true);
+      if (change === "disappeared") expect(() => new CodexSessionProvider().deleteSessionFiles(CHILD)).not.toThrow(); // nothing on disk to protect
+      expect(existsSync(file)).toBe(change !== "disappeared");
     } finally {
       restoreRead?.();
     }

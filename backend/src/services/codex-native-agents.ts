@@ -55,10 +55,13 @@ export function nativeAgentForChat(chatId: string, allowOwnedCancellation = fals
   const fallback = { parentThreadId: "unverified parent (inspect the owning Codex thread)", sessionId, logPath: resolved?.logPath ?? "" };
   // A server-created web controller proves control of this execution, NOT that
   // a disk thread is safe to resume. Positive native evidence still wins.
-  // Persisted native ownership survives missing logs. Incomplete metadata cannot
-  // establish root ownership either, including filesystem-only threads.
+  // Persisted native ownership survives missing logs. An absent rollout with no
+  // stored native lineage, though — pruned sessions, a changed CODEX_HOME — is
+  // no evidence of a parent at all, any more than an unreadable header is;
+  // refusing it as "native child: read-only" misnamed the condition and locked
+  // an ordinary root. Nothing is on disk to protect, so control is allowed.
   if (meta.nativeAgent && meta.provider === "codex" && !resolved) return fallback;
-  if (!resolved) return !ownedRoot && meta.provider === "codex" ? fallback : null;
+  if (!resolved) return null;
   const session = readCodexSessionMeta(resolved.logPath);
   // A header this process cannot read (permissions, a torn first line) is a
   // parser gap, not evidence that a parent owns the thread. Refusing control
