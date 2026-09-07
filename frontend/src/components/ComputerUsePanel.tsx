@@ -57,18 +57,16 @@ export default function ComputerUsePanel({
   const [preview, setPreview] = useState(false);
   const [localStatus, setLocalStatus] = useState<ComputerUseStatus | null>(null);
   const shared = !!controller;
-  const publish = controller?.publish;
-  const fail = controller?.fail;
-  const acceptResponse = controller?.acceptResponse;
+  const sharedReadStatus = controller?.readStatus;
+  const beginMutation = controller?.beginMutation;
   const status = controller ? controller.status : localStatus;
+  // Shared reads publish only inside the controller's ordering fence. Keep the
+  // standalone panel path for isolated embeddings without a chat controller.
   const setStatus = useCallback(
     (next: ComputerUseStatus | null | ((previous: ComputerUseStatus | null) => ComputerUseStatus | null)) => {
-      if (publish && fail) {
-        if (typeof next === "function") fail("Status connection lost. Retry status before controlling the target.");
-        else if (next) publish(next);
-      } else setLocalStatus(next);
+      if (!shared) setLocalStatus(next);
     },
-    [publish, fail],
+    [shared],
   );
   const [kind, setKind] = useState<ComputerUseKind>("browser");
   const [selected, setSelected] = useState("");
@@ -96,7 +94,16 @@ export default function ComputerUsePanel({
   const human = !!active && session.controller === "human";
   const canAct = human && !!frame && !busy && !capturing && !denied;
 
-  const refresh = useCallback(async (signal: AbortSignal) => client.status(chatId, signal), [chatId]);
+  const refresh = useCallback(
+    async (signal: AbortSignal) => {
+      if (sharedReadStatus) {
+        await sharedReadStatus(signal);
+        return null;
+      }
+      return client.status(chatId, signal);
+    },
+    [chatId, sharedReadStatus],
+  );
 
   // Serialize normal operations; emergency stop/revoke can supersede any in-flight
   // request. The server remains responsible for cancelling already accepted work.
@@ -294,6 +301,7 @@ export default function ComputerUsePanel({
   const control = (operation: "takeover" | "resume" | "stop" | "revoke" | "approve") => {
     if (!session) return;
     void run(operation, async (signal) => {
+      const acceptResponse = beginMutation?.();
       const result = await client.control(chatId, session.id, operation, session.generation, signal);
       if (!signal.aborted) acceptResponse?.(result);
     });
@@ -302,6 +310,7 @@ export default function ComputerUsePanel({
     if (!canAct || !session || !frame || operationActive.current || captures.has(captureKey(chatId, session.id))) return;
     setText("");
     void run(`Manual ${value.type}`, async (signal) => {
+      const acceptResponse = beginMutation?.();
       const result = await client.action(
         chatId,
         session.id,
@@ -341,6 +350,7 @@ export default function ComputerUsePanel({
               disabled={busy || denied || capability?.available !== true}
               onClick={() => {
                 void run("Enable requested", async (signal) => {
+                  const acceptResponse = beginMutation?.();
                   const opened = await client.open(chatId, kind, signal);
                   if (!signal.aborted) {
                     setSelected(opened.session.id);
@@ -382,6 +392,7 @@ export default function ComputerUsePanel({
                   disabled={busy || denied}
                   onClick={() =>
                     void run("Request approved", async (signal) => {
+                      const acceptResponse = beginMutation?.();
                       const result = await client.control(chatId, item.id, "approve", item.generation, signal);
                       if (!signal.aborted) acceptResponse?.(result);
                     })
@@ -392,6 +403,7 @@ export default function ComputerUsePanel({
                 <button
                   onClick={() =>
                     void run("Request denied", async (signal) => {
+                      const acceptResponse = beginMutation?.();
                       const result = await client.control(chatId, item.id, "revoke", item.generation, signal);
                       if (!signal.aborted) acceptResponse?.(result);
                     })

@@ -176,3 +176,177 @@ it("does not let a late old-chat status response populate the new chat header", 
   expect(screen.getByText(/0 active · 0 waiting/)).toBeTruthy();
   expect(screen.queryByText(/1 active · 1 waiting/)).toBeNull();
 });
+
+// Permanent reproduction: viewer Retry used to bypass the shared poll revision
+// fence and republish an older status after a newer status/error had arrived.
+it.each(["stopped", "new pending", "connection lost"] as const)(
+  "fences a late viewer status success and failure after newer shared authority: %s",
+  async (newer) => {
+    vi.useFakeTimers();
+    render(<Harness />);
+    await act(async () => {});
+    const stale = structuredClone(status);
+    click("Switch view");
+    const oldRead = deferred<ComputerUseStatus>();
+    vi.mocked(client.status).mockImplementationOnce(() => oldRead.promise);
+    click("Retry status");
+    await act(async () => {});
+    if (newer === "connection lost") vi.mocked(client.status).mockRejectedValue(new Error("offline"));
+    else {
+      status = {
+        ...status,
+        capabilities: [],
+        sessions: newer === "stopped" ? [] : [{ id: "new-emergency-id", kind: "native", state: "awaiting_approval", controller: null, generation: 0 }],
+      };
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    const header = screen.getByText(/Browser & Computer Control:/).textContent;
+    await act(async () => oldRead.resolve(stale));
+    expect(screen.getByText(/Browser & Computer Control:/).textContent).toBe(header);
+    expect((screen.getByRole("button", { name: "Enable" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(client.status).toHaveBeenCalledTimes(3);
+
+    // Repeat with a late error: it must neither replace the newer state/error
+    // nor trigger an automatic recovery request that supersedes newer authority.
+    const oldFailure = deferred<ComputerUseStatus>();
+    vi.mocked(client.status).mockImplementationOnce(() => oldFailure.promise);
+    click("Retry status");
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await act(async () => oldFailure.reject(new Error("old failure")));
+    expect(screen.getByText(/Browser & Computer Control:/).textContent).toBe(header);
+    expect(client.status).toHaveBeenCalledTimes(5);
+    if (newer === "new pending") {
+      click("Stop computer control");
+      expect(client.control).toHaveBeenCalledWith("c1", "new-emergency-id", "stop", 0);
+      expect(vi.mocked(client.control).mock.calls.some(([, id]) => id === "s1" || id === "s2")).toBe(false);
+      await act(async () => {});
+    }
+  },
+);
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  return { promise, resolve, reject };
+}
+
+it("preserves a post-mutation response and ordered refresh against an older pending poll", async () => {
+  vi.useFakeTimers();
+  status.sessions[0].controller = "agent";
+  render(<Harness />);
+  await act(async () => {});
+  click("Switch view");
+  const stale = structuredClone(status);
+  const poll = deferred<ComputerUseStatus>();
+  const postMutation = deferred<ComputerUseStatus>();
+  vi.mocked(client.status)
+    .mockImplementationOnce(() => poll.promise)
+    .mockImplementationOnce(() => postMutation.promise);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  vi.mocked(client.control).mockImplementationOnce(async () => {
+    status.sessions[0] = { ...status.sessions[0], controller: "human", generation: 2 };
+    return structuredClone(status.sessions[0]);
+  });
+  click("Take over");
+  await act(async () => {});
+  expect(screen.getByText(/controllers: agent 0 \/ human 1/)).toBeTruthy();
+  await act(async () => poll.resolve(stale));
+  expect(screen.getByText(/controllers: agent 0 \/ human 1/)).toBeTruthy();
+  await act(async () => postMutation.resolve(structuredClone(status)));
+  expect((screen.getByRole("button", { name: "Resume agent" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(client.observe).not.toHaveBeenCalled();
+});
+
+// Permanent emergency-stop reproductions. No transport settlement is assumed:
+// both status and control can hang forever, and old results can arrive after retry.
+it.each(["status", "control", "both", "both then route change"] as const)(
+  "bounds never-resolving %s waits, exposes failures, resumes polling/viewer, and fences late results after retry",
+  async (hung) => {
+    vi.useFakeTimers();
+    const view = render(<Harness />);
+    await act(async () => {});
+    click("Switch view");
+    const stale = structuredClone(status);
+    const reads: ReturnType<typeof deferred<ComputerUseStatus>>[] = [];
+    const stops: ReturnType<typeof deferred<unknown>>[] = [];
+    if (hung !== "control")
+      vi.mocked(client.status).mockImplementation(() => {
+        const read = deferred<ComputerUseStatus>();
+        reads.push(read);
+        return read.promise;
+      });
+    vi.mocked(client.control).mockImplementation(() => {
+      if (hung === "status") return Promise.reject(new Error("known stop failed"));
+      const stop = deferred<unknown>();
+      stops.push(stop);
+      return stop.promise;
+    });
+    click("Stop computer control");
+    expect(client.control).toHaveBeenCalledTimes(2); // Before discovery settles.
+    await act(async () => {});
+    if (hung === "status") expect(screen.getByRole("alert").textContent).toContain("known stop failed");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect((screen.getByRole("button", { name: "Stop computer control" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getAllByRole("alert").some((alert) => /Retry Stop computer control/.test(alert.textContent ?? ""))).toBe(true);
+    if (hung !== "status") expect(screen.getAllByRole("alert").some((alert) => /timed out/.test(alert.textContent ?? ""))).toBe(true);
+    expect(screen.getByLabelText("Target")).toBeTruthy(); // Viewer no longer pinned unavailable.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000);
+    });
+    expect(vi.mocked(client.status).mock.calls.length).toBeGreaterThan(3); // Polling recovered.
+
+    // Retry is independent of every old unresolved request. No abort signals
+    // were sent to stop; a UI deadline makes no server-cancellation claim.
+    expect(vi.mocked(client.control).mock.calls.every((args) => args[4] === undefined)).toBe(true);
+    vi.mocked(client.status).mockImplementation(async () => structuredClone(status));
+    vi.mocked(client.control).mockImplementation(async (_chat, id) => {
+      const session = status.sessions.find((item) => item.id === id)!;
+      session.state = "stopped";
+      return structuredClone(session);
+    });
+    const chatId = hung === "both then route change" ? "c2" : "c1";
+    if (chatId === "c2") {
+      view.rerender(<Harness id="c2" />);
+      await act(async () => {});
+    }
+    click("Stop computer control");
+    await act(async () => {});
+    expect(screen.getByText(/0 active · 0 waiting/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    const callsAfterRetry = vi.mocked(client.control).mock.calls.length;
+    await act(async () => {
+      for (const [index, read] of reads.entries()) {
+        if (index % 2) read.reject(new Error("late old status failure"));
+        else read.resolve(stale);
+      }
+      for (const [index, stop] of stops.entries()) {
+        if (index % 2) stop.reject(new Error("late old stop failure"));
+        else stop.resolve({ ...stale.sessions[0], generation: 99 });
+      }
+    });
+    expect(screen.getByText(/0 active · 0 waiting/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(client.control).toHaveBeenCalledTimes(callsAfterRetry);
+    expect(
+      vi
+        .mocked(client.control)
+        .mock.calls.slice(2)
+        .every(([id, , operation]) => id === chatId && operation === "stop"),
+    ).toBe(true);
+    expect(client.open).not.toHaveBeenCalled();
+    expect(client.observe).not.toHaveBeenCalled();
+  },
+);
