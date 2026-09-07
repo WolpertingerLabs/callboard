@@ -93,7 +93,7 @@ it("places Computer in the existing desktop topbar switcher, not above the compo
   fireEvent.click(computer);
   expect(screen.getByLabelText("Target")).toBeTruthy();
   expect(screen.getByLabelText("Composer")).toBeTruthy();
-  expect(screen.getByLabelText("Target").closest(".computer-use-dedicated")).toBeTruthy();
+  expect(screen.getByLabelText("Target").closest(".computer-use-panel")).toBeTruthy();
   fireEvent.click(screen.getByRole("radio", { name: "Show git diff" }));
   expect(screen.getByText("Git diff view")).toBeTruthy();
   fireEvent.click(screen.getByRole("radio", { name: "Show debug metrics" }));

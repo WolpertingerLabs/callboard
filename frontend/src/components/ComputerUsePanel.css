@@ -1,27 +1,13 @@
+/* The panel is the chat's Computer view: it fills the content area and scrolls
+   as a whole, like the diff and debug views. */
 .computer-use-panel {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  margin: 6px 0;
+  height: 100%;
+  overflow: auto;
   background: var(--surface);
   font-size: 12px;
 }
-.computer-use-heading {
-  width: 100%;
-  text-align: left;
-  padding: 8px 12px;
-  font-weight: 600;
-  color: var(--text);
-  /* The global button reset clears the border but not the background, so
-     without this the heading paints the UA's `buttonface` over the panel's
-     --surface. `color-scheme` on the theme roots makes that shade follow the
-     theme, but the heading is meant to read as the panel's own header rather
-     than as a filled button — it takes the panel's surface, in either theme. */
-  background: transparent;
-}
 .computer-use-body {
-  padding: 0 12px 12px;
-  max-height: 65vh;
-  overflow: auto;
+  padding: 12px;
 }
 .computer-use-body p {
   margin: 8px 0;
@@ -69,19 +55,6 @@
   display: block;
   margin: 4px 0;
   color: var(--text-muted);
-}
-
-.computer-use-dedicated {
-  height: 100%;
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-  overflow: auto;
-}
-.computer-use-dedicated .computer-use-body {
-  max-height: none;
-  overflow: visible;
-  padding: 12px;
 }
 /* Wrap against available chat width, not viewport width: a desktop sidebar or
    split pane can leave much less room than the viewport media query suggests. */

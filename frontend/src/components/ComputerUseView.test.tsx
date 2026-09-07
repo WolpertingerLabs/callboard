@@ -18,7 +18,7 @@ function Harness({ id = "c1", onRender }: { id?: string; onRender?: (controller:
       <ComputerUseHeader controller={controller} viewOpen={visible} />
       <button onClick={() => setVisible(!visible)}>Switch view</button>
       {visible && id && !controller.stopping && (
-        <ComputerUsePanel key={`${id}:${controller.viewerEpoch}`} chatId={id} permission="allow" dedicated controller={controller} />
+        <ComputerUsePanel key={`${id}:${controller.viewerEpoch}`} chatId={id} permission="allow" controller={controller} />
       )}
     </>
   );
