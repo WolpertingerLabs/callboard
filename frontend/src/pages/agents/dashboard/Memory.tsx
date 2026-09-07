@@ -23,14 +23,15 @@ const FILE_LABELS: Record<string, string> = {
 };
 
 /** Mirrors DEFAULT_JOURNAL_TOKEN_BUDGET in backend/src/services/claude-compiler.ts */
-const DEFAULT_JOURNAL_TOKEN_BUDGET = 4000;
+const DEFAULT_JOURNAL_TOKEN_BUDGET = 16000;
 
 const JOURNAL_BUDGET_OPTIONS = [
-  { value: 1000, label: "1k tokens" },
   { value: 2000, label: "2k tokens" },
-  { value: 4000, label: "4k tokens (default)" },
+  { value: 4000, label: "4k tokens" },
   { value: 8000, label: "8k tokens" },
-  { value: 16000, label: "16k tokens" },
+  { value: 16000, label: "16k tokens (default)" },
+  { value: 32000, label: "32k tokens" },
+  { value: 64000, label: "64k tokens" },
   { value: 0, label: "No limit" },
 ];
 
@@ -281,8 +282,8 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
                 ))}
               </select>
               <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.45 }}>
-                Caps each earlier day&apos;s journal in the system message. Today&apos;s journal and MEMORY.md are always sent in full; a trimmed journal tells
-                the agent to read the file for the rest.
+                A backstop against one runaway day crowding out the system message — an ordinary journal passes through untouched. Today&apos;s journal and
+                MEMORY.md are always sent in full; a trimmed journal tells the agent to read the file for the rest.
               </p>
             </div>
           </div>

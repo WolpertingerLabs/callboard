@@ -114,11 +114,15 @@ const CORE_WORKSPACE_FILES: { filename: string; label: string }[] = [
 ];
 
 /**
- * Default per-file token budget for previous-day journals. Journals are meant to
- * be verbose (see the scaffold CLAUDE.md), so an unbounded pre-load is the single
- * largest source of system-prompt growth for a long-lived agent.
+ * Default per-file token budget for previous-day journals.
+ *
+ * Sized as a backstop against a runaway log, not as a tight budget: journals are
+ * meant to be verbose (see the scaffold CLAUDE.md), and an ordinary day should
+ * pass through untouched. It exists so that one pathological journal — a pasted
+ * build log, a loop that wrote the same entry ten thousand times — cannot crowd
+ * out the rest of the system prompt.
  */
-export const DEFAULT_JOURNAL_TOKEN_BUDGET = 4000;
+export const DEFAULT_JOURNAL_TOKEN_BUDGET = 16000;
 
 /** Chars-per-token ratio used for both estimation and budgeting. */
 const CHARS_PER_TOKEN = 4;
