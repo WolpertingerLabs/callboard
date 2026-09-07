@@ -188,7 +188,7 @@ describe("native Codex replay", () => {
   });
 });
 
-it("requires complete metadata when native ownership follows a large unrelated object", async () => {
+it("reads native ownership that follows a large unrelated object, however large the header", async () => {
   const path = rollout();
   const original = JSON.parse((await import("node:fs")).readFileSync(path, "utf8").split("\n")[0]);
   const { id, cwd, timestamp, cli_version, ...tail } = original.payload;
@@ -198,13 +198,51 @@ it("requires complete metadata when native ownership follows a large unrelated o
   );
   expect(readCodexSessionMeta(path)?.nativeAgent?.parentThreadId).toBe(ROOT);
   expect(() => assertNativeAgentControllable(CHILD)).toThrow("read-only");
+  // The forge agent's rollout on a real device: a 1.4 MB base_instructions on
+  // line 1. Still one record; still this child's own header.
   writeFileSync(
     path,
-    JSON.stringify({ type: "session_meta", payload: { id, cwd, timestamp, cli_version, base_instructions: { text: "x".repeat(1024 * 1024) }, ...tail } }) +
+    JSON.stringify({ type: "session_meta", payload: { id, cwd, timestamp, cli_version, base_instructions: { text: "x".repeat(1400 * 1024) }, ...tail } }) +
       "\n",
   );
-  expect(readCodexSessionMeta(path)).toBeNull();
+  expect(readCodexSessionMeta(path)).toMatchObject({ id: CHILD, cwd: "/tmp/repo", nativeAgent: { parentThreadId: ROOT }, historyStartOrdinal: 4 });
   expect(() => assertNativeAgentControllable(CHILD)).toThrow("read-only");
+});
+
+it("an oversized root header is an ordinary root: discoverable, resumable, with its transcript intact", () => {
+  const path = rollout(ROOT, null, [event("task_started"), message("root output"), event("task_complete")], {
+    base_instructions: { text: "x".repeat(1400 * 1024) },
+  });
+  expect(readCodexSessionMeta(path)).toMatchObject({ id: ROOT, cwd: "/tmp/repo" });
+  expect(readCodexSessionMeta(path)?.isNativeThread).toBeUndefined();
+  const provider = new CodexSessionProvider();
+  expect(provider.discoverSessions({ limit: 10, offset: 0 }).sessions.map((s) => [s.sessionId, s.folder])).toEqual([[ROOT, "/tmp/repo"]]);
+  expect(provider.resolveSession(ROOT)?.folder).toBe("/tmp/repo");
+  expect(JSON.stringify(parseCodexRollout(path))).toContain("root output");
+  state.chats = [{ id: ROOT, session_id: ROOT, metadata: '{"provider":"codex"}', folder: "/tmp/repo", session_log_path: null, created_at: "", updated_at: "" }];
+  expect(() => assertNativeAgentControllable(ROOT)).not.toThrow();
+});
+
+it("an unreadable header is not native evidence for control, but still refuses deletion", async () => {
+  const path = rollout(ROOT, null);
+  state.chats = [{ id: ROOT, session_id: ROOT, metadata: '{"provider":"codex"}', folder: "/tmp/repo", session_log_path: null, created_at: "", updated_at: "" }];
+  const fs = await import("node:fs");
+  const open = fs.openSync;
+  const denied = vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) => {
+    if (file === path) throw Object.assign(new Error("fixture read denied"), { code: "EACCES" });
+    return open(file, flags, mode);
+  });
+  try {
+    expect(readCodexSessionMeta(path)).toBeNull();
+    expect(() => assertNativeAgentControllable(ROOT)).not.toThrow();
+    expect(() => new CodexSessionProvider().deleteSessionFiles(ROOT)).toThrow("refusing deletion");
+    // Persisted native ownership is positive evidence and still wins over a missing header.
+    state.chats[0].metadata = JSON.stringify({ provider: "codex", nativeAgent: { parentThreadId: CHILD } });
+    expect(() => assertNativeAgentControllable(ROOT)).toThrow("read-only");
+  } finally {
+    denied.mockRestore();
+  }
+  expect(fs.existsSync(path)).toBe(true);
 });
 
 it("invalidates native lineage and boundary on restored-mtime equal-length rewrites", async () => {

@@ -60,7 +60,13 @@ export function nativeAgentForChat(chatId: string, allowOwnedCancellation = fals
   if (meta.nativeAgent && meta.provider === "codex" && !resolved) return fallback;
   if (!resolved) return !ownedRoot && meta.provider === "codex" ? fallback : null;
   const session = readCodexSessionMeta(resolved.logPath);
-  if (!session || session.id !== sessionId) return ownedRoot && !session?.isNativeThread ? null : fallback;
+  // A header this process cannot read (permissions, a torn first line) is a
+  // parser gap, not evidence that a parent owns the thread. Refusing control
+  // on it locks the user out of an ordinary root; only persisted native
+  // ownership or a positive header may do that. Deletion stays fail-closed
+  // separately, in the provider.
+  if (!session) return meta.nativeAgent && meta.provider === "codex" ? fallback : null;
+  if (session.id !== sessionId) return ownedRoot && !session.isNativeThread ? null : fallback;
   if (!session.isNativeThread) return meta.nativeAgent && meta.provider === "codex" ? fallback : null;
   return { parentThreadId: "unverified parent (inspect the owning Codex thread)", ...session.nativeAgent, sessionId, logPath: resolved.logPath };
 }

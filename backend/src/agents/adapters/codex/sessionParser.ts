@@ -294,8 +294,33 @@ function scanRolloutLines<T>(filePath: string, visit: (line: RolloutLine) => T |
   return scanJsonlLines<T>(filePath, (line) => visit(line as RolloutLine));
 }
 
-/** Read up to `maxBytes` from the front of a file; `null` when unreadable. */
-function readHead(filePath: string, maxBytes: number): string | null {
+/** First read of {@link readFirstLine}: most `session_meta` lines on a real device are larger, but the fixtures and seeded handoffs are not. */
+const FIRST_LINE_INITIAL_BYTES = 8192;
+/** Subsequent reads double from here up to {@link FIRST_LINE_MAX_CHUNK_BYTES}. */
+const FIRST_LINE_GROWTH_BYTES = 64 * 1024;
+const FIRST_LINE_MAX_CHUNK_BYTES = 1024 * 1024;
+
+/** `readFirstLine` ran out of budget before reaching the end of the line — transient, not evidence about the file. */
+const BUDGET_EXHAUSTED = Symbol("budget-exhausted");
+
+/**
+ * Read the first physical line of a file, and only that line.
+ *
+ * The line is read in growing chunks and the read stops at the first newline,
+ * so a rollout pays for its `session_meta` and nothing after it — never a
+ * whole-file slurp, and never a fixed 1 MB head that reads transcript the
+ * caller does not want. There is no cap on the line itself: a `session_meta`
+ * whose `base_instructions` runs past 1 MB (the uncapped agent prompt does
+ * this today) is still the same one record, and a reader that gives up on it
+ * makes the rollout invisible to discovery, un-resumable, and — because
+ * "unreadable" used to be indistinguishable from "native child" — read-only.
+ *
+ * `budget` is charged for the bytes actually read (bounded by `size`, the
+ * file's stat size, so a small rollout never costs a full chunk). Running out
+ * mid-line returns {@link BUDGET_EXHAUSTED} so the caller can tell a spent
+ * budget from a malformed file; `null` means the file could not be read.
+ */
+function readFirstLine(filePath: string, size: number, budget?: MetadataReadBudget): string | null | typeof BUDGET_EXHAUSTED {
   let fd: number;
   try {
     fd = openSync(filePath, "r");
@@ -303,9 +328,23 @@ function readHead(filePath: string, maxBytes: number): string | null {
     return null;
   }
   try {
-    const buf = Buffer.allocUnsafe(maxBytes);
-    const bytes = readSync(fd, buf, 0, maxBytes, 0);
-    return buf.toString("utf-8", 0, bytes);
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    let chunkBytes = FIRST_LINE_INITIAL_BYTES;
+    for (;;) {
+      let want = Math.min(chunkBytes, size - offset);
+      if (budget) want = Math.min(want, budget.remainingBytes);
+      if (want <= 0) return offset >= size ? Buffer.concat(chunks).toString("utf-8") : BUDGET_EXHAUSTED;
+      const buf = Buffer.allocUnsafe(want);
+      const read = buf.subarray(0, readSync(fd, buf, 0, want, offset));
+      if (budget) budget.remainingBytes -= read.length;
+      if (read.length === 0) return Buffer.concat(chunks).toString("utf-8");
+      const newline = read.indexOf(0x0a);
+      chunks.push(newline >= 0 ? read.subarray(0, newline) : read);
+      if (newline >= 0) return Buffer.concat(chunks).toString("utf-8");
+      offset += read.length;
+      chunkBytes = chunkBytes < FIRST_LINE_GROWTH_BYTES ? FIRST_LINE_GROWTH_BYTES : Math.min(chunkBytes * 2, FIRST_LINE_MAX_CHUNK_BYTES);
+    }
   } catch {
     return null;
   } finally {
@@ -398,6 +437,30 @@ export function clearCodexSessionMetaCache(): void {
 }
 
 /**
+ * Aggregate read allowance shared across one discovery pass. Charged for bytes
+ * actually read — a memo hit costs nothing, a small rollout costs its size —
+ * so the number of rollouts a pass can see is a function of their headers, not
+ * of a fixed per-file price. Exhaustion is transient: the rollout that ran out
+ * is not memoized as "no meta" and is read on the next pass.
+ */
+export interface MetadataReadBudget {
+  remainingBytes: number;
+}
+
+/**
+ * The `session_meta` is the complete first record and nothing else: a later
+ * line claiming to be one is inherited fork history, not this thread's own
+ * header, so only line 1 is ever consulted.
+ */
+function readBoundedSessionMeta(filePath: string, size: number, budget?: MetadataReadBudget): SessionMeta | null | typeof BUDGET_EXHAUSTED {
+  const line = readFirstLine(filePath, size, budget);
+  if (line === BUDGET_EXHAUSTED) return line;
+  const record = parseObject(line ?? "");
+  if (record?.type !== "session_meta") return null;
+  return buildSessionMeta((record.payload ?? {}) as Record<string, unknown>);
+}
+
+/**
  * Read just the `session_meta` (complete first record) of a rollout. Used by the
  * provider for discovery (folder, sort timestamp) and id resolution without
  * parsing the whole transcript.
@@ -405,30 +468,13 @@ export function clearCodexSessionMetaCache(): void {
  * Memoized per file version — discovery asks this of every rollout on every
  * chat-list request, and the answer only changes when the file does.
  */
-export interface MetadataReadBudget {
-  remainingBytes: number;
-}
-
-function readBoundedSessionMeta(filePath: string, budget?: MetadataReadBudget): SessionMeta | undefined {
-  const headRead = (size: number) => {
-    if (budget && budget.remainingBytes < size) return null;
-    if (budget) budget.remainingBytes -= size;
-    return readHead(filePath, size);
-  };
-  // A malformed/huge metadata line must not turn discovery into a whole-log scan.
-  const small = parseObject(headRead(8192)?.split("\n")[0] ?? "");
-  if (small?.type === "session_meta") return buildSessionMeta((small.payload ?? {}) as Record<string, unknown>);
-  const head = headRead(1024 * 1024);
-  const line = parseObject(head?.split("\n")[0] ?? "");
-  if (line?.type === "session_meta") return buildSessionMeta((line.payload ?? {}) as Record<string, unknown>);
-  return undefined;
-}
-
 export function readCodexSessionMeta(filePath: string, budget?: MetadataReadBudget): SessionMeta | null {
   let key: string;
+  let size: number;
   try {
     const st = statSync(filePath, { bigint: true });
     key = `${st.dev}:${st.ino}:${st.ctimeNs}:${st.mtimeNs}:${st.size}`;
+    size = Number(st.size);
   } catch {
     // Unreadable/missing: answer "no meta", the same thing the scan would have
     // answered before there was a cache, without memoizing anything for a file
@@ -439,10 +485,9 @@ export function readCodexSessionMeta(filePath: string, budget?: MetadataReadBudg
   const cached = metaCache.get(filePath);
   if (cached && cached.key === key) return cached.meta;
 
-  const beforeBudget = budget?.remainingBytes;
-  const meta = readBoundedSessionMeta(filePath, budget) ?? null;
+  const meta = readBoundedSessionMeta(filePath, size, budget);
   // Budget exhaustion is transient, not evidence of malformed metadata.
-  if (!meta && budget && (budget.remainingBytes < 1024 * 1024 || beforeBudget! < 8192)) return null;
+  if (meta === BUDGET_EXHAUSTED) return null;
 
   // Refreshing an entry already held doesn't grow the map, so it evicts nothing.
   if (metaCache.size >= META_CACHE_MAX && !metaCache.has(filePath)) {

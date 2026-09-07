@@ -7,7 +7,7 @@ import { linkSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync, app
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { META_CACHE_MAX, clearCodexSessionMetaCache, readCodexSessionMeta } from "./sessionParser.js";
+import { META_CACHE_MAX, clearCodexSessionMetaCache, parseCodexRollout, readCodexSessionMeta, readFirstUserPrompt } from "./sessionParser.js";
 
 const THREAD_ID = "019ec7f2-cd5d-7823-b2d1-6683c42bfe32";
 /** Fixed so `statSync().mtimeMs` is an exact, reproducible integer. */
@@ -158,6 +158,24 @@ describe("readCodexSessionMeta — bounded complete records", () => {
       },
     ]);
     expect(readCodexSessionMeta(filePath)?.cwd).toBe("/p/far");
+  });
+
+  it("reads a first record larger than 1 MB — the uncapped agent prompt — as this thread's own header", () => {
+    // The forge agent's rollout on a real device carries a 1.4 MB
+    // base_instructions on line 1. A hard 1 MB head read answered "no meta",
+    // which made the thread invisible to discovery, its transcript empty, and
+    // — because unreadable looked like native — its chat read-only.
+    writeRollout([metaLine("/p/forge", 1400 * 1024), userLine("build the barrel")]);
+    expect(readCodexSessionMeta(filePath)).toEqual({ id: THREAD_ID, cwd: "/p/forge", timestamp: "2026-06-14T17:03:58.000Z", cliVersion: "0.139.0" });
+    expect(JSON.stringify(parseCodexRollout(filePath))).toContain("build the barrel");
+    expect(readFirstUserPrompt(filePath)).toBe("build the barrel");
+  });
+
+  it("reads the header and nothing after it, whatever the transcript weighs", () => {
+    writeRollout([metaLine("/p/light", 64), ...Array.from({ length: 2000 }, (_, i) => userLine("x".repeat(2048) + i))]);
+    const budget = { remainingBytes: 64 * 1024 };
+    expect(readCodexSessionMeta(filePath, budget)?.cwd).toBe("/p/light");
+    expect(64 * 1024 - budget.remainingBytes).toBeLessThanOrEqual(8192);
   });
 
   it("refuses metadata whose first line is still being written", () => {

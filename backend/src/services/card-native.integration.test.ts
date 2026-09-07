@@ -462,8 +462,12 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
     if (mode === "missing") rmSync(path);
     else {
       // Actual cold metadata budget exhaustion, not a mocked discovery result.
+      // The budget is charged for bytes actually read, so the newer fillers
+      // ahead of CHILD in mtime order must carry real header weight: 1,024
+      // rollouts with a 24 KB first line spend the 16 MB before CHILD is reached.
       utimesSync(path, 1700000000, 1700000000);
-      for (let n = 0; n < 2048; n++) rollout(`00000000-0000-0000-0000-${String(n).padStart(12, "0")}`, IMPL, "task_complete", { source: "exec" });
+      for (let n = 0; n < 1024; n++)
+        rollout(`00000000-0000-0000-0000-${String(n).padStart(12, "0")}`, IMPL, "task_complete", { source: "exec", padding: "x".repeat(24 * 1024) });
       utimesSync(leaf, Date.now() / 1000 + 1, Date.now() / 1000 + 1);
     }
     const before = disk();

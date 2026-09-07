@@ -63,12 +63,15 @@ afterEach(() => {
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe("native caller boundaries with real storage and registry", () => {
-  it.each(["missing", "oversized"])("cancels an actual owned root with %s metadata, but cannot resume it", async (kind) => {
+  it.each(["missing", "oversized"])("cancels an actual owned root with %s metadata; only a missing log blocks resuming it", async (kind) => {
     chatFileService.upsertChat(ROOT, scratch, ROOT, { metadata: JSON.stringify({ provider: "codex" }) });
     if (kind === "oversized") rollout(ROOT, false, { base_instructions: "x".repeat(1024 * 1024) });
     const abortController = new AbortController();
     sessionRegistry.register(ROOT, { type: "web", abortController, emitter: new EventEmitter() });
-    expect(() => assertNativeAgentControllable(ROOT)).toThrow();
+    // A header past 1 MB is still this root's own header; it neither hides
+    // the thread nor makes it look parent-owned.
+    if (kind === "missing") expect(() => assertNativeAgentControllable(ROOT)).toThrow();
+    else expect(() => assertNativeAgentControllable(ROOT)).not.toThrow();
     const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
     const status = await buildCallboardToolsSpec(() => ROOT)
       .tools.find((tool) => tool.name === "get_session_status")!
@@ -213,28 +216,16 @@ describe("native caller boundaries with real storage and registry", () => {
     expect(() => assertNativeAgentControllable(CHILD)).not.toThrow();
     expect(JSON.parse(findChat(CHILD, false).metadata).provider).toBe("claude-code");
   });
-  it.each(["http", "low-level"].flatMap((entry) => ["disappeared", "unreadable", "oversized", "mismatched", "native"].map((change) => ({ entry, change }))))(
+  it.each(["http", "low-level"].flatMap((entry) => ["disappeared", "mismatched", "native"].map((change) => ({ entry, change }))))(
     "refuses unpersisted $entry after current evidence becomes $change, without side effects",
     async ({ entry, change }) => {
       const file = rollout(CHILD, false);
-      const fs = await import("node:fs");
-      let restoreRead: (() => void) | undefined;
       const reasoning = await import("./reasoning-capabilities.js");
       const validate = vi.spyOn(reasoning, entry === "http" ? "assertReasoningEffort" : "assertStoredReasoningEffort").mockImplementationOnce(async () => {
         expect(chatFileService.getChat(CHILD)).toBeNull();
         if (change === "disappeared") rmSync(file);
-        else if (change === "oversized") rollout(CHILD, false, { base_instructions: "x".repeat(1024 * 1024) });
         else if (change === "mismatched") rollout(CHILD, false, { id: ROOT });
-        else if (change === "native") rollout(CHILD, true);
-        else {
-          appendFileSync(file, "\n"); // Invalidate cached metadata before injected read failure.
-          const open = fs.openSync;
-          const read = vi.spyOn(fs, "openSync").mockImplementation((path, flags, mode) => {
-            if (path === file) throw Object.assign(new Error("fixture read denied"), { code: "EACCES" });
-            return open(path, flags, mode);
-          });
-          restoreRead = () => read.mockRestore();
-        }
+        else rollout(CHILD, true);
       });
       const callbacks = await import("./session-callbacks.js");
       const callback = vi.spyOn(callbacks, "registerCompletionCallback");
@@ -257,7 +248,6 @@ describe("native caller boundaries with real storage and registry", () => {
         expect(chatFileService.getChat(CHILD)).toBeNull();
         expect(existsSync(join(scratch, "chats", CHILD + ".json"))).toBe(false);
       } finally {
-        restoreRead?.();
         validate.mockRestore();
         callback.mockRestore();
         adopt.mockRestore();
@@ -266,6 +256,30 @@ describe("native caller boundaries with real storage and registry", () => {
       }
     },
   );
+  it.each(["unreadable", "oversized"])("does not mistake a root whose header becomes %s for a native child", async (change) => {
+    const file = rollout(CHILD, false);
+    const fs = await import("node:fs");
+    let restoreRead: (() => void) | undefined;
+    try {
+      if (change === "oversized") rollout(CHILD, false, { base_instructions: "x".repeat(1024 * 1024) });
+      else {
+        appendFileSync(file, "\n"); // Invalidate cached metadata before injected read failure.
+        const open = fs.openSync;
+        const read = vi.spyOn(fs, "openSync").mockImplementation((path, flags, mode) => {
+          if (path === file) throw Object.assign(new Error("fixture read denied"), { code: "EACCES" });
+          return open(path, flags, mode);
+        });
+        restoreRead = () => read.mockRestore();
+      }
+      // Control is refused only on positive native evidence; a parser or I/O
+      // gap on the header is not that. Deletion stays fail-closed regardless.
+      expect(() => assertNativeAgentControllable(CHILD)).not.toThrow();
+      if (change === "unreadable") expect(() => new CodexSessionProvider().deleteSessionFiles(CHILD)).toThrow("refusing deletion");
+      expect(existsSync(file)).toBe(true);
+    } finally {
+      restoreRead?.();
+    }
+  });
   it("does not replace a concurrently adopted filesystem root after low-level validation", async () => {
     rollout(CHILD, false);
     const reasoning = await import("./reasoning-capabilities.js");
@@ -291,18 +305,14 @@ describe("native caller boundaries with real storage and registry", () => {
     expect((await request(streamRouter, "/:id/stop", "post", CHILD)).status).toHaveBeenCalledWith(409);
     expect(abortController.signal.aborted).toBe(false);
   });
-  it.each(["oversized", "mismatched", "malformed", "native"])("low-level deletion refuses %s metadata", (kind) => {
-    const file = rollout(
-      CHILD,
-      kind === "native",
-      kind === "oversized" ? { base_instructions: "x".repeat(1024 * 1024) } : kind === "mismatched" ? { id: ROOT } : {},
-    );
+  it.each(["mismatched", "malformed", "native"])("low-level deletion refuses %s metadata", (kind) => {
+    const file = rollout(CHILD, kind === "native", kind === "mismatched" ? { id: ROOT } : {});
     if (kind === "malformed") writeFileSync(file, "{");
     expect(() => new CodexSessionProvider().deleteSessionFiles(CHILD)).toThrow();
     expect(existsSync(file)).toBe(true);
   });
-  it("low-level deletion still removes a verified matching root", () => {
-    const file = rollout(ROOT);
+  it.each(["ordinary", "oversized"])("low-level deletion still removes a verified matching root with an %s header", (kind) => {
+    const file = rollout(ROOT, false, kind === "oversized" ? { base_instructions: "x".repeat(1024 * 1024) } : {});
     new CodexSessionProvider().deleteSessionFiles(ROOT);
     expect(existsSync(file)).toBe(false);
   });
