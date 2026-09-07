@@ -83,6 +83,9 @@ it("places Computer in the existing desktop topbar switcher, not above the compo
   mount();
   const computer = await screen.findByRole("radio", { name: "Show computer control" });
   expect(computer.closest("header")).toBeTruthy();
+  expect(computer.closest("header")!.parentElement!.classList.contains("chat-layout")).toBe(true);
+  expect(computer.closest("header")!.style.display).toBe("");
+  expect(screen.getByTitle("Stop generation").classList.contains("chat-header-generation-stop")).toBe(true);
   expect(within(screen.getByRole("radiogroup", { name: "View mode" })).getAllByRole("radio")).toHaveLength(4);
   expect(screen.queryByLabelText("Target")).toBeNull();
   expect(screen.queryByRole("button", { name: /▸ Browser/ })).toBeNull();

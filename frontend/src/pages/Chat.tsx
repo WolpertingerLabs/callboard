@@ -2585,14 +2585,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     ) : null;
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <div className="chat-layout" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <header
         className={`chat-header${isMobile ? " chat-header-mobile" : ""}`}
         style={{
           padding: "12px 16px",
           borderBottom: "1px solid var(--border)",
           background: "var(--bg-sidebar)",
-          display: "flex",
           alignItems: "center",
           gap: 12,
           flexShrink: 0,
@@ -2937,6 +2936,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             stop), armed, and stopping (cancel sent, waiting for the run to
             actually end server-side). */}
         <button
+          className="chat-header-generation-stop"
           onClick={handleStop}
           disabled={!canStop}
           style={{
