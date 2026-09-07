@@ -11,7 +11,8 @@ import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy
 import { getToolCategorizer } from "../agents/permissions/categorizers.js";
 import { EventEmitter } from "events";
 import { execFile } from "child_process";
-import { resolve, isAbsolute } from "path";
+import { accessSync, constants as fsConstants, statSync } from "fs";
+import { resolve, isAbsolute, delimiter as pathDelimiter, join as pathJoin } from "path";
 import { chatFileService } from "./chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setSlashCommandsForDirectory } from "./slashCommands.js";
@@ -266,26 +267,91 @@ function resolveEnvReferences(env: Record<string, string>): Record<string, strin
 
 /**
  * Resolve ${CLAUDE_PLUGIN_ROOT} and relative paths in MCP server command/args.
- * Uses the server's mcpJsonDir or the parent plugin's path as the base directory.
+ *
+ * Two base directories, because the two substitutions mean different things:
+ *   - `${CLAUDE_PLUGIN_ROOT}` is by definition the PLUGIN root, so it expands to
+ *     `pluginPath` when we know it.
+ *   - A bare relative path in a .mcp.json is relative to that file, so it
+ *     resolves against `mcpJsonDir`.
+ * They coincide for the common layout (.mcp.json sits at the plugin root) and
+ * each falls back to the other when only one is known.
+ *
+ * `args` and `command` are NOT interchangeable, and neither is unconditionally
+ * a path.
+ *
+ * For `command` the rule is execvp(3)'s own: a command containing a path
+ * separator is a path; a bare name is looked up on PATH and must pass through
+ * untouched. Getting that wrong is what this function used to do —
+ * `"command": "node"` was rewritten to `<plugin-dir>/node`, which does not
+ * exist, so the server died with ENOENT and took its tools out of the session.
+ *
+ * For `args`, most are paths, but flags and package specs are not: `npx -y
+ * @scope/pkg` was being rewritten to `<plugin-dir>/-y <plugin-dir>/@scope/pkg`.
+ * Anything that cannot be a relative path — a leading `-`, a leading `@` (npm
+ * scope), or a URL — is left alone; everything else keeps being anchored to the
+ * base dir, so bare relative paths like `dist/server.js` still resolve.
+ *
+ * Together these break every .mcp.json using a bare interpreter (node, npx,
+ * python3, uvx, bun, deno), which is the overwhelming majority of them.
  */
-function resolveServerPaths(server: McpServerConfig, pluginPath?: string): { command?: string; args?: string[] } {
-  const baseDir = server.mcpJsonDir || pluginPath;
-  if (!baseDir) return { command: server.command, args: server.args };
+export function resolveServerPaths(server: McpServerConfig, pluginPath?: string): { command?: string; args?: string[] } {
+  const pluginRoot = pluginPath || server.mcpJsonDir;
+  const relativeBase = server.mcpJsonDir || pluginPath;
+  if (!pluginRoot || !relativeBase) return { command: server.command, args: server.args };
 
-  const resolvePath = (value: string): string => {
-    // Replace ${CLAUDE_PLUGIN_ROOT} with the base directory
-    const replaced = value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, baseDir);
-    // If still relative after replacement, resolve against baseDir
-    if (!isAbsolute(replaced)) {
-      return resolve(baseDir, replaced);
-    }
-    return replaced;
+  const substitute = (value: string): string => value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot);
+
+  // A flag, an npm scope, or a URL is never a relative path — anchoring one
+  // produces nonsense like `<plugin-dir>/-y`.
+  const isNotAPath = (value: string): boolean => value.startsWith("-") || value.startsWith("@") || value.includes("://");
+
+  const resolveArg = (value: string): string => {
+    const replaced = substitute(value);
+    if (isNotAPath(replaced)) return replaced;
+    return isAbsolute(replaced) ? replaced : resolve(relativeBase, replaced);
+  };
+
+  // Commands are program names unless they look like a path.
+  const resolveCommand = (value: string): string => {
+    const replaced = substitute(value);
+    // No separator → bare program name → leave it for PATH lookup.
+    if (!replaced.includes("/")) return replaced;
+    return isAbsolute(replaced) ? replaced : resolve(relativeBase, replaced);
   };
 
   return {
-    command: server.command ? resolvePath(server.command) : server.command,
-    args: server.args?.map(resolvePath),
+    command: server.command ? resolveCommand(server.command) : server.command,
+    args: server.args?.map(resolveArg),
   };
+}
+
+/**
+ * Is `command` something we can actually exec — an executable file at a path, or
+ * a bare name present on PATH?
+ *
+ * Purely advisory. A stdio server that fails to spawn is already isolated by the
+ * SDK (its siblings and the in-process servers stay connected), but the failure
+ * is invisible from callboard's side: the CLI reports `status: "failed"` on its
+ * init message, which callboard does not consume, so the only evidence is the
+ * absence of tools the log has already claimed to inject. This turns that into a
+ * named warning at build time.
+ */
+export function isCommandLaunchable(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const isExecutableFile = (candidate: string): boolean => {
+    try {
+      if (!statSync(candidate).isFile()) return false;
+      accessSync(candidate, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Anything with a separator is a path, per the same rule resolveServerPaths uses.
+  if (command.includes("/")) return isExecutableFile(command);
+
+  const pathEntries = (env.PATH || "").split(pathDelimiter).filter(Boolean);
+  return pathEntries.some((dir) => isExecutableFile(pathJoin(dir, command)));
 }
 
 function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTools: string[]; resolvedEnvVars: Record<string, string> } | undefined {
@@ -315,6 +381,12 @@ function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTool
       if (server.type === "stdio") {
         const pluginPath = pluginPathMap.get(server.sourcePluginId);
         const { command, args } = resolveServerPaths(server, pluginPath);
+        if (command && !isCommandLaunchable(command)) {
+          log.warn(
+            `MCP server "${server.name}" (plugin ${server.sourcePluginId}) has an unlaunchable command "${command}" — ` +
+              `it will fail to start and its mcp__${server.name}__* tools will be absent from the session`,
+          );
+        }
         serverConfig[server.name] = {
           command,
           args: args || [],
