@@ -52,7 +52,11 @@ for (const engine of ["claude-code", "codex", "acp"] as const)
       try {
         const listed = (await client.listTools()).tools;
         expect(listed.map((tool) => tool.name)).toEqual(["cu_observe"]);
-        if (engine === "codex") expect(listed[0].description).toContain("bound to the owning root chat");
+        if (engine === "codex") {
+          // The exec-identity note rides once on the server's `instructions`, not on every tool.
+          expect(listed[0].description).toBe("fixture");
+          expect(client.getInstructions()).toContain("bound to the owning root chat");
+        }
         expect((await client.callTool({ name: "cu_observe", arguments: {} })).content).toEqual(content);
       } finally {
         await client.close();
