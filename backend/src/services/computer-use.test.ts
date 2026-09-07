@@ -222,3 +222,16 @@ it("does not cache a failed probe, so a fixed prerequisite is seen on the next p
   const second = await host.status("a");
   expect(second.capabilities.find((c) => c.kind === "browser")?.available).toBe(true);
 });
+
+it("does not cache an unavailable probe either: the shipped drivers resolve their failures, not reject them", async () => {
+  const { host, probe } = fixture();
+  // Both real drivers catch everything and resolve `{ available: false, reason }`.
+  probe.mockResolvedValueOnce({ kind: "browser", available: false, capabilities: [], reason: "Install xdotool" });
+  const first = await host.status("a");
+  expect(first.capabilities.find((c) => c.kind === "browser")).toMatchObject({ available: false, reason: "Install xdotool" });
+  const calls = probe.mock.calls.length;
+  const second = await host.status("a");
+  expect(second.capabilities.find((c) => c.kind === "browser")?.available).toBe(true);
+  // The browser probe re-ran; the (available) native stand-in was served from cache.
+  expect(probe.mock.calls.length).toBe(calls + 1);
+});

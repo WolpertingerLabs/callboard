@@ -131,14 +131,26 @@ export class ComputerUseHost {
    * Driver probes are host facts, not chat facts, and the native one execs
    * `xdotool getdisplaygeometry` with a 5s timeout — on a configured but
    * unreachable DISPLAY every status poll and `cu_open` blocked on it. Cache
-   * for a few seconds; a failed probe is not cached so a fix is seen promptly.
+   * for a few seconds. Only an *available* result is kept: both shipped
+   * drivers catch their own failures and resolve `{ available: false }`, so
+   * evicting on rejection alone cached a missing prerequisite for the full
+   * window. An unavailable probe is re-run on the next poll so a fix is seen
+   * promptly.
    */
   private probe(kind: ComputerTargetKind) {
     const cached = this.probes.get(kind);
     if (cached && Date.now() - cached.at < PROBE_CACHE_MS) return cached.result;
     const result = this.drivers[kind].probe();
-    this.probes.set(kind, { at: Date.now(), result });
-    result.catch(() => this.probes.delete(kind));
+    const entry = { at: Date.now(), result };
+    this.probes.set(kind, entry);
+    result.then(
+      (probe) => {
+        if (!probe.available && this.probes.get(kind) === entry) this.probes.delete(kind);
+      },
+      () => {
+        if (this.probes.get(kind) === entry) this.probes.delete(kind);
+      },
+    );
     return result;
   }
   private presentation(value: SessionStatus) {
