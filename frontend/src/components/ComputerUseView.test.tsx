@@ -9,12 +9,13 @@ import ComputerUsePanel from "./ComputerUsePanel";
 
 vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() } }));
 let status: ComputerUseStatus;
-function Harness({ id = "c1" }: { id?: string }) {
+function Harness({ id = "c1", onRender }: { id?: string; onRender?: (controller: ReturnType<typeof useComputerUseController>) => void }) {
   const controller = useComputerUseController(id || undefined);
   const [visible, setVisible] = useState(false);
+  onRender?.(controller);
   return (
     <>
-      <ComputerUseHeader controller={controller} />
+      <ComputerUseHeader controller={controller} viewOpen={visible} />
       <button onClick={() => setVisible(!visible)}>Switch view</button>
       {visible && id && !controller.stopping && (
         <ComputerUsePanel key={`${id}:${controller.viewerEpoch}`} chatId={id} permission="allow" dedicated controller={controller} />
@@ -150,12 +151,12 @@ it("fences old route discovery/actions and never sends an old controller stop to
   click("Stop computer control");
   vi.mocked(client.status).mockResolvedValue({ ...status, sessions: [] });
   view.rerender(<Harness id="c2" />);
-  await screen.findByText("Idle");
-  expectIdle();
+  await act(async () => {});
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
   await act(async () => resolveStatus({ ...status, sessions: [{ id: "late", kind: "native", controller: "agent", state: "active", generation: 1 }] }));
   expect(client.control).toHaveBeenCalledWith("c1", "late", "stop", 1);
   expect(vi.mocked(client.control).mock.calls.every(([id]) => id === "c1")).toBe(true);
-  expectIdle();
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
 });
 it("reports background status failure truthfully and keeps emergency stop available without any observation", async () => {
   vi.useFakeTimers();
@@ -182,10 +183,10 @@ it("does not let a late old-chat status response populate the new chat header", 
   const view = render(<Harness />);
   vi.mocked(client.status).mockResolvedValue({ ...status, sessions: [] });
   view.rerender(<Harness id="c2" />);
-  await screen.findByText("Idle");
-  expectIdle();
+  await act(async () => {});
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
   await act(async () => resolve(status));
-  expectIdle();
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
   expect(screen.queryByText(/1 active · 1 waiting/)).toBeNull();
 });
 
@@ -394,7 +395,8 @@ it.each(["open viewer", "closed viewer", "newer status error"] as const)(
       await act(async () => {
         await vi.advanceTimersByTimeAsync(3000);
       });
-      expect(screen.getByText("Last known")).toBeTruthy();
+      if (mode === "closed viewer") expect(screen.queryByText("Last known")).toBeNull();
+      else expect(screen.getByText("Last known")).toBeTruthy();
     }
     await act(async () => open.resolve({ session: openedSession }));
     expect(screen.getByText("Last known")).toBeTruthy();
@@ -657,4 +659,44 @@ it.each([undefined, { done: true }])("consumes an action request on a successful
   click("Stop computer control");
   await act(async () => {});
   expect(vi.mocked(client.control).mock.calls.filter(([, , op]) => op === "stop")).toEqual([["c1", openedSession.id, "stop", 8]]);
+});
+
+it.each(["pending", "error"] as const)("never renders old-chat %s Stop flags or alerts in an unused destination, even before effects reset", async (mode) => {
+  status.sessions = [];
+  vi.mocked(client.status).mockRejectedValue(new Error("offline"));
+  const view = render(<Harness />);
+  await act(async () => {});
+  click("Switch view");
+  const discovery = deferred<ComputerUseStatus>();
+  if (mode === "pending") vi.mocked(client.status).mockReturnValueOnce(discovery.promise);
+  click("Stop computer control");
+  await act(async () => {});
+  click("Switch view");
+  expect(screen.getByRole("button", { name: "Stop computer control" })).toBeTruthy();
+  if (mode === "error") expect(screen.getByRole("alert").textContent).toContain("Retry Stop");
+  else expect(screen.getByText("Stopping…")).toBeTruthy();
+
+  const renders: { stopping: boolean; stopError: string; hasUsage: boolean }[] = [];
+  const record = ({ stopping, stopError, hasUsage }: ReturnType<typeof useComputerUseController>) => renders.push({ stopping, stopError, hasUsage });
+  vi.mocked(client.status).mockResolvedValue({ ...status, sessions: [] });
+  view.rerender(<Harness id="c2" onRender={record} />);
+  await act(async () => {});
+  expect(renders.length).toBeGreaterThan(0);
+  expect(renders.every((value) => !value.stopping && !value.stopError && !value.hasUsage)).toBe(true);
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+
+  // Returning to c1 is a new controller lifetime, not a revival of its old Stop.
+  view.rerender(<Harness id="c1" onRender={record} />);
+  await act(async () => {});
+  if (mode === "pending") {
+    await act(async () => discovery.resolve({ ...status, sessions: [openedSession] }));
+    expect(client.control).toHaveBeenCalledWith("c1", openedSession.id, "stop", 1);
+    expect(vi.mocked(client.control).mock.calls.every(([id]) => id === "c1")).toBe(true);
+  }
+  expect(renders.every((value) => !value.stopping && !value.stopError && !value.hasUsage)).toBe(true);
+  expect(screen.queryByRole("button", { name: "Stop computer control" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(client.open).not.toHaveBeenCalled();
+  expect(client.observe).not.toHaveBeenCalled();
 });

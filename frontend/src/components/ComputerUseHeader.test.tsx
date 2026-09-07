@@ -17,6 +17,7 @@ const status: ComputerUseStatus = {
 };
 function controller(overrides: Partial<ComputerUseController> = {}): ComputerUseController {
   return {
+    hasUsage: true,
     status,
     statusError: "",
     stopping: false,
@@ -71,3 +72,30 @@ it("keeps a stable stop accessible name during stopping and displays retry error
   expect((screen.getByRole("button", { name: "Stop computer control" }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByRole("alert").textContent).toContain("Could not verify");
 });
+
+it.each([null, ...(["deny", "ask", "allow"] as const).map((permission) => ({ ...status, permission, sessions: [] }))])(
+  "renders no strip or spacing for unused status %s, including errors; explicit viewing provides Stop without latching usage",
+  (snapshot) => {
+    const control = controller({ hasUsage: false, status: snapshot, statusError: "offline" });
+    const { container, rerender } = render(<ComputerUseHeader controller={control} />);
+    expect(container.innerHTML).toBe("");
+    rerender(<ComputerUseHeader controller={control} viewOpen />);
+    fireEvent.click(screen.getByRole("button", { name: "Stop computer control" }));
+    expect(control.stopAll).toHaveBeenCalledTimes(1);
+    rerender(<ComputerUseHeader controller={control} />);
+    expect(container.innerHTML).toBe("");
+    expect(control.beginMutation).not.toHaveBeenCalled();
+  },
+);
+
+it.each([{ stopping: true }, { stopError: "Discovery failed. Retry Stop computer control." }])(
+  "keeps unused closed-view Stop uncertainty visible (%s)",
+  (uncertainty) => {
+    const control = controller({ hasUsage: false, status: null, ...uncertainty });
+    const { container, rerender } = render(<ComputerUseHeader controller={control} />);
+    expect(screen.getByRole("button", { name: "Stop computer control" })).toBeTruthy();
+    if (uncertainty.stopError) expect(screen.getByRole("alert").textContent).toContain("Retry Stop");
+    rerender(<ComputerUseHeader controller={{ ...control, stopping: false, stopError: "" }} />);
+    expect(container.innerHTML).toBe("");
+  },
+);
