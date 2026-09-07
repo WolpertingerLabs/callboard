@@ -27,6 +27,14 @@ function identity(p: Principal): Readonly<Principal> {
 function fail(code: ConstructorParameters<typeof ComputerUseError>[0]): never {
   throw new ComputerUseError(code);
 }
+/**
+ * Errors inside a bounded driver call that leave the driver's physical state
+ * uncertain: the session is fenced `failed` and cleaned up. Every other code is
+ * a request rejected by policy or validation, before or instead of dispatch,
+ * and must leave the session usable — an out-of-bounds click is not a reason
+ * to close the browser. Unknown throwables become `driver_error`, so they fence.
+ */
+const FENCING_CODES = new Set<ComputerUseError["code"]>(["timeout", "cancelled", "driver_error", "stopped"]);
 interface Session {
   id: string;
   target: Target;
@@ -45,6 +53,7 @@ interface Session {
   revision: number;
   frame?: { id: string; revision: number; generation: number; actorId: string; role: Principal["role"]; width: number; height: number };
   timer?: NodeJS.Timeout;
+  reaper?: NodeJS.Timeout;
   cleanup?: Promise<void>;
   inflight?: Promise<unknown>;
 }
@@ -58,6 +67,7 @@ export class ComputerUseService {
   private maxQueue: number;
   private ttl: number;
   private maxSessions: number;
+  private retention: number;
   private disposed = false;
   constructor(options: ServiceOptions = {}) {
     this.authorize = options.authorize ?? (() => "deny");
@@ -85,6 +95,12 @@ export class ComputerUseService {
       .min(1)
       .max(1024)
       .parse(options.maxSessions ?? 16);
+    this.retention = z
+      .number()
+      .int()
+      .min(0)
+      .max(3600000)
+      .parse(options.terminalRetentionMs ?? 60000);
     for (const t of options.targets ?? []) {
       if (
         !t.id ||
@@ -231,9 +247,20 @@ export class ComputerUseService {
       }
       const domain = s.target.driver.lockDomain;
       if (domain && domains.get(domain) === s.id) domains.delete(domain);
-    })().catch(() => {
-      /* Fenced and quarantined; no potentially sensitive driver diagnostics. */
-    }));
+    })()
+      .catch(() => {
+        /* Fenced and quarantined; no potentially sensitive driver diagnostics. */
+      })
+      .then(() => {
+        // A terminal row stays listed for a grace period so a host can still see
+        // the stop/failure it just observed, then it is dropped: sessions are
+        // opened and stopped per turn, and an unbounded ledger of dead rows is
+        // neither audit (events carry that) nor status.
+        s.reaper = setTimeout(() => {
+          if (this.sessions.get(s.id) === s && s.state !== "ready" && s.state !== "starting") this.sessions.delete(s.id);
+        }, this.retention);
+        s.reaper.unref();
+      }));
   }
   private async bounded<T>(s: Session, work: (signal: AbortSignal) => Promise<T>, external?: AbortSignal): Promise<T> {
     const generation = s.generation;
@@ -262,16 +289,13 @@ export class ComputerUseService {
     try {
       return await Promise.race([pending, cancelled]);
     } catch (error) {
-      if (
-        !(error instanceof ComputerUseError && error.code === "stale_frame") &&
-        s.generation === generation &&
-        (s.state === "ready" || s.state === "starting")
-      ) {
+      // Translate before fencing: fencing aborts the epoch, which would turn every driver fault into "cancelled".
+      const typed = error instanceof ComputerUseError ? error : new ComputerUseError(controller.signal.aborted ? "cancelled" : "driver_error");
+      if (FENCING_CODES.has(typed.code) && s.generation === generation && (s.state === "ready" || s.state === "starting")) {
         this.fence(s, "failed");
         void this.cleanup(s);
       }
-      if (error instanceof ComputerUseError) throw error;
-      throw new ComputerUseError(controller.signal.aborted ? "cancelled" : "driver_error");
+      throw typed;
     } finally {
       clearTimeout(timer);
       epochSignal.removeEventListener("abort", abort);
@@ -286,6 +310,8 @@ export class ComputerUseService {
     op: "observe" | "act",
     work: (signal: AbortSignal) => Promise<T>,
     signal?: AbortSignal,
+    /** Request validation at dequeue, outside the fenced driver call: a rejection here is not a driver failure. */
+    prepare?: () => void,
   ): Promise<T> {
     const check = () => {
       this.check(s, ref);
@@ -300,6 +326,7 @@ export class ComputerUseService {
       check();
       await this.allowed(p, op, s.target, s);
       check();
+      prepare?.();
       const value = await this.bounded(s, work, signal);
       check();
       await this.allowed(p, op, s.target, s);
@@ -483,22 +510,28 @@ export class ComputerUseService {
       .strict()
       .parse(request);
     const s = this.own(p, request.sessionId);
+    const a = request.action;
+    // Runs at enqueue and again at dequeue (the frame may have been consumed
+    // meanwhile). Everything here is a request rejection, never a driver fault.
+    const preflight = () => {
+      this.lease(s, p, request);
+      this.assertFrame(p, { sessionId: request.sessionId, generation: request.generation, frameId: request.frameId });
+      const frame = s.frame!;
+      if (a.type === "navigate" && s.target.driver.kind !== "browser") fail("unsupported");
+      if ("x" in a && (a.x >= frame.width || a.y >= frame.height)) fail("invalid_request");
+      if (a.type === "drag" && (a.toX >= frame.width || a.toY >= frame.height)) fail("invalid_request");
+    };
     this.lease(s, p, request);
     if (s.seen.has(request.actionId)) fail("invalid_request");
     if (s.seen.size >= 10000) fail("queue_full");
     s.seen.add(request.actionId);
+    preflight();
     await this.queue(
       p,
       s,
       request,
       "act",
       async (sig) => {
-        this.lease(s, p, request);
-        this.assertFrame(p, { sessionId: request.sessionId, generation: request.generation, frameId: request.frameId });
-        const frame = s.frame!;
-        const a = request.action;
-        if ("x" in a && (a.x >= frame.width || a.y >= frame.height)) fail("invalid_request");
-        if (a.type === "drag" && (a.toX >= frame.width || a.toY >= frame.height)) fail("invalid_request");
         // Consume before dispatch, including actions that partially mutate and then fail.
         this.invalidateFrame(s);
         try {
@@ -508,6 +541,7 @@ export class ComputerUseService {
         }
       },
       signal,
+      preflight,
     );
     this.emit(s, "acted");
     return this.snapshot(s);
