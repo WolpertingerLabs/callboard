@@ -188,8 +188,15 @@ export const OPENCODE_CONFIG_CONTENT_ENV = "OPENCODE_CONFIG_CONTENT";
  */
 export function openCodePermissionConfig(permissions: DefaultPermissions | null): string {
   // Deliberately FOUR built-in axes: a disabled managed service must not disable
-  // OpenCode's unrelated task tool. Managed tools authorize at the service on
-  // every call, including vendor-internal children with ambiguous identity.
+  // OpenCode's unrelated task tool. The managed computer tools are allow-listed
+  // in BOTH branches, which means OpenCode never asks callboard about them and
+  // the chat's `computerControl` axis is not enforced by this adapter at all.
+  // That is intentional, not an oversight: the service is the gate.
+  // `ComputerUseHost.authorize` re-reads the chat's policy on every call and
+  // denies a `deny` axis before any driver is touched, and every action still
+  // needs the human's confirmation in the panel. A `*: ask` round-trip for these
+  // names would only add a second, scope-blind prompt in front of that one —
+  // including for vendor-internal children with ambiguous identity.
   const axes: Array<keyof DefaultPermissions> = ["fileRead", "fileWrite", "codeExecution", "webAccess"];
   const allAllowed = !!permissions && axes.every((axis) => permissions[axis] === "allow");
   const managed = { "computer_use_*": "allow", "mcp__computer_use__*": "allow", "cu_*": "allow" };
