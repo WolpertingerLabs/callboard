@@ -95,3 +95,90 @@ describe("checkSdkVersionOnce", () => {
     expect(() => require("@openai/codex-sdk/package.json")).toThrowError(/ERR_PACKAGE_PATH_NOT_EXPORTED|not defined by "exports"/);
   });
 });
+
+/**
+ * Adapter-vs-SDK item drift.
+ *
+ * `messageAdapter.ts` switches on `ThreadItem["type"]` with no `default` arm, so
+ * an SDK bump that ADDS a member to that union produces a silent
+ * `undefined` — the event is dropped and nothing says so. That is exactly the
+ * failure this repo just spent a full investigation ruling out, and the cheapest
+ * way to never repeat it is to assert the two sets still agree.
+ *
+ * The union is a type and therefore erased at runtime, so it is recovered from
+ * the SDK's shipped `.d.ts`: the source of truth is the installed package, not a
+ * list copied into this file that would drift alongside the code it guards.
+ * Membership is then checked *behaviourally* — every declared type must
+ * translate to something other than `undefined`.
+ */
+describe("messageAdapter ↔ SDK ThreadItem drift", () => {
+  /** Item types the installed SDK declares as members of `ThreadItem`. */
+  async function declaredItemTypes(): Promise<string[]> {
+    const { existsSync, readFileSync } = await import("node:fs");
+    const { dirname, join } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+
+    // `require.resolve("@openai/codex-sdk")` throws here too — the package's
+    // `exports` map defines no main Node will resolve from a test context (same
+    // root cause as the package.json case asserted above). Walk up to the
+    // installing `node_modules` instead, which is stable regardless of exports.
+    let dir = dirname(fileURLToPath(import.meta.url));
+    let dts: string | null = null;
+    for (let i = 0; i < 10 && !dts; i++) {
+      const candidate = join(dir, "node_modules", "@openai", "codex-sdk", "dist", "index.d.ts");
+      if (existsSync(candidate)) dts = candidate;
+      dir = dirname(dir);
+    }
+    if (!dts) throw new Error("could not locate @openai/codex-sdk dist/index.d.ts");
+    const src = readFileSync(dts, "utf-8");
+
+    const union = /type\s+ThreadItem\s*=\s*([^;]+);/.exec(src);
+    if (!union) throw new Error("could not find `type ThreadItem = ...` in the SDK .d.ts");
+    const members = union[1]!.split("|").map((s) => s.trim());
+
+    return members.map((member) => {
+      // Each member is an interface alias whose discriminant is a string literal.
+      const decl = new RegExp(`type\\s+${member}\\s*=\\s*\\{[^}]*?type:\\s*"([^"]+)"`, "s").exec(src);
+      if (!decl) throw new Error(`could not resolve the \`type\` literal for ThreadItem member ${member}`);
+      return decl[1]!;
+    });
+  }
+
+  it("recovers the union from the installed SDK, not from a hardcoded list", async () => {
+    const types = await declaredItemTypes();
+    // Sanity: the parse actually found members, so a silently-empty list can
+    // never make the assertion below vacuous.
+    expect(types.length).toBeGreaterThanOrEqual(8);
+    expect(types).toContain("agent_message");
+    expect(types).toContain("command_execution");
+  });
+
+  it("translates every item type the SDK declares", async () => {
+    const { translateCodexEvent } = await import("./messageAdapter.js");
+    const types = await declaredItemTypes();
+
+    const unhandled: string[] = [];
+    for (const type of types) {
+      // A permissive item: the switch reads different fields per arm, and this
+      // test is about reaching an arm at all, not about field mapping (which
+      // messageAdapter.test.ts covers against real captures).
+      const item = { id: "drift", type, command: "", changes: [], arguments: {}, query: "", items: [], message: "", text: "" };
+      for (const phase of ["item.started", "item.updated", "item.completed"] as const) {
+        const result = translateCodexEvent({ type: phase, item } as never);
+        if (result === undefined) unhandled.push(`${phase}/${type}`);
+      }
+    }
+
+    expect(unhandled).toEqual([]);
+  });
+
+  it("does not claim to handle compaction on the public lane", async () => {
+    // `context_compaction` is NOT in `ThreadItem` for 0.153.4 — the CLI records
+    // compactions only in the rollout. If a future SDK adds it, this fails and
+    // the rollout tail's dedupe assumptions need revisiting (both paths would
+    // then be live at once).
+    const types = await declaredItemTypes();
+    expect(types).not.toContain("context_compaction");
+    expect(types).not.toContain("user_message");
+  });
+});

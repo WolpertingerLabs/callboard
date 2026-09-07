@@ -32,6 +32,7 @@ import type { Codex, Input, ThreadOptions, UserInput } from "@openai/codex-sdk";
 import type { AgentQuery } from "../../ports/AgentProvider.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { translateCodexEvents } from "./messageAdapter.js";
+import { RolloutTail } from "./rolloutTail.js";
 import type { CodexToolServerHandle } from "./toolAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -129,12 +130,104 @@ export class CodexAgentQuery implements AgentQuery {
         return;
       }
 
-      yield* translateCodexEvents(events);
+      yield* this.withCompactionEvents(translateCodexEvents(events));
       log.debug("iterate() finished");
     } finally {
       this.cleanupPromptImages();
       this.cleanupInstructionsFile();
       await this.closeToolServers();
+    }
+  }
+
+  /**
+   * Merge the public event stream with compactions tailed from the run's
+   * rollout, which the public stream does not report at all (see
+   * {@link RolloutTail}).
+   *
+   * A plain "drain the queue between source events" interleave would defeat the
+   * purpose: the whole symptom being fixed is a run that emits *nothing* on the
+   * public lane for minutes at a time, so the compaction has to be able to
+   * arrive while the source iterator is parked. Hence the pump/queue split —
+   * the source is drained by a background task and both producers wake a single
+   * consumer.
+   *
+   * The tail is started from the thread id (known upfront when resuming,
+   * otherwise from `session_started`) and stopped in a `finally`, so normal
+   * completion, a thrown error, and an abort all tear it down.
+   */
+  private async *withCompactionEvents(source: AsyncIterable<AgentEvent>): AsyncIterable<AgentEvent> {
+    const queue: AgentEvent[] = [];
+    let notify: (() => void) | null = null;
+    let pendingWake = false;
+
+    // Latching wake: if nothing is parked yet, remember the signal instead of
+    // dropping it. Without the latch a push landing between the `done` check
+    // and the `await` would be lost and the consumer would hang forever.
+    const wake = (): void => {
+      const resume = notify;
+      notify = null;
+      if (resume) resume();
+      else pendingWake = true;
+    };
+
+    // A ref rather than a bare `let`: the only assignment happens inside
+    // `startTail`, which TS's control-flow analysis cannot see, so a plain
+    // binding narrows to `null` (and then `never`) by the time `finally` runs.
+    const tail: { current: RolloutTail | null } = { current: null };
+    const startTail = (threadId: string): void => {
+      if (tail.current || !threadId) return;
+      tail.current = new RolloutTail(threadId, {
+        onCompaction: (compaction) => {
+          log.debug(`rollout compaction ${compaction.id} (window=${compaction.contextWindow ?? "unknown"})`);
+          queue.push({ type: "compaction_boundary" });
+          wake();
+        },
+      });
+      tail.current.start();
+    };
+
+    // A resumed turn appends to an existing rollout whose id we already know,
+    // so the tail can start before the first event arrives.
+    if (this.params.resumeId) startTail(this.params.resumeId);
+
+    let done = false;
+    let failure: unknown = null;
+    const pump = (async () => {
+      try {
+        for await (const event of source) {
+          if (event.type === "session_started") startTail(event.sessionId);
+          queue.push(event);
+          wake();
+        }
+      } catch (err) {
+        failure = err;
+      } finally {
+        done = true;
+        wake();
+      }
+    })();
+
+    try {
+      for (;;) {
+        while (queue.length > 0) yield queue.shift() as AgentEvent;
+        if (done) break;
+        await new Promise<void>((resolve) => {
+          if (pendingWake) {
+            pendingWake = false;
+            resolve();
+            return;
+          }
+          notify = resolve;
+        });
+      }
+      // Surface a source failure with the same semantics as yielding it
+      // directly: translateCodexEvents re-throws aborts for the service layer.
+      if (failure) throw failure;
+    } finally {
+      tail.current?.stop();
+      // The pump only rejects via `failure`, but await it so the task is
+      // settled before the generator returns and cannot outlive the run.
+      await pump.catch(() => {});
     }
   }
 
