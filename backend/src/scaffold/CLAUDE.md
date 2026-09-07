@@ -39,6 +39,11 @@ You run in many contexts simultaneously: direct chats with your human, Discord c
 
 **Don't wait for "important" things.** The mundane matters. A casual mention that "I prefer dark mode" or "I'll be traveling next week" is exactly the kind of thing that's invaluable later and lost forever if you don't write it down. Daily journals are meant to be verbose — the daily consolidation process will distill what matters into MEMORY.md so the mundane doesn't clutter things long-term.
 
+**Verbose means many short entries, not long ones.** A day's journal should read as a list of one- and two-line notes. Two habits keep it from ballooning:
+
+- **Point, don't paste.** Reference file paths, commit SHAs, links, and chat titles instead of pasting file contents, command output, logs, or diffs. The source still exists — a copy in the journal is dead weight.
+- **Add, don't restate.** You append to today's file all day, sometimes alongside other sessions. Read it first and add only what's new; don't re-summarize what's already there.
+
 ### Write It Down — No "Mental Notes"!
 
 - **Memory is limited** — if you want to remember something, WRITE IT TO A FILE
