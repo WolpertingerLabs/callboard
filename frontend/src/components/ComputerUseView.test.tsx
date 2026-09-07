@@ -12,9 +12,17 @@ vi.mock("../api/computerUse", async (importOriginal) => ({
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
 }));
 let status: ComputerUseStatus;
-function Harness({ id = "c1", onRender }: { id?: string; onRender?: (controller: ReturnType<typeof useComputerUseController>) => void }) {
-  const controller = useComputerUseController(id || undefined);
+function Harness({
+  id = "c1",
+  agentRunning = false,
+  onRender,
+}: {
+  id?: string;
+  agentRunning?: boolean;
+  onRender?: (controller: ReturnType<typeof useComputerUseController>) => void;
+}) {
   const [visible, setVisible] = useState(false);
+  const controller = useComputerUseController(id || undefined, { agentRunning, viewOpen: visible });
   onRender?.(controller);
   return (
     <>
@@ -76,6 +84,77 @@ it("polls status only with hidden waiting badges and opens a full viewer without
   expect(client.observe).not.toHaveBeenCalled();
   expect(client.control).not.toHaveBeenCalled();
 });
+// Polling only while status can change. Every loaded chat used to hit
+// /status every 3 s for as long as it was visible, whether or not it had ever
+// used computer control; each hit re-read the chat file and ran both driver probes.
+it("reads an unused idle chat once, polls only while the Computer view is open, and refreshes at once when reopened stale", async () => {
+  vi.useFakeTimers();
+  status.sessions = [];
+  const { container } = render(<Harness />);
+  await act(async () => {});
+  expect(client.status).toHaveBeenCalledTimes(1);
+  expect(container.querySelector(".computer-use-header")).toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(9000);
+  });
+  expect(client.status).toHaveBeenCalledTimes(1);
+  // Opening the view after an idle stretch reads immediately, then polls.
+  click("Switch view");
+  await act(async () => {});
+  expect(client.status).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  expect(client.status).toHaveBeenCalledTimes(3);
+  // Closing it stops the poll without an extra read; reopening within the
+  // interval does not double up either.
+  click("Switch view");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(9000);
+  });
+  expect(client.status).toHaveBeenCalledTimes(3);
+  click("Switch view");
+  await act(async () => {});
+  expect(client.status).toHaveBeenCalledTimes(4);
+  click("Switch view");
+  click("Switch view");
+  await act(async () => {});
+  expect(client.status).toHaveBeenCalledTimes(4);
+  expect(client.open).not.toHaveBeenCalled();
+  expect(client.observe).not.toHaveBeenCalled();
+});
+
+it("polls while the agent is running even for an unused chat with the view closed, and stops when it finishes", async () => {
+  vi.useFakeTimers();
+  status.sessions = [];
+  const view = render(<Harness agentRunning />);
+  await act(async () => {});
+  expect(client.status).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  expect(client.status).toHaveBeenCalledTimes(3);
+  view.rerender(<Harness agentRunning={false} />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(9000);
+  });
+  expect(client.status).toHaveBeenCalledTimes(3);
+});
+
+it("latches stopped history from the single load read and keeps polling a chat that has used computer control", async () => {
+  vi.useFakeTimers();
+  status.sessions = [{ id: "t", kind: "browser", state: "stopped", controller: null, generation: 2 }];
+  render(<Harness />);
+  await act(async () => {});
+  expect(screen.getByRole("button", { name: "Stop computer control" })).toBeTruthy();
+  expectIdle();
+  expect(client.status).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(6000);
+  });
+  expect(client.status).toHaveBeenCalledTimes(3);
+});
+
 it("stops all browser/native and pending sessions without confirmation, even when denied and status fails; exposes partial errors and retry", async () => {
   render(<Harness />);
   await screen.findByText(/1 active · 1 waiting/);
@@ -661,7 +740,8 @@ it("does not retire pending requests from a stale ignored read, or real positive
 it("does not retire a late-created pending request from an authoritative empty read dispatched before its ID was learned", async () => {
   vi.useFakeTimers();
   status.sessions = [];
-  render(<Harness />);
+  // A running agent keeps the background poll alive after the view closes.
+  render(<Harness agentRunning />);
   await act(async () => {});
   click("Switch view");
   const open = deferred<Awaited<ReturnType<typeof client.open>>>();

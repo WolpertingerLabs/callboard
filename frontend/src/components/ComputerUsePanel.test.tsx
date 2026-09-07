@@ -34,8 +34,8 @@ function Viewer({
   onPermissions?: () => void;
   onRender?: (controller: ReturnType<typeof useComputerUseController>) => void;
 }) {
-  const controller = useComputerUseController(chatId);
   const [visible, setVisible] = useState(true);
+  const controller = useComputerUseController(chatId, { viewOpen: visible });
   onRender?.(controller);
   return (
     <>

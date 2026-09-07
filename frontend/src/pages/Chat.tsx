@@ -561,8 +561,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   }, [chat?.metadata]);
 
   // Only a loaded, matching, non-native-child chat gets managed computer controls.
+  // Status polls only while it can change: the agent is running, the chat has
+  // used computer control, or the Computer view is open.
   const computerChatId = id && chat?.id === id && !nativeAgent ? id : undefined;
-  const computerController = useComputerUseController(computerChatId);
+  const computerController = useComputerUseController(computerChatId, {
+    agentRunning: streaming || !!globalSessionActive,
+    viewOpen: viewMode === "computer",
+  });
 
   // Which ACP vendor, for chats on the ACP kind. Read from metadata rather than
   // derived from `chatProvider`, because the kind alone does not name a harness.
