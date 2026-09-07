@@ -626,3 +626,25 @@ test("terminal sessions stay listed for the retention grace period, then drop", 
   await s.stop(agent, live.sessionId);
   await s.dispose();
 });
+
+test("cleanup always reaches driver close, so a failed input release can be quarantined by the driver", async () => {
+  let releases = 0;
+  const f = fake({
+    releaseInput: async () => {
+      releases++;
+      throw new ComputerUseError("driver_error");
+    },
+  });
+  f.driver.kind = "native-desktop";
+  f.driver.lockDomain = "fake-native-release-failure";
+  const s = new ComputerUseService({ targets: [{ id: "native", enabled: true, driver: f.driver }], authorize: () => "allow" });
+  const l = await s.open(agent, "native");
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
+  await assert.rejects(s.act(agent, action(l, "k", { type: "key", key: "a" })), error("driver_error"));
+  await delay(10);
+  assert.equal(s.status(agent)[0].state, "failed");
+  assert.ok(releases >= 1);
+  assert.equal(f.calls.close, 1);
+  await s.dispose();
+  assert.equal(f.calls.close, 1);
+});

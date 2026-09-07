@@ -239,11 +239,19 @@ export class ComputerUseService {
   }
   private cleanup(s: Session): Promise<void> {
     return (s.cleanup ??= (async () => {
-      // Keep the lock if cleanup fails: an uncertain native helper must not be reused.
       await s.inflight?.catch(() => {});
       if (s.driver) {
-        await s.driver.releaseInput();
-        await s.driver.close();
+        // Always reach close(): it is the driver's only chance to settle its
+        // own state after a failed release. The native driver retries the
+        // release there and, if that fails again, keeps its input lock and
+        // marks it quarantined — which is what makes a later reclaim refuse.
+        // Skipping close() on a release failure left a lock holding a live
+        // PID with no marker, i.e. exactly the lock that gets reclaimed.
+        try {
+          await s.driver.releaseInput();
+        } finally {
+          await s.driver.close();
+        }
       }
       const domain = s.target.driver.lockDomain;
       if (domain && domains.get(domain) === s.id) domains.delete(domain);
