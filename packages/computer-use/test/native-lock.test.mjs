@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireNativeInputLock } from "../dist/drivers/native-lock.js";
+import { acquireNativeInputLock, reclaimDeadClaim } from "../dist/drivers/native-lock.js";
 
 const error = (code, pattern) => (e) => e.code === code && (!pattern || pattern.test(e.message));
 async function root(t) {
@@ -60,4 +60,29 @@ test("two reclaimers of one stale lock cannot both hold it", async (t) => {
   assert.equal(held.length, 1);
   assert.equal(results.find((r) => r.status === "rejected").reason.code, "lease_conflict");
   await held[0].value.release();
+});
+
+test("a reclaimer that inspected a dead holder cannot displace the live holder that replaced it meanwhile", async (t) => {
+  // A and C both saw the dead PID. C reclaimed first and now holds the lock.
+  // A acts on its stale inspection: the claim it takes is C's, not the dead one.
+  const path = join(await root(t), "domain");
+  await mkdir(path, { mode: 0o700 });
+  const dead = await exitedPid();
+  await writeFile(join(path, "pid"), `${dead}\n`);
+  const c = await acquireNativeInputLock(path); // C's reclaim
+  assert.equal(c.reclaimed, true);
+  await assert.rejects(reclaimDeadClaim(path, dead), error("lease_conflict", /reclaimed concurrently[\s\S]*domain$/));
+  // C's claim is intact and still names C; nothing was moved aside.
+  assert.equal((await readFile(join(path, "pid"), "utf8")).trim(), String(process.pid));
+  assert.deepEqual((await readdir(path)).sort(), ["pid"]);
+  // And a fresh acquire sees C as a live holder.
+  await assert.rejects(acquireNativeInputLock(path), error("lease_conflict", /live process/));
+  await c.release();
+});
+
+test("a reclaim that finds the claim already gone fails closed rather than creating a second holder", async (t) => {
+  const path = join(await root(t), "domain");
+  await mkdir(path, { mode: 0o700 });
+  await assert.rejects(reclaimDeadClaim(path, 1), error("lease_conflict", /reclaimed concurrently/));
+  await assert.rejects(acquireNativeInputLock(path), error("lease_conflict", /no holder recorded/));
 });
