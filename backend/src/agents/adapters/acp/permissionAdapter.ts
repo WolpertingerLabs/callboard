@@ -305,12 +305,20 @@ export function acpToolLabel(toolCall: RequestPermissionRequest["toolCall"]): st
   if (name) return name;
   const kind = typeof toolCall?.kind === "string" ? toolCall.kind.trim() : "";
   const title = typeof toolCall?.title === "string" ? toolCall.title.trim() : "";
-  // A managed computer-control name in the title outranks `kind`: no ACP
-  // `ToolKind` can ever spell `cu_*`/`computer_use_*`, so a vendor that omits
-  // `name` would otherwise label the call `other` and gate it on
-  // `codeExecution` — allow in every job/cron/spawned chat — instead of the
-  // `computerControl` axis. This is an exact-identifier match, not prose.
-  if (isComputerControlToolName(title)) return title;
+  // A managed computer-control name in the title is taken ONLY when `kind` has
+  // no opinion (`other`, `think`, absent). No ACP `ToolKind` can spell
+  // `cu_*`/`computer_use_*`, so a vendor that omits `name` would otherwise
+  // label such a call `other` and gate it on `codeExecution` — allow in every
+  // job/cron/spawned chat — instead of the `computerControl` axis.
+  //
+  // It must NOT outrank an informative kind. OpenCode puts the touched path in
+  // `title`, the model chooses that path, and `computer_use.py` or `cu_payload`
+  // satisfy the name pattern: with `kind: "edit"` the call is a file write and
+  // must be gated as one, whatever the file is called. Letting the title win
+  // there re-created the "axis chosen by the shape of a filename" defect the
+  // comment above describes, and on a `computerControl: ask` chat it turned
+  // the transport-admission rule into an unprompted write.
+  if (categorizeAcpToolKind(toolCall?.kind) === null && isComputerControlToolName(title)) return title;
   if (kind && isToolIdentifier(kind)) return kind;
   if (title && isToolIdentifier(title)) return title;
   return "unknown_tool";

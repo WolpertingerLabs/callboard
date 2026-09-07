@@ -177,6 +177,27 @@ describe("acpToolLabel", () => {
     expect(acpToolLabel({ toolCallId: "c", kind: "edit", title: "computer_useful_action" } as never)).toBe("edit");
   });
 
+  it("a managed-looking filename never overrides an informative kind", () => {
+    // OpenCode puts the model-chosen path in `title`. A file called
+    // `computer_use.py` being edited is a write; `cu_payload` being executed is
+    // code execution. Under `computerControl: ask` the computerControl axis is
+    // transport-admitted (allow), so mis-labelling these would write or run
+    // without a prompt; under `computerControl: deny` every such edit would be
+    // silently rejected. Both are the wrong axis.
+    const edit = { toolCallId: "c", kind: "edit", title: "computer_use.py", rawInput: { filePath: "computer_use.py" } } as never;
+    expect(acpToolLabel(edit)).toBe("edit");
+    expect(categorizeAcpToolName(acpToolLabel(edit))).toBe("fileWrite");
+    const run = { toolCallId: "c", kind: "execute", title: "cu_payload", rawInput: { command: "./cu_payload" } } as never;
+    expect(acpToolLabel(run)).toBe("execute");
+    expect(categorizeAcpToolName(acpToolLabel(run))).toBe("codeExecution");
+    const nested = { toolCallId: "c", kind: "edit", title: "computer_use/main" } as never;
+    expect(categorizeAcpToolName(acpToolLabel(nested))).toBe("fileWrite");
+    // The legitimate no-name managed call (kind carries nothing) still lands on computerControl.
+    const managed = { toolCallId: "c", kind: "other", title: "cu_action", rawInput: { sessionId: "s" } } as never;
+    expect(categorizeAcpToolName(acpToolLabel(managed))).toBe("computerControl");
+    expect(categorizeAcpToolName(acpToolLabel({ toolCallId: "c", title: "cu_action" } as never))).toBe("computerControl");
+  });
+
   it("does not let the shape of a filename choose the permission axis", () => {
     // OpenCode puts the file being touched in `title`, and whether that string
     // is identifier-shaped depends on something with no bearing on the tool:
@@ -312,6 +333,28 @@ describe("the two-pass rule", () => {
     // stale value.
     expect(await resolveAcpPermission(request(), ctx)).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
     expect(canUseTool).toHaveBeenCalledWith("run_command", { command: "ls" }, { signal: ctx.signal });
+  });
+
+  it("an OpenCode edit of a file named like a managed tool is prompted as a write, not admitted as computer control", async () => {
+    // fileWrite: ask, computerControl: ask. computerControl "ask" is
+    // transport-admitted (allow) — so if the filename picked the axis, this
+    // write would go through with no prompt at all.
+    const live = perms({ fileWrite: "ask", codeExecution: "ask", computerControl: "ask" });
+    const canUseTool = vi.fn().mockResolvedValue({ behavior: "deny" });
+    const ctx = { getPermissions: () => live, canUseTool, signal: new AbortController().signal };
+    for (const toolCall of [
+      { toolCallId: "c1", kind: "edit", title: "computer_use.py", rawInput: { filePath: "computer_use.py" } },
+      { toolCallId: "c2", kind: "execute", title: "cu_payload", rawInput: { command: "./cu_payload" } },
+    ]) {
+      const res = await resolveAcpPermission(request({ toolCall } as never), ctx);
+      expect(res).toEqual({ outcome: { outcome: "selected", optionId: "r1" } });
+    }
+    expect(canUseTool).toHaveBeenCalledTimes(2);
+    expect(canUseTool.mock.calls.map((c) => c[0])).toEqual(["edit", "execute"]);
+    // And a real managed call with no name and an uninformative kind is still admitted for the service to gate.
+    const managed = { toolCallId: "c3", kind: "other", title: "cu_action", rawInput: { sessionId: "s" } };
+    expect(await resolveAcpPermission(request({ toolCall: managed } as never), ctx)).toEqual({ outcome: { outcome: "selected", optionId: "a1" } });
+    expect(canUseTool).toHaveBeenCalledTimes(2);
   });
 
   it("cannot disagree with pass 2 about the policy, because both read the same accessor", () => {
