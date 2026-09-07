@@ -40,14 +40,19 @@ export async function resolveReasoningTarget(input: ReasoningRequest, settings =
           : undefined;
   const model =
     provider === "codex" || provider === "cline" || provider === "pi" ? resolveSessionModel(input.model, fallback, provider, settings) : input.model;
-  return { provider, providerId, route, endpoint, model: model ?? codexRoute?.model, injectedOpenRouter };
+  // `model` is what execution pins on the thread; `defaultModel` is what the CLI
+  // runs when it pins nothing, and is only ever consulted for capabilities.
+  return { provider, providerId, route, endpoint, model: model ?? codexRoute?.model, defaultModel: codexRoute?.defaultModel, injectedOpenRouter };
 }
 
 const ADAPTER_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 export async function resolveReasoningCapability(input: ReasoningRequest): Promise<ReasoningCapability> {
   const target = await resolveReasoningTarget(input);
   const { provider, route } = target;
-  let { model } = target;
+  // Most Codex chats name no model at all (subscription mode leaves codexModel
+  // null), and the CLI does have a default: resolve against it instead of
+  // refusing every effort for lack of a name.
+  let model = target.model ?? (provider === "codex" ? target.defaultModel : undefined);
   if (provider === "cline" && !model) {
     try {
       model = (await import("../agents/adapters/cline/optionsAdapter.js")).resolveDefaultModelId(target.providerId);
