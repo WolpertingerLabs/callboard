@@ -1,4 +1,5 @@
-import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { assertStoredReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { resolveCodexExecutionRoute, type CodexExecutionRoute } from "./codex-execution-route.js";
 import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
@@ -1009,7 +1010,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         "Re-point it at another harness — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",
     );
   }
-  if (isNewChat) await assertReasoningEffort(opts);
   log.debug(`sendMessage — isNewChat=${isNewChat}, folder=${opts.folder || "n/a"}, chatId=${opts.chatId || "n/a"}`);
 
   // Resolve chat context: existing chat or new chat setup
@@ -1020,6 +1020,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // resolveParentage runs because the child's own record does not exist yet
   // (the reopen rule below needs to know which root's card to check).
   let newChatRootId: string | undefined;
+  // The Codex route probe spawns the CLI (~0.5s). When a stored effort needs
+  // checking, resolve it once here and hand the same answer to the adapter
+  // options below; with no effort the adapter block is the only consumer.
+  let codexRoute: CodexExecutionRoute | undefined;
 
   if (opts.chatId) {
     // Existing chat flow — check file storage first, then fall back to filesystem.
@@ -1047,7 +1051,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
     initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
     const ownershipExpectation = { sessionId: chat.session_id, provider: initialMetadata.provider };
-    await assertReasoningEffort({ ...initialMetadata, cwd: folder });
+    // Stored settings are revalidated on the execution path: refused only when
+    // the catalog knows the model and rules the effort out, never because a
+    // probe could not answer — see assertStoredReasoningEffort.
+    if (initialMetadata.provider === "codex" && initialMetadata.effort) codexRoute = await resolveCodexExecutionRoute(getAgentSettings(), folder);
+    await assertStoredReasoningEffort({ ...initialMetadata, cwd: folder, codexRoute });
     assertChatContextUnchanged(expectedContext, chatFileService.getChat(chat.id));
     assertNativeAgentControllable(opts.chatId, ownershipExpectation);
     if (!storedChat) {
@@ -1075,6 +1083,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // The SDK creates logs keyed by this path, so we must preserve it exactly.
     folder = opts.folder;
     resumeSessionId = undefined;
+    // Every route/tool/runner that hands a new chat here validated the explicit
+    // selection fail-closed already; this pass only guards against a stored
+    // automation setting the catalog has since ruled out.
+    if (opts.provider === "codex" && opts.effort) codexRoute = await resolveCodexExecutionRoute(getAgentSettings(), folder);
+    await assertStoredReasoningEffort({ provider: opts.provider, model: opts.model, effort: opts.effort, cwd: folder, codexRoute });
     initialMetadata = {
       ...(defaultPermissions && { defaultPermissions }),
       ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
@@ -1661,7 +1674,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // key or from an ambient OpenRouter setup — see isCodexRoutedThroughOpenRouter
     // for why the env case additionally requires an explicit endpoint override.
     const reasoningTarget = await resolveReasoningTarget(
-      { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, cwd: folder },
+      { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, cwd: folder, codexRoute },
       agentSettings,
     );
     const useOpenRouter = reasoningTarget.injectedOpenRouter;

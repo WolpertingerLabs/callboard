@@ -483,4 +483,13 @@ describe("model-aware reasoning transport", () => {
   it("refuses native-only ultra on OR", () => {
     expect(() => translateCodexOptions({ codex: { useOpenRouter: true, reasoningEffort: "ultra" } })).toThrow("cannot be sent to OpenRouter");
   });
+  it("sends a stored effort natively when the route probe could not answer, instead of failing the chat", () => {
+    // A probe timeout or unreadable config is "cannot verify", not "unsupported":
+    // before route discovery existed nothing here could stop a chat.
+    const { threadOptions, codexOpts } = translateCodexOptions({ codex: { reasoningRoute: "unknown", reasoningEffort: "high" } });
+    expect(threadOptions.modelReasoningEffort).toBe("high");
+    expect(codexOpts.config?.model_reasoning_summary).toBe("auto");
+    expect(codexOpts.config?.model_reasoning_effort).toBeUndefined();
+    expect(translateCodexOptions({ codex: { reasoningRoute: "unknown", reasoningEffort: "none" } }).codexOpts.config?.model_reasoning_summary).toBe("none");
+  });
 });

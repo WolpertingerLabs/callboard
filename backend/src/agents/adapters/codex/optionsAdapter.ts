@@ -386,8 +386,12 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // additionally sets the Codex effort tier (below). Default (unset) ⇒ summaries
   // on at Codex's own effort.
   const reasoningEffort = extras.reasoningEffort;
+  // An unknown route (probe timed out, private endpoint, unreadable config) is
+  // "cannot verify", not "unsupported": the effort rides through natively, as it
+  // did before route discovery existed, and the CLI reports a real mismatch.
+  // Fail-closed validation of *new* selections lives in assertReasoningEffort.
   if (extras.reasoningRoute === "unknown" && reasoningEffort) {
-    throw new Error("Codex execution route is unknown; clear the reasoning effort or configure a known endpoint before sending an explicit effort.");
+    log.warn(`Codex execution route is unknown; sending reasoning effort "${reasoningEffort}" with native semantics, unverified.`);
   }
   if (
     (extras.useOpenRouter || extras.reasoningRoute === "openrouter") &&

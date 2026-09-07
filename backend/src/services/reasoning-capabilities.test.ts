@@ -29,7 +29,7 @@ vi.mock("./codex-execution-route.js", async (importOriginal) => ({
 vi.mock("../agents/adapters/pi/modelCatalog.js", () => ({ getPiModelReasoningEfforts: async () => ["none", "minimal", "low", "medium", "high"] }));
 vi.mock("./codex-models.js", () => ({ getCodexModelsAsync: mocks.native }));
 vi.mock("./openrouter-models.js", () => ({ getOpenRouterModelsAsync: mocks.or }));
-import { assertReasoningEffort, resolveReasoningCapability, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { assertReasoningEffort, assertStoredReasoningEffort, resolveReasoningCapability, resolveReasoningTarget } from "./reasoning-capabilities.js";
 beforeEach(() => {
   mocks.settings = { codexModel: "native", codexOpenRouterModel: "vendor/routed", clineModel: "cline-model", piModel: "vendor/routed" };
   mocks.injected = false;
@@ -151,3 +151,29 @@ describe("Codex chats without a configured model", () => {
   });
 });
 
+describe("stored efforts on the execution path", () => {
+  it("lets an effort through when the route probe or catalog cannot verify it", async () => {
+    mocks.routeUnknown = true;
+    await expect(assertReasoningEffort({ provider: "codex", effort: "high" })).rejects.toThrow("not supported");
+    await expect(assertStoredReasoningEffort({ provider: "codex", effort: "high" })).resolves.toBeUndefined();
+    mocks.routeUnknown = false;
+    mocks.native.mockResolvedValue([]);
+    await expect(assertStoredReasoningEffort({ provider: "codex", effort: "xhigh" })).resolves.toBeUndefined();
+    mocks.native.mockResolvedValue([{ id: "native" }]);
+    await expect(assertStoredReasoningEffort({ provider: "codex", effort: "xhigh" })).resolves.toBeUndefined();
+  });
+  it("still refuses an effort the catalog knows the model does not support", async () => {
+    await expect(assertStoredReasoningEffort({ provider: "codex", effort: "xhigh" })).rejects.toThrow("not supported");
+    await expect(assertStoredReasoningEffort({ provider: "codex", effort: "ultra" })).resolves.toBeUndefined();
+    await expect(assertStoredReasoningEffort({ provider: "codex", effort: {} })).rejects.toThrow("not supported");
+    await expect(assertStoredReasoningEffort({ provider: "claude-code", effort: "high" })).rejects.toThrow("does not expose");
+  });
+  it("reuses a route the caller already probed instead of spawning the CLI again", async () => {
+    const codexRoute = { route: "codex" as const, endpoint: "https://api.openai.com/v1", injectedOpenRouter: false };
+    await assertStoredReasoningEffort({ provider: "codex", effort: "max", codexRoute });
+    expect((await resolveReasoningTarget({ provider: "codex", codexRoute })).route).toBe("codex");
+    expect(mocks.probe).not.toHaveBeenCalled();
+    await resolveReasoningTarget({ provider: "codex" });
+    expect(mocks.probe).toHaveBeenCalledTimes(1);
+  });
+});

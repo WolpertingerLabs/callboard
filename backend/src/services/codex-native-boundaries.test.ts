@@ -119,7 +119,10 @@ describe("native caller boundaries with real storage and registry", () => {
     rollout(CHILD, false);
     chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata: '{"provider":"codex"}' });
     const reasoning = await import("./reasoning-capabilities.js");
-    const validate = vi.spyOn(reasoning, "assertReasoningEffort").mockImplementationOnce(async () => {
+    // The HTTP route validates the explicit body fail-closed; sendMessage
+    // revalidates stored metadata on the execution path. Either is the awaited
+    // preflight this test races against.
+    const validate = vi.spyOn(reasoning, entry === "http" ? "assertReasoningEffort" : "assertStoredReasoningEffort").mockImplementationOnce(async () => {
       rollout(CHILD, true);
     });
     const update = vi.spyOn(chatFileService, "updateChatMetadata");
@@ -217,7 +220,7 @@ describe("native caller boundaries with real storage and registry", () => {
       const fs = await import("node:fs");
       let restoreRead: (() => void) | undefined;
       const reasoning = await import("./reasoning-capabilities.js");
-      const validate = vi.spyOn(reasoning, "assertReasoningEffort").mockImplementationOnce(async () => {
+      const validate = vi.spyOn(reasoning, entry === "http" ? "assertReasoningEffort" : "assertStoredReasoningEffort").mockImplementationOnce(async () => {
         expect(chatFileService.getChat(CHILD)).toBeNull();
         if (change === "disappeared") rmSync(file);
         else if (change === "oversized") rollout(CHILD, false, { base_instructions: "x".repeat(1024 * 1024) });
@@ -266,7 +269,7 @@ describe("native caller boundaries with real storage and registry", () => {
   it("does not replace a concurrently adopted filesystem root after low-level validation", async () => {
     rollout(CHILD, false);
     const reasoning = await import("./reasoning-capabilities.js");
-    const validate = vi.spyOn(reasoning, "assertReasoningEffort").mockImplementationOnce(async () => {
+    const validate = vi.spyOn(reasoning, "assertStoredReasoningEffort").mockImplementationOnce(async () => {
       chatFileService.upsertChat(CHILD, scratch, CHILD, { metadata: '{"provider":"codex","title":"concurrent"}' });
     });
     const adopt = vi.spyOn(chatFileService, "upsertChat");

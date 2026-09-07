@@ -1,8 +1,9 @@
 /** Model/route resolution shared by execution, API validation and the picker. */
 import { getAgentSettings, resolveSessionModel } from "./agent-settings.js";
-import { resolveCodexExecutionRoute, safeApiRoot } from "./codex-execution-route.js";
+import { resolveCodexExecutionRoute, safeApiRoot, type CodexExecutionRoute } from "./codex-execution-route.js";
 import { getCodexModelsAsync } from "./codex-models.js";
 import { getOpenRouterModelsAsync } from "./openrouter-models.js";
+import { createLogger } from "../utils/logger.js";
 import {
   nativeCodexReasoningCapability,
   openRouterReasoningCapability,
@@ -10,18 +11,22 @@ import {
   type ReasoningCapability,
 } from "shared/types/reasoning.js";
 
+const log = createLogger("reasoning-capabilities");
+
 export interface ReasoningRequest {
   provider?: string;
   model?: string;
   effort?: unknown;
   cwd?: string;
   folder?: string;
+  /** A route the caller already probed for this cwd — the probe spawns the CLI, so one sendMessage resolves it once. */
+  codexRoute?: CodexExecutionRoute;
 }
 
 /** Exactly the defaults/alias namespace passed to each execution adapter. */
 export async function resolveReasoningTarget(input: ReasoningRequest, settings = getAgentSettings()) {
   const provider = input.provider ?? "claude-code";
-  const codexRoute = provider === "codex" ? await resolveCodexExecutionRoute(settings, input.cwd ?? input.folder) : undefined;
+  const codexRoute = provider === "codex" ? (input.codexRoute ?? (await resolveCodexExecutionRoute(settings, input.cwd ?? input.folder))) : undefined;
   const injectedOpenRouter = codexRoute?.injectedOpenRouter ?? false;
   const providerId =
     provider === "cline" ? settings.clineProviderId?.trim() || "anthropic" : provider === "pi" ? settings.piProviderId?.trim() || "openrouter" : provider;
@@ -133,11 +138,40 @@ export async function resolveReasoningCapability(input: ReasoningRequest): Promi
   };
 }
 
+function capabilityAllows(capability: ReasoningCapability, effort: unknown): boolean {
+  return typeof effort === "string" && (capability.efforts.includes(effort) || (effort === "none" && capability.legacySummaryNone === true));
+}
+
+function unsupportedEffortError(capability: ReasoningCapability, effort: unknown): Error {
+  return new Error(
+    `Reasoning effort "${String(effort)}" is not supported for ${capability.provider}/${capability.route} model "${capability.model ?? "(runtime default)"}". ${capability.message ?? ""} Supported efforts: ${capability.efforts.join(", ") || "none advertised"}. Clear the effort to use the runtime default.`,
+  );
+}
+
+/** New explicit selections fail closed: an effort nobody can vouch for is refused. */
 export async function assertReasoningEffort(input: ReasoningRequest): Promise<void> {
   if (input.effort === undefined || input.effort === "") return;
   const capability = await resolveReasoningCapability(input);
-  if (typeof input.effort === "string" && (capability.efforts.includes(input.effort) || (input.effort === "none" && capability.legacySummaryNone))) return;
-  throw new Error(
-    `Reasoning effort "${String(input.effort)}" is not supported for ${capability.provider}/${capability.route} model "${capability.model ?? "(runtime default)"}". ${capability.message ?? ""} Supported efforts: ${capability.efforts.join(", ") || "none advertised"}. Clear the effort to use the runtime default.`,
-  );
+  if (capabilityAllows(capability, input.effort)) return;
+  throw unsupportedEffortError(capability, input.effort);
+}
+
+/**
+ * Execution of an already-stored effort. Refused only when the catalog knows the
+ * model and does not list the effort. A route probe that timed out, an offline
+ * catalog or an unlisted model cannot verify anything, and before these probes
+ * existed none of them could stop a chat — so the value goes through as it did
+ * then, and the harness itself reports a genuinely unsupported effort.
+ */
+export async function assertStoredReasoningEffort(input: ReasoningRequest): Promise<void> {
+  if (input.effort === undefined || input.effort === "") return;
+  const capability = await resolveReasoningCapability(input);
+  if (capabilityAllows(capability, input.effort)) return;
+  if (capability.status === "unknown" && typeof input.effort === "string") {
+    log.warn(
+      `Cannot verify stored reasoning effort "${input.effort}" for ${capability.provider}/${capability.route} model "${capability.model ?? "(runtime default)"}"; sending it unverified.`,
+    );
+    return;
+  }
+  throw unsupportedEffortError(capability, input.effort);
 }

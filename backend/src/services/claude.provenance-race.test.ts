@@ -9,7 +9,7 @@ process.env.CALLBOARD_DATA_DIR = dir;
 const validate = vi.hoisted(() => vi.fn());
 vi.mock("./reasoning-capabilities.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./reasoning-capabilities.js")>()),
-  assertReasoningEffort: validate,
+  assertStoredReasoningEffort: validate,
 }));
 vi.mock("./quick-completion.js", () => ({
   generateChatTitle: async () => null,
