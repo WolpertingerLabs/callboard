@@ -1,4 +1,5 @@
 import { resolveJobSessionFolder } from "./job-session-folder.js";
+import { resolveJobSessionModel } from "./job-session-model.js";
 import { getAgentSettings, resolveSessionModel } from "./agent-settings.js";
 import { isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
 import { OPENROUTER_REASONING_EFFORTS } from "shared/types/reasoning.js";
@@ -23,7 +24,7 @@ export async function assertJobReasoningEfforts(raw: unknown): Promise<void> {
     try {
       const input = {
         provider: (step.provider ?? defaults.provider ?? "claude-code") as string,
-        model: (step.model ?? defaults.model) as string | undefined,
+        model: resolveJobSessionModel(step as { provider?: string; model?: string }, defaults as { provider?: string; model?: string }),
         effort: step.effort,
       };
       const folder = resolveJobSessionFolder(step, defaults);

@@ -1,4 +1,5 @@
 import { resolveJobSessionFolder } from "./job-session-folder.js";
+import { resolveJobSessionModel } from "./job-session-model.js";
 /**
  * Job runner — the deterministic state machine behind job runs.
  *
@@ -1092,7 +1093,10 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   }
 
   const provider = sessionFields?.provider ?? defaults.provider ?? "claude-code";
-  const model = sessionFields?.model ?? defaults.model;
+  // The job-level default model belongs to the job-level default harness; a
+  // step on another harness, or a native step handed an OpenRouter slug, gets
+  // none — see resolveJobSessionModel.
+  const model = resolveJobSessionModel(sessionFields ?? {}, defaults);
 
   const promptIterable = (async function* () {
     yield { type: "user" as const, message: { role: "user" as const, content: prompt } };

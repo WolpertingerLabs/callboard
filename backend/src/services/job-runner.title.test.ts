@@ -147,4 +147,21 @@ describe("step reasoning overrides", () => {
     await flush(() => sentConfig.length === 1);
     expect(sentConfig[0]).toEqual({ model: "luna", effort: "max" });
   });
+  it("does not hand the job default model to a step on another harness", async () => {
+    // Pre-#408 the default was documented as an OpenRouter slug and never reached
+    // any other harness; a legacy definition like this one still exists.
+    const jobId = makeJob({
+      defaults: { provider: "codex", model: "anthropic/claude-sonnet-4" },
+      steps: [
+        { id: "a", type: "agent", prompt: "Do it", provider: "claude-code", next: "b" },
+        { id: "b", type: "agent", prompt: "Do it", model: "luna" },
+      ],
+    });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => !!store.getRun(runId)?.activeStep?.chatId);
+    expect(sentConfig[0]).toEqual({ model: undefined, effort: undefined });
+    endStep(runId, "a");
+    await flush(() => sentConfig.length === 2);
+    expect(sentConfig[1]).toEqual({ model: "luna", effort: undefined });
+  });
 });
