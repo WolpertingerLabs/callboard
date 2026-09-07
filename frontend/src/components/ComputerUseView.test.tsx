@@ -235,10 +235,10 @@ it.each(["stopped", "new pending", "connection lost"] as const)(
     if (newer === "new pending") {
       click("Stop computer control");
       expect(client.control).toHaveBeenCalledWith("c1", "new-emergency-id", "stop", 0);
-      // Snapshot absence is not a terminal acknowledgement. Previously known
-      // IDs remain emergency targets as well as the newly discovered ID.
+      // Real sessions survive absence; generation-zero request IDs can expire
+      // silently and are retired only by the authoritative missing snapshot.
       expect(client.control).toHaveBeenCalledWith("c1", "s1", "stop", 1);
-      expect(client.control).toHaveBeenCalledWith("c1", "s2", "stop", 0);
+      expect(vi.mocked(client.control).mock.calls.some(([, id]) => id === "s2")).toBe(false);
       await act(async () => {});
     }
   },
@@ -501,3 +501,160 @@ it.each(["status", "stop acknowledgement"] as const)(
     expect(summary().getAttribute("aria-label")).toContain("0 active · 0 waiting for approval");
   },
 );
+
+it("consumes a target approval ID that returns a different real session ID, even when post-approval reads fail", async () => {
+  status.sessions = [{ id: "request", kind: "browser", state: "pending_approval", generation: 0, controller: null }];
+  render(<Harness />);
+  await screen.findByText("0 active · 1 waiting");
+  click("Switch view");
+  vi.mocked(client.control).mockImplementation(async (_chat, id, operation) => {
+    if (operation === "approve") {
+      status.sessions = [{ ...openedSession, generation: 4 }];
+      vi.mocked(client.status).mockRejectedValue(new Error("post-approval offline"));
+      return status.sessions[0];
+    }
+    if (id === "request") throw new Error("Unknown session");
+    status.sessions[0].state = "stopped";
+    return { ...status.sessions[0] };
+  });
+  click("Approve this request");
+  await screen.findByText("Last known");
+  // Stop must learn the returned ID and forget the consumed request even when
+  // fresh status cannot establish visible authority.
+  click("Stop computer control");
+  await act(async () => {});
+  expect(client.control).toHaveBeenCalledWith("c1", openedSession.id, "stop", 4);
+  expect(
+    vi
+      .mocked(client.control)
+      .mock.calls.filter(([, , op]) => op === "stop")
+      .map(([, id]) => id),
+  ).toEqual([openedSession.id]);
+  expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("Unknown session"))).toBe(false);
+  vi.mocked(client.status).mockImplementation(async () => structuredClone(status));
+  click("Stop computer control");
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(vi.mocked(client.control).mock.calls.filter(([, , op]) => op === "stop")).toHaveLength(1);
+});
+
+it.each(["pending", "awaiting_approval", "approval_required", "pending_approval"] as const)(
+  "retires expired/removed generation-zero %s requests, without dropping the active session",
+  async (alias) => {
+    vi.useFakeTimers();
+    status.sessions = [
+      { ...openedSession, generation: 7 },
+      { id: "expired-request", kind: "browser", state: alias, controller: null, generation: 0 },
+    ];
+    render(<Harness />);
+    await act(async () => {});
+    status.sessions = [status.sessions[0]];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    vi.mocked(client.control).mockImplementation(async (_chat, id) => {
+      if (id === "expired-request") throw new Error("Unknown session");
+      status.sessions[0].state = "stopped";
+      return { ...status.sessions[0] };
+    });
+    click("Stop computer control");
+    await act(async () => {});
+    expect(screen.queryByRole("alert")).toBeNull();
+    click("Stop computer control");
+    await act(async () => {});
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(client.control).toHaveBeenCalledExactlyOnceWith("c1", openedSession.id, "stop", 7);
+  },
+);
+
+it("clears a raced Unknown session request-stop error only after authoritative discovery confirms expiration", async () => {
+  status.sessions = [{ id: "expired", kind: "browser", state: "pending_approval", controller: null, generation: 0 }];
+  render(<Harness />);
+  await screen.findByText("0 active · 1 waiting");
+  status.sessions = []; // The host expired it since the last poll.
+  vi.mocked(client.control).mockRejectedValue(new Error("Unknown session"));
+  click("Stop computer control");
+  await act(async () => {});
+  expect(screen.queryByRole("alert")).toBeNull();
+  expectIdle();
+  click("Stop computer control");
+  await act(async () => {});
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(client.control).toHaveBeenCalledExactlyOnceWith("c1", "expired", "stop", 0);
+});
+
+it("does not retire pending requests from a stale ignored read, or real positive-generation sessions from an authoritative missing read", async () => {
+  vi.useFakeTimers();
+  status.sessions = [status.sessions[1], { ...openedSession, state: "awaiting_approval", generation: 5 }];
+  render(<Harness />);
+  await act(async () => {});
+  click("Switch view");
+  const old = deferred<ComputerUseStatus>();
+  vi.mocked(client.status).mockReturnValueOnce(old.promise);
+  click("Retry status");
+  await act(async () => {});
+  // A newer authoritative read keeps s2, but is missing the real session.
+  status.sessions = [status.sessions[0]];
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  await act(async () => old.resolve({ ...status, sessions: [] }));
+  vi.mocked(client.status).mockRejectedValue(new Error("offline"));
+  vi.mocked(client.control).mockImplementation(async (_chat, id) => ({ id, state: "stopped" }));
+  click("Stop computer control");
+  expect(client.control).toHaveBeenCalledWith("c1", "s2", "stop", 0);
+  expect(client.control).toHaveBeenCalledWith("c1", openedSession.id, "stop", 5);
+  await act(async () => {});
+});
+
+it("does not retire a late-created pending request from an authoritative empty read dispatched before its ID was learned", async () => {
+  vi.useFakeTimers();
+  status.sessions = [];
+  render(<Harness />);
+  await act(async () => {});
+  click("Switch view");
+  const open = deferred<Awaited<ReturnType<typeof client.open>>>();
+  vi.mocked(client.open).mockReturnValueOnce(open.promise);
+  click("Enable");
+  await act(async () => {});
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  click("Switch view");
+  const poll = deferred<ComputerUseStatus>();
+  vi.mocked(client.status).mockReturnValueOnce(poll.promise);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  await act(async () => open.resolve({ session: { id: "late-request", kind: "browser", state: "pending_approval", generation: 0, controller: null } }));
+  await act(async () => poll.resolve({ ...status, sessions: [] }));
+  expectIdle();
+  vi.mocked(client.status).mockRejectedValue(new Error("offline"));
+  vi.mocked(client.control).mockResolvedValue({ id: "late-request", state: "stopped" });
+  click("Stop computer control");
+  expect(client.control).toHaveBeenCalledWith("c1", "late-request", "stop", 0);
+  await act(async () => {});
+});
+
+it.each([undefined, { done: true }])("consumes an action request on a successful opaque approval result (%s), not its parent session", async (result) => {
+  status.sessions = [
+    { ...openedSession, generation: 8 },
+    { id: "action-request", kind: "browser", state: "pending_approval", generation: 0, controller: null },
+  ];
+  render(<Harness />);
+  await screen.findByText("1 active · 1 waiting");
+  click("Switch view");
+  vi.mocked(client.control).mockImplementation(async (_chat, id, operation) => {
+    if (operation === "approve") {
+      status.sessions = [status.sessions[0]];
+      vi.mocked(client.status).mockRejectedValue(new Error("offline"));
+      return result;
+    }
+    if (id === "action-request") throw new Error("Unknown session");
+    return { id, state: "stopped" };
+  });
+  click("Confirm request");
+  await screen.findByText("Last known");
+  click("Stop computer control");
+  await act(async () => {});
+  expect(vi.mocked(client.control).mock.calls.filter(([, , op]) => op === "stop")).toEqual([["c1", openedSession.id, "stop", 8]]);
+});

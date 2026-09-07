@@ -301,7 +301,7 @@ export default function ComputerUsePanel({
   const control = (operation: "takeover" | "resume" | "stop" | "revoke" | "approve") => {
     if (!session) return;
     void run(operation, async (signal) => {
-      const acceptResponse = beginMutation?.();
+      const acceptResponse = beginMutation?.(operation === "approve" ? session : undefined);
       const result = await client.control(chatId, session.id, operation, session.generation, shared && operation === "approve" ? undefined : signal);
       acceptResponse?.(result, !signal.aborted);
     });
@@ -394,7 +394,7 @@ export default function ComputerUsePanel({
                   disabled={busy || denied}
                   onClick={() =>
                     void run("Request approved", async (signal) => {
-                      const acceptResponse = beginMutation?.();
+                      const acceptResponse = beginMutation?.(item);
                       const result = await client.control(chatId, item.id, "approve", item.generation, shared ? undefined : signal);
                       acceptResponse?.(result, !signal.aborted);
                     })

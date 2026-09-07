@@ -4,6 +4,10 @@ import { computerUseClient as client } from "../api/computerUse";
 
 export const isTerminal = (session: ComputerUseSession) => ["stopped", "revoked", "closed", "failed", "expired"].includes(session.state);
 export const isPending = (session: ComputerUseSession) => ["pending", "awaiting_approval", "approval_required", "pending_approval"].includes(session.state);
+// Host requests (target access and individual GUI actions) are generation zero,
+// with their own IDs. Real package sessions start at generation one; never retire
+// one merely because its state uses a pending alias or it disappears from a read.
+export const isPendingRequest = (session: ComputerUseSession) => session.generation === 0 && isPending(session);
 
 // Bound the UI wait, not the accepted server operation. In particular, a timed-out
 // stop may still complete: do not abort it on timeout, navigation or viewer cleanup.
@@ -44,7 +48,8 @@ export function useComputerUseController(chatId: string | undefined) {
   const known = useRef<ComputerUseStatus | null>(null);
   // Stop-only knowledge is deliberately independent of display authority. A
   // successful open can arrive after a newer (empty) poll or a connection error.
-  // Absence from a snapshot never proves that an accepted session was stopped.
+  // Absence never proves an accepted session stopped. Generation-zero requests
+  // differ: the host deletes them on approval, denial/cancel or expiration.
   const emergency = useRef(new Map<string, ComputerUseSession>());
   const terminalIds = useRef(new Set<string>());
   const rememberEmergency = useCallback((response: unknown) => {
@@ -61,6 +66,15 @@ export function useComputerUseController(chatId: string | undefined) {
     if (!["browser", "native"].includes(value.kind ?? "") || !Number.isSafeInteger(value.generation) || value.generation! < 0) return;
     if (!previous || value.generation! >= previous.generation)
       emergency.current.set(value.id, { ...value, controller: value.controller ?? null } as ComputerUseSession);
+  }, []);
+  const retireRequest = useCallback((id: string) => {
+    const entry = emergency.current.get(id);
+    if (entry && isPendingRequest(entry)) {
+      terminalIds.current.add(id);
+      emergency.current.delete(id);
+      return true;
+    }
+    return false;
   }, []);
   const mounted = useRef(false);
   const lifetime = useRef(0);
@@ -126,9 +140,18 @@ export function useComputerUseController(chatId: string | undefined) {
       const scoped = () => mounted.current && current.current === chatId && lifetime.current === epoch && inScope() && !signal?.aborted;
       const ticket = scoped() ? ++readSequence.current : -1;
       const authority = revision.current;
+      const requestsAtStart = new Map([...emergency.current].filter(([, session]) => isPendingRequest(session)));
       const valid = () => scoped() && ticket === readSequence.current && authority === revision.current;
       try {
         const next = await bounded(client.status(chatId, signal));
+        if (valid()) {
+          const present = new Set(next.sessions.map((session) => session.id));
+          for (const [id, entry] of requestsAtStart) {
+            // Do not retire a request learned/updated while this read was in
+            // flight, nor from a read whose authority fence declined its result.
+            if (!present.has(id) && emergency.current.get(id) === entry) retireRequest(id);
+          }
+        }
         if (scoped()) for (const session of next.sessions) rememberEmergency(session);
         if (valid()) publish(next);
         // Discovery can still stop old-chat sessions after navigation, but must
@@ -142,30 +165,35 @@ export function useComputerUseController(chatId: string | undefined) {
         return undefined;
       }
     },
-    [chatId, publish, fail, rememberEmergency],
+    [chatId, publish, fail, rememberEmergency, retireRequest],
   );
 
   // Fence mutation responses as well as reads. A newer published status/error,
   // another mutation or emergency stop supersedes this response. The viewer
   // still performs a fresh, ordered post-mutation status read.
-  const beginMutation = useCallback(() => {
-    const epoch = lifetime.current;
-    const mutation = ++mutationSequence.current;
-    const authority = ++revision.current;
-    return (response: unknown, present = true) => {
-      const scoped = mounted.current && current.current === chatId && lifetime.current === epoch;
-      if (scoped) rememberEmergency(response);
-      if (
-        present &&
-        mounted.current &&
-        current.current === chatId &&
-        lifetime.current === epoch &&
-        mutation === mutationSequence.current &&
-        authority === revision.current
-      )
-        acceptResponse(response);
-    };
-  }, [chatId, acceptResponse, rememberEmergency]);
+  const beginMutation = useCallback(
+    (approvedRequest?: ComputerUseSession) => {
+      const epoch = lifetime.current;
+      const mutation = ++mutationSequence.current;
+      const authority = ++revision.current;
+      return (response: unknown, present = true) => {
+        const scoped = mounted.current && current.current === chatId && lifetime.current === epoch;
+        const canPresent = present && scoped && mutation === mutationSequence.current && authority === revision.current;
+        // A successful approval consumes the request even when it returns an opaque
+        // action result/204, or its new session response loses display authority.
+        // Same-ID promotion is retained for adapters that return a real session ID.
+        const returnedId = response && typeof response === "object" ? (response as { id?: unknown }).id : undefined;
+        const consumed =
+          scoped && approvedRequest && isPendingRequest(approvedRequest) && returnedId !== approvedRequest.id ? retireRequest(approvedRequest.id) : false;
+        if (scoped) rememberEmergency(response);
+        if (canPresent) {
+          if (consumed && approvedRequest) acceptResponse({ id: approvedRequest.id, state: "closed" });
+          acceptResponse(response);
+        }
+      };
+    },
+    [chatId, acceptResponse, rememberEmergency, retireRequest],
+  );
 
   useEffect(() => {
     ++lifetime.current;
@@ -218,10 +246,13 @@ export function useComputerUseController(chatId: string | undefined) {
     const epoch = lifetime.current;
     const valid = () => mounted.current && current.current === chatId && lifetime.current === epoch && stopSequence.current === attempt;
     const errors: string[] = [];
-    const report = (message: string) => {
-      errors.push(message);
+    const requestFailures = new Map<string, string>();
+    const messages = () => [...errors, ...requestFailures.values()];
+    const report = (message: string, requestId?: string) => {
+      if (requestId) requestFailures.set(requestId, message);
+      else errors.push(message);
       // Show each failure immediately, even while discovery/verification waits.
-      if (valid()) setStopError(`${errors.join(" ")} Retry Stop computer control when this attempt finishes.`);
+      if (valid()) setStopError(`${messages().join(" ")} Retry Stop computer control when this attempt finishes.`);
     };
     const sessions = new Map(emergency.current);
     const attempted = new Set<string>();
@@ -235,7 +266,7 @@ export function useComputerUseController(chatId: string | undefined) {
           acceptResponse(result);
         }
       } catch (error) {
-        report(`${session.kind} ${session.id}: ${error instanceof Error ? error.message : "stop failed"}`);
+        report(`${session.kind} ${session.id}: ${error instanceof Error ? error.message : "stop failed"}`, isPendingRequest(session) ? session.id : undefined);
       }
     };
     // Dispatch known emergency stops immediately, even if discovery is slow.
@@ -267,7 +298,12 @@ export function useComputerUseController(chatId: string | undefined) {
       if (valid()) {
         stopActive.current = false;
         setStopping(false);
-        setStopError(errors.length ? `${errors.join(" ")} Retry Stop computer control.` : "");
+        // Discovery/verification may confirm that a failed stop targeted a
+        // request already consumed/expired. Only those proven request failures
+        // can be cleared; transport failures for real sessions remain retryable.
+        for (const id of requestFailures.keys()) if (terminalIds.current.has(id)) requestFailures.delete(id);
+        const remaining = messages();
+        setStopError(remaining.length ? `${remaining.join(" ")} Retry Stop computer control.` : "");
       }
     }
   }, [chatId, readStatus, acceptResponse, rememberEmergency]);
