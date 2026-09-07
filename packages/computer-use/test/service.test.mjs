@@ -325,7 +325,7 @@ test("real MCP initialize/list/call preserves text + image and fixed manifest", 
     const { tools } = await client.listTools();
     assert.deepEqual(
       tools.map((t) => t.name),
-      getToolDefinitions(s, agent).map((t) => t.name),
+      ["computer_status", "computer_probe", "computer_open", "computer_observe", "computer_act", "computer_stop", "computer_revoke"],
     );
     assert.equal(
       tools.some((t) => t.name.includes("grant") || t.name.includes("resume")),
