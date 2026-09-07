@@ -95,13 +95,16 @@ let warnedSdkDrift = false;
  *    order and `updatedAt`, and an append changes neither the directory nor
  *    the set. {@link ROLLOUT_LISTING_TTL_MS} bounds how stale that ordering
  *    can be.
- *  - **A write in the same clock tick as the walk.** Directory mtimes come
- *    from the kernel's coarse clock (a jiffy — up to 10 ms), so a file created
- *    right after the walk but inside the same tick leaves the mtime as the
- *    walk saw it. A listing is therefore only memoized once every directory's
- *    mtime is comfortably older than the walk ({@link ROLLOUT_LISTING_SETTLE_MS});
- *    during a burst of rollout creation the walk simply runs each time, which
- *    is correct and no slower than before.
+ *  - **A write in the same timestamp tick as the walk.** Directory mtimes come
+ *    from the kernel's coarse clock (a jiffy — up to 10 ms) and are then stored
+ *    at the filesystem's granularity, which is one whole second on ext4 with
+ *    128-byte inodes, ext3 and HFS+. A file created right after the walk but
+ *    inside the same tick leaves the mtime as the walk saw it. A listing is
+ *    therefore only memoized once every directory's mtime is more than a
+ *    second older than the walk ({@link ROLLOUT_LISTING_SETTLE_MS}); during a
+ *    burst of rollout creation the walk simply runs each time, which is
+ *    correct and no slower than before. In the steady state — no rollout
+ *    created in the last second — the memo is what answers.
  */
 interface RolloutListingMemo {
   root: string;
@@ -110,7 +113,7 @@ interface RolloutListingMemo {
   entries: RolloutEntry[];
 }
 const ROLLOUT_LISTING_TTL_MS = 2000;
-const ROLLOUT_LISTING_SETTLE_MS = 50;
+const ROLLOUT_LISTING_SETTLE_MS = 1100;
 let rolloutListing: RolloutListingMemo | null = null;
 
 /** Drop the memoized rollout listing. Test seam — production never needs it. */

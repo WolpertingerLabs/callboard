@@ -415,8 +415,12 @@ describe("rollout listing memo", () => {
     expect(provider.discoverSessions({ limit: 10, offset: 0 }).sessions.map((s) => s.sessionId)).toEqual([UUID_A]);
   });
 
-  it("never memoizes a walk of a tree that changed within the clock's coarse tick", async () => {
-    writeRollout(UUID_A); // the day directory's mtime is "now"
+  it.each([0, 900])("never memoizes a walk taken within a second of a directory's mtime (%d ms ago)", async (age) => {
+    // Directory mtimes are stored at the filesystem's granularity — a whole
+    // second on ext4 with 128-byte inodes, ext3 and HFS+ — so a rollout
+    // created in the same second as the walk leaves the mtime unchanged.
+    writeRollout(UUID_A);
+    if (age) backdateTree(age);
     const provider = new CodexSessionProvider();
     provider.resolveSession(UUID_A);
     const spy = await walks();
@@ -426,6 +430,20 @@ describe("rollout listing memo", () => {
     } finally {
       spy.restore();
     }
+  });
+
+  it("sees a rollout created in the same second as a walk, on a 1-second-granularity filesystem", async () => {
+    writeRollout(UUID_A);
+    const now = Date.now();
+    const second = new Date(Math.floor(now / 1000) * 1000);
+    // Simulate 1 s granularity: the day directory's mtime is the current whole second.
+    for (const dir of ["sessions", "sessions/2026", "sessions/2026/06"]) utimesSync(join(CODEX_HOME, dir), new Date(now - 60_000), new Date(now - 60_000));
+    utimesSync(join(CODEX_HOME, "sessions/2026/06/14"), second, second);
+    const provider = new CodexSessionProvider();
+    expect(provider.resolveSession(UUID_B)).toBeNull();
+    const created = writeRollout(UUID_B);
+    utimesSync(join(CODEX_HOME, "sessions/2026/06/14"), second, second); // the write did not move the mtime
+    expect(provider.resolveSession(UUID_B)?.logPath).toBe(created);
   });
 
   it("does not serve one $CODEX_HOME's listing for another", async () => {
