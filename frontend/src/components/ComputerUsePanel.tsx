@@ -57,9 +57,11 @@ export default function ComputerUsePanel({
 }) {
   const resumePrivacyId = useId();
   const sharedGrantId = useId();
-  // Codex runs native subagents inside the parent's turn; the host authorizes
-  // them under the parent chat, so the grant a human approves here is theirs too.
-  const sharedGrantNote = provider === "codex" ? sharedGrantId : undefined;
+  // Claude Code (Task subagents, same CLI process and tool server) and Codex
+  // (native subagents on the parent's per-turn socket) run subagents inside the
+  // parent's turn; the host authorizes them under the parent chat, so the grant
+  // a human approves here is theirs too.
+  const sharedGrantNote = provider === "codex" || provider === "claude-code" ? sharedGrantId : undefined;
   const [preview, setPreview] = useState(false);
   const { readStatus, beginMutation, status } = controller;
   const [kind, setKind] = useState<ComputerUseKind>("browser");
@@ -309,8 +311,9 @@ export default function ComputerUsePanel({
         </div>
         {sharedGrantNote && (
           <p id={sharedGrantNote} role="note">
-            <strong>Codex:</strong> a grant you enable or approve here is shared with any native subagents the agent spawns during the turn, and their actions
-            are recorded under this chat&apos;s identity.
+            <strong>Shared with subagents:</strong> a grant you enable or approve here is shared with any subagents the agent runs inside this chat&apos;s
+            turn ({provider === "codex" ? "Codex native subagents" : "Claude Code Task subagents"}), and their screenshots and actions are recorded under this
+            chat&apos;s identity.
           </p>
         )}
         {(kind === "native" || session?.kind === "native") && (

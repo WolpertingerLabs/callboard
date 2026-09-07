@@ -110,7 +110,10 @@ describe("ComputerUsePanel", () => {
     expect(onPermissions).toHaveBeenCalled();
   });
 
-  it.each(["codex", "claude-code", undefined])("explains the shared subagent grant only for Codex chats (%s)", async (provider) => {
+  it.each(["codex", "claude-code", "pi", undefined])("explains the shared subagent grant for the engines whose subagents share the tool server (%s)", async (provider) => {
+    // Claude Code Task subagents run in the same CLI process against the same
+    // in-process server; Codex native subagents inherit the parent's per-turn
+    // socket. Both act under the parent chat's identity, so both must be told.
     status.permission = "ask";
     status.sessions = [
       status.sessions[0],
@@ -118,14 +121,15 @@ describe("ComputerUsePanel", () => {
     ];
     render(<Viewer permission="ask" provider={provider} />);
     await ready();
-    const note = screen.queryByText(/shared with any native subagents/);
-    if (provider !== "codex") {
+    const note = screen.queryByText(/shared with any subagents the agent runs inside this chat's turn/);
+    if (provider !== "codex" && provider !== "claude-code") {
       expect(note).toBeNull();
       expect(button("Enable").hasAttribute("aria-describedby")).toBe(false);
       expect(button("Confirm request").hasAttribute("aria-describedby")).toBe(false);
       return;
     }
     expect(note!.getAttribute("role")).toBe("note");
+    expect(note!.textContent).toContain(provider === "codex" ? "Codex native subagents" : "Claude Code Task subagents");
     expect(note!.textContent).toContain("recorded under this chat's identity");
     // Both places a human grants access point at the same note.
     expect(button("Enable").getAttribute("aria-describedby")).toBe(note!.id);

@@ -201,7 +201,7 @@ export class ComputerUseHost {
               }
             : {
                 reason:
-                  "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested. Every agent action still needs a separate confirmation here, whatever the permission level. On Codex, native subagents spawned by this chat share this grant and act under this chat's identity.",
+                  "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested. Every agent action still needs a separate confirmation here, whatever the permission level. Subagents the engine runs inside this chat's turn (Claude Code Task subagents, Codex native subagents) share this grant and act under this chat's identity.",
               }),
           state: "pending_approval" as SessionStatus["state"],
           generation: 0,

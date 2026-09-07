@@ -85,13 +85,15 @@ const text = (value: unknown): ToolCallResult => ({ content: [{ type: "text", te
 
 /**
  * Identity note: the spec is bound to the owning chat through `getChatId`, and
- * every call is authorized and audited as `agent:<that chat>`. On Codex the
- * tool server is a per-turn socket the parent's native subagents inherit, and
- * exec requests carry no verified caller thread id (see
- * `codex/toolAdapter.ts`), so a subagent's `cu_*` calls arrive — and are
- * recorded — as the parent's. `assertNativeAgentControllable` only stops a
- * child chat id from enabling a target on its own; it cannot see this path.
- * The Enable approval text tells the granting human so (`ComputerUseHost.status`).
+ * every call is authorized and audited as `agent:<that chat>`. Subagents that
+ * run inside the parent's turn call this same server and inherit that identity:
+ * on Claude Code, Task subagents run in the same CLI process against the same
+ * in-process SDK server; on Codex, the tool server is a per-turn socket the
+ * native subagents inherit, and exec requests carry no verified caller thread
+ * id (see `codex/toolAdapter.ts`). Either way a subagent's `cu_*` calls arrive
+ * — and are recorded — as the parent's. `assertNativeAgentControllable` only
+ * stops a child chat id from enabling a target on its own; it cannot see this
+ * path. The Enable approval text and the panel tell the granting human so.
  */
 export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSpec {
   type Context = { signal?: AbortSignal; toolCallId?: string };

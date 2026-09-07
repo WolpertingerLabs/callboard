@@ -169,7 +169,7 @@ Existing chats continue normally: this feature does not automatically open a bro
 
 Choose **Managed browser** or **Native desktop (service host)** and click **Enable**; Ask also requires scoped approval. Browser permission does not authorize desktop control. **Every model-requested GUI mutation currently requires a separate human confirmation, even with Allow** — Allow only removes the extra approval click on Enable; it does not grant autonomous control. Approvals expire and bind one action to one captured frame; refresh and request a new approval if the frame becomes stale.
 
-On Codex, native subagents spawned by a chat share that chat's tool server and therefore its computer-control grant: their screenshots and action requests are authorized and audited as the parent chat, not as the child. Enable a target in a Codex chat only if you are comfortable with everything it spawns using it.
+Subagents that run inside a chat's turn share that chat's tool server and therefore its computer-control grant: Claude Code Task subagents and Codex native subagents both make their screenshot and action requests as the parent chat, and they are authorized and audited as the parent, not as the child. Enable a target only if you are comfortable with everything the chat spawns using it.
 
 **Provision the service host first:**
 
