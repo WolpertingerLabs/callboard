@@ -102,6 +102,41 @@ export async function* translateCodexEvents(
  * tool-item lifecycle events that translate to a single event each (no fan-out
  * here — the pair is split across the started/completed events themselves).
  */
+/**
+ * Item types the CLI records in the durable rollout but does NOT project onto
+ * the public `--experimental-json` lane in 0.153.4, checked before the typed
+ * switches below.
+ *
+ * They are absent from the SDK's eight-member `ThreadItem` union, so TypeScript
+ * cannot express them as `case` arms — hence the widened lookup. Handling them
+ * here is deliberately **inert against the current CLI**: nothing in this build
+ * can produce one. It exists so that a later CLI which starts emitting them
+ * degrades into the right behaviour instead of silently falling out of a
+ * `switch` with no `default`.
+ *
+ *  - `context_compaction` — the compaction this adapter otherwise learns about
+ *    only by tailing the rollout (see `rolloutTail.ts`). If the public lane ever
+ *    carries it, it maps onto the same `compaction_boundary` the tail emits, and
+ *    the tail's id-dedupe is what keeps the two from double-reporting.
+ *  - `user_message` — the user's own turn echoed back. callboard already has it
+ *    (it sent it), so the correct translation is to drop it rather than render
+ *    the prompt a second time.
+ *
+ * @see plans/codex-spike-findings.md §4
+ */
+function translateRolloutOnlyItem(item: ThreadItem): AgentEvent | null | undefined {
+  switch ((item as { type?: string }).type) {
+    case "context_compaction":
+      return { type: "compaction_boundary" };
+    case "user_message":
+      return null;
+    default:
+      // Not one of ours — `undefined` (distinct from the `null` that means
+      // "recognised, deliberately dropped") tells the caller to keep going.
+      return undefined;
+  }
+}
+
 export function translateCodexEvent(event: ThreadEvent): AgentEvent | AgentEvent[] | null {
   switch (event.type) {
     case "thread.started":
@@ -140,6 +175,11 @@ export function translateCodexEvent(event: ThreadEvent): AgentEvent | AgentEvent
  * finished working through it. See {@link todoEvent}.
  */
 function translateItemStarted(item: ThreadItem): AgentEvent | null {
+  const rolloutOnly = translateRolloutOnlyItem(item);
+  // A compaction/user-message item says nothing at *start* — it is only
+  // meaningful once complete, so both drop here even when recognised.
+  if (rolloutOnly !== undefined) return null;
+
   switch (item.type) {
     case "command_execution":
       return toolUse("Bash", item.id, { command: item.command });
@@ -173,6 +213,11 @@ function translateItemStarted(item: ThreadItem): AgentEvent | null {
  * there is nothing to double-count.
  */
 function translateItemUpdated(item: ThreadItem): AgentEvent | null {
+  // Same reasoning as `item.started`: neither has a mid-flight update worth
+  // rendering, and re-emitting a compaction here would double-count it.
+  const rolloutOnly = translateRolloutOnlyItem(item);
+  if (rolloutOnly !== undefined) return null;
+
   switch (item.type) {
     case "command_execution":
       return toolUse("Bash", item.id, { command: item.command });
@@ -196,6 +241,9 @@ function translateItemUpdated(item: ThreadItem): AgentEvent | null {
  * content here; tool items emit their `tool_result`.
  */
 function translateItemCompleted(item: ThreadItem): AgentEvent | null {
+  const rolloutOnly = translateRolloutOnlyItem(item);
+  if (rolloutOnly !== undefined) return rolloutOnly;
+
   switch (item.type) {
     case "agent_message":
       return { type: "text", content: (item as AgentMessageItem).text };

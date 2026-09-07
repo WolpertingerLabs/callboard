@@ -12,6 +12,9 @@
  *    NOT a mock that pokes SDK callbacks, so the translation runs exactly as it
  *    does in production.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import { translateCodexEvent, translateCodexEvents } from "./messageAdapter.js";
@@ -351,5 +354,108 @@ describe("translateCodexEvents — driven against the captured spike stream", ()
     ).rejects.toThrow("AbortError");
     // The session_started that arrived before the throw was still yielded.
     expect(seen).toEqual([{ type: "session_started", sessionId: "t" }]);
+  });
+});
+
+/**
+ * Rollout-only item types.
+ *
+ * These are recorded in the durable rollout but never projected onto the public
+ * `--experimental-json` lane by CLI 0.153.4 — they are absent from the SDK's
+ * eight-member `ThreadItem` union, so nothing in this build can produce one.
+ * The handling is deliberately inert today; it exists so a later CLI that
+ * starts emitting them degrades correctly instead of falling out of a `switch`
+ * with no `default` and returning `undefined`.
+ *
+ * Casting through `unknown` is the point of the test: it constructs exactly the
+ * shape the type system says cannot arrive, which is what a version bump would
+ * deliver at runtime.
+ */
+describe("rollout-only item types (defensive, inert against 0.153.4)", () => {
+  const item = (type: string, extra: Record<string, unknown> = {}): ThreadEvent =>
+    ({ type: "item.completed", item: { id: "i1", type, ...extra } }) as unknown as ThreadEvent;
+
+  it("maps a context_compaction item onto compaction_boundary", () => {
+    expect(translateCodexEvent(item("context_compaction"))).toEqual({ type: "compaction_boundary" });
+  });
+
+  it("drops a user_message item rather than echoing the prompt back", () => {
+    expect(translateCodexEvent(item("user_message", { content: "hi" }))).toBeNull();
+  });
+
+  it("drops both at item.started and item.updated, so a compaction counts once", () => {
+    for (const phase of ["item.started", "item.updated"] as const) {
+      for (const type of ["context_compaction", "user_message"]) {
+        const event = { type: phase, item: { id: "i1", type } } as unknown as ThreadEvent;
+        expect(translateCodexEvent(event)).toBeNull();
+      }
+    }
+  });
+
+  it("still returns null (not undefined) for a genuinely unknown item type", () => {
+    // The pre-check must not swallow types it does not recognise: they fall
+    // through to the typed switch, whose absent `default` yields undefined.
+    // Asserting the current behaviour so a future `default` arm is a visible change.
+    expect(translateCodexEvent(item("some_future_type"))).toBeUndefined();
+  });
+});
+
+/**
+ * Real captured live streams, as further evidence that the public lane is
+ * snake_case with the fields the adapter reads.
+ *
+ * The PascalCase item types visible in a rollout (`AgentMessage`, `Reasoning`,
+ * `CommandExecution`, `ContextCompaction`) are a *different serialization of
+ * the same run* and never reach this adapter. These fixtures were captured with
+ * `codex exec --experimental-json` against CLI 0.153.4 — the exact bytes the
+ * SDK generator parses — so if a future CLI switches encodings, these fail.
+ */
+describe("captured 0.153.4 live streams", () => {
+  const fixture = (name: string): ThreadEvent[] =>
+    parseFixture(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "__fixtures__", name), "utf-8"));
+
+  it("translates a reasoning + command_execution run with no dropped events", async () => {
+    const events = fixture("stream-cli-0.153.4-reasoning.jsonl");
+    // The capture really does contain a reasoning item — otherwise this proves nothing.
+    expect(events.some((e) => "item" in e && (e.item as { type: string }).type === "reasoning")).toBe(true);
+
+    const out = await collect(events);
+    expect(out.map((e) => e.type)).toEqual([
+      "session_started",
+      "text", // agent_message (commentary phase on the rollout lane)
+      "thinking", // reasoning — read via .text, which the live lane provides
+      "tool_use", // command_execution item.started
+      "tool_result", // command_execution item.completed
+      "text", // agent_message (final answer)
+      "result",
+    ]);
+    // The reasoning item carried real content, not an empty string from a dead
+    // field read — the exact failure mode the PascalCase theory predicted.
+    const thinking = out.find((e) => e.type === "thinking");
+    expect(thinking && "content" in thinking && thinking.content.length).toBeGreaterThan(0);
+  });
+
+  it("translates a file_change run as a change list", async () => {
+    const out = await collect(fixture("stream-cli-0.153.4-file-change.jsonl"));
+    expect(out.map((e) => e.type)).toEqual([
+      "session_started",
+      "text",
+      "tool_use",
+      "tool_result",
+      "tool_use", // file_change item.started
+      "tool_result", // file_change item.completed
+      "text",
+      "result",
+    ]);
+    const edit = out.find((e) => e.type === "tool_use" && "toolName" in e && e.toolName === "Edit");
+    expect(edit).toBeDefined();
+  });
+
+  it("contains no compaction on the public lane, which is why the tail exists", () => {
+    for (const name of ["stream-cli-0.153.4-reasoning.jsonl", "stream-cli-0.153.4-file-change.jsonl"]) {
+      const types = fixture(name).map((e) => ("item" in e ? (e.item as { type: string }).type : e.type));
+      expect(types).not.toContain("context_compaction");
+      expect(types).not.toContain("ContextCompaction");
+    }
   });
 });

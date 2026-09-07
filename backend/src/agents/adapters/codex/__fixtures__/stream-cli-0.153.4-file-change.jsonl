@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a07baf-8ea2-74f1-8b45-bcb32eaf2082"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run `echo hi`, create `a.txt` containing `hello`, then stop.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc 'echo hi'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/bash -lc 'echo hi'","aggregated_output":"hi\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"file_change","changes":[{"path":"/tmp/codex-astra.Emfcf9/a.txt","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"/tmp/codex-astra.Emfcf9/a.txt","kind":"add"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Ran `echo hi` (output: `hi`) and created `a.txt` containing `hello`."}}
+{"type":"turn.completed","usage":{"input_tokens":30708,"cached_input_tokens":27264,"cache_write_input_tokens":0,"output_tokens":112,"reasoning_output_tokens":0}}
