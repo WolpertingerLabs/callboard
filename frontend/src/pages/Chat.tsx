@@ -2587,6 +2587,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <header
+        className={`chat-header${isMobile ? " chat-header-mobile" : ""}`}
         style={{
           padding: "12px 16px",
           borderBottom: "1px solid var(--border)",
@@ -2615,8 +2616,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             <ArrowLeft size={20} />
           </button>
         )}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div className="chat-header-identity">
+          <div className="chat-header-identity-line">
             <div style={{ fontSize: 15, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {!id
                 ? info?.is_git_repo
@@ -2740,7 +2741,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         </div>
         {/* Desktop: action buttons inline, right-aligned */}
         {!isMobile && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          <div className="chat-header-actions">
             {/* View mode switcher - Chat / Git diff / Debug / Job */}
             {viewModeSwitcher}
             {computerChatId && <ComputerUseHeader controller={computerController} />}

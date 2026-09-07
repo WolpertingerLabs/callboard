@@ -83,24 +83,110 @@
   overflow: visible;
   padding: 12px;
 }
+/* Wrap against available chat width, not viewport width: a desktop sidebar or
+   split pane can leave much less room than the viewport media query suggests. */
+.chat-header {
+  flex-wrap: wrap;
+}
+.chat-header-identity {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.chat-header-identity-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.chat-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  max-width: 100%;
+  min-width: 0;
+}
+.chat-header-actions > *,
+.chat-header > button {
+  flex-shrink: 0;
+}
+.chat-header-actions > .computer-use-header {
+  flex-shrink: 1;
+}
 .computer-use-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: 100%;
+  flex-shrink: 0;
   font-size: 12px;
-  padding: 6px;
+  line-height: 1.4;
   color: var(--text);
-  background: var(--surface);
 }
-.computer-use-header button {
-  border: 1px solid var(--border);
+.computer-use-summary {
+  flex: 1 1 140px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.computer-use-summary > svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.computer-use-badge {
+  white-space: nowrap;
+}
+.computer-use-badge + .computer-use-badge::before {
+  content: "·";
+  margin-right: 4px;
+  color: var(--text-muted);
+}
+.computer-use-badge[data-warning="true"] {
+  font-weight: 600;
+}
+.computer-use-header .computer-use-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--danger);
   border-radius: 4px;
-  padding: 8px;
+  padding: 7px 8px;
   color: var(--text);
   background: var(--bg);
+  flex: 0 0 auto;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.computer-use-stop svg {
+  color: var(--danger);
   flex-shrink: 0;
 }
+.computer-use-stop:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.computer-use-stop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .computer-use-header [role="alert"] {
-  width: 100%;
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+  color: var(--danger);
+}
+/* The persistent mobile safety row is independent of the collapsed actions.
+   It uses the same compact content, never a second full status sentence. */
+.chat-header + .computer-use-header {
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sidebar);
+}
+.chat-header-mobile .chat-header-identity {
+  flex-basis: 100px;
 }
