@@ -119,7 +119,7 @@
     "multer": "^2.0.2",
     "node-cron": "^3.0.3",
     "winston": "^3.19.0",
-    "zod": "^4.4.3"
+    "zod": ">=4.4.3 <4.5.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
@@ -138,7 +138,8 @@
     "vitest": "^4.0.18"
   },
   "overrides": {
-    "shell-quote": "1.8.4"
+    "shell-quote": "1.8.4",
+    "zod": "$zod"
   },
   "optionalDependencies": {
     "playwright": "^1.55.0"
