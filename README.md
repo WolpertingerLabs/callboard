@@ -161,7 +161,9 @@ A zero exit from npm is not the same claim as "the engine is installed", so the 
 
 ### Browser & Computer Control (preview)
 
-Existing chats continue normally: this feature does not automatically open a browser or control a desktop. In a chat, expand **Browser & Computer Control**, open **Chat permissions**, and explicitly change its fifth permission from **Deny** to **Ask** or **Allow**. Missing legacy values and new child/job defaults deny managed access, including screenshots.
+The dedicated Computer view contains target selection, approvals, screenshots and manual takeover. Switching views never enables a target, captures a screenshot or resumes an agent. Closing the view drops local screenshots and input; it does not cancel an already accepted server capture. Header status continues to poll without screenshots, and **Stop computer control** stays reachable even on mobile with the action bar closed. It attempts all current chat browser/native sessions and pending requests, independently of Stop generation; partial failures remain visible for retry. Native Codex child chats are read-only. This UI has offline regression coverage, not live UI, model, browser, Aseprite or Blender qualification.
+
+Existing chats continue normally: this feature does not automatically open a browser or control a desktop. In an existing chat, select the monitor (**Show computer control**) in the header view switcher (on mobile, open the secondary action bar), then open **Chat permissions**, and explicitly change its fifth permission from **Deny** to **Ask** or **Allow**. Missing legacy values and new child/job defaults deny managed access, including screenshots.
 
 > Controls Callboard's browser and desktop tools. Agents with unrestricted code execution may still run their own automation.
 

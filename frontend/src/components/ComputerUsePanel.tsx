@@ -3,6 +3,7 @@ import type { ComputerUseAction, ComputerUseKind, ComputerUseObservation, Comput
 import type { PermissionLevel } from "shared/types/permissions.js";
 import { computerUseClient as client } from "../api/computerUse";
 import "./ComputerUsePanel.css";
+import type { ComputerUseController } from "../hooks/useComputerUseController";
 
 // A fetch abort is not server-side capture cancellation. Keep accepted captures
 // ordered across effect cleanup and panel remounts, and never reuse their old frame.
@@ -42,15 +43,33 @@ export default function ComputerUsePanel({
   chatId,
   permission = "deny",
   onPermissions,
+  controller,
+  dedicated = false,
 }: {
   chatId: string;
   permission?: PermissionLevel;
   onPermissions?: () => void;
+  controller?: ComputerUseController;
+  dedicated?: boolean;
 }) {
   const resumePrivacyId = useId();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(dedicated);
   const [preview, setPreview] = useState(false);
-  const [status, setStatus] = useState<ComputerUseStatus | null>(null);
+  const [localStatus, setLocalStatus] = useState<ComputerUseStatus | null>(null);
+  const shared = !!controller;
+  const publish = controller?.publish;
+  const fail = controller?.fail;
+  const acceptResponse = controller?.acceptResponse;
+  const status = controller ? controller.status : localStatus;
+  const setStatus = useCallback(
+    (next: ComputerUseStatus | null | ((previous: ComputerUseStatus | null) => ComputerUseStatus | null)) => {
+      if (publish && fail) {
+        if (typeof next === "function") fail("Status connection lost. Retry status before controlling the target.");
+        else if (next) publish(next);
+      } else setLocalStatus(next);
+    },
+    [publish, fail],
+  );
   const [kind, setKind] = useState<ComputerUseKind>("browser");
   const [selected, setSelected] = useState("");
   const [observation, setObservation] = useState<(ComputerUseObservation & { sessionId: string; controller: ComputerUseSession["controller"] }) | null>(null);
@@ -123,17 +142,25 @@ export default function ComputerUsePanel({
         }
       }
     },
-    [refresh, session, chatId],
+    [refresh, session, chatId, setStatus],
   );
 
   useEffect(() => {
     operationActive.current = false;
     setCapturing(false);
+    setBusy(false);
+    setPreview(false);
+    dragStart.current = null;
     setObservation(null);
     setStatus(null);
     setError("");
     setText("");
     setUrl("");
+    if (shared)
+      return () => {
+        ++sequence.current;
+        abort.current?.abort();
+      };
     if (!expanded) return;
     const ticket = ++sequence.current;
     const controller = new AbortController();
@@ -154,12 +181,12 @@ export default function ComputerUsePanel({
       controller.abort();
       abort.current?.abort();
     };
-  }, [chatId, expanded, permission, refresh]);
+  }, [chatId, expanded, permission, refresh, shared, setStatus]);
 
   // Status only: never capture a screen silently. Invalidate stale displayed frames
   // when another viewer/agent changes the generation, controller or permission.
   useEffect(() => {
-    if (!expanded || busy) return;
+    if (shared || !expanded || busy) return;
     let alive = true;
     let inFlight = false;
     const controller = new AbortController();
@@ -187,9 +214,14 @@ export default function ComputerUsePanel({
       controller.abort();
       window.clearInterval(timer);
     };
-  }, [expanded, busy, refresh]);
+  }, [expanded, busy, refresh, shared, setStatus]);
 
   useEffect(() => {
+    if (denied || !active) {
+      setPreview(false);
+      setText("");
+      setUrl("");
+    }
     setObservation((previous) =>
       previous &&
       !denied &&
@@ -262,14 +294,15 @@ export default function ComputerUsePanel({
   const control = (operation: "takeover" | "resume" | "stop" | "revoke" | "approve") => {
     if (!session) return;
     void run(operation, async (signal) => {
-      await client.control(chatId, session.id, operation, session.generation, signal);
+      const result = await client.control(chatId, session.id, operation, session.generation, signal);
+      if (!signal.aborted) acceptResponse?.(result);
     });
   };
   const action = (value: ComputerUseAction) => {
     if (!canAct || !session || !frame || operationActive.current || captures.has(captureKey(chatId, session.id))) return;
     setText("");
     void run(`Manual ${value.type}`, async (signal) => {
-      await client.action(
+      const result = await client.action(
         chatId,
         session.id,
         {
@@ -280,15 +313,18 @@ export default function ComputerUsePanel({
         },
         signal,
       );
+      if (!signal.aborted) acceptResponse?.(result);
       return captureFrame(chatId, session.id, () => !signal.aborted);
     });
   };
 
   return (
-    <section className="computer-use-panel" aria-label="Browser & Computer Control">
-      <button className="computer-use-heading" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
-        {expanded ? "▾" : "▸"} Browser &amp; Computer Control
-      </button>
+    <section className={`computer-use-panel${dedicated ? " computer-use-dedicated" : ""}`} aria-label="Browser & Computer Control">
+      {!dedicated && (
+        <button className="computer-use-heading" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+          {expanded ? "▾" : "▸"} Browser &amp; Computer Control
+        </button>
+      )}
       {expanded && (
         <div className="computer-use-body">
           <p>Controls Callboard&apos;s browser and desktop tools. Agents with unrestricted code execution may still run their own automation.</p>
@@ -306,7 +342,10 @@ export default function ComputerUsePanel({
               onClick={() => {
                 void run("Enable requested", async (signal) => {
                   const opened = await client.open(chatId, kind, signal);
-                  if (!signal.aborted) setSelected(opened.session.id);
+                  if (!signal.aborted) {
+                    setSelected(opened.session.id);
+                    acceptResponse?.(opened.session);
+                  }
                 });
               }}
             >
@@ -333,7 +372,7 @@ export default function ComputerUsePanel({
                 "Target readiness has not been confirmed. Retry status; configure the browser runtime or a supported native display on the service host."}
             </p>
           )}
-          {error && <p role="alert">{error}</p>}
+          {(error || controller?.statusError) && <p role="alert">{error || controller?.statusError}</p>}
           {status?.sessions
             .filter((item) => pending(item) && item.id !== session?.id)
             .map((item) => (
@@ -343,7 +382,8 @@ export default function ComputerUsePanel({
                   disabled={busy || denied}
                   onClick={() =>
                     void run("Request approved", async (signal) => {
-                      await client.control(chatId, item.id, "approve", item.generation, signal);
+                      const result = await client.control(chatId, item.id, "approve", item.generation, signal);
+                      if (!signal.aborted) acceptResponse?.(result);
                     })
                   }
                 >
@@ -352,7 +392,8 @@ export default function ComputerUsePanel({
                 <button
                   onClick={() =>
                     void run("Request denied", async (signal) => {
-                      await client.control(chatId, item.id, "revoke", item.generation, signal);
+                      const result = await client.control(chatId, item.id, "revoke", item.generation, signal);
+                      if (!signal.aborted) acceptResponse?.(result);
                     })
                   }
                 >

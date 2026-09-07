@@ -70,3 +70,37 @@
   margin: 4px 0;
   color: var(--text-muted);
 }
+
+.computer-use-dedicated {
+  height: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  overflow: auto;
+}
+.computer-use-dedicated .computer-use-body {
+  max-height: none;
+  overflow: visible;
+  padding: 12px;
+}
+.computer-use-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 6px;
+  color: var(--text);
+  background: var(--surface);
+}
+.computer-use-header button {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  color: var(--text);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.computer-use-header [role="alert"] {
+  width: 100%;
+}

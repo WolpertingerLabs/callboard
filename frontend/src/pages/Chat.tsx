@@ -1,4 +1,6 @@
 import { normalizePermissions } from "shared/types/permissions.js";
+import ComputerUseHeader from "../components/ComputerUseHeader";
+import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUsePanel from "../components/ComputerUsePanel";
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
@@ -11,6 +13,7 @@ import {
   ArrowLeft,
   ArrowDown,
   MessageSquare,
+  Monitor,
   GitBranch,
   GitFork,
   ChevronUp,
@@ -321,7 +324,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     message: string;
   }>({ isOpen: false, prompt: "", message: "" });
   const acknowledgeBranchDriftRef = useRef(false);
-  const [viewMode, setViewMode] = useState<"chat" | "diff" | "debug" | "job">("chat");
+  const [viewMode, setViewMode] = useState<"chat" | "diff" | "debug" | "job" | "computer">("chat");
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [chatPermissions, setChatPermissions] = useState<DefaultPermissions | null>(null);
@@ -556,6 +559,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       return undefined;
     }
   }, [chat?.metadata]);
+
+  // Only a loaded, matching, non-native-child chat gets managed computer controls.
+  const computerChatId = id && chat?.id === id && !nativeAgent ? id : undefined;
+  const computerController = useComputerUseController(computerChatId);
 
   // Which ACP vendor, for chats on the ACP kind. Read from metadata rather than
   // derived from `chatProvider`, because the kind alone does not name a harness.
@@ -2528,7 +2535,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // View mode radio-style switcher: explicit Chat button first (active by
   // default), followed by Git diff / Debug / Job buttons when applicable.
-  const viewModeButtons: { mode: "chat" | "diff" | "debug" | "job"; icon: ReactNode; title: string }[] = [
+  const viewModeButtons: { mode: "chat" | "diff" | "debug" | "job" | "computer"; icon: ReactNode; title: string }[] = [
     { mode: "chat", icon: <MessageSquare size={16} />, title: "Show chat" },
   ];
   if ((!id && info?.is_git_repo) || (id && chat?.is_git_repo)) {
@@ -2536,6 +2543,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   }
   if (id) {
     viewModeButtons.push({ mode: "debug", icon: <Activity size={16} />, title: "Show debug metrics" });
+  }
+  if (computerChatId) {
+    viewModeButtons.push({ mode: "computer", icon: <Monitor size={16} />, title: "Show computer control" });
   }
   if (chatJobRunId) {
     viewModeButtons.push({ mode: "job", icon: <Workflow size={16} />, title: "Show job run progress" });
@@ -2565,6 +2575,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               justifyContent: "center",
               transition: "all 0.15s ease",
             }}
+            aria-label={b.title}
             title={b.title}
           >
             {b.icon}
@@ -2732,6 +2743,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
             {/* View mode switcher - Chat / Git diff / Debug / Job */}
             {viewModeSwitcher}
+            {computerChatId && <ComputerUseHeader controller={computerController} />}
 
             {id && userMessageIndices.length > 1 && (
               <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
@@ -2965,6 +2977,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         )}
       </header>
 
+      {isMobile && computerChatId && <ComputerUseHeader controller={computerController} />}
+
       {/* Mobile: secondary action bar */}
       {isMobile && showMobileActions && (
         <div
@@ -3167,7 +3181,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       )}
 
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        {viewMode === "diff" ? (
+        {viewMode === "computer" && computerChatId ? (
+          computerController.stopping ? (
+            <p role="status">Stopping computer control…</p>
+          ) : (
+            <ComputerUsePanel
+              key={`${computerChatId}:${computerController.viewerEpoch}`}
+              chatId={computerChatId}
+              controller={computerController}
+              dedicated
+              permission={effectivePermissions.computerControl}
+              onPermissions={() => setShowPermissionsModal(true)}
+            />
+          )
+        ) : viewMode === "diff" ? (
           <GitDiffView folder={!id ? folder : chat?.folder || folder} />
         ) : viewMode === "debug" ? (
           <ChatDebugPanel messages={messages} />
@@ -3649,9 +3676,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             Native Codex child · {nativeAgent.lifecycle} · read-only. {nativeAgent.controlNote}{" "}
             <a href={`/chat/${nativeAgent.parentThreadId}`}>Open parent thread</a>
           </div>
-        )}
-        {id && !nativeAgent && (
-          <ComputerUsePanel key={id} chatId={id} permission={effectivePermissions.computerControl} onPermissions={() => setShowPermissionsModal(true)} />
         )}
         <PromptInput
           onSend={handleSend}

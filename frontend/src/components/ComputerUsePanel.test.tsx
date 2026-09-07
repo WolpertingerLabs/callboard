@@ -325,55 +325,60 @@ async function serviceViewer(holdSecondCapture = false) {
   return { service, human, ref, mutation, release, captureCount: () => captures };
 }
 
-it.each(["pause", "hide", "remount"] as const)("fences a pending preview through %s before acquiring new manual authority", async (mode) => {
-  const fixture = await serviceViewer(true);
-  let view = render(<ComputerUsePanel chatId="real-preview" permission="allow" />);
-  try {
-    await expand();
-    fireEvent.click(button("Refresh screenshot"));
-    await screen.findByRole("img");
-    await waitFor(() => expect(manualInput().disabled).toBe(false));
-    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
-    await waitFor(() => expect(fixture.captureCount()).toBe(2));
-    expect(manualInput().disabled).toBe(true);
-    expect(screen.getByText(/Capturing screenshot… Manual input is paused/)).toBeTruthy();
-    fireEvent.click(button("Enter"));
-    expect(client.action).not.toHaveBeenCalled();
-    expect(button("Stop").disabled).toBe(false);
-    expect(button("Revoke").disabled).toBe(false);
+it.each(["pause", "hide", "remount", "dedicated-remount"] as const)(
+  "fences a pending preview through %s before acquiring new manual authority",
+  async (mode) => {
+    const fixture = await serviceViewer(true);
+    let view = render(<ComputerUsePanel chatId="real-preview" permission="allow" dedicated={mode === "dedicated-remount"} />);
+    try {
+      if (mode === "dedicated-remount") await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
+      else await expand();
+      fireEvent.click(button("Refresh screenshot"));
+      await screen.findByRole("img");
+      await waitFor(() => expect(manualInput().disabled).toBe(false));
+      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+      await waitFor(() => expect(fixture.captureCount()).toBe(2));
+      expect(manualInput().disabled).toBe(true);
+      expect(screen.getByText(/Capturing screenshot… Manual input is paused/)).toBeTruthy();
+      fireEvent.click(button("Enter"));
+      expect(client.action).not.toHaveBeenCalled();
+      expect(button("Stop").disabled).toBe(false);
+      expect(button("Revoke").disabled).toBe(false);
 
-    if (mode === "pause") fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
-    else if (mode === "hide") fireEvent.click(button("Hide screenshot"));
-    else {
-      view.unmount();
-      view = render(<ComputerUsePanel chatId="real-preview" permission="allow" />);
-      await expand();
-    }
-    fireEvent.click(button("Refresh screenshot"));
-    expect(vi.mocked(client.observe).mock.calls[1][2]?.aborted).toBe(false);
-    // No new HTTP observation may overtake the accepted held capture.
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(client.observe).toHaveBeenCalledTimes(2);
-    expect(manualInput().disabled).toBe(true);
-    await act(async () => {
+      if (mode === "pause") fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+      else if (mode === "hide") fireEvent.click(button("Hide screenshot"));
+      else {
+        view.unmount();
+        view = render(<ComputerUsePanel chatId="real-preview" permission="allow" dedicated={mode === "dedicated-remount"} />);
+        if (mode === "dedicated-remount") await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
+        else await expand();
+      }
+      fireEvent.click(button("Refresh screenshot"));
+      expect(vi.mocked(client.observe).mock.calls[1][2]?.aborted).toBe(false);
+      // No new HTTP observation may overtake the accepted held capture.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(client.observe).toHaveBeenCalledTimes(2);
+      expect(manualInput().disabled).toBe(true);
+      await act(async () => {
+        fixture.release();
+      });
+      await screen.findByRole("img");
+      await waitFor(() => expect(manualInput().disabled).toBe(false));
+      expect(fixture.captureCount()).toBe(3);
+      fireEvent.click(button("Enter"));
+      await waitFor(() => expect(fixture.mutation).toHaveBeenCalledTimes(1));
+      expect(fixture.service.status(fixture.human)[0].state).toBe("ready");
+      expect(screen.queryByRole("alert")).toBeNull();
+      await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
+    } finally {
       fixture.release();
-    });
-    await screen.findByRole("img");
-    await waitFor(() => expect(manualInput().disabled).toBe(false));
-    expect(fixture.captureCount()).toBe(3);
-    fireEvent.click(button("Enter"));
-    await waitFor(() => expect(fixture.mutation).toHaveBeenCalledTimes(1));
-    expect(fixture.service.status(fixture.human)[0].state).toBe("ready");
-    expect(screen.queryByRole("alert")).toBeNull();
-    await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
-  } finally {
-    fixture.release();
-    view.unmount();
-    await fixture.service.dispose();
-  }
-});
+      view.unmount();
+      await fixture.service.dispose();
+    }
+  },
+);
 
 it("recovers a real stale-frame rejection without denying authorized refresh or replaying the action", async () => {
   const fixture = await serviceViewer();
