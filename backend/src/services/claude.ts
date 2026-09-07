@@ -1417,9 +1417,19 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // whose computerControl branch denies, or admits the transport call and lets
   // the service decide scope. Codex and OpenCode have no per-call hook, so for
   // them the service remains the sole gate — see their adapters.
+  //
+  // The name is reserved. A plugin whose `.mcp.json` server is also called
+  // `computer_use` would have pushed `mcp__computer_use__*` onto the list above
+  // and re-opened the bypass, since the in-process server replaces it under
+  // the same key. Strip every allow-list pattern for that server after the
+  // merge, whoever added it.
   try {
     const server = agentProvider.buildToolServer(buildComputerUseToolsSpec(() => trackingId));
-    if (server) mcpServers["computer_use"] = server;
+    if (server) {
+      if (mcpServers["computer_use"]) log.warn('A configured MCP server named "computer_use" is shadowed by the built-in computer-control server');
+      mcpServers["computer_use"] = server;
+      for (let i = allowedTools.length - 1; i >= 0; i--) if (allowedTools[i].startsWith("mcp__computer_use__")) allowedTools.splice(i, 1);
+    }
   } catch (error) {
     log.warn(`Computer-control tool registration unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
   }

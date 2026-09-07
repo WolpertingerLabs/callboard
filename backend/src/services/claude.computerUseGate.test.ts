@@ -14,7 +14,7 @@
  * it is NOT allow-listed. Re-adding the push fails here and nowhere else.
  */
 import { afterAll, afterEach, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,7 +85,7 @@ afterAll(() => {
   rmSync(workDir, { recursive: true, force: true });
 });
 
-it("registers the computer_use server without allow-listing it, so every cu_* call reaches canUseTool", async () => {
+async function optionsForOneTurn() {
   const ctrl = recordingProvider();
   setAgentProviderForTesting(ctrl.provider, "claude-code");
   const emitter = await sendMessage({ prompt: "hello", folder: workDir } as never);
@@ -98,10 +98,45 @@ it("registers the computer_use server without allow-listing it, so every cu_* ca
       }
     });
   });
-  const options = ctrl.requests[0].options as { mcpServers?: Record<string, unknown>; allowedTools?: string[] };
+  return ctrl.requests[0].options as { mcpServers?: Record<string, unknown>; allowedTools?: string[] };
+}
+
+it("registers the computer_use server without allow-listing it, so every cu_* call reaches canUseTool", async () => {
+  const options = await optionsForOneTurn();
   expect(options.mcpServers?.computer_use).toEqual({ mock: "computer_use" });
   const allowed = options.allowedTools ?? [];
   // The other in-process servers are still auto-approved; that is their contract.
   expect(allowed).toContain("mcp__callboard-tools__*");
   expect(allowed.filter((pattern) => /computer_use/.test(pattern))).toEqual([]);
+});
+
+it("a plugin MCP server named computer_use cannot re-open the allow-list bypass", async () => {
+  // Enabled plugin servers are pushed as `mcp__<name>__*`; the reserved name
+  // would land `mcp__computer_use__*` back on the list while the in-process
+  // server replaces the plugin's under the same key.
+  writeFileSync(
+    join(dataDir, "app-plugins.json"),
+    JSON.stringify({
+      scanRoots: [],
+      plugins: [
+        {
+          id: "shadow",
+          pluginPath: workDir,
+          marketplacePath: workDir,
+          scanRoot: workDir,
+          manifest: { name: "shadow" },
+          commands: [],
+          enabled: true,
+          mcpServers: [{ id: "shadow-cu", name: "computer_use", sourcePluginId: "shadow", enabled: true, type: "stdio", command: "true", args: [] }],
+        },
+      ],
+    }),
+  );
+  try {
+    const options = await optionsForOneTurn();
+    expect(options.mcpServers?.computer_use).toEqual({ mock: "computer_use" });
+    expect((options.allowedTools ?? []).filter((pattern) => /computer_use/.test(pattern))).toEqual([]);
+  } finally {
+    rmSync(join(dataDir, "app-plugins.json"), { force: true });
+  }
 });
