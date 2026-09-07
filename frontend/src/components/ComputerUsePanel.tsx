@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession } from "shared/types/computerUse.js";
 import type { PermissionLevel } from "shared/types/permissions.js";
-import { computerUseClient as client } from "../api/computerUse";
+import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 import "./ComputerUsePanel.css";
 import type { ComputerUseController } from "../hooks/useComputerUseController";
 
@@ -224,10 +224,20 @@ export default function ComputerUsePanel({
     if (!session) return;
     void run(operation, async (signal) => {
       const acceptResponse = beginMutation(operation === "approve" ? session : undefined);
-      // An approval creates a session the shared ledger must learn even if this
-      // view closes first; a fetch abort could not cancel the accepted approval.
-      const result = await client.control(chatId, session.id, operation, session.generation, operation === "approve" ? undefined : signal);
-      acceptResponse(result, !signal.aborted);
+      try {
+        // An approval creates a session the shared ledger must learn even if this
+        // view closes first; a fetch abort could not cancel the accepted approval.
+        const result = await client.control(chatId, session.id, operation, session.generation, operation === "approve" ? undefined : signal);
+        acceptResponse(result, !signal.aborted);
+      } catch (error) {
+        // Stopping a session the server no longer knows is settled, not failed:
+        // record it as closed so the shared emergency ledger stops retrying it.
+        if ((operation === "stop" || operation === "revoke") && controlErrorCode(error) === "not_found") {
+          acceptResponse({ id: session.id, state: "closed" }, !signal.aborted);
+          return;
+        }
+        throw error;
+      }
     });
   };
   const action = (value: ComputerUseAction) => {

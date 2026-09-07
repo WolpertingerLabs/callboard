@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ComputerUseSession, ComputerUseStatus } from "shared/types/computerUse.js";
-import { computerUseClient as client } from "../api/computerUse";
+import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 
 export const isTerminal = (session: ComputerUseSession) => ["stopped", "revoked", "closed", "failed", "expired"].includes(session.state);
 export const isPending = (session: ComputerUseSession) => ["pending", "awaiting_approval", "approval_required", "pending_approval"].includes(session.state);
@@ -275,6 +275,17 @@ export function useComputerUseController(chatId: string | undefined) {
           acceptResponse(result);
         }
       } catch (error) {
+        // A session the server no longer knows (daemon restart, service eviction)
+        // cannot be running. Absence from status never retires a real session, so
+        // this is the only evidence that settles it; otherwise Stop would re-send
+        // the dead id forever and verification would keep calling it active.
+        if (controlErrorCode(error) === "not_found") {
+          if (valid()) {
+            rememberEmergency({ id: session.id, state: "closed" });
+            acceptResponse({ id: session.id, state: "closed" });
+          }
+          return;
+        }
         report(`${session.kind} ${session.id}: ${error instanceof Error ? error.message : "stop failed"}`, isPendingRequest(session) ? session.id : undefined);
       }
     };

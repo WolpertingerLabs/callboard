@@ -4,7 +4,10 @@ import type { ComputerUseStatus } from "shared/types/computerUse.js";
 import { computerUseClient as client } from "../api/computerUse";
 import { useComputerUseController } from "./useComputerUseController";
 
-vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn() } }));
+vi.mock("../api/computerUse", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/computerUse")>()),
+  computerUseClient: { status: vi.fn(), control: vi.fn() },
+}));
 afterEach(() => {
   cleanup();
   vi.resetAllMocks();

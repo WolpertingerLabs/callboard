@@ -6,7 +6,10 @@ import { computerUseClient as client } from "../api/computerUse";
 import { stopChat } from "../api";
 
 const fixture = vi.hoisted(() => ({ native: false, active: { type: "web" } }));
-vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() } }));
+vi.mock("../api/computerUse", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/computerUse")>()),
+  computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
+}));
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   getChat: vi.fn(async (id: string) => ({

@@ -8,7 +8,8 @@ import ComputerUsePanel, { framePoint } from "./ComputerUsePanel";
 import { computerUseClient as client } from "../api/computerUse";
 import { useComputerUseController } from "../hooks/useComputerUseController";
 
-vi.mock("../api/computerUse", () => ({
+vi.mock("../api/computerUse", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/computerUse")>()),
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
 }));
 let status: ComputerUseStatus;

@@ -7,7 +7,10 @@ import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUseHeader from "./ComputerUseHeader";
 import ComputerUsePanel from "./ComputerUsePanel";
 
-vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() } }));
+vi.mock("../api/computerUse", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/computerUse")>()),
+  computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
+}));
 let status: ComputerUseStatus;
 function Harness({ id = "c1", onRender }: { id?: string; onRender?: (controller: ReturnType<typeof useComputerUseController>) => void }) {
   const controller = useComputerUseController(id || undefined);
@@ -567,6 +570,53 @@ it.each(["pending", "awaiting_approval", "approval_required", "pending_approval"
     expect(client.control).toHaveBeenCalledExactlyOnceWith("c1", openedSession.id, "stop", 7);
   },
 );
+
+// Daemon restart or service eviction: the server no longer knows a real session.
+// Its absence from status never retires it (absence is not proof it stopped), so
+// only the server's not_found on stop can settle it. Without that, every Stop
+// re-sent the dead id, failed, and then verification reported it still active.
+it.each(["stop", "revoke"] as const)("retires a real session the server no longer knows after a not_found %s, so Stop settles", async (operation) => {
+  status.sessions = [status.sessions[0]];
+  render(<Harness />);
+  await screen.findByText("1 active · 0 waiting");
+  status.sessions = [];
+  vi.mocked(client.control).mockRejectedValue(Object.assign(new Error("Control session not found"), { code: "not_found" }));
+  if (operation === "stop") click("Stop computer control");
+  else {
+    click("Switch view");
+    click("Revoke");
+  }
+  await act(async () => {});
+  await waitFor(() => expect(client.control).toHaveBeenCalledWith("c1", "s1", operation, 1, ...(operation === "stop" ? [] : [expect.any(AbortSignal)])));
+  if (operation === "revoke") {
+    // Settled, not failed: the view shows no error and the dead session leaves the list.
+    await waitFor(() => expect(screen.queryByText(/State: /)).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    click("Switch view");
+  }
+  await waitFor(() => expect(screen.getByRole("button", { name: "Stop computer control" }).hasAttribute("disabled")).toBe(false));
+  expect(screen.queryByRole("alert")).toBeNull();
+  expectIdle();
+  click("Stop computer control");
+  await act(async () => {});
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(vi.mocked(client.control).mock.calls.filter(([, , op]) => op === "stop")).toHaveLength(operation === "stop" ? 1 : 0);
+});
+
+it("still reports a transport failure on stop and keeps that session for retry", async () => {
+  status.sessions = [status.sessions[0]];
+  render(<Harness />);
+  await screen.findByText("1 active · 0 waiting");
+  status.sessions = [];
+  vi.mocked(client.control).mockRejectedValue(Object.assign(new Error("Bad gateway"), { code: undefined, status: 502 }));
+  click("Stop computer control");
+  await act(async () => {});
+  expect(screen.getByRole("alert").textContent).toContain("Bad gateway");
+  vi.mocked(client.control).mockResolvedValue({ id: "s1", state: "stopped" });
+  click("Stop computer control");
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(client.control).toHaveBeenCalledTimes(2);
+});
 
 it("clears a raced Unknown session request-stop error only after authoritative discovery confirms expiration", async () => {
   status.sessions = [{ id: "expired", kind: "browser", state: "pending_approval", controller: null, generation: 0 }];

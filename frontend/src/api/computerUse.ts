@@ -1,5 +1,18 @@
 import type { ComputerUseActionRequest, ComputerUseKind, ComputerUseObservation, ComputerUseSession, ComputerUseStatus } from "shared/types/computerUse.js";
 
+/** A failed route response. The server's `code` (`not_found`, `stale_generation`,
+ * `denied`, …) travels with the message so callers can distinguish "the server no
+ * longer knows this session" from a transport failure that is worth retrying.
+ */
+export interface ComputerUseRequestError extends Error {
+  status: number;
+  code?: string;
+}
+export function controlErrorCode(error: unknown): string | undefined {
+  const code = (error as Partial<ComputerUseRequestError> | undefined)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
 /** Same-origin cookie authentication, as in api.ts. The server must enforce
  * Origin/CSRF, chat ownership, scoped grants and generation fencing on every route.
  * Keep endpoint/envelope adaptations here, not in the viewer.
@@ -15,9 +28,13 @@ async function request<T>(chatId: string, path: string, body?: unknown, signal?:
   if (!response.ok) {
     const data = await response.json().catch(() => null);
     const reason = typeof data?.error === "string" ? data.error : (data?.error?.message ?? data?.message);
-    throw new Error(
-      typeof reason === "string" ? reason : `Computer control unavailable (${response.status}). Check server configuration and chat permissions, then retry.`,
+    const failure: ComputerUseRequestError = Object.assign(
+      new Error(
+        typeof reason === "string" ? reason : `Computer control unavailable (${response.status}). Check server configuration and chat permissions, then retry.`,
+      ),
+      { status: response.status, ...(typeof data?.code === "string" ? { code: data.code } : {}) },
     );
+    throw failure;
   }
   return response.status === 204 ? (undefined as T) : response.json();
 }

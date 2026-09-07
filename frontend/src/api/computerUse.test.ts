@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { computerUseClient, validateObservation, validateStatus } from "./computerUse";
+import { computerUseClient, controlErrorCode, validateObservation, validateStatus } from "./computerUse";
 
 afterEach(() => vi.unstubAllGlobals());
 describe("computer-use HTTP adapter", () => {
@@ -24,6 +24,30 @@ describe("computer-use HTTP adapter", () => {
   it("surfaces actionable backend capability errors", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('{"error":{"message":"Native display missing: configure OS consent"}}', { status: 503 })));
     await expect(computerUseClient.open("c", "native")).rejects.toThrow("configure OS consent");
+  });
+  it("surfaces the server's error code alongside its message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ code: "not_found", error: "Control session not found" }), { status: 404 })),
+    );
+    const failure = await computerUseClient.control("c1", "s1", "stop", 1).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("Control session not found");
+    expect(controlErrorCode(failure)).toBe("not_found");
+  });
+  it.each([
+    ["a non-JSON body", () => new Response("gateway timeout", { status: 504 })],
+    ["a JSON body without a code", () => new Response(JSON.stringify({ error: "nope" }), { status: 500 })],
+  ])("reports no code for %s", async (_label, response) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response()),
+    );
+    const failure = await computerUseClient.control("c1", "s1", "stop", 1).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(controlErrorCode(failure)).toBeUndefined();
+    expect(controlErrorCode(new Error("plain"))).toBeUndefined();
+    expect(controlErrorCode(undefined)).toBeUndefined();
   });
   it("rejects malformed readiness instead of leaving controls enabled", () => {
     expect(() => validateStatus({ permission: "allow" } as never)).toThrow("Invalid computer-control status");
