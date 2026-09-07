@@ -149,6 +149,14 @@ export function resetCodexSdkDriftWarning(): void {
 export class CodexSessionProvider implements SessionProvider {
   readonly kind = "codex" as const;
   discoveryIncomplete = false;
+  /**
+   * Set by {@link nativeDiscoveryEvidence}: the last pass ran out of metadata
+   * budget before reading every rollout, so its result is the newest subset
+   * of the corpus, not the corpus. Header bytes on a real device (~75 MB)
+   * exceed the 16 MB cold budget several times over; each pass memoizes what
+   * it read, so a few passes — or the sidebar's unbudgeted walk — complete it.
+   */
+  nativeDiscoveryIncomplete = false;
 
   ownershipEvidence() {
     // Release evidence gates a directory removal; it reads the tree as it is now.
@@ -163,13 +171,16 @@ export class CodexSessionProvider implements SessionProvider {
     const entries = this.listRollouts();
     const counts = new Map<string, number>();
     for (const entry of entries) counts.set(entry.threadId, (counts.get(entry.threadId) ?? 0) + 1);
-    const budget = { remainingBytes: 16 * 1024 * 1024 };
-    return entries.flatMap((entry) => {
+    const budget = { remainingBytes: 16 * 1024 * 1024, exhausted: 0 };
+    const evidence = entries.flatMap((entry) => {
       if (counts.get(entry.threadId) !== 1) return [];
       const meta = readCodexSessionMeta(entry.filePath, budget);
       if (!meta || meta.id !== entry.threadId || isIgnoredProjectFolder(meta.cwd ?? "")) return [];
       return [{ ...entry, meta }];
     });
+    this.nativeDiscoveryIncomplete = budget.exhausted > 0;
+    if (this.nativeDiscoveryIncomplete) log.debug(`Native discovery read ${entries.length - budget.exhausted} of ${entries.length} rollouts before its metadata budget ran out.`);
+    return evidence;
   }
 
   constructor() {

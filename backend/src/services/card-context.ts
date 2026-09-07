@@ -36,7 +36,8 @@ export function createCardContext(stored = listChatsSnapshot()) {
   // Classification does not depend on whether an inferred parent edge is usable.
   // Even ambiguous stored owners retain positive native evidence; they cannot
   // silently become ordinary standalone cards when edge resolution fails.
-  for (const entry of new CodexSessionProvider().nativeDiscoveryEvidence()) {
+  const provider = new CodexSessionProvider();
+  for (const entry of provider.nativeDiscoveryEvidence()) {
     if (!entry.meta.nativeAgent) continue;
     const owners = ownersBySession.get(entry.threadId) ?? [];
     if (!owners.length && storedById.has(entry.threadId)) continue; // Different namespaces, same spelling.
@@ -118,6 +119,12 @@ export function createCardContext(stored = listChatsSnapshot()) {
     }
   }
   return {
+    /**
+     * True when the native discovery pass behind this context ran out of
+     * metadata budget: filesystem-only native children older than what it
+     * reached are absent from these cards until a later pass reads them.
+     */
+    nativeDiscoveryIncomplete: provider.nativeDiscoveryIncomplete,
     resolve(id: string): { rootChatId: string } | null {
       if (!id || /[/\\\0]/.test(id) || id === "." || id === "..") return null;
       id = nativeAliases.get(id) ?? id;

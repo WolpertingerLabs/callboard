@@ -68,6 +68,7 @@ it("cold metadata exhaustion recovers on next request with no repeated walk per 
   const cold = c.summaries([])[0].chatCount;
   expect(cold).toBeGreaterThan(1);
   expect(cold).toBeLessThan(2101);
+  expect(c.nativeDiscoveryIncomplete).toBe(true); // a partial pass says so
   expect(vi.mocked(fs.opendirSync)).toHaveBeenCalledTimes(4);
   // 16 MB of metadata plus 8 MB of lifecycle replay, and nothing outside either budget.
   expect(readBytes()).toBeLessThanOrEqual(24 * 1024 * 1024);
@@ -78,7 +79,9 @@ it("cold metadata exhaustion recovers on next request with no repeated walk per 
   expect(readBytes()).toBeLessThanOrEqual(24 * 1024 * 1024);
   // Each pass reads what the last could not afford; a few passes see everything.
   for (let pass = 0; pass < 4; pass++) createCardContext([record()]);
-  expect(createCardContext([record()]).summaries([])[0].chatCount).toBe(2101);
+  c = createCardContext([record()]);
+  expect(c.summaries([])[0].chatCount).toBe(2101);
+  expect(c.nativeDiscoveryIncomplete).toBe(false);
 });
 it("fallback metadata budget is enforced, hits are free, refusal does not poison cache", () => {
   const p = write(1, { padding: "x".repeat(9000) });

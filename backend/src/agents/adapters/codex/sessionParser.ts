@@ -464,6 +464,8 @@ export function clearCodexSessionMetaCache(): void {
  */
 export interface MetadataReadBudget {
   remainingBytes: number;
+  /** Rollouts this pass could not read because the budget ran out — the pass is partial when this is non-zero. */
+  exhausted?: number;
 }
 
 /**
@@ -506,7 +508,10 @@ export function readCodexSessionMeta(filePath: string, budget?: MetadataReadBudg
 
   const meta = readBoundedSessionMeta(filePath, size, budget);
   // Budget exhaustion is transient, not evidence of malformed metadata.
-  if (meta === BUDGET_EXHAUSTED) return null;
+  if (meta === BUDGET_EXHAUSTED) {
+    if (budget) budget.exhausted = (budget.exhausted ?? 0) + 1;
+    return null;
+  }
 
   // Refreshing an entry already held doesn't grow the map, so it evicts nothing.
   if (metaCache.size >= META_CACHE_MAX && !metaCache.has(filePath)) {

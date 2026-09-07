@@ -463,6 +463,31 @@ describe("rollout listing memo", () => {
     }
   });
 
+  it("flags a native discovery pass that ran out of metadata budget", () => {
+    for (let n = 0; n < 12; n++)
+      writeRollout(`019ec7f2-cd5d-7823-b2d1-${String(n).padStart(12, "0")}`, {
+        lines: [
+          {
+            type: "session_meta",
+            payload: {
+              id: `019ec7f2-cd5d-7823-b2d1-${String(n).padStart(12, "0")}`,
+              cwd: "/home/cybil/project",
+              source: { subagent: { thread_spawn: { parent_thread_id: UUID_A } } },
+              padding: "x".repeat(2 * 1024 * 1024),
+            },
+          },
+        ],
+      });
+    const provider = new CodexSessionProvider();
+    const cold = provider.nativeDiscoveryEvidence();
+    expect(cold.length).toBeGreaterThan(0);
+    expect(cold.length).toBeLessThan(12);
+    expect(provider.nativeDiscoveryIncomplete).toBe(true);
+    for (let pass = 0; pass < 4; pass++) provider.nativeDiscoveryEvidence();
+    expect(provider.nativeDiscoveryEvidence()).toHaveLength(12);
+    expect(provider.nativeDiscoveryIncomplete).toBe(false);
+  });
+
   it("release evidence always walks the tree as it is now", async () => {
     writeRollout(UUID_A);
     backdateTree();
