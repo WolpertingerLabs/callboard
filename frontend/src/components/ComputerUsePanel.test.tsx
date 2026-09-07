@@ -1,9 +1,10 @@
 import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerUseStatus } from "shared/types/computerUse.js";
 import ComputerUsePanel, { framePoint } from "./ComputerUsePanel";
 import { computerUseClient as client } from "../api/computerUse";
+import { declarationsFor, declarationsJsdomIgnores, injectCss, matchesSelector, readCss, setTheme, TRANSPARENT, UA_BUTTON_FILL } from "../testing/cssCascade";
 
 vi.mock("../api/computerUse", () => ({
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
@@ -457,4 +458,113 @@ it("does not dispatch an unaccepted queued preview after the new panel closes", 
     view.unmount();
     await fixture.service.dispose();
   }
+});
+
+/**
+ * The collapsed heading's background is a CSS contract, not a component one.
+ *
+ * `index.css`'s global reset clears a button's border but not its background,
+ * so a `<button>` with no `background` declaration falls through to the user
+ * agent's `buttonface`. The heading is the full width of the panel and sits
+ * directly above the composer, so on a phone in dark mode that read as a light
+ * band of unstyled whitespace jammed into the chat view, with --text over it
+ * at roughly 1.1:1.
+ *
+ * `color-scheme: dark` on :root — guarded in `src/index.colorScheme.test.ts` —
+ * is not a substitute. It makes `buttonface` follow the theme, but the shade
+ * it follows to is a mid-grey, so the band stays visible; the heading has to
+ * paint nothing of its own and let `.computer-use-panel`'s `var(--surface)`
+ * show through. Both halves are load-bearing, which is why both are guarded.
+ *
+ * Two jsdom limits shape how this is written, and both are worked around
+ * rather than assumed away (see `testing/cssCascade.ts`):
+ *
+ * - jsdom's UA stylesheet carries Chrome's `button { background-color:
+ *   buttonface }`, which is the whole reason the fall-through reproduces here
+ *   at all. Nothing in this repo supplies it, so the first case below pins it:
+ *   were a future jsdom to drop that rule, a bare button would read
+ *   transparent and the cases after it would pass for entirely the wrong
+ *   reason.
+ * - jsdom honours neither `@media` conditions nor `!important`, so the last
+ *   case checks the CSSOM directly for either kind of override reaching the
+ *   heading. Both are the shape that goes green here while the browser paints
+ *   the band: a media-scoped rule breaks on exactly the phone viewport this
+ *   was reported from, and `button { background: buttonface !important }` in
+ *   the global reset beats `.computer-use-heading` in a real cascade while
+ *   jsdom hands specificity the win. Matching is by
+ *   `element.matches(selectorText)`, not by looking for the class in the
+ *   selector text — `.computer-use-panel > button` reaches this element too.
+ */
+describe("the collapsed heading's resolved background", () => {
+  let sheet: CSSStyleSheet;
+  // Optional: if injectCss throws, beforeAll never assigns it, and an
+  // unguarded call here buries that error under a TypeError.
+  let remove: (() => void) | undefined;
+
+  beforeAll(() => {
+    ({ sheet, remove } = injectCss(readCss("index.css"), readCss("components/ComputerUsePanel.css")));
+  });
+
+  afterAll(() => {
+    remove?.();
+    setTheme(null);
+  });
+
+  const heading = () => getComputedStyle(button("▸ Browser & Computer Control"));
+
+  it("is measured against a UA fill that is actually live", () => {
+    const bare = document.createElement("button");
+    document.body.appendChild(bare);
+    try {
+      // A <button> the app has not styled. If this ever reads transparent, the
+      // cases below are passing because jsdom paints nothing, not because the
+      // heading opts out of a fill that was really there.
+      expect(getComputedStyle(bare).backgroundColor).toBe(UA_BUTTON_FILL);
+      expect(UA_BUTTON_FILL).not.toBe(TRANSPARENT);
+    } finally {
+      bare.remove();
+    }
+  });
+
+  it.each(["dark", "light"] as const)("paints nothing of its own in the %s theme", (mode) => {
+    setTheme(mode);
+    render(<ComputerUsePanel chatId="c1" permission="allow" />);
+    expect(heading().backgroundColor).toBe(TRANSPARENT);
+    expect(heading().backgroundColor).not.toBe(UA_BUTTON_FILL);
+  });
+
+  it.each(["dark", "light"] as const)("sits on a panel painting a themed surface in the %s theme", (mode) => {
+    setTheme(mode);
+    render(<ComputerUsePanel chatId="c1" permission="allow" />);
+    const panel = document.querySelector(".computer-use-panel")!;
+
+    // The other half of "transparent is the right value": a transparent heading
+    // over a transparent panel would be a bare strip of --bg, not a header.
+    // getComputedStyle cannot carry this — it reports `rgba(0, 0, 0, 0)` for
+    // the panel's `var(--surface)` exactly as it would for an explicit
+    // `transparent`, so reading it there cannot tell the two apart. Read the
+    // declarations that apply to the element instead, assert exactly one owns
+    // the background (a second would mean the cascade, not this test, decides),
+    // and resolve the variable it names — which jsdom does do.
+    const declared = declarationsFor(sheet, panel, "background");
+    expect(declared.map((d) => d.selectorText)).toEqual([".computer-use-panel"]);
+
+    // Deliberately not pinned to `background` vs `background-color`: either
+    // spelling paints the same surface, and this should not red on that
+    // refactor. What matters is that the value names a theme variable rather
+    // than a literal — and that the variable resolves to something in the mode
+    // under test, which is the half getComputedStyle *can* answer.
+    const token = /^var\((--[a-z-]+)\)$/.exec(declared[0].value)?.[1];
+    expect(token).toBeTruthy();
+    const surface = getComputedStyle(document.documentElement).getPropertyValue(token!);
+    expect(surface).not.toBe("");
+    expect(surface).not.toBe("transparent");
+  });
+
+  it("takes no background from anywhere the resolved cascade cannot see", () => {
+    render(<ComputerUsePanel chatId="c1" permission="allow" />);
+    const el = button("▸ Browser & Computer Control");
+    const unseen = declarationsJsdomIgnores(sheet).filter((d) => d.property.startsWith("background") && matchesSelector(el, d.selectorText));
+    expect(unseen).toEqual([]);
+  });
 });

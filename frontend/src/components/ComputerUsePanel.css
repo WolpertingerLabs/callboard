@@ -11,6 +11,12 @@
   padding: 8px 12px;
   font-weight: 600;
   color: var(--text);
+  /* The global button reset clears the border but not the background, so
+     without this the heading paints the UA's `buttonface` over the panel's
+     --surface. `color-scheme` on the theme roots makes that shade follow the
+     theme, but the heading is meant to read as the panel's own header rather
+     than as a filled button — it takes the panel's surface, in either theme. */
+  background: transparent;
 }
 .computer-use-body {
   padding: 0 12px 12px;
