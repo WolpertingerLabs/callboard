@@ -139,6 +139,13 @@ export default function ComputerUsePanel({
     };
   }, [chatId, permission]);
 
+  // Invalidate the displayed frame and any pointer press in progress only when
+  // the session's identity, generation, controller or permission really changes.
+  // Every 3 s status publish yields a new `session` object even when nothing
+  // changed; keying on it would silently drop a click or drag that straddles a poll.
+  const sessionId = session?.id;
+  const sessionGeneration = session?.generation;
+  const sessionController = session?.controller;
   useEffect(() => {
     if (denied || !active) {
       setPreview(false);
@@ -149,22 +156,19 @@ export default function ComputerUsePanel({
       previous &&
       !denied &&
       active &&
-      session &&
-      previous.sessionId === session.id &&
-      previous.generation === session.generation &&
-      previous.controller === session.controller
+      sessionId !== undefined &&
+      previous.sessionId === sessionId &&
+      previous.generation === sessionGeneration &&
+      previous.controller === sessionController
         ? previous
         : null,
     );
     dragStart.current = null;
-  }, [denied, active, session]);
+  }, [denied, active, sessionId, sessionGeneration, sessionController]);
 
   // Preview requests are not aborted on cleanup: aborting fetch cannot cancel an
   // already accepted server observation. Discard late presentation, but retain
   // its settlement barrier before any later explicit capture/control operation.
-  const sessionId = session?.id;
-  const sessionGeneration = session?.generation;
-  const sessionController = session?.controller;
   useEffect(() => {
     if (!preview || denied || !active || !sessionId || busy) return;
     let alive = true;

@@ -22,14 +22,31 @@ const button = (name: string) => screen.getByRole("button", { name }) as HTMLBut
 
 // The panel is only ever the chat's Computer view, fed by the chat's shared
 // controller; "Switch view" unmounts and remounts it exactly as Chat.tsx does.
-function Viewer({ chatId = "c1", permission, onPermissions }: { chatId?: string; permission?: PermissionLevel; onPermissions?: () => void }) {
+function Viewer({
+  chatId = "c1",
+  permission,
+  onPermissions,
+  onRender,
+}: {
+  chatId?: string;
+  permission?: PermissionLevel;
+  onPermissions?: () => void;
+  onRender?: (controller: ReturnType<typeof useComputerUseController>) => void;
+}) {
   const controller = useComputerUseController(chatId);
   const [visible, setVisible] = useState(true);
+  onRender?.(controller);
   return (
     <>
       <button onClick={() => setVisible(!visible)}>Switch view</button>
       {visible && !controller.stopping && (
-        <ComputerUsePanel key={`${chatId}:${controller.viewerEpoch}`} chatId={chatId} permission={permission} onPermissions={onPermissions} controller={controller} />
+        <ComputerUsePanel
+          key={`${chatId}:${controller.viewerEpoch}`}
+          chatId={chatId}
+          permission={permission}
+          onPermissions={onPermissions}
+          controller={controller}
+        />
       )}
     </>
   );
@@ -252,6 +269,28 @@ describe("ComputerUsePanel", () => {
     });
     expect(screen.queryByRole("img")).toBeNull();
     expect(client.control).not.toHaveBeenCalled();
+  });
+
+  it.each(["click", "drag"] as const)("keeps a %s press across a status poll that changes nothing", async (mode) => {
+    status.sessions[0].controller = "human";
+    let controller!: ReturnType<typeof useComputerUseController>;
+    render(<Viewer permission="allow" onRender={(value) => (controller = value)} />);
+    await ready();
+    fireEvent.click(button("Refresh screenshot"));
+    const img = await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    if (mode === "drag") fireEvent.change(screen.getByLabelText("Pointer"), { target: { value: "drag" } });
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500 }) as DOMRect;
+    fireEvent.pointerDown(img, { clientX: 100, clientY: 50, pointerId: 1 });
+    // The shared poller republishes an identical status mid-press.
+    await act(async () => {
+      await controller.readStatus();
+    });
+    fireEvent.pointerUp(img, { clientX: 300, clientY: 50, pointerId: 1 });
+    await waitFor(() => expect(client.action).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(client.action).mock.calls[0][2].action).toEqual(
+      mode === "drag" ? { type: "drag", fromX: 100, fromY: 50, toX: 300, toY: 50 } : { type: "click", x: 300, y: 50, button: "left" },
+    );
   });
 
   it("maps scaled screenshot coordinates and clamps edges", () => {
