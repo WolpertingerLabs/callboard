@@ -163,6 +163,20 @@ describe("acpToolLabel", () => {
     expect(acpToolLabel({ toolCallId: "c", title: "write" } as never)).toBe("write");
   });
 
+  it("a managed computer-control name in the title outranks the kind, so the call lands on computerControl", () => {
+    // A vendor that omits `name` and labels the MCP call by its generic kind
+    // (`other`) used to be gated on codeExecution — allow in every job/cron/
+    // spawned chat — even though the title spelled the managed tool exactly.
+    for (const title of ["cu_action", "computer_use_cu_observe", "mcp__computer_use__cu_open"]) {
+      const call = { toolCallId: "c", kind: "other", title, rawInput: { sessionId: "s" } } as never;
+      expect(acpToolLabel(call)).toBe(title);
+      expect(categorizeAcpToolName(acpToolLabel(call))).toBe("computerControl");
+    }
+    // Only the exact managed identifiers: prose or look-alikes still defer to kind.
+    expect(acpToolLabel({ toolCallId: "c", kind: "other", title: "Click via cu_action" } as never)).toBe("other");
+    expect(acpToolLabel({ toolCallId: "c", kind: "edit", title: "computer_useful_action" } as never)).toBe("edit");
+  });
+
   it("does not let the shape of a filename choose the permission axis", () => {
     // OpenCode puts the file being touched in `title`, and whether that string
     // is identifier-shaped depends on something with no bearing on the tool:

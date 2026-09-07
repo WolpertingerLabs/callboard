@@ -304,8 +304,14 @@ export function acpToolLabel(toolCall: RequestPermissionRequest["toolCall"]): st
   const name = typeof toolCall?.name === "string" ? toolCall.name.trim() : "";
   if (name) return name;
   const kind = typeof toolCall?.kind === "string" ? toolCall.kind.trim() : "";
-  if (kind && isToolIdentifier(kind)) return kind;
   const title = typeof toolCall?.title === "string" ? toolCall.title.trim() : "";
+  // A managed computer-control name in the title outranks `kind`: no ACP
+  // `ToolKind` can ever spell `cu_*`/`computer_use_*`, so a vendor that omits
+  // `name` would otherwise label the call `other` and gate it on
+  // `codeExecution` — allow in every job/cron/spawned chat — instead of the
+  // `computerControl` axis. This is an exact-identifier match, not prose.
+  if (isComputerControlToolName(title)) return title;
+  if (kind && isToolIdentifier(kind)) return kind;
   if (title && isToolIdentifier(title)) return title;
   return "unknown_tool";
 }
