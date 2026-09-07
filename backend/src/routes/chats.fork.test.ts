@@ -9,18 +9,34 @@
  * cards.metadata.test.ts. The chat lookup, file service and session provider
  * are stubbed so the test asserts purely on the metadata the route composes.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Request, Response } from "express";
 const effortContexts = vi.hoisted(() => vi.fn());
+/** Which check the route ran for each call: "explicit" (fail-closed) or "stored". */
+const effortChecks = vi.hoisted(() => vi.fn());
+/** Set to simulate a Codex route probe that cannot answer (timeout, bad cwd). */
+const probeUnknown = vi.hoisted(() => ({ value: false }));
 
-vi.mock("../services/reasoning-capabilities.js", () => ({
-  assertReasoningEffort: async (input: { provider?: string; effort?: unknown; cwd?: string }) => {
+vi.mock("../services/reasoning-capabilities.js", () => {
+  const verify = (input: { provider?: string; effort?: unknown; cwd?: string }) => {
     const { provider, effort } = input;
     effortContexts(input);
     if (effort === "ultra" && input.cwd !== "/trusted-project") throw new Error("global base-model does not support ultra");
     if (effort && provider === "claude-code") throw new Error("Reasoning effort is not supported for claude-code");
-  },
-}));
+  };
+  return {
+    assertReasoningEffort: async (input: { provider?: string; effort?: unknown; cwd?: string }) => {
+      effortChecks("explicit");
+      if (input.effort && probeUnknown.value) throw new Error(`Reasoning effort "${String(input.effort)}" is not supported for codex/unknown`);
+      verify(input);
+    },
+    assertStoredReasoningEffort: async (input: { provider?: string; effort?: unknown; cwd?: string }) => {
+      effortChecks("stored");
+      if (probeUnknown.value) return; // cannot verify: the stored value goes through
+      verify(input);
+    },
+  };
+});
 
 let parentChat: any;
 
@@ -441,4 +457,33 @@ it("fork validates inherited ultra against its trusted project, not the global m
   expect(result.code).toBe(201);
   expect(effortContexts).toHaveBeenLastCalledWith(expect.objectContaining({ provider: "codex", effort: "ultra", cwd: "/trusted-project" }));
   expect(result.meta.effort).toBe("ultra");
+});
+
+describe("fork effort checks: explicit selections fail closed, inherited values resume", () => {
+  afterEach(() => {
+    probeUnknown.value = false;
+  });
+  it("forks a chat whose inherited effort the probe cannot verify, as resume would", async () => {
+    probeUnknown.value = true;
+    setParent({ provider: "codex", effort: "high" });
+    const result = await fork();
+    expect(result.code).toBe(201);
+    expect(result.meta.effort).toBe("high");
+    expect(effortChecks).toHaveBeenLastCalledWith("stored");
+  });
+  it("still refuses an effort named in the request when it cannot be verified", async () => {
+    probeUnknown.value = true;
+    setParent({ provider: "codex", effort: "high" });
+    const result = await fork({ effort: "xhigh" });
+    expect(result.code).toBe(400);
+    expect(effortChecks).toHaveBeenLastCalledWith("explicit");
+    expect(calls.forkSession).toEqual([]);
+  });
+  it("treats clearing the effort as an explicit selection", async () => {
+    setParent({ provider: "codex", effort: "ultra" });
+    const result = await fork({ effort: "" });
+    expect(result.code).toBe(201);
+    expect(result.meta.effort).toBeUndefined();
+    expect(effortChecks).toHaveBeenLastCalledWith("explicit");
+  });
 });

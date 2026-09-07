@@ -1,4 +1,4 @@
-import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
+import { assertReasoningEffort, assertStoredReasoningEffort } from "../services/reasoning-capabilities.js";
 import {
   nativeMetadata,
   refreshNativeMetadata,
@@ -1204,7 +1204,12 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   const effort = req.body.effort !== undefined ? requestedEffort : isHandoff ? undefined : meta.effort;
 
   try {
-    await assertReasoningEffort({ provider: targetKind, model, effort: req.body.effort !== undefined ? req.body.effort : effort, cwd: chat.folder });
+    // An effort named in the request is a new selection and fails closed. An
+    // inherited one is a stored value the source chat resumes with today, so it
+    // is checked the way resume checks it: refused only when the catalog knows
+    // the model rules it out, not because the route probe could not answer.
+    if (req.body.effort !== undefined) await assertReasoningEffort({ provider: targetKind, model, effort: req.body.effort, cwd: chat.folder });
+    else await assertStoredReasoningEffort({ provider: targetKind, model, effort, cwd: chat.folder });
   } catch (error) {
     return res.status(400).json({ error: (error as Error).message });
   }
