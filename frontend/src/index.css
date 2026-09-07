@@ -14,7 +14,16 @@
      the collapsed "Browser & Computer Control" heading is a bare <button>, so
      it fell through to the UA's `buttonface` (#efefef) and drew a light band
      across the dark chat view. `index.html` sets data-theme before first
-     paint, so the pair below is resolved by the time anything is drawn. */
+     paint, so the pair below is resolved by the time anything is drawn.
+
+     Scope: this keys on data-theme, i.e. the *resolved mode*. A custom theme
+     is applied as inline `--*` properties on <html> and does not touch
+     data-theme (applyCustomThemeVars, App.tsx), so a custom palette whose
+     dark mode is actually pale would get dark native chrome on a light page.
+     Deliberately not handled: it needs a theme that contradicts the
+     generator's own "dark mode = dark backgrounds" instruction, and inferring
+     the mode instead would mean parsing an arbitrary CSS colour out of --bg
+     in the frontend, which nothing here can do today. */
   color-scheme: dark;
 
   /* Core palette */

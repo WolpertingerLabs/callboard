@@ -1,12 +1,10 @@
-import { readFileSync } from "fs";
-import { dirname, join } from "path";
-import { fileURLToPath } from "url";
 import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerUseStatus } from "shared/types/computerUse.js";
 import ComputerUsePanel, { framePoint } from "./ComputerUsePanel";
 import { computerUseClient as client } from "../api/computerUse";
+import { conditionalRules, injectCss, readCss, setTheme, TRANSPARENT, UA_BUTTON_FILL } from "../testing/cssCascade";
 
 vi.mock("../api/computerUse", () => ({
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
@@ -466,32 +464,82 @@ it("does not dispatch an unaccepted queued preview after the new panel closes", 
  * The collapsed heading's background is a CSS contract, not a component one.
  *
  * `index.css`'s global reset clears a button's border but not its background,
- * so a `<button>` with no `background` declaration paints the user agent's
- * `buttonface` — #efefef in Chrome. The heading is the full width of the panel
- * and sits directly above the composer, so on a phone in dark mode that read as
- * a light band of unstyled whitespace jammed into the chat view, with --text
- * over it at roughly 1.1:1.
+ * so a `<button>` with no `background` declaration falls through to the user
+ * agent's `buttonface`. The heading is the full width of the panel and sits
+ * directly above the composer, so on a phone in dark mode that read as a light
+ * band of unstyled whitespace jammed into the chat view, with --text over it
+ * at roughly 1.1:1.
  *
- * jsdom applies no stylesheet and resolves no user-agent defaults, so there is
- * nothing to assert on a rendered node — `getComputedStyle` reports the empty
- * string either way, which is exactly what it reported while the bug was live.
- * The stylesheet is what has to be checked, so the stylesheet is what is read.
+ * `color-scheme: dark` on :root — guarded in `src/index.colorScheme.test.ts` —
+ * is not a substitute. It makes `buttonface` follow the theme, but the shade
+ * it follows to is a mid-grey, so the band stays visible; the heading has to
+ * paint nothing of its own and let `.computer-use-panel`'s `var(--surface)`
+ * show through. Both halves are load-bearing, which is why both are guarded.
+ *
+ * Two jsdom limits shape how this is written, and both are worked around
+ * rather than assumed away (see `testing/cssCascade.ts`):
+ *
+ * - jsdom's UA stylesheet carries Chrome's `button { background-color:
+ *   buttonface }`, which is the whole reason the fall-through reproduces here
+ *   at all. Nothing in this repo supplies it, so the first case below pins it:
+ *   were a future jsdom to drop that rule, a bare button would read
+ *   transparent and the cases after it would pass for entirely the wrong
+ *   reason.
+ * - jsdom applies no `@media` rule at any viewport, so the last case checks the
+ *   CSSOM directly for a conditional redeclaration that `getComputedStyle`
+ *   would never see. That is exactly the shape that would break on the phone
+ *   viewport this bug was reported from while every other case stayed green.
  */
-describe("the collapsed heading's stylesheet contract", () => {
-  // Not `new URL(..., import.meta.url)`: Vite rewrites that into an asset
-  // reference, and the http URL it returns is not openable by fs.
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ComputerUsePanel.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  const heading = /\.computer-use-heading\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+describe("the collapsed heading's resolved background", () => {
+  let sheet: CSSStyleSheet;
+  let remove: () => void;
 
-  it("declares a background so the rule never falls through to buttonface", () => {
-    expect(heading).not.toBe("");
-    expect(/(^|;)\s*background(-color)?\s*:/.test(heading)).toBe(true);
+  beforeAll(() => {
+    ({ sheet, remove } = injectCss(readCss("index.css"), readCss("components/ComputerUsePanel.css")));
   });
 
-  it("takes the panel's own surface rather than painting a fill of its own", () => {
-    // `transparent` is the whole point: .computer-use-panel already sets
-    // `background: var(--surface)`, so the heading reads as that panel's header
-    // in either theme without naming a second colour that could drift from it.
-    expect(/(^|;)\s*background\s*:\s*transparent\s*(;|$)/.test(heading)).toBe(true);
+  afterAll(() => {
+    remove();
+    setTheme(null);
+  });
+
+  const heading = () => getComputedStyle(button("▸ Browser & Computer Control"));
+
+  it("is measured against a UA fill that is actually live", () => {
+    const bare = document.createElement("button");
+    document.body.appendChild(bare);
+    try {
+      // A <button> the app has not styled. If this ever reads transparent, the
+      // cases below are passing because jsdom paints nothing, not because the
+      // heading opts out of a fill that was really there.
+      expect(getComputedStyle(bare).backgroundColor).toBe(UA_BUTTON_FILL);
+      expect(UA_BUTTON_FILL).not.toBe(TRANSPARENT);
+    } finally {
+      bare.remove();
+    }
+  });
+
+  it.each(["dark", "light"] as const)("paints nothing of its own in the %s theme", (mode) => {
+    setTheme(mode);
+    render(<ComputerUsePanel chatId="c1" permission="allow" />);
+    expect(heading().backgroundColor).toBe(TRANSPARENT);
+    expect(heading().backgroundColor).not.toBe(UA_BUTTON_FILL);
+  });
+
+  it("sits on a panel that does paint a surface", () => {
+    setTheme("dark");
+    render(<ComputerUsePanel chatId="c1" permission="allow" />);
+    const panel = document.querySelector(".computer-use-panel")!;
+    // The other half of "transparent is the right value": a transparent heading
+    // over a transparent panel would be a bare strip of --bg, not a header.
+    // jsdom does not substitute var(), so the shorthand is where this reads.
+    expect(getComputedStyle(panel).background).toBe("var(--surface)");
+  });
+
+  it("declares the heading's background nowhere the resolved cascade cannot see it", () => {
+    const conditional = conditionalRules(sheet).filter(
+      (rule) => rule.selectorText.includes(".computer-use-heading") && rule.properties.some((name) => name.startsWith("background")),
+    );
+    expect(conditional).toEqual([]);
   });
 });
