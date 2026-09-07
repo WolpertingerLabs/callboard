@@ -163,7 +163,7 @@ describe("acpToolLabel", () => {
     expect(acpToolLabel({ toolCallId: "c", title: "write" } as never)).toBe("write");
   });
 
-  it("a managed computer-control name in the title outranks the kind, so the call lands on computerControl", () => {
+  it("a managed computer-control name in the title labels the call only when the kind has no opinion", () => {
     // A vendor that omits `name` and labels the MCP call by its generic kind
     // (`other`) used to be gated on codeExecution — allow in every job/cron/
     // spawned chat — even though the title spelled the managed tool exactly.
@@ -196,6 +196,27 @@ describe("acpToolLabel", () => {
     const managed = { toolCallId: "c", kind: "other", title: "cu_action", rawInput: { sessionId: "s" } } as never;
     expect(categorizeAcpToolName(acpToolLabel(managed))).toBe("computerControl");
     expect(categorizeAcpToolName(acpToolLabel({ toolCallId: "c", title: "cu_action" } as never))).toBe("computerControl");
+  });
+
+  it("a null-opinion kind with a managed-looking title is still not trusted when the input is some other tool's", () => {
+    // OpenCode's `external_directory` ask is `kind: "other"` titled with the
+    // shell command, and its `websearch` ask is titled with the query. A model
+    // that runs `cu_payload` with an external workdir, or searches for
+    // "cu_action", must not have that ask admitted on the computerControl axis:
+    // the input shape (`command`/`directories`, `query`) is nothing a managed
+    // `cu_*` tool ever takes.
+    const external = { toolCallId: "c", kind: "other", title: "cu_payload", rawInput: { command: "cu_payload", directories: ["/elsewhere"], patterns: [] } } as never;
+    expect(acpToolLabel(external)).toBe("other");
+    expect(categorizeAcpToolName(acpToolLabel(external))).not.toBe("computerControl");
+    const search = { toolCallId: "c", kind: "other", title: "cu_action", rawInput: { query: "cu_action" } } as never;
+    expect(acpToolLabel(search)).toBe("other");
+    const arrayInput = { toolCallId: "c", kind: "other", title: "cu_action", rawInput: ["cu_action"] } as never;
+    expect(acpToolLabel(arrayInput)).toBe("other");
+    // The managed shapes themselves still pass: nothing, a target kind, a session ref with frame and action.
+    expect(acpToolLabel({ toolCallId: "c", kind: "other", title: "cu_status", rawInput: {} } as never)).toBe("cu_status");
+    expect(acpToolLabel({ toolCallId: "c", kind: "other", title: "cu_open", rawInput: { kind: "browser" } } as never)).toBe("cu_open");
+    const action = { toolCallId: "c", kind: "other", title: "cu_action", rawInput: { sessionId: "s", generation: 1, frameId: "f", action: { type: "click" } } } as never;
+    expect(acpToolLabel(action)).toBe("cu_action");
   });
 
   it("does not let the shape of a filename choose the permission axis", () => {

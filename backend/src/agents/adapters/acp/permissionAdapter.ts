@@ -300,6 +300,21 @@ export function categorizeAcpToolName(name: string): PermissionCategory | null {
  *    display string, which is why it keeps the top slot; if a vendor is ever
  *    found abusing it, the same demotion `title` just took is available.
  */
+/**
+ * The complete input vocabulary of the managed `cu_*` tools
+ * (`backend/src/services/computer-use-tools.ts`): `cu_status` takes nothing,
+ * `cu_open` a target `kind`, and observe/action/stop a session ref plus
+ * `frameId`/`action`. Any other key means the call is some other tool wearing
+ * a managed-looking title.
+ */
+const MANAGED_COMPUTER_INPUT_KEYS: ReadonlySet<string> = new Set(["sessionId", "generation", "frameId", "action", "kind"]);
+
+function hasManagedComputerInputShape(rawInput: unknown): boolean {
+  if (rawInput === undefined || rawInput === null) return true; // nothing to contradict the title
+  if (typeof rawInput !== "object" || Array.isArray(rawInput)) return false;
+  return Object.keys(rawInput as Record<string, unknown>).every((key) => MANAGED_COMPUTER_INPUT_KEYS.has(key));
+}
+
 export function acpToolLabel(toolCall: RequestPermissionRequest["toolCall"]): string {
   const name = typeof toolCall?.name === "string" ? toolCall.name.trim() : "";
   if (name) return name;
@@ -318,7 +333,15 @@ export function acpToolLabel(toolCall: RequestPermissionRequest["toolCall"]): st
   // there re-created the "axis chosen by the shape of a filename" defect the
   // comment above describes, and on a `computerControl: ask` chat it turned
   // the transport-admission rule into an unprompted write.
-  if (categorizeAcpToolKind(toolCall?.kind) === null && isComputerControlToolName(title)) return title;
+  //
+  // Even with a null-opinion kind, OpenCode's `external_directory` and
+  // `websearch` asks arrive as `other` with a model-chosen title (the shell
+  // command, or the query) — so `cu_payload --workdir /elsewhere` would still
+  // land here. Those asks carry their own input (`command`, `directories`,
+  // `query`, ...), which a managed computer-control call never does: its input
+  // is at most a session ref, a frame id, an action and a target kind. When
+  // `rawInput` is present it must fit that shape or the title is not trusted.
+  if (categorizeAcpToolKind(toolCall?.kind) === null && isComputerControlToolName(title) && hasManagedComputerInputShape(toolCall?.rawInput)) return title;
   if (kind && isToolIdentifier(kind)) return kind;
   if (title && isToolIdentifier(title)) return title;
   return "unknown_tool";
