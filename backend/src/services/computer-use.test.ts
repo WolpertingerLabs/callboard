@@ -182,3 +182,16 @@ it.each(["approve", "expire", "revoke", "stop", "invalidated approval"] as const
     }
   },
 );
+
+it("resume hands the viewer control state, not the screenshot the service captured for the agent", async () => {
+  const { host } = fixture();
+  const opened = await host.open("a", "browser");
+  const taken = await host.takeover("a", opened.id, opened.generation);
+  const resumed = await host.resume("a", opened.id, taken.generation);
+  expect(resumed.controller).toBe("agent");
+  expect(resumed).not.toHaveProperty("observation");
+  // Nor may the grant retain it: the next presentation of the lease is clean too.
+  const again = await host.takeover("a", opened.id, resumed.generation);
+  expect(again).not.toHaveProperty("observation");
+});
+

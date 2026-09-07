@@ -290,7 +290,10 @@ export class ComputerUseHost {
   async resume(chatId: string, id: string, expectedGeneration?: unknown) {
     const grant = this.grant(chatId, id);
     if (expectedGeneration !== grant.lease.generation) throw controlError("stale_generation", "Refresh control state before resuming");
-    grant.lease = await this.service.resume(controlPrincipal(chatId, "human"), {
+    // The service returns the fresh agent observation with the lease. Drop it:
+    // a grant must not retain a screenshot, and this endpoint returns control
+    // state, not pixels — the viewer observes explicitly.
+    const { observation: _observation, ...lease } = await this.service.resume(controlPrincipal(chatId, "human"), {
       sessionId: id,
       generation: grant.lease.generation,
       leaseId: grant.lease.leaseId,
@@ -314,6 +317,7 @@ export class ComputerUseHost {
     }
     const result = await this.service.revoke(controlPrincipal(chatId, "human"), id);
     this.grants.delete(id);
+    grant.lease = lease;
     return this.presentation(result);
   }
   async requestAgentAction(chatId: string, id: string, generation: number, frameId: string, action: unknown, execute: (id: string) => Promise<unknown>) {
