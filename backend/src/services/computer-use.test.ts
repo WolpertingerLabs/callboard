@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
+import { ComputerUseService, type Driver, type Probe } from "@wolpertingerlabs/computer-use";
 import { ComputerUseHost, controlPrincipal, type HostPolicy } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 
@@ -14,7 +14,7 @@ function fixture(level = "allow") {
   };
   const observe = vi.fn(async () => ({ data: "AA==", mimeType: "image/png" as const, width: 100, height: 100, capturedAt: Date.now() }));
   const act = vi.fn(async () => {});
-  const probe = vi.fn(async () => ({ kind: "browser" as const, available: true, capabilities: ["screenshot"] }));
+  const probe = vi.fn(async (): Promise<Probe> => ({ kind: "browser", available: true, capabilities: ["screenshot"] }));
   const driver: Driver = {
     kind: "browser",
     probe,
