@@ -29,6 +29,7 @@ vi.mock("./chat-file-service.js", () => ({
     getChat: (id: string) => state.chats.find((chat) => chat.id === id) ?? null,
     getChatBySessionId: (id: string) => state.chats.find((chat) => chat.session_id === id) ?? null,
     getAllChats: () => state.chats,
+    updateChatMetadata: () => {},
   },
 }));
 vi.mock("../utils/paths.js", async (original) => ({ ...(await original<typeof import("../utils/paths.js")>()), isIgnoredProjectFolder: () => false }));
@@ -346,76 +347,91 @@ it("does not replay discarded excludeTriggered rows before pagination", async ()
   expect(vi.mocked(fs.readSync).mock.calls.filter((args) => Number((args as unknown[])[3]) > 1024 * 1024).length).toBeLessThanOrEqual(1);
 }, 30000);
 
-it.each(["filesystem-only", "stored-missing", "linked-descendant"])(
-  "refuses workspace archive without native release evidence: %s",
+/** A worktree workspace whose directory was never created: every gate but the native one is exercised elsewhere. */
+async function nativeWorkspace() {
+  const { createWorkspace } = await import("./workspace-store.js");
+  const cwd = join(state.home, "never-created-worktree");
+  const workspace = createWorkspace({
+    cwd,
+    repoPath: join(state.home, "no-repo"),
+    isolation: "worktree",
+    worktree: { owned: true, mode: "branch-off", branch: "test", baseBranch: "main" },
+  });
+  return { cwd, workspace };
+}
+const storedChat = (id: string, sessionId: string, folder: string, workspaceId: string, metadata: Record<string, unknown> = { provider: "codex" }) => ({
+  id,
+  session_id: sessionId,
+  folder,
+  workspaceId,
+  session_log_path: null,
+  created_at: "",
+  updated_at: "",
+  metadata: JSON.stringify(metadata),
+});
+
+it.each(["stored-missing", "linked-descendant", "active", "complete-live-parent", "unreadable-linked"])(
+  "keeps the worktree, but never refuses the record archive, without native release evidence: %s",
   async (mode) => {
-    const { createWorkspace, getWorkspace, archiveWorkspace: markArchived } = await import("./workspace-store.js");
+    const { archiveWorkspace: markArchived } = await import("./workspace-store.js");
     const { archiveWorkspace, evaluateWorktreeRemoval } = await import("./workspace-service.js");
     const { quarantineDirectory } = await import("../utils/worktree-trash.js");
-    const cwd = join(state.home, "never-created-worktree");
-    const workspace = createWorkspace({
-      cwd,
-      repoPath: join(state.home, "no-repo"),
-      isolation: "worktree",
-      worktree: { owned: true, mode: "branch-off", branch: "test", baseBranch: "main" },
-    });
-    if (mode === "filesystem-only") rollout(CHILD, ROOT, [event("task_complete")], { cwd });
-    else if (mode === "stored-missing")
-      state.chats = [
-        {
-          id: CHILD,
-          session_id: CHILD,
-          folder: cwd,
-          workspaceId: workspace.id,
-          session_log_path: null,
-          created_at: "",
-          updated_at: "",
-          metadata: JSON.stringify({ provider: "codex", nativeAgent: { parentThreadId: ROOT } }),
-        },
-      ];
-    else {
-      state.chats = [
-        {
-          id: ROOT,
-          session_id: ROOT,
-          folder: cwd,
-          workspaceId: workspace.id,
-          session_log_path: null,
-          created_at: "",
-          updated_at: "",
-          metadata: '{"provider":"codex"}',
-        },
-      ];
+    const { sessionRegistry } = await import("./session-registry.js");
+    const { cwd, workspace } = await nativeWorkspace();
+    if (mode === "stored-missing")
+      state.chats = [storedChat(CHILD, CHILD, cwd, workspace.id, { provider: "codex", nativeAgent: { parentThreadId: ROOT } })];
+    else if (mode === "linked-descendant") {
+      state.chats = [storedChat(ROOT, ROOT, cwd, workspace.id)];
       rollout(CHILD, ROOT, [event("task_complete")], { cwd: "/different/child/cwd" });
-      rollout(LEAF, CHILD);
+      rollout(LEAF, CHILD); // task_started long ago: unknown, not released
+    } else if (mode === "active") {
+      rollout(CHILD, ROOT, [{ ...event("task_started"), timestamp: new Date().toISOString() }], { cwd });
+    } else if (mode === "complete-live-parent") {
+      state.chats = [storedChat("stored-root", ROOT, "/elsewhere", "other-workspace")];
+      sessionRegistry.register("stored-root", { type: "web", abortController: new AbortController(), emitter: new (await import("node:events")).EventEmitter() });
+      rollout(CHILD, ROOT, [event("task_complete")], { cwd });
+    } else {
+      state.chats = [storedChat(CHILD, CHILD, cwd, workspace.id)];
+      writeFileSync(rollout(CHILD, ROOT, [event("task_complete")], { cwd }), "{");
     }
-    const result = await archiveWorkspace(workspace.id);
-    expect(result?.outcome).toBe("refused");
-    const { buildWorkspaceTools } = await import("./workspace-tools.js");
-    const toolResult = await buildWorkspaceTools()
-      .find((tool) => tool.name === "archive_workspace")!
-      .handler({ workspaceId: workspace.id });
-    expect(JSON.stringify(toolResult)).toContain("refused");
-    const { workspacesRouter } = await import("../routes/workspaces.js");
-    const handler = (workspacesRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/archive").route.stack[0].handle;
-    let httpResult: any;
-    const response = {
-      json: (data: unknown) => {
-        httpResult = data;
-      },
-      status: () => response,
-    };
-    await handler({ params: { id: workspace.id } }, response);
-    expect(httpResult.outcome).toBe("refused");
-    expect(result?.worktree.removed).toBe(false);
-    expect(result?.worktree.blockers.some((reason) => reason.detail.includes("ownership release"))).toBe(true);
-    expect(evaluateWorktreeRemoval(workspace).blockers.some((reason) => reason.detail.includes("ownership release"))).toBe(true);
-    expect(markArchived).not.toHaveBeenCalled();
-    expect(quarantineDirectory).not.toHaveBeenCalled();
-    expect(getWorkspace(workspace.id)?.status).not.toBe("archived");
+    try {
+      vi.mocked(markArchived).mockReturnValueOnce(null);
+      const result = await archiveWorkspace(workspace.id);
+      expect(result?.outcome).toBe("archived");
+      expect(markArchived).toHaveBeenCalledWith(workspace.id);
+      expect(result?.worktree.removed).toBe(false);
+      expect(result?.worktree.disposition).toBe("kept");
+      expect(result?.worktree.blockers.some((reason) => /ownership release|native ownership/.test(reason.detail))).toBe(true);
+      expect(evaluateWorktreeRemoval(workspace).blockers.some((reason) => /ownership release|native ownership/.test(reason.detail))).toBe(true);
+      expect(quarantineDirectory).not.toHaveBeenCalled();
+    } finally {
+      sessionRegistry.unregister("stored-root");
+    }
   },
   30000,
 );
+
+it.each(["complete", "interrupted"])("releases a native child whose last child-local event is %s and whose parent is not live", async (terminal) => {
+  const { evaluateWorktreeRemoval } = await import("./workspace-service.js");
+  const { cwd, workspace } = await nativeWorkspace();
+  state.chats = [storedChat("stored-root", ROOT, "/elsewhere", "other-workspace")];
+  rollout(CHILD, ROOT, [event("task_started"), event(terminal === "complete" ? "task_complete" : "turn_aborted")], { cwd });
+  expect(evaluateWorktreeRemoval(workspace).blockers.map((reason) => reason.detail).filter((detail) => /Codex/.test(detail))).toEqual([]);
+  // A follow-up turn takes the release back.
+  appendFileSync(new CodexSessionProvider().resolveSession(CHILD)!.logPath, JSON.stringify({ ...event("task_started"), timestamp: new Date().toISOString() }) + "\n");
+  expect(evaluateWorktreeRemoval(workspace).blockers.some((reason) => reason.detail.includes("ownership release"))).toBe(true);
+});
+
+it("scopes unverifiable rollouts to the workspaces their lineage touches", async () => {
+  const { evaluateWorktreeRemoval } = await import("./workspace-service.js");
+  const { workspace } = await nativeWorkspace();
+  // An unreadable header anywhere under $CODEX_HOME used to block every workspace on the machine.
+  writeFileSync(rollout(SIBLING, null), "{");
+  rollout(LEAF, ROOT, [event("task_complete")], { id: CHILD, cwd: "/unrelated" }); // header id mismatches the filename
+  expect(evaluateWorktreeRemoval(workspace).blockers.map((reason) => reason.detail).filter((detail) => /Codex/.test(detail))).toEqual([]);
+  state.chats = [storedChat("linked", SIBLING, "/anywhere", workspace.id)];
+  expect(evaluateWorktreeRemoval(workspace).blockers.map((reason) => reason.detail)).toContain(`Cannot establish native ownership or cwd for Codex thread ${SIBLING}`);
+});
 
 it("bounds directory enumeration itself and refuses incomplete ownership discovery", async () => {
   const fs = await import("node:fs");
