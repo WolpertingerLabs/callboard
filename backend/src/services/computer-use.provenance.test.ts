@@ -48,16 +48,25 @@ it("denies independently enabling a discovered or persisted native child despite
   expect(() => loadComputerUsePolicy(f.id)).toThrow(/parent-owned/);
 });
 
-it("uses inferred provenance, rejects ambiguous evidence, and invalidates grants on identity/context changes", () => {
+it("uses inferred provenance, rejects ambiguous evidence, and invalidates grants on permission/engine changes only", () => {
   const f = fixture();
   const initial = loadComputerUsePolicy(f.id).signature;
   chatFileService.updateChatMetadata(f.id, { title: "unrelated" });
   expect(loadComputerUsePolicy(f.id).signature).toBe(initial);
+  // Chat-context churn that does not change what the agent may do must not
+  // revoke a live grant: a nudge resume appends a session id, a user
+  // acknowledges branch drift, a model/effort change, a folder move.
+  chatFileService.updateChatMetadata(f.id, { session_ids: [f.id, randomUUID()], lastBranch: "feature/x", model: "gpt-5", effort: "high" });
+  expect(loadComputerUsePolicy(f.id).signature).toBe(initial);
+  chatFileService.updateChat(f.id, { folder: dir + "/moved" });
+  expect(loadComputerUsePolicy(f.id).signature).toBe(initial);
+  // What the agent may do, and which engine it is, do change the signature.
+  chatFileService.updateChatMetadata(f.id, { defaultPermissions: { ...permissions, webAccess: "ask" } });
+  const narrowed = loadComputerUsePolicy(f.id).signature;
+  expect(narrowed).not.toBe(initial);
   setSessionProvidersForTesting([f.resolver("pi")]);
   const rerouted = loadComputerUsePolicy(f.id).signature;
-  expect(rerouted).not.toBe(initial);
-  chatFileService.updateChat(f.id, { folder: dir + "/moved" });
-  expect(loadComputerUsePolicy(f.id).signature).not.toBe(rerouted);
+  expect(rerouted).not.toBe(narrowed);
   setSessionProvidersForTesting([f.resolver("pi"), f.resolver("claude-code")]);
   expect(() => loadComputerUsePolicy(f.id)).toThrow(/provenance/);
 });

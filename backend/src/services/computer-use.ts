@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
-import { chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { resolveSessionContext } from "../utils/session-provenance.js";
 import { chatFileService } from "./chat-file-service.js";
@@ -36,7 +35,13 @@ export function loadComputerUsePolicy(chatId: string): HostPolicy {
     );
   }
   const policy = readComputerUsePolicy(metadata.defaultPermissions);
-  return { policy, signature: JSON.stringify([policy, chatContextFingerprint(chat), routing.provider, routing.acpProviderId]) };
+  // The signature is what a grant is bound to; drift revokes the live session.
+  // Sign only what changes the authority itself: the permission axes and the
+  // engine identity the provenance check just verified. The wider chat
+  // fingerprint (session ids, last branch, model, folder) used to be in here,
+  // and a nudge resume appending a session id or an acknowledged branch drift
+  // revoked the browser mid-turn with "permissions changed".
+  return { policy, signature: JSON.stringify([policy, routing.provider, routing.acpProviderId]) };
 }
 export function controlError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
