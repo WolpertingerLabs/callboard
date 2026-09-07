@@ -59,7 +59,11 @@ export function nativeCodexReasoningCapability(model?: CodexModelInfo): Reasonin
 export function openRouterReasoningCapability(model?: OpenRouterModelInfo): ReasoningCapability {
   const metadata = model?.reasoning;
   const efforts = metadata?.supportedEfforts;
-  const supportedEfforts = (efforts === null ? [...OPENROUTER_REASONING_EFFORTS] : (efforts ?? [])).filter(
+  // Omitted supported_efforts means no effort *selector*; the on/off control is
+  // separate (default_enabled/mandatory), so a non-mandatory reasoning model
+  // still accepts the opt-out. Only `mandatory` hides it ("the model rejects it").
+  const advertised = efforts === null ? [...OPENROUTER_REASONING_EFFORTS] : efforts === undefined ? (metadata ? ["none"] : []) : efforts;
+  const supportedEfforts = advertised.filter(
     (effort) => (OPENROUTER_REASONING_EFFORTS as readonly string[]).includes(effort) && !(metadata?.mandatory && effort === "none"),
   );
   return {
@@ -71,7 +75,11 @@ export function openRouterReasoningCapability(model?: OpenRouterModelInfo): Reas
     ...(!model
       ? { message: "OpenRouter model metadata is unavailable; only the runtime default can be used." }
       : efforts === undefined
-        ? { message: "This OpenRouter model does not advertise effort selection." }
+        ? {
+            message: metadata
+              ? `This OpenRouter model does not advertise effort selection${metadata.mandatory ? "" : "; none disables its reasoning"}.`
+              : "This OpenRouter model does not advertise effort selection.",
+          }
         : {}),
   };
 }

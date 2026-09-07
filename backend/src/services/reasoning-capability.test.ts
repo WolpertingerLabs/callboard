@@ -15,7 +15,11 @@ describe("reasoning capability contract", () => {
     expect(parseOpenRouterReasoning({ supported_efforts: null })).toEqual({ supportedEfforts: null });
     expect(parseOpenRouterReasoning({ supported_efforts: [] })).toEqual({ supportedEfforts: [] });
     expect(openRouterReasoningCapability(model).efforts).toEqual([]);
-    expect(openRouterReasoningCapability({ ...model, reasoning: {} }).efforts).toEqual([]);
+    // Omitted supported_efforts hides the effort selector, not the off switch:
+    // a reasoning model that is not mandatory still accepts the opt-out.
+    expect(openRouterReasoningCapability({ ...model, reasoning: {} }).efforts).toEqual(["none"]);
+    expect(openRouterReasoningCapability({ ...model, reasoning: { defaultEnabled: true } }).efforts).toEqual(["none"]);
+    expect(openRouterReasoningCapability({ ...model, reasoning: { mandatory: true } }).efforts).toEqual([]);
     expect(openRouterReasoningCapability({ ...model, reasoning: { supportedEfforts: [] } }).efforts).toEqual([]);
     expect(openRouterReasoningCapability({ ...model, reasoning: { supportedEfforts: null } }).efforts).toEqual([
       "none",
