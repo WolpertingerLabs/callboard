@@ -256,12 +256,13 @@ function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberC
   // registered while it sits blocked on user input, and blocked-on-you is
   // the state the board must surface.
   const pendingKind = nativeAgent ? undefined : deps.pendingKindOf(chat.id, chat.session_id);
+  // A native child with no recent activity — terminal, errored or simply no
+  // evidence — is "stopped" for the board; `nativeAgent.lifecycle` carries the
+  // distinction for clients that want it (see CardMemberChat).
   const status = nativeAgent
     ? nativeAgent.lifecycle === "active"
       ? "ongoing"
-      : nativeAgent.lifecycle === "unknown"
-        ? "unknown"
-        : "stopped"
+      : "stopped"
     : pendingKind
       ? "waiting"
       : deps.isSessionActive(chat.id, chat.session_id)

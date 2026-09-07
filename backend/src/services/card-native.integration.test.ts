@@ -234,7 +234,7 @@ describe("filesystem-only native card membership", () => {
     const time = vi.spyOn(Date, "now").mockReturnValue(now + 31_000);
     card = (await mcp("get_card", { card_id: CHILD })).card;
     expect(card.rollup).toBe("idle");
-    expect(card.memberChats.find((m: any) => m.chatId === CHILD).status).toBe("unknown");
+    expect(card.memberChats.find((m: any) => m.chatId === CHILD).status).toBe("stopped");
     expect(card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent.lifecycle).toBe("unknown");
     time.mockRestore();
     appendFileSync(path, JSON.stringify({ type: "event_msg", payload: { type: "error" } }) + "\n");
@@ -435,7 +435,7 @@ describe("native classification, parent namespace and lifecycle identity obligat
       const assertUnknown = (card: any) => {
         const member = card.memberChats.find((m: any) => m.chatId === CHILD);
         expect(member.nativeAgent.lifecycle).toBe("unknown");
-        expect(member.status).toBe("unknown");
+        expect(member.status).toBe("stopped");
         expect(card.rollup).toBe("idle");
       };
       assertUnknown((await rest("get", "/")).cards.find((c: any) => c.id === ROOT));
@@ -484,7 +484,7 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
       for (const id of [CHILD, "mapped-child", LEAF]) {
         const card = (await cold(() => rest("get", "/:id", id))).card;
         expect(card.id).toBe(ROOT);
-        expect(card.memberChats.find((m: any) => m.chatId === "mapped-child").status).toBe("unknown");
+        expect(card.memberChats.find((m: any) => m.chatId === "mapped-child").status).toBe("stopped");
       }
       expect((await cold(() => mcp("get_card", { card_id: CHILD }))).card.id).toBe(ROOT);
       expect((await cold(() => mcp("get_card"))).card.id).toBe(ROOT); // Inherited implicit identity is unchanged.

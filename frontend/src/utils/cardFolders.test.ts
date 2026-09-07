@@ -36,8 +36,19 @@ function card(memberChats: CardMemberChat[]): CardSummary {
 }
 
 describe("cardFolders", () => {
-  it("counts native unknown members without treating them as live", () => {
-    const folders = cardFolders(card([member({ chatId: "native", folder: "/scratch", status: "unknown" })]));
+  it("counts a native member with no lifecycle evidence as stopped, not live", () => {
+    // The daemon reports an unknown native lifecycle as status "stopped" and
+    // keeps the lifecycle on nativeAgent, so this bundle needs no new vocabulary.
+    const folders = cardFolders(
+      card([
+        member({
+          chatId: "native",
+          folder: "/scratch",
+          status: "stopped",
+          nativeAgent: { parentThreadId: "parent", management: "read-only", controlNote: "", lifecycle: "unknown" },
+        }),
+      ]),
+    );
     expect(folders[0].chatCount).toBe(1);
     expect(folders[0].live).toBeUndefined();
   });

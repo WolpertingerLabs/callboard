@@ -52,7 +52,7 @@ export function cardFolders(card: CardSummary): CardFolder[] {
   const byPath = new Map<string, CardFolder>();
   for (const chat of card.memberChats) {
     if (!chat.folder) continue;
-    const live = chat.status === "ongoing" || chat.status === "waiting" ? chat.status : undefined;
+    const live = chat.status === "stopped" ? undefined : chat.status;
     const existing = byPath.get(chat.folder);
     if (!existing) {
       byPath.set(chat.folder, {

@@ -36,7 +36,6 @@ const CHAT_STATUS_COLORS: Record<string, string> = {
   ongoing: "var(--board-rollup-active)",
   waiting: "var(--board-rollup-needs-you)",
   stopped: "var(--board-rollup-idle)",
-  unknown: "var(--board-rollup-idle)",
 };
 
 /** Icon/text buttons must set a background — the global button reset leaves
