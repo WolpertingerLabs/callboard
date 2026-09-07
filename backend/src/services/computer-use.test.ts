@@ -14,9 +14,10 @@ function fixture(level = "allow") {
   };
   const observe = vi.fn(async () => ({ data: "AA==", mimeType: "image/png" as const, width: 100, height: 100, capturedAt: Date.now() }));
   const act = vi.fn(async () => {});
+  const probe = vi.fn(async () => ({ kind: "browser" as const, available: true, capabilities: ["screenshot"] }));
   const driver: Driver = {
     kind: "browser",
-    probe: async () => ({ kind: "browser", available: true, capabilities: ["screenshot"] }),
+    probe,
     open: async () => ({ observe, act, close: async () => {}, releaseInput: async () => {} }),
   };
   const service = new ComputerUseService({ targets: [{ id: "managed-browser", enabled: true, driver }], authorize: (request) => host.authorize(request) });
@@ -27,6 +28,7 @@ function fixture(level = "allow") {
     service,
     act,
     observe,
+    probe,
     change: (level: string) => {
       current = { policy: readComputerUsePolicy({ ...current.policy, computerControl: level }), signature: level };
     },
@@ -195,3 +197,28 @@ it("resume hands the viewer control state, not the screenshot the service captur
   expect(again).not.toHaveProperty("observation");
 });
 
+it("caches driver probes across status polls instead of re-executing them every second", async () => {
+  const { host, probe } = fixture();
+  await host.status("a");
+  await host.status("a");
+  await host.status("a");
+  // Both drivers in the fixture share this probe (browser + the native stand-in).
+  expect(probe).toHaveBeenCalledTimes(2);
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(Date.now() + 10_000);
+    await host.status("a");
+    expect(probe).toHaveBeenCalledTimes(4);
+  } finally {
+    now.mockRestore();
+  }
+});
+
+it("does not cache a failed probe, so a fixed prerequisite is seen on the next poll", async () => {
+  const { host, probe } = fixture();
+  probe.mockRejectedValueOnce(new Error("no display"));
+  const first = await host.status("a");
+  expect(first.capabilities.find((c) => c.kind === "browser")?.available).toBe(false);
+  const second = await host.status("a");
+  expect(second.capabilities.find((c) => c.kind === "browser")?.available).toBe(true);
+});

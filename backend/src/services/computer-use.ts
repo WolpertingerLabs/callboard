@@ -49,6 +49,7 @@ export function controlError(code: string, message: string): Error & { code: str
 export const controlPrincipal = (chatId: string, role: "agent" | "human"): Principal => ({ ownerId: chatId, actorId: `${role}:${chatId}`, role });
 const uiKind = (kind: string): ComputerTargetKind => (kind === "browser" ? "browser" : "desktop");
 const targetId = (kind: ComputerTargetKind) => (kind === "browser" ? "managed-browser" : "native-desktop");
+const PROBE_CACHE_MS = 5_000;
 interface Grant {
   chatId: string;
   signature: string;
@@ -73,6 +74,7 @@ export class ComputerUseHost {
   private readonly pending = new Map<string, Pending>();
   private readonly events = new Map<string, unknown[]>();
   private readonly unsubscribers = new Map<string, () => void>();
+  private readonly probes = new Map<ComputerTargetKind, { at: number; result: Promise<Awaited<ReturnType<Driver["probe"]>>> }>();
   private readonly watchdog: ReturnType<typeof setInterval>;
   constructor(
     readonly service: ComputerUseService,
@@ -125,6 +127,20 @@ export class ComputerUseHost {
     }
     for (const [id, pending] of this.pending) if (pending.expiresAt <= Date.now()) this.pending.delete(id);
   }
+  /**
+   * Driver probes are host facts, not chat facts, and the native one execs
+   * `xdotool getdisplaygeometry` with a 5s timeout — on a configured but
+   * unreachable DISPLAY every status poll and `cu_open` blocked on it. Cache
+   * for a few seconds; a failed probe is not cached so a fix is seen promptly.
+   */
+  private probe(kind: ComputerTargetKind) {
+    const cached = this.probes.get(kind);
+    if (cached && Date.now() - cached.at < PROBE_CACHE_MS) return cached.result;
+    const result = this.drivers[kind].probe();
+    this.probes.set(kind, { at: Date.now(), result });
+    result.catch(() => this.probes.delete(kind));
+    return result;
+  }
   private presentation(value: SessionStatus) {
     return {
       ...value,
@@ -142,7 +158,7 @@ export class ComputerUseHost {
       (["browser", "desktop"] as const).map(async (kind) => {
         const restriction = computerUseScopeError(kind, policy);
         try {
-          const probe = await this.drivers[kind].probe();
+          const probe = await this.probe(kind);
           return { ...probe, kind: kind === "browser" ? "browser" : "native", available: probe.available && !restriction, reason: restriction ?? probe.reason };
         } catch {
           return {
