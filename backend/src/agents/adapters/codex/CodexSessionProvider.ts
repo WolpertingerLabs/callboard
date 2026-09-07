@@ -22,7 +22,7 @@
  * @see plans/codex-adapter-job.md (Step 9 session-provider)
  * @see plans/codex-spike-findings.md §5 (rollout format)
  */
-import { mkdirSync, opendirSync, lstatSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
+import { mkdirSync, opendirSync, lstatSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
 import type { HandoffTurn } from "../../handoff.js";
@@ -71,6 +71,66 @@ function isValidThreadId(sessionId: string): boolean {
 let warnedSdkDrift = false;
 
 /**
+ * Memo for {@link CodexSessionProvider.listRollouts}.
+ *
+ * Every session lookup walks the whole dated tree — `resolveSession` is a
+ * find over the listing — and a single request repeats that lookup several
+ * times: the chat list calls `findChat` once per legacy row (8,400 of 9,000
+ * records on a real device carry no `provider`, so each one asks every
+ * provider), and one POST /message re-validates native ownership before and
+ * after each awaited preflight. The tree is append-only and never pruned, so
+ * each walk is a few milliseconds that grows for as long as Codex is used.
+ *
+ * The memo is validated by the **directory** mtimes of the tree (the root and
+ * every `YYYY/MM/DD` level), which change exactly when a rollout is created,
+ * removed or renamed and cost one `stat` per directory — ~20 stats against
+ * ~400 file stats. That answers "is the set of files the same?" precisely, and
+ * the per-file `stat` a lookup does afterwards (`resolveSession` callers
+ * `statSync` the path; `readCodexSessionMeta` keys its own memo on the file's
+ * stat) covers a file changing under a still-valid listing.
+ *
+ * Two things a directory mtime does not tell:
+ *
+ *  - **A file appended to.** The listing carries each file's stat for sort
+ *    order and `updatedAt`, and an append changes neither the directory nor
+ *    the set. {@link ROLLOUT_LISTING_TTL_MS} bounds how stale that ordering
+ *    can be.
+ *  - **A write in the same clock tick as the walk.** Directory mtimes come
+ *    from the kernel's coarse clock (a jiffy — up to 10 ms), so a file created
+ *    right after the walk but inside the same tick leaves the mtime as the
+ *    walk saw it. A listing is therefore only memoized once every directory's
+ *    mtime is comfortably older than the walk ({@link ROLLOUT_LISTING_SETTLE_MS});
+ *    during a burst of rollout creation the walk simply runs each time, which
+ *    is correct and no slower than before.
+ */
+interface RolloutListingMemo {
+  root: string;
+  walkedAt: number;
+  directories: Map<string, bigint>;
+  entries: RolloutEntry[];
+}
+const ROLLOUT_LISTING_TTL_MS = 2000;
+const ROLLOUT_LISTING_SETTLE_MS = 50;
+let rolloutListing: RolloutListingMemo | null = null;
+
+/** Drop the memoized rollout listing. Test seam — production never needs it. */
+export function clearCodexRolloutListingCache(): void {
+  rolloutListing = null;
+}
+
+function rolloutListingIsCurrent(memo: RolloutListingMemo, root: string, now: number): boolean {
+  if (memo.root !== root || now - memo.walkedAt > ROLLOUT_LISTING_TTL_MS || now < memo.walkedAt) return false;
+  for (const [dir, mtimeNs] of memo.directories) {
+    try {
+      if (statSync(dir, { bigint: true }).mtimeNs !== mtimeNs) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Test seam: forget that the drift check has run, so the next construction
  * performs it again.
  *
@@ -88,7 +148,8 @@ export class CodexSessionProvider implements SessionProvider {
   discoveryIncomplete = false;
 
   ownershipEvidence() {
-    const entries = this.listRollouts();
+    // Release evidence gates a directory removal; it reads the tree as it is now.
+    const entries = this.listRollouts({ fresh: true });
     return { complete: !this.discoveryIncomplete, sessions: entries.map((entry) => ({ ...entry, meta: readCodexSessionMeta(entry.filePath) })) };
   }
 
@@ -172,11 +233,16 @@ export class CodexSessionProvider implements SessionProvider {
    * dirs, and unreadable files (each is skipped rather than throwing). Sorted
    * by mtime DESC so discovery/search get newest-first for free.
    */
-  private listRollouts(): RolloutEntry[] {
+  private listRollouts(opts: { fresh?: boolean } = {}): RolloutEntry[] {
     this.discoveryIncomplete = false;
     const root = resolveCodexSessionsRoot();
+    const now = Date.now();
+    if (!opts.fresh && rolloutListing && rolloutListingIsCurrent(rolloutListing, root, now)) return rolloutListing.entries;
+    rolloutListing = null;
+    /** Every directory the walk descended into, with the mtime it had — the memo's validation key. */
+    const directories = new Map<string, bigint>();
     try {
-      lstatSync(root);
+      directories.set(root, lstatSync(root, { bigint: true }).mtimeNs);
     } catch (error) {
       this.discoveryIncomplete = (error as NodeJS.ErrnoException).code !== "ENOENT";
       return [];
@@ -218,15 +284,15 @@ export class CodexSessionProvider implements SessionProvider {
     for (const yyyy of safeReaddir(root)) {
       if (!/^\d{4}$/.test(yyyy)) continue;
       const yPath = join(root, yyyy);
-      if (!this.isRolloutDirectory(yPath)) continue;
+      if (!this.isRolloutDirectory(yPath, directories)) continue;
       for (const mm of safeReaddir(yPath)) {
         if (!/^\d{2}$/.test(mm)) continue;
         const mPath = join(yPath, mm);
-        if (!this.isRolloutDirectory(mPath)) continue;
+        if (!this.isRolloutDirectory(mPath, directories)) continue;
         for (const dd of safeReaddir(mPath)) {
           if (!/^\d{2}$/.test(dd)) continue;
           const dPath = join(mPath, dd);
-          if (!this.isRolloutDirectory(dPath)) continue;
+          if (!this.isRolloutDirectory(dPath, directories)) continue;
           for (const file of safeReaddir(dPath)) {
             const threadId = extractThreadIdFromFilename(file);
             if (!threadId) continue;
@@ -249,13 +315,18 @@ export class CodexSessionProvider implements SessionProvider {
     }
 
     entries.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime());
+    // Memoize only a complete walk of a settled tree (see the memo's note): an
+    // incomplete listing must not be served again as if it were the corpus.
+    const settled = [...directories.values()].every((mtimeNs) => now - Number(mtimeNs / 1_000_000n) > ROLLOUT_LISTING_SETTLE_MS);
+    if (!this.discoveryIncomplete && settled) rolloutListing = { root, walkedAt: now, directories, entries };
     return entries;
   }
 
-  private isRolloutDirectory(path: string): boolean {
+  private isRolloutDirectory(path: string, directories: Map<string, bigint>): boolean {
     try {
-      const stat = lstatSync(path);
+      const stat = lstatSync(path, { bigint: true });
       if (stat.isSymbolicLink()) this.discoveryIncomplete = true;
+      if (stat.isDirectory()) directories.set(path, stat.mtimeNs);
       return stat.isDirectory();
     } catch {
       this.discoveryIncomplete = true;

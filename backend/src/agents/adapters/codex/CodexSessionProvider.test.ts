@@ -16,6 +16,12 @@ vi.mock("../../../services/agent-settings.js", () => ({
   getAgentSettings: vi.fn(),
 }));
 
+// Real filesystem; `opendirSync` is wrapped so the listing-memo tests can count walks.
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, opendirSync: vi.fn(fs.opendirSync) };
+});
+
 vi.mock("../../../utils/paths.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../utils/paths.js")>();
   return { ...actual, isIgnoredProjectFolder: vi.fn(() => false) };
@@ -361,5 +367,95 @@ describe("seedSession images", () => {
 
     const parsed = provider.parseSessionMessages([SEED_ID]);
     expect(parsed[0]!.imageIds).toHaveLength(1);
+  });
+});
+
+describe("rollout listing memo", () => {
+  const backdateTree = (age = 60_000) => {
+    const stamp = new Date(Date.now() - age);
+    for (const dir of ["sessions", "sessions/2026", "sessions/2026/06", "sessions/2026/06/14"]) utimesSync(join(CODEX_HOME, dir), stamp, stamp);
+  };
+  const walks = async () => {
+    const fs = await import("node:fs");
+    vi.mocked(fs.opendirSync).mockClear();
+    return { count: () => vi.mocked(fs.opendirSync).mock.calls.length, restore: () => vi.mocked(fs.opendirSync).mockClear() };
+  };
+
+  it("answers repeated lookups against a settled tree without walking it again", async () => {
+    writeRollout(UUID_A);
+    writeRollout(UUID_B);
+    backdateTree();
+    const { clearCodexRolloutListingCache } = await import("./CodexSessionProvider.js");
+    clearCodexRolloutListingCache();
+    const provider = new CodexSessionProvider();
+    provider.resolveSession(UUID_A);
+    const spy = await walks();
+    try {
+      // The six lookups one POST /message performs on a legacy chat, and the
+      // one-per-row lookups of the chat list, all land here.
+      for (let i = 0; i < 6; i++) expect(provider.resolveSession(UUID_A)?.logPath).toContain(UUID_A);
+      expect(new CodexSessionProvider().discoverSessions({ limit: 10, offset: 0 }).total).toBe(2);
+      expect(spy.count()).toBe(0);
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it("sees a rollout created after the walk, and one removed", async () => {
+    writeRollout(UUID_A);
+    backdateTree();
+    const provider = new CodexSessionProvider();
+    expect(provider.resolveSession(UUID_B)).toBeNull();
+    const created = writeRollout(UUID_B);
+    expect(provider.resolveSession(UUID_B)?.logPath).toBe(created);
+    backdateTree();
+    provider.resolveSession(UUID_B); // memoized again
+    rmSync(created);
+    expect(provider.resolveSession(UUID_B)).toBeNull();
+    expect(provider.discoverSessions({ limit: 10, offset: 0 }).sessions.map((s) => s.sessionId)).toEqual([UUID_A]);
+  });
+
+  it("never memoizes a walk of a tree that changed within the clock's coarse tick", async () => {
+    writeRollout(UUID_A); // the day directory's mtime is "now"
+    const provider = new CodexSessionProvider();
+    provider.resolveSession(UUID_A);
+    const spy = await walks();
+    try {
+      provider.resolveSession(UUID_A);
+      expect(spy.count()).toBeGreaterThan(0);
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it("does not serve one $CODEX_HOME's listing for another", async () => {
+    writeRollout(UUID_A);
+    backdateTree();
+    const provider = new CodexSessionProvider();
+    expect(provider.resolveSession(UUID_A)).not.toBeNull();
+    provider.resolveSession(UUID_A);
+    const other = join(tmpdir(), `codex-session-test-other-${Date.now()}`);
+    mkdirSync(join(other, "sessions"), { recursive: true });
+    const { getAgentSettings } = await import(SETTINGS_MODULE);
+    vi.mocked(getAgentSettings).mockReturnValue({ codexHome: other });
+    try {
+      expect(provider.resolveSession(UUID_A)).toBeNull();
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it("release evidence always walks the tree as it is now", async () => {
+    writeRollout(UUID_A);
+    backdateTree();
+    const provider = new CodexSessionProvider();
+    provider.resolveSession(UUID_A);
+    const spy = await walks();
+    try {
+      provider.ownershipEvidence();
+      expect(spy.count()).toBeGreaterThan(0);
+    } finally {
+      spy.restore();
+    }
   });
 });
