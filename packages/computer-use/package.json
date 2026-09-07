@@ -32,7 +32,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76 || ^4.4.3"
   },
   "optionalDependencies": {
     "playwright": "^1.55.0"
