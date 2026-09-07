@@ -302,8 +302,8 @@ export default function ComputerUsePanel({
     if (!session) return;
     void run(operation, async (signal) => {
       const acceptResponse = beginMutation?.();
-      const result = await client.control(chatId, session.id, operation, session.generation, signal);
-      if (!signal.aborted) acceptResponse?.(result);
+      const result = await client.control(chatId, session.id, operation, session.generation, shared && operation === "approve" ? undefined : signal);
+      acceptResponse?.(result, !signal.aborted);
     });
   };
   const action = (value: ComputerUseAction) => {
@@ -322,7 +322,7 @@ export default function ComputerUsePanel({
         },
         signal,
       );
-      if (!signal.aborted) acceptResponse?.(result);
+      acceptResponse?.(result, !signal.aborted);
       return captureFrame(chatId, session.id, () => !signal.aborted);
     });
   };
@@ -351,10 +351,12 @@ export default function ComputerUsePanel({
               onClick={() => {
                 void run("Enable requested", async (signal) => {
                   const acceptResponse = beginMutation?.();
-                  const opened = await client.open(chatId, kind, signal);
+                  const opened = await client.open(chatId, kind, shared ? undefined : signal);
+                  // Keep stop-only knowledge even after this viewer closes. A
+                  // fetch abort cannot cancel a server-accepted open.
+                  acceptResponse?.(opened.session, !signal.aborted);
                   if (!signal.aborted) {
                     setSelected(opened.session.id);
-                    acceptResponse?.(opened.session);
                   }
                 });
               }}
@@ -393,8 +395,8 @@ export default function ComputerUsePanel({
                   onClick={() =>
                     void run("Request approved", async (signal) => {
                       const acceptResponse = beginMutation?.();
-                      const result = await client.control(chatId, item.id, "approve", item.generation, signal);
-                      if (!signal.aborted) acceptResponse?.(result);
+                      const result = await client.control(chatId, item.id, "approve", item.generation, shared ? undefined : signal);
+                      acceptResponse?.(result, !signal.aborted);
                     })
                   }
                 >
@@ -405,7 +407,7 @@ export default function ComputerUsePanel({
                     void run("Request denied", async (signal) => {
                       const acceptResponse = beginMutation?.();
                       const result = await client.control(chatId, item.id, "revoke", item.generation, signal);
-                      if (!signal.aborted) acceptResponse?.(result);
+                      acceptResponse?.(result, !signal.aborted);
                     })
                   }
                 >

@@ -42,6 +42,26 @@ export function useComputerUseController(chatId: string | undefined) {
   const mutationSequence = useRef(0);
   const stopSequence = useRef(0);
   const known = useRef<ComputerUseStatus | null>(null);
+  // Stop-only knowledge is deliberately independent of display authority. A
+  // successful open can arrive after a newer (empty) poll or a connection error.
+  // Absence from a snapshot never proves that an accepted session was stopped.
+  const emergency = useRef(new Map<string, ComputerUseSession>());
+  const terminalIds = useRef(new Set<string>());
+  const rememberEmergency = useCallback((response: unknown) => {
+    if (!response || typeof response !== "object") return;
+    const value = response as Partial<ComputerUseSession>;
+    if (typeof value.id !== "string" || typeof value.state !== "string") return;
+    if (isTerminal(value as ComputerUseSession)) {
+      terminalIds.current.add(value.id);
+      emergency.current.delete(value.id);
+      return;
+    }
+    if (terminalIds.current.has(value.id)) return; // Session IDs cannot be revived.
+    const previous = emergency.current.get(value.id);
+    if (!["browser", "native"].includes(value.kind ?? "") || !Number.isSafeInteger(value.generation) || value.generation! < 0) return;
+    if (!previous || value.generation! >= previous.generation)
+      emergency.current.set(value.id, { ...value, controller: value.controller ?? null } as ComputerUseSession);
+  }, []);
   const mounted = useRef(false);
   const lifetime = useRef(0);
   const stopActive = useRef(false);
@@ -66,6 +86,7 @@ export function useComputerUseController(chatId: string | undefined) {
     (response: unknown) => {
       if (!mounted.current || current.current !== chatId || !known.current || !response || typeof response !== "object") return;
       const value = response as Partial<ComputerUseSession>;
+      if (value.id && terminalIds.current.has(value.id) && !isTerminal(value as ComputerUseSession)) return;
       if (typeof value.id !== "string" || typeof value.state !== "string") return;
       const status = {
         ...known.current,
@@ -108,6 +129,7 @@ export function useComputerUseController(chatId: string | undefined) {
       const valid = () => scoped() && ticket === readSequence.current && authority === revision.current;
       try {
         const next = await bounded(client.status(chatId, signal));
+        if (scoped()) for (const session of next.sessions) rememberEmergency(session);
         if (valid()) publish(next);
         // Discovery can still stop old-chat sessions after navigation, but must
         // never publish that old authority or invalidate the new route's reads.
@@ -120,7 +142,7 @@ export function useComputerUseController(chatId: string | undefined) {
         return undefined;
       }
     },
-    [chatId, publish, fail],
+    [chatId, publish, fail, rememberEmergency],
   );
 
   // Fence mutation responses as well as reads. A newer published status/error,
@@ -130,8 +152,11 @@ export function useComputerUseController(chatId: string | undefined) {
     const epoch = lifetime.current;
     const mutation = ++mutationSequence.current;
     const authority = ++revision.current;
-    return (response: unknown) => {
+    return (response: unknown, present = true) => {
+      const scoped = mounted.current && current.current === chatId && lifetime.current === epoch;
+      if (scoped) rememberEmergency(response);
       if (
+        present &&
         mounted.current &&
         current.current === chatId &&
         lifetime.current === epoch &&
@@ -140,12 +165,14 @@ export function useComputerUseController(chatId: string | undefined) {
       )
         acceptResponse(response);
     };
-  }, [chatId, acceptResponse]);
+  }, [chatId, acceptResponse, rememberEmergency]);
 
   useEffect(() => {
     ++lifetime.current;
     mounted.current = true;
     known.current = null;
+    emergency.current.clear();
+    terminalIds.current.clear();
     stopActive.current = false;
     setStopping(false);
     setStopError("");
@@ -196,14 +223,17 @@ export function useComputerUseController(chatId: string | undefined) {
       // Show each failure immediately, even while discovery/verification waits.
       if (valid()) setStopError(`${errors.join(" ")} Retry Stop computer control when this attempt finishes.`);
     };
-    const sessions = new Map((known.current?.sessions ?? []).filter((item) => !isTerminal(item)).map((item) => [item.id, item]));
+    const sessions = new Map(emergency.current);
     const attempted = new Set<string>();
     const stopSession = async (session: ComputerUseSession) => {
       if (attempted.has(session.id)) return;
       attempted.add(session.id);
       try {
         const result = await bounded(client.control(chatId, session.id, "stop", session.generation));
-        if (valid()) acceptResponse(result);
+        if (valid()) {
+          rememberEmergency(result);
+          acceptResponse(result);
+        }
       } catch (error) {
         report(`${session.kind} ${session.id}: ${error instanceof Error ? error.message : "stop failed"}`);
       }
@@ -215,7 +245,7 @@ export function useComputerUseController(chatId: string | undefined) {
         const next = await readStatus(undefined, valid);
         if (!next) report("Could not discover all sessions; attempting every last-known session.");
         for (const item of next?.sessions ?? []) {
-          if (!isTerminal(item)) sessions.set(item.id, item);
+          if (!isTerminal(item) && (!valid() || !terminalIds.current.has(item.id))) sessions.set(item.id, item);
         }
       } catch {
         report("Could not discover all sessions; attempting every last-known session.");
@@ -223,11 +253,13 @@ export function useComputerUseController(chatId: string | undefined) {
       // All known browser/native sessions, including pending approvals. Each wait
       // is bounded, but accepted stop requests are not aborted. Late settlements
       // of timed-out requests have no publication callbacks and cannot undo retry.
+      if (valid()) for (const [id, session] of emergency.current) sessions.set(id, session);
       await Promise.all([knownStops, ...[...sessions.values()].map(stopSession)]);
       try {
         const next = await readStatus(undefined, valid);
         if (!next) report("Could not verify stopped state.");
-        else if (next.sessions.some((item) => !isTerminal(item))) report("Some sessions are still active or pending.");
+        else if (next.sessions.some((item) => !isTerminal(item)) || (valid() && emergency.current.size > 0))
+          report("Some sessions are still active or pending.");
       } catch {
         report("Could not verify stopped state.");
       }
@@ -238,7 +270,7 @@ export function useComputerUseController(chatId: string | undefined) {
         setStopError(errors.length ? `${errors.join(" ")} Retry Stop computer control.` : "");
       }
     }
-  }, [chatId, readStatus, acceptResponse]);
+  }, [chatId, readStatus, acceptResponse, rememberEmergency]);
   const visible = snapshot.chatId === chatId ? snapshot : { status: null, error: "" };
   return { status: visible.status, statusError: visible.error, readStatus, beginMutation, stopAll, stopping, stopError, viewerEpoch };
 }

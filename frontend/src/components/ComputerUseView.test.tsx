@@ -23,6 +23,12 @@ function Harness({ id = "c1" }: { id?: string }) {
   );
 }
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+const summary = () => screen.getByRole("status", { name: /^Browser & Computer Control/ });
+function expectIdle() {
+  expect(screen.getByText("Idle")).toBeTruthy();
+  expect(summary().getAttribute("aria-label")).toContain("0 active · 0 waiting for approval");
+}
+
 beforeEach(() => {
   status = {
     permission: "allow",
@@ -80,8 +86,11 @@ it("stops all browser/native and pending sessions without confirmation, even whe
   expect(client.control).toHaveBeenCalledWith("c1", "s1", "stop", 1);
   expect(client.control).toHaveBeenCalledWith("c1", "s2", "stop", 0);
   expect(screen.getByRole("alert").textContent).toContain("native unavailable");
-  expect(screen.getByText(/status unavailable \(last known\)/).textContent).toContain("0 active · 1 waiting");
+  expect(screen.getByText("Last known")).toBeTruthy();
+  expect(summary().getAttribute("aria-label")).toContain("Status unavailable (last known)");
+  expect(screen.getByText("0 active · 1 waiting")).toBeTruthy();
   vi.mocked(client.status).mockImplementation(async () => ({ ...status, sessions: [] }));
+  vi.mocked(client.control).mockImplementation(async (_chat, id) => ({ id, state: "stopped" }));
   click("Stop computer control");
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
 });
@@ -141,11 +150,12 @@ it("fences old route discovery/actions and never sends an old controller stop to
   click("Stop computer control");
   vi.mocked(client.status).mockResolvedValue({ ...status, sessions: [] });
   view.rerender(<Harness id="c2" />);
-  await screen.findByText(/0 active · 0 waiting/);
+  await screen.findByText("Idle");
+  expectIdle();
   await act(async () => resolveStatus({ ...status, sessions: [{ id: "late", kind: "native", controller: "agent", state: "active", generation: 1 }] }));
   expect(client.control).toHaveBeenCalledWith("c1", "late", "stop", 1);
   expect(vi.mocked(client.control).mock.calls.every(([id]) => id === "c1")).toBe(true);
-  expect(screen.getByText(/0 active · 0 waiting/)).toBeTruthy();
+  expectIdle();
 });
 it("reports background status failure truthfully and keeps emergency stop available without any observation", async () => {
   vi.useFakeTimers();
@@ -155,7 +165,8 @@ it("reports background status failure truthfully and keeps emergency stop availa
   await act(async () => {
     await vi.advanceTimersByTimeAsync(3000);
   });
-  expect(screen.getByText(/status unavailable \(last known\)/)).toBeTruthy();
+  expect(screen.getByText("Last known")).toBeTruthy();
+  expect(summary().getAttribute("aria-label")).toContain("Status unavailable (last known)");
   expect((screen.getByRole("button", { name: "Stop computer control" }) as HTMLButtonElement).disabled).toBe(false);
   expect(client.observe).not.toHaveBeenCalled();
   expect(client.open).not.toHaveBeenCalled();
@@ -171,9 +182,10 @@ it("does not let a late old-chat status response populate the new chat header", 
   const view = render(<Harness />);
   vi.mocked(client.status).mockResolvedValue({ ...status, sessions: [] });
   view.rerender(<Harness id="c2" />);
-  await screen.findByText(/0 active · 0 waiting/);
+  await screen.findByText("Idle");
+  expectIdle();
   await act(async () => resolve(status));
-  expect(screen.getByText(/0 active · 0 waiting/)).toBeTruthy();
+  expectIdle();
   expect(screen.queryByText(/1 active · 1 waiting/)).toBeNull();
 });
 
@@ -202,9 +214,9 @@ it.each(["stopped", "new pending", "connection lost"] as const)(
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
     });
-    const header = screen.getByText(/Browser & Computer Control:/).textContent;
+    const header = summary().getAttribute("aria-label");
     await act(async () => oldRead.resolve(stale));
-    expect(screen.getByText(/Browser & Computer Control:/).textContent).toBe(header);
+    expect(summary().getAttribute("aria-label")).toBe(header);
     expect((screen.getByRole("button", { name: "Enable" }) as HTMLButtonElement).disabled).toBe(true);
     expect(client.status).toHaveBeenCalledTimes(3);
 
@@ -218,12 +230,15 @@ it.each(["stopped", "new pending", "connection lost"] as const)(
       await vi.advanceTimersByTimeAsync(3000);
     });
     await act(async () => oldFailure.reject(new Error("old failure")));
-    expect(screen.getByText(/Browser & Computer Control:/).textContent).toBe(header);
+    expect(summary().getAttribute("aria-label")).toBe(header);
     expect(client.status).toHaveBeenCalledTimes(5);
     if (newer === "new pending") {
       click("Stop computer control");
       expect(client.control).toHaveBeenCalledWith("c1", "new-emergency-id", "stop", 0);
-      expect(vi.mocked(client.control).mock.calls.some(([, id]) => id === "s1" || id === "s2")).toBe(false);
+      // Snapshot absence is not a terminal acknowledgement. Previously known
+      // IDs remain emergency targets as well as the newly discovered ID.
+      expect(client.control).toHaveBeenCalledWith("c1", "s1", "stop", 1);
+      expect(client.control).toHaveBeenCalledWith("c1", "s2", "stop", 0);
       await act(async () => {});
     }
   },
@@ -260,9 +275,11 @@ it("preserves a post-mutation response and ordered refresh against an older pend
   });
   click("Take over");
   await act(async () => {});
-  expect(screen.getByText(/controllers: agent 0 \/ human 1/)).toBeTruthy();
+  expect(summary().getAttribute("aria-label")).toContain("controllers: agent 0 / human 1");
+  expect(screen.getByText("Human 1")).toBeTruthy();
   await act(async () => poll.resolve(stale));
-  expect(screen.getByText(/controllers: agent 0 \/ human 1/)).toBeTruthy();
+  expect(summary().getAttribute("aria-label")).toContain("controllers: agent 0 / human 1");
+  expect(screen.getByText("Human 1")).toBeTruthy();
   await act(async () => postMutation.resolve(structuredClone(status)));
   expect((screen.getByRole("button", { name: "Resume agent" }) as HTMLButtonElement).disabled).toBe(false);
   expect(client.observe).not.toHaveBeenCalled();
@@ -324,7 +341,7 @@ it.each(["status", "control", "both", "both then route change"] as const)(
     }
     click("Stop computer control");
     await act(async () => {});
-    expect(screen.getByText(/0 active · 0 waiting/)).toBeTruthy();
+    expectIdle();
     expect(screen.queryByRole("alert")).toBeNull();
     const callsAfterRetry = vi.mocked(client.control).mock.calls.length;
     await act(async () => {
@@ -337,7 +354,7 @@ it.each(["status", "control", "both", "both then route change"] as const)(
         else stop.resolve({ ...stale.sessions[0], generation: 99 });
       }
     });
-    expect(screen.getByText(/0 active · 0 waiting/)).toBeTruthy();
+    expectIdle();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(client.control).toHaveBeenCalledTimes(callsAfterRetry);
     expect(
@@ -348,5 +365,139 @@ it.each(["status", "control", "both", "both then route change"] as const)(
     ).toBe(true);
     expect(client.open).not.toHaveBeenCalled();
     expect(client.observe).not.toHaveBeenCalled();
+  },
+);
+
+const openedSession = { id: "late-open", kind: "browser" as const, state: "active", controller: "agent" as const, generation: 1 };
+
+// Exact review reproduction: a zero-session poll wins display authority while
+// Enable is pending. Its later successful response must still teach Stop the ID.
+it.each(["open viewer", "closed viewer", "newer status error"] as const)(
+  "retains a successfully opened emergency ID independently of stale display authority: %s",
+  async (mode) => {
+    vi.useFakeTimers();
+    status.sessions = [];
+    render(<Harness />);
+    await act(async () => {});
+    click("Switch view");
+    const open = deferred<{ session: typeof openedSession }>();
+    vi.mocked(client.open).mockReturnValueOnce(open.promise);
+    click("Enable");
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expectIdle();
+    vi.mocked(client.status).mockRejectedValue(new Error("offline after empty poll"));
+    if (mode === "closed viewer") click("Switch view");
+    if (mode !== "open viewer") {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(screen.getByText("Last known")).toBeTruthy();
+    }
+    await act(async () => open.resolve({ session: openedSession }));
+    expect(screen.getByText("Last known")).toBeTruthy();
+    expect(summary().getAttribute("aria-label")).toContain("0 active · 0 waiting for approval");
+    expect(summary().getAttribute("aria-label")).toContain("Status unavailable (last known)");
+    if (mode !== "closed viewer") expect((screen.getByRole("button", { name: "Enable" }) as HTMLButtonElement).disabled).toBe(true);
+    // An accepted open remains observable by the shared ledger on viewer close;
+    // aborting its fetch would lose the only acknowledgement of its session ID.
+    expect(vi.mocked(client.open).mock.calls[0][2]).toBeUndefined();
+    vi.mocked(client.control).mockResolvedValue({ id: openedSession.id, state: "stopped" });
+    click("Stop computer control");
+    expect(client.control).toHaveBeenCalledWith("c1", openedSession.id, "stop", 1);
+    await act(async () => {});
+    expect(summary().getAttribute("aria-label")).toContain("0 active · 0 waiting for approval");
+    expect(client.observe).not.toHaveBeenCalled();
+    expect(vi.mocked(client.control).mock.calls.every(([, , operation]) => operation === "stop")).toBe(true);
+  },
+);
+
+it("learns the newly created ID from a late successful approval after its viewer closes", async () => {
+  vi.useFakeTimers();
+  status.sessions = [status.sessions[1]];
+  render(<Harness />);
+  await act(async () => {});
+  click("Switch view");
+  const approval = deferred<unknown>();
+  vi.mocked(client.control).mockReturnValueOnce(approval.promise);
+  click("Approve this request");
+  await act(async () => {});
+  click("Switch view");
+  status.sessions = [];
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3000);
+  });
+  expectIdle();
+  await act(async () => approval.resolve(openedSession));
+  expectIdle();
+  vi.mocked(client.status).mockRejectedValue(new Error("offline"));
+  vi.mocked(client.control).mockResolvedValue({ id: openedSession.id, state: "stopped" });
+  click("Stop computer control");
+  expect(client.control).toHaveBeenCalledWith("c1", openedSession.id, "stop", 1);
+  expect(vi.mocked(client.control).mock.calls[0][4]).toBeUndefined();
+  await act(async () => {});
+});
+
+it.each(["different chat", "same chat, new lifetime"] as const)("does not leak late open IDs into %s", async (mode) => {
+  vi.useFakeTimers();
+  status.sessions = [];
+  const view = render(<Harness />);
+  await act(async () => {});
+  click("Switch view");
+  const open = deferred<{ session: typeof openedSession }>();
+  vi.mocked(client.open).mockReturnValueOnce(open.promise);
+  click("Enable");
+  await act(async () => {});
+  view.rerender(<Harness id="c2" />);
+  await act(async () => {});
+  if (mode === "same chat, new lifetime") {
+    view.rerender(<Harness id="c1" />);
+    await act(async () => {});
+  }
+  await act(async () => open.resolve({ session: openedSession }));
+  expectIdle();
+  vi.mocked(client.status).mockRejectedValue(new Error("offline"));
+  click("Stop computer control");
+  await act(async () => {});
+  expect(client.control).not.toHaveBeenCalled();
+  expect(summary().getAttribute("aria-label")).toContain("0 active · 0 waiting for approval");
+});
+
+it.each(["status", "stop acknowledgement"] as const)(
+  "does not revive a terminal emergency ID from a late active open response after %s",
+  async (terminalSource) => {
+    vi.useFakeTimers();
+    status.sessions = [];
+    render(<Harness />);
+    await act(async () => {});
+    click("Switch view");
+    const open = deferred<{ session: typeof openedSession }>();
+    vi.mocked(client.open).mockReturnValueOnce(open.promise);
+    click("Enable");
+    await act(async () => {});
+    status.sessions = [{ ...openedSession, generation: 2 }];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    if (terminalSource === "status") {
+      status.sessions = [{ ...openedSession, generation: 3, state: "stopped" }];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+    } else {
+      click("Stop computer control");
+      await act(async () => {});
+      expect(client.control).toHaveBeenCalledWith("c1", openedSession.id, "stop", 2);
+    }
+    const stoppedCalls = vi.mocked(client.control).mock.calls.length;
+    await act(async () => open.resolve({ session: openedSession }));
+    expectIdle();
+    vi.mocked(client.status).mockRejectedValue(new Error("offline after terminal acknowledgement"));
+    click("Stop computer control");
+    await act(async () => {});
+    expect(client.control).toHaveBeenCalledTimes(stoppedCalls);
+    expect(summary().getAttribute("aria-label")).toContain("0 active · 0 waiting for approval");
   },
 );

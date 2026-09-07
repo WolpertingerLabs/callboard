@@ -22,9 +22,8 @@ function controller(overrides: Partial<ComputerUseController> = {}): ComputerUse
     stopping: false,
     stopError: "",
     stopAll: vi.fn(async () => {}),
-    publish: vi.fn(),
-    fail: vi.fn(),
-    acceptResponse: vi.fn(),
+    readStatus: vi.fn(async () => undefined),
+    beginMutation: vi.fn(() => vi.fn()),
     viewerEpoch: 0,
     ...overrides,
   };
@@ -42,7 +41,8 @@ it("keeps counts, pending approval and named controllers visible with full acces
   expect(summary.title).toBe(summary.getAttribute("aria-label"));
   expect(summary.textContent).not.toContain("Browser & Computer Control:");
   expect(control.stopAll).not.toHaveBeenCalled();
-  expect(control.publish).not.toHaveBeenCalled();
+  expect(control.readStatus).not.toHaveBeenCalled();
+  expect(control.beginMutation).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Stop computer control" }));
   expect(control.stopAll).toHaveBeenCalledTimes(1);
 });
