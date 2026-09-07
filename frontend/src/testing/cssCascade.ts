@@ -15,12 +15,17 @@
  * a first-match parser drops a second `:root` block, which is the ordinary way
  * to extend a stylesheet, so the guard goes green while the app is broken.
  *
- * Three things jsdom genuinely does not do. Callers must work around them
- * rather than quietly assume them away:
+ * Four things jsdom genuinely does not do. Each is measured, not assumed, and
+ * each is worked around here rather than hand-waved in a comment:
  *
- * - **No `var()` substitution.** `background: var(--surface)` leaves
- *   `backgroundColor` empty and reads back from the shorthand as the literal
- *   `var(--surface)`. The custom properties themselves resolve fine, via
+ * - **No `var()` substitution.** For the shorthand `background: var(--surface)`,
+ *   `backgroundColor` reads back `"rgba(0, 0, 0, 0)"` — indistinguishable from
+ *   an explicit `transparent` — while the `background` shorthand reads back the
+ *   literal `"var(--surface)"`. For the longhand `background-color:
+ *   var(--surface)` it is the other way round: `backgroundColor` itself holds
+ *   the literal. Neither spelling yields a colour, so a test that cares what a
+ *   var-backed property paints must read the declaration via `declarationsFor`
+ *   and resolve the custom property itself, which does work:
  *   `getComputedStyle(el).getPropertyValue("--surface")`.
  * - **No system-colour resolution.** jsdom's own UA stylesheet *does* carry
  *   Chrome's `button { background-color: buttonface }`, so the fall-through
@@ -32,8 +37,21 @@
  * - **No `@media` evaluation, at any viewport.** Media rules are parsed into
  *   the CSSOM but never applied; `window.resizeTo` is a no-op and there is no
  *   `matchMedia`. A rule that only breaks on a phone is therefore invisible to
- *   `getComputedStyle`. `conditionalRules` exists so a test can fail loudly on
- *   that blind spot instead of silently ceasing to cover it.
+ *   `getComputedStyle`.
+ * - **No `!important`.** jsdom parses the flag — `getPropertyPriority` returns
+ *   `"important"` — but resolves the cascade on specificity and source order
+ *   alone, discarding importance. That fails in the dangerous direction: an
+ *   `!important` a later or more specific *normal* declaration would beat is
+ *   read back as if it were not there, so the guard goes green while the
+ *   browser paints the override. `index.css` already carries a global
+ *   `button { }` reset, which is exactly where someone reaches to force a
+ *   background, and `!important` is the reflex when a reset appears not to
+ *   take.
+ *
+ * The last two are the same hazard — a declaration the CSSOM holds but
+ * `getComputedStyle` will not honour — so `declarationsJsdomIgnores` reports
+ * both, and a test can fail loudly on the blind spot instead of silently
+ * ceasing to cover it.
  */
 import { readFileSync } from "fs";
 import { dirname, join } from "path";
@@ -65,12 +83,25 @@ export const UA_BUTTON_FILL = "buttonface";
 /** Fully transparent, as `getComputedStyle` reports it. */
 export const TRANSPARENT = "rgba(0, 0, 0, 0)";
 
-/** Append the given sources to the document as one `<style>` element. */
+/**
+ * Append the given sources to the document as one `<style>` element.
+ *
+ * The `sheet` is checked rather than asserted: jsdom refuses a stylesheet it
+ * cannot parse — `@layer` and CSS nesting both do it, and both are legal CSS a
+ * real browser handles — and leaves `el.sheet` null. Left as `el.sheet!` that
+ * surfaces later as a `TypeError` from whichever helper touches it first,
+ * which is a bisect rather than a message.
+ */
 export function injectCss(...sources: string[]): { sheet: CSSStyleSheet; remove: () => void } {
   const el = document.createElement("style");
   el.textContent = sources.join("\n");
   document.head.appendChild(el);
-  return { sheet: el.sheet!, remove: () => el.remove() };
+  const sheet = el.sheet;
+  if (!sheet) {
+    el.remove();
+    throw new Error("jsdom parsed no stylesheet from the injected CSS. Its parser rejects the whole file on syntax it does not know — @layer and CSS nesting are the usual causes.");
+  }
+  return { sheet, remove: () => el.remove() };
 }
 
 /** Set — or with `null`, clear — the `data-theme` attribute the palette keys on. */
@@ -79,24 +110,25 @@ export function setTheme(mode: "dark" | "light" | null): void {
   else document.documentElement.dataset.theme = mode;
 }
 
-export interface ConditionalRule {
-  /** The `@media`/`@supports` conditions this rule sits under, outermost first. */
+export interface Declaration {
+  /** The `@media`/`@supports` conditions this rule sits under; "" at top level. */
   condition: string;
   selectorText: string;
-  /** Longhand property names the rule declares, as jsdom expanded them. */
-  properties: string[];
+  /** Property name as authored, so a shorthand stays `background`. */
+  property: string;
+  value: string;
+  important: boolean;
 }
 
 /**
- * Every style rule nested inside a conditional at-rule, with its condition.
+ * Every declaration in the sheet, in source order, at any nesting depth.
  *
- * These are exactly the declarations `getComputedStyle` will not see, so a test
- * that cares about a property can assert that nothing redeclares it out of
- * reach. Keyframes are skipped: their children are `CSSKeyframeRule`s keyed by
- * percentage, not selectors, and they are not part of any element's cascade.
+ * Keyframes are skipped: their children are `CSSKeyframeRule`s keyed by
+ * percentage rather than selectors, and they are not part of any element's
+ * cascade.
  */
-export function conditionalRules(sheet: CSSStyleSheet): ConditionalRule[] {
-  const out: ConditionalRule[] = [];
+function allDeclarations(sheet: CSSStyleSheet): Declaration[] {
+  const out: Declaration[] = [];
 
   const walk = (rules: CSSRuleList, condition: string) => {
     for (const rule of Array.from(rules) as (CSSRule & Record<string, unknown>)[]) {
@@ -110,19 +142,66 @@ export function conditionalRules(sheet: CSSStyleSheet): ConditionalRule[] {
       }
 
       const selectorText = rule.selectorText as string | undefined;
-      if (!condition || typeof selectorText !== "string") continue;
+      if (typeof selectorText !== "string") continue;
 
       // Index access rather than `.item(i)`: the CSSStyleDeclaration jsdom
       // hangs off a rule inside an at-rule is array-like but has no `item`,
-      // and calling it throws. Names come back as authored, so a shorthand
-      // stays `background` rather than expanding to `background-color`.
-      const style = rule.style as unknown as { length: number } & Record<number, string>;
-      const properties: string[] = [];
-      for (let i = 0; i < style.length; i++) properties.push(style[i]);
-      out.push({ condition, selectorText, properties });
+      // and calling it throws.
+      const style = rule.style as unknown as CSSStyleDeclaration & { length: number } & Record<number, string>;
+      for (let i = 0; i < style.length; i++) {
+        const property = style[i];
+        out.push({
+          condition,
+          selectorText,
+          property,
+          value: style.getPropertyValue(property),
+          important: style.getPropertyPriority(property) === "important",
+        });
+      }
     }
   };
 
   walk(sheet.cssRules, "");
   return out;
+}
+
+/**
+ * Does `element` match this rule's selector?
+ *
+ * Wrapped only so a selector jsdom's engine cannot parse names itself in the
+ * failure. Nothing in `index.css` throws today, `:has()` included.
+ */
+export function matchesSelector(element: Element, selectorText: string): boolean {
+  try {
+    return element.matches(selectorText);
+  } catch (cause) {
+    throw new Error(`jsdom could not evaluate the selector \`${selectorText}\``, { cause });
+  }
+}
+
+/**
+ * Declarations of `propertyPrefix` that apply to `element`, in source order.
+ *
+ * For reading what a property was *authored* as when `getComputedStyle` will
+ * not resolve it — a `var()` reference, most often. Callers should assert on
+ * the number of hits rather than blindly taking the last: this reports the
+ * cascade's inputs, not its winner, and does not model specificity.
+ */
+export function declarationsFor(sheet: CSSStyleSheet, element: Element, propertyPrefix: string): Declaration[] {
+  return allDeclarations(sheet).filter((d) => d.property.startsWith(propertyPrefix) && matchesSelector(element, d.selectorText));
+}
+
+/**
+ * Declarations the CSSOM holds but `getComputedStyle` will not honour here:
+ * anything under an `@media`/`@supports` condition, and anything flagged
+ * `!important`.
+ *
+ * Both are invisible to the resolved-cascade assertions, and both fail in the
+ * direction that goes green while the browser breaks. An `!important` jsdom
+ * would have honoured anyway is still reported — its outcome was reached by
+ * the wrong rule, and the caller filtering by element and property is what
+ * keeps that from being noise.
+ */
+export function declarationsJsdomIgnores(sheet: CSSStyleSheet): Declaration[] {
+  return allDeclarations(sheet).filter((d) => d.condition !== "" || d.important);
 }

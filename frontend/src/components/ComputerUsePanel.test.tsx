@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { ComputerUseStatus } from "shared/types/computerUse.js";
 import ComputerUsePanel, { framePoint } from "./ComputerUsePanel";
 import { computerUseClient as client } from "../api/computerUse";
-import { conditionalRules, injectCss, readCss, setTheme, TRANSPARENT, UA_BUTTON_FILL } from "../testing/cssCascade";
+import { declarationsFor, declarationsJsdomIgnores, injectCss, matchesSelector, readCss, setTheme, TRANSPARENT, UA_BUTTON_FILL } from "../testing/cssCascade";
 
 vi.mock("../api/computerUse", () => ({
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
@@ -485,21 +485,28 @@ it("does not dispatch an unaccepted queued preview after the new panel closes", 
  *   were a future jsdom to drop that rule, a bare button would read
  *   transparent and the cases after it would pass for entirely the wrong
  *   reason.
- * - jsdom applies no `@media` rule at any viewport, so the last case checks the
- *   CSSOM directly for a conditional redeclaration that `getComputedStyle`
- *   would never see. That is exactly the shape that would break on the phone
- *   viewport this bug was reported from while every other case stayed green.
+ * - jsdom honours neither `@media` conditions nor `!important`, so the last
+ *   case checks the CSSOM directly for either kind of override reaching the
+ *   heading. Both are the shape that goes green here while the browser paints
+ *   the band: a media-scoped rule breaks on exactly the phone viewport this
+ *   was reported from, and `button { background: buttonface !important }` in
+ *   the global reset beats `.computer-use-heading` in a real cascade while
+ *   jsdom hands specificity the win. Matching is by
+ *   `element.matches(selectorText)`, not by looking for the class in the
+ *   selector text — `.computer-use-panel > button` reaches this element too.
  */
 describe("the collapsed heading's resolved background", () => {
   let sheet: CSSStyleSheet;
-  let remove: () => void;
+  // Optional: if injectCss throws, beforeAll never assigns it, and an
+  // unguarded call here buries that error under a TypeError.
+  let remove: (() => void) | undefined;
 
   beforeAll(() => {
     ({ sheet, remove } = injectCss(readCss("index.css"), readCss("components/ComputerUsePanel.css")));
   });
 
   afterAll(() => {
-    remove();
+    remove?.();
     setTheme(null);
   });
 
@@ -526,20 +533,38 @@ describe("the collapsed heading's resolved background", () => {
     expect(heading().backgroundColor).not.toBe(UA_BUTTON_FILL);
   });
 
-  it("sits on a panel that does paint a surface", () => {
-    setTheme("dark");
+  it.each(["dark", "light"] as const)("sits on a panel painting a themed surface in the %s theme", (mode) => {
+    setTheme(mode);
     render(<ComputerUsePanel chatId="c1" permission="allow" />);
     const panel = document.querySelector(".computer-use-panel")!;
+
     // The other half of "transparent is the right value": a transparent heading
     // over a transparent panel would be a bare strip of --bg, not a header.
-    // jsdom does not substitute var(), so the shorthand is where this reads.
-    expect(getComputedStyle(panel).background).toBe("var(--surface)");
+    // getComputedStyle cannot carry this — it reports `rgba(0, 0, 0, 0)` for
+    // the panel's `var(--surface)` exactly as it would for an explicit
+    // `transparent`, so reading it there cannot tell the two apart. Read the
+    // declarations that apply to the element instead, assert exactly one owns
+    // the background (a second would mean the cascade, not this test, decides),
+    // and resolve the variable it names — which jsdom does do.
+    const declared = declarationsFor(sheet, panel, "background");
+    expect(declared.map((d) => d.selectorText)).toEqual([".computer-use-panel"]);
+
+    // Deliberately not pinned to `background` vs `background-color`: either
+    // spelling paints the same surface, and this should not red on that
+    // refactor. What matters is that the value names a theme variable rather
+    // than a literal — and that the variable resolves to something in the mode
+    // under test, which is the half getComputedStyle *can* answer.
+    const token = /^var\((--[a-z-]+)\)$/.exec(declared[0].value)?.[1];
+    expect(token).toBeTruthy();
+    const surface = getComputedStyle(document.documentElement).getPropertyValue(token!);
+    expect(surface).not.toBe("");
+    expect(surface).not.toBe("transparent");
   });
 
-  it("declares the heading's background nowhere the resolved cascade cannot see it", () => {
-    const conditional = conditionalRules(sheet).filter(
-      (rule) => rule.selectorText.includes(".computer-use-heading") && rule.properties.some((name) => name.startsWith("background")),
-    );
-    expect(conditional).toEqual([]);
+  it("takes no background from anywhere the resolved cascade cannot see", () => {
+    render(<ComputerUsePanel chatId="c1" permission="allow" />);
+    const el = button("▸ Browser & Computer Control");
+    const unseen = declarationsJsdomIgnores(sheet).filter((d) => d.property.startsWith("background") && matchesSelector(el, d.selectorText));
+    expect(unseen).toEqual([]);
   });
 });

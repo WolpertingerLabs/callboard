@@ -27,17 +27,19 @@
  * `testing/cssCascade.ts`.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { conditionalRules, injectCss, readCss, setTheme } from "./testing/cssCascade";
+import { declarationsJsdomIgnores, injectCss, readCss, setTheme } from "./testing/cssCascade";
 
 let sheet: CSSStyleSheet;
-let remove: () => void;
+// Optional: if injectCss throws, beforeAll never assigns it, and an
+// unguarded call here buries that error under a TypeError.
+let remove: (() => void) | undefined;
 
 beforeAll(() => {
   ({ sheet, remove } = injectCss(readCss("index.css")));
 });
 
 afterAll(() => {
-  remove();
+  remove?.();
   setTheme(null);
 });
 
@@ -62,12 +64,13 @@ describe("native widget color-scheme", () => {
   });
 
   it("declares color-scheme nowhere the resolved cascade cannot see it", () => {
-    // jsdom applies no @media rule at any viewport, so a color-scheme hidden
-    // inside one would leave the three tests above passing while the theme
-    // broke on exactly the phone viewport this was reported from. Nothing
-    // declares it conditionally today; if that changes, this should fail rather
-    // than quietly stop covering it.
-    const conditional = conditionalRules(sheet).filter((rule) => rule.properties.includes("color-scheme"));
-    expect(conditional).toEqual([]);
+    // The three cases above read what jsdom resolves, and jsdom honours neither
+    // @media conditions nor !important. Either would leave them passing while
+    // the browser did something else: a media-scoped override breaks on exactly
+    // the phone viewport this was reported from, and an !important on an
+    // earlier or less specific rule — `:root { color-scheme: dark !important }`
+    // ahead of the light block, say — silently takes over the theme jsdom still
+    // reports as correct. Nothing declares color-scheme either way today.
+    expect(declarationsJsdomIgnores(sheet).filter((d) => d.property === "color-scheme")).toEqual([]);
   });
 });
