@@ -559,6 +559,19 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       return undefined;
     }
   }, [chat?.metadata]);
+  // Where "Open parent thread" goes. The parent's *chat* id is what the router
+  // takes; the native thread id only happens to equal it for chats whose id is
+  // their session id. Explicit Callboard parentage wins, then the parent the
+  // daemon inferred from the rollout, then the raw thread id as a last resort.
+  const nativeParentChatId = (() => {
+    if (!nativeAgent) return undefined;
+    try {
+      const meta = JSON.parse(chat?.metadata || "{}");
+      return (typeof meta.parentChatId === "string" && meta.parentChatId) || nativeAgent.inferredParentChatId || nativeAgent.parentThreadId;
+    } catch {
+      return nativeAgent.parentThreadId;
+    }
+  })();
 
   // Only a loaded, matching, non-native-child chat gets managed computer controls.
   // Status polls only while it can change: the agent is running, the chat has
@@ -3680,7 +3693,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         {nativeAgent && (
           <div role="status" style={{ padding: 12 }}>
             Native Codex child · {nativeAgent.lifecycle} · read-only. {nativeAgent.controlNote}{" "}
-            <a href={`/chat/${nativeAgent.parentThreadId}`}>Open parent thread</a>
+            <a
+              href={`/chat/${nativeParentChatId}`}
+              onClick={(e) => {
+                e.preventDefault();
+                navigate(`/chat/${nativeParentChatId}`);
+              }}
+            >
+              Open parent thread
+            </a>
           </div>
         )}
         <PromptInput
