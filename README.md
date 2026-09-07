@@ -203,7 +203,7 @@ Callboard isn't just a chat window — it's a platform for running autonomous ag
 Agents are created from the UI. Each agent has a name, emoji, personality, role, tone, pronouns and guidelines that shape how it behaves, plus what it knows about you — your name, timezone and location. Those compile into a system-prompt append you can inspect, section by section with a token estimate, from the agent's dashboard. Behind the scenes, an agent gets:
 
 - **A workspace** at `~/.callboard/agent-workspaces/<alias>/` with scaffold files that teach it how to maintain memory, take notes, and work proactively — `CLAUDE.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `MEMORY.md`
-- **A two-tier memory system** — daily journal files at `memory/YYYY-MM-DD.md` for running notes, and a curated long-term `MEMORY.md` distilled over time
+- **A two-tier memory system** — daily journal files at `memory/YYYY-MM-DD.md` for running notes, and a curated long-term `MEMORY.md` distilled over time. Today's journal and `MEMORY.md` are pre-loaded whole; each *earlier* day is capped by the **journal budget** on the Memory tab — 16k tokens by default, a backstop against one runaway day rather than a tight budget, and settable up to no limit. A capped journal carries a notice telling the agent to read or search the file for the entries left out
 - **Tool permissions** — agents default to allow on the original four axes (file read/write, code execution, web access), but you can restrict per session. Browser & Computer Control defaults to deny
 - **A caller identity** for the connection proxy, chosen per proxy mode, which decides which external APIs it can reach
 

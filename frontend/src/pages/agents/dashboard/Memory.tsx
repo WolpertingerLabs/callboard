@@ -2,7 +2,15 @@ import { useState, useEffect, useCallback } from "react";
 // useOutletContext removed — agent is now passed as a prop
 import { Save, FileText, Calendar, ChevronRight, Check, ScrollText } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
-import { getWorkspaceFiles, getWorkspaceFile, updateWorkspaceFile, getAgentMemory, getAgentDailyMemory, getAgentSystemMessagePreview } from "../../../api";
+import {
+  getWorkspaceFiles,
+  getWorkspaceFile,
+  updateWorkspaceFile,
+  getAgentMemory,
+  getAgentDailyMemory,
+  getAgentSystemMessagePreview,
+  updateAgent,
+} from "../../../api";
 import type { AgentConfig, SystemMessagePreview as SystemMessagePreviewData } from "../../../api";
 import SystemMessagePreview, { formatTokenCount } from "./SystemMessagePreview";
 
@@ -13,6 +21,19 @@ const FILE_LABELS: Record<string, string> = {
   "HEARTBEAT.md": "Heartbeat Tasks",
   "MEMORY.md": "Curated Memory",
 };
+
+/** Mirrors DEFAULT_JOURNAL_TOKEN_BUDGET in backend/src/services/claude-compiler.ts */
+const DEFAULT_JOURNAL_TOKEN_BUDGET = 16000;
+
+const JOURNAL_BUDGET_OPTIONS = [
+  { value: 2000, label: "2k tokens" },
+  { value: 4000, label: "4k tokens" },
+  { value: 8000, label: "8k tokens" },
+  { value: 16000, label: "16k tokens (default)" },
+  { value: 32000, label: "32k tokens" },
+  { value: 64000, label: "64k tokens" },
+  { value: 0, label: "No limit" },
+];
 
 const FILE_DESCRIPTIONS: Record<string, string> = {
   "SOUL.md": "Personality, values, tone, boundaries — who the agent IS",
@@ -42,6 +63,10 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
   // System message preview
   const [preview, setPreview] = useState<SystemMessagePreviewData | null>(null);
   const [showSystemMessage, setShowSystemMessage] = useState(false);
+
+  // Journal pre-load budget
+  const [journalBudget, setJournalBudget] = useState<number>(agent.journalTokenBudget ?? DEFAULT_JOURNAL_TOKEN_BUDGET);
+  const [budgetSaving, setBudgetSaving] = useState(false);
 
   const refreshPreview = useCallback(() => {
     getAgentSystemMessagePreview(agent.alias)
@@ -103,6 +128,23 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
       .then(setDailyContent)
       .catch(() => setDailyContent(""));
   }, [agent.alias, selectedDate]);
+
+  const handleBudgetChange = useCallback(
+    async (value: number) => {
+      const previous = journalBudget;
+      setJournalBudget(value);
+      setBudgetSaving(true);
+      try {
+        await updateAgent(agent.alias, { journalTokenBudget: value });
+        refreshPreview();
+      } catch {
+        setJournalBudget(previous);
+      } finally {
+        setBudgetSaving(false);
+      }
+    },
+    [agent.alias, journalBudget, refreshPreview],
+  );
 
   const hasChanges = content !== originalContent;
 
@@ -213,6 +255,37 @@ export default function Memory({ agent }: { agent: AgentConfig }) {
                 </span>
               )}
             </button>
+            <div style={{ borderTop: "1px solid var(--border)", padding: "10px 14px" }}>
+              <label htmlFor="journal-budget" style={{ display: "block", fontSize: 12, fontWeight: 500, marginBottom: 4 }}>
+                Journal budget
+              </label>
+              <select
+                id="journal-budget"
+                value={journalBudget}
+                disabled={budgetSaving}
+                onChange={(e) => handleBudgetChange(Number(e.target.value))}
+                style={{
+                  width: "100%",
+                  padding: "6px 8px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg-secondary)",
+                  color: "var(--text)",
+                  cursor: budgetSaving ? "default" : "pointer",
+                }}
+              >
+                {JOURNAL_BUDGET_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.45 }}>
+                A backstop against one runaway day crowding out the system message — an ordinary journal passes through untouched. Today&apos;s journal and
+                MEMORY.md are always sent in full; a trimmed journal tells the agent to read the file for the rest.
+              </p>
+            </div>
           </div>
 
           <h3

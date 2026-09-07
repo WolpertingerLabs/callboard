@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compileSystemPrompt, compileIdentityPrompt, compileWorkspaceContext } from "./claude-compiler.js";
+import { compileSystemPrompt, compileIdentityPrompt, compileWorkspaceContext, DEFAULT_JOURNAL_TOKEN_BUDGET } from "./claude-compiler.js";
 import type { AgentConfig } from "shared";
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
@@ -103,5 +103,135 @@ describe("compileSystemPrompt", () => {
     expect(compiled.prompt).toBe("");
     expect(compiled.totalChars).toBe(0);
     expect(compiled.sections.every((s) => !s.included)).toBe(true);
+  });
+});
+
+describe("journal token budget", () => {
+  let workspace: string;
+
+  /** A journal whose every line is identifiable, sized well past any budget under test */
+  function writeJournal(date: string, lineCount: number): void {
+    const lines = Array.from({ length: lineCount }, (_, i) => `- entry ${i} ${"x".repeat(80)}`);
+    writeFileSync(join(workspace, "memory", `${date}.md`), lines.join("\n"));
+  }
+
+  function yesterdayKey(): string {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return formatDate(d);
+  }
+
+  function sectionFor(compiled: ReturnType<typeof compileSystemPrompt>, date: string) {
+    return compiled.sections.find((s) => s.key === `memory/${date}.md`);
+  }
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "claude-compiler-budget-"));
+    mkdirSync(join(workspace, "memory"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("trims a previous day's journal to the configured budget", () => {
+    writeJournal(yesterdayKey(), 500);
+
+    const compiled = compileSystemPrompt(makeConfig({ journalTokenBudget: 200 }), workspace);
+    const section = sectionFor(compiled, yesterdayKey());
+
+    expect(section?.truncated).toBe(true);
+    // 200 tokens ≈ 800 chars; allow the notice and the header line on top
+    expect(section?.chars).toBeLessThan(200 * 4 + 500);
+  });
+
+  it("keeps the tail of a trimmed journal and drops the start", () => {
+    writeJournal(yesterdayKey(), 500);
+
+    const compiled = compileSystemPrompt(makeConfig({ journalTokenBudget: 200 }), workspace);
+    const content = sectionFor(compiled, yesterdayKey())?.content ?? "";
+
+    expect(content).toContain("entry 499");
+    expect(content).not.toContain("entry 0 ");
+  });
+
+  it("tells the agent how to recover the omitted entries", () => {
+    const date = yesterdayKey();
+    writeJournal(date, 500);
+
+    const compiled = compileSystemPrompt(makeConfig({ journalTokenBudget: 200 }), workspace);
+    const content = sectionFor(compiled, date)?.content ?? "";
+
+    expect(content).toContain(`memory/${date}.md`);
+    expect(content).toMatch(/read .* or search it/i);
+  });
+
+  it("never truncates today's journal", () => {
+    const today = formatDate(new Date());
+    writeJournal(today, 500);
+
+    const compiled = compileSystemPrompt(makeConfig({ journalTokenBudget: 200 }), workspace);
+    const section = sectionFor(compiled, today);
+
+    expect(section?.truncated).toBeUndefined();
+    expect(section?.content).toContain("entry 0 ");
+    expect(section?.content).toContain("entry 499");
+  });
+
+  it("never truncates MEMORY.md, however large", () => {
+    const memory = Array.from({ length: 500 }, (_, i) => `- fact ${i} ${"y".repeat(80)}`).join("\n");
+    writeFileSync(join(workspace, "MEMORY.md"), memory);
+
+    const compiled = compileSystemPrompt(makeConfig({ journalTokenBudget: 200 }), workspace);
+    const section = compiled.sections.find((s) => s.key === "MEMORY.md");
+
+    expect(section?.truncated).toBeUndefined();
+    expect(section?.content).toContain("fact 0 ");
+    expect(section?.content).toContain("fact 499");
+  });
+
+  it("treats a budget of 0 as unlimited", () => {
+    writeJournal(yesterdayKey(), 500);
+
+    const compiled = compileSystemPrompt(makeConfig({ journalTokenBudget: 0 }), workspace);
+    const section = sectionFor(compiled, yesterdayKey());
+
+    expect(section?.truncated).toBeUndefined();
+    expect(section?.content).toContain("entry 0 ");
+  });
+
+  it("applies the default budget when the agent has not set one", () => {
+    writeJournal(yesterdayKey(), 4000);
+
+    const compiled = compileSystemPrompt(makeConfig(), workspace);
+    const section = sectionFor(compiled, yesterdayKey());
+
+    expect(section?.truncated).toBe(true);
+    expect(section?.estTokens).toBeLessThan(DEFAULT_JOURNAL_TOKEN_BUDGET * 1.2);
+  });
+
+  it("leaves a journal that fits the budget completely untouched", () => {
+    writeJournal(yesterdayKey(), 5);
+
+    const compiled = compileSystemPrompt(makeConfig({ journalTokenBudget: 200 }), workspace);
+    const section = sectionFor(compiled, yesterdayKey());
+
+    expect(section?.truncated).toBeUndefined();
+    expect(section?.content).toContain("entry 0 ");
+    expect(section?.content).toContain("entry 4 ");
+  });
+
+  it("cuts on a line boundary so no entry is embedded half-written", () => {
+    writeJournal(yesterdayKey(), 500);
+
+    const compiled = compileSystemPrompt(makeConfig({ journalTokenBudget: 200 }), workspace);
+    const content = sectionFor(compiled, yesterdayKey())?.content ?? "";
+
+    // Every surviving journal line is a whole entry, not a fragment of one
+    const entryLines = content.split("\n").filter((l) => l.includes("entry "));
+    expect(entryLines.length).toBeGreaterThan(0);
+    for (const line of entryLines) {
+      expect(line).toMatch(/^- entry \d+ x{80}$/);
+    }
   });
 });

@@ -191,7 +191,13 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     eventSubscriptions,
     mcpKeyAlias,
     enabled,
+    journalTokenBudget,
   } = req.body as Partial<AgentConfig>;
+
+  if (journalTokenBudget !== undefined && (!Number.isInteger(journalTokenBudget) || journalTokenBudget < 0 || journalTokenBudget > 200_000)) {
+    res.status(400).json({ error: "journalTokenBudget must be an integer between 0 and 200000 (0 disables truncation)" });
+    return;
+  }
 
   // Build updated config — only override fields present in request body
   let updated: AgentConfig = {
@@ -212,6 +218,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
     ...(userContext !== undefined && { userContext: userContext?.trim() || undefined }),
     ...(eventSubscriptions !== undefined && { eventSubscriptions }),
     ...(enabled !== undefined && { enabled }),
+    ...(journalTokenBudget !== undefined && { journalTokenBudget }),
   };
 
   // Route mcpKeyAlias to the correct per-mode field and strip before persist
