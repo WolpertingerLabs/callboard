@@ -293,6 +293,23 @@ describe("ComputerUsePanel", () => {
     );
   });
 
+  it("opens on the live session, not an older stopped one still listed in status", async () => {
+    status.sessions = [
+      { id: "old", kind: "browser", state: "stopped", controller: null, generation: 3 },
+      { id: "live", kind: "browser", state: "ready", controller: "agent", generation: 1 },
+    ];
+    render(<Viewer permission="allow" />);
+    await ready();
+    expect((screen.getByLabelText("Session") as HTMLSelectElement).value).toBe("live");
+    expect(screen.getByText(/State: ready · Controller: agent/)).toBeTruthy();
+    expect(button("Take over").disabled).toBe(false);
+    expect(button("Refresh screenshot").disabled).toBe(false);
+    // An explicit choice of the stopped session is still honoured.
+    fireEvent.change(screen.getByLabelText("Session"), { target: { value: "old" } });
+    expect(screen.getByText(/State: stopped · Controller: none/)).toBeTruthy();
+    expect(button("Stop").disabled).toBe(true);
+  });
+
   it("maps scaled screenshot coordinates and clamps edges", () => {
     expect(framePoint(260, 145, { left: 10, top: 20, width: 500, height: 250 }, 1000, 500)).toEqual({ x: 500, y: 250 });
     expect(framePoint(999, -10, { left: 10, top: 20, width: 500, height: 250 }, 1000, 500)).toEqual({ x: 999, y: 0 });

@@ -69,7 +69,9 @@ export default function ComputerUsePanel({
   const sequence = useRef(0);
   const abort = useRef<AbortController>();
   const dragStart = useRef<{ x: number; y: number } | null>(null);
-  const session = status?.sessions.find((item) => item.id === selected) ?? status?.sessions[0];
+  // Status lists terminal sessions too, oldest first, so a fresh mount must not
+  // land on a stopped session with every control disabled while a live one exists.
+  const session = status?.sessions.find((item) => item.id === selected) ?? status?.sessions.find((item) => !terminal(item)) ?? status?.sessions[0];
   const capability = status?.capabilities.find((item) => item.kind === kind);
   const denied = permission === "deny" || status?.permission === "deny";
   const active =
