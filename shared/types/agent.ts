@@ -26,6 +26,13 @@ export interface AgentConfig {
   userLocation?: string;
   userContext?: string;
 
+  // Memory — how much of each *previous* day's journal is pre-loaded into the
+  // system prompt. Today's journal and MEMORY.md are never truncated; a
+  // truncated journal carries a notice telling the agent to read or search the
+  // file for the omitted entries.
+  // Absent → DEFAULT_JOURNAL_TOKEN_BUDGET. 0 → no truncation.
+  journalTokenBudget?: number;
+
   // Event subscriptions — which drawlatch connections this agent monitors
   // The event watcher wakes the agent when new events arrive from subscribed connections
   eventSubscriptions?: EventSubscription[];
@@ -55,6 +62,8 @@ export interface SystemPromptSection {
   estTokens: number;
   /** False when the file is missing/empty and therefore omitted from the prompt */
   included: boolean;
+  /** True when the section was trimmed to the agent's journal token budget */
+  truncated?: boolean;
 }
 
 /** Response of GET /api/agents/:alias/system-message-preview */

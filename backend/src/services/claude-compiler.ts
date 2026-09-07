@@ -113,20 +113,65 @@ const CORE_WORKSPACE_FILES: { filename: string; label: string }[] = [
   { filename: "MEMORY.md", label: "Curated Memory" },
 ];
 
+/**
+ * Default per-file token budget for previous-day journals. Journals are meant to
+ * be verbose (see the scaffold CLAUDE.md), so an unbounded pre-load is the single
+ * largest source of system-prompt growth for a long-lived agent.
+ */
+export const DEFAULT_JOURNAL_TOKEN_BUDGET = 4000;
+
+/** Chars-per-token ratio used for both estimation and budgeting. */
+const CHARS_PER_TOKEN = 4;
+
 interface WorkspaceSectionEntry {
   key: string;
   label: string;
   source: "workspace" | "memory-journal";
   /** The exact text embedded in the prompt, or undefined when the file is missing/empty */
   embedded?: string;
+  /** True when the file was over budget and only its tail is embedded */
+  truncated?: boolean;
+}
+
+/**
+ * Trim a previous-day journal to `budgetTokens`, keeping the tail.
+ *
+ * The tail is what matters on an older journal: entries are appended
+ * chronologically, so the end holds the most recent work and the end-of-day
+ * summary of open threads. The elision notice names the file and tells the
+ * agent how to recover what was dropped — the content is still on disk, so
+ * truncating here costs a tool call, not the memory.
+ */
+function truncateJournal(content: string, filename: string, budgetTokens: number): { text: string; truncated: boolean } {
+  const budgetChars = budgetTokens * CHARS_PER_TOKEN;
+  if (budgetTokens <= 0 || content.length <= budgetChars) {
+    return { text: content, truncated: false };
+  }
+
+  // Cut on a line boundary so the kept text never starts mid-entry
+  const tail = content.slice(content.length - budgetChars);
+  const firstBreak = tail.indexOf("\n");
+  const kept = (firstBreak >= 0 ? tail.slice(firstBreak + 1) : tail).trimStart();
+  const omittedTokens = estimateTokens(content.length - kept.length);
+
+  const notice =
+    `[Earlier entries omitted — this journal exceeded the ${budgetTokens.toLocaleString()}-token pre-load budget, ` +
+    `so roughly ${omittedTokens.toLocaleString()} tokens from the start of the day were dropped. ` +
+    `The full day is still on disk: read \`${filename}\` or search it if you need what came before.]`;
+
+  return { text: `${notice}\n\n${kept}`, truncated: true };
 }
 
 /**
  * Collect workspace files (core files + today/yesterday memory journals) as
  * prompt sections. Missing/empty files are returned without `embedded` so
  * callers can list them as not included.
+ *
+ * `journalTokenBudget` caps each *previous*-day journal. Today's journal is
+ * always embedded in full — it is the session's working context — as are the
+ * core files, MEMORY.md among them, which are already curated.
  */
-function collectWorkspaceSections(workspacePath: string): WorkspaceSectionEntry[] {
+function collectWorkspaceSections(workspacePath: string, journalTokenBudget: number = DEFAULT_JOURNAL_TOKEN_BUDGET): WorkspaceSectionEntry[] {
   const entries: WorkspaceSectionEntry[] = [];
 
   for (const { filename, label } of CORE_WORKSPACE_FILES) {
@@ -143,15 +188,24 @@ function collectWorkspaceSections(workspacePath: string): WorkspaceSectionEntry[
   const today = new Date();
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
+  const todayKey = formatDateForMemory(today);
 
-  for (const date of [formatDateForMemory(today), formatDateForMemory(yesterday)]) {
+  for (const date of [todayKey, formatDateForMemory(yesterday)]) {
     const memFile = `memory/${date}.md`;
     const content = readWorkspaceFile(workspacePath, memFile);
+    if (!content || !content.trim()) {
+      entries.push({ key: memFile, label: `Daily Journal (${date})`, source: "memory-journal" });
+      continue;
+    }
+
+    const { text, truncated } = date === todayKey ? { text: content.trim(), truncated: false } : truncateJournal(content.trim(), memFile, journalTokenBudget);
+
     entries.push({
       key: memFile,
       label: `Daily Journal (${date})`,
       source: "memory-journal",
-      embedded: content && content.trim() ? `This is the current content of ${memFile}:\n${content.trim()}` : undefined,
+      embedded: `This is the current content of ${memFile}:\n${text}`,
+      truncated,
     });
   }
 
@@ -164,8 +218,8 @@ function collectWorkspaceSections(workspacePath: string): WorkspaceSectionEntry[
  * Reads workspace files (SOUL.md, USER.md, TOOLS.md, HEARTBEAT.md, MEMORY.md,
  * and recent memory journals) and concatenates them for context injection.
  */
-export function compileWorkspaceContext(workspacePath: string): string {
-  const sections = collectWorkspaceSections(workspacePath)
+export function compileWorkspaceContext(workspacePath: string, journalTokenBudget?: number): string {
+  const sections = collectWorkspaceSections(workspacePath, journalTokenBudget)
     .map((s) => s.embedded)
     .filter((s): s is string => Boolean(s));
 
@@ -201,7 +255,8 @@ export interface CompiledSystemPrompt {
  */
 export function compileSystemPrompt(config: AgentConfig, workspacePath: string): CompiledSystemPrompt {
   const identity = compileIdentityPrompt(config);
-  const workspaceContext = compileWorkspaceContext(workspacePath);
+  const budget = config.journalTokenBudget;
+  const workspaceContext = compileWorkspaceContext(workspacePath, budget);
   const prompt = [identity, workspaceContext].filter(Boolean).join("\n\n");
 
   const sections: SystemPromptSection[] = [
@@ -214,7 +269,7 @@ export function compileSystemPrompt(config: AgentConfig, workspacePath: string):
       estTokens: estimateTokens(identity.length),
       included: identity.length > 0,
     },
-    ...collectWorkspaceSections(workspacePath).map((s): SystemPromptSection => {
+    ...collectWorkspaceSections(workspacePath, budget).map((s): SystemPromptSection => {
       const content = s.embedded ?? "";
       return {
         key: s.key,
@@ -224,6 +279,7 @@ export function compileSystemPrompt(config: AgentConfig, workspacePath: string):
         chars: content.length,
         estTokens: estimateTokens(content.length),
         included: content.length > 0,
+        ...(s.truncated && { truncated: true }),
       };
     }),
   ];

@@ -87,6 +87,22 @@ function SectionRow({ section, isLast }: { section: SystemPromptSection; isLast:
           <div style={{ fontSize: 13, fontWeight: 500 }}>{section.label}</div>
           <div style={{ fontSize: 11, fontFamily: "monospace", color: "var(--text-muted)" }}>{section.key}</div>
         </div>
+        {section.truncated && (
+          <span
+            title="This journal exceeded the pre-load budget, so only its most recent entries are embedded. The agent is told to read the file for the rest."
+            style={{
+              fontSize: 11,
+              color: "var(--warning)",
+              background: "color-mix(in srgb, var(--warning) 12%, transparent)",
+              padding: "2px 8px",
+              borderRadius: 6,
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+            }}
+          >
+            trimmed
+          </span>
+        )}
         {section.included ? (
           <TokenBadge tokens={section.estTokens} />
         ) : (
