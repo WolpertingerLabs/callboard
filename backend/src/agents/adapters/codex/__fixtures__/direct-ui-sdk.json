@@ -1,0 +1,162 @@
+[
+  {
+    "type": "item.started",
+    "item": {
+      "id": "item_1",
+      "type": "mcp_tool_call",
+      "server": "callboard-ui",
+      "tool": "render_file",
+      "arguments": {
+        "url": "https://example.com/smoke.png",
+        "caption": "Smoke image"
+      },
+      "result": null,
+      "error": null,
+      "status": "in_progress"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "item_1",
+      "type": "mcp_tool_call",
+      "server": "callboard-ui",
+      "tool": "render_file",
+      "arguments": {
+        "url": "https://example.com/smoke.png",
+        "caption": "Smoke image"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"type\":\"render_file\",\"url\":\"https://example.com/smoke.png\",\"media_type\":\"image\",\"mime_type\":\"image/png\",\"display_mode\":\"inline\",\"file_size\":0,\"caption\":\"Smoke image\"}"
+          }
+        ],
+        "structured_content": null
+      },
+      "error": null,
+      "status": "completed"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "id": "item_2",
+      "type": "mcp_tool_call",
+      "server": "callboard-ui",
+      "tool": "create_canvas",
+      "arguments": {
+        "name": "Smoke canvas",
+        "content_type": "html",
+        "content": "<h1>Smoke canvas</h1>"
+      },
+      "result": null,
+      "error": null,
+      "status": "in_progress"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "item_2",
+      "type": "mcp_tool_call",
+      "server": "callboard-ui",
+      "tool": "create_canvas",
+      "arguments": {
+        "name": "Smoke canvas",
+        "content_type": "html",
+        "content": "<h1>Smoke canvas</h1>"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"type\":\"render_canvas\",\"canvas_id\":\"smoke-canvas\",\"version\":1,\"name\":\"Smoke canvas\",\"content_type\":\"html\"}"
+          }
+        ],
+        "structured_content": null
+      },
+      "error": null,
+      "status": "completed"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "id": "item_4",
+      "type": "mcp_tool_call",
+      "server": "callboard-tools",
+      "tool": "echo",
+      "arguments": {
+        "value": "normal-exec-ok"
+      },
+      "result": null,
+      "error": null,
+      "status": "in_progress"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "item_4",
+      "type": "mcp_tool_call",
+      "server": "callboard-tools",
+      "tool": "echo",
+      "arguments": {
+        "value": "normal-exec-ok"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "normal-exec-ok"
+          }
+        ],
+        "structured_content": null
+      },
+      "error": null,
+      "status": "completed"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "id": "item_1",
+      "type": "mcp_tool_call",
+      "server": "callboard-ui",
+      "tool": "update_canvas",
+      "arguments": {
+        "canvas_id": "smoke-canvas",
+        "content": "<h1>Updated smoke canvas</h1>"
+      },
+      "result": null,
+      "error": null,
+      "status": "in_progress"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "item_1",
+      "type": "mcp_tool_call",
+      "server": "callboard-ui",
+      "tool": "update_canvas",
+      "arguments": {
+        "canvas_id": "smoke-canvas",
+        "content": "<h1>Updated smoke canvas</h1>"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"type\":\"render_canvas\",\"canvas_id\":\"smoke-canvas\",\"version\":2,\"name\":\"Smoke canvas\",\"content_type\":\"html\"}"
+          }
+        ],
+        "structured_content": null
+      },
+      "error": null,
+      "status": "completed"
+    }
+  }
+]

@@ -1,3 +1,4 @@
+import { CALLBOARD_UI_NAMESPACE, CALLBOARD_UI_SERVER, CALLBOARD_UI_TOOLS } from "shared/types/callboard-ui-tools.js";
 /**
  * Options translation: Claude-SDK-shaped {@link AgentQueryRequest.options} →
  * Codex `@openai/codex-sdk` construction inputs ({@link CodexOptions} +
@@ -48,6 +49,10 @@ const log = createLogger("codex-adapter");
  * `openRouter` extras pattern.
  */
 export interface CodexOptionsExtras {
+  /** Verified native CLI capability and its existing direct-only list; absent = legacy route. */
+  directUiNamespaces?: string[];
+  /** Preserve the boolean shorthand when adding a nested code_mode setting. */
+  directUiCodeModeEnabled?: boolean;
   /** Subscription (ChatGPT login) vs raw API key. Default subscription — no key passed. */
   authMode?: "subscription" | "api-key";
   /**
@@ -233,7 +238,10 @@ function sanitizeEnvRecord(env: unknown): Record<string, string> | undefined {
  *     since callboard doesn't own their lifecycle.
  * Anything that matches neither shape is logged and skipped.
  */
-export function collectCodexMcpServers(mcpServers: ClaudeShapedOptions["mcpServers"]): {
+export function collectCodexMcpServers(
+  mcpServers: ClaudeShapedOptions["mcpServers"],
+  directUi = false,
+): {
   config?: Record<string, CodexMcpServerConfig>;
   handles: CodexToolServerHandle[];
 } {
@@ -241,8 +249,18 @@ export function collectCodexMcpServers(mcpServers: ClaudeShapedOptions["mcpServe
   const config: Record<string, CodexMcpServerConfig> = {};
   const handles: CodexToolServerHandle[] = [];
   for (const [name, value] of Object.entries(mcpServers)) {
+    if (name === CALLBOARD_UI_SERVER || name === "callboard_ui") {
+      log.warn(`Ignoring external MCP server with reserved Callboard UI name "${name}"`);
+      continue;
+    }
     if (isCodexToolServerHandle(value)) {
       config[name] = value.toMcpServerConfig();
+      if (directUi && name === "callboard-tools" && value.name === "callboard-tools") {
+        // Two filtered views of ONE live handler bundle/socket, not two copies
+        // of stateful handlers. Codex owns selection; close/cancel remain unchanged.
+        config[name] = { ...config[name], disabled_tools: [...CALLBOARD_UI_TOOLS] };
+        config[CALLBOARD_UI_SERVER] = { ...value.toMcpServerConfig(), enabled_tools: [...CALLBOARD_UI_TOOLS] };
+      }
       handles.push(value);
       continue;
     }
@@ -441,9 +459,32 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // Codex connects OUT to MCP servers; each callboard tool bundle is hosted
   // in-process (buildCodexToolServer) and exposed to Codex as an `mcp_servers`
   // entry pointing at the relay shim. The live handles ride out for cleanup.
-  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers);
+  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers, extras.directUiNamespaces !== undefined);
   if (mcpServersConfig) {
     codexOpts.config = { ...codexOpts.config, mcp_servers: mcpServersConfig };
+  }
+
+  if (toolServerHandles.some((handle) => handle.name === "callboard-tools")) {
+    // The new identity is reserved even in user config.toml. Disable the
+    // underscore spelling (same native namespace), and replace the alias as
+    // ONE table so a pre-existing external URL/env/command cannot survive the
+    // SDK's usual leaf-wise merge. These are per-run overrides, never edits.
+    const ui = mcpServersConfig?.[CALLBOARD_UI_SERVER];
+    codexOpts.configOverrides = [
+      `mcp_servers.callboard_ui={enabled=false,command=${JSON.stringify(process.execPath)},args=["--version"]}`,
+      ui
+        ? `mcp_servers.callboard-ui={command=${JSON.stringify(ui.command)},args=${JSON.stringify(ui.args)},tool_timeout_sec=${ui.tool_timeout_sec},enabled_tools=${JSON.stringify(ui.enabled_tools)}}`
+        : `mcp_servers.callboard-ui={enabled=false,command=${JSON.stringify(process.execPath)},args=["--version"]}`,
+    ];
+  }
+  if (mcpServersConfig?.[CALLBOARD_UI_SERVER] && extras.directUiNamespaces) {
+    codexOpts.config = {
+      ...codexOpts.config,
+      // Leaf override only: preserve code_mode.enabled and every unrelated
+      // user setting. Do not turn code mode on (or off) for the user.
+      ...(extras.directUiCodeModeEnabled !== undefined ? { "features.code_mode.enabled": extras.directUiCodeModeEnabled } : {}),
+      "features.code_mode.direct_only_tool_namespaces": [...new Set([...extras.directUiNamespaces, CALLBOARD_UI_NAMESPACE])],
+    };
   }
 
   // A session with in-process tool servers gets the exec identity note once,

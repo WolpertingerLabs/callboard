@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Maximize2 } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 
-interface RenderCanvasData {
+export interface RenderCanvasData {
   type: "render_canvas";
   canvas_id: string;
   version: number;

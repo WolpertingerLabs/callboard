@@ -167,6 +167,39 @@ describe("live connectivity (Codex ⇄ shim ⇄ in-process server over stdio)", 
     }
   }, 20_000);
 
+  it("keeps a success-shaped UI failure non-renderable even when Codex discards isError in history", async () => {
+    const payload = JSON.stringify({
+      type: "render_file",
+      url: "https://example.com/smoke.png",
+      media_type: "image",
+      mime_type: "image/png",
+      display_mode: "inline",
+      file_size: 0,
+    });
+    const handle = track(
+      buildCodexToolServer(
+        specWith({
+          name: "render_file",
+          description: "Test failed UI result",
+          inputSchema: {},
+          handler: async () => ({ isError: true, content: [{ type: "text", text: payload }] }),
+        }),
+      ),
+    );
+    const client = await connectClient(handle);
+    try {
+      expect(await client.callTool({ name: "render_file", arguments: {} })).toMatchObject({
+        isError: true,
+        content: [
+          { type: "text", text: "Callboard UI tool failed." },
+          { type: "text", text: payload },
+        ],
+      });
+    } finally {
+      await client.close();
+    }
+  }, 20_000);
+
   it("surfaces a handler isError result as an MCP tool error", async () => {
     const handle = track(buildCodexToolServer(specWith(echoTool, boomTool)));
     const client = await connectClient(handle);

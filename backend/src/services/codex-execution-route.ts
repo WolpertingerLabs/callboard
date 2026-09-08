@@ -20,6 +20,9 @@ export interface CodexExecutionRoute {
    */
   defaultModel?: string;
   injectedOpenRouter: boolean;
+  /** Native direct-UI support, with the effective user list preserved. */
+  directUiNamespaces?: string[];
+  directUiCodeModeEnabled?: boolean;
 }
 interface RouteConfig {
   model_provider?: unknown;
@@ -93,6 +96,7 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
       let buffer = "";
       let finished = false;
       // Held while `model/list` runs; a CLI that cannot answer it still yields the route.
+      let cliUserAgent: unknown;
       let resolvedRoute: Omit<CodexExecutionRoute, "injectedOpenRouter"> | undefined;
       const finish = (route: Omit<CodexExecutionRoute, "injectedOpenRouter"> = resolvedRoute ?? { route: "unknown" }) => {
         if (finished) return;
@@ -119,11 +123,20 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
             const response = JSON.parse(line);
             if (response.id === 1) {
               if (response.error) return finish();
+              cliUserAgent = response.result?.userAgent;
               send({ method: "initialized", params: {} });
               send({ id: 2, method: "config/read", params: { includeLayers: false, ...(cwd ? { cwd } : {}) } });
             } else if (response.id === 2) {
               if (!response.result?.config) return finish();
               resolvedRoute = routeFromCodexConfig(response.result.config, env);
+              if (resolvedRoute.route === "codex") {
+                const namespaces = directUiNamespacesFromConfig(cliUserAgent, response.result.config);
+                if (namespaces) {
+                  resolvedRoute.directUiNamespaces = namespaces;
+                  const codeMode = response.result.config.features?.code_mode;
+                  if (typeof codeMode === "boolean") resolvedRoute.directUiCodeModeEnabled = codeMode;
+                }
+              }
               // Only the CLI knows which model it runs unconfigured; the debug
               // catalog carries no default marker. Ask in the same session.
               if (resolvedRoute.route === "unknown" || resolvedRoute.model) return finish(resolvedRoute);
@@ -147,4 +160,21 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
     void pending.finally(() => inFlight.delete(key));
   }
   return { ...(await pending), injectedOpenRouter };
+}
+
+/** Config/read is already our read-only CLI config probe, not an execution
+ * transport. Older/unknown binaries and alternate provider routes stay legacy.
+ * Never replace a user list we could not read or whose shape we do not know. */
+export function directUiNamespacesFromConfig(userAgent: unknown, config: unknown): string[] | undefined {
+  const match = typeof userAgent === "string" ? /(?:codex_sdk_ts|codex_cli_rs)\/(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(userAgent) : null;
+  if (!match || Number(match[1]) !== 0 || Number(match[2]) < 153 || (Number(match[2]) === 153 && Number(match[3]) < 4)) return undefined;
+  if (!config || typeof config !== "object") return undefined;
+  const features = (config as { features?: Record<string, unknown> }).features;
+  const codeMode = features?.code_mode;
+  if (codeMode !== undefined && typeof codeMode !== "boolean" && (!codeMode || typeof codeMode !== "object" || Array.isArray(codeMode))) return undefined;
+  // The caller carries a boolean form forward as an explicit enabled leaf.
+  if (typeof codeMode === "boolean") return [];
+  const list = (codeMode as { direct_only_tool_namespaces?: unknown } | undefined)?.direct_only_tool_namespaces;
+  if (list === undefined) return [];
+  return Array.isArray(list) && list.every((value) => typeof value === "string") ? [...list] : undefined;
 }
