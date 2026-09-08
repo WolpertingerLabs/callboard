@@ -54,7 +54,13 @@ async function main() {
         systemPrompt:
           "You are executing a bounded development tool test. Follow the user's steps exactly. Do not use shell, network, desktop, collaboration, or other tools. No filesystem operations except the requested canvas tools.",
         mcpServers: { "callboard-tools": handle },
-        codex: { model: "gpt-5.6-sol", sandboxMode: "danger-full-access", approvalPolicy: "never", directUiNamespaces: route.directUiNamespaces },
+        codex: {
+          model: "gpt-5.6-sol",
+          sandboxMode: "danger-full-access",
+          approvalPolicy: "never",
+          directUiNamespaces: route.directUiNamespaces,
+          directUiPolicy: route.directUiPolicy,
+        },
       });
       instructions = translated.instructionsFilePath;
       const client = new Codex(translated.codexOpts);

@@ -23,6 +23,8 @@ export interface CodexExecutionRoute {
   /** Native direct-UI support, with the effective user list preserved. */
   directUiNamespaces?: string[];
   directUiCodeModeEnabled?: boolean;
+  /** No effective config for the identities being split/overridden. */
+  directUiPolicy?: "unconfigured";
 }
 interface RouteConfig {
   model_provider?: unknown;
@@ -131,8 +133,9 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
               resolvedRoute = routeFromCodexConfig(response.result.config, env);
               if (resolvedRoute.route === "codex") {
                 const namespaces = directUiNamespacesFromConfig(cliUserAgent, response.result.config);
-                if (namespaces) {
+                if (namespaces && canSplitCodexUiTools(response.result.config)) {
                   resolvedRoute.directUiNamespaces = namespaces;
+                  resolvedRoute.directUiPolicy = "unconfigured";
                   const codeMode = response.result.config.features?.code_mode;
                   if (typeof codeMode === "boolean") resolvedRoute.directUiCodeModeEnabled = codeMode;
                 }
@@ -177,4 +180,42 @@ export function directUiNamespacesFromConfig(userAgent: unknown, config: unknown
   const list = (codeMode as { direct_only_tool_namespaces?: unknown } | undefined)?.direct_only_tool_namespaces;
   if (list === undefined) return [];
   return Array.isArray(list) && list.every((value) => typeof value === "string") ? [...list] : undefined;
+}
+
+/** A namespace split must not escape server-scoped policy. Deliberately do
+ * not enumerate/copy policy leaves: enabled/allow/deny lists, default/per-tool
+ * approvals and future/unknown fields all remain on the original identity.
+ * Any existing entry for an affected identity therefore keeps the run unsplit.
+ * Only this non-sensitive proof leaves config/read, never transport/auth data.
+ */
+export function canSplitCodexUiTools(config: unknown): boolean {
+  const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  if (!object(config)) return false;
+  const affected = ["callboard-tools", "callboard_tools", "callboard-ui", "callboard_ui"];
+  const noAffectedServer = (servers: unknown): boolean => {
+    if (servers === undefined) return true;
+    if (!object(servers)) return false;
+    return !affected.some((name) => Object.hasOwn(servers, name));
+  };
+  if (!noAffectedServer(config.mcp_servers)) return false;
+  // Plugin-provided servers have their own policy tables. Do not assume an
+  // affected identity is unconfigured just because the top-level map is empty.
+  if (config.plugins !== undefined) {
+    if (!object(config.plugins)) return false;
+    for (const plugin of Object.values(config.plugins)) {
+      if (!object(plugin) || !noAffectedServer(plugin.mcp_servers)) return false;
+    }
+  }
+  if (config.features !== undefined) {
+    if (!object(config.features)) return false;
+    const mode = config.features.code_mode;
+    if (mode !== undefined && typeof mode !== "boolean") {
+      if (!object(mode)) return false;
+      // Namespace exclusions are also identity-scoped. Their interaction with
+      // a renamed namespace is not proven; do not reinterpret that policy.
+      const excluded = mode.excluded_tool_namespaces;
+      if (excluded !== undefined && (!Array.isArray(excluded) || excluded.length > 0)) return false;
+    }
+  }
+  return true;
 }

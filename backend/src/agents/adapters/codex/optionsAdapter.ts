@@ -51,6 +51,8 @@ const log = createLogger("codex-adapter");
 export interface CodexOptionsExtras {
   /** Verified native CLI capability and its existing direct-only list; absent = legacy route. */
   directUiNamespaces?: string[];
+  /** Required config/read proof; a namespace list alone never authorizes a split. */
+  directUiPolicy?: "unconfigured";
   /** Preserve the boolean shorthand when adding a nested code_mode setting. */
   directUiCodeModeEnabled?: boolean;
   /** Subscription (ChatGPT login) vs raw API key. Default subscription — no key passed. */
@@ -459,7 +461,9 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // Codex connects OUT to MCP servers; each callboard tool bundle is hosted
   // in-process (buildCodexToolServer) and exposed to Codex as an `mcp_servers`
   // entry pointing at the relay shim. The live handles ride out for cleanup.
-  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers, extras.directUiNamespaces !== undefined);
+  const directUi =
+    extras.directUiNamespaces !== undefined && extras.directUiPolicy === "unconfigured" && !extras.useOpenRouter && extras.reasoningRoute !== "openrouter";
+  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers, directUi);
   if (mcpServersConfig) {
     codexOpts.config = { ...codexOpts.config, mcp_servers: mcpServersConfig };
   }

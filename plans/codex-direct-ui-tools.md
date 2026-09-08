@@ -20,7 +20,9 @@ grants desktop permissions, or changes the execution transport.
 
 The existing read-only `config/read` route probe also returns the effective user
 namespace list and CLI version evidence. Enable the split only for the verified
-native route and CLI 0.153.4+ (0.x). Preserve boolean code-mode shorthand as its
+native route and CLI 0.153.4+ (0.x), plus a fresh `directUiPolicy: "unconfigured"`
+proof from that same effective config read. A namespace list alone cannot
+authorize splitting. Preserve boolean code-mode shorthand as its
 explicit `enabled` value when adding the nested setting. Unknown/older binaries,
 unreadable/malformed config, and alternate provider routes retain the previous
 unsplit behavior; they do not claim direct-rendering support. No new App Server
@@ -33,6 +35,44 @@ collision. The disabled entry includes an inert command because the native confi
 parser requires a transport even when disabled. Other user configuration remains
 untouched. Socket lifetime, timeout, cancellation, and root-bound identity remain
 owned by the original handle. No handler infers caller identity from request IDs.
+
+## Policy-preserving fallback (root review P1)
+
+The initial candidate incorrectly overwrote the original server's deny list and
+exposed all three UI tools under the alias, escaping allowlists and server-disable
+settings. The revised implementation deliberately does **not** attempt to copy or
+reinterpret server policy. If effective `config/read` has **any** entry for
+`callboard-tools`, `callboard_tools`, `callboard-ui`, or `callboard_ui`, the run
+stays unsplit. This includes transport-only entries: the conservative tradeoff is
+legacy rendering for explicitly configured first-party identities, rather than
+silently broadening their policy. The original server's policy leaves are not
+overridden, and both reserved UI aliases stay disabled.
+
+The audit also covers server-default/per-tool approval settings
+(`default_tools_approval_mode`, `tools.<tool>.approval_mode`), unknown/future fields
+inside those server entries, plugin server-policy tables for affected identities,
+and code-mode namespace exclusions. A nonempty or malformed exclusion list, or an
+unknown shape in the inspected policy containers, likewise prevents splitting.
+Unrelated external server policies do not prevent the normal no-policy split.
+Global approval/sandbox policy and the legacy bridge transport/timeout behavior
+are unchanged. No raw server/auth configuration is carried outside the probe.
+
+`directUiPolicy.test.ts` runs the installed native CLI's **config/read**, not a
+mock, before and after the actual adapter's SDK-equivalent flattened config plus
+raw overrides. It needs no login, model call, or production server. The first
+three regression cases retain these exact original-server policies:
+
+| Original policy | Original after translation | UI alias after translation |
+| --- | --- | --- |
+| `disabled_tools=["render_file","set_chat_title"]` | Unchanged | Disabled |
+| `enabled_tools=["read_canvas"]` | Unchanged | Disabled |
+| `enabled=false` | Unchanged | Disabled |
+
+Native cases also cover empty/combined allow/deny lists, default/per-tool approvals,
+an unknown server field, trusted-project policy, and the policy-free positive
+control (the split still works and preserves the user's code-mode namespace list).
+Unit cases fail closed for malformed policy and plugin entries. The coordinating
+root's original standalone config probe also now passes unchanged.
 
 ## Transcript and trust
 

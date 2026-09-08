@@ -60,7 +60,10 @@ describe("direct UI config", () => {
   it("uses two filtered views of the same owned socket, without altering code mode or routing", () => {
     const handle = buildCodexToolServer({ name: "callboard-tools", version: "1", tools: [] });
     handles.push(handle);
-    const options = { mcpServers: { "callboard-tools": handle }, codex: { directUiNamespaces: ["custom", "mcp__callboard_ui"] } };
+    const options = {
+      mcpServers: { "callboard-tools": handle },
+      codex: { directUiNamespaces: ["custom", "mcp__callboard_ui"], directUiPolicy: "unconfigured" as const },
+    };
     const translated = translateCodexOptions(options);
     const config = translated.codexOpts.config!;
     expect(config["features.code_mode.direct_only_tool_namespaces"]).toEqual(["custom", "mcp__callboard_ui"]);
@@ -74,9 +77,8 @@ describe("direct UI config", () => {
     expect(servers.config!["callboard-tools"].disabled_tools).toEqual(servers.config!["callboard-ui"].enabled_tools);
     for (const enabled of [true, false]) {
       expect(
-        translateCodexOptions({ ...options, codex: { directUiNamespaces: [], directUiCodeModeEnabled: enabled } }).codexOpts.config?.[
-          "features.code_mode.enabled"
-        ],
+        translateCodexOptions({ ...options, codex: { directUiNamespaces: [], directUiPolicy: "unconfigured", directUiCodeModeEnabled: enabled } }).codexOpts
+          .config?.["features.code_mode.enabled"],
       ).toBe(enabled);
     }
     const legacy = translateCodexOptions({ ...options, codex: { useOpenRouter: true } });

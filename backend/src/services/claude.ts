@@ -1705,7 +1705,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(requestedModel && { model: requestedModel }),
       ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
       ...(chatEffort && { reasoningEffort: chatEffort }),
-      ...(codexRoute.directUiNamespaces && { directUiNamespaces: codexRoute.directUiNamespaces, directUiCodeModeEnabled: codexRoute.directUiCodeModeEnabled }),
+      ...(codexRoute.directUiNamespaces && {
+        directUiNamespaces: codexRoute.directUiNamespaces,
+        directUiCodeModeEnabled: codexRoute.directUiCodeModeEnabled,
+        directUiPolicy: codexRoute.directUiPolicy,
+      }),
       reasoningRoute: reasoningTarget.route === "openrouter" ? "openrouter" : reasoningTarget.route === "codex" ? "native" : "unknown",
       ...(permissions && { permissions }),
     };
