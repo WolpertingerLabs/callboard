@@ -383,8 +383,39 @@ it("describes an action for the log without writing typed text or URL query stri
   expect(logged({ type: "navigate", url: "https://example.com/dashboard" })).toBe("Open https://example.com/dashboard in the managed browser on workshop");
   expect(logged({ type: "navigate", url: "https://example.com" })).toBe("Open https://example.com in the managed browser on workshop");
   // A URL that will not parse degrades to nothing, never to itself: this is
-  // exactly the fallback a leak would come through.
-  expect(logged({ type: "navigate", url: "not a url?token=SECRET" })).toBe("Open an unparseable URL in the managed browser on workshop");
+  // exactly the fallback a leak would come through. The schema now rejects it
+  // first, so the line names the class; the branch's own guards stay as the
+  // belt to that brace, and are asserted directly below.
+  expect(logged({ type: "navigate", url: "not a url?token=SECRET" })).toBe("Perform an invalid navigate action in the managed browser on workshop");
+  expect(describeAgentActionForLog({ type: "navigate", url: "data:text/plain,SECRET" }, target)).not.toContain("SECRET");
+
+  /**
+   * The class, not the instances. This describer runs BEFORE the action is
+   * validated — the strict schema does not execute until the MCP hop — so
+   * anything the service will reject must not reach a branch written for the
+   * shape it isn't. The opaque-origin schemes are why: `new URL()` parses them
+   * happily, `origin` is the literal string "null", and the whole payload sits
+   * in `pathname`, so a describer that trusted the parse would print it.
+   */
+  for (const url of [
+    "data:text/plain,SECRET-EXFIL-TOKEN",
+    "javascript:alert(document.cookie)",
+    "file:///home/user/.ssh/id_rsa",
+    "blob:https://x.com/uuid-SECRET",
+  ]) {
+    const line = logged({ type: "navigate", url });
+    expect(line, url).toMatch(/^(Perform an invalid navigate|Open a non-web URL|Open an unparseable URL)/);
+    expect(line, url).not.toContain("SECRET");
+    expect(line, url).not.toContain("cookie");
+    expect(line, url).not.toContain("id_rsa");
+  }
+  // Extra keys, wrong types and out-of-range values are all the same class.
+  expect(logged({ type: "click", x: 1, y: 2, bogus: "SECRET" })).toBe("Perform an invalid click action in the managed browser on workshop");
+  expect(logged({ type: "type", text: 42 })).toBe("Perform an invalid type action in the managed browser on workshop");
+  expect(logged({ type: "wait", durationMs: 999_999 })).toBe("Perform an invalid wait action in the managed browser on workshop");
+  // And the label comes from the known list, never from the caller: the one
+  // caller-supplied string still on this path is the one it will not print.
+  expect(logged({ type: "click\nSECRET" })).toBe("Perform an invalid unknown action in the managed browser on workshop");
 
   // A named key keeps its name; a bare character does not, because a secret
   // entered one key at a time is still a secret, just spread over N lines.
@@ -392,6 +423,9 @@ it("describes an action for the log without writing typed text or URL query stri
   expect(logged({ type: "key", key: "Enter" })).toBe("Press Enter in the managed browser on workshop");
   expect(logged({ type: "key", key: "h" })).toBe("Press a character key in the managed browser on workshop");
   expect(logged({ type: "key", key: "7" })).toBe("Press a character key in the managed browser on workshop");
+  // Anything outside the key grammar is not a key press at all — a model
+  // reaching for `key` to enter text writes its text nowhere.
+  expect(logged({ type: "key", key: "hunter2-password" })).toBe("Perform an invalid key action in the managed browser on workshop");
 
   // The rest say what happened without saying what was on the screen.
   for (const action of [

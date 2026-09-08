@@ -110,6 +110,39 @@ describe("ComputerUsePanel", () => {
     expect(intro).not.toMatch(/agent enables/);
     fireEvent.click(button("Chat permissions"));
     expect(onPermissions).toHaveBeenCalled();
+    // Nothing to consent to while it is denied, so the Enable note stays away.
+    expect(screen.queryByRole("note", { name: "What Enable grants" })).toBeNull();
+  });
+
+  /**
+   * The Enable click is the consent boundary for unattended control, and the
+   * two levels produce identical panels otherwise. A chat someone else
+   * configured — or you configured a month ago — must say which one it is at
+   * the moment you click, not two screens away in Chat permissions.
+   */
+  it.each([
+    ["allow", "This chat is set to Allow:", /acts on it without asking you again/],
+    ["ask", "This chat is set to Ask:", /asks you here in the chat before every action/],
+  ] as const)("says what Enable grants when the chat is %s", async (permission, heading, detail) => {
+    status.permission = permission;
+    render(<Viewer permission={permission} />);
+    await ready();
+
+    const note = screen.getByRole("note", { name: "What Enable grants" });
+    expect(note.textContent).toContain(heading);
+    expect(note.textContent).toMatch(detail);
+    expect(note.textContent).not.toMatch(permission === "allow" ? /asks you/ : /without asking/);
+  });
+
+  it("takes the level from the server, not from this tab's copy of the chat record", async () => {
+    // A level changed in another tab (or by the human in Chat permissions)
+    // reaches this panel through status first. Showing the stale prop here
+    // would tell someone they are consenting to the opposite of what they are.
+    status.permission = "allow";
+    render(<Viewer permission="ask" />);
+    await ready();
+
+    expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("This chat is set to Allow:");
   });
 
   it.each(["codex", "claude-code", "pi", undefined])("explains the shared subagent grant for the engines whose subagents share the tool server (%s)", async (provider) => {

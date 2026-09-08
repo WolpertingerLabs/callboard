@@ -9,6 +9,7 @@ import {
 import { Router } from "express";
 import type { Request } from "express";
 import { controlOriginError } from "../auth.js";
+import { noteComputerControlAtCreation } from "../services/computer-use-policy.js";
 import { existsSync } from "fs";
 import { randomUUID } from "node:crypto";
 import { chatFileService } from "../services/chat-file-service.js";
@@ -1072,6 +1073,7 @@ chatsRouter.post("/", (req, res) => {
   const { folder, sessionId, defaultPermissions } = req.body;
   if (!folder) return res.status(400).json({ error: "folder is required" });
   if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
+  noteComputerControlAtCreation("POST /api/chats", res.locals?.authMethod, defaultPermissions);
 
   // Create metadata with default permissions if provided
   const metadata = {
@@ -1587,8 +1589,8 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     const storedControl = level(meta.defaultPermissions?.computerControl);
     const requestedControl = Object.hasOwn(defaultPermissions, "computerControl") ? level(defaultPermissions.computerControl) : storedControl;
     if (requestedControl !== storedControl) {
-      if (res.locals.authMethod !== "session") {
-        log.warn(`Rejected a ${res.locals.authMethod ?? "unauthenticated"} attempt to set computerControl=${requestedControl} on ${chat.id}`);
+      if (res.locals?.authMethod !== "session") {
+        log.warn(`Rejected a ${res.locals?.authMethod ?? "unauthenticated"} attempt to set computerControl=${requestedControl} on ${chat.id}`);
         return res.status(403).json({ error: "Changing Browser & Computer Control requires a logged-in session, not an API key.", code: "denied" });
       }
       const originError = controlOriginError(req);

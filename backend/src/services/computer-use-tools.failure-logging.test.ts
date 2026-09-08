@@ -41,11 +41,11 @@ const frame = { data: "AA==", mimeType: "image/png" as const, width: 100, height
  * because a fixture that silently says yes is the shape
  * `computer-use.invariant.test.ts` exists to forbid.
  */
-function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAction, level: "ask" | "allow" = "ask") {
+function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAction, level: "ask" | "allow" = "ask", act: () => Promise<void> = async () => {}) {
   const driver: Driver = {
     kind: "browser",
     probe: async () => ({ kind: "browser", available: true, capabilities: ["screenshot"] }),
-    open: async () => ({ act: async () => {}, close: async () => {}, releaseInput: async () => {}, observe }),
+    open: async () => ({ act, close: async () => {}, releaseInput: async () => {}, observe }),
   };
   const service = new ComputerUseService({
     targets: [{ id: "managed-browser", enabled: true, driver }],
@@ -330,4 +330,66 @@ it("keeps typed text and URL query strings out of the log", async () => {
   // What survives is the shape: enough to reconstruct what the agent did.
   expect(infoLine("Type 24 characters into the managed browser")).toBeDefined();
   expect(infoLine("Open https://example.com/reset (query omitted) in the managed browser")).toBeDefined();
+});
+
+/**
+ * A stopped turn is not a fault, and on this path it does not arrive as one:
+ * `call()` converts everything — an abort included — into an `isError` result
+ * carrying `{"error":"unavailable"}`, so an error-shaped check would record a
+ * turn the user stopped as an unexplained failure. The abort travels with the
+ * signal instead, exactly as `call()`'s own `logContext()` does.
+ */
+it("records a stopped turn as cancelled, not as an unexplained failure", async () => {
+  let acting!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    acting = resolve;
+  });
+  const { tool, enable } = harness(async () => frame, undefined, "allow", async () => {
+    acting();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+  const controller = new AbortController();
+  beginComputerUseTurn(() => "chat", controller.signal);
+  const opened = await enable();
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+
+  const inflight = tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
+  await entered;
+  controller.abort();
+  expect((await inflight).isError).toBe(true);
+
+  expect(infoLine("attempting unattended")).toBeDefined();
+  expect(infoLine("did NOT complete")).toContain("code=cancelled");
+  expect(logs.error).not.toHaveBeenCalled();
+});
+
+/**
+ * The redaction runs before the action is validated, so it has to do the
+ * validating. `cu_action`'s outer schema is a loose record and the host's
+ * pre-checks only bound the size and the `type`; the strict grammar does not
+ * run until the MCP hop, inside `execute` — by which time this line is on
+ * disk. Every payload below is rejected there, and every one of them would
+ * have been written first.
+ */
+it.each([
+  ["an opaque-origin URL whose payload lives in its path", { type: "navigate", url: "data:text/plain,SECRET-EXFIL-TOKEN" }],
+  ["a javascript: URL", { type: "navigate", url: "javascript:alert(SECRET)" }],
+  ["a local file URL", { type: "navigate", url: "file:///home/user/.ssh/SECRET_rsa" }],
+  ["text smuggled through a key press", { type: "key", key: "SECRET-typed-as-a-key" }],
+])("writes nothing about %s, because it validates before it describes", async (_case, action) => {
+  const { tool, enable } = harness(async () => frame, undefined, "allow");
+  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
+  const opened = await enable();
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+
+  expect((await tool("cu_action").handler({ ...ref, frameId, action })).isError).toBe(true);
+  end();
+
+  const written = [...logs.info.mock.calls, ...logs.warn.mock.calls, ...logs.error.mock.calls].map((call) => String(call[0])).join("\n");
+  expect(written).not.toContain("SECRET");
+  // The attempt is still recorded — an operator must see that something was
+  // tried — it just names the class instead of quoting the payload.
+  expect(infoLine("attempting unattended")).toMatch(/Perform an invalid (navigate|key) action/);
 });

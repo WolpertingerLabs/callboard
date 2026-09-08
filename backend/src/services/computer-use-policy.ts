@@ -21,6 +21,9 @@
  * `computer-use.invariant.test.ts`.
  */
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("computer-use-policy");
 
 export type ComputerTargetKind = "browser" | "desktop";
 export interface ComputerUsePolicy {
@@ -45,6 +48,27 @@ export function readComputerUsePolicy(value: unknown): ComputerUsePolicy {
     codeExecution: level("codeExecution"),
     webAccess: level("webAccess"),
   };
+}
+
+/**
+ * Record the one path by which a caller that is not a signed-in human can still
+ * put a non-`deny` `computerControl` on a chat: **creating** one.
+ *
+ * `PATCH /:id/permissions` refuses to *change* the axis for anyone but a
+ * same-origin session, because that rewrites the expectation of a human who
+ * already chose `ask` — their existing Enable habit becomes the exploit. A
+ * brand-new chat has no such expectation to violate, and passing permissions is
+ * the documented purpose of the parameter (every in-repo agent-facing spawn
+ * hardcodes `deny`), so this is deliberately not blocked. It is merely written
+ * down: nothing else would show an operator that a chat was born unattended-
+ * capable at the request of an API key.
+ *
+ * Silent for a signed-in human and for `deny`, which is every ordinary call.
+ */
+export function noteComputerControlAtCreation(where: string, authMethod: unknown, defaultPermissions: unknown): void {
+  const level = readComputerUsePolicy(defaultPermissions).computerControl;
+  if (level === "deny" || authMethod === "session") return;
+  log.warn(`[PERM-DIAG] ${where}: a ${typeof authMethod === "string" ? authMethod : "unauthenticated"} caller created a chat with computerControl=${level}`);
 }
 
 /**

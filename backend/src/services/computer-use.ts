@@ -1,6 +1,12 @@
 /** Thin Callboard host: policy, human grants and presentation. Drivers live in the independent package. */
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
+// The schema is a value, not a type: `describeAgentActionForLog` asks the
+// service's own grammar whether an action is well-formed before it writes a
+// word about it. The package's index pulls in zod and node builtins only —
+// playwright is a type-only import inside the browser driver — so this costs
+// nothing that the dynamic import in `getComputerUseHost` was avoiding.
+import { actionSchema } from "@wolpertingerlabs/computer-use";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
 import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
@@ -226,7 +232,8 @@ export function logComputerUseFailure(operation: string, ids: { chatId?: unknown
  * - **It is an attempt, not a receipt.** It is written *before* the driver is
  *   reached, because a process that dies mid-action must still leave the trace.
  *   So it says "attempting", and {@link logUnattendedFailure} follows when the
- *   action does not complete. No second line means it did.
+ *   action does not complete. No second line means it did — unless the log ends
+ *   there, which is the case this ordering exists to keep visible.
  * - **It carries no payload.** {@link describeAgentActionForLog}, not
  *   {@link describeAgentAction}: `controlId`/`oneLine`/`slice` are
  *   log-*injection* guards and redact nothing, and a typed password or a
@@ -252,9 +259,17 @@ export function logUnattendedAction(chatId: string, sessionId: string, redactedS
  * otherwise. Same level as the attempt so the pair greps together; the cause is
  * on the `logComputerUseFailure` line, at `error` when the driver or host
  * actually failed.
+ *
+ * `context.cancelled` is not optional politeness. On the production path the
+ * caller's `execute` is `computer-use-tools`' `call()`, which never throws —
+ * it converts everything, a stopped turn included, into an `isError` result
+ * carrying `{"error":"unavailable"}`. So the `isAbort` branch below never sees
+ * a real abort, and a turn the user stopped would be recorded as an unexplained
+ * failure. The caller holds the signal; it says so, exactly as `call()`'s own
+ * `logContext()` does. `escalate` has no meaning here — nobody approved this.
  */
-export function logUnattendedFailure(chatId: string, sessionId: string, error: unknown): void {
-  const label = isAbort(error) ? "cancelled" : controlCode(error) || envelopeCode(error) || "unavailable";
+export function logUnattendedFailure(chatId: string, sessionId: string, error: unknown, context: FailureContext = {}): void {
+  const label = context.cancelled || isAbort(error) ? "cancelled" : controlCode(error) || envelopeCode(error) || "unavailable";
   log.info(`Computer control ${controlIds({ chatId, sessionId })} unattended action did NOT complete (computerControl=allow) code=${label}`);
 }
 
@@ -375,14 +390,29 @@ export function describeAgentAction(action: Record<string, unknown>, target: str
  *
  * A log line is a different artifact from a confirmation prompt: it is written
  * to `~/.callboard/logs/callboard.log` at the default level, kept
- * indefinitely, and pasted into bug reports. Two of the eight action types
- * carry arbitrary content, and both of them routinely carry secrets — a typed
- * password, a magic-link or OAuth token in a URL — so this describes their
- * *shape* instead:
+ * indefinitely, and pasted into bug reports. So this describes an action's
+ * *shape* where the human-facing version describes its content.
+ *
+ * **It validates first, and that is the load-bearing part.** Everything below
+ * is a branch tuned for a well-formed action, and this line is written *before*
+ * the action runs — the strict schema does not execute until the MCP hop,
+ * inside `execute`. The host's own pre-checks admit any object under 8KB whose
+ * `type` is in {@link ACTION_TYPES}, which is nowhere near enough: `new URL()`
+ * happily parses `data:text/plain,SECRET` and `javascript:alert(cookie)`, whose
+ * origin is the literal string `"null"` and whose entire payload lands in
+ * `pathname`. Asking `actionSchema` — the service's own grammar, exported for
+ * exactly this — kills that class rather than the two instances of it we
+ * happened to find, and keeps killing it if the grammar grows a field.
+ *
+ * What survives validation is still redacted, because a *valid* action carries
+ * content too:
  *
  * - `type` → the character count, never the characters.
  * - `navigate` → origin and path, with any query string or fragment dropped and
- *   the elision marked, since that is where session tokens live.
+ *   the elision marked. Those are the highest-density place for a session
+ *   token, though not the only one: a path segment can be a token too, and the
+ *   path is kept because dropping it would leave the log unable to say what the
+ *   agent was doing at all.
  * - `key` → the name of anything with a name (`Enter`, `Control+a`, `ArrowUp`),
  *   but not a bare single character. A key press is not normally content, and
  *   `type` exists for text — but a secret entered one `key` at a time is still
@@ -391,10 +421,15 @@ export function describeAgentAction(action: Record<string, unknown>, target: str
  *
  * The rest are coordinates and durations, which say what happened without
  * saying what was on the screen; they pass through unchanged so the log stays
- * reconstructable. A malformed URL degrades to nothing rather than to itself:
- * this must never be the fallback that leaks.
+ * reconstructable.
  */
 export function describeAgentActionForLog(action: Record<string, unknown>, target: string): string {
+  // A shape the service will reject must not reach a branch below, where a
+  // describer written for the valid shape would print its payload verbatim.
+  // Even the label is drawn from the known list rather than echoed: the one
+  // caller-supplied string on this path is the one string it will not print.
+  if (!actionSchema.safeParse(action).success)
+    return `Perform an invalid ${ACTION_TYPES.includes(String(action.type)) ? String(action.type) : "unknown"} action in the ${target}`;
   switch (action.type) {
     case "type": {
       const length = String(action.text ?? "").length;
@@ -409,6 +444,13 @@ export function describeAgentActionForLog(action: Record<string, unknown>, targe
       } catch {
         return `Open an unparseable URL in the ${target}`;
       }
+      // Unreachable while the schema above refines the protocol to http/https,
+      // and kept anyway. This branch splits a URL into a part it keeps and a
+      // part it drops, and an opaque-origin scheme (`data:`, `javascript:`,
+      // `blob:`, `file:`) parses fine while putting the whole payload into the
+      // part it keeps — so a grammar that widened one day would silently make
+      // this the leak. Cheaper to hold the property here than to remember.
+      if (!["http:", "https:"].includes(url.protocol) || url.origin === "null") return `Open a non-web URL in the ${target}`;
       const path = url.pathname === "/" ? "" : url.pathname;
       const elided = url.search || url.hash ? " (query omitted)" : "";
       return `Open ${`${url.origin}${path}`.slice(0, 300)}${elided} in the ${target}`;
@@ -831,16 +873,20 @@ export class ComputerUseHost {
       // it did not happen, because this log is the only account anyone gets and
       // an over-report is the worst way for it to be wrong.
       logUnattendedAction(chatId, id, describeAgentActionForLog(request, target));
+      // A stopped turn is not a fault, and it does not arrive as one: `call()`
+      // hands back an `isError` result whatever happened, so the abort has to
+      // travel with the signal the caller gave us rather than with the error.
+      const outcome = (): FailureContext => ({ cancelled: options?.signal?.aborted });
       let result: T;
       try {
         result = await execute(randomUUID(), request, { confirmedByHuman: false });
       } catch (error) {
-        logUnattendedFailure(chatId, id, error);
+        logUnattendedFailure(chatId, id, error, outcome());
         throw error;
       }
       // The MCP layer answers a fault as an `isError` result rather than a
       // throw, so the successful-looking return above is not proof of anything.
-      if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) logUnattendedFailure(chatId, id, result);
+      if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) logUnattendedFailure(chatId, id, result, outcome());
       return result;
     }
     // A queue cannot form when the call blocks: the agent's own turn is parked

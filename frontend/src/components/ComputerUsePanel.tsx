@@ -83,6 +83,13 @@ export default function ComputerUsePanel({
   const session = status?.sessions.find((item) => item.id === selected) ?? status?.sessions.find((item) => !terminal(item)) ?? status?.sessions[0];
   const capability = status?.capabilities.find((item) => item.kind === kind);
   const denied = permission === "deny" || status?.permission === "deny";
+  // What the Enable click actually consents to. Since the level began governing
+  // per-action prompts, this button IS the consent boundary for unattended
+  // control — and a chat someone else configured, or you configured a month
+  // ago, looks identical either way. The server's level wins over the prop: the
+  // prop is this tab's copy of the chat record, and a change made elsewhere
+  // reaches the panel through status first.
+  const level = status?.permission ?? permission;
   const active =
     session && ["active", "ready", "running"].includes(session.state) && status?.capabilities.some((item) => item.kind === session.kind && item.available);
   const frame =
@@ -310,6 +317,23 @@ export default function ComputerUsePanel({
           </button>
           {onPermissions && <button onClick={onPermissions}>Chat permissions</button>}
         </div>
+        {/* Beside the button, not in the intro: the intro explains the two
+            levels in general, and this says which one this chat is — the only
+            place the difference is visible at the moment you consent to it. */}
+        {!denied && (
+          <p role="note" aria-label="What Enable grants">
+            {level === "allow" ? (
+              <>
+                <strong>This chat is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded in
+                the server log.
+              </>
+            ) : (
+              <>
+                <strong>This chat is set to Ask:</strong> the agent&apos;s turn stops and asks you here in the chat before every action on the target.
+              </>
+            )}
+          </p>
+        )}
         {sharedGrantNote && (
           <p id={sharedGrantNote} role="note">
             <strong>Shared with subagents:</strong> a grant you enable or approve here is shared with any subagents the agent runs inside this chat&apos;s
