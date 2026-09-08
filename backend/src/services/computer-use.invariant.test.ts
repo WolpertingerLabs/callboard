@@ -181,8 +181,8 @@ it('a chat with computerControl "allow" performs the action with no prompt at al
   // Nobody was asked, and nothing is left parked waiting for an answer.
   expect(events.filter((event) => event.type === "permission_request")).toEqual([]);
   expect(hasPendingRequest(CHAT)).toBe(false);
-  // What the human WAS shown under "ask" is what the operator's log gets here
-  // instead — the unattended action's only record. See `logUnattendedAction`.
+  // The operator's log gets a redacted description of it instead — the
+  // unattended action's only record. See `logUnattendedAction`.
   expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "click", x: 10, y: 20 }, { confirmedByHuman: false });
 });
 

@@ -8,6 +8,7 @@ import {
 } from "../services/codex-native-agents.js";
 import { Router } from "express";
 import type { Request } from "express";
+import { controlOriginError } from "../auth.js";
 import { existsSync } from "fs";
 import { randomUUID } from "node:crypto";
 import { chatFileService } from "../services/chat-file-service.js";
@@ -1505,7 +1506,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
 chatsRouter.patch("/:id/permissions", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Update chat permissions'
-  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks.'
+  // #swagger.description = 'Update the default tool permissions for a chat. Changes take effect immediately for future tool use checks. The computerControl axis is the exception to this router\'s bearer-key access: CHANGING it requires a logged-in same-origin session, because allow means unattended GUI control and an agent must not be able to raise the level that governs it. Requests that leave it unchanged — or omit it, which preserves the stored value — are unaffected.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -1532,6 +1533,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Updated chat" } */
   /* #swagger.responses[400] = { description: "Invalid request body" } */
+  /* #swagger.responses[403] = { description: "Changing computerControl from a bearer key or a cross-origin request" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   const { defaultPermissions } = req.body;
   if (!defaultPermissions || typeof defaultPermissions !== "object" || Array.isArray(defaultPermissions)) {
@@ -1560,7 +1562,40 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
       meta = parseChatMetadata(chat.metadata);
     } catch {}
 
-    meta.defaultPermissions = normalizePermissions(defaultPermissions);
+    /**
+     * The fifth axis is not like the other four: it is the one an agent could
+     * usefully raise on its own chat.
+     *
+     * This router sits under `requireAuth`, which accepts a Bearer `cbk_` key —
+     * correct for the four axes, where the API is a supported way to widen a
+     * chat's own permissions. `computerControl` is different because of what it
+     * now means: `allow` is unattended GUI control. An agent holding a key
+     * could flip its chat from `ask` to `allow`, and while that revokes any
+     * live grant (the level is in the signature), the human's *next* Enable
+     * click — made for an ordinary reason, believing they are enabling the
+     * `ask` behaviour they configured — would hand over unattended control.
+     * Before the level governed prompting, that flip bought almost nothing.
+     *
+     * So changing this axis keeps the guarantees of the control plane it
+     * governs (`requireSessionAuth` + `requireControlOrigin` in
+     * routes/computer-use.ts): a logged-in, same-origin human, never an API
+     * key. Leaving it alone is unrestricted — an API client updating the other
+     * four axes is unaffected, and an omitted key preserves the stored value
+     * rather than being normalized down to `deny` behind the human's back.
+     */
+    const level = (value: unknown) => (value === "allow" || value === "ask" ? value : "deny");
+    const storedControl = level(meta.defaultPermissions?.computerControl);
+    const requestedControl = Object.hasOwn(defaultPermissions, "computerControl") ? level(defaultPermissions.computerControl) : storedControl;
+    if (requestedControl !== storedControl) {
+      if (res.locals.authMethod !== "session") {
+        log.warn(`Rejected a ${res.locals.authMethod ?? "unauthenticated"} attempt to set computerControl=${requestedControl} on ${chat.id}`);
+        return res.status(403).json({ error: "Changing Browser & Computer Control requires a logged-in session, not an API key.", code: "denied" });
+      }
+      const originError = controlOriginError(req);
+      if (originError) return res.status(403).json({ error: originError, code: "denied" });
+    }
+
+    meta.defaultPermissions = { ...normalizePermissions(defaultPermissions), computerControl: requestedControl };
     const updatedMetadata = JSON.stringify(meta);
 
     // Upsert: creates file storage record if it only existed on filesystem

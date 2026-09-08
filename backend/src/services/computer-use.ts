@@ -47,6 +47,50 @@ const ROUTINE_CONTROL_CODES = new Set([
 /** Identifiers are caller-supplied; keep them to the id alphabet so nothing forges a log line. */
 const controlId = (value: unknown): string => (typeof value === "string" ? value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 160) : "");
 
+/** The `chat=… session=…` prefix every computer-control log line shares. */
+const controlIds = (ids: { chatId?: unknown; sessionId?: unknown }): string => {
+  const sessionId = controlId(ids.sessionId);
+  return `chat=${controlId(ids.chatId) || "-"}${sessionId ? ` session=${sessionId}` : ""}`;
+};
+
+/**
+ * An error's `code`, sanitized. Same treatment as the identifiers: a code can
+ * reach here from a recovered MCP payload, so bound it and drop anything that
+ * could act as a separator. The alphabet stays wide enough for an errno
+ * (`ENOENT`, `ERR_DLOPEN_FAILED`), which is the most greppable thing an uncoded
+ * throwable carries. Empty when there is no string code — the caller decides
+ * what that means.
+ */
+const controlCode = (error: unknown): string => {
+  const raw = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof raw === "string" ? raw.slice(0, 64).replace(/[^a-zA-Z0-9_]/g, "") : "";
+};
+
+/**
+ * The code inside an `isError` tool result, which is not a throw and carries no
+ * `code` property of its own.
+ *
+ * Reading it keeps the unattended correction line honest about *why* an action
+ * did not complete instead of labelling everything `unavailable`. Exactly the
+ * classification `mcpFailure` makes on the tool side, and for the same two
+ * cases it documents: our own handler's `{"error":"<code>"}` envelope
+ * (`mcp.ts`, a fixed enum), or the SDK's own argument validation, which is not
+ * JSON and is an `invalid_request` — `cu_action`'s outer schema is a loose
+ * record, so an action can pass it and fail the strict `computer_act` one.
+ * Anything else yields "", and the caller falls back.
+ */
+const envelopeCode = (result: unknown): string => {
+  const content = (result as { content?: unknown } | null | undefined)?.content;
+  if (!Array.isArray(content)) return "";
+  const block = content.find((item) => (item as { type?: unknown } | null)?.type === "text") as { text?: unknown } | undefined;
+  if (typeof block?.text !== "string" || !block.text) return "";
+  try {
+    return controlCode({ code: (JSON.parse(block.text) as { error?: unknown }).error });
+  } catch {
+    return "invalid_request";
+  }
+};
+
 /**
  * An abort is not a fault, and it does not always arrive as `cancelled`: the
  * MCP client rejects an aborted call with a numeric `-32001` McpError, and a
@@ -151,16 +195,8 @@ export function isConfirmedFailure(error: unknown): boolean {
  *   `failed`. Logged with the message and the stack frames.
  */
 export function logComputerUseFailure(operation: string, ids: { chatId?: unknown; sessionId?: unknown }, error: unknown, context: FailureContext = {}): void {
-  const raw = (error as { code?: unknown } | null | undefined)?.code;
-  // Same treatment as the identifiers: a code can reach here from a recovered
-  // MCP payload, so bound it and drop anything that could act as a separator.
-  // The alphabet stays wide enough for an errno (`ENOENT`, `ERR_DLOPEN_FAILED`),
-  // which is the most greppable thing an uncoded throwable carries.
-  const coded = typeof raw === "string" ? raw.slice(0, 64).replace(/[^a-zA-Z0-9_]/g, "") : "";
-  const label = context.cancelled || isAbort(error) ? "cancelled" : coded || "unavailable";
-  const chatId = controlId(ids.chatId) || "-";
-  const sessionId = controlId(ids.sessionId);
-  const where = `${operation} chat=${chatId}${sessionId ? ` session=${sessionId}` : ""} code=${label}`;
+  const label = context.cancelled || isAbort(error) ? "cancelled" : controlCode(error) || "unavailable";
+  const where = `${operation} ${controlIds(ids)} code=${label}`;
   const detail = oneLine(error instanceof Error ? error.message : String(error ?? "")).slice(0, 500);
   if (label === "cancelled" || (!context.escalate && ROUTINE_CONTROL_CODES.has(label))) {
     log.debug(`Computer control ${where} refused: ${detail}`);
@@ -174,27 +210,52 @@ export function logComputerUseFailure(operation: string, ids: { chatId?: unknown
 }
 
 /**
- * Record a GUI action performed under `computerControl: "allow"`, where no
- * human was asked.
+ * Record that an unattended GUI action is about to run — `computerControl:
+ * "allow"`, nobody asked.
  *
  * Under `ask` the record already exists and is better than a log line: the
  * confirmation is a `permission_request` in the chat, so the transcript carries
  * the action, its target and the human's answer. `allow` removes the prompt —
  * and with it that record. Without this line the server retains nothing about
- * what an unattended agent actually did to a real browser; the operator's only
- * source would be the model's own transcript, which is the one artifact a
+ * what an unattended agent did to a real browser; the operator's only source
+ * would be the model's own transcript, which is the one artifact a
  * prompt-injected page can influence.
  *
- * So exactly one line per unprompted action, at `info` — the same sanitizers,
- * the same shape and the same destination as {@link logComputerUseFailure}
- * (#427), and the same human-readable summary the `ask` prompt would have
- * shown. It cannot flood: it is emitted once per action the agent was going to
- * take anyway, and it carries no page content beyond the bounded action
- * description the human-facing prompt is already built from.
+ * Two properties this line is careful about, both learned the hard way:
+ *
+ * - **It is an attempt, not a receipt.** It is written *before* the driver is
+ *   reached, because a process that dies mid-action must still leave the trace.
+ *   So it says "attempting", and {@link logUnattendedFailure} follows when the
+ *   action does not complete. No second line means it did.
+ * - **It carries no payload.** {@link describeAgentActionForLog}, not
+ *   {@link describeAgentAction}: `controlId`/`oneLine`/`slice` are
+ *   log-*injection* guards and redact nothing, and a typed password or a
+ *   magic-link query string would otherwise sit in `~/.callboard/logs/` in
+ *   plaintext, at the default level, indefinitely. #427's rule — "error text
+ *   and identifiers only; browser sessions handle credentials and page content,
+ *   and none of that belongs here" — governs this line too.
+ *
+ * It cannot flood: one line per action the agent was going to take anyway.
  */
-export function logUnattendedAction(chatId: string, sessionId: string, summary: string): void {
-  const ids = `chat=${controlId(chatId) || "-"}${controlId(sessionId) ? ` session=${controlId(sessionId)}` : ""}`;
-  log.info(`Computer control ${ids} performed unattended (computerControl=allow): ${oneLine(summary).slice(0, 500)}`);
+export function logUnattendedAction(chatId: string, sessionId: string, redactedSummary: string): void {
+  log.info(`Computer control ${controlIds({ chatId, sessionId })} attempting unattended (computerControl=allow): ${oneLine(redactedSummary).slice(0, 500)}`);
+}
+
+/**
+ * The correction to a {@link logUnattendedAction} line: the action was
+ * attempted and did not complete.
+ *
+ * Needed because an `allow` failure is deliberately not escalated — nobody is
+ * waiting on it — so its detailed line lands at `debug` for the routine codes
+ * and is invisible at the default level. Without this, the log would say an
+ * unattended agent did something it did not do, and contain nothing that says
+ * otherwise. Same level as the attempt so the pair greps together; the cause is
+ * on the `logComputerUseFailure` line, at `error` when the driver or host
+ * actually failed.
+ */
+export function logUnattendedFailure(chatId: string, sessionId: string, error: unknown): void {
+  const label = isAbort(error) ? "cancelled" : controlCode(error) || envelopeCode(error) || "unavailable";
+  log.info(`Computer control ${controlIds({ chatId, sessionId })} unattended action did NOT complete (computerControl=allow) code=${label}`);
 }
 
 export interface HostPolicy {
@@ -273,7 +334,14 @@ const PENDING_TARGET_REASON =
 
 const humanTarget = (kind: ComputerTargetKind) => `${kind === "browser" ? "managed browser" : "native desktop"} on ${hostname()}`;
 
-/** Show the human what they are approving. Never UUIDs, never raw JSON. */
+/**
+ * Show the human what they are approving. Never UUIDs, never raw JSON.
+ *
+ * This one is for a person deciding, so it says everything: the URL with its
+ * query string, the text about to be typed. That is the point of a
+ * confirmation, and it is the same human/log split #426 drew — see
+ * {@link describeAgentActionForLog} for what a log line may keep.
+ */
 export function describeAgentAction(action: Record<string, unknown>, target: string): string {
   const clip = (value: unknown, limit = 160) => {
     const text = String(value ?? "");
@@ -299,6 +367,54 @@ export function describeAgentAction(action: Record<string, unknown>, target: str
       return `Wait ${Number(action.durationMs)}ms on the ${target}`;
     default:
       return `Perform a ${clip(action.type, 40)} action in the ${target}`;
+  }
+}
+
+/**
+ * The same action, described for the **server log** rather than for a person.
+ *
+ * A log line is a different artifact from a confirmation prompt: it is written
+ * to `~/.callboard/logs/callboard.log` at the default level, kept
+ * indefinitely, and pasted into bug reports. Two of the eight action types
+ * carry arbitrary content, and both of them routinely carry secrets — a typed
+ * password, a magic-link or OAuth token in a URL — so this describes their
+ * *shape* instead:
+ *
+ * - `type` → the character count, never the characters.
+ * - `navigate` → origin and path, with any query string or fragment dropped and
+ *   the elision marked, since that is where session tokens live.
+ * - `key` → the name of anything with a name (`Enter`, `Control+a`, `ArrowUp`),
+ *   but not a bare single character. A key press is not normally content, and
+ *   `type` exists for text — but a secret entered one `key` at a time is still
+ *   a secret spread over N log lines, and the character is the one part of that
+ *   line nobody needs.
+ *
+ * The rest are coordinates and durations, which say what happened without
+ * saying what was on the screen; they pass through unchanged so the log stays
+ * reconstructable. A malformed URL degrades to nothing rather than to itself:
+ * this must never be the fallback that leaks.
+ */
+export function describeAgentActionForLog(action: Record<string, unknown>, target: string): string {
+  switch (action.type) {
+    case "type": {
+      const length = String(action.text ?? "").length;
+      return `Type ${length} character${length === 1 ? "" : "s"} into the ${target}`;
+    }
+    case "key":
+      return [...String(action.key ?? "")].length === 1 ? `Press a character key in the ${target}` : describeAgentAction(action, target);
+    case "navigate": {
+      let url: URL;
+      try {
+        url = new URL(String(action.url ?? ""));
+      } catch {
+        return `Open an unparseable URL in the ${target}`;
+      }
+      const path = url.pathname === "/" ? "" : url.pathname;
+      const elided = url.search || url.hash ? " (query omitted)" : "";
+      return `Open ${`${url.origin}${path}`.slice(0, 300)}${elided} in the ${target}`;
+    }
+    default:
+      return describeAgentAction(action, target);
   }
 }
 
@@ -656,9 +772,10 @@ export class ComputerUseHost {
    *   answer it: no policy value, hook, allow-list entry or API key reaches
    *   `requestHumanApproval`, which has no auto-decide branch. This branch is
    *   what `computer-use.invariant.test.ts` pins, end to end.
-   * - **`allow`** — the action runs unprompted, and one line goes to the
-   *   operator's log ({@link logUnattendedAction}) because the prompt was the
-   *   only other record of it.
+   * - **`allow`** — the action runs unprompted, bracketed by the operator's
+   *   only record of it: {@link logUnattendedAction} before, and
+   *   {@link logUnattendedFailure} after if it did not complete. Both carry the
+   *   redacted description, never the human-facing one.
    * - **`deny`** — refused here, as it already is at the transport gate, at
    *   `authorize` and at every scope check.
    *
@@ -710,9 +827,21 @@ export class ComputerUseHost {
     const summary = describeAgentAction(request, target);
     if (level === "allow") {
       // The human granted unattended control for this chat. All that is left to
-      // do is leave a trace of it.
-      logUnattendedAction(chatId, id, summary);
-      return execute(randomUUID(), request, { confirmedByHuman: false });
+      // do is leave a trace of it — an attempt before, and a correction after if
+      // it did not happen, because this log is the only account anyone gets and
+      // an over-report is the worst way for it to be wrong.
+      logUnattendedAction(chatId, id, describeAgentActionForLog(request, target));
+      let result: T;
+      try {
+        result = await execute(randomUUID(), request, { confirmedByHuman: false });
+      } catch (error) {
+        logUnattendedFailure(chatId, id, error);
+        throw error;
+      }
+      // The MCP layer answers a fault as an `isError` result rather than a
+      // throw, so the successful-looking return above is not proof of anything.
+      if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true) logUnattendedFailure(chatId, id, result);
+      return result;
     }
     // A queue cannot form when the call blocks: the agent's own turn is parked
     // here until this one is answered. What CAN arrive is a second, concurrent

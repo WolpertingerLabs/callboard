@@ -4,9 +4,11 @@ import { computerUseClient as client, controlErrorCode } from "../api/computerUs
 
 export const isTerminal = (session: ComputerUseSession) => ["stopped", "revoked", "closed", "failed", "expired"].includes(session.state);
 export const isPending = (session: ComputerUseSession) => ["pending", "awaiting_approval", "approval_required", "pending_approval"].includes(session.state);
-// Host requests (target access and individual GUI actions) are generation zero,
-// with their own IDs. Real package sessions start at generation one; never retire
-// one merely because its state uses a pending alias or it disappears from a read.
+// Host requests are generation zero, with their own IDs. Since #428 the only
+// kind left is a human's own Enable click under Ask: an individual GUI action is
+// confirmed in the chat (or, under Allow, not at all) and never appears here.
+// Real package sessions start at generation one; never retire one merely because
+// its state uses a pending alias or it disappears from a read.
 export const isPendingRequest = (session: ComputerUseSession) => session.generation === 0 && isPending(session);
 
 // Bound the UI wait, not the accepted server operation. In particular, a timed-out

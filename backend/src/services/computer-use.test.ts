@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComputerUseService, type Driver, type Probe } from "@wolpertingerlabs/computer-use";
-import { ComputerUseHost, controlPrincipal, describeAgentAction, type ActionConfirmationRequest, type ConfirmAgentAction, type HostPolicy } from "./computer-use.js";
+import {
+  ComputerUseHost,
+  controlPrincipal,
+  describeAgentAction,
+  describeAgentActionForLog,
+  type ActionConfirmationRequest,
+  type ConfirmAgentAction,
+  type HostPolicy,
+} from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 
 const hosts: ComputerUseHost[] = [];
@@ -350,6 +358,50 @@ it("describes every action type in words a human can act on", () => {
   expect(said({ type: "wait", durationMs: 500 })).toBe("Wait 500ms on the managed browser on workshop");
   // A 4096-character `type` is legal; a prompt the human has to scroll past is not.
   expect(said({ type: "type", text: "x".repeat(4096) })).toBe(`Type “${"x".repeat(160)}…” into the managed browser on workshop`);
+});
+
+/**
+ * The log-facing twin. The prompt above is read by a person deciding, so it
+ * says everything; this one is written to `~/.callboard/logs/callboard.log` in
+ * plaintext, at the default level, kept indefinitely and pasted into bug
+ * reports — so the two content-bearing action types describe their shape
+ * instead. Everything else is coordinates and key names and passes through, or
+ * the log stops being reconstructable.
+ */
+it("describes an action for the log without writing typed text or URL query strings to it", () => {
+  const target = "managed browser on workshop";
+  const logged = (action: Record<string, unknown>) => describeAgentActionForLog(action, target);
+
+  expect(logged({ type: "type", text: "hunter2-my-real-password" })).toBe("Type 24 characters into the managed browser on workshop");
+  expect(logged({ type: "type", text: "x" })).toBe("Type 1 character into the managed browser on workshop");
+  expect(logged({ type: "type", text: "" })).toBe("Type 0 characters into the managed browser on workshop");
+  // Origin and path survive; the query string and fragment — where session
+  // tokens and magic links live — do not, and their absence is stated.
+  expect(logged({ type: "navigate", url: "https://example.com/reset?token=SECRET#also-secret" })).toBe(
+    "Open https://example.com/reset (query omitted) in the managed browser on workshop",
+  );
+  expect(logged({ type: "navigate", url: "https://example.com/dashboard" })).toBe("Open https://example.com/dashboard in the managed browser on workshop");
+  expect(logged({ type: "navigate", url: "https://example.com" })).toBe("Open https://example.com in the managed browser on workshop");
+  // A URL that will not parse degrades to nothing, never to itself: this is
+  // exactly the fallback a leak would come through.
+  expect(logged({ type: "navigate", url: "not a url?token=SECRET" })).toBe("Open an unparseable URL in the managed browser on workshop");
+
+  // A named key keeps its name; a bare character does not, because a secret
+  // entered one key at a time is still a secret, just spread over N lines.
+  expect(logged({ type: "key", key: "Control+a" })).toBe("Press Control+a in the managed browser on workshop");
+  expect(logged({ type: "key", key: "Enter" })).toBe("Press Enter in the managed browser on workshop");
+  expect(logged({ type: "key", key: "h" })).toBe("Press a character key in the managed browser on workshop");
+  expect(logged({ type: "key", key: "7" })).toBe("Press a character key in the managed browser on workshop");
+
+  // The rest say what happened without saying what was on the screen.
+  for (const action of [
+    { type: "click", x: 412, y: 233 },
+    { type: "move", x: 3, y: 4 },
+    { type: "drag", x: 1, y: 2, toX: 9, toY: 8 },
+    { type: "scroll", deltaX: 0, deltaY: -400 },
+    { type: "wait", durationMs: 500 },
+  ])
+    expect(logged(action)).toBe(describeAgentAction(action, target));
 });
 
 it("resume hands the viewer control state, not the screenshot the service captured for the agent", async () => {

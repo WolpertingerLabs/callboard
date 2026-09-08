@@ -241,9 +241,11 @@ it.each([
  * `permission_request` the human answered, and it stays in the transcript.
  * `allow` removes the prompt, so nothing outside the model's own transcript —
  * the one artifact a prompt-injected page can influence — would say what an
- * unattended agent did to a real browser. One `info` line per action closes it.
+ * unattended agent did to a real browser. An `info` line per action closes it.
  */
-it("records each unprompted action an allow chat performs, so an operator can reconstruct the session", async () => {
+const infoLine = (needle: string) => logs.info.mock.calls.map((call) => String(call[0])).find((entry) => entry.includes(needle));
+
+it("records each unprompted action an allow chat attempts, so an operator can reconstruct the session", async () => {
   const { tool, enable } = harness(
     async () => frame,
     // Would say yes if it were reached. It is not: `allow` does not ask.
@@ -255,19 +257,27 @@ it("records each unprompted action an allow chat performs, so an operator can re
   const ref = { sessionId: opened.id, generation: opened.generation };
   const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
 
-  expect((await tool("cu_action").handler({ ...ref, frameId, action: { type: "navigate", url: "https://example.com" } })).isError).toBeUndefined();
+  expect((await tool("cu_action").handler({ ...ref, frameId, action: { type: "navigate", url: "https://example.com/dashboard" } })).isError).toBeUndefined();
   end();
 
-  const line = logs.info.mock.calls.map((call) => String(call[0])).find((entry) => entry.includes("performed unattended"))!;
+  const line = infoLine("attempting unattended")!;
   expect(line).toBeDefined();
-  // The same identifiers the failure lines carry, and the same human-readable
-  // summary the `ask` prompt would have shown — no page content beyond it.
   expect(line).toContain(`chat=chat session=${opened.id}`);
   expect(line).toContain("computerControl=allow");
-  expect(line).toMatch(/Open https:\/\/example\.com in the managed browser on \S+$/);
+  expect(line).toMatch(/Open https:\/\/example\.com\/dashboard in the managed browser on \S+$/);
+  // It completed, so nothing corrects it. That absence is the success signal.
+  expect(infoLine("did NOT complete")).toBeUndefined();
 });
 
-it("does not escalate an allow chat's failure: nobody is waiting on it", async () => {
+/**
+ * The line is written before the driver is reached — a process that dies
+ * mid-action must still leave the trace — so it says "attempting", and an
+ * action that does not happen gets a correction at the same level. Without it
+ * the log would assert an unattended agent did something it did not do, and
+ * `allow` failures are deliberately not escalated, so the detailed line sits at
+ * `debug` where the default level cannot see it.
+ */
+it("corrects the record when an allow chat's action does not complete", async () => {
   const { tool, enable } = harness(async () => frame, undefined, "allow");
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
   const opened = await enable();
@@ -276,10 +286,48 @@ it("does not escalate an allow chat's failure: nobody is waiting on it", async (
 
   // The loose outer schema again: this only fails the strict `computer_act`
   // schema, which is a routine `invalid_request` when no human was promised it
-  // would happen. It reaches the model as an error result either way.
+  // would happen. It reaches the model as an error result rather than a throw,
+  // so nothing but this reconciliation would notice.
   expect((await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2, bogus: 9 } })).isError).toBe(true);
   end();
 
+  expect(infoLine("attempting unattended")).toBeDefined();
+  const correction = infoLine("did NOT complete")!;
+  expect(correction).toBeDefined();
+  expect(correction).toContain(`chat=chat session=${opened.id}`);
+  expect(correction).toContain("code=invalid_request");
+  // Still not escalated: nobody is waiting on it, so the cause stays routine.
   expect(logs.error).not.toHaveBeenCalled();
   expect(String(logs.debug.mock.calls.at(-1)?.[0])).toContain("code=invalid_request");
+});
+
+/**
+ * The log is a different artifact from the prompt. `~/.callboard/logs/` is
+ * plaintext, at the default level, kept indefinitely, and pasted into bug
+ * reports; #427's rule for this file is "error text and identifiers only —
+ * browser sessions handle credentials and page content, and none of that
+ * belongs here". The two content-bearing action types are where that rule is
+ * either kept or broken.
+ */
+it("keeps typed text and URL query strings out of the log", async () => {
+  const { tool, enable } = harness(async () => frame, undefined, "allow");
+  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
+  const opened = await enable();
+  const ref = { sessionId: opened.id, generation: opened.generation };
+
+  const act = async (action: Record<string, unknown>) => {
+    const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+    return tool("cu_action").handler({ ...ref, frameId, action });
+  };
+  await act({ type: "type", text: "hunter2-my-real-password" });
+  await act({ type: "navigate", url: "https://example.com/reset?token=SECRET-MAGIC-LINK#fragment-secret" });
+  end();
+
+  const written = logs.info.mock.calls.map((call) => String(call[0])).join("\n");
+  expect(written).not.toContain("hunter2-my-real-password");
+  expect(written).not.toContain("SECRET-MAGIC-LINK");
+  expect(written).not.toContain("fragment-secret");
+  // What survives is the shape: enough to reconstruct what the agent did.
+  expect(infoLine("Type 24 characters into the managed browser")).toBeDefined();
+  expect(infoLine("Open https://example.com/reset (query omitted) in the managed browser")).toBeDefined();
 });
