@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import rateLimit from "express-rate-limit";
 import { requireSessionAuth } from "../auth.js";
-import { getComputerUseHost } from "../services/computer-use.js";
+import { getComputerUseHost, logComputerUseFailure } from "../services/computer-use.js";
 
 /** This control plane is for the signed-in human, never an agent API key. */
 export function requireControlOrigin(req: Request, res: Response, next: NextFunction): void {
@@ -37,13 +37,15 @@ function ids(req: Request): { chatId: string; sessionId: string } {
   return { chatId, sessionId };
 }
 
-function handle(fn: (req: Request) => Promise<unknown>) {
+function handle(operation: string, fn: (req: Request) => Promise<unknown>) {
   return async (req: Request, res: Response) => {
     try {
       res.json(await fn(req));
     } catch (error) {
       const value = error as { code?: string; message?: string };
       const code = value.code ?? "unavailable";
+      // The client answer below stays sanitized; the operator's copy goes to the log.
+      logComputerUseFailure(operation, { chatId: req.params.chatId, sessionId: req.params.sessionId }, error);
       const status =
         code === "not_found"
           ? 404
@@ -61,14 +63,14 @@ function handle(fn: (req: Request) => Promise<unknown>) {
 
 computerUseRouter.get(
   "/:chatId/status",
-  handle(async (req) => {
+  handle("status", async (req) => {
     const { chatId } = ids(req);
     return (await getComputerUseHost()).status(chatId);
   }),
 );
 computerUseRouter.post(
   "/:chatId/open",
-  handle(async (req) => {
+  handle("open", async (req) => {
     const { chatId } = ids(req);
     const kind = req.body?.kind;
     if (kind !== "browser" && kind !== "desktop" && kind !== "native" && kind !== "native-desktop")
@@ -78,14 +80,14 @@ computerUseRouter.post(
 );
 computerUseRouter.post(
   "/:chatId/:sessionId/observe",
-  handle(async (req) => {
+  handle("observe", async (req) => {
     const { chatId, sessionId } = ids(req);
     return (await getComputerUseHost()).observe(chatId, sessionId);
   }),
 );
 computerUseRouter.post(
   "/:chatId/:sessionId/action",
-  handle(async (req) => {
+  handle("action", async (req) => {
     const { chatId, sessionId } = ids(req);
     const frameId = req.body?.frameId;
     if (typeof frameId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(frameId))
@@ -96,7 +98,7 @@ computerUseRouter.post(
 for (const operation of ["approve", "takeover", "resume", "stop", "revoke"] as const) {
   computerUseRouter.post(
     `/:chatId/:sessionId/${operation}`,
-    handle(async (req) => {
+    handle(operation, async (req) => {
       const { chatId, sessionId } = ids(req);
       return (await getComputerUseHost())[operation](chatId, sessionId, req.body?.expectedGeneration);
     }),

@@ -1,7 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 import type { Request, Response } from "express";
 vi.mock("../auth.js", () => ({ requireSessionAuth: (_req: Request, _res: Response, next: () => void) => next() }));
-vi.mock("../services/computer-use.js", () => ({ getComputerUseHost: vi.fn() }));
+vi.mock("../services/computer-use.js", async (original) => ({
+  ...(await original<typeof import("../services/computer-use.js")>()),
+  getComputerUseHost: vi.fn(),
+}));
 import express from "express";
 import { getComputerUseHost } from "../services/computer-use.js";
 import { requireControlOrigin, computerUseRouter } from "./computer-use.js";

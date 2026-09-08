@@ -4,7 +4,7 @@ import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { defineTool, type ToolCallResult, type ToolServerSpec } from "../agents/ports/tools.js";
-import { controlError, controlPrincipal, getComputerUseHost } from "./computer-use.js";
+import { controlError, controlPrincipal, getComputerUseHost, logComputerUseFailure } from "./computer-use.js";
 
 interface TurnBinding {
   token: string;
@@ -69,19 +69,41 @@ async function connection(chatId: string): Promise<Connection> {
   }
   return current;
 }
-const failure = (error: unknown): ToolCallResult => ({
-  isError: true,
-  content: [
-    {
-      type: "text",
-      text: JSON.stringify({
-        error: (error as { code?: string }).code ?? "unavailable",
-        message: error instanceof Error ? error.message : "Computer control unavailable",
-      }),
-    },
-  ],
-});
+/** The agent gets the tool result; the operator gets the same failure in the server log. */
+const failure = (error: unknown, operation: string, chatId: string, sessionId?: unknown): ToolCallResult => {
+  logComputerUseFailure(operation, { chatId, sessionId }, error);
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          error: (error as { code?: string }).code ?? "unavailable",
+          message: error instanceof Error ? error.message : "Computer control unavailable",
+        }),
+      },
+    ],
+  };
+};
 const text = (value: unknown): ToolCallResult => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+/**
+ * The MCP layer answers a driver fault as an `isError` result carrying
+ * `{"error":"<code>"}` text, not a throw, so nothing above it ever sees an
+ * exception. Recover the code — and only the code — so an agent-driven failure
+ * is as visible to the operator as a panel-driven one. Unparseable tool text is
+ * deliberately not logged verbatim: it can be page-derived.
+ */
+function mcpFailure(content: unknown[]): Error & { code?: string } {
+  const block = content.find((item) => (item as { type?: unknown } | null)?.type === "text") as { text?: unknown } | undefined;
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(typeof block?.text === "string" ? block.text : "") as { error?: unknown };
+    if (typeof parsed?.error === "string") code = parsed.error;
+  } catch {
+    code = undefined;
+  }
+  return Object.assign(new Error(code ? `Driver reported ${code}` : "Driver reported a failure"), code ? { code } : {});
+}
 
 /**
  * Identity note: the spec is bound to the owning chat through `getChatId`, and
@@ -109,6 +131,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
       signal.throwIfAborted();
       if (!approvedSignal && currentTurn(chatId)?.token !== turn?.token) throw controlError("cancelled", "The chat turn changed");
       const content = Array.isArray(result.content) ? result.content : [];
+      if (result.isError) logComputerUseFailure(name, { chatId, sessionId: input.sessionId }, mcpFailure(content));
       return {
         content: content.flatMap<ToolCallResult["content"][number]>((block) => {
           if (block.type === "text" && typeof block.text === "string") return [{ type: "text" as const, text: block.text }];
@@ -119,7 +142,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
         ...(result.isError ? { isError: true } : {}),
       };
     } catch (error) {
-      return failure(error);
+      return failure(error, name, getChatId(), input.sessionId);
     }
   }
   const ref = { sessionId: z.string().uuid(), generation: z.number().int().positive() };
@@ -147,7 +170,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
                 "If there is no ready session, ask the human to Enable this target in the Computer Control panel. Browser scope does not grant desktop access.",
             });
           } catch (error) {
-            return failure(error);
+            return failure(error, "cu_open", getChatId());
           }
         },
       ),
@@ -182,7 +205,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
               }),
             );
           } catch (error) {
-            return failure(error);
+            return failure(error, "cu_action", getChatId(), input.sessionId);
           }
         },
       ),

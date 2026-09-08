@@ -4,9 +4,66 @@ import { hostname } from "node:os";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { createLogger } from "../utils/logger.js";
 import { resolveSessionContext } from "../utils/session-provenance.js";
 import { chatFileService } from "./chat-file-service.js";
 import { computerUseScopeError, readComputerUsePolicy, type ComputerTargetKind, type ComputerUsePolicy } from "./computer-use-policy.js";
+
+const log = createLogger("computer-use");
+
+/**
+ * Codes the host or the driver package raises to tell a caller what to do
+ * differently: a chat that does not exist, a malformed action, a permission
+ * that says ask/deny, a stale frame, a turn that moved on. They are the normal
+ * operation of the control plane, so they log at debug — an operator polling a
+ * viewer would otherwise fill the log with `stale_frame` at error level.
+ *
+ * Everything else (`driver_error`, `unsupported`, `timeout`, `disposed`, and
+ * any uncoded throwable, which the routes report as `unavailable`) means the
+ * driver or the host itself failed, and is what an operator needs after a
+ * session lands in `failed` with nothing else to go on. Those log at error with
+ * the underlying message and stack.
+ */
+const ROUTINE_CONTROL_CODES = new Set([
+  "not_found",
+  "invalid_request",
+  "denied",
+  "approval_required",
+  "queue_full",
+  "lease_conflict",
+  "stale_frame",
+  "stale_generation",
+  "stopped",
+  "revoked",
+  "cancelled",
+]);
+
+/** Identifiers are attacker-influenced; keep them to the id alphabet so nothing forges a log line. */
+const controlId = (value: unknown): string => (typeof value === "string" ? value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 160) : "");
+
+/**
+ * Record a computer-control failure for the operator.
+ *
+ * The HTTP and MCP surfaces both answer the caller with a sanitized message on
+ * purpose; this is the other half of that trade — the detail has to land
+ * somewhere, and that somewhere is the server log. Error text and identifiers
+ * only: browser sessions handle credentials and page content, and none of that
+ * belongs here.
+ */
+export function logComputerUseFailure(operation: string, ids: { chatId?: unknown; sessionId?: unknown }, error: unknown): void {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  const label = typeof code === "string" && code ? code : "unavailable";
+  const chatId = controlId(ids.chatId) || "-";
+  const sessionId = controlId(ids.sessionId);
+  const where = `${operation} chat=${chatId}${sessionId ? ` session=${sessionId}` : ""} code=${label}`;
+  const detail = (error instanceof Error ? error.message : String(error ?? "")).slice(0, 500);
+  if (ROUTINE_CONTROL_CODES.has(label)) {
+    log.debug(`Computer control ${where} refused: ${detail}`);
+    return;
+  }
+  const stack = error instanceof Error && error.stack ? `\n${error.stack.slice(0, 2000)}` : "";
+  log.error(`Computer control ${where} failed: ${detail}${stack}`);
+}
 
 export interface HostPolicy {
   policy: ComputerUsePolicy;
