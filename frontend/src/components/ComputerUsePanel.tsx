@@ -685,8 +685,8 @@ export default function ComputerUsePanel({
           )}
         </div>
         <div className="computer-use-footer">
-          {capturing && (
-            <p className="computer-use-notice" role="status">
+          {preview && (
+            <p className="computer-use-notice computer-use-capture-status" role="status" data-capturing={capturing} aria-hidden={!capturing}>
               Capturing screenshot… Manual input is paused until a fresh frame is available.
             </p>
           )}

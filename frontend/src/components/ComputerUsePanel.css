@@ -288,6 +288,12 @@
     min-height: 96px;
   }
 }
+/* Keep the notice's wrapped height (and the footer gap) throughout live
+   preview. Removing it between captures makes the flex-sized image pulse.
+   Hidden status text must not be announced while manual input is available. */
+.computer-use-capture-status[data-capturing="false"] {
+  visibility: hidden;
+}
 .computer-use-footer summary {
   cursor: pointer;
   color: var(--text-muted);
