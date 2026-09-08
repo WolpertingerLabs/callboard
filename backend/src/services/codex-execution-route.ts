@@ -183,7 +183,7 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
  * transport. Older/unknown binaries and alternate provider routes stay legacy.
  * Never replace a user list we could not read or whose shape we do not know. */
 export function directUiNamespacesFromConfig(userAgent: unknown, config: unknown): string[] | undefined {
-  const match = typeof userAgent === "string" ? /(?:codex_sdk_ts|codex_cli_rs)\/(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(userAgent) : null;
+  const match = typeof userAgent === "string" ? /(?:codex_sdk_ts|codex_cli_rs|callboard-config)\/(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(userAgent) : null;
   if (!match || Number(match[1]) !== 0 || Number(match[2]) < 153 || (Number(match[2]) === 153 && Number(match[3]) < 4)) return undefined;
   if (!config || typeof config !== "object") return undefined;
   const features = (config as { features?: Record<string, unknown> }).features;

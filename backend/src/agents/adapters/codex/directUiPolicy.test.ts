@@ -19,6 +19,8 @@ let handle: CodexToolServerHandle;
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "cb-ui-policy-"));
   vi.stubEnv("OPENAI_BASE_URL", "");
+  // Exercise the actual probe identity, not this developer session's SDK origin.
+  vi.stubEnv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", undefined);
   handle = buildCodexToolServer({ name: "callboard-tools", version: "1", tools: [] });
 });
 afterEach(async () => {

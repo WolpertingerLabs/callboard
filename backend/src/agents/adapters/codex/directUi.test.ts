@@ -49,6 +49,7 @@ function parse(records: unknown[]) {
 describe("direct UI config", () => {
   it("preserves the user's list only for a verified supporting CLI/config shape", () => {
     const agent = "codex_sdk_ts/0.153.4 (Linux)";
+    expect(directUiNamespacesFromConfig("callboard-config/0.153.4 (Linux)", {})).toEqual([]);
     expect(directUiNamespacesFromConfig(agent, {})).toEqual([]);
     for (const code_mode of [true, false]) expect(directUiNamespacesFromConfig(agent, { features: { code_mode } })).toEqual([]);
     expect(directUiNamespacesFromConfig(agent, { features: { code_mode: { enabled: false, direct_only_tool_namespaces: ["custom"] } } })).toEqual(["custom"]);

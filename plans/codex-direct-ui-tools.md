@@ -92,6 +92,9 @@ native `config/read` and `codex mcp list --json` then consume those arguments.
 Tests require exact preservation of the existing entry except `enabled=false`,
 both aliases disabled, no widened tool availability, and intact code-mode policy.
 No authentication, model call, foreign handler, or production service is involved.
+The tests clear inherited SDK originator state: native initialize reports
+`callboard-config/0.153.4` for this probe outside Codex-hosted sessions. That
+explicit first-party identity is version-gated alongside SDK/CLI identities.
 
 ## Transcript and trust
 
