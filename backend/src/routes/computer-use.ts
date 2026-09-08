@@ -1,9 +1,12 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import rateLimit from "express-rate-limit";
-import { requireSessionAuth } from "../auth.js";
+import { controlOriginError, requireSessionAuth } from "../auth.js";
 import { getComputerUseHost, logComputerUseFailure } from "../services/computer-use.js";
 
-/** This control plane is for the signed-in human, never an agent API key. */
+/** This control plane is for the signed-in human, never an agent API key.
+ *  The per-action confirmation now lives in the chat, and `POST
+ *  /api/chats/:id/respond` applies the same two rules to it — see
+ *  `pendingRequestRequiresHuman`. */
 export function requireControlOrigin(req: Request, res: Response, next: NextFunction): void {
   res.setHeader("Cache-Control", "no-store, private");
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -11,14 +14,9 @@ export function requireControlOrigin(req: Request, res: Response, next: NextFunc
     next();
     return;
   }
-  try {
-    const origin = new URL(req.get("origin") || "");
-    if (!["http:", "https:"].includes(origin.protocol) || origin.host !== req.get("host") || req.get("sec-fetch-site") === "cross-site") {
-      res.status(403).json({ error: "Computer control requires a same-origin browser session.", code: "denied" });
-      return;
-    }
-  } catch {
-    res.status(403).json({ error: "Computer control requires a valid Origin header.", code: "denied" });
+  const error = controlOriginError(req);
+  if (error) {
+    res.status(403).json({ error, code: "denied" });
     return;
   }
   next();

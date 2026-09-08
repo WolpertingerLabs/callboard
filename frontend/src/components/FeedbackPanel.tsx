@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
+import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 
 export interface PendingAction {
@@ -26,14 +27,20 @@ export default function FeedbackPanel({ action, onRespond, agentName = "Claude" 
   const [planExpanded, setPlanExpanded] = useState(false);
 
   if (action.type === "permission_request") {
+    const guiAction = isComputerUseAction(action.toolName);
     return (
       <div style={panelStyle}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>Permission requested</div>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>{action.toolName}</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>{guiAction ? "Confirm this GUI action" : "Permission requested"}</div>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>{guiAction ? "Computer control" : action.toolName}</div>
         {action.input && <pre style={preStyle}>{formatInput(action.toolName!, action.input)}</pre>}
+        {guiAction && (
+          <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
+            Every action needs this confirmation, whatever the chat&apos;s permission level: a pixel action may transmit data, change files or execute code.
+          </p>
+        )}
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={() => onRespond(true)} style={allowBtn}>
-            Allow
+            {guiAction ? "Confirm" : "Allow"}
           </button>
           <button onClick={() => onRespond(false)} style={denyBtn}>
             Deny
@@ -151,7 +158,27 @@ export default function FeedbackPanel({ action, onRespond, agentName = "Claude" 
   return null;
 }
 
+/**
+ * The chat's per-action computer-control gate.
+ *
+ * Exact equality, never a pattern. Matching here is trust-side: it grants the
+ * computer-control header AND makes {@link formatInput} render only `summary` +
+ * `action`, dropping every other input key. A looser match would let a
+ * third-party MCP server exposing its own `cu_action` — the bare spelling the
+ * cline/pi custom-tool bridges use — render as a Callboard GUI confirmation
+ * with, say, its `command` field never shown. The backend raises exactly one
+ * name; recognize exactly that one.
+ */
+function isComputerUseAction(toolName?: string): boolean {
+  return toolName === CU_ACTION_TOOL_NAME;
+}
+
 function formatInput(toolName: string, input: Record<string, unknown>): string {
+  // The backend already wrote this one for a human: what will happen, where.
+  // The raw action follows so nothing is hidden behind the summary.
+  if (isComputerUseAction(toolName) && typeof input.summary === "string") {
+    return [String(input.summary), input.action ? JSON.stringify(input.action) : ""].filter(Boolean).join("\n\n");
+  }
   if (toolName === "Bash" && input.command) return String(input.command);
   if (toolName === "Write" && input.file_path) return `Write to ${input.file_path}`;
   if (toolName === "Edit" && input.file_path) return `Edit ${input.file_path}`;

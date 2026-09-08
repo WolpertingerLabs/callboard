@@ -4,7 +4,7 @@ vi.mock("./computer-use.js", async (original) => ({
   ...(await original<typeof import("./computer-use.js")>()),
   getComputerUseHost: vi.fn(),
 }));
-import { ComputerUseHost, getComputerUseHost } from "./computer-use.js";
+import { ComputerUseHost, getComputerUseHost, type ActionConfirmationRequest, type ConfirmAgentAction } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { beginComputerUseTurn, buildComputerUseToolsSpec, closeComputerUseConnections } from "./computer-use-tools.js";
 
@@ -15,7 +15,28 @@ afterEach(async () => {
   host = undefined;
 });
 
-it("the real host MCP hop returns pixels and executes only the human-approved action, then fences a revoked grant", async () => {
+/** A stand-in human the test answers for, one question at a time. */
+function human() {
+  const queue: { request: ActionConfirmationRequest; answer: (outcome: { approved: boolean; reason: "human" | "denied" }) => void }[] = [];
+  const waiters: (() => void)[] = [];
+  const confirm: ConfirmAgentAction = (request) =>
+    new Promise((resolve) => {
+      queue.push({ request, answer: resolve });
+      waiters.splice(0).forEach((wake) => wake());
+    });
+  const asked = async (index: number) => {
+    while (queue.length <= index) await new Promise<void>((resolve) => waiters.push(resolve));
+    return queue[index].request;
+  };
+  return { confirm, asked, approve: (index = 0) => queue[index].answer({ approved: true, reason: "human" }), deny: (index = 0) => queue[index].answer({ approved: false, reason: "denied" }) };
+}
+
+const textOf = (result: { content: { type: string }[] }) => {
+  const block = result.content.find((item) => item.type === "text") as { text: string } | undefined;
+  return block ? JSON.parse(block.text) : undefined;
+};
+
+it("the real host MCP hop blocks on the human, executes only what they confirmed, and fences a revoked grant", async () => {
   const act = vi.fn(async () => {});
   let targetChanged: (() => void) | undefined;
   let authorizeAction: (() => Promise<void>) | undefined = undefined;
@@ -39,10 +60,13 @@ it("the real host MCP hop returns pixels and executes only the human-approved ac
       return host?.authorize(request) ?? "deny";
     },
   });
-  host = new ComputerUseHost(service, { browser: driver, desktop: { ...driver, kind: "native-desktop" } }, () => ({
-    policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow" }),
-    signature: "scope",
-  }));
+  const person = human();
+  host = new ComputerUseHost(
+    service,
+    { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
+    () => ({ policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow" }), signature: "scope" }),
+    person.confirm,
+  );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
   const controller = new AbortController();
   const end = beginComputerUseTurn(() => "chat", controller.signal);
@@ -53,24 +77,29 @@ it("the real host MCP hop returns pixels and executes only the human-approved ac
   const pixels = await tool("cu_observe").handler(ref);
   expect(pixels.content).toContainEqual({ type: "image", data: "AA==", mimeType: "image/png" });
   const frameId = JSON.parse((pixels.content[0] as { text: string }).text).frameId;
-  const requested = await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
+
+  // ── The call blocks; nothing reaches the driver until the human answers ──
+  const requested = tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
+  const question = await person.asked(0);
+  expect(question.summary).toMatch(/^Click at \(1, 2\) in the managed browser on \S+$/);
   expect(act).not.toHaveBeenCalled();
-  const first = requested.content[0];
-  expect(first.type).toBe("text");
-  const pending = JSON.parse(first.type === "text" ? first.text : "{}");
-  const queued = await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 3, y: 4 } });
-  const queuedId = JSON.parse((queued.content[0] as { text: string }).text).approvalId;
-  // Normal turn completion does not discard a separately scoped human approval.
-  end();
-  await host.approve("chat", pending.approvalId);
+  // A second concurrent request is refused, not queued behind the first.
+  expect(textOf(await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 3, y: 4 } }))).toMatchObject({ error: "queue_full" });
+  person.approve(0);
+  const result = await requested;
+  expect(result.isError).toBeUndefined();
   expect(act).toHaveBeenCalledOnce();
-  await expect(host.approve("chat", queuedId)).rejects.toMatchObject({ code: "stale_frame" });
+
+  // ── A refusal comes back as a refusal, and never runs ──
+  const nextFrame = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+  const refused = tool("cu_action").handler({ ...ref, frameId: nextFrame, action: { type: "navigate", url: "https://example.com" } });
+  await person.asked(1);
+  person.deny(1);
+  expect(textOf(await refused)).toMatchObject({ error: "denied", message: expect.stringContaining("NOT performed") });
   expect(act).toHaveBeenCalledOnce();
-  const nextEnd = beginComputerUseTurn(() => "chat", new AbortController().signal);
-  const current = await tool("cu_observe").handler(ref);
-  const currentId = JSON.parse((current.content[0] as { text: string }).text).frameId;
-  const delayed = await tool("cu_action").handler({ ...ref, frameId: currentId, action: { type: "click", x: 5, y: 6 } });
-  const delayedId = JSON.parse((delayed.content[0] as { text: string }).text).approvalId;
+
+  // ── A target change between the human's yes and the driver's act is not a success ──
+  const currentId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
   let enter!: () => void, release!: () => void;
   const entered = new Promise<void>((r) => {
     enter = r;
@@ -78,22 +107,23 @@ it("the real host MCP hop returns pixels and executes only the human-approved ac
   const gate = new Promise<void>((r) => {
     release = r;
   });
-  let checks = 0;
   authorizeAction = async () => {
-    if (++checks === 2) {
-      enter();
-      await gate;
-    }
+    enter();
+    await gate;
   };
-  const approved = expect(host.approve("chat", delayedId)).rejects.toMatchObject({ code: "driver_error" });
+  const delayed = tool("cu_action").handler({ ...ref, frameId: currentId, action: { type: "click", x: 5, y: 6 } });
+  await person.asked(2);
+  person.approve(2);
   await entered;
-  targetChanged!(); // Changes after host approval, while the MCP service awaits policy.
+  targetChanged!(); // Changes after the human's yes, while the MCP service awaits policy.
   release();
-  await approved;
+  expect(textOf(await delayed)).toMatchObject({ error: "driver_error" });
   expect(act).toHaveBeenCalledOnce();
+
+  authorizeAction = undefined;
   await host.revoke("chat", opened.id);
   expect((await tool("cu_observe").handler(ref)).isError).toBe(true);
-  nextEnd();
+  end();
 });
 
 it("an idle facade cannot call the service, even if a model supplies a session identifier", async () => {

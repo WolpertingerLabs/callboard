@@ -1,13 +1,41 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ComputerUseService, type Driver, type Probe } from "@wolpertingerlabs/computer-use";
-import { ComputerUseHost, controlPrincipal, type HostPolicy } from "./computer-use.js";
+import { ComputerUseHost, controlPrincipal, describeAgentAction, type ActionConfirmationRequest, type ConfirmAgentAction, type HostPolicy } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 
 const hosts: ComputerUseHost[] = [];
 afterEach(async () => {
   await Promise.all(hosts.splice(0).map((host) => host.dispose()));
 });
-function fixture(level = "allow") {
+
+/** A stand-in human whose answer the test controls, and whose question it can read. */
+function human() {
+  const asked: ActionConfirmationRequest[] = [];
+  let announce!: (request: ActionConfirmationRequest) => void;
+  const questioned = new Promise<ActionConfirmationRequest>((resolve) => {
+    announce = resolve;
+  });
+  let answer!: (outcome: { approved: boolean; reason: "human" | "denied" }) => void;
+  const answered = new Promise<{ approved: boolean; reason: "human" | "denied" }>((resolve) => {
+    answer = resolve;
+  });
+  const confirm: ConfirmAgentAction = vi.fn(async (request) => {
+    asked.push(request);
+    announce(request);
+    return answered;
+  });
+  return {
+    confirm,
+    asked,
+    questioned,
+    approve: () => answer({ approved: true, reason: "human" }),
+    deny: () => answer({ approved: false, reason: "denied" }),
+  };
+}
+/** The impatient human: says yes without the test having to drive them. */
+const alwaysApproves: ConfirmAgentAction = async () => ({ approved: true, reason: "human" });
+
+function fixture(level = "allow", confirm: ConfirmAgentAction = alwaysApproves) {
   let current: HostPolicy = {
     policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
     signature: level,
@@ -21,7 +49,7 @@ function fixture(level = "allow") {
     open: async () => ({ observe, act, close: async () => {}, releaseInput: async () => {} }),
   };
   const service = new ComputerUseService({ targets: [{ id: "managed-browser", enabled: true, driver }], authorize: (request) => host.authorize(request) });
-  const host: ComputerUseHost = new ComputerUseHost(service, { browser: driver, desktop: { ...driver, kind: "native-desktop" } }, () => current);
+  const host: ComputerUseHost = new ComputerUseHost(service, { browser: driver, desktop: { ...driver, kind: "native-desktop" } }, () => current, confirm);
   hosts.push(host);
   return {
     host,
@@ -75,11 +103,12 @@ describe("computer-use human grants", () => {
     const resumed = await host.resume("a", opened.id, taken.generation);
     expect(resumed.controller).toBe("agent");
   });
-  it("mutation approval is scoped, one-use, and invalidated by takeover", async () => {
-    const { host, service } = fixture();
+  it("mutation approval is scoped, blocks until answered, and is invalidated by takeover", async () => {
+    const person = human();
+    const { host, service } = fixture("allow", person.confirm);
     const opened = await host.open("a", "browser");
     const execute = vi.fn(async () => ({ done: true }));
-    const approval = await host.requestAgentAction(
+    const call = host.requestAgentAction(
       "a",
       opened.id,
       opened.generation,
@@ -87,27 +116,85 @@ describe("computer-use human grants", () => {
       { type: "click", x: 1, y: 1 },
       execute,
     );
+    const rejection = expect(call).rejects.toMatchObject({ code: "stale_generation" });
+    await person.questioned;
     expect(execute).not.toHaveBeenCalled();
+    // The world moved while the human was reading: their answer is scoped to
+    // the generation they saw, and cannot execute against the one that replaced it.
     await host.takeover("a", opened.id, opened.generation);
-    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "stale_generation" });
+    person.approve();
+    await rejection;
     expect(execute).not.toHaveBeenCalled();
   });
-  it("does not report a failed MCP mutation as a successful human approval", async () => {
+  it("does not report a failed MCP mutation as a successful human approval, and re-asks for the retry", async () => {
     const { host, service } = fixture();
     const opened = await host.open("a", "browser");
-    const approval = await host.requestAgentAction(
+    const attempt = async () =>
+      host.requestAgentAction(
+        "a",
+        opened.id,
+        opened.generation,
+        (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId,
+        { type: "click", x: 1, y: 1 },
+        async () => ({ isError: true, content: [] }),
+      );
+    await expect(attempt()).rejects.toMatchObject({ code: "driver_error" });
+    // No approval survives the failure to be redeemed a second time: the retry
+    // is a fresh request that asks the human again.
+    await expect(attempt()).rejects.toMatchObject({ code: "driver_error" });
+  });
+  it("reports a refusal as a refusal and never as something to retry", async () => {
+    const person = human();
+    const { host, service } = fixture("allow", person.confirm);
+    const opened = await host.open("a", "browser");
+    const execute = vi.fn(async () => ({ done: true }));
+    const call = host.requestAgentAction(
       "a",
       opened.id,
       opened.generation,
       (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId,
-      { type: "click", x: 1, y: 1 },
-      async () => ({
-        isError: true,
-        content: [],
-      }),
+      { type: "navigate", url: "https://example.com" },
+      execute,
     );
-    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "driver_error" });
-    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "denied" });
+    await person.questioned;
+    person.deny();
+    await expect(call).rejects.toMatchObject({ code: "denied", message: expect.stringContaining("NOT performed") });
+    await expect(call).rejects.toMatchObject({ message: expect.stringContaining("Do not repeat it") });
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it("asks in readable terms — the action and its target, not session and frame UUIDs", async () => {
+    const person = human();
+    const { host, service } = fixture("allow", person.confirm);
+    const opened = await host.open("a", "browser");
+    const frameId = (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId;
+    const action = { type: "navigate", url: "https://example.com" };
+    const execute = vi.fn(async () => ({}));
+    const call = host.requestAgentAction("a", opened.id, opened.generation, frameId, action, execute);
+    const question = await person.questioned;
+    expect(question.summary).toContain("Open https://example.com in the managed browser");
+    expect(question.action).toEqual({ type: "navigate", url: "https://example.com" });
+    expect(JSON.stringify(question)).not.toContain(frameId);
+    expect(JSON.stringify(question)).not.toContain(opened.id);
+    // The snapshot the human was shown is the one that runs — and `execute` is
+    // handed that snapshot rather than being trusted to find it.
+    action.url = "https://evil.example";
+    expect(question.action).toEqual({ type: "navigate", url: "https://example.com" });
+    person.approve();
+    await call;
+    expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "navigate", url: "https://example.com" });
+  });
+  it("refuses a second concurrent GUI action rather than replacing the question the human is reading", async () => {
+    const person = human();
+    const { host, service } = fixture("allow", person.confirm);
+    const opened = await host.open("a", "browser");
+    const frameId = (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId;
+    const first = host.requestAgentAction("a", opened.id, opened.generation, frameId, { type: "key", key: "Enter" }, async () => ({ done: true }));
+    await person.questioned;
+    await expect(
+      host.requestAgentAction("a", opened.id, opened.generation, frameId, { type: "key", key: "Escape" }, async () => ({ done: true })),
+    ).rejects.toMatchObject({ code: "queue_full" });
+    person.approve();
+    await first;
   });
   it("changed permissions invalidate pending session grants", async () => {
     const { host, change } = fixture("ask");
@@ -118,29 +205,22 @@ describe("computer-use human grants", () => {
 });
 
 for (const level of ["allow", "ask"])
-  it(`frame-bound approvals remain visible under ${level} but cannot execute after another capture`, async () => {
-    const { host, service } = fixture(level);
+  it(`a ${level} chat's confirmed action still cannot execute after another capture`, async () => {
+    const person = human();
+    const { host, service } = fixture(level, person.confirm);
     let opened = await host.open("a", "browser");
     if (level === "ask") opened = (await host.approve("a", opened.id)) as typeof opened;
     const ref = { sessionId: opened.id, generation: opened.generation };
     const frame = await service.observe(controlPrincipal("a", "agent"), ref);
-    const action = { type: "click", x: 1, y: 2 };
     const execute = vi.fn(async () => ({}));
-    const approval = await host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, action, execute);
-    action.x = 90;
-    expect((await host.status("a")).sessions).toContainEqual(
-      expect.objectContaining({
-        id: approval.approvalId,
-        state: "pending_approval",
-        requestedFrameId: frame.frameId,
-        requestedAction: { type: "click", x: 1, y: 2 },
-        reason: expect.stringContaining(frame.frameId),
-      }),
-    );
+    const call = host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "click", x: 1, y: 2 }, execute);
+    const rejection = expect(call).rejects.toMatchObject({ code: "stale_frame" });
+    await person.questioned;
+    // Coordinates mean nothing once the pixels under them may have changed.
     await service.observe(controlPrincipal("a", "agent"), ref);
-    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "stale_frame" });
+    person.approve();
+    await rejection;
     expect(execute).not.toHaveBeenCalled();
-    await expect(host.approve("a", approval.approvalId)).rejects.toMatchObject({ code: "denied" });
   });
 
 // Viewer ledger contract: pending DTOs are consumable request IDs, not sessions.
@@ -157,33 +237,60 @@ it("approval replaces the generation-zero target request with a different real s
   await expect(host.stop("a", opened.id, opened.generation)).resolves.toMatchObject({ id: opened.id, state: "stopped" });
 });
 
-it.each(["approve", "expire", "revoke", "stop", "invalidated approval"] as const)(
-  "removes an action request on %s without treating its parent session as a request",
-  async (operation) => {
-    const { host, service, change } = fixture();
-    const opened = await host.open("a", "browser");
-    const frame = await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation });
-    const execute = vi.fn(async () => ({ done: true }));
-    const request = await host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "key", key: "Enter" }, execute);
-    expect((await host.status("a")).sessions).toContainEqual(expect.objectContaining({ id: request.approvalId, generation: 0, parentSessionId: opened.id }));
-    const now = vi.spyOn(Date, "now");
-    try {
-      if (operation === "expire") now.mockReturnValue(Date.now() + 120_001);
-      else if (operation === "invalidated approval") {
-        change("deny");
-        await expect(host.approve("a", request.approvalId)).rejects.toMatchObject({ code: "denied" });
-      } else await host[operation]("a", request.approvalId);
-      const sessions = (await host.status("a")).sessions;
-      expect(sessions.some((session) => session.id === request.approvalId)).toBe(false);
-      expect(sessions.find((session) => session.id === opened.id)?.generation).toBeGreaterThan(0);
-      if (operation !== "invalidated approval") expect(sessions.find((session) => session.id === opened.id)?.state).toBe("ready");
-      expect(execute).toHaveBeenCalledTimes(operation === "approve" ? 1 : 0);
-      await expect(host.stop("a", request.approvalId)).rejects.toMatchObject({ code: "not_found" });
-    } finally {
-      now.mockRestore();
-    }
-  },
-);
+it("an awaited GUI action is not a session: it never appears in the viewer's ledger", async () => {
+  // It used to. A parked approval was presented as a generation-zero
+  // pending_approval "session" so the panel could offer Confirm/Deny for it,
+  // which is exactly the UI this refactor removed. The parent session must
+  // still read as the live one throughout.
+  const person = human();
+  const { host, service } = fixture("allow", person.confirm);
+  const opened = await host.open("a", "browser");
+  const frame = await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation });
+  const execute = vi.fn(async () => ({ done: true }));
+  const call = host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "key", key: "Enter" }, execute);
+  await person.questioned;
+  const sessions = (await host.status("a")).sessions;
+  expect(sessions.map((session) => session.id)).toEqual([opened.id]);
+  expect(sessions[0]).toMatchObject({ state: "ready" });
+  person.approve();
+  await call;
+  expect(execute).toHaveBeenCalledOnce();
+  expect((await host.status("a")).sessions.map((session) => session.id)).toEqual([opened.id]);
+});
+
+it("a target request under ask is still a request the panel can confirm, expire or revoke", async () => {
+  // The Enable flow is untouched: it is the human's own click, confirmed in
+  // the panel where they clicked it.
+  const { host } = fixture("ask");
+  const request = await host.open("a", "browser");
+  expect((await host.status("a")).sessions).toContainEqual(expect.objectContaining({ id: request.id, state: "pending_approval" }));
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(Date.now() + 120_001);
+    expect((await host.status("a")).sessions.some((session) => session.id === request.id)).toBe(false);
+  } finally {
+    now.mockRestore();
+  }
+  const second = await host.open("a", "browser");
+  expect((await host.revoke("a", second.id)).state).toBe("revoked");
+  expect((await host.status("a")).sessions).toEqual([]);
+});
+
+it("describes every action type in words a human can act on", () => {
+  const target = "managed browser on workshop";
+  const said = (action: Record<string, unknown>) => describeAgentAction(action, target);
+  expect(said({ type: "navigate", url: "https://example.com/login" })).toBe("Open https://example.com/login in the managed browser on workshop");
+  expect(said({ type: "click", x: 412, y: 233 })).toBe("Click at (412, 233) in the managed browser on workshop");
+  expect(said({ type: "click", x: 1, y: 2, button: "right" })).toBe("Right-click at (1, 2) in the managed browser on workshop");
+  expect(said({ type: "move", x: 3, y: 4 })).toBe("Move the pointer to (3, 4) in the managed browser on workshop");
+  expect(said({ type: "drag", x: 1, y: 2, toX: 9, toY: 8 })).toBe("Drag from (1, 2) to (9, 8) in the managed browser on workshop");
+  expect(said({ type: "scroll", deltaX: 0, deltaY: -400 })).toBe("Scroll by (0, -400) in the managed browser on workshop");
+  expect(said({ type: "key", key: "Control+a" })).toBe("Press Control+a in the managed browser on workshop");
+  expect(said({ type: "type", text: "hello" })).toBe("Type “hello” into the managed browser on workshop");
+  expect(said({ type: "wait", durationMs: 500 })).toBe("Wait 500ms on the managed browser on workshop");
+  // A 4096-character `type` is legal; a prompt the human has to scroll past is not.
+  expect(said({ type: "type", text: "x".repeat(4096) })).toBe(`Type “${"x".repeat(160)}…” into the managed browser on workshop`);
+});
 
 it("resume hands the viewer control state, not the screenshot the service captured for the agent", async () => {
   const { host } = fixture();

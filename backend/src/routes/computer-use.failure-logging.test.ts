@@ -9,7 +9,13 @@ import type { Request, Response } from "express";
 
 const logs = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() }));
 vi.mock("../utils/logger.js", () => ({ createLogger: () => logs, default: () => logs }));
-vi.mock("../auth.js", () => ({ requireSessionAuth: (_req: Request, _res: Response, next: () => void) => next() }));
+// Partial: only the session check is stubbed. `controlOriginError` stays real,
+// because these requests go through the router's own origin middleware — they
+// send a matching `Origin` header for exactly that reason.
+vi.mock("../auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../auth.js")>()),
+  requireSessionAuth: (_req: Request, _res: Response, next: () => void) => next(),
+}));
 vi.mock("../services/computer-use.js", async (original) => ({
   ...(await original<typeof import("../services/computer-use.js")>()),
   getComputerUseHost: vi.fn(),

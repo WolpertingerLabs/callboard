@@ -275,8 +275,8 @@ export default function ComputerUsePanel({
       <div className="computer-use-body">
         <p>
           Controls Callboard&apos;s browser and desktop tools. Only you can enable a target. Allow lets your Enable click open it immediately; under Ask,
-          Enable creates a request you confirm separately. Every action the agent takes still needs your confirmation here. Agents with unrestricted code
-          execution may still run their own automation.
+          Enable creates a request you confirm separately. Every action the agent takes still needs your confirmation — the agent&apos;s turn stops and asks
+          you in the chat, not here. Agents with unrestricted code execution may still run their own automation.
         </p>
         <p>Tools run on the configured service target, not on this viewer&apos;s computer. Model visual capability is not established by this viewer.</p>
         <div className="computer-use-controls">
@@ -327,7 +327,7 @@ export default function ComputerUsePanel({
         {denied && (
           <p role="status">
             Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Allow only lets your Enable
-            click open a target without a separate confirmation; each agent action still asks you.
+            click open a target without a separate confirmation; each agent action still asks you in the chat.
           </p>
         )}
         {!capability?.available && (
@@ -337,10 +337,13 @@ export default function ComputerUsePanel({
           </p>
         )}
         {(error || controller?.statusError) && <p role="alert">{error || controller?.statusError}</p>}
+        {/* Target requests only — your own Enable click under Ask. A GUI action
+            the agent wants to take is confirmed in the chat, where the agent is
+            blocked waiting for it; the server does not park those here. */}
         {status?.sessions
           .filter((item) => pending(item) && item.id !== session?.id)
           .map((item) => (
-            <aside key={item.id} aria-label="Pending computer approval">
+            <aside key={item.id} aria-label="Pending target approval">
               <p>{item.reason ?? `Approve access to ${item.targetLabel ?? item.kind}`}</p>
               <button
                 disabled={busy || denied}

@@ -60,6 +60,7 @@ import { generateChatTitle } from "./quick-completion.js";
 import { patchCardFields, readCardFields } from "./card-fields.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
+import { pendingRequests, type PendingRequest } from "./pending-requests.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
@@ -67,6 +68,12 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("claude");
 
 export type { StreamEvent };
+
+// The pending-prompt registry moved to ./pending-requests.js so that a second
+// producer (the blocking computer-use approval) can reach it without importing
+// this module and closing a cycle. Re-exported here because every existing
+// caller — routes, caches, tests — knows it by this address.
+export { getPendingRequest, hasPendingRequest, pendingRequestFingerprint, respondToPermission } from "./pending-requests.js";
 
 /** Thrown for a chat pinned to a harness this build no longer implements. */
 export class RetiredProviderError extends Error {}
@@ -161,21 +168,10 @@ async function buildProxyConnectionsPrompt(proxyKeyAlias: string): Promise<strin
   ].join("\n");
 }
 
-interface PendingRequest {
-  toolName: string;
-  input: Record<string, unknown>;
-  suggestions?: readonly unknown[];
-  eventType: "permission_request" | "user_question" | "plan_review";
-  eventData: Record<string, unknown>;
-  resolve: (result: PermissionResult) => void;
-}
-
 interface ActiveSession {
   abortController: AbortController;
   emitter: EventEmitter;
 }
-
-const pendingRequests = new Map<string, PendingRequest>();
 
 /**
  * Build plugin configuration for Claude SDK from active plugin IDs.
@@ -510,64 +506,6 @@ export function getActiveSession(chatId: string): ActiveSession | undefined {
   return { abortController: info.abortController, emitter: info.emitter };
 }
 
-export function hasPendingRequest(chatId: string): boolean {
-  return pendingRequests.has(chatId);
-}
-
-/**
- * A value that changes whenever the set of chats awaiting a permission answer
- * changes — the "waiting" half of a folder row's `status`.
- *
- * Derived from the map rather than maintained as a counter alongside it. There
- * are seven places that add to or remove from `pendingRequests` (permission
- * request, response, abort, two unregister paths, the tracking-id rekey, and
- * cleanup), and a hand-bumped counter is one forgotten call site away from
- * silently pinning a folder row to "waiting" forever. Reading the keys cannot
- * drift, and the map holds one entry per chat currently blocked on a prompt —
- * normally zero, a handful at worst — so it costs nothing to ask.
- *
- * Consumed by the folder-list cache; see services/folder-list-cache.ts.
- */
-export function pendingRequestFingerprint(): string {
-  if (pendingRequests.size === 0) return "";
-  return [...pendingRequests.keys()].sort().join(",");
-}
-
-export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve"> | null {
-  const p = pendingRequests.get(chatId);
-  if (!p) return null;
-  const { resolve: _, ...rest } = p;
-  return rest;
-}
-
-export function respondToPermission(
-  chatId: string,
-  allow: boolean,
-  updatedInput?: Record<string, unknown>,
-  updatedPermissions?: unknown[],
-): { ok: boolean; toolName?: string } {
-  const pending = pendingRequests.get(chatId);
-  if (!pending) return { ok: false };
-  const toolName = pending.toolName;
-  pendingRequests.delete(chatId);
-
-  if (allow) {
-    // For AskUserQuestion the frontend only sends back the collected `answers`.
-    // The SDK tool requires the original `questions` to remain in the input
-    // (it builds `{...input, answers}`), so merge rather than replace — otherwise
-    // `questions` is undefined and the tool crashes mapping over it.
-    const resolvedInput = updatedInput && pending.eventType === "user_question" ? { ...pending.input, ...updatedInput } : updatedInput || pending.input;
-    pending.resolve({
-      behavior: "allow",
-      updatedInput: resolvedInput,
-      updatedPermissions: updatedPermissions as any,
-    });
-  } else {
-    pending.resolve({ behavior: "deny", message: "User denied", interrupt: true });
-  }
-  return { ok: true, toolName };
-}
-
 /**
  * Cancel the run backing `chatId` — the whole request, not just the event
  * stream the UI happens to be reading.
@@ -818,6 +756,31 @@ export function buildCanUseTool(
       }
     }
 
+    // A chat has one prompt slot, and this used to overwrite whatever was in
+    // it. Two tool calls in one assistant block (or a Task subagent, which
+    // shares this `trackingId`) could therefore replace a question the user was
+    // mid-way through reading: the panel swapped, the first prompt vanished
+    // with no trace and no `/pending` replay, and its caller waited for an
+    // answer that could no longer arrive.
+    //
+    // That was survivable while every occupant was an ordinary tool
+    // permission. It is not, now that the occupant may be the computer-control
+    // confirmation — the one prompt whose whole job is to be seen. So the slot
+    // is first-come-first-served in both directions: `requestHumanApproval`
+    // already refuses to displace a prompt, and so does this.
+    //
+    // Refusing is not the same as interrupting. `interrupt: false` lets the
+    // model carry on and re-request once the user has answered, which is the
+    // behaviour a parallel tool block wants.
+    if (pendingRequests.has(getTrackingId())) {
+      log.info(`[PERM-DIAG] tool=${toolName} deferred: ${getTrackingId()} is already awaiting an answer`);
+      return {
+        behavior: "deny",
+        message: "The user is already being asked about something else in this chat, so this call was not run. Request it again once they have answered.",
+        interrupt: false,
+      };
+    }
+
     return new Promise<PermissionResult>((resolve) => {
       if (toolName === "AskUserQuestion") {
         emitter.emit("event", {
@@ -854,10 +817,13 @@ export function buildCanUseTool(
       }
 
       const trackingId = getTrackingId();
-      pendingRequests.set(trackingId, { toolName, input, suggestions, eventType, eventData, resolve });
+      const entry: PendingRequest = { toolName, input, suggestions, eventType, eventData, resolve };
+      pendingRequests.set(trackingId, entry);
 
       signal.addEventListener("abort", () => {
-        pendingRequests.delete(trackingId);
+        // Only our own entry — the rekey path may have moved it, and a
+        // replacement must never be torn down by an older prompt's abort.
+        if (pendingRequests.get(trackingId) === entry) pendingRequests.delete(trackingId);
         resolve({ behavior: "deny", message: "Aborted" });
       });
     });

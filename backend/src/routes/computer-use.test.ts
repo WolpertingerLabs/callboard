@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import type { Request, Response } from "express";
-vi.mock("../auth.js", () => ({ requireSessionAuth: (_req: Request, _res: Response, next: () => void) => next() }));
+// Partial: `requireSessionAuth` is stubbed away because these cases are about
+// the origin boundary, but `controlOriginError` — the rule under test, shared
+// with the computer-control confirmation in routes/stream.ts — must be real.
+vi.mock("../auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../auth.js")>()),
+  requireSessionAuth: (_req: Request, _res: Response, next: () => void) => next(),
+}));
 vi.mock("../services/computer-use.js", async (original) => ({
   ...(await original<typeof import("../services/computer-use.js")>()),
   getComputerUseHost: vi.fn(),
