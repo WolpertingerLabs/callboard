@@ -52,9 +52,9 @@ async function enable(host: ComputerUseHost, chatId = "a") {
   return (request.state === "pending_approval" ? await host.approve(chatId, request.id) : request) as { id: string; generation: number };
 }
 
-function fixture(level = "allow", confirm: ConfirmAgentAction = alwaysApproves) {
+function fixture(level = "allow", confirm: ConfirmAgentAction = alwaysApproves, fileRead = "allow") {
   let current: HostPolicy = {
-    policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
+    policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead, fileWrite: "allow", codeExecution: "allow" }),
     signature: level,
   };
   const observe = vi.fn(async () => ({ data: "AA==", mimeType: "image/png" as const, width: 100, height: 100, capturedAt: Date.now() }));
@@ -482,7 +482,7 @@ it("shows the human control plane the driver's operator diagnostics, which no ag
     kind: "browser",
     available: false,
     capabilities: [],
-    reason: "Chromium executable not found; run \"npx playwright install chromium\"",
+    reason: 'Chromium executable not found; run "npx playwright install chromium"',
     operatorDetail: "Checked /home/operator/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
   });
   const capability = (await host.status("a")).capabilities.find((c) => c.kind === "browser");
@@ -502,4 +502,55 @@ it("does not cache an unavailable probe either: the shipped drivers resolve thei
   expect(second.capabilities.find((c) => c.kind === "browser")?.available).toBe(true);
   // The browser probe re-ran; the (available) native stand-in was served from cache.
   expect(probe.mock.calls.length).toBe(calls + 1);
+});
+
+it.each(["setup-required", "unsupported", "unknown", undefined] as const)("maps optional native readiness %s to viewer status", async (readiness) => {
+  const { host, probe } = fixture();
+  probe.mockResolvedValue({
+    kind: "native-desktop",
+    available: false,
+    capabilities: [],
+    reason: "Safe reason",
+    operatorDetail: "/private/operator/path",
+    ...(readiness ? { readiness } : {}),
+  });
+  const capability = (await host.status("a")).capabilities.find((item) => item.kind === "native");
+  expect(capability).toMatchObject({ available: false, reason: "Safe reason /private/operator/path" });
+  expect(capability?.readiness).toBe(readiness);
+  expect(capability).not.toHaveProperty("operatorDetail");
+});
+it("keeps denied permissions authoritative even when probes throw", async () => {
+  const { host, probe } = fixture("deny");
+  probe.mockRejectedValue(new Error("private diagnostic"));
+  const capability = (await host.status("a")).capabilities.find((item) => item.kind === "native");
+  expect(capability).toMatchObject({ available: false, readiness: "permission-blocked" });
+  expect(capability?.reason).toMatch(/denied/i);
+  expect(JSON.stringify(capability)).not.toContain("private diagnostic");
+});
+it("does not diagnose a thrown probe as missing prerequisites", async () => {
+  const { host, probe } = fixture();
+  probe.mockRejectedValue(new Error("private diagnostic"));
+  expect((await host.status("a")).capabilities.find((item) => item.kind === "native")).toMatchObject({
+    readiness: "unknown",
+    reason: expect.stringMatching(/retry/i),
+  });
+});
+
+it.each([false, true])("native scope restriction overrides readiness even with probe failure=%s", async (throws) => {
+  const { host, probe } = fixture("allow", alwaysApproves, "ask");
+  if (throws) probe.mockRejectedValue(new Error("probe failed"));
+  else probe.mockResolvedValue({ kind: "native-desktop", available: false, capabilities: [], readiness: "setup-required", reason: "Missing display" });
+  expect((await host.status("a")).capabilities.find((item) => item.kind === "native")).toMatchObject({
+    readiness: "permission-blocked",
+    available: false,
+    reason: expect.stringMatching(/narrower fileRead/),
+  });
+});
+
+it("keeps browser probe failures unavailable with generic retry guidance and no desktop classification", async () => {
+  const { host, probe } = fixture();
+  probe.mockRejectedValue(new Error("private diagnostic"));
+  const capability = (await host.status("a")).capabilities.find((item) => item.kind === "browser");
+  expect(capability).toMatchObject({ available: false, reason: expect.stringMatching(/Retry status/) });
+  expect(capability).not.toHaveProperty("readiness");
 });

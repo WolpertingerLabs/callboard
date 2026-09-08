@@ -523,7 +523,8 @@ const REFUSALS: Record<HumanApprovalOutcome["reason"], { code: string; message: 
   },
   prompt_busy: {
     code: "approval_unavailable",
-    message: "This chat is already waiting on another prompt, so the GUI action was NOT performed. Let the human answer that first, then observe and re-request.",
+    message:
+      "This chat is already waiting on another prompt, so the GUI action was NOT performed. Let the human answer that first, then observe and re-request.",
   },
 };
 
@@ -637,13 +638,20 @@ export class ComputerUseHost {
           // it is the one surface allowed to show the driver's operator diagnostics.
           const { operatorDetail, ...probe } = await this.probe(kind);
           const detailed = [probe.reason, operatorDetail].filter(Boolean).join(" ") || undefined;
-          return { ...probe, kind: kind === "browser" ? "browser" : "native", available: probe.available && !restriction, reason: restriction ?? detailed };
+          return {
+            ...probe,
+            kind: kind === "browser" ? "browser" : "native",
+            available: probe.available && !restriction,
+            reason: restriction ?? detailed,
+            ...(kind === "desktop" && restriction ? { readiness: "permission-blocked" as const } : {}),
+          };
         } catch {
           return {
             kind: kind === "browser" ? "browser" : "native",
             available: false,
             capabilities: [],
-            reason: "Driver probe unavailable; install/configure the native prerequisites on the service host.",
+            reason: restriction ?? "Driver probe unavailable. Retry status or ask your agent to check readiness on the Callboard service host.",
+            ...(kind === "desktop" ? { readiness: restriction ? ("permission-blocked" as const) : ("unknown" as const) } : {}),
           };
         }
       }),

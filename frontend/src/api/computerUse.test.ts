@@ -70,3 +70,19 @@ describe("computer-use HTTP adapter", () => {
     }
   });
 });
+
+it.each(["setup-required", "unsupported", "permission-blocked", "unknown", "future-value", undefined])(
+  "preserves additive readiness %s across the HTTP adapter without rejecting old payloads",
+  async (readiness) => {
+    const payload = {
+      permission: "allow",
+      capabilities: [{ kind: "native", available: false, reason: "Diagnostic", ...(readiness ? { readiness } : {}) }],
+      sessions: [],
+    };
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    expect(await computerUseClient.status("c1")).toEqual(payload);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledWith("/api/computer-use/c1/status", expect.objectContaining({ method: "GET" }));
+  },
+);

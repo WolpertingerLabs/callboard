@@ -66,28 +66,32 @@ export function createNativeDesktopDriver(options: NativeDesktopDriverOptions = 
       });
     });
   const probe = async (): Promise<Probe> => {
-    const no = (reason: string): Probe => ({ available: false, kind: "native-desktop", reason, capabilities: [] });
+    const no = (readiness: Probe["readiness"], reason: string): Probe => ({ available: false, kind: "native-desktop", readiness, reason, capabilities: [] });
     if (!compatible())
       return no(
+        config.permissions && Object.values(config.permissions).some((level) => level !== "allow") ? "permission-blocked" : "setup-required",
         "Native target needs explicit enable, full-desktop acknowledgement, and all file/network/code permissions allowed; X11 cannot confine applications",
       );
     if (delegate) {
       try {
         return await delegate.probe();
       } catch {
-        return no("Configured native helper unavailable");
+        return no("unknown", "Configured native helper unavailable");
       }
     }
-    if (platform() !== "linux") return no("No native driver installed for this OS; supply a qualified native-desktop driver");
-    if (!display) return no("No configured DISPLAY (headless hosts are unsupported)");
-    if (!/^:[0-9]+(?:\.[0-9]+)?$/.test(display)) return no("Only explicitly configured local X11 DISPLAY values are supported");
-    if (process.env.WAYLAND_DISPLAY) return no("Wayland/XWayland full desktop capture is not qualified; supply a Wayland driver");
+    if (platform() !== "linux") return no("unsupported", "No native driver installed for this OS; supply a qualified native-desktop driver");
+    if (process.env.WAYLAND_DISPLAY) return no("unsupported", "Wayland/XWayland full desktop capture is not qualified; supply a Wayland driver");
+    if (!display) return no("setup-required", "No configured local X11 DISPLAY on the service host");
+    if (!/^:[0-9]+(?:\.[0-9]+)?$/.test(display)) return no("setup-required", "Only explicitly configured local X11 DISPLAY values are supported");
     try {
       await access("/usr/bin/xdotool", constants.X_OK);
       await access("/usr/bin/import", constants.X_OK);
       await run("/usr/bin/xdotool", ["getdisplaygeometry"]);
     } catch {
-      return no("Requires reachable local X11, /usr/bin/xdotool (libxdo/XTEST), and ImageMagick /usr/bin/import; nothing is installed automatically");
+      return no(
+        "setup-required",
+        "Requires reachable local X11, /usr/bin/xdotool (libxdo/XTEST), and ImageMagick /usr/bin/import; nothing is installed automatically",
+      );
     }
     return {
       available: true,

@@ -621,3 +621,59 @@ it("does not dispatch an unaccepted queued preview after the new view closes", a
     await fixture.service.dispose();
   }
 });
+
+describe("desktop readiness guidance", () => {
+  it.each([
+    ["setup-required", "Desktop setup required", /Ask your agent in chat/],
+    ["unsupported", "Desktop environment unsupported", /compatible native driver/],
+    ["permission-blocked", "Desktop permissions required", /file, network, and code/],
+    ["unknown", "Desktop readiness unconfirmed", /Retry status to check/],
+    [undefined, "Desktop readiness unconfirmed", /Retry status to check/],
+    ["future-classification", "Desktop readiness unconfirmed", /Retry status to check/],
+  ])("renders passive, escaped guidance for %s", async (readiness, heading, guidance) => {
+    const onPermissions = vi.fn();
+    status.sessions = [];
+    status.capabilities[1] = { kind: "native", available: false, reason: "<img src=x onerror=alert(1)> unsupported DISPLAY", ...({ readiness } as object) };
+    render(<Viewer permission="allow" onPermissions={onPermissions} />);
+    await waitFor(() => expect(button("Enable").disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    expect(screen.getByRole("heading", { name: heading as string })).toBeTruthy();
+    expect(screen.getByText(guidance as RegExp)).toBeTruthy();
+    expect(screen.getByText(status.capabilities[1].reason!)).toBeTruthy();
+    expect(document.querySelector("img")).toBeNull();
+    expect(button("Enable").disabled).toBe(true);
+    fireEvent.click(button("Enable"));
+    expect(client.open).not.toHaveBeenCalled();
+    expect(client.control).not.toHaveBeenCalled();
+    expect(client.action).not.toHaveBeenCalled();
+    expect(client.observe).not.toHaveBeenCalled();
+    expect(onPermissions).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Choose a target above and enable it/)).toBeNull();
+  });
+  it("shows only the denied notice rather than a setup diagnosis", async () => {
+    status.capabilities[1] = { kind: "native", available: false, readiness: "setup-required", reason: "No display" };
+    render(<Viewer permission="deny" />);
+    await ready();
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    expect(screen.getByText(/Computer control is denied/)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /Desktop setup/ })).toBeNull();
+    expect(screen.queryByText("No display")).toBeNull();
+  });
+  it("does not diagnose during loading or change available desktop behavior", async () => {
+    vi.mocked(client.status).mockReturnValue(new Promise(() => {}));
+    const view = render(<Viewer permission="allow" />);
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    expect(screen.getByRole("heading", { name: "Desktop readiness unconfirmed" })).toBeTruthy();
+    expect(button("Enable").disabled).toBe(true);
+    view.unmount();
+    status.capabilities[1] = { kind: "native", available: true };
+    vi.mocked(client.status).mockResolvedValue(status);
+    render(<Viewer permission="allow" />);
+    await ready();
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    expect(screen.queryByRole("heading", { name: /Desktop readiness/ })).toBeNull();
+    expect(button("Enable").disabled).toBe(false);
+    fireEvent.click(button("Enable"));
+    await waitFor(() => expect(client.open).toHaveBeenCalledWith("c1", "native"));
+  });
+});
