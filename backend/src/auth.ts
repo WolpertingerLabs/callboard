@@ -327,3 +327,26 @@ export function requireSessionAuth(req: Request, res: Response, next: NextFuncti
   }
   next();
 }
+
+/**
+ * The same-origin rule the computer-control plane enforces on every mutation,
+ * as a pure check so the two places that need it cannot drift: the
+ * `requireControlOrigin` middleware on `/api/computer-use/*`, and the
+ * computer-control confirmation inside `POST /api/chats/:id/respond`.
+ *
+ * Returns the refusal message, or undefined when the request is same-origin.
+ * The session cookie is already `SameSite=strict`, so this is defense in depth
+ * — it also refuses a request that arrives with no `Origin` at all, which a
+ * browser always sends on a cross-origin-capable method like POST.
+ */
+export function controlOriginError(req: Request): string | undefined {
+  try {
+    const origin = new URL(req.get("origin") || "");
+    if (!["http:", "https:"].includes(origin.protocol) || origin.host !== req.get("host") || req.get("sec-fetch-site") === "cross-site") {
+      return "Computer control requires a same-origin browser session.";
+    }
+  } catch {
+    return "Computer control requires a valid Origin header.";
+  }
+  return undefined;
+}

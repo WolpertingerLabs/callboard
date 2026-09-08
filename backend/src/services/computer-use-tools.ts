@@ -251,10 +251,13 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
               input.generation,
               input.frameId,
               input.action,
-              async (actionId) => {
+              // `approvedAction` is the host's snapshot — the same object the
+              // human was shown — not this closure's `input.action`. The
+              // trailing `true` is the other half: this call runs only after
+              // they confirmed, so its failures are never routine.
+              async (actionId, approvedAction) => {
                 const lease = host.agentLease(getChatId(), input.sessionId, input.generation);
-                // `true`: this runs only after the human confirmed.
-                return call("computer_act", { ...lease, frameId: input.frameId, actionId, action: input.action }, context, true);
+                return call("computer_act", { ...lease, frameId: input.frameId, actionId, action: approvedAction }, context, true);
               },
               { signal: context?.signal ? AbortSignal.any([turn.signal, context.signal]) : turn.signal },
             );

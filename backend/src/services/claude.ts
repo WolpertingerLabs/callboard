@@ -756,6 +756,31 @@ export function buildCanUseTool(
       }
     }
 
+    // A chat has one prompt slot, and this used to overwrite whatever was in
+    // it. Two tool calls in one assistant block (or a Task subagent, which
+    // shares this `trackingId`) could therefore replace a question the user was
+    // mid-way through reading: the panel swapped, the first prompt vanished
+    // with no trace and no `/pending` replay, and its caller waited for an
+    // answer that could no longer arrive.
+    //
+    // That was survivable while every occupant was an ordinary tool
+    // permission. It is not, now that the occupant may be the computer-control
+    // confirmation — the one prompt whose whole job is to be seen. So the slot
+    // is first-come-first-served in both directions: `requestHumanApproval`
+    // already refuses to displace a prompt, and so does this.
+    //
+    // Refusing is not the same as interrupting. `interrupt: false` lets the
+    // model carry on and re-request once the user has answered, which is the
+    // behaviour a parallel tool block wants.
+    if (pendingRequests.has(getTrackingId())) {
+      log.info(`[PERM-DIAG] tool=${toolName} deferred: ${getTrackingId()} is already awaiting an answer`);
+      return {
+        behavior: "deny",
+        message: "The user is already being asked about something else in this chat, so this call was not run. Request it again once they have answered.",
+        interrupt: false,
+      };
+    }
+
     return new Promise<PermissionResult>((resolve) => {
       if (toolName === "AskUserQuestion") {
         emitter.emit("event", {
@@ -792,10 +817,13 @@ export function buildCanUseTool(
       }
 
       const trackingId = getTrackingId();
-      pendingRequests.set(trackingId, { toolName, input, suggestions, eventType, eventData, resolve });
+      const entry: PendingRequest = { toolName, input, suggestions, eventType, eventData, resolve };
+      pendingRequests.set(trackingId, entry);
 
       signal.addEventListener("abort", () => {
-        pendingRequests.delete(trackingId);
+        // Only our own entry — the rekey path may have moved it, and a
+        // replacement must never be torn down by an older prompt's abort.
+        if (pendingRequests.get(trackingId) === entry) pendingRequests.delete(trackingId);
         resolve({ behavior: "deny", message: "Aborted" });
       });
     });

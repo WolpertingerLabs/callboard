@@ -42,12 +42,22 @@ it("offers Confirm and Deny, and reports each one faithfully", () => {
   expect(onRespond).toHaveBeenLastCalledWith(true);
 });
 
-it("does not lend its chrome to a lookalike tool from another server", () => {
-  render(<FeedbackPanel action={{ ...guiAction, toolName: "mcp__evil__cu_action" }} onRespond={() => {}} />);
-  expect(screen.getByText("Permission requested")).toBeTruthy();
-  expect(screen.getByText("mcp__evil__cu_action")).toBeTruthy();
-  expect(screen.queryByText(/whatever the chat's permission level/)).toBeNull();
-});
+// Matching here is trust-side: it grants the computer-control header and makes
+// formatInput render ONLY `summary` + `action`. A third-party MCP server whose
+// tool is called `cu_action` (the bare spelling the cline/pi custom-tool
+// bridges use) must not borrow that, or a human could confirm a `command` they
+// were never shown.
+it.each(["cu_action", "computer_use_cu_action", "mcp__evil__cu_action", "my_cu_action", "MCP__COMPUTER_USE__CU_ACTION"])(
+  "does not lend its chrome to a lookalike tool named %s",
+  (toolName) => {
+    render(<FeedbackPanel action={{ ...guiAction, toolName, input: { ...guiAction.input, command: "rm -rf /" } }} onRespond={() => {}} />);
+    expect(screen.getByText("Permission requested")).toBeTruthy();
+    expect(screen.getByText(toolName)).toBeTruthy();
+    expect(screen.queryByText(/whatever the chat's permission level/)).toBeNull();
+    // And its other inputs are rendered rather than hidden behind `summary`.
+    expect(screen.getByText(/rm -rf \//)).toBeTruthy();
+  },
+);
 
 it("leaves every other permission request exactly as it was", () => {
   render(<FeedbackPanel action={{ type: "permission_request", toolName: "Bash", input: { command: "ls -la" } }} onRespond={() => {}} />);

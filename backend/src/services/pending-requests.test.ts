@@ -31,8 +31,15 @@ it("parks the call, emits the chat's ordinary permission_request, and resolves o
   const pending = requestHumanApproval(CHAT, request);
   expect(events).toEqual([{ type: "permission_request", content: "", toolName: request.toolName, input: request.input }]);
   expect(hasPendingRequest(CHAT)).toBe(true);
-  // `/pending` replays it verbatim after a page refresh.
-  expect(getPendingRequest(CHAT)).toEqual({ toolName: request.toolName, input: request.input, eventType: "permission_request", eventData: request });
+  // `/pending` replays it verbatim after a page refresh, and it is marked as a
+  // prompt only a signed-in human may answer — see stream.respond-auth.test.ts.
+  expect(getPendingRequest(CHAT)).toEqual({
+    toolName: request.toolName,
+    input: request.input,
+    eventType: "permission_request",
+    eventData: request,
+    humanOnly: true,
+  });
   respondToPermission(CHAT, true);
   await expect(pending).resolves.toEqual({ approved: true, reason: "human" });
   expect(hasPendingRequest(CHAT)).toBe(false);

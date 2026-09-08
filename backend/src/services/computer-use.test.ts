@@ -168,17 +168,20 @@ describe("computer-use human grants", () => {
     const opened = await host.open("a", "browser");
     const frameId = (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId;
     const action = { type: "navigate", url: "https://example.com" };
-    const call = host.requestAgentAction("a", opened.id, opened.generation, frameId, action, async () => ({}));
+    const execute = vi.fn(async () => ({}));
+    const call = host.requestAgentAction("a", opened.id, opened.generation, frameId, action, execute);
     const question = await person.questioned;
     expect(question.summary).toContain("Open https://example.com in the managed browser");
     expect(question.action).toEqual({ type: "navigate", url: "https://example.com" });
     expect(JSON.stringify(question)).not.toContain(frameId);
     expect(JSON.stringify(question)).not.toContain(opened.id);
-    // The snapshot the human was shown is the one that runs.
+    // The snapshot the human was shown is the one that runs — and `execute` is
+    // handed that snapshot rather than being trusted to find it.
     action.url = "https://evil.example";
     expect(question.action).toEqual({ type: "navigate", url: "https://example.com" });
     person.approve();
     await call;
+    expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "navigate", url: "https://example.com" });
   });
   it("refuses a second concurrent GUI action rather than replacing the question the human is reading", async () => {
     const person = human();

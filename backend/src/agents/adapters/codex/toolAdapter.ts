@@ -64,7 +64,32 @@ export type CodexMcpServerConfig = {
   env?: Record<string, string>;
   url?: string;
   bearer_token_env_var?: string;
+  /** Seconds Codex will wait for one tool call. See {@link CALLBOARD_TOOL_TIMEOUT_SEC}. */
+  tool_timeout_sec?: number;
 };
+
+/**
+ * How long Codex waits for one callboard tool call, in seconds.
+ *
+ * Callboard tools park on purpose. `wait` sleeps up to 300s; the computer-use
+ * confirmation (`HUMAN_APPROVAL_TIMEOUT_MS`) blocks up to 300s while a human
+ * reads a GUI action in the chat. Codex is an MCP *client* with its own
+ * per-call patience, and left unset it applies an internal default this
+ * codebase does not control — verified with `codex mcp list --json`, which
+ * reports `"tool_timeout_sec": null` for a server that does not set it.
+ *
+ * That matters most for the confirmation, because the two clocks disagreeing
+ * is a correctness problem and not just a UX one: if Codex abandoned the call
+ * at its own deadline while the prompt stayed open, a human confirming
+ * afterwards would run an action the harness had already moved past. Setting
+ * this makes OUR deadline the one that always fires first, so Codex never
+ * abandons a call callboard is still holding, and the question of whether it
+ * would announce that is moot.
+ *
+ * Only callboard's own bundles get it. User-configured external MCP servers
+ * keep whatever their author chose.
+ */
+export const CALLBOARD_TOOL_TIMEOUT_SEC = 600;
 
 /**
  * The stdio specialization callboard's own bundles always use: the relay shim is
@@ -251,5 +276,5 @@ export function shimSpawnConfig(socketPath: string): CodexStdioServerConfig {
   const isTs = here.endsWith(".ts");
   const shimPath = join(dirname(here), `mcp-server-shim${isTs ? ".ts" : ".js"}`);
   const args = isTs ? ["--import", "tsx", shimPath, socketPath] : [shimPath, socketPath];
-  return { command: process.execPath, args };
+  return { command: process.execPath, args, tool_timeout_sec: CALLBOARD_TOOL_TIMEOUT_SEC };
 }

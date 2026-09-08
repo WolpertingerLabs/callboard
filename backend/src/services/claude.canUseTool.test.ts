@@ -16,6 +16,8 @@ import type { StreamEvent, DefaultPermissions } from "shared/types/index.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
 import { categorizeClaudeTool } from "../agents/adapters/claude-code/permissionAdapter.js";
 import { buildCanUseTool, respondToPermission, hasPendingRequest, getPendingRequest, stopSession } from "./claude.js";
+import { requestHumanApproval } from "./pending-requests.js";
+import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
 import { sessionRegistry } from "./session-registry.js";
 
 const FULL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
@@ -241,5 +243,56 @@ describe("buildCanUseTool — registry integration", () => {
     expect(stopSession(trackingId)).toBe(true);
     expect(hasPendingRequest(trackingId)).toBe(false);
     await expect(promise).resolves.toMatchObject({ behavior: "deny" });
+  });
+});
+
+/**
+ * A chat has one prompt slot, and the computer-control confirmation is now one
+ * of the things that can occupy it. Whoever arrives second must be told to come
+ * back, never silently swap the panel out from under the user.
+ */
+describe("buildCanUseTool — the prompt slot holds one question", () => {
+  it("defers a second tool rather than replacing the question the user is reading", async () => {
+    const { canUseTool, emitter, trackingId } = make({ policy: makePolicy(FULL_ASK) });
+    const events: StreamEvent[] = [];
+    emitter.on("event", (e: StreamEvent) => events.push(e));
+
+    const first = canUseTool("Write", { path: "/tmp/first" }, unsignaled());
+    const second = await canUseTool("Bash", { command: "ls" }, unsignaled());
+
+    expect(second).toMatchObject({ behavior: "deny", interrupt: false, message: expect.stringContaining("already being asked") });
+    // The user saw one question, and it is still the first one.
+    expect(events).toHaveLength(1);
+    expect(getPendingRequest(trackingId)).toMatchObject({ toolName: "Write" });
+
+    respondToPermission(trackingId, true);
+    await expect(first).resolves.toMatchObject({ behavior: "allow" });
+    // Slot free again: the deferred tool can now be re-requested and parks.
+    void canUseTool("Bash", { command: "ls" }, unsignaled());
+    expect(getPendingRequest(trackingId)).toMatchObject({ toolName: "Bash" });
+    respondToPermission(trackingId, false);
+  });
+
+  it("the same rule protects a parked computer-control confirmation", async () => {
+    const trackingId = `cu-slot-${Math.random().toString(36).slice(2)}`;
+    const emitter = new EventEmitter();
+    sessionRegistry.register(trackingId, { type: "web", abortController: new AbortController(), emitter });
+    try {
+      const approval = requestHumanApproval(trackingId, {
+        toolName: CU_ACTION_TOOL_NAME,
+        input: { summary: "Click at (1, 2)" },
+        timeoutMs: 60_000,
+      });
+      const { canUseTool } = make({ policy: makePolicy(FULL_ASK), trackingId, emitter });
+
+      expect(await canUseTool("Bash", { command: "ls" }, unsignaled())).toMatchObject({ behavior: "deny", interrupt: false });
+      // Still the GUI confirmation, still answerable, still human-only.
+      expect(getPendingRequest(trackingId)).toMatchObject({ toolName: CU_ACTION_TOOL_NAME, humanOnly: true });
+
+      respondToPermission(trackingId, false);
+      await expect(approval).resolves.toEqual({ approved: false, reason: "denied" });
+    } finally {
+      sessionRegistry.unregister(trackingId);
+    }
   });
 });

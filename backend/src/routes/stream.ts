@@ -3,6 +3,8 @@ import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
+import { pendingRequestRequiresHuman } from "../services/pending-requests.js";
+import { controlOriginError } from "../auth.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import { sendRetiredProviderError } from "../utils/route-errors.js";
 import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp/vendors.js";
@@ -816,10 +818,30 @@ streamRouter.post("/:id/respond", (req, res) => {
     }
   } */
   /* #swagger.responses[200] = { description: "Response accepted" } */
+  /* #swagger.responses[403] = { description: "This prompt requires a signed-in, same-origin human session (computer-control confirmations)" } */
   /* #swagger.responses[404] = { description: "No pending request" } */
   const { allow, updatedInput, updatedPermissions } = req.body;
   if (!hasPendingRequest(req.params.id)) {
     return res.status(404).json({ error: "No pending request" });
+  }
+  // Most prompts here are ordinary tool permissions, and answering those with
+  // an API key is a supported workflow — `requireAuth` admits both actors.
+  // A prompt raised by `requestHumanApproval` is not one of those: it is the
+  // computer-control gate, whose whole purpose is to hold after chat policy
+  // has already said yes. It therefore keeps the guarantees of the panel
+  // endpoint it replaced (`requireSessionAuth` + `requireControlOrigin` in
+  // routes/computer-use.ts) rather than inheriting this router's weaker ones.
+  if (pendingRequestRequiresHuman(req.params.id)) {
+    if (res.locals.authMethod !== "session") {
+      log.warn(`Rejected a ${res.locals.authMethod ?? "unauthenticated"} attempt to answer the computer-control prompt on ${req.params.id}`);
+      return res.status(403).json({ error: "This confirmation requires a logged-in session, not an API key.", code: "denied" });
+    }
+    // Belt to the SameSite=strict cookie's braces, and the same check the
+    // Enable/approve endpoint makes. Anyone who can reach this prompt has
+    // already passed it there to enable the target, so it adds no new way to
+    // be locked out.
+    const originError = controlOriginError(req);
+    if (originError) return res.status(403).json({ error: originError, code: "denied" });
   }
   const result = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions);
   res.json({ ok: result.ok, toolName: result.toolName });

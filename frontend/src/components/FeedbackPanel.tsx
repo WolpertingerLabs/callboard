@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
+import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 
 export interface PendingAction {
@@ -158,14 +159,18 @@ export default function FeedbackPanel({ action, onRespond, agentName = "Claude" 
 }
 
 /**
- * The chat's per-action computer-control gate. The backend raises it under one
- * name on every engine (`CU_ACTION_TOOL_NAME`); the other spellings are the
- * namespace variants `isComputerControlToolName` accepts on the backend, and
- * the list is closed for the same reason it is closed there — `my_cu_action`
- * from some other server must not borrow this panel's chrome.
+ * The chat's per-action computer-control gate.
+ *
+ * Exact equality, never a pattern. Matching here is trust-side: it grants the
+ * computer-control header AND makes {@link formatInput} render only `summary` +
+ * `action`, dropping every other input key. A looser match would let a
+ * third-party MCP server exposing its own `cu_action` — the bare spelling the
+ * cline/pi custom-tool bridges use — render as a Callboard GUI confirmation
+ * with, say, its `command` field never shown. The backend raises exactly one
+ * name; recognize exactly that one.
  */
 function isComputerUseAction(toolName?: string): boolean {
-  return !!toolName && /^(?:cu_action|computer_use(?:__|[_.:/])cu_action|mcp__computer_use__cu_action)$/.test(toolName);
+  return toolName === CU_ACTION_TOOL_NAME;
 }
 
 function formatInput(toolName: string, input: Record<string, unknown>): string {

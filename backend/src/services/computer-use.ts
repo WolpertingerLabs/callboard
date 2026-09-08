@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
+import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
@@ -284,9 +285,11 @@ export type ConfirmAgentAction = (request: ActionConfirmationRequest) => Promise
 
 /**
  * The tool name the confirmation prompt is attributed to — the same string the
- * model called and the transcript shows.
+ * model called and the transcript shows. Defined in `shared/` because the chat
+ * panel keys its computer-control presentation on this exact value; see the
+ * doc comment there for why that match must stay exact.
  */
-export const CU_ACTION_TOOL_NAME = "mcp__computer_use__cu_action";
+export { CU_ACTION_TOOL_NAME };
 
 /**
  * The production confirmation: the chat's own blocking prompt.
@@ -312,7 +315,9 @@ const REFUSALS: Record<HumanApprovalOutcome["reason"], { code: string; message: 
   },
   timeout: {
     code: "approval_timeout",
-    message: "Nobody confirmed this GUI action in time, so it was NOT performed. Observe the current state before requesting it again.",
+    // Explicitly not a refusal — that distinction decides whether re-requesting
+    // is reasonable, and the tool description tells the model a refusal is final.
+    message: "Nobody answered in time, so this GUI action was NOT performed. That is not a refusal: observe the current state, then you may request it again.",
   },
   aborted: {
     code: "cancelled",
@@ -633,7 +638,12 @@ export class ComputerUseHost {
     generation: number,
     frameId: string,
     action: unknown,
-    execute: (actionId: string) => Promise<T>,
+    /**
+     * Runs the confirmed action. It is handed the exact snapshot the human was
+     * shown — do not reach back to the caller's own copy, or "what is shown is
+     * what runs" stops being a property of the wiring and becomes a promise.
+     */
+    execute: (actionId: string, approvedAction: Record<string, unknown>) => Promise<T>,
     options?: { signal?: AbortSignal },
   ): Promise<T> {
     const grant = this.grant(chatId, id);
@@ -683,7 +693,7 @@ export class ComputerUseHost {
       this.service.assertFrame(controlPrincipal(chatId, "agent"), { sessionId: id, generation, frameId });
       if (options?.signal?.aborted)
         throw controlError("cancelled", "The turn ended after the human confirmed but before the action ran; it was NOT performed.");
-      const result = await execute(randomUUID());
+      const result = await execute(randomUUID(), request);
       if (result && typeof result === "object" && (result as { isError?: unknown }).isError === true)
         throw controlError("driver_error", "The approved action did not complete. Refresh session state before retrying; approval cannot be reused.");
       return result;

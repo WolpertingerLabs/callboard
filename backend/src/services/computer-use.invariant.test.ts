@@ -26,8 +26,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
-import type { StreamEvent } from "shared/types/index.js";
-import { ComputerUseHost, controlPrincipal, CU_ACTION_TOOL_NAME } from "./computer-use.js";
+import { CU_ACTION_TOOL_NAME, type StreamEvent } from "shared/types/index.js";
+import { ComputerUseHost, controlPrincipal } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { getPendingRequest, hasPendingRequest, respondToPermission } from "./pending-requests.js";
 import { sessionRegistry } from "./session-registry.js";

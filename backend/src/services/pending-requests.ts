@@ -28,6 +28,17 @@ export interface PendingRequest {
   eventType: "permission_request" | "user_question" | "plan_review";
   eventData: Record<string, unknown>;
   resolve: (result: PermissionResult) => void;
+  /**
+   * This prompt may be answered ONLY by a signed-in human, never by an API
+   * key — see {@link pendingRequestRequiresHuman} for why the distinction
+   * exists and where it is enforced.
+   *
+   * Set by {@link requestHumanApproval} and by nothing else. A harness
+   * callback's prompt (`buildCanUseTool`) does not set it: those are ordinary
+   * tool permissions, and the `/respond` route has always accepted a bearer
+   * token for them.
+   */
+  humanOnly?: true;
 }
 
 /**
@@ -68,6 +79,32 @@ export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve
   if (!p) return null;
   const { resolve: _, ...rest } = p;
   return rest;
+}
+
+/**
+ * Is this chat blocked on a prompt only a signed-in human may answer?
+ *
+ * The distinction is not cosmetic, and getting it wrong once already cost a
+ * security property. `POST /api/chats/:id/respond` sits under `requireAuth`,
+ * which accepts a Bearer `cbk_` API key as readily as a session cookie. That is
+ * correct for an ordinary tool permission — answering "may I run Bash" over the
+ * API is a supported, documented workflow.
+ *
+ * It is NOT correct for the computer-use gate. The endpoint that gate used to
+ * live behind — `POST /api/computer-use/:chatId/:sessionId/approve` — carries
+ * `requireSessionAuth` + `requireControlOrigin` under the comment "This control
+ * plane is for the signed-in human, never an agent API key", because the entire
+ * value of a second gate is that it still holds when the first one has passed.
+ * An agent that has got hold of an API key (from disk, an env var, a prior
+ * chat's output) must not be able to confirm its own GUI action.
+ *
+ * So the requirement travels with the prompt rather than being re-derived from
+ * a tool name at the route: {@link requestHumanApproval} marks every prompt it
+ * raises, and `/respond` refuses a non-session actor for those. A future
+ * blocking gate inherits the protection by existing, not by remembering.
+ */
+export function pendingRequestRequiresHuman(chatId: string): boolean {
+  return pendingRequests.get(chatId)?.humanOnly === true;
 }
 
 export function respondToPermission(
@@ -151,6 +188,10 @@ export interface HumanApprovalOutcome {
  * Fails closed on every ambiguity: no live session, a prompt already open for
  * this chat (we will not clobber the question the human is looking at), an
  * abort, or the timeout all resolve `approved: false`.
+ *
+ * Every prompt raised here is marked {@link PendingRequest.humanOnly}: an API
+ * key cannot answer it, only a signed-in browser session can. See
+ * {@link pendingRequestRequiresHuman}.
  */
 export function requestHumanApproval(chatId: string, request: HumanApprovalRequest): Promise<HumanApprovalOutcome> {
   const emitter = sessionRegistry.get(chatId)?.emitter;
@@ -181,6 +222,7 @@ export function requestHumanApproval(chatId: string, request: HumanApprovalReque
       input: request.input,
       eventType: "permission_request",
       eventData: { toolName: request.toolName, input: request.input },
+      humanOnly: true,
       resolve: (result) => settle(result.behavior === "allow" ? { approved: true, reason: "human" } : { approved: false, reason: "denied" }),
     };
     const timer = setTimeout(() => settle({ approved: false, reason: "timeout" }), timeoutMs);

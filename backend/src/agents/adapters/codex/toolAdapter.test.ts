@@ -15,12 +15,17 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { AnyToolDefinition, ToolDefinition, ToolServerSpec } from "../../ports/tools.js";
 import {
+  CALLBOARD_TOOL_TIMEOUT_SEC,
   CODEX_TOOL_IDENTITY_NOTE,
   buildCodexToolServer,
   isCodexToolServerHandle,
   shimSpawnConfig,
   type CodexToolServerHandle,
 } from "./toolAdapter.js";
+import { HUMAN_APPROVAL_TIMEOUT_MS } from "../../../services/pending-requests.js";
+
+/** The `wait` tool's ceiling (services/callboard-tools.ts: `z.number().min(1).max(300)`). */
+const MAX_WAIT_SECONDS = 300;
 
 // Track handles opened in a test so afterEach always tears down their sockets,
 // even when an assertion throws mid-test.
@@ -46,6 +51,18 @@ describe("shimSpawnConfig", () => {
     // Last arg is always the socket path; the shim file precedes it.
     expect(cfg.args[cfg.args.length - 1]).toBe("/tmp/x/s.sock");
     expect(cfg.args.some((a) => a.includes("mcp-server-shim"))).toBe(true);
+  });
+
+  it("outlasts every callboard tool that parks on purpose, so codex never abandons a live call", () => {
+    // Codex is an MCP client with its own per-call patience, and unset it uses
+    // an internal default callboard does not control (`codex mcp list --json`
+    // reports `tool_timeout_sec: null` for a server that omits it). The
+    // computer-use confirmation is the one that must not lose this race: if
+    // codex gave up while the prompt stayed open, a human confirming later
+    // would run an action the harness had already moved past.
+    expect(shimSpawnConfig("/tmp/x/s.sock").tool_timeout_sec).toBe(CALLBOARD_TOOL_TIMEOUT_SEC);
+    expect(CALLBOARD_TOOL_TIMEOUT_SEC * 1000).toBeGreaterThan(HUMAN_APPROVAL_TIMEOUT_MS);
+    expect(CALLBOARD_TOOL_TIMEOUT_SEC).toBeGreaterThan(MAX_WAIT_SECONDS);
   });
 
   it("runs a .ts shim through the tsx loader (dev/test), a .js shim directly", () => {
