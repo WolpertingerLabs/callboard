@@ -55,6 +55,15 @@ beforeAll(() => {
 });
 afterAll(() => remove?.());
 beforeEach(() => {
+  vi.stubGlobal(
+    "Image",
+    vi.fn(function () {
+      const image = document.createElement("img");
+      image.decode = vi.fn().mockResolvedValue(undefined);
+      queueMicrotask(() => fireEvent.load(image));
+      return image;
+    }),
+  );
   const status: ComputerUseStatus = {
     permission: "allow",
     capabilities: [{ kind: "browser", available: true }],
@@ -70,6 +79,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 /** The real panel, showing a frame, so every class asserted on is one it renders. */
@@ -153,4 +164,74 @@ it("keeps desktop guidance and long diagnostics wrappable using theme tokens", a
   expect(values(notice, "overflow-wrap")).toEqual(["anywhere"]);
   expect(values(notice, "color")).toEqual(["var(--text)"]);
   expect(values(notice, "background")).toEqual(["var(--bg)"]);
+});
+
+it.each(["browser", "native"] as const)("reserves the %s capture notice through successive capture/load/decode cycles", async (kind) => {
+  vi.mocked(client.status).mockResolvedValue({
+    permission: "allow",
+    capabilities: [
+      { kind: "browser", available: true },
+      { kind: "native", available: true },
+    ],
+    sessions: [{ id: "s1", kind, state: "active", controller: "human", generation: 1 }],
+  });
+  const { footer } = await panel();
+  const observation = await vi.mocked(client.observe).mock.results[0].value;
+  let releaseCapture!: () => void;
+  let releaseDecode!: () => void;
+  let image!: HTMLImageElement;
+  vi.mocked(client.observe).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        releaseCapture = () => resolve(observation);
+      }),
+  );
+  vi.stubGlobal(
+    "Image",
+    vi.fn(function () {
+      image = document.createElement("img");
+      image.decode = () =>
+        new Promise((resolve) => {
+          releaseDecode = resolve;
+        });
+      return image;
+    }),
+  );
+  vi.useFakeTimers();
+  const preview = screen.getByRole("checkbox", { name: /Live preview/ });
+  fireEvent.click(preview);
+  const notice = footer.querySelector(".computer-use-capture-status")!;
+  expect(notice.textContent).toContain("Capturing screenshot… Manual input is paused until a fresh frame is available.");
+  const manual = screen.getByRole("group", { name: /Manual input/ }) as HTMLFieldSetElement;
+  for (let cycle = 0; cycle < 3; cycle++) {
+    await act(async () => {
+      if (cycle) await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(getComputedStyle(notice).visibility).toBe("visible");
+    expect(screen.getAllByRole("status")).toContain(notice);
+    expect(manual.disabled).toBe(true);
+    await act(async () => {
+      releaseCapture();
+    });
+    expect(getComputedStyle(notice).visibility).toBe("visible");
+    expect(manual.disabled).toBe(true);
+    await act(async () => {
+      fireEvent.load(image);
+    });
+    expect(getComputedStyle(notice).visibility).toBe("visible");
+    expect(manual.disabled).toBe(true);
+    await act(async () => {
+      releaseDecode();
+    });
+    // jsdom cannot measure bounds: assert the same, content-sized box stays in
+    // flow instead of unmounting or display:none. Chromium checks the bounds.
+    expect(footer.querySelector(".computer-use-capture-status")).toBe(notice);
+    expect(getComputedStyle(notice).visibility).toBe("hidden");
+    expect(getComputedStyle(notice).display).toBe("block");
+    expect(notice.hasAttribute("hidden")).toBe(false);
+    expect(screen.queryAllByRole("status")).not.toContain(notice);
+    expect(manual.disabled).toBe(false);
+  }
+  fireEvent.click(preview);
+  expect(footer.querySelector(".computer-use-capture-status")).toBeNull();
 });

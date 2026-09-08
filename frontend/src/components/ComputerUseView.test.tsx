@@ -42,6 +42,15 @@ function expectIdle() {
 }
 
 beforeEach(() => {
+  vi.stubGlobal(
+    "Image",
+    vi.fn(function () {
+      const image = document.createElement("img");
+      image.decode = vi.fn().mockResolvedValue(undefined);
+      queueMicrotask(() => fireEvent.load(image));
+      return image;
+    }),
+  );
   status = {
     permission: "allow",
     capabilities: [{ kind: "browser", available: true }],
@@ -58,6 +67,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  vi.unstubAllGlobals();
   cleanup();
   vi.resetAllMocks();
   vi.useRealTimers();

@@ -27,6 +27,24 @@ function captureFrame(chatId: string, sessionId: string, canStart: () => boolean
   return pending;
 }
 
+/** Keep the old pixels until the replacement is loaded and decoded, not merely
+ * until the observe HTTP request finishes. No screenshot leaves this tab. */
+async function readyFrame(frame: ComputerUseObservation["frame"]) {
+  const image = new Image();
+  const loaded = new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("Screenshot image failed to load."));
+  });
+  image.src = `data:${frame.mimeType};base64,${frame.data}`;
+  try {
+    await loaded;
+    if (image.decode) await image.decode();
+  } finally {
+    image.onload = null;
+    image.onerror = null;
+  }
+}
+
 const terminal = (session: ComputerUseSession) => ["stopped", "revoked", "closed", "failed", "expired"].includes(session.state);
 const pending = (session: ComputerUseSession) => ["pending", "awaiting_approval", "approval_required", "pending_approval"].includes(session.state);
 
@@ -104,7 +122,15 @@ export default function ComputerUsePanel({
   const { readStatus, beginMutation, status } = controller;
   const [kind, setKind] = useState<ComputerUseKind>("browser");
   const [selected, setSelected] = useState("");
-  const [observation, setObservation] = useState<(ComputerUseObservation & { sessionId: string; controller: ComputerUseSession["controller"] }) | null>(null);
+  const [observation, setObservation] = useState<
+    (ComputerUseObservation & { sessionId: string; controller: ComputerUseSession["controller"]; kind: ComputerUseKind; targetLabel?: string }) | null
+  >(null);
+  // Retained pixels are not authority: even pausing a pending preview must
+  // leave the old token fenced until another fresh frame is ready.
+  const [fresh, setFresh] = useState(false);
+  // Explicit captures also wait for decode. A status invalidation must reject
+  // their late completion even if the session later returns to the same values.
+  const presentationEpoch = useRef(0);
   const [busy, setBusy] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const operationActive = useRef(false);
@@ -131,17 +157,24 @@ export default function ComputerUsePanel({
   const active =
     session && ["active", "ready", "running"].includes(session.state) && status?.capabilities.some((item) => item.kind === session.kind && item.available);
   const frame =
-    !denied && active && observation?.sessionId === session.id && observation.generation === session.generation && observation.controller === session.controller
+    !denied &&
+    active &&
+    observation?.sessionId === session.id &&
+    observation.generation === session.generation &&
+    observation.controller === session.controller &&
+    observation.kind === session.kind &&
+    observation.targetLabel === session.targetLabel
       ? observation.frame
       : null;
   const human = !!active && session.controller === "human";
-  const canAct = human && !!frame && !busy && !capturing && !denied;
+  const canAct = human && !!frame && fresh && !busy && !capturing && !denied;
 
   // Serialize normal operations; emergency stop/revoke can supersede any in-flight
   // request. The server remains responsible for cancelling already accepted work.
   const run = useCallback(
     async (label: string, work: (signal: AbortSignal) => Promise<ComputerUseObservation | void>, keepFrame = false) => {
       const ticket = ++sequence.current;
+      const epoch = presentationEpoch.current;
       operationActive.current = true;
       setPreview(false);
       abort.current?.abort();
@@ -149,7 +182,10 @@ export default function ComputerUsePanel({
       abort.current = controller;
       setBusy(true);
       setError("");
-      if (!keepFrame) setObservation(null);
+      if (!keepFrame) {
+        setObservation(null);
+        setFresh(false);
+      }
       try {
         if (session && label !== "stop" && label !== "revoke") {
           await captures.get(captureKey(chatId, session.id))?.catch(() => {});
@@ -158,7 +194,12 @@ export default function ComputerUsePanel({
         const nextFrame = await work(controller.signal);
         await readStatus(controller.signal);
         if (ticket !== sequence.current) return;
-        if (nextFrame && session) setObservation({ ...nextFrame, sessionId: session.id, controller: session.controller });
+        if (nextFrame && session) {
+          await readyFrame(nextFrame.frame);
+          if (ticket !== sequence.current || epoch !== presentationEpoch.current) return;
+          setObservation({ ...nextFrame, sessionId: session.id, controller: session.controller, kind: session.kind, targetLabel: session.targetLabel });
+          setFresh(true);
+        }
         setTimeline((items) => [`${new Date().toLocaleTimeString()} — ${label}`, ...items].slice(0, 20));
       } catch (err) {
         if (ticket !== sequence.current) return;
@@ -202,7 +243,11 @@ export default function ComputerUsePanel({
   const sessionId = session?.id;
   const sessionGeneration = session?.generation;
   const sessionController = session?.controller;
+  const sessionKind = session?.kind;
+  const sessionTarget = session?.targetLabel;
   useEffect(() => {
+    ++presentationEpoch.current;
+    setFresh(false);
     if (denied || !active) {
       setPreview(false);
       setText("");
@@ -215,18 +260,20 @@ export default function ComputerUsePanel({
       sessionId !== undefined &&
       previous.sessionId === sessionId &&
       previous.generation === sessionGeneration &&
-      previous.controller === sessionController
+      previous.controller === sessionController &&
+      previous.kind === sessionKind &&
+      previous.targetLabel === sessionTarget
         ? previous
         : null,
     );
     dragStart.current = null;
-  }, [denied, active, sessionId, sessionGeneration, sessionController]);
+  }, [denied, active, sessionId, sessionGeneration, sessionController, sessionKind, sessionTarget]);
 
   // Preview requests are not aborted on cleanup: aborting fetch cannot cancel an
   // already accepted server observation. Discard late presentation, but retain
   // its settlement barrier before any later explicit capture/control operation.
   useEffect(() => {
-    if (!preview || denied || !active || !sessionId || busy) return;
+    if (!preview || denied || !active || !sessionId || !sessionKind || busy) return;
     let alive = true;
     let inFlight = false;
     const capture = async () => {
@@ -234,12 +281,15 @@ export default function ComputerUsePanel({
       inFlight = true;
       const ticket = sequence.current;
       setCapturing(true);
-      setObservation(null);
+      setFresh(false);
       dragStart.current = null;
       try {
         const result = await captureFrame(chatId, sessionId, () => alive && ticket === sequence.current && !operationActive.current);
+        if (!alive || ticket !== sequence.current) return;
+        await readyFrame(result.frame);
         if (alive && ticket === sequence.current) {
-          setObservation({ ...result, sessionId, controller: sessionController ?? null });
+          setObservation({ ...result, sessionId, controller: sessionController ?? null, kind: sessionKind, targetLabel: sessionTarget });
+          setFresh(true);
         }
       } catch {
         if (alive && ticket === sequence.current) {
@@ -261,7 +311,7 @@ export default function ComputerUsePanel({
       setCapturing(false);
       window.clearInterval(timer);
     };
-  }, [preview, denied, active, sessionId, sessionGeneration, sessionController, busy, chatId]);
+  }, [preview, denied, active, sessionId, sessionGeneration, sessionController, sessionKind, sessionTarget, busy, chatId]);
 
   const hideScreenshot = () => {
     setPreview(false);
@@ -635,8 +685,8 @@ export default function ComputerUsePanel({
           )}
         </div>
         <div className="computer-use-footer">
-          {capturing && (
-            <p className="computer-use-notice" role="status">
+          {preview && (
+            <p className="computer-use-notice computer-use-capture-status" role="status" data-capturing={capturing} aria-hidden={!capturing}>
               Capturing screenshot… Manual input is paused until a fresh frame is available.
             </p>
           )}

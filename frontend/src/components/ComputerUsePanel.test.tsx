@@ -13,6 +13,9 @@ vi.mock("../api/computerUse", async (importOriginal) => ({
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
 }));
 let status: ComputerUseStatus;
+let autoLoad: boolean;
+let images: HTMLImageElement[];
+const decodeImage = vi.fn<() => Promise<void>>();
 const observation = {
   generation: 1,
   frameId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
@@ -59,6 +62,20 @@ function Viewer({
 const ready = () => screen.findByRole("button", { name: "Stop" });
 
 beforeEach(() => {
+  autoLoad = true;
+  images = [];
+  decodeImage.mockReset().mockResolvedValue(undefined);
+  // jsdom does not fetch/decode images. Model those two boundaries separately.
+  vi.stubGlobal(
+    "Image",
+    vi.fn(function () {
+      const image = document.createElement("img");
+      image.decode = decodeImage;
+      images.push(image);
+      if (autoLoad) queueMicrotask(() => fireEvent.load(image));
+      return image;
+    }),
+  );
   status = {
     permission: "allow",
     capabilities: [
@@ -80,6 +97,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("ComputerUsePanel", () => {
@@ -675,5 +694,220 @@ describe("desktop readiness guidance", () => {
     expect(button("Enable").disabled).toBe(false);
     fireEvent.click(button("Enable"));
     await waitFor(() => expect(client.open).toHaveBeenCalledWith("c1", "native"));
+  });
+});
+
+describe("live preview image readiness", () => {
+  const next = { ...observation, frameId: "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb", frame: { ...observation.frame, data: "AQ==", width: 800 } };
+  const third = { ...observation, frameId: "cccccccc-cccc-4ccc-bccc-cccccccccccc", frame: { ...observation.frame, data: "Ag==", width: 600 } };
+  const source = (value: typeof observation) => `data:${value.frame.mimeType};base64,${value.frame.data}`;
+
+  async function setup(kind: "browser" | "native") {
+    status.sessions[0].kind = kind;
+    status.sessions[0].controller = "human";
+    status.capabilities[1].available = true;
+    let controller!: ReturnType<typeof useComputerUseController>;
+    const view = render(<Viewer permission="allow" onRender={(value) => (controller = value)} />);
+    await ready();
+    fireEvent.click(button("Refresh screenshot"));
+    const image = await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    return { view, image, readStatus: () => controller.readStatus() };
+  }
+
+  it.each(["browser", "native"] as const)(
+    "retains %s pixels through capture, load and decode, then uses exactly the successive displayed tokens",
+    async (kind) => {
+      const { image } = await setup(kind);
+      let resolveCapture!: (value: typeof observation) => void;
+      vi.mocked(client.observe).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveCapture = resolve;
+        }),
+      );
+      autoLoad = false;
+      let resolveDecode!: () => void;
+      decodeImage.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveDecode = resolve;
+          }),
+      );
+      vi.useFakeTimers();
+      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+      await act(async () => {});
+      expect(manualInput().disabled).toBe(true);
+      expect(screen.getByRole("img")).toBe(image);
+      expect(image.getAttribute("src")).toBe(source(observation));
+      fireEvent.click(button("Enter"));
+      expect(client.action).not.toHaveBeenCalled();
+      await act(async () => {
+        resolveCapture(next);
+      });
+      expect(image.getAttribute("src")).toBe(source(observation));
+      expect(manualInput().disabled).toBe(true);
+      await act(async () => {
+        fireEvent.load(images[1]);
+      });
+      expect(image.getAttribute("src")).toBe(source(observation));
+      expect(manualInput().disabled).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(client.observe).toHaveBeenCalledTimes(2); // no overlapping capture during decode
+      await act(async () => {
+        resolveDecode();
+      });
+      expect(screen.getByRole("img")).toBe(image);
+      expect(image.getAttribute("src")).toBe(source(next));
+      expect(manualInput().disabled).toBe(false);
+
+      vi.mocked(client.observe).mockResolvedValue(third);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(image.getAttribute("src")).toBe(source(next));
+      expect(manualInput().disabled).toBe(true);
+      fireEvent.click(button("Enter"));
+      expect(client.action).not.toHaveBeenCalled();
+      await act(async () => {
+        fireEvent.load(images[2]);
+      });
+      expect(image.getAttribute("src")).toBe(source(third));
+      expect(manualInput().disabled).toBe(false);
+      autoLoad = true;
+      image.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 250 }) as DOMRect;
+      await act(async () => {
+        fireEvent.pointerDown(image, { clientX: 150, clientY: 125, pointerId: 1 });
+        fireEvent.pointerUp(image, { clientX: 150, clientY: 125, pointerId: 1 });
+      });
+      expect(vi.mocked(client.action).mock.calls[0][2].action).toEqual({ type: "click", x: 300, y: 250, button: "left" });
+      expect(vi.mocked(client.action).mock.calls[0][2].frameId).toBe(third.frameId);
+      expect(vi.mocked(client.action).mock.calls[0][2].expectedGeneration).toBe(third.generation);
+    },
+  );
+
+  it.each(
+    (["pause", "hide", "close", "permission", "generation", "session", "target", "controller", "stop", "revoke"] as const).flatMap((mode) =>
+      (["load", "decode"] as const).map((phase) => ({ mode, phase })),
+    ),
+  )("rejects late $phase after $mode without reauthorizing retained pixels", async ({ mode, phase }) => {
+    const { image, readStatus } = await setup("native");
+    vi.mocked(client.observe).mockResolvedValue(next);
+    let resolveDecode!: () => void;
+    decodeImage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveDecode = resolve;
+        }),
+    );
+    autoLoad = phase !== "load";
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await waitFor(() => expect(images).toHaveLength(2));
+    if (phase === "decode") await waitFor(() => expect(decodeImage).toHaveBeenCalledTimes(2));
+    expect(image.getAttribute("src")).toBe(source(observation));
+    expect(manualInput().disabled).toBe(true);
+    // Any new preview triggered by the changed authority stays pending.
+    vi.mocked(client.observe).mockResolvedValue(observation);
+    autoLoad = false;
+    if (mode === "pause") fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    else if (mode === "hide") fireEvent.click(button("Hide screenshot"));
+    else if (mode === "close") fireEvent.click(button("Switch view"));
+    else if (mode === "stop" || mode === "revoke") fireEvent.click(button(mode === "stop" ? "Stop" : "Revoke"));
+    else {
+      if (mode === "permission") status.permission = "deny";
+      if (mode === "generation") status.sessions[0].generation++;
+      if (mode === "session") status.sessions[0].id = "s2";
+      if (mode === "target") status.sessions[0].targetLabel = "Different desktop";
+      if (mode === "controller") status.sessions[0].controller = "agent";
+      await act(async () => {
+        await readStatus();
+      });
+    }
+    if (phase === "load")
+      await act(async () => {
+        fireEvent.load(images[1]);
+      });
+    await act(async () => {
+      resolveDecode();
+    });
+    if (mode === "pause") {
+      expect(screen.getByRole("img").getAttribute("src")).toBe(source(observation));
+      expect(manualInput().disabled).toBe(true);
+      fireEvent.click(button("Enter"));
+      expect(client.action).not.toHaveBeenCalled();
+      autoLoad = true;
+      fireEvent.click(button("Refresh screenshot"));
+      await waitFor(() => expect(manualInput().disabled).toBe(false));
+    } else {
+      expect(screen.queryByRole("img")).toBeNull();
+    }
+  });
+
+  it("rejects an explicit capture decoded after authority changes away and back", async () => {
+    const { readStatus } = await setup("native");
+    let resolveDecode!: () => void;
+    decodeImage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveDecode = resolve;
+        }),
+    );
+    fireEvent.click(button("Refresh screenshot"));
+    await waitFor(() => expect(decodeImage).toHaveBeenCalledTimes(2));
+    status.sessions[0].generation = 2;
+    await act(async () => {
+      await readStatus();
+    });
+    status.sessions[0].generation = 1;
+    await act(async () => {
+      await readStatus();
+    });
+    await act(async () => {
+      resolveDecode();
+    });
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(manualInput().disabled).toBe(true);
+  });
+
+  it.each(["success", "failure"] as const)("does not replace or clear a newer frame on late decode %s", async (outcome) => {
+    await setup("browser");
+    let finish!: () => void;
+    decodeImage.mockImplementationOnce(
+      () =>
+        new Promise((resolve, reject) => {
+          finish = outcome === "success" ? resolve : () => reject(new Error("Old decode failed"));
+        }),
+    );
+    vi.mocked(client.observe).mockResolvedValueOnce(next).mockResolvedValue(third);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await waitFor(() => expect(decodeImage).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    fireEvent.click(button("Refresh screenshot"));
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    expect(screen.getByRole("img").getAttribute("src")).toBe(source(third));
+    await act(async () => {
+      finish();
+    });
+    expect(screen.getByRole("img").getAttribute("src")).toBe(source(third));
+    expect(manualInput().disabled).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it.each(["capture", "load", "decode"] as const)("clears retained pixels on %s error", async (phase) => {
+    await setup("browser");
+    if (phase === "capture") vi.mocked(client.observe).mockRejectedValueOnce(new Error("Capture failed"));
+    else vi.mocked(client.observe).mockResolvedValue(next);
+    if (phase === "load") autoLoad = false;
+    if (phase === "decode") decodeImage.mockRejectedValueOnce(new Error("Bad image"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    if (phase === "load") {
+      await waitFor(() => expect(images).toHaveLength(2));
+      fireEvent.error(images[1]);
+    }
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(manualInput().disabled).toBe(true);
+    expect(button("Stop").disabled).toBe(false);
   });
 });
