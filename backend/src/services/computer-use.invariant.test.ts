@@ -1,38 +1,42 @@
 /**
- * The invariant: **every GUI action requires an explicit human confirmation,
- * regardless of the chat's permission level.**
+ * The invariant: **a chat set to `computerControl: "ask"` cannot have a GUI
+ * action performed without an explicit human confirmation.** No policy value,
+ * hook, allow-list entry, adapter, subagent or API key can satisfy it — only a
+ * signed-in human answering the prompt in that chat.
  *
- * This is the second of two independent gates, and the danger is that they look
- * like one. The first gate — may the agent call `cu_action` at all — is the
- * ordinary permission path, and for a chat with `computerControl: "allow"` it
- * says yes; production logs read `tool=mcp__computer_use__cu_action,
- * category=computerControl, decision=allow`. The second gate exists *because*
- * the first one passed: a pixel action can transmit data, change files or
- * execute code, so a human confirms each one. Routing the second through the
- * first would delete it silently, and nothing else in the system would notice.
+ * `ask` and `allow` are now two different contracts, and the danger is that
+ * they blur. `allow` deliberately performs GUI actions unattended: that is the
+ * user's informed choice, and this file asserts it works rather than pretending
+ * otherwise. What must not happen is `ask` quietly acquiring the same
+ * behaviour — through a second policy read, an "effective level", a
+ * confirmation with a configurable default, or a test double that says yes.
+ * Both branches are pinned here, in one place, so the difference between them
+ * stays a single readable decision.
  *
- * So this file exercises the real thing, top to bottom, with the policy pinned
- * to the most permissive setting a chat can have: the real `ComputerUseHost`
- * with its DEFAULT confirmation wiring (no test double injected — that is the
- * point), the real `requestHumanApproval`, the real pending-prompt registry,
- * and the real `respondToPermission` the HTTP route calls. The only fakes are
- * the driver's pixels.
+ * So this file exercises the real thing, top to bottom: the real
+ * `ComputerUseHost` with its DEFAULT confirmation wiring (no test double
+ * injected — that is the point), the real `requestHumanApproval`, the real
+ * pending-prompt registry, and the real `respondToPermission` the HTTP route
+ * calls. The only fakes are the driver's pixels.
  *
- * If someone re-routes the approval through `ToolPermissionPolicy`, threads the
- * `computerControl` level into the confirmation, or gives
- * `requestHumanApproval` an auto-decide branch, the first assertion here fails:
- * the call returns instead of blocking, and the driver acts with nobody asked.
+ * If someone re-routes the `ask` approval through `ToolPermissionPolicy`,
+ * widens the `allow` branch to cover `ask`, or gives `requestHumanApproval` an
+ * auto-decide branch, the first assertion here fails: the call returns instead
+ * of blocking, and the driver acts with nobody asked.
+ *
+ * The boundary both levels share — a human, and only a human, enables a
+ * target — is pinned at the bottom.
  */
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
-import { CU_ACTION_TOOL_NAME, type StreamEvent } from "shared/types/index.js";
+import { CU_ACTION_TOOL_NAME, type PermissionLevel, type StreamEvent } from "shared/types/index.js";
 import { ComputerUseHost, controlPrincipal } from "./computer-use.js";
 import { readComputerUsePolicy } from "./computer-use-policy.js";
 import { getPendingRequest, hasPendingRequest, respondToPermission } from "./pending-requests.js";
 import { sessionRegistry } from "./session-registry.js";
 
-const CHAT = "chat-under-allow";
+const CHAT = "chat-under-test";
 
 const hosts: ComputerUseHost[] = [];
 afterEach(async () => {
@@ -41,8 +45,8 @@ afterEach(async () => {
   respondToPermission(CHAT, false);
 });
 
-/** A chat whose every permission axis is "allow" — the maximum a user can grant. */
-function fixture() {
+/** A chat whose every other permission axis is "allow" — the maximum a user can grant. */
+function fixture(computerControl: PermissionLevel) {
   const act = vi.fn(async () => {});
   const driver: Driver = {
     kind: "browser",
@@ -55,11 +59,14 @@ function fixture() {
     }),
   };
   const service = new ComputerUseService({ targets: [{ id: "managed-browser", enabled: true, driver }], authorize: (request) => host.authorize(request) });
+  let level = computerControl;
   // Third argument only: the policy reader. The fourth — the confirmation — is
-  // deliberately left at its production default.
+  // deliberately left at its production default. The signature is pinned so a
+  // level change is visible to the branch under test rather than short-circuited
+  // by the grant revocation a real signature change would trigger first.
   const host: ComputerUseHost = new ComputerUseHost(service, { browser: driver, desktop: { ...driver, kind: "native-desktop" } }, () => ({
-    policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
-    signature: "allow-everything",
+    policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
+    signature: "pinned",
   }));
   hosts.push(host);
 
@@ -69,17 +76,30 @@ function fixture() {
   const events: StreamEvent[] = [];
   emitter.on("event", (event: StreamEvent) => events.push(event));
   sessionRegistry.register(CHAT, { type: "web", abortController: new AbortController(), emitter });
-  return { host, service, act, events };
+  return {
+    host,
+    service,
+    act,
+    events,
+    setLevel: (next: PermissionLevel) => {
+      level = next;
+    },
+  };
 }
 
+/**
+ * Enable a target the way the product does: a human's own click, through the
+ * host's `open`/`approve` — the pair the agent has no route to.
+ */
 async function readyFrame(host: ComputerUseHost, service: ComputerUseService) {
-  const opened = await host.open(CHAT, "browser");
+  const request = await host.open(CHAT, "browser");
+  const opened = (request.state === "pending_approval" ? await host.approve(CHAT, request.id) : request) as { id: string; generation: number };
   const frame = await service.observe(controlPrincipal(CHAT, "agent"), { sessionId: opened.id, generation: opened.generation });
   return { opened, frameId: frame.frameId };
 }
 
-it('a chat with computerControl "allow" still cannot perform a GUI action without an explicit human confirmation', async () => {
-  const { host, service, act, events } = fixture();
+it('a chat with computerControl "ask" cannot perform a GUI action without an explicit human confirmation', async () => {
+  const { host, service, act, events } = fixture("ask");
   const { opened, frameId } = await readyFrame(host, service);
   const execute = vi.fn(async () => ({ done: true }));
 
@@ -97,7 +117,10 @@ it('a chat with computerControl "allow" still cannot perform a GUI action withou
   expect(hasPendingRequest(CHAT)).toBe(true);
   const prompt = events.find((event) => event.type === "permission_request");
   expect(prompt).toMatchObject({ type: "permission_request", toolName: CU_ACTION_TOOL_NAME });
-  expect(getPendingRequest(CHAT)).toMatchObject({ toolName: CU_ACTION_TOOL_NAME, eventType: "permission_request" });
+  // `humanOnly` is what makes `POST /api/chats/:id/respond` refuse a bearer
+  // `cbk_` key and a cross-origin actor: an agent holding a key must not be
+  // able to confirm its own action. See `pendingRequestRequiresHuman`.
+  expect(getPendingRequest(CHAT)).toMatchObject({ toolName: CU_ACTION_TOOL_NAME, eventType: "permission_request", humanOnly: true });
 
   // And it is legible: what will happen and where, not session/frame UUIDs.
   const input = (prompt as unknown as { input: Record<string, unknown> }).input;
@@ -112,8 +135,8 @@ it('a chat with computerControl "allow" still cannot perform a GUI action withou
   expect(execute).toHaveBeenCalledOnce();
 });
 
-it('a chat with computerControl "allow" reports the human\'s refusal as a refusal, and runs nothing', async () => {
-  const { host, service, act } = fixture();
+it('a chat with computerControl "ask" reports the human\'s refusal as a refusal, and runs nothing', async () => {
+  const { host, service, act } = fixture("ask");
   const { opened, frameId } = await readyFrame(host, service);
   const execute = vi.fn(async () => ({ done: true }));
 
@@ -128,8 +151,8 @@ it('a chat with computerControl "allow" reports the human\'s refusal as a refusa
   expect(hasPendingRequest(CHAT)).toBe(false);
 });
 
-it("a GUI action requested with no live chat session to ask in is refused, never assumed", async () => {
-  const { host, service, act } = fixture();
+it('a GUI action requested under "ask" with no live chat session to ask in is refused, never assumed', async () => {
+  const { host, service, act } = fixture("ask");
   const { opened, frameId } = await readyFrame(host, service);
   sessionRegistry.unregister(CHAT); // e.g. the run ended while a resident tool closure lingered
   const execute = vi.fn(async () => ({ done: true }));
@@ -139,4 +162,64 @@ it("a GUI action requested with no live chat session to ask in is refused, never
   });
   expect(execute).not.toHaveBeenCalled();
   expect(act).not.toHaveBeenCalled();
+});
+
+/**
+ * The other half of the contract, and the reason the tests above have to be
+ * this explicit: `allow` really does mean allow. The control now says what it
+ * does, so a change that made `allow` prompt would be as much a defect as one
+ * that made `ask` silent.
+ */
+it('a chat with computerControl "allow" performs the action with no prompt at all', async () => {
+  const { host, service, events } = fixture("allow");
+  const { opened, frameId } = await readyFrame(host, service);
+  const execute = vi.fn(async () => ({ done: true }));
+
+  await expect(host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "click", x: 10, y: 20 }, execute)).resolves.toEqual({ done: true });
+
+  expect(execute).toHaveBeenCalledOnce();
+  // Nobody was asked, and nothing is left parked waiting for an answer.
+  expect(events.filter((event) => event.type === "permission_request")).toEqual([]);
+  expect(hasPendingRequest(CHAT)).toBe(false);
+  // The operator's log gets a redacted description of it instead — the
+  // unattended action's only record. See `logUnattendedAction`.
+  expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "click", x: 10, y: 20 }, { confirmedByHuman: false });
+});
+
+it('a chat with computerControl "deny" refuses the action outright, prompting nobody', async () => {
+  // A denied chat cannot normally hold a grant at all — the scope check refuses
+  // `open`, and in production a level change revokes a live session through the
+  // signature. This asserts the floor underneath both: with the session still
+  // in hand, the action is refused rather than turned into a question someone
+  // might answer yes to.
+  const { host, service, events, setLevel } = fixture("allow");
+  const { opened, frameId } = await readyFrame(host, service);
+  const execute = vi.fn(async () => ({ done: true }));
+  setLevel("deny");
+
+  await expect(host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "click", x: 1, y: 2 }, execute)).rejects.toMatchObject({
+    code: "denied",
+  });
+  expect(execute).not.toHaveBeenCalled();
+  expect(events.filter((event) => event.type === "permission_request")).toEqual([]);
+  expect(hasPendingRequest(CHAT)).toBe(false);
+});
+
+/**
+ * The boundary that keeps `allow` sane, and the one thing the level never
+ * governs. `cu_open` — the only enable-shaped tool the agent has — resolves to
+ * `host.status`, which lists what a human already started and grants nothing.
+ * `open`/`approve` are reachable only through `routes/computer-use.ts`, which
+ * is `requireSessionAuth` + same-origin.
+ */
+it.each(["allow", "ask", "deny"] as const)('an agent cannot enable a target under computerControl "%s"', async (level) => {
+  const { host, service } = fixture(level);
+
+  // The service refuses the agent principal directly, whatever role it claims.
+  await expect(service.open(controlPrincipal(CHAT, "agent"), "managed-browser")).rejects.toMatchObject({ code: "denied" });
+  await expect(service.open(controlPrincipal(CHAT, "human"), "managed-browser")).rejects.toMatchObject({ code: "denied" });
+
+  // And the agent's own tool surface reports sessions rather than creating one.
+  const before = (await host.status(CHAT)).sessions.length;
+  expect(before).toBe(0);
 });

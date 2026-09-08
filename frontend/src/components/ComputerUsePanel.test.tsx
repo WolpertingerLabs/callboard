@@ -95,21 +95,54 @@ describe("ComputerUsePanel", () => {
     expect(screen.getByText(/Same-machine native control/)).toBeTruthy();
   });
 
-  it("keeps legacy/missing permission deny, with an actionable settings path that does not oversell Allow", async () => {
+  it("keeps legacy/missing permission deny, with an actionable settings path that states what each level does", async () => {
     const onPermissions = vi.fn();
     render(<Viewer onPermissions={onPermissions} />);
     await ready();
     expect(button("Enable").disabled).toBe(true);
     expect(button("Refresh screenshot").disabled).toBe(true);
     const denied = screen.getByText(/Computer control is denied/);
-    expect(denied.textContent).toContain("Allow only lets your Enable click open a target without a separate confirmation; each agent action still asks you in the chat.");
+    expect(denied.textContent).toContain("Ask confirms each agent action with you in the chat; Allow lets the agent act unattended.");
+    expect(denied.textContent).toContain("Either way, only your Enable click starts a target.");
     const intro = screen.getByText(/Controls Callboard's browser and desktop tools/).textContent!;
-    expect(intro).toContain("Only you can enable a target.");
-    expect(intro).toContain("Allow lets your Enable click open it immediately; under Ask, Enable creates a request you confirm separately.");
-    expect(intro).toContain("Every action the agent takes still needs your confirmation — the agent's turn stops and asks you in the chat, not here.");
+    expect(intro).toContain("Only you can enable a target — the agent never can, at any permission level.");
+    expect(intro).toContain("Allow lets the agent act on its own, while Ask stops its turn and asks you in the chat before each action.");
     expect(intro).not.toMatch(/agent enables/);
     fireEvent.click(button("Chat permissions"));
     expect(onPermissions).toHaveBeenCalled();
+    // Nothing to consent to while it is denied, so the Enable note stays away.
+    expect(screen.queryByRole("note", { name: "What Enable grants" })).toBeNull();
+  });
+
+  /**
+   * The Enable click is the consent boundary for unattended control, and the
+   * two levels produce identical panels otherwise. A chat someone else
+   * configured — or you configured a month ago — must say which one it is at
+   * the moment you click, not two screens away in Chat permissions.
+   */
+  it.each([
+    ["allow", "This chat is set to Allow:", /acts on it without asking you again/],
+    ["ask", "This chat is set to Ask:", /asks you here in the chat before every action/],
+  ] as const)("says what Enable grants when the chat is %s", async (permission, heading, detail) => {
+    status.permission = permission;
+    render(<Viewer permission={permission} />);
+    await ready();
+
+    const note = screen.getByRole("note", { name: "What Enable grants" });
+    expect(note.textContent).toContain(heading);
+    expect(note.textContent).toMatch(detail);
+    expect(note.textContent).not.toMatch(permission === "allow" ? /asks you/ : /without asking/);
+  });
+
+  it("takes the level from the server, not from this tab's copy of the chat record", async () => {
+    // A level changed in another tab (or by the human in Chat permissions)
+    // reaches this panel through status first. Showing the stale prop here
+    // would tell someone they are consenting to the opposite of what they are.
+    status.permission = "allow";
+    render(<Viewer permission="ask" />);
+    await ready();
+
+    expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("This chat is set to Allow:");
   });
 
   it.each(["codex", "claude-code", "pi", undefined])("explains the shared subagent grant for the engines whose subagents share the tool server (%s)", async (provider) => {

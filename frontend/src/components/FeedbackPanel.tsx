@@ -35,7 +35,7 @@ export default function FeedbackPanel({ action, onRespond, agentName = "Claude" 
         {action.input && <pre style={preStyle}>{formatInput(action.toolName!, action.input)}</pre>}
         {guiAction && (
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
-            Every action needs this confirmation, whatever the chat&apos;s permission level: a pixel action may transmit data, change files or execute code.
+            This chat asks before every GUI action: a pixel action may transmit data, change files or execute code.
           </p>
         )}
         <div style={{ display: "flex", gap: 8 }}>

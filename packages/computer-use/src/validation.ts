@@ -32,7 +32,18 @@ export const actionSchema = z.discriminatedUnion("type", [
         .string()
         .url()
         .max(4096)
-        .refine((s) => ["http:", "https:"].includes(new URL(s).protocol)),
+        // The try is not decoration. Zod runs every check on a string even
+        // after an earlier one fails, so a value `.url()` has already rejected
+        // still reaches this refinement — and `new URL()` throws on it, which
+        // escapes `parse`/`safeParse` as a raw TypeError instead of arriving as
+        // a validation error the service maps to `invalid_request`.
+        .refine((s) => {
+          try {
+            return ["http:", "https:"].includes(new URL(s).protocol);
+          } catch {
+            return false;
+          }
+        }),
     })
     .strict(),
   z.object({ type: z.literal("wait"), durationMs: z.number().int().min(0).max(2000) }).strict(),

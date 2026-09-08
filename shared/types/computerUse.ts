@@ -2,7 +2,8 @@ import type { PermissionLevel } from "./permissions.js";
 
 /**
  * The tool name the per-action computer-control confirmation is raised under,
- * on every engine.
+ * on every engine — that is, in a chat whose `computerControl` is `ask`; under
+ * `allow` no confirmation is raised at all.
  *
  * Shared because both sides of one contract need the *same* string and neither
  * may widen it. The backend raises exactly this name

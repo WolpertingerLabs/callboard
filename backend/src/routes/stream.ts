@@ -5,6 +5,7 @@ import { Router } from "express";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
 import { pendingRequestRequiresHuman } from "../services/pending-requests.js";
 import { controlOriginError } from "../auth.js";
+import { noteComputerControlAtCreation } from "../services/computer-use-policy.js";
 import { isRoutableProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import { sendRetiredProviderError } from "../utils/route-errors.js";
 import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp/vendors.js";
@@ -114,6 +115,10 @@ streamRouter.post("/new/message", async (req, res) => {
   );
   if (!folder) return res.status(400).json({ error: "folder is required" });
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
+  // The other creation surface. `POST /:id/message` needs no such note: for an
+  // existing chat `getDefaultPermissions` re-reads the stored record and
+  // ignores this field entirely, so it cannot raise a level.
+  noteComputerControlAtCreation("POST /api/chats/new/message", res.locals?.authMethod, defaultPermissions);
 
   // Check if folder exists — before effort validation, which probes the Codex
   // CLI in that cwd and would otherwise report the bad path as an unknown route.

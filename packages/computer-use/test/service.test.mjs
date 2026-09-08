@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import { ComputerUseService, ComputerUseError, createNativeDesktopDriver, getToolDefinitions, createMcpServer } from "../dist/index.js";
+import { ComputerUseService, ComputerUseError, createNativeDesktopDriver, getToolDefinitions, createMcpServer, actionSchema } from "../dist/index.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 const agent = Object.freeze({ ownerId: "owner", actorId: "agent", role: "agent" });
@@ -647,4 +647,19 @@ test("cleanup always reaches driver close, so a failed input release can be quar
   assert.equal(f.calls.close, 1);
   await s.dispose();
   assert.equal(f.calls.close, 1);
+});
+
+/**
+ * `service.act` and the MCP tool both parse with this schema, so a value it
+ * cannot validate has to arrive as a rejection. Zod runs every check on a
+ * string after an earlier one fails, so the navigate refinement sees values
+ * `.url()` already rejected — unguarded, `new URL()` threw out of `safeParse`
+ * and the MCP boundary reported a caller's typo as `driver_error`.
+ */
+test("actionSchema rejects an unparseable or non-web URL instead of throwing", () => {
+  for (const url of ["not a url", "data:text/plain,x", "javascript:alert(1)", "file:///etc/passwd"]) {
+    const result = actionSchema.safeParse({ type: "navigate", url });
+    assert.equal(result.success, false, `${url} must be rejected, not accepted`);
+  }
+  assert.equal(actionSchema.safeParse({ type: "navigate", url: "https://example.com/a?b=1" }).success, true);
 });

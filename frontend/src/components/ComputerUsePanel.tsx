@@ -83,6 +83,13 @@ export default function ComputerUsePanel({
   const session = status?.sessions.find((item) => item.id === selected) ?? status?.sessions.find((item) => !terminal(item)) ?? status?.sessions[0];
   const capability = status?.capabilities.find((item) => item.kind === kind);
   const denied = permission === "deny" || status?.permission === "deny";
+  // What the Enable click actually consents to. Since the level began governing
+  // per-action prompts, this button IS the consent boundary for unattended
+  // control — and a chat someone else configured, or you configured a month
+  // ago, looks identical either way. The server's level wins over the prop: the
+  // prop is this tab's copy of the chat record, and a change made elsewhere
+  // reaches the panel through status first.
+  const level = status?.permission ?? permission;
   const active =
     session && ["active", "ready", "running"].includes(session.state) && status?.capabilities.some((item) => item.kind === session.kind && item.available);
   const frame =
@@ -274,9 +281,9 @@ export default function ComputerUsePanel({
     <section className="computer-use-panel" aria-label="Browser & Computer Control">
       <div className="computer-use-body">
         <p>
-          Controls Callboard&apos;s browser and desktop tools. Only you can enable a target. Allow lets your Enable click open it immediately; under Ask,
-          Enable creates a request you confirm separately. Every action the agent takes still needs your confirmation — the agent&apos;s turn stops and asks
-          you in the chat, not here. Agents with unrestricted code execution may still run their own automation.
+          Controls Callboard&apos;s browser and desktop tools. Only you can enable a target — the agent never can, at any permission level. After that, Allow
+          lets the agent act on its own, while Ask stops its turn and asks you in the chat before each action. Agents with unrestricted code execution may
+          still run their own automation.
         </p>
         <p>Tools run on the configured service target, not on this viewer&apos;s computer. Model visual capability is not established by this viewer.</p>
         <div className="computer-use-controls">
@@ -310,6 +317,23 @@ export default function ComputerUsePanel({
           </button>
           {onPermissions && <button onClick={onPermissions}>Chat permissions</button>}
         </div>
+        {/* Beside the button, not in the intro: the intro explains the two
+            levels in general, and this says which one this chat is — the only
+            place the difference is visible at the moment you consent to it. */}
+        {!denied && (
+          <p role="note" aria-label="What Enable grants">
+            {level === "allow" ? (
+              <>
+                <strong>This chat is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded in
+                the server log.
+              </>
+            ) : (
+              <>
+                <strong>This chat is set to Ask:</strong> the agent&apos;s turn stops and asks you here in the chat before every action on the target.
+              </>
+            )}
+          </p>
+        )}
         {sharedGrantNote && (
           <p id={sharedGrantNote} role="note">
             <strong>Shared with subagents:</strong> a grant you enable or approve here is shared with any subagents the agent runs inside this chat&apos;s
@@ -326,8 +350,8 @@ export default function ComputerUsePanel({
         )}
         {denied && (
           <p role="status">
-            Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Allow only lets your Enable
-            click open a target without a separate confirmation; each agent action still asks you in the chat.
+            Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Ask confirms each agent
+            action with you in the chat; Allow lets the agent act unattended. Either way, only your Enable click starts a target.
           </p>
         )}
         {!capability?.available && (
@@ -338,8 +362,9 @@ export default function ComputerUsePanel({
         )}
         {(error || controller?.statusError) && <p role="alert">{error || controller?.statusError}</p>}
         {/* Target requests only — your own Enable click under Ask. A GUI action
-            the agent wants to take is confirmed in the chat, where the agent is
-            blocked waiting for it; the server does not park those here. */}
+            the agent wants to take is confirmed in the chat (under Ask, where
+            the agent is blocked waiting for it) or not at all (under Allow);
+            the server does not park those here. */}
         {status?.sessions
           .filter((item) => pending(item) && item.id !== session?.id)
           .map((item) => (
