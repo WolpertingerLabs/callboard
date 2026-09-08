@@ -132,7 +132,12 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
         await context.routeWebSocket("**/*", (ws) => ws.close());
         active = context.pages()[0] ?? (await context.newPage());
         const configure = (page: Page) => {
-          page.on("framenavigated", () => onTargetChanged?.());
+          // Playwright fires this for every iframe too; only a top-level
+          // navigation moves the pixels an observed frame was captured from.
+          // Invalidating on ad/embed iframes made observe → act permanently stale.
+          page.on("framenavigated", (frame) => {
+            if (frame === page.mainFrame()) onTargetChanged?.();
+          });
           page.on("close", () => onTargetChanged?.());
           page.on("dialog", (dialog) => {
             void dialog.dismiss().catch(() => {});

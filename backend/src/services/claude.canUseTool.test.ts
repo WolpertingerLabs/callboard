@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { StreamEvent, DefaultPermissions } from "shared/types/index.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
+import { categorizeClaudeTool } from "../agents/adapters/claude-code/permissionAdapter.js";
 import { buildCanUseTool, respondToPermission, hasPendingRequest, getPendingRequest, stopSession } from "./claude.js";
 import { sessionRegistry } from "./session-registry.js";
 
@@ -75,6 +76,44 @@ describe("buildCanUseTool — auto-decide paths", () => {
     expect(seen.some((e) => e.type === "permission_request")).toBe(true);
     expect(respondToPermission(trackingId, true).ok).toBe(true);
     await expect(promise).resolves.toMatchObject({ behavior: "allow" });
+  });
+});
+
+describe("buildCanUseTool — computerControl reaches the gate", () => {
+  // `mcp__computer_use__*` is deliberately NOT in the SDK allow-list (see
+  // claude.ts), so these calls do arrive here. Use the real Claude categorizer
+  // so the tool name → axis mapping is the production one.
+  const withComputerControl = (perms: DefaultPermissions | null) => makePolicy(perms, categorizeClaudeTool);
+  const tool = "mcp__computer_use__cu_observe";
+
+  it("denies a managed computer tool when the axis is deny, without interrupting the turn", async () => {
+    const { canUseTool } = make({ policy: withComputerControl({ ...FULL_ALLOW, computerControl: "deny" }) });
+    const result = await canUseTool(tool, { sessionId: "s", generation: 1 }, unsignaled());
+    expect(result).toMatchObject({ behavior: "deny", interrupt: false });
+    expect((result as { message: string }).message).toContain("computerControl");
+  });
+
+  it("denies when the axis is absent (legacy four-axis record) or there are no permissions at all", async () => {
+    const legacy = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow" } as unknown as DefaultPermissions;
+    for (const perms of [legacy, null]) {
+      const { canUseTool } = make({ policy: withComputerControl(perms) });
+      expect(await canUseTool(tool, {}, unsignaled())).toMatchObject({ behavior: "deny", interrupt: false });
+    }
+  });
+
+  it("admits the transport call under ask and allow so the service can decide scope; never prompts here", async () => {
+    for (const level of ["ask", "allow"] as const) {
+      const { canUseTool, emitter } = make({ policy: withComputerControl({ ...FULL_ALLOW, computerControl: level }) });
+      const seen: StreamEvent[] = [];
+      emitter.on("event", (e: StreamEvent) => seen.push(e));
+      expect(await canUseTool(tool, { sessionId: "s" }, unsignaled())).toEqual({ behavior: "allow", updatedInput: { sessionId: "s" } });
+      expect(seen).toEqual([]);
+    }
+  });
+
+  it("a denied write still interrupts the turn (unchanged for the other axes)", async () => {
+    const { canUseTool } = make({ policy: withComputerControl({ ...FULL_ALLOW, fileWrite: "deny" }) });
+    expect(await canUseTool("Write", {}, unsignaled())).toMatchObject({ behavior: "deny", interrupt: true });
   });
 });
 

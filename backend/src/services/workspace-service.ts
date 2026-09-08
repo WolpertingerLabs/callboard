@@ -621,21 +621,12 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
   const existing = getWorkspace(id);
   if (!existing) return null;
 
-  // Refuse before interrupting any root, mutating bookkeeping, or quarantining.
-  // Filesystem-only children are not in chatsForWorkspace/the registry.
-  const nativeBlockers = nativeWorkspaceReleaseBlockers(id, existing.cwd);
-  if (nativeBlockers.length)
-    return {
-      outcome: "refused",
-      workspace: existing,
-      chats: [],
-      worktree: {
-        removed: false,
-        disposition: "kept",
-        path: resolve(existing.cwd),
-        blockers: nativeBlockers.map((detail) => ({ code: "session-still-running" as const, detail })),
-      },
-    };
+  // Native Codex children are not refused here. Marking the record archived
+  // removes no directory, and the only gate a native child may hold is the
+  // removal one — `evaluateWorktreeRemoval` below consults
+  // `nativeWorkspaceReleaseBlockers` and keeps the worktree while any child
+  // is unreleased. Filesystem-only children are not in chatsForWorkspace or
+  // the registry, so nothing in the cascade can touch them.
 
   // 1. Cascade. Stop anything still running — and *wait* for it, because step 3
   //    may move the directory those sessions are working in. Then mark the

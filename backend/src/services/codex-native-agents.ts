@@ -55,12 +55,21 @@ export function nativeAgentForChat(chatId: string, allowOwnedCancellation = fals
   const fallback = { parentThreadId: "unverified parent (inspect the owning Codex thread)", sessionId, logPath: resolved?.logPath ?? "" };
   // A server-created web controller proves control of this execution, NOT that
   // a disk thread is safe to resume. Positive native evidence still wins.
-  // Persisted native ownership survives missing logs. Incomplete metadata cannot
-  // establish root ownership either, including filesystem-only threads.
+  // Persisted native ownership survives missing logs. An absent rollout with no
+  // stored native lineage, though — pruned sessions, a changed CODEX_HOME — is
+  // no evidence of a parent at all, any more than an unreadable header is;
+  // refusing it as "native child: read-only" misnamed the condition and locked
+  // an ordinary root. Nothing is on disk to protect, so control is allowed.
   if (meta.nativeAgent && meta.provider === "codex" && !resolved) return fallback;
-  if (!resolved) return !ownedRoot && meta.provider === "codex" ? fallback : null;
+  if (!resolved) return null;
   const session = readCodexSessionMeta(resolved.logPath);
-  if (!session || session.id !== sessionId) return ownedRoot && !session?.isNativeThread ? null : fallback;
+  // A header this process cannot read (permissions, a torn first line) is a
+  // parser gap, not evidence that a parent owns the thread. Refusing control
+  // on it locks the user out of an ordinary root; only persisted native
+  // ownership or a positive header may do that. Deletion stays fail-closed
+  // separately, in the provider.
+  if (!session) return meta.nativeAgent && meta.provider === "codex" ? fallback : null;
+  if (session.id !== sessionId) return ownedRoot && !session.isNativeThread ? null : fallback;
   if (!session.isNativeThread) return meta.nativeAgent && meta.provider === "codex" ? fallback : null;
   return { parentThreadId: "unverified parent (inspect the owning Codex thread)", ...session.nativeAgent, sessionId, logPath: resolved.logPath };
 }
@@ -195,18 +204,34 @@ export function refreshNativeMetadata(logPath: string, sessionId: string, raw?: 
   return enriched === existing ? (raw ?? "{}") : JSON.stringify(enriched);
 }
 
-/** One discovery pass, never recursive per child; no writes to stored records. */
+/** One discovery pass, never recursive per child; no writes to stored records.
+ *
+ * Synthetic (no stored record) entries are admitted only for native
+ * descendants and the filesystem-only parent threads that anchor them. Every
+ * other rollout without a record is an ordinary Codex CLI session, and those
+ * are no more a Callboard chat than a Claude CLI session without a record is.
+ */
 export function withNativeCodexChats(stored: Chat[]): Chat[] {
   const bySession = new Map(stored.map((chat) => [chat.session_id, chat]));
   const result = new Map(stored.map((chat) => [chat.id, { ...chat, metadata: refreshNativeMetadata("", chat.session_id, chat.metadata) }]));
-  for (const entry of new CodexSessionProvider().discoverSessions({ limit: 10_000, offset: 0 }).sessions) {
+  const sessions = new CodexSessionProvider().discoverSessions({ limit: 10_000, offset: 0 }).sessions;
+  const discovered: { entry: (typeof sessions)[number]; chat: Chat | undefined; metadata: Record<string, unknown> }[] = [];
+  /** Parent thread ids named by a discovered native child — the roots worth keeping without a record. */
+  const anchors = new Set<string>();
+  for (const entry of sessions) {
     const chat = bySession.get(entry.sessionId);
     const existing = parseMetadata(chat?.metadata);
     if (existing.provider && existing.provider !== "codex") continue;
     const metadata = nativeMetadata(entry.filePath, entry.sessionId, existing, false, undefined, bySession);
+    const native = metadata.nativeAgent as { parentThreadId?: string } | undefined;
+    if (typeof native?.parentThreadId === "string") anchors.add(native.parentThreadId);
     // Include roots as well so filesystem-only parent threads can anchor trees.
     const parentId = typeof metadata.parentChatId === "string" ? metadata.parentChatId : undefined;
     if (parentId && bySession.has(parentId) && !existing.parentChatId && !existing.forkedFrom) metadata.parentChatId = bySession.get(parentId)!.id;
+    discovered.push({ entry, chat, metadata });
+  }
+  for (const { entry, chat, metadata } of discovered) {
+    if (!chat && !metadata.nativeAgent && !anchors.has(entry.sessionId)) continue;
     result.set(chat?.id ?? entry.sessionId, {
       ...chat,
       id: chat?.id ?? entry.sessionId,
@@ -222,28 +247,58 @@ export function withNativeCodexChats(stored: Chat[]): Chat[] {
 }
 
 /** Destructive operations need release evidence, not recent activity or registry absence.
- * Exec has no verified native-child ownership-release signal. Even a completed
- * turn is insufficient. Unknown/partial discovery is therefore a refusal too.
+ * Exec has no verified native-child ownership-release signal, so release is
+ * inferred only from the child's own rollout: its last child-local event is
+ * terminal (`task_complete` / `turn_aborted`) and nothing that could hand it
+ * another turn — its parent — is live. Unknown/partial discovery is a refusal.
  */
 export function nativeWorkspaceEvidence() {
   return { stored: chatFileService.getAllChats(), evidence: new CodexSessionProvider().ownershipEvidence() };
 }
 
-export function nativeWorkspaceReleaseBlockers(workspaceId: string, cwd: string, snapshot = nativeWorkspaceEvidence()): string[] {
+interface NativeReleaseIndex {
+  records: { id: string; folder: string; parent: string | undefined; native: boolean }[];
+  /** Rollouts whose header could not be read or does not verify against the filename. */
+  unverifiable: string[];
+  logPathById: Map<string, string>;
+  chatIdBySession: Map<string, string>;
+  /** Lineage edges, parent → children; stored id ↔ session id edges included. */
+  children: Map<string, string[]>;
+}
+
+/**
+ * Everything the blocker evaluation derives from a snapshot but not from the
+ * workspace. A listing evaluates every workspace against one snapshot, and
+ * parsing 9,000 stored records per workspace was most of its cost.
+ */
+const releaseIndexes = new WeakMap<object, NativeReleaseIndex>();
+function nativeReleaseIndex(snapshot: ReturnType<typeof nativeWorkspaceEvidence>): NativeReleaseIndex {
+  const cached = releaseIndexes.get(snapshot);
+  if (cached) return cached;
   const { stored, evidence } = snapshot;
-  const blockers: string[] = evidence.complete ? [] : ["Codex discovery was incomplete; native ownership release cannot be established"];
-  const linked = new Set(stored.filter((chat) => chat.workspaceId === workspaceId).flatMap((chat) => [chat.id, chat.session_id]));
-  const records = stored.map((chat) => ({
-    id: chat.session_id,
-    folder: chat.folder,
-    parent: parseMetadata(chat.metadata).parentChatId ?? (parseMetadata(chat.metadata).nativeAgent as { parentThreadId?: string } | undefined)?.parentThreadId,
-    native: !!parseMetadata(chat.metadata).nativeAgent,
-  }));
+  const records: NativeReleaseIndex["records"] = stored.map((chat) => {
+    const meta = parseMetadata(chat.metadata);
+    return {
+      id: chat.session_id,
+      folder: chat.folder,
+      parent: (meta.parentChatId as string | undefined) ?? (meta.nativeAgent as { parentThreadId?: string } | undefined)?.parentThreadId,
+      native: !!meta.nativeAgent,
+    };
+  });
+  const chatIdBySession = new Map<string, string>();
+  for (const chat of stored) chatIdBySession.set(chat.session_id, chat.id);
+  // A rollout whose header cannot be read or verified says nothing about any
+  // workspace. It blocks only the workspace its stored lineage ties it to;
+  // blocking every workspace on it would turn one unreadable file anywhere
+  // under $CODEX_HOME into a machine-wide lockout.
+  const unverifiable: string[] = [];
+  const logPathById = new Map<string, string>();
   for (const session of evidence.sessions) {
     if (!session.meta || session.meta.id !== session.threadId) {
-      blockers.push(`Cannot establish native ownership or cwd for Codex thread ${session.threadId}`);
+      unverifiable.push(session.threadId);
       continue;
     }
+    logPathById.set(session.threadId, session.filePath);
     records.push({
       id: session.threadId,
       folder: session.meta.cwd ?? "",
@@ -265,6 +320,16 @@ export function nativeWorkspaceReleaseBlockers(workspaceId: string, cwd: string,
       addEdge(chat.id, chat.session_id);
       addEdge(chat.session_id, chat.id);
     }
+  const index = { records, unverifiable, logPathById, chatIdBySession, children };
+  releaseIndexes.set(snapshot, index);
+  return index;
+}
+
+export function nativeWorkspaceReleaseBlockers(workspaceId: string, cwd: string, snapshot = nativeWorkspaceEvidence()): string[] {
+  const { stored, evidence } = snapshot;
+  const { records, unverifiable, logPathById, chatIdBySession, children } = nativeReleaseIndex(snapshot);
+  const blockers: string[] = evidence.complete ? [] : ["Codex discovery was incomplete; native ownership release cannot be established"];
+  const linked = new Set(stored.filter((chat) => chat.workspaceId === workspaceId).flatMap((chat) => [chat.id, chat.session_id]));
   const queue = [...linked];
   for (let i = 0; i < queue.length; i++)
     for (const child of children.get(queue[i]) ?? [])
@@ -272,12 +337,23 @@ export function nativeWorkspaceReleaseBlockers(workspaceId: string, cwd: string,
         linked.add(child);
         queue.push(child);
       }
+  for (const id of unverifiable) if (linked.has(id)) blockers.push(`Cannot establish native ownership or cwd for Codex thread ${id}`);
+  const parentLive = (parent: string | undefined): boolean => {
+    if (!parent) return false;
+    if (sessionRegistry.get(chatIdBySession.get(parent) ?? parent)) return true;
+    // A parent that is itself a native child is live while its own replay says so.
+    const parentLog = logPathById.get(parent);
+    return !!parentLog && readNativeLifecycle(parentLog) === "active";
+  };
   for (const record of records) {
     if (!record.native) continue;
-    if (linked.has(record.id) || sameOrNestedDirectory(record.folder, cwd))
-      blockers.push(
-        `Native Codex thread ${record.id}: exec cannot establish ownership release; ask its owning parent to close it and reconcile its native session evidence before removing this workspace`,
-      );
+    if (!linked.has(record.id) && !sameOrNestedDirectory(record.folder, cwd)) continue;
+    const logPath = logPathById.get(record.id);
+    const lifecycle = logPath ? readNativeLifecycle(logPath, Date.now(), undefined, record.id) : "unknown";
+    if ((lifecycle === "complete" || lifecycle === "interrupted") && !parentLive(record.parent)) continue;
+    blockers.push(
+      `Native Codex thread ${record.id}: exec cannot establish ownership release; ask its owning parent to close it and reconcile its native session evidence before removing this workspace`,
+    );
   }
   return [...new Set(blockers)];
 }

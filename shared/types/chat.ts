@@ -203,6 +203,8 @@ export interface ChatTreeAncestor {
 
 export interface NativeCodexAgent {
   parentThreadId: string;
+  /** Chat id of the parent as inferred from the rollout, when the parent has a stored chat and no explicit parentage overrides it. */
+  inferredParentChatId?: string;
   nickname?: string;
   agentPath?: string;
   role?: string;

@@ -105,12 +105,18 @@ export type CardPendingKind = "permission" | "question" | "plan";
 
 /** Compact member-chat row for board tiles/drawer. */
 export interface CardMemberChat {
-  /** Native lifecycle is evidence, not process liveness; controls remain parent-owned. */
+  /**
+   * Native lifecycle is evidence, not process liveness; controls remain
+   * parent-owned. The lifecycle lives only here: `status` keeps its original
+   * vocabulary so a bundle older than the daemon (which treats anything not
+   * "stopped" as live, and has no colour for a value it never knew) reads a
+   * native member the same way a current one does.
+   */
   nativeAgent?: NativeCodexAgent;
   chatId: string;
   title: string | null;
   folder: string;
-  status: "ongoing" | "waiting" | "stopped" | "unknown";
+  status: "ongoing" | "waiting" | "stopped";
   /** Set when status === "waiting": the kind of input the chat is blocked on. */
   pendingKind?: CardPendingKind;
   chatStatus?: string;

@@ -1,4 +1,3 @@
-import { assertReasoningEffort } from "./reasoning-capabilities.js";
 /**
  * Shared agent execution helper.
  *
@@ -114,7 +113,11 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
     }
 
     const workspacePath = getAgentWorkspacePath(agentAlias);
-    await assertReasoningEffort({ provider, model, effort, cwd: workspacePath });
+    // No fail-closed effort check here: the action's effort was validated when
+    // it was saved (cron/trigger routes, agent and callboard tools), and this is
+    // its execution. sendMessage revalidates it as a *stored* value — refused
+    // only when the catalog knows the model rules it out, never because the
+    // route probe hiccuped — and probes the Codex CLI once for both purposes.
     const fullSystemPrompt = compileSystemPrompt(config, workspacePath).prompt;
     const sendMessage = getSendMessage();
 

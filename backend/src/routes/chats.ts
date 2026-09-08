@@ -1,4 +1,4 @@
-import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
+import { assertReasoningEffort, assertStoredReasoningEffort } from "../services/reasoning-capabilities.js";
 import {
   nativeMetadata,
   refreshNativeMetadata,
@@ -390,7 +390,7 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
-  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of each chat's card: 'all' (default, no scoping), 'active' (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or 'inactive' (the complement: chats on a CLOSED card's tree, plus chats that are on no card at all). Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record." } */
+  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement: chats on the tree of a CLOSED card, plus chats that are on no card at all). Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record." } */
   /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'Back-compatible alias for cardLifecycle=active, kept for persisted prefs and older client bundles. Ignored when cardLifecycle is given.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields" } */
@@ -1204,7 +1204,12 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   const effort = req.body.effort !== undefined ? requestedEffort : isHandoff ? undefined : meta.effort;
 
   try {
-    await assertReasoningEffort({ provider: targetKind, model, effort: req.body.effort !== undefined ? req.body.effort : effort, cwd: chat.folder });
+    // An effort named in the request is a new selection and fails closed. An
+    // inherited one is a stored value the source chat resumes with today, so it
+    // is checked the way resume checks it: refused only when the catalog knows
+    // the model rules it out, not because the route probe could not answer.
+    if (req.body.effort !== undefined) await assertReasoningEffort({ provider: targetKind, model, effort: req.body.effort, cwd: chat.folder });
+    else await assertStoredReasoningEffort({ provider: targetKind, model, effort, cwd: chat.folder });
   } catch (error) {
     return res.status(400).json({ error: (error as Error).message });
   }

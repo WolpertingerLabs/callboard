@@ -300,12 +300,49 @@ export function categorizeAcpToolName(name: string): PermissionCategory | null {
  *    display string, which is why it keeps the top slot; if a vendor is ever
  *    found abusing it, the same demotion `title` just took is available.
  */
+/**
+ * The complete input vocabulary of the managed `cu_*` tools
+ * (`backend/src/services/computer-use-tools.ts`): `cu_status` takes nothing,
+ * `cu_open` a target `kind`, and observe/action/stop a session ref plus
+ * `frameId`/`action`. Any other key means the call is some other tool wearing
+ * a managed-looking title.
+ */
+const MANAGED_COMPUTER_INPUT_KEYS: ReadonlySet<string> = new Set(["sessionId", "generation", "frameId", "action", "kind"]);
+
+function hasManagedComputerInputShape(rawInput: unknown): boolean {
+  if (rawInput === undefined || rawInput === null) return true; // nothing to contradict the title
+  if (typeof rawInput !== "object" || Array.isArray(rawInput)) return false;
+  return Object.keys(rawInput as Record<string, unknown>).every((key) => MANAGED_COMPUTER_INPUT_KEYS.has(key));
+}
+
 export function acpToolLabel(toolCall: RequestPermissionRequest["toolCall"]): string {
   const name = typeof toolCall?.name === "string" ? toolCall.name.trim() : "";
   if (name) return name;
   const kind = typeof toolCall?.kind === "string" ? toolCall.kind.trim() : "";
-  if (kind && isToolIdentifier(kind)) return kind;
   const title = typeof toolCall?.title === "string" ? toolCall.title.trim() : "";
+  // A managed computer-control name in the title is taken ONLY when `kind` has
+  // no opinion (`other`, `think`, absent). No ACP `ToolKind` can spell
+  // `cu_*`/`computer_use_*`, so a vendor that omits `name` would otherwise
+  // label such a call `other` and gate it on `codeExecution` — allow in every
+  // job/cron/spawned chat — instead of the `computerControl` axis.
+  //
+  // It must NOT outrank an informative kind. OpenCode puts the touched path in
+  // `title`, the model chooses that path, and `computer_use.py` or `cu_payload`
+  // satisfy the name pattern: with `kind: "edit"` the call is a file write and
+  // must be gated as one, whatever the file is called. Letting the title win
+  // there re-created the "axis chosen by the shape of a filename" defect the
+  // comment above describes, and on a `computerControl: ask` chat it turned
+  // the transport-admission rule into an unprompted write.
+  //
+  // Even with a null-opinion kind, OpenCode's `external_directory` and
+  // `websearch` asks arrive as `other` with a model-chosen title (the shell
+  // command, or the query) — so `cu_payload --workdir /elsewhere` would still
+  // land here. Those asks carry their own input (`command`, `directories`,
+  // `query`, ...), which a managed computer-control call never does: its input
+  // is at most a session ref, a frame id, an action and a target kind. When
+  // `rawInput` is present it must fit that shape or the title is not trusted.
+  if (categorizeAcpToolKind(toolCall?.kind) === null && isComputerControlToolName(title) && hasManagedComputerInputShape(toolCall?.rawInput)) return title;
+  if (kind && isToolIdentifier(kind)) return kind;
   if (title && isToolIdentifier(title)) return title;
   return "unknown_tool";
 }

@@ -110,9 +110,7 @@ function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
   server.registerTool(
     def.name,
     {
-      // Exec's MCP requests do not carry a verified caller thread id. Children
-      // inherit this socket config; never advertise its bound identity as local.
-      description: `${def.description} [Codex exec identity: this Callboard tool server is bound to the owning root chat. Native subagents inherit it but must not use implicit-current-chat operations as child-local operations.]`,
+      description: def.description,
       inputSchema: def.inputSchema,
     },
     async (args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
@@ -125,10 +123,29 @@ function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
   );
 }
 
+/**
+ * Exec's MCP requests do not carry a verified caller thread id, and a native
+ * subagent inherits its parent's `mcp_servers` config — so a child reaching
+ * this socket is indistinguishable from the root it belongs to. The tools must
+ * never advertise that bound identity as the caller's own.
+ *
+ * Said once per session, not once per tool. This used to be appended to every
+ * tool description, which put ~230 characters × every Callboard tool into the
+ * tool list of every request of every Codex chat for a case (a native child
+ * calling an implicit-current-chat tool) most sessions never reach. It now
+ * rides in two session-level places: the MCP server's own `instructions`
+ * (the protocol's slot for exactly this), and — because the Codex CLI is not
+ * known to surface those — appended once to the session's instructions file
+ * by the optionsAdapter when the session has one.
+ */
+export const CODEX_TOOL_IDENTITY_NOTE =
+  "Codex exec identity: the Callboard tool servers in this session are bound to the owning root chat. " +
+  "Native subagents inherit them but must not use implicit-current-chat operations (title, status, completion, summon) as child-local operations.";
+
 /** Build a fresh MCP server instance wired to the spec's live handlers. One per
  *  socket connection — MCP servers own their transport 1:1. */
 function createServerForSpec(spec: ToolServerSpec): McpServer {
-  const server = new McpServer({ name: spec.name, version: spec.version });
+  const server = new McpServer({ name: spec.name, version: spec.version }, { instructions: CODEX_TOOL_IDENTITY_NOTE });
   for (const def of spec.tools) registerSpecTool(server, def);
   return server;
 }

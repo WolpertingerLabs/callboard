@@ -92,6 +92,8 @@ export interface ServiceOptions {
   maxQueue?: number;
   sessionTtlMs?: number;
   maxSessions?: number;
+  /** How long a stopped/failed/revoked session stays listed in status after cleanup. Default 60s. */
+  terminalRetentionMs?: number;
 }
 export interface SessionRef {
   sessionId: string;

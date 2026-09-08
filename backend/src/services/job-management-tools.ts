@@ -58,7 +58,7 @@ const JOB_SCHEMA_DOC = `A job definition is JSON:
   "name": "Display Name",
   "description": "...",
   "inputs": [{ "key": "task", "label": "Task", "type": "string"|"text", "required": true, "default": "..." }],
-  "defaults": { "folder": "/abs/path", "provider": "claude-code"|"codex", "model": "model-id", "agentAlias": "name" },
+  "defaults": { "folder": "/abs/path", "provider": "claude-code"|"codex", "model": "model-id" (applies only to steps on the default provider, or a cross-harness alias), "agentAlias": "name" },
   "limits": { "maxTotalSessions": 50, "maxDurationHours": 168 },
   "steps": [ ...ordered steps... ],
   "outputs": { "<key>": "{{steps.<stepId>.outputs.<key>}}" } (optional — run-level outputs, resolved when a run succeeds; each referenced step must run on every successful path. A value that is exactly one {{ref}} keeps the referenced value's native type. Harvested by "job" steps in parent jobs.)

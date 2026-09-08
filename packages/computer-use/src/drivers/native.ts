@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, rmdir, lstat } from "node:fs/promises";
+import { access, mkdir, lstat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir, platform, userInfo } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { ComputerUseError, type Driver, type Action, type Probe } from "../contracts.js";
 import { actionSchema } from "../validation.js";
+import { acquireNativeInputLock } from "./native-lock.js";
 
 export interface NativeDesktopDriverOptions {
   /** Both explicit enable and a configured DISPLAY are required. Never selects ambient DISPLAY. */
@@ -105,18 +106,14 @@ export function createNativeDesktopDriver(options: NativeDesktopDriverOptions = 
       if (!capability.available) throw new ComputerUseError("unsupported", capability.reason);
       context.signal.throwIfAborted();
       if (delegate) return delegate.open(context);
-      // Cross-process lock: fail closed on a stale/crashed holder; never guess that it is safe to steal input.
+      // Cross-process lock. A dead holder is reclaimed; a quarantined lock (its
+      // input release failed) and a live holder fail closed, naming the path.
       const root = join(tmpdir(), `computer-use-x11-${userInfo().uid}`);
       await mkdir(root, { mode: 0o700, recursive: true });
       const st = await lstat(root);
       if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== userInfo().uid || (st.mode & 0o077) !== 0)
         throw new ComputerUseError("denied", "Unsafe native lock directory");
-      const lock = join(root, createHash("sha256").update(domain).digest("hex"));
-      try {
-        await mkdir(lock, { mode: 0o700 });
-      } catch {
-        throw new ComputerUseError("lease_conflict", "Native input locked; stale locks require operator inspection");
-      }
+      const lock = await acquireNativeInputLock(join(root, createHash("sha256").update(domain).digest("hex")));
       let closed = false;
       const heldButtons = new Set<string>(),
         heldKeys = new Set<string>();
@@ -138,9 +135,16 @@ export function createNativeDesktopDriver(options: NativeDesktopDriverOptions = 
         releaseInput,
         async close() {
           if (closed) return;
-          await releaseInput();
+          try {
+            await releaseInput();
+          } catch (error) {
+            // Keep the lock, but say why, instead of orphaning it silently.
+            closed = true;
+            await lock.quarantine("input release failed at close").catch(() => {});
+            throw error;
+          }
           closed = true;
-          await rmdir(lock);
+          await lock.release();
         },
         async observe(sig) {
           sig.throwIfAborted();

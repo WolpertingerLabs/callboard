@@ -112,15 +112,16 @@ streamRouter.post("/new/message", async (req, res) => {
   );
   if (!folder) return res.status(400).json({ error: "folder is required" });
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
+
+  // Check if folder exists — before effort validation, which probes the Codex
+  // CLI in that cwd and would otherwise report the bad path as an unknown route.
+  if (!existsSync(folder)) {
+    return res.status(400).json({ error: "folder does not exist" });
+  }
   try {
     await assertReasoningEffort({ provider: isRoutableProvider(provider) ? provider : undefined, model, effort, cwd: folder });
   } catch (error) {
     return res.status(400).json({ error: (error as Error).message });
-  }
-
-  // Check if folder exists
-  if (!existsSync(folder)) {
-    return res.status(400).json({ error: "folder does not exist" });
   }
 
   // Resolve effective folder based on branch configuration

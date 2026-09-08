@@ -11,7 +11,14 @@ const require = createRequire(import.meta.url);
 export interface CodexExecutionRoute {
   route: "codex" | "openrouter" | "unknown";
   endpoint?: string;
+  /** Model pinned by the effective CLI config, when the user set one. */
   model?: string;
+  /**
+   * The model the CLI runs when neither Callboard nor its config names one
+   * (`model/list` → `isDefault`). Asked for only when `model` is absent. Left
+   * undefined by CLIs that cannot answer; never guessed from the catalog order.
+   */
+  defaultModel?: string;
   injectedOpenRouter: boolean;
 }
 interface RouteConfig {
@@ -50,7 +57,8 @@ export function routeFromCodexConfig(config: RouteConfig, env: NodeJS.ProcessEnv
 
 /** Config/read, unlike readiness regexes, handles comments, inactive tables,
  * quoting, project layers, profiles and future syntax in the CLI itself.
- * No thread/model call is made. We never read auth.json, inspect credential
+ * No thread is started; `model/list` is only asked which model is the CLI's
+ * default when config names none. We never read auth.json, inspect credential
  * fields or log raw config/stderr; only the route/model projection leaves here.
  * Do not cache completed reads: project/config changes must affect validation
  * immediately. Concurrent identical reads share work only while in flight. */
@@ -84,7 +92,9 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
       const child = spawn(command!, args, { cwd, env, stdio: ["pipe", "pipe", "ignore"] });
       let buffer = "";
       let finished = false;
-      const finish = (route: Omit<CodexExecutionRoute, "injectedOpenRouter"> = { route: "unknown" }) => {
+      // Held while `model/list` runs; a CLI that cannot answer it still yields the route.
+      let resolvedRoute: Omit<CodexExecutionRoute, "injectedOpenRouter"> | undefined;
+      const finish = (route: Omit<CodexExecutionRoute, "injectedOpenRouter"> = resolvedRoute ?? { route: "unknown" }) => {
         if (finished) return;
         finished = true;
         clearTimeout(timeout);
@@ -112,7 +122,19 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
               send({ method: "initialized", params: {} });
               send({ id: 2, method: "config/read", params: { includeLayers: false, ...(cwd ? { cwd } : {}) } });
             } else if (response.id === 2) {
-              return finish(response.result?.config ? routeFromCodexConfig(response.result.config, env) : undefined);
+              if (!response.result?.config) return finish();
+              resolvedRoute = routeFromCodexConfig(response.result.config, env);
+              // Only the CLI knows which model it runs unconfigured; the debug
+              // catalog carries no default marker. Ask in the same session.
+              if (resolvedRoute.route === "unknown" || resolvedRoute.model) return finish(resolvedRoute);
+              send({ id: 3, method: "model/list", params: {} });
+            } else if (response.id === 3) {
+              const entries: unknown = response.result?.data;
+              const chosen = Array.isArray(entries)
+                ? (entries as Array<{ isDefault?: unknown; model?: unknown; id?: unknown }>).find((entry) => entry?.isDefault === true)
+                : undefined;
+              const defaultModel = string(chosen?.model) ?? string(chosen?.id);
+              return finish({ ...resolvedRoute!, ...(defaultModel ? { defaultModel } : {}) });
             }
           } catch {
             /* Ignore non-protocol output; never log potentially sensitive data. */

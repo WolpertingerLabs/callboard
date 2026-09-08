@@ -23,7 +23,10 @@ test("browser always requests Chromium sandboxing and cleans its disposable prof
   const pageEvents = new Map(),
     contextEvents = new Map();
   let changes = 0;
+  const mainFrame = { name: "main" },
+    childFrame = { name: "iframe" };
   const page = {
+    mainFrame: () => mainFrame,
     on(name, callback) {
       pageEvents.set(name, callback);
     },
@@ -62,7 +65,9 @@ test("browser always requests Chromium sandboxing and cleans its disposable prof
       false,
     );
     assert.equal(options.ignoreDefaultArgs, undefined);
-    pageEvents.get("framenavigated")();
+    pageEvents.get("framenavigated")(childFrame);
+    assert.equal(changes, 0); // Iframe navigations (ads, embeds) do not move the top-level pixels.
+    pageEvents.get("framenavigated")(mainFrame);
     pageEvents.get("close")();
     contextEvents.get("page")(page);
     assert.equal(changes, 3); // Driver reports known navigation/closure/popup revisions.

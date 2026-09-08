@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import { ComputerUseService, createNativeDesktopDriver, getToolDefinitions, createMcpServer } from "../dist/index.js";
+import { ComputerUseService, ComputerUseError, createNativeDesktopDriver, getToolDefinitions, createMcpServer } from "../dist/index.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 const agent = Object.freeze({ ownerId: "owner", actorId: "agent", role: "agent" });
@@ -145,10 +145,12 @@ test("revocation while screenshot in flight blocks late result and queued/future
   const gate = new Promise((r) => (release = r));
   let entered;
   const started = new Promise((r) => (entered = r));
+  let captures = 0;
   const { service: s, calls } = setup(
     {},
     {
       observe: async () => {
+        if (captures++ === 0) return frame; // The first capture issues the frame the queued action cites.
         entered();
         await gate;
         return frame;
@@ -156,6 +158,7 @@ test("revocation while screenshot in flight blocks late result and queued/future
     },
   );
   const l = await s.open(agent, "browser");
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
   const observation = s.observe(agent, ref(l));
   await started;
   const queued = s.act(agent, action(l));
@@ -322,7 +325,7 @@ test("real MCP initialize/list/call preserves text + image and fixed manifest", 
     const { tools } = await client.listTools();
     assert.deepEqual(
       tools.map((t) => t.name),
-      getToolDefinitions(s, agent).map((t) => t.name),
+      ["computer_status", "computer_probe", "computer_open", "computer_observe", "computer_act", "computer_stop", "computer_revoke"],
     );
     assert.equal(
       tools.some((t) => t.name.includes("grant") || t.name.includes("resume")),
@@ -550,4 +553,98 @@ test("MCP discards a service frame if takeover completes before image serializat
     result.content.some((c) => c.type === "image"),
     false,
   );
+});
+
+test("request rejections inside act leave the session usable; only uncertain driver state fences", async () => {
+  const thrown = [];
+  const { service: s, calls } = setup(
+    {},
+    {
+      act: async () => {
+        calls.act++;
+        const next = thrown.shift();
+        if (next) throw next;
+      },
+    },
+  );
+  const l = await s.open(agent, "browser");
+  const capture = async () => (await s.observe(agent, ref(l))).frameId;
+  // Out-of-bounds coordinates on a 100x100 frame: rejected before dispatch.
+  l.frameId = await capture();
+  await assert.rejects(s.act(agent, action(l, "oob", { type: "click", x: 1300, y: 1 })), error("invalid_request"));
+  await assert.rejects(s.act(agent, action(l, "oob-drag", { type: "drag", x: 1, y: 1, toX: 1, toY: 100 })), error("invalid_request"));
+  assert.equal(s.status(agent)[0].state, "ready");
+  assert.equal(calls.act, 0);
+  assert.equal(calls.close, 0);
+  // Policy/capability rejections raised by the driver itself (navigate while offline) do not fence either.
+  thrown.push(new ComputerUseError("denied"));
+  l.frameId = await capture();
+  await assert.rejects(s.act(agent, action(l, "offline", { type: "navigate", url: "https://example.test/" })), error("denied"));
+  assert.equal(s.status(agent)[0].state, "ready");
+  assert.equal(calls.close, 0);
+  // The same session still accepts input afterwards.
+  l.frameId = await capture();
+  await s.act(agent, action(l, "ok"));
+  assert.equal(calls.act, 2);
+  // An unknown throwable means the driver's state is uncertain: fence and close.
+  thrown.push(new Error("driver exploded"));
+  l.frameId = await capture();
+  await assert.rejects(s.act(agent, action(l, "boom")), error("driver_error"));
+  assert.equal(s.status(agent)[0].state, "failed");
+  await s.dispose();
+  assert.equal(calls.close, 1);
+});
+test("navigate is rejected before dispatch on native targets without fencing", async () => {
+  const f = fake();
+  f.driver.kind = "native-desktop";
+  f.driver.lockDomain = "fake-native-navigate";
+  const s = new ComputerUseService({ targets: [{ id: "native", enabled: true, driver: f.driver }], authorize: () => "allow" });
+  const l = await s.open(agent, "native");
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
+  await assert.rejects(s.act(agent, action(l, "nav", { type: "navigate", url: "https://example.test/" })), error("unsupported"));
+  assert.equal(s.status(agent)[0].state, "ready");
+  assert.equal(f.calls.act, 0);
+  await s.dispose();
+});
+test("terminal sessions stay listed for the retention grace period, then drop", async () => {
+  const { service: s } = setup({ terminalRetentionMs: 100 });
+  const ids = [];
+  for (let i = 0; i < 3; i++) {
+    const l = await s.open(agent, "browser");
+    await s.stop(agent, l.sessionId);
+    ids.push(l.sessionId);
+  }
+  assert.deepEqual(
+    s.status(agent).map((x) => x.state),
+    ["stopped", "stopped", "stopped"],
+  );
+  await delay(150);
+  assert.deepEqual(s.status(agent), []);
+  await assert.rejects(s.observe(agent, { sessionId: ids[0], generation: 1 }), error("not_found"));
+  const live = await s.open(agent, "browser");
+  assert.equal(s.status(agent).length, 1);
+  await s.stop(agent, live.sessionId);
+  await s.dispose();
+});
+
+test("cleanup always reaches driver close, so a failed input release can be quarantined by the driver", async () => {
+  let releases = 0;
+  const f = fake({
+    releaseInput: async () => {
+      releases++;
+      throw new ComputerUseError("driver_error");
+    },
+  });
+  f.driver.kind = "native-desktop";
+  f.driver.lockDomain = "fake-native-release-failure";
+  const s = new ComputerUseService({ targets: [{ id: "native", enabled: true, driver: f.driver }], authorize: () => "allow" });
+  const l = await s.open(agent, "native");
+  l.frameId = (await s.observe(agent, ref(l))).frameId;
+  await assert.rejects(s.act(agent, action(l, "k", { type: "key", key: "a" })), error("driver_error"));
+  await delay(10);
+  assert.equal(s.status(agent)[0].state, "failed");
+  assert.ok(releases >= 1);
+  assert.equal(f.calls.close, 1);
+  await s.dispose();
+  assert.equal(f.calls.close, 1);
 });

@@ -106,6 +106,36 @@ describe("model-aware reasoning picker", () => {
     expect(fetchMock).toHaveBeenLastCalledWith("/api/codex/reasoning?provider=codex&model=&cwd=%2Frouter-project", expect.anything());
   });
 
+  it("tells its caller when the saved effort must not be submitted, and when it may again", async () => {
+    // setCustomValidity alone is inert here: nothing submits a form, so a
+    // click-to-create caller has to be told explicitly to hold off.
+    const onEffortValidityChange = vi.fn();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(capability(["low", "max"]))));
+    const { rerender } = render(<ProviderConfigPicker {...base} effort={"ultra" as EffortLevel} onEffortValidityChange={onEffortValidityChange} />);
+    await screen.findByRole("alert");
+    expect(onEffortValidityChange).toHaveBeenLastCalledWith(true);
+    rerender(<ProviderConfigPicker {...base} effort="max" onEffortValidityChange={onEffortValidityChange} />);
+    await waitFor(() => expect(onEffortValidityChange).toHaveBeenLastCalledWith(false));
+    rerender(<ProviderConfigPicker {...base} effort={"ultra" as EffortLevel} provider="claude-code" onEffortValidityChange={onEffortValidityChange} />);
+    // No effort control for this harness, so nothing can be blocked by one.
+    await waitFor(() => expect(onEffortValidityChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it("does not block its caller while the capability is still loading", async () => {
+    // Every keystroke in a folder field re-keys the fetch and the Codex probe can
+    // take ~1s; an effort that is merely unverified must not hold up creation —
+    // the server validates fail-closed on /new/message regardless.
+    const onEffortValidityChange = vi.fn();
+    let resolveFetch!: (data: unknown) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => (resolveFetch = resolve))));
+    render(<ProviderConfigPicker {...base} effort="high" cwd="/typing" onEffortValidityChange={onEffortValidityChange} />);
+    expect(screen.getByRole("option", { name: /checking/ })).toBeTruthy();
+    expect(onEffortValidityChange).toHaveBeenCalledWith(false);
+    expect(onEffortValidityChange).not.toHaveBeenCalledWith(true);
+    resolveFetch(response(capability(["low"])));
+    await waitFor(() => expect(onEffortValidityChange).toHaveBeenLastCalledWith(true));
+  });
+
   it("retains max, ultra and future persisted values for validation rather than downgrading", () => {
     for (const effort of ["max", "ultra", "future"] as EffortLevel[]) {
       saveDefaultOpenRouterEffort(effort);

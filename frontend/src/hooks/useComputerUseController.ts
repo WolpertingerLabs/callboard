@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ComputerUseSession, ComputerUseStatus } from "shared/types/computerUse.js";
-import { computerUseClient as client } from "../api/computerUse";
+import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 
 export const isTerminal = (session: ComputerUseSession) => ["stopped", "revoked", "closed", "failed", "expired"].includes(session.state);
 export const isPending = (session: ComputerUseSession) => ["pending", "awaiting_approval", "approval_required", "pending_approval"].includes(session.state);
@@ -26,10 +26,21 @@ async function bounded<T>(request: Promise<T>): Promise<T> {
   }
 }
 
+export const COMPUTER_STATUS_POLL_MS = 3000;
+
 /** Chat-scoped status only. No target creation, permission changes or observation.
  * Each closure retains its original chat ID; stale results cannot publish to a new route.
+ *
+ * Status is read once when a chat loads, so stopped history or a pending approval
+ * from an earlier visit still latches `hasUsage`. It then polls only while status
+ * can actually change: a control session or approval request is only ever created
+ * by a running agent or by the human in the open Computer view, so an idle chat
+ * that never used computer control costs the server nothing after that first read.
  */
-export function useComputerUseController(chatId: string | undefined) {
+export function useComputerUseController(
+  chatId: string | undefined,
+  { agentRunning = false, viewOpen = false }: { agentRunning?: boolean; viewOpen?: boolean } = {},
+) {
   const [snapshot, setSnapshot] = useState<{ chatId?: string; status: ComputerUseStatus | null; error: string }>({ status: null, error: "" });
   const [usageChatId, setUsageChatId] = useState<string>();
   const [stopping, setStopping] = useState(false);
@@ -87,6 +98,9 @@ export function useComputerUseController(chatId: string | undefined) {
   const mounted = useRef(false);
   const lifetime = useRef(0);
   const stopActive = useRef(false);
+  // When this lifetime last dispatched any status read (poll, viewer retry,
+  // post-mutation, discovery). Zero until the chat's load read goes out.
+  const lastReadAt = useRef(0);
   const publish = useCallback(
     (status: ComputerUseStatus) => {
       if (!mounted.current || current.current !== chatId) return;
@@ -147,6 +161,7 @@ export function useComputerUseController(chatId: string | undefined) {
       const epoch = lifetime.current;
       const scoped = () => mounted.current && current.current === chatId && lifetime.current === epoch && inScope() && !signal?.aborted;
       const ticket = scoped() ? ++readSequence.current : -1;
+      if (ticket !== -1) lastReadAt.current = Date.now();
       const authority = revision.current;
       const requestsAtStart = new Map([...emergency.current].filter(([, session]) => isPendingRequest(session)));
       const valid = () => scoped() && ticket === readSequence.current && authority === revision.current;
@@ -203,6 +218,11 @@ export function useComputerUseController(chatId: string | undefined) {
     [chatId, acceptResponse, rememberEmergency, retireRequest],
   );
 
+  // One controller lifetime per chat route. Background reads belong to the
+  // lifetime, not to the poll schedule below: toggling the schedule must never
+  // abort or discard a read that is already in flight.
+  const lifetimeAbort = useRef<AbortController>();
+  const pollInFlight = useRef(false);
   useEffect(() => {
     ++lifetime.current;
     mounted.current = true;
@@ -211,36 +231,46 @@ export function useComputerUseController(chatId: string | undefined) {
     emergency.current.clear();
     terminalIds.current.clear();
     stopActive.current = false;
+    pollInFlight.current = false;
+    lastReadAt.current = 0;
     setStopping(false);
     setStopError("");
     setSnapshot({ chatId, status: null, error: "" });
-    if (!chatId) return;
-    let alive = true;
-    let inFlight = false;
     const abort = new AbortController();
-    const refresh = async () => {
-      if (inFlight || stopActive.current) return;
-      inFlight = true;
-      try {
-        await readStatus(abort.signal, () => alive);
-      } catch {
-        // readStatus owns the shared error fence and unavailable state.
-      } finally {
-        inFlight = false;
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, 3000);
+    lifetimeAbort.current = abort;
     return () => {
-      alive = false;
       mounted.current = false;
       ++revision.current;
       abort.abort();
-      window.clearInterval(timer);
     };
-  }, [chatId, readStatus]);
+  }, [chatId]);
+
+  // Poll only while status can change. A stop in flight blocks polling anyway
+  // (its own discovery and verification reads are authoritative), but keeps the
+  // schedule alive so the read after it lands promptly.
+  const shouldPoll = !!chatId && (agentRunning || viewOpen || usageChatId === chatId || stopping);
+  useEffect(() => {
+    if (!chatId) return;
+    const refresh = async () => {
+      if (pollInFlight.current || stopActive.current) return;
+      pollInFlight.current = true;
+      try {
+        await readStatus(lifetimeAbort.current?.signal);
+      } catch {
+        // readStatus owns the shared error fence and unavailable state.
+      } finally {
+        pollInFlight.current = false;
+      }
+    };
+    // The chat's single load read; and when polling resumes after an idle
+    // stretch, one read right away rather than a stale view for another interval.
+    if (lastReadAt.current === 0 || (shouldPoll && Date.now() - lastReadAt.current >= COMPUTER_STATUS_POLL_MS)) void refresh();
+    if (!shouldPoll) return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, COMPUTER_STATUS_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [chatId, readStatus, shouldPoll]);
 
   const stopAll = useCallback(async () => {
     if (!chatId || current.current !== chatId || stopActive.current) return;
@@ -275,6 +305,17 @@ export function useComputerUseController(chatId: string | undefined) {
           acceptResponse(result);
         }
       } catch (error) {
+        // A session the server no longer knows (daemon restart, service eviction)
+        // cannot be running. Absence from status never retires a real session, so
+        // this is the only evidence that settles it; otherwise Stop would re-send
+        // the dead id forever and verification would keep calling it active.
+        if (controlErrorCode(error) === "not_found") {
+          if (valid()) {
+            rememberEmergency({ id: session.id, state: "closed" });
+            acceptResponse({ id: session.id, state: "closed" });
+          }
+          return;
+        }
         report(`${session.kind} ${session.id}: ${error instanceof Error ? error.message : "stop failed"}`, isPendingRequest(session) ? session.id : undefined);
       }
     };

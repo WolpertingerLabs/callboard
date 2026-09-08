@@ -180,6 +180,13 @@ export interface JobDefinition {
   defaults?: {
     folder?: string;
     provider?: UiAgentProviderKind;
+    /**
+     * Model for steps running on the default harness (`provider`, claude-code
+     * when unset). A step that names another provider does not inherit it — a
+     * model id is harness-specific — unless it is a cross-harness alias, which
+     * resolves per provider. An OpenRouter `vendor/slug` never reaches a native
+     * Claude Code or Codex step.
+     */
     model?: string;
     agentAlias?: string;
   };

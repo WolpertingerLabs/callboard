@@ -1,4 +1,5 @@
-import { assertReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { assertStoredReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { resolveCodexExecutionRoute, type CodexExecutionRoute } from "./codex-execution-route.js";
 import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
@@ -18,7 +19,7 @@ import { findChat } from "../utils/chat-lookup.js";
 import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import type { StreamEvent, TaskListItem } from "shared/types/index.js";
-import { TASK_LIST_TOOLS } from "shared/types/index.js";
+import { TASK_LIST_TOOLS, normalizePermissions } from "shared/types/index.js";
 import type { McpServerConfig } from "shared/types/index.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
@@ -797,17 +798,18 @@ export function buildCanUseTool(
       try {
         const { decision, category } = toolPermissionPolicy.decide(toolName);
         log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, decision=${decision}`);
-        // A scoped computer grant/approval belongs to the service, not the SDK's
-        // generic per-tool prompt. This only admits the transport call; the
-        // service still denies unenabled targets and checks every action/frame.
-        if (category === "computerControl" && decision === "ask") {
-          return { behavior: "allow", updatedInput: input };
-        }
+        // computerControl never decides "ask" here: a scoped grant/approval
+        // belongs to the service, so `decidePermission` maps "ask" to allow
+        // (transport admitted, service still checks every target/action/frame)
+        // and an absent or "deny" axis to deny.
         if (decision === "allow") {
           return { behavior: "allow", updatedInput: input };
         }
         if (decision === "deny") {
-          return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
+          // A denied computer-control call is a harmless service lookup the
+          // model should read and relay ("enable it in the panel"), not a
+          // reason to abort the turn the way a denied write or shell is.
+          return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: category !== "computerControl" };
         }
         // "ask" — fall through to the user-prompt path
       } catch (err) {
@@ -1008,7 +1010,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         "Re-point it at another harness — to keep using OpenRouter credentials, route a native harness through them in Settings → API.",
     );
   }
-  if (isNewChat) await assertReasoningEffort(opts);
   log.debug(`sendMessage — isNewChat=${isNewChat}, folder=${opts.folder || "n/a"}, chatId=${opts.chatId || "n/a"}`);
 
   // Resolve chat context: existing chat or new chat setup
@@ -1019,6 +1020,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // resolveParentage runs because the child's own record does not exist yet
   // (the reopen rule below needs to know which root's card to check).
   let newChatRootId: string | undefined;
+  // The Codex route probe spawns the CLI (~0.5s). When a stored effort needs
+  // checking, resolve it once here and hand the same answer to the adapter
+  // options below; with no effort the adapter block is the only consumer.
+  let codexRoute: CodexExecutionRoute | undefined;
 
   if (opts.chatId) {
     // Existing chat flow — check file storage first, then fall back to filesystem.
@@ -1046,7 +1051,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     if (resolvedChat?._provider_resolution_error) throw new Error(resolvedChat._provider_resolution_error);
     initialMetadata = needsProvenance ? parseChatMetadata(resolvedChat?.metadata || chat.metadata) : storedMetadata;
     const ownershipExpectation = { sessionId: chat.session_id, provider: initialMetadata.provider };
-    await assertReasoningEffort({ ...initialMetadata, cwd: folder });
+    // Stored settings are revalidated on the execution path: refused only when
+    // the catalog knows the model and rules the effort out, never because a
+    // probe could not answer — see assertStoredReasoningEffort.
+    if (initialMetadata.provider === "codex" && initialMetadata.effort) codexRoute = await resolveCodexExecutionRoute(getAgentSettings(), folder);
+    await assertStoredReasoningEffort({ ...initialMetadata, cwd: folder, codexRoute });
     assertChatContextUnchanged(expectedContext, chatFileService.getChat(chat.id));
     assertNativeAgentControllable(opts.chatId, ownershipExpectation);
     if (!storedChat) {
@@ -1074,6 +1083,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // The SDK creates logs keyed by this path, so we must preserve it exactly.
     folder = opts.folder;
     resumeSessionId = undefined;
+    // Every route/tool/runner that hands a new chat here validated the explicit
+    // selection fail-closed already; this pass only guards against a stored
+    // automation setting the catalog has since ruled out.
+    if (opts.provider === "codex" && opts.effort) codexRoute = await resolveCodexExecutionRoute(getAgentSettings(), folder);
+    await assertStoredReasoningEffort({ provider: opts.provider, model: opts.model, effort: opts.effort, cwd: folder, codexRoute });
     initialMetadata = {
       ...(defaultPermissions && { defaultPermissions }),
       ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
@@ -1324,11 +1338,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata, providerKind);
 
+  // Stored records are normalized on read: a legacy four-axis record has no
+  // `computerControl`, and absence must read as deny, never as "not set".
+  // `null` (no permissions at all) stays null — the Codex/pi option builders
+  // treat it as "use the SDK default", and decidePermission already denies
+  // computer control for a missing axis.
   const getDefaultPermissions = (): DefaultPermissions | null => {
     if (isNewChat) {
       // For new chats, use the permissions passed directly
       log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=true, raw=${JSON.stringify(defaultPermissions)}`);
-      return defaultPermissions ?? null;
+      return defaultPermissions ? normalizePermissions(defaultPermissions) : null;
     }
     // Re-read from file so mid-conversation permission changes take effect immediately
     try {
@@ -1337,7 +1356,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         const freshMeta = JSON.parse(freshChat.metadata || "{}");
         if (freshMeta.defaultPermissions) {
           log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=false, fresh=${JSON.stringify(freshMeta.defaultPermissions)}`);
-          return freshMeta.defaultPermissions;
+          return normalizePermissions(freshMeta.defaultPermissions);
         }
       }
     } catch (err) {
@@ -1345,7 +1364,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     }
     // Fall back to initial metadata if re-read fails
     log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=false, fallback=${JSON.stringify(initialMetadata.defaultPermissions)}`);
-    return initialMetadata.defaultPermissions ?? null;
+    return initialMetadata.defaultPermissions ? normalizePermissions(initialMetadata.defaultPermissions) : null;
   };
 
   // Policy: provider-specific tool-name → category map, neutral allow/deny/ask
@@ -1390,11 +1409,26 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   const endComputerUseTurn = beginComputerUseTurn(() => trackingId, abortController.signal);
   // All harnesses proxy these tools through the same package MCP service.
   // Importing/registering the surface does not start a browser or desktop.
+  //
+  // Deliberately NOT added to `allowedTools`: that list is auto-approved by the
+  // SDK before `canUseTool` fires, which made the chat's `computerControl: deny`
+  // unenforceable at this layer (only the service's own authorizer stood). With
+  // no allow-list entry every `mcp__computer_use__*` call reaches `canUseTool`,
+  // whose computerControl branch denies, or admits the transport call and lets
+  // the service decide scope. Codex and OpenCode have no per-call hook, so for
+  // them the service remains the sole gate — see their adapters.
+  //
+  // The name is reserved. A plugin whose `.mcp.json` server is also called
+  // `computer_use` would have pushed `mcp__computer_use__*` onto the list above
+  // and re-opened the bypass, since the in-process server replaces it under
+  // the same key. Strip every allow-list pattern for that server after the
+  // merge, whoever added it.
   try {
     const server = agentProvider.buildToolServer(buildComputerUseToolsSpec(() => trackingId));
     if (server) {
+      if (mcpServers["computer_use"]) log.warn('A configured MCP server named "computer_use" is shadowed by the built-in computer-control server');
       mcpServers["computer_use"] = server;
-      allowedTools.push("mcp__computer_use__*");
+      for (let i = allowedTools.length - 1; i >= 0; i--) if (allowedTools[i].startsWith("mcp__computer_use__")) allowedTools.splice(i, 1);
     }
   } catch (error) {
     log.warn(`Computer-control tool registration unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
@@ -1650,7 +1684,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // key or from an ambient OpenRouter setup — see isCodexRoutedThroughOpenRouter
     // for why the env case additionally requires an explicit endpoint override.
     const reasoningTarget = await resolveReasoningTarget(
-      { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, cwd: folder },
+      { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, cwd: folder, codexRoute },
       agentSettings,
     );
     const useOpenRouter = reasoningTarget.injectedOpenRouter;

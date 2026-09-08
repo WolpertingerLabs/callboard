@@ -6,7 +6,10 @@ import { computerUseClient as client } from "../api/computerUse";
 import { stopChat } from "../api";
 
 const fixture = vi.hoisted(() => ({ native: false, active: { type: "web" } }));
-vi.mock("../api/computerUse", () => ({ computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() } }));
+vi.mock("../api/computerUse", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/computerUse")>()),
+  computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
+}));
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
   getChat: vi.fn(async (id: string) => ({
@@ -93,7 +96,7 @@ it("places Computer in the existing desktop topbar switcher, not above the compo
   fireEvent.click(computer);
   expect(screen.getByLabelText("Target")).toBeTruthy();
   expect(screen.getByLabelText("Composer")).toBeTruthy();
-  expect(screen.getByLabelText("Target").closest(".computer-use-dedicated")).toBeTruthy();
+  expect(screen.getByLabelText("Target").closest(".computer-use-panel")).toBeTruthy();
   fireEvent.click(screen.getByRole("radio", { name: "Show git diff" }));
   expect(screen.getByText("Git diff view")).toBeTruthy();
   fireEvent.click(screen.getByRole("radio", { name: "Show debug metrics" }));

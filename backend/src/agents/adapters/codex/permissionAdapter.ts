@@ -43,8 +43,15 @@ export interface CodexPermissionMapping {
   approvalPolicy: ApprovalMode;
 }
 
-/** True when any built-in axis asks. computerControl is independently service-
- * gated and must not widen the sandbox or duplicate its scoped approval. */
+/** True when any built-in axis asks.
+ *
+ * `computerControl` is deliberately absent from this and from the sandbox
+ * mapping: Codex has no per-call hook, so the adapter cannot enforce that axis
+ * at all. The managed `cu_*` tools are gated solely by the computer-use
+ * service — `ComputerUseHost.authorize` re-reads the chat's policy on every
+ * call and `computerUseScopeError` denies a `deny` axis before any driver is
+ * touched. It must not widen the sandbox or duplicate the service's scoped
+ * human approval here. */
 export function hasAnyAsk(perms: DefaultPermissions): boolean {
   const levels: PermissionLevel[] = [perms.fileRead, perms.fileWrite, perms.codeExecution, perms.webAccess];
   return levels.some((level) => level === "ask");

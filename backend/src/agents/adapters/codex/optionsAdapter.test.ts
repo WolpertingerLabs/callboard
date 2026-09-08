@@ -22,7 +22,7 @@ import {
   translateCodexOptions,
   writeInstructionsFile,
 } from "./optionsAdapter.js";
-import type { CodexToolServerHandle } from "./toolAdapter.js";
+import { CODEX_TOOL_IDENTITY_NOTE, type CodexToolServerHandle } from "./toolAdapter.js";
 
 /** A stub tool-server handle — duck-types {@link isCodexToolServerHandle} so the
  *  options layer can be tested without standing up a real socket. */
@@ -216,6 +216,29 @@ describe("translateCodexOptions — systemPrompt → temp model_instructions_fil
     });
     trackTempFromFile(instructionsFilePath);
     expect(readFileSync(instructionsFilePath!, "utf-8")).toBe("appended bit");
+  });
+
+  it("says the exec identity note once, in the instructions, when the session has in-process tool servers", () => {
+    const { instructionsFilePath } = translateCodexOptions({
+      systemPrompt: "follow the rules",
+      mcpServers: { "callboard-tools": fakeHandle("callboard-tools", "/tmp/a/s.sock"), "job-tools": fakeHandle("job-tools", "/tmp/b/s.sock") },
+    });
+    trackTempFromFile(instructionsFilePath);
+    const text = readFileSync(instructionsFilePath!, "utf-8");
+    expect(text.startsWith("follow the rules")).toBe(true);
+    expect(text.split(CODEX_TOOL_IDENTITY_NOTE)).toHaveLength(2); // exactly once, not once per server or per tool
+  });
+
+  it("leaves the instructions alone when no tool server is attached", () => {
+    const { instructionsFilePath } = translateCodexOptions({ systemPrompt: "follow the rules" });
+    trackTempFromFile(instructionsFilePath);
+    expect(readFileSync(instructionsFilePath!, "utf-8")).toBe("follow the rules");
+  });
+
+  it("never writes a note-only instructions file: that would replace the CLI's built-in prompt", () => {
+    const { codexOpts, instructionsFilePath } = translateCodexOptions({ mcpServers: { "callboard-tools": fakeHandle("callboard-tools", "/tmp/a/s.sock") } });
+    expect(instructionsFilePath).toBeNull();
+    expect((codexOpts.config as { model_instructions_file?: string }).model_instructions_file).toBeUndefined();
   });
 
   it("no systemPrompt → no file, no model_instructions_file (reasoning-summary config only)", () => {
@@ -482,5 +505,14 @@ describe("model-aware reasoning transport", () => {
   });
   it("refuses native-only ultra on OR", () => {
     expect(() => translateCodexOptions({ codex: { useOpenRouter: true, reasoningEffort: "ultra" } })).toThrow("cannot be sent to OpenRouter");
+  });
+  it("sends a stored effort natively when the route probe could not answer, instead of failing the chat", () => {
+    // A probe timeout or unreadable config is "cannot verify", not "unsupported":
+    // before route discovery existed nothing here could stop a chat.
+    const { threadOptions, codexOpts } = translateCodexOptions({ codex: { reasoningRoute: "unknown", reasoningEffort: "high" } });
+    expect(threadOptions.modelReasoningEffort).toBe("high");
+    expect(codexOpts.config?.model_reasoning_summary).toBe("auto");
+    expect(codexOpts.config?.model_reasoning_effort).toBeUndefined();
+    expect(translateCodexOptions({ codex: { reasoningRoute: "unknown", reasoningEffort: "none" } }).codexOpts.config?.model_reasoning_summary).toBe("none");
   });
 });

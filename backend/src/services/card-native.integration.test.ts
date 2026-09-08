@@ -234,7 +234,7 @@ describe("filesystem-only native card membership", () => {
     const time = vi.spyOn(Date, "now").mockReturnValue(now + 31_000);
     card = (await mcp("get_card", { card_id: CHILD })).card;
     expect(card.rollup).toBe("idle");
-    expect(card.memberChats.find((m: any) => m.chatId === CHILD).status).toBe("unknown");
+    expect(card.memberChats.find((m: any) => m.chatId === CHILD).status).toBe("stopped");
     expect(card.memberChats.find((m: any) => m.chatId === CHILD).nativeAgent.lifecycle).toBe("unknown");
     time.mockRestore();
     appendFileSync(path, JSON.stringify({ type: "event_msg", payload: { type: "error" } }) + "\n");
@@ -435,7 +435,7 @@ describe("native classification, parent namespace and lifecycle identity obligat
       const assertUnknown = (card: any) => {
         const member = card.memberChats.find((m: any) => m.chatId === CHILD);
         expect(member.nativeAgent.lifecycle).toBe("unknown");
-        expect(member.status).toBe("unknown");
+        expect(member.status).toBe("stopped");
         expect(card.rollup).toBe("idle");
       };
       assertUnknown((await rest("get", "/")).cards.find((c: any) => c.id === ROOT));
@@ -462,8 +462,12 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
     if (mode === "missing") rmSync(path);
     else {
       // Actual cold metadata budget exhaustion, not a mocked discovery result.
+      // The budget is charged for bytes actually read, so the newer fillers
+      // ahead of CHILD in mtime order must carry real header weight: 1,024
+      // rollouts with a 24 KB first line spend the 16 MB before CHILD is reached.
       utimesSync(path, 1700000000, 1700000000);
-      for (let n = 0; n < 2048; n++) rollout(`00000000-0000-0000-0000-${String(n).padStart(12, "0")}`, IMPL, "task_complete", { source: "exec" });
+      for (let n = 0; n < 1024; n++)
+        rollout(`00000000-0000-0000-0000-${String(n).padStart(12, "0")}`, IMPL, "task_complete", { source: "exec", padding: "x".repeat(24 * 1024) });
       utimesSync(leaf, Date.now() / 1000 + 1, Date.now() / 1000 + 1);
     }
     const before = disk();
@@ -480,7 +484,7 @@ describe("round-two durable aliases and returned-root replay budgets", () => {
       for (const id of [CHILD, "mapped-child", LEAF]) {
         const card = (await cold(() => rest("get", "/:id", id))).card;
         expect(card.id).toBe(ROOT);
-        expect(card.memberChats.find((m: any) => m.chatId === "mapped-child").status).toBe("unknown");
+        expect(card.memberChats.find((m: any) => m.chatId === "mapped-child").status).toBe("stopped");
       }
       expect((await cold(() => mcp("get_card", { card_id: CHILD }))).card.id).toBe(ROOT);
       expect((await cold(() => mcp("get_card"))).card.id).toBe(ROOT); // Inherited implicit identity is unchanged.

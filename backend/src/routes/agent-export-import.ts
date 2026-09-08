@@ -18,8 +18,33 @@ import {
 import { ensureDefaultCronJobs, listCronJobs } from "../services/agent-cron-jobs.js";
 import { scheduleJob } from "../services/cron-scheduler.js";
 import { createLogger } from "../utils/logger.js";
+import { assertStoredReasoningEffort } from "../services/reasoning-capabilities.js";
 
 const log = createLogger("agent-export-import");
+
+/**
+ * Every other writer of a cron/trigger action validates its reasoning effort
+ * fail-closed at save time, and the executor relies on that. An archive was
+ * exported on some other machine whose catalog may differ, so an imported
+ * action gets the stored-value check instead: an effort the local catalog
+ * positively rules out is dropped (the action still runs, on the default),
+ * one it cannot verify is kept. Mutates the parsed file in place.
+ */
+export async function dropUnsupportedActionEfforts(alias: string, fileName: string, parsed: unknown): Promise<void> {
+  if (!Array.isArray(parsed)) return;
+  const cwd = getAgentWorkspacePath(alias);
+  for (const entry of parsed) {
+    const action = entry && typeof entry === "object" ? (entry as { action?: Record<string, unknown> }).action : undefined;
+    if (!action || typeof action !== "object" || action.effort === undefined || action.effort === "") continue;
+    try {
+      await assertStoredReasoningEffort({ ...action, cwd } as Parameters<typeof assertStoredReasoningEffort>[0]);
+    } catch (error) {
+      const label = typeof (entry as { name?: unknown }).name === "string" ? (entry as { name: string }).name : (entry as { id?: string }).id ?? "?";
+      log.warn(`Import: ${fileName} for ${alias}: dropping reasoning effort "${String(action.effort)}" on "${label}": ${(error as Error).message}`);
+      delete action.effort;
+    }
+  }
+}
 
 export const agentExportImportRouter = Router();
 
@@ -142,7 +167,7 @@ agentExportImportRouter.get("/:alias/export", (req: Request, res: Response): voi
 });
 
 // ── Import: POST /api/agents/import ──────────────────────────────
-agentExportImportRouter.post("/import", upload.single("file"), (req: Request, res: Response): void => {
+agentExportImportRouter.post("/import", upload.single("file"), async (req: Request, res: Response): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ error: "No file uploaded. Please upload a .zip file." });
     return;
@@ -255,6 +280,7 @@ agentExportImportRouter.post("/import", upload.single("file"), (req: Request, re
   if (cronEntry) {
     try {
       const cronData = JSON.parse(cronEntry.getData().toString("utf8"));
+      await dropUnsupportedActionEfforts(alias, "cron-jobs.json", cronData);
       writeFileSync(join(dataDir, "cron-jobs.json"), JSON.stringify(cronData, null, 2));
     } catch {
       log.warn(`Import: invalid cron-jobs.json for ${alias}, skipping`);
@@ -266,6 +292,7 @@ agentExportImportRouter.post("/import", upload.single("file"), (req: Request, re
   if (triggersEntry) {
     try {
       const triggersData = JSON.parse(triggersEntry.getData().toString("utf8"));
+      await dropUnsupportedActionEfforts(alias, "triggers.json", triggersData);
       writeFileSync(join(dataDir, "triggers.json"), JSON.stringify(triggersData, null, 2));
     } catch {
       log.warn(`Import: invalid triggers.json for ${alias}, skipping`);

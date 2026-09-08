@@ -1,4 +1,18 @@
-/** Host-side policy translation. The package service remains authoritative. */
+/** Host-side policy translation. The package service remains authoritative.
+ *
+ * What the `computerControl` levels actually mean today:
+ *  - `deny`  — no target can be enabled; `cu_*` calls are refused by the service
+ *              (and, on Claude Code, by `canUseTool` before they reach it).
+ *  - `ask`   — the human's Enable click creates a request the human confirms
+ *              separately; then each agent action is confirmed.
+ *  - `allow` — the human's Enable click opens the target immediately. Only a
+ *              human can enable a target at any level (`cu_open` lists ready
+ *              sessions and grants nothing). Each agent
+ *              action STILL needs a human confirmation in the panel
+ *              (`ComputerUseHost.requestAgentAction` is unconditional). The
+ *              level does not grant autonomous control; any UI or description
+ *              that says otherwise is wrong, not this table.
+ */
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
 
 export type ComputerTargetKind = "browser" | "desktop";

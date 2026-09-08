@@ -1,12 +1,15 @@
+import { useState } from "react";
 import { ComputerUseService, type Driver } from "@wolpertingerlabs/computer-use";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerUseStatus } from "shared/types/computerUse.js";
+import type { PermissionLevel } from "shared/types/permissions.js";
 import ComputerUsePanel, { framePoint } from "./ComputerUsePanel";
 import { computerUseClient as client } from "../api/computerUse";
-import { declarationsFor, declarationsJsdomIgnores, injectCss, matchesSelector, readCss, setTheme, TRANSPARENT, UA_BUTTON_FILL } from "../testing/cssCascade";
+import { useComputerUseController } from "../hooks/useComputerUseController";
 
-vi.mock("../api/computerUse", () => ({
+vi.mock("../api/computerUse", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../api/computerUse")>()),
   computerUseClient: { status: vi.fn(), open: vi.fn(), observe: vi.fn(), control: vi.fn(), action: vi.fn() },
 }));
 let status: ComputerUseStatus;
@@ -17,10 +20,44 @@ const observation = {
 };
 const manualInput = () => screen.getByRole("group", { name: /Manual input/ }) as HTMLFieldSetElement;
 const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
-async function expand() {
-  fireEvent.click(button("▸ Browser & Computer Control"));
-  await waitFor(() => expect(button("Retry status").disabled).toBe(false));
+
+// The panel is only ever the chat's Computer view, fed by the chat's shared
+// controller; "Switch view" unmounts and remounts it exactly as Chat.tsx does.
+function Viewer({
+  chatId = "c1",
+  permission,
+  provider,
+  onPermissions,
+  onRender,
+}: {
+  chatId?: string;
+  permission?: PermissionLevel;
+  provider?: string;
+  onPermissions?: () => void;
+  onRender?: (controller: ReturnType<typeof useComputerUseController>) => void;
+}) {
+  const [visible, setVisible] = useState(true);
+  const controller = useComputerUseController(chatId, { viewOpen: visible });
+  onRender?.(controller);
+  return (
+    <>
+      <button onClick={() => setVisible(!visible)}>Switch view</button>
+      {visible && !controller.stopping && (
+        <ComputerUsePanel
+          key={`${chatId}:${controller.viewerEpoch}`}
+          chatId={chatId}
+          permission={permission}
+          provider={provider}
+          onPermissions={onPermissions}
+          controller={controller}
+        />
+      )}
+    </>
+  );
 }
+// The first shared status read has landed and rendered the session row.
+const ready = () => screen.findByRole("button", { name: "Stop" });
+
 beforeEach(() => {
   status = {
     permission: "allow",
@@ -46,10 +83,10 @@ afterEach(() => {
 });
 
 describe("ComputerUsePanel", () => {
-  it("never enables or captures automatically and disables unavailable native targets", async () => {
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    expect(client.status).not.toHaveBeenCalled();
-    await expand();
+  it("reads status once on load, never enables or captures automatically, and disables unavailable native targets", async () => {
+    render(<Viewer permission="allow" />);
+    await ready();
+    expect(client.status).toHaveBeenCalledTimes(1);
     expect(client.open).not.toHaveBeenCalled();
     expect(client.observe).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
@@ -58,19 +95,52 @@ describe("ComputerUsePanel", () => {
     expect(screen.getByText(/Same-machine native control/)).toBeTruthy();
   });
 
-  it("keeps legacy/missing permission deny, with an actionable settings path", async () => {
+  it("keeps legacy/missing permission deny, with an actionable settings path that does not oversell Allow", async () => {
     const onPermissions = vi.fn();
-    render(<ComputerUsePanel chatId="c1" onPermissions={onPermissions} />);
-    await expand();
+    render(<Viewer onPermissions={onPermissions} />);
+    await ready();
     expect(button("Enable").disabled).toBe(true);
     expect(button("Refresh screenshot").disabled).toBe(true);
+    const denied = screen.getByText(/Computer control is denied/);
+    expect(denied.textContent).toContain("Allow only lets your Enable click open a target without a separate confirmation; each agent action still asks you.");
+    const intro = screen.getByText(/Controls Callboard's browser and desktop tools/).textContent!;
+    expect(intro).toContain("Only you can enable a target.");
+    expect(intro).toContain("Allow lets your Enable click open it immediately; under Ask, Enable creates a request you confirm separately.");
+    expect(intro).toContain("Every action the agent takes still needs your confirmation here.");
+    expect(intro).not.toMatch(/agent enables/);
     fireEvent.click(button("Chat permissions"));
     expect(onPermissions).toHaveBeenCalled();
   });
 
+  it.each(["codex", "claude-code", "pi", undefined])("explains the shared subagent grant for the engines whose subagents share the tool server (%s)", async (provider) => {
+    // Claude Code Task subagents run in the same CLI process against the same
+    // in-process server; Codex native subagents inherit the parent's per-turn
+    // socket. Both act under the parent chat's identity, so both must be told.
+    status.permission = "ask";
+    status.sessions = [
+      status.sessions[0],
+      { id: "request", kind: "browser", state: "pending_approval", controller: null, generation: 0, reason: "Approve access to this target" },
+    ];
+    render(<Viewer permission="ask" provider={provider} />);
+    await ready();
+    const note = screen.queryByText(/shared with any subagents the agent runs inside this chat's turn/);
+    if (provider !== "codex" && provider !== "claude-code") {
+      expect(note).toBeNull();
+      expect(button("Enable").hasAttribute("aria-describedby")).toBe(false);
+      expect(button("Confirm request").hasAttribute("aria-describedby")).toBe(false);
+      return;
+    }
+    expect(note!.getAttribute("role")).toBe("note");
+    expect(note!.textContent).toContain(provider === "codex" ? "Codex native subagents" : "Claude Code Task subagents");
+    expect(note!.textContent).toContain("recorded under this chat's identity");
+    // Both places a human grants access point at the same note.
+    expect(button("Enable").getAttribute("aria-describedby")).toBe(note!.id);
+    expect(button("Confirm request").getAttribute("aria-describedby")).toBe(note!.id);
+  });
+
   it("requires takeover and a fresh frame, then sends fenced manual actions", async () => {
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    await expand();
+    render(<Viewer permission="allow" />);
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("img");
     expect((screen.getByRole("group", { name: /Manual input/ }) as HTMLFieldSetElement).disabled).toBe(true);
@@ -103,8 +173,8 @@ describe("ComputerUsePanel", () => {
   it.each(["browser", "native"] as const)("ties the %s takeover privacy warning to Resume agent", async (kind) => {
     status.sessions[0].kind = kind;
     if (kind === "native") status.capabilities[1].available = true;
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    await expand();
+    render(<Viewer permission="allow" />);
+    await ready();
     if (kind === "native") fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
     expect(button("Resume agent").hasAttribute("aria-describedby")).toBe(false);
     expect(screen.queryByText(/Resuming immediately captures/)).toBeNull();
@@ -130,12 +200,13 @@ describe("ComputerUsePanel", () => {
   it("offers explicit scoped approval for ask and clears revoked screenshots", async () => {
     status.permission = "ask";
     status.sessions[0].state = "awaiting_approval";
-    render(<ComputerUsePanel chatId="c1" permission="ask" />);
-    await expand();
+    render(<Viewer permission="ask" />);
+    await ready();
     expect(button("Refresh screenshot").disabled).toBe(true);
     fireEvent.click(button("Approve this request"));
     await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
-    expect(client.control).toHaveBeenCalledWith("c1", "s1", "approve", 1, expect.any(AbortSignal));
+    // An accepted approval is never aborted by this view: the shared ledger must learn its result.
+    expect(client.control).toHaveBeenCalledWith("c1", "s1", "approve", 1, undefined);
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("img");
     fireEvent.click(button("Revoke"));
@@ -143,29 +214,30 @@ describe("ComputerUsePanel", () => {
     expect(screen.queryByRole("img")).toBeNull();
   });
 
-  it("drops a late screenshot when the panel is closed", async () => {
+  it("drops a late screenshot when the view is closed", async () => {
     let resolve!: (value: typeof observation) => void;
     vi.mocked(client.observe).mockReturnValue(
       new Promise((done) => {
         resolve = done;
       }),
     );
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    await expand();
+    render(<Viewer permission="allow" />);
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
-    fireEvent.click(button("▾ Browser & Computer Control"));
+    fireEvent.click(button("Switch view"));
     await act(async () => {
       resolve(observation);
     });
     expect(screen.queryByRole("img")).toBeNull();
-    await expand();
+    fireEvent.click(button("Switch view"));
+    await ready();
     expect(screen.queryByRole("img")).toBeNull();
   });
 
   it("retains emergency stop/revoke when screenshot or status requests fail", async () => {
     vi.mocked(client.observe).mockRejectedValue(new Error("Capture consent revoked. Configure OS capture consent."));
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    await expand();
+    render(<Viewer permission="allow" />);
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("alert");
     expect(button("Stop").disabled).toBe(false);
@@ -181,8 +253,8 @@ describe("ComputerUsePanel", () => {
         resolve = done;
       }),
     );
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    await expand();
+    render(<Viewer permission="allow" />);
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
     fireEvent.click(button("Stop"));
     await waitFor(() => expect(client.control).toHaveBeenCalledWith("c1", "s1", "stop", 1, expect.any(AbortSignal)));
@@ -194,17 +266,18 @@ describe("ComputerUsePanel", () => {
 
   it("requires explicit native selection and enable even when available", async () => {
     status.capabilities[1] = { kind: "native", available: true };
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    await expand();
+    render(<Viewer permission="allow" />);
+    await ready();
     fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
     expect(client.open).not.toHaveBeenCalled();
     fireEvent.click(button("Enable"));
-    await waitFor(() => expect(client.open).toHaveBeenCalledWith("c1", "native", expect.any(AbortSignal)));
+    // A server-accepted open cannot be cancelled by aborting its fetch, so none is passed.
+    await waitFor(() => expect(client.open).toHaveBeenCalledWith("c1", "native"));
   });
 
   it("discards stale generation frames permanently when status changes", async () => {
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    await expand();
+    render(<Viewer permission="allow" />);
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("img");
     status.sessions[0].generation = 2;
@@ -224,8 +297,8 @@ describe("ComputerUsePanel", () => {
         resolve = done;
       }),
     );
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    await expand();
+    render(<Viewer permission="allow" />);
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
     fireEvent.click(button("Hide screenshot"));
     await act(async () => {
@@ -233,6 +306,45 @@ describe("ComputerUsePanel", () => {
     });
     expect(screen.queryByRole("img")).toBeNull();
     expect(client.control).not.toHaveBeenCalled();
+  });
+
+  it.each(["click", "drag"] as const)("keeps a %s press across a status poll that changes nothing", async (mode) => {
+    status.sessions[0].controller = "human";
+    let controller!: ReturnType<typeof useComputerUseController>;
+    render(<Viewer permission="allow" onRender={(value) => (controller = value)} />);
+    await ready();
+    fireEvent.click(button("Refresh screenshot"));
+    const img = await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    if (mode === "drag") fireEvent.change(screen.getByLabelText("Pointer"), { target: { value: "drag" } });
+    img.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500 }) as DOMRect;
+    fireEvent.pointerDown(img, { clientX: 100, clientY: 50, pointerId: 1 });
+    // The shared poller republishes an identical status mid-press.
+    await act(async () => {
+      await controller.readStatus();
+    });
+    fireEvent.pointerUp(img, { clientX: 300, clientY: 50, pointerId: 1 });
+    await waitFor(() => expect(client.action).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(client.action).mock.calls[0][2].action).toEqual(
+      mode === "drag" ? { type: "drag", fromX: 100, fromY: 50, toX: 300, toY: 50 } : { type: "click", x: 300, y: 50, button: "left" },
+    );
+  });
+
+  it("opens on the live session, not an older stopped one still listed in status", async () => {
+    status.sessions = [
+      { id: "old", kind: "browser", state: "stopped", controller: null, generation: 3 },
+      { id: "live", kind: "browser", state: "ready", controller: "agent", generation: 1 },
+    ];
+    render(<Viewer permission="allow" />);
+    await ready();
+    expect((screen.getByLabelText("Session") as HTMLSelectElement).value).toBe("live");
+    expect(screen.getByText(/State: ready · Controller: agent/)).toBeTruthy();
+    expect(button("Take over").disabled).toBe(false);
+    expect(button("Refresh screenshot").disabled).toBe(false);
+    // An explicit choice of the stopped session is still honoured.
+    fireEvent.change(screen.getByLabelText("Session"), { target: { value: "old" } });
+    expect(screen.getByText(/State: stopped · Controller: none/)).toBeTruthy();
+    expect(button("Stop").disabled).toBe(true);
   });
 
   it("maps scaled screenshot coordinates and clamps edges", () => {
@@ -247,8 +359,8 @@ it("uses the new capture token after an action and clears stale-frame errors wit
   vi.mocked(client.observe)
     .mockResolvedValueOnce(observation)
     .mockResolvedValue({ ...observation, frameId: nextFrameId });
-  render(<ComputerUsePanel chatId="c1" permission="allow" />);
-  await expand();
+  render(<Viewer permission="allow" />);
+  await ready();
   fireEvent.click(button("Refresh screenshot"));
   await screen.findByRole("img");
   fireEvent.click(button("Enter"));
@@ -325,66 +437,61 @@ async function serviceViewer(holdSecondCapture = false) {
   return { service, human, ref, mutation, release, captureCount: () => captures };
 }
 
-it.each(["pause", "hide", "remount", "dedicated-remount"] as const)(
-  "fences a pending preview through %s before acquiring new manual authority",
-  async (mode) => {
-    const fixture = await serviceViewer(true);
-    let view = render(<ComputerUsePanel chatId="real-preview" permission="allow" dedicated={mode === "dedicated-remount"} />);
-    try {
-      if (mode === "dedicated-remount") await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
-      else await expand();
-      fireEvent.click(button("Refresh screenshot"));
-      await screen.findByRole("img");
-      await waitFor(() => expect(manualInput().disabled).toBe(false));
-      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
-      await waitFor(() => expect(fixture.captureCount()).toBe(2));
-      expect(manualInput().disabled).toBe(true);
-      expect(screen.getByText(/Capturing screenshot… Manual input is paused/)).toBeTruthy();
-      fireEvent.click(button("Enter"));
-      expect(client.action).not.toHaveBeenCalled();
-      expect(button("Stop").disabled).toBe(false);
-      expect(button("Revoke").disabled).toBe(false);
+it.each(["pause", "hide", "remount"] as const)("fences a pending preview through %s before acquiring new manual authority", async (mode) => {
+  const fixture = await serviceViewer(true);
+  let view = render(<Viewer chatId="real-preview" permission="allow" />);
+  try {
+    await ready();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await waitFor(() => expect(fixture.captureCount()).toBe(2));
+    expect(manualInput().disabled).toBe(true);
+    expect(screen.getByText(/Capturing screenshot… Manual input is paused/)).toBeTruthy();
+    fireEvent.click(button("Enter"));
+    expect(client.action).not.toHaveBeenCalled();
+    expect(button("Stop").disabled).toBe(false);
+    expect(button("Revoke").disabled).toBe(false);
 
-      if (mode === "pause") fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
-      else if (mode === "hide") fireEvent.click(button("Hide screenshot"));
-      else {
-        view.unmount();
-        view = render(<ComputerUsePanel chatId="real-preview" permission="allow" dedicated={mode === "dedicated-remount"} />);
-        if (mode === "dedicated-remount") await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
-        else await expand();
-      }
-      fireEvent.click(button("Refresh screenshot"));
-      expect(vi.mocked(client.observe).mock.calls[1][2]?.aborted).toBe(false);
-      // No new HTTP observation may overtake the accepted held capture.
-      await act(async () => {
-        await Promise.resolve();
-      });
-      expect(client.observe).toHaveBeenCalledTimes(2);
-      expect(manualInput().disabled).toBe(true);
-      await act(async () => {
-        fixture.release();
-      });
-      await screen.findByRole("img");
-      await waitFor(() => expect(manualInput().disabled).toBe(false));
-      expect(fixture.captureCount()).toBe(3);
-      fireEvent.click(button("Enter"));
-      await waitFor(() => expect(fixture.mutation).toHaveBeenCalledTimes(1));
-      expect(fixture.service.status(fixture.human)[0].state).toBe("ready");
-      expect(screen.queryByRole("alert")).toBeNull();
-      await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
-    } finally {
-      fixture.release();
+    if (mode === "pause") fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    else if (mode === "hide") fireEvent.click(button("Hide screenshot"));
+    else {
       view.unmount();
-      await fixture.service.dispose();
+      view = render(<Viewer chatId="real-preview" permission="allow" />);
+      await ready();
     }
-  },
-);
+    fireEvent.click(button("Refresh screenshot"));
+    expect(vi.mocked(client.observe).mock.calls[1][2]?.aborted).toBe(false);
+    // No new HTTP observation may overtake the accepted held capture.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(client.observe).toHaveBeenCalledTimes(2);
+    expect(manualInput().disabled).toBe(true);
+    await act(async () => {
+      fixture.release();
+    });
+    await screen.findByRole("img");
+    await waitFor(() => expect(manualInput().disabled).toBe(false));
+    expect(fixture.captureCount()).toBe(3);
+    fireEvent.click(button("Enter"));
+    await waitFor(() => expect(fixture.mutation).toHaveBeenCalledTimes(1));
+    expect(fixture.service.status(fixture.human)[0].state).toBe("ready");
+    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(button("Resume agent").disabled).toBe(false));
+  } finally {
+    fixture.release();
+    view.unmount();
+    await fixture.service.dispose();
+  }
+});
 
 it("recovers a real stale-frame rejection without denying authorized refresh or replaying the action", async () => {
   const fixture = await serviceViewer();
-  const view = render(<ComputerUsePanel chatId="real-stale" permission="allow" />);
+  const view = render(<Viewer chatId="real-stale" permission="allow" />);
   try {
-    await expand();
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("img");
     await waitFor(() => expect(manualInput().disabled).toBe(false));
@@ -412,9 +519,9 @@ it("recovers a real stale-frame rejection without denying authorized refresh or 
 
 it.each(["stop", "revoke"] as const)("keeps emergency %s immediate while an accepted preview is held", async (operation) => {
   const fixture = await serviceViewer(true);
-  const view = render(<ComputerUsePanel chatId="real-emergency" permission="allow" />);
+  const view = render(<Viewer chatId="real-emergency" permission="allow" />);
   try {
-    await expand();
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("img");
     await waitFor(() => expect(manualInput().disabled).toBe(false));
@@ -436,19 +543,19 @@ it.each(["stop", "revoke"] as const)("keeps emergency %s immediate while an acce
   }
 });
 
-it("does not dispatch an unaccepted queued preview after the new panel closes", async () => {
+it("does not dispatch an unaccepted queued preview after the new view closes", async () => {
   const fixture = await serviceViewer(true);
-  let view = render(<ComputerUsePanel chatId="real-queued-preview" permission="allow" />);
+  let view = render(<Viewer chatId="real-queued-preview" permission="allow" />);
   try {
-    await expand();
+    await ready();
     fireEvent.click(button("Refresh screenshot"));
     await screen.findByRole("img");
     await waitFor(() => expect(manualInput().disabled).toBe(false));
     fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
     await waitFor(() => expect(fixture.captureCount()).toBe(2));
     view.unmount();
-    view = render(<ComputerUsePanel chatId="real-queued-preview" permission="allow" />);
-    await expand();
+    view = render(<Viewer chatId="real-queued-preview" permission="allow" />);
+    await ready();
     fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
     // The new preview is queued behind B, but has not reached the server.
     expect(client.observe).toHaveBeenCalledTimes(2);
@@ -463,113 +570,4 @@ it("does not dispatch an unaccepted queued preview after the new panel closes", 
     view.unmount();
     await fixture.service.dispose();
   }
-});
-
-/**
- * The collapsed heading's background is a CSS contract, not a component one.
- *
- * `index.css`'s global reset clears a button's border but not its background,
- * so a `<button>` with no `background` declaration falls through to the user
- * agent's `buttonface`. The heading is the full width of the panel and sits
- * directly above the composer, so on a phone in dark mode that read as a light
- * band of unstyled whitespace jammed into the chat view, with --text over it
- * at roughly 1.1:1.
- *
- * `color-scheme: dark` on :root — guarded in `src/index.colorScheme.test.ts` —
- * is not a substitute. It makes `buttonface` follow the theme, but the shade
- * it follows to is a mid-grey, so the band stays visible; the heading has to
- * paint nothing of its own and let `.computer-use-panel`'s `var(--surface)`
- * show through. Both halves are load-bearing, which is why both are guarded.
- *
- * Two jsdom limits shape how this is written, and both are worked around
- * rather than assumed away (see `testing/cssCascade.ts`):
- *
- * - jsdom's UA stylesheet carries Chrome's `button { background-color:
- *   buttonface }`, which is the whole reason the fall-through reproduces here
- *   at all. Nothing in this repo supplies it, so the first case below pins it:
- *   were a future jsdom to drop that rule, a bare button would read
- *   transparent and the cases after it would pass for entirely the wrong
- *   reason.
- * - jsdom honours neither `@media` conditions nor `!important`, so the last
- *   case checks the CSSOM directly for either kind of override reaching the
- *   heading. Both are the shape that goes green here while the browser paints
- *   the band: a media-scoped rule breaks on exactly the phone viewport this
- *   was reported from, and `button { background: buttonface !important }` in
- *   the global reset beats `.computer-use-heading` in a real cascade while
- *   jsdom hands specificity the win. Matching is by
- *   `element.matches(selectorText)`, not by looking for the class in the
- *   selector text — `.computer-use-panel > button` reaches this element too.
- */
-describe("the collapsed heading's resolved background", () => {
-  let sheet: CSSStyleSheet;
-  // Optional: if injectCss throws, beforeAll never assigns it, and an
-  // unguarded call here buries that error under a TypeError.
-  let remove: (() => void) | undefined;
-
-  beforeAll(() => {
-    ({ sheet, remove } = injectCss(readCss("index.css"), readCss("components/ComputerUsePanel.css")));
-  });
-
-  afterAll(() => {
-    remove?.();
-    setTheme(null);
-  });
-
-  const heading = () => getComputedStyle(button("▸ Browser & Computer Control"));
-
-  it("is measured against a UA fill that is actually live", () => {
-    const bare = document.createElement("button");
-    document.body.appendChild(bare);
-    try {
-      // A <button> the app has not styled. If this ever reads transparent, the
-      // cases below are passing because jsdom paints nothing, not because the
-      // heading opts out of a fill that was really there.
-      expect(getComputedStyle(bare).backgroundColor).toBe(UA_BUTTON_FILL);
-      expect(UA_BUTTON_FILL).not.toBe(TRANSPARENT);
-    } finally {
-      bare.remove();
-    }
-  });
-
-  it.each(["dark", "light"] as const)("paints nothing of its own in the %s theme", (mode) => {
-    setTheme(mode);
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    expect(heading().backgroundColor).toBe(TRANSPARENT);
-    expect(heading().backgroundColor).not.toBe(UA_BUTTON_FILL);
-  });
-
-  it.each(["dark", "light"] as const)("sits on a panel painting a themed surface in the %s theme", (mode) => {
-    setTheme(mode);
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    const panel = document.querySelector(".computer-use-panel")!;
-
-    // The other half of "transparent is the right value": a transparent heading
-    // over a transparent panel would be a bare strip of --bg, not a header.
-    // getComputedStyle cannot carry this — it reports `rgba(0, 0, 0, 0)` for
-    // the panel's `var(--surface)` exactly as it would for an explicit
-    // `transparent`, so reading it there cannot tell the two apart. Read the
-    // declarations that apply to the element instead, assert exactly one owns
-    // the background (a second would mean the cascade, not this test, decides),
-    // and resolve the variable it names — which jsdom does do.
-    const declared = declarationsFor(sheet, panel, "background");
-    expect(declared.map((d) => d.selectorText)).toEqual([".computer-use-panel"]);
-
-    // Deliberately not pinned to `background` vs `background-color`: either
-    // spelling paints the same surface, and this should not red on that
-    // refactor. What matters is that the value names a theme variable rather
-    // than a literal — and that the variable resolves to something in the mode
-    // under test, which is the half getComputedStyle *can* answer.
-    const token = /^var\((--[a-z-]+)\)$/.exec(declared[0].value)?.[1];
-    expect(token).toBeTruthy();
-    const surface = getComputedStyle(document.documentElement).getPropertyValue(token!);
-    expect(surface).not.toBe("");
-    expect(surface).not.toBe("transparent");
-  });
-
-  it("takes no background from anywhere the resolved cascade cannot see", () => {
-    render(<ComputerUsePanel chatId="c1" permission="allow" />);
-    const el = button("▸ Browser & Computer Control");
-    const unseen = declarationsJsdomIgnores(sheet).filter((d) => d.property.startsWith("background") && matchesSelector(el, d.selectorText));
-    expect(unseen).toEqual([]);
-  });
 });

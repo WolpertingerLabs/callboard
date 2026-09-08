@@ -249,7 +249,7 @@ describe("review regressions: authoritative transcript consumers", () => {
     expect(JSON.parse(chatFileService.getChat("explicit-vendor")!.metadata!)).toEqual({ provider: "acp", acpProviderId: "opencode" });
   });
 
-  it("recovers unanimous historical ownership for reads, but refuses missing-current Codex resume", async () => {
+  it("recovers unanimous historical ownership for reads without mistaking a missing current rollout for a native child", async () => {
     const provider = stub("codex", "historical-codex");
     vi.mocked(provider.parseSessionMessages).mockReturnValue([{ type: "text", role: "assistant", content: "historical Codex" } as never]);
     setSessionProvidersForTesting([stub("claude-code", "unrelated"), provider]);
@@ -262,7 +262,10 @@ describe("review regressions: authoritative transcript consumers", () => {
     expect(JSON.stringify(await readTool("multi-review"))).toContain("historical Codex");
     expect(readFinalAssistantText("multi-review")).toBe("historical Codex");
     expect(chatFileService.getChat("multi-review")!.metadata).toBe(metadata);
-    await expect(sendMessage({ chatId: "multi-review", prompt: "offline replay" })).rejects.toThrow(/read-only/);
+    // An absent current rollout is no evidence of a parent; a resume attempt is
+    // the harness's to refuse ("no rollout found"), not the native guard's.
+    const { assertNativeAgentControllable } = await import("../services/codex-native-agents.js");
+    expect(() => assertNativeAgentControllable("multi-review")).not.toThrow();
     expect(chatFileService.getChat("multi-review")!.metadata).toBe(metadata);
   });
 

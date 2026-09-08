@@ -62,6 +62,19 @@ describe("installed Codex effective config/read", () => {
     await writeFile(join(project, ".codex", "config.toml"), `model='gpt-5.5'\n`);
     expect((await resolveCodexExecutionRoute({ codexHome: home }, project)).model).toBe("gpt-5.5");
   });
+  it("asks the CLI which model it runs when config names none, and only then", async () => {
+    // Subscription-mode production settings leave codexModel null and most
+    // chats store no model; the CLI still has a default and can name it.
+    const unconfigured = await resolveCodexExecutionRoute({ codexHome: home }, home);
+    expect(unconfigured.route).toBe("codex");
+    expect(unconfigured.model).toBeUndefined();
+    expect(typeof unconfigured.defaultModel).toBe("string");
+    expect(unconfigured.defaultModel!.length).toBeGreaterThan(0);
+    await config(`model='gpt-5.5'\n`);
+    const configured = await resolveCodexExecutionRoute({ codexHome: home }, home);
+    expect(configured).toMatchObject({ route: "codex", model: "gpt-5.5" });
+    expect(configured.defaultModel).toBeUndefined();
+  });
   it("private custom endpoints and malformed config are unknown, not assumed native", async () => {
     await config(`model_provider='private'\n[model_providers.private]\nname='Private'\nbase_url='https://private.example/v1'\nwire_api='responses'\n`);
     expect((await resolveCodexExecutionRoute({ codexHome: home }, home)).route).toBe("unknown");
@@ -133,4 +146,25 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     base: "https://api.openai.com/v1",
     key: "sentinel-intentional-key",
   });
+});
+
+it("keeps the route when a CLI cannot answer model/list", async () => {
+  const wrapper = join(home, "old-cli.cjs");
+  await writeFile(
+    wrapper,
+    `#!${process.execPath}
+const readline = require('node:readline');
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.method === 'model/list') return process.stdout.write(JSON.stringify({ id: request.id, error: { code: -32601, message: 'unknown method' } }) + '\\n');
+  const result = request.method === 'config/read' ? { config: { model_provider: 'openai' } } : {};
+  if (request.id) process.stdout.write(JSON.stringify({ id: request.id, result }) + '\\n');
+});
+`,
+    { mode: 0o700 },
+  );
+  const result = await resolveCodexExecutionRoute({ codexHome: home, codexPathOverride: wrapper }, home);
+  expect(result).toMatchObject({ route: "codex", injectedOpenRouter: false });
+  expect(result.model).toBeUndefined();
+  expect(result.defaultModel).toBeUndefined();
 });

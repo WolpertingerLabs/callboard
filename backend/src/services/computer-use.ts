@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
-import { chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { resolveSessionContext } from "../utils/session-provenance.js";
 import { chatFileService } from "./chat-file-service.js";
@@ -36,7 +35,13 @@ export function loadComputerUsePolicy(chatId: string): HostPolicy {
     );
   }
   const policy = readComputerUsePolicy(metadata.defaultPermissions);
-  return { policy, signature: JSON.stringify([policy, chatContextFingerprint(chat), routing.provider, routing.acpProviderId]) };
+  // The signature is what a grant is bound to; drift revokes the live session.
+  // Sign only what changes the authority itself: the permission axes and the
+  // engine identity the provenance check just verified. The wider chat
+  // fingerprint (session ids, last branch, model, folder) used to be in here,
+  // and a nudge resume appending a session id or an acknowledged branch drift
+  // revoked the browser mid-turn with "permissions changed".
+  return { policy, signature: JSON.stringify([policy, routing.provider, routing.acpProviderId]) };
 }
 export function controlError(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
@@ -44,6 +49,7 @@ export function controlError(code: string, message: string): Error & { code: str
 export const controlPrincipal = (chatId: string, role: "agent" | "human"): Principal => ({ ownerId: chatId, actorId: `${role}:${chatId}`, role });
 const uiKind = (kind: string): ComputerTargetKind => (kind === "browser" ? "browser" : "desktop");
 const targetId = (kind: ComputerTargetKind) => (kind === "browser" ? "managed-browser" : "native-desktop");
+const PROBE_CACHE_MS = 5_000;
 interface Grant {
   chatId: string;
   signature: string;
@@ -68,6 +74,7 @@ export class ComputerUseHost {
   private readonly pending = new Map<string, Pending>();
   private readonly events = new Map<string, unknown[]>();
   private readonly unsubscribers = new Map<string, () => void>();
+  private readonly probes = new Map<ComputerTargetKind, { at: number; result: Promise<Awaited<ReturnType<Driver["probe"]>>> }>();
   private readonly watchdog: ReturnType<typeof setInterval>;
   constructor(
     readonly service: ComputerUseService,
@@ -120,6 +127,32 @@ export class ComputerUseHost {
     }
     for (const [id, pending] of this.pending) if (pending.expiresAt <= Date.now()) this.pending.delete(id);
   }
+  /**
+   * Driver probes are host facts, not chat facts, and the native one execs
+   * `xdotool getdisplaygeometry` with a 5s timeout — on a configured but
+   * unreachable DISPLAY every status poll and `cu_open` blocked on it. Cache
+   * for a few seconds. Only an *available* result is kept: both shipped
+   * drivers catch their own failures and resolve `{ available: false }`, so
+   * evicting on rejection alone cached a missing prerequisite for the full
+   * window. An unavailable probe is re-run on the next poll so a fix is seen
+   * promptly.
+   */
+  private probe(kind: ComputerTargetKind) {
+    const cached = this.probes.get(kind);
+    if (cached && Date.now() - cached.at < PROBE_CACHE_MS) return cached.result;
+    const result = this.drivers[kind].probe();
+    const entry = { at: Date.now(), result };
+    this.probes.set(kind, entry);
+    result.then(
+      (probe) => {
+        if (!probe.available && this.probes.get(kind) === entry) this.probes.delete(kind);
+      },
+      () => {
+        if (this.probes.get(kind) === entry) this.probes.delete(kind);
+      },
+    );
+    return result;
+  }
   private presentation(value: SessionStatus) {
     return {
       ...value,
@@ -137,7 +170,7 @@ export class ComputerUseHost {
       (["browser", "desktop"] as const).map(async (kind) => {
         const restriction = computerUseScopeError(kind, policy);
         try {
-          const probe = await this.drivers[kind].probe();
+          const probe = await this.probe(kind);
           return { ...probe, kind: kind === "browser" ? "browser" : "native", available: probe.available && !restriction, reason: restriction ?? probe.reason };
         } catch {
           return {
@@ -166,7 +199,10 @@ export class ComputerUseHost {
                 parentSessionId: pending.sessionId,
                 reason: `Confirm one GUI action on session ${pending.sessionId}, frame ${pending.frameId}: ${JSON.stringify(pending.action)}. It may transmit data, change files, or execute code. Approval expires after two minutes.`,
               }
-            : { reason: "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested." }),
+            : {
+                reason:
+                  "Approve access to this specific target for this chat until expiry. Screenshots are sent to the configured model when requested. Every agent action still needs a separate confirmation here, whatever the permission level. Subagents the engine runs inside this chat's turn (Claude Code Task subagents, Codex native subagents) share this grant and act under this chat's identity.",
+              }),
           state: "pending_approval" as SessionStatus["state"],
           generation: 0,
           controller: null,
@@ -285,11 +321,15 @@ export class ComputerUseHost {
   async resume(chatId: string, id: string, expectedGeneration?: unknown) {
     const grant = this.grant(chatId, id);
     if (expectedGeneration !== grant.lease.generation) throw controlError("stale_generation", "Refresh control state before resuming");
-    grant.lease = await this.service.resume(controlPrincipal(chatId, "human"), {
+    // The service returns the fresh agent observation with the lease. Drop it:
+    // a grant must not retain a screenshot, and this endpoint returns control
+    // state, not pixels — the viewer observes explicitly.
+    const { observation: _observation, ...lease } = await this.service.resume(controlPrincipal(chatId, "human"), {
       sessionId: id,
       generation: grant.lease.generation,
       leaseId: grant.lease.leaseId,
     });
+    grant.lease = lease;
     return this.presentation(grant.lease);
   }
   async stop(chatId: string, id: string, _generation?: unknown) {

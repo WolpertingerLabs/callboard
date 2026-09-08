@@ -23,10 +23,16 @@ export function decidePermission(category: PermissionCategory | null, defaultPer
   const policy = defaultPermissions?.[category];
   if (policy === "allow") return "allow";
   if (policy === "deny") return "deny";
-  // Scoped approval is owned by the managed service, which sees the principal.
-  // Generic harness prompts cannot approve scope and would duplicate its ask.
-  // Explicit deny remains an additional defense; this allow grants no authority.
-  if (category === "computerControl") return "allow";
+  if (category === "computerControl") {
+    // Scoped approval is owned by the managed service, which sees the principal.
+    // Generic harness prompts cannot approve scope and would duplicate its ask,
+    // so an explicit "ask" admits the transport call; this grants no authority.
+    // An ABSENT axis is not "ask": legacy four-axis records and chats with no
+    // permissions at all predate computer control and never opted in. The
+    // normalizer maps absence to deny (shared/types/permissions.ts); this is
+    // the same rule for callers that hand over raw metadata.
+    return policy === "ask" ? "allow" : "deny";
+  }
   return "ask";
 }
 
