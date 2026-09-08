@@ -104,8 +104,13 @@ describe("ComputerUsePanel", () => {
     const denied = screen.getByText(/Computer control is denied/);
     expect(denied.textContent).toContain("Ask confirms each agent action with you in the chat; Allow lets the agent act unattended.");
     expect(denied.textContent).toContain("Either way, only your Enable click starts a target.");
+    // The two facts a viewer mis-assumes stay on the panel itself; only the
+    // rest of the explanation moved into the disclosure below them.
+    const brief = screen.getByText(/Only you can enable a target/);
+    expect(brief.closest("details")).toBeNull();
+    expect(brief.textContent).toContain("Only you can enable a target — the agent never can, at any permission level.");
+    expect(brief.textContent).toContain("Tools run on the configured service target, not on this viewer's computer.");
     const intro = screen.getByText(/Controls Callboard's browser and desktop tools/).textContent!;
-    expect(intro).toContain("Only you can enable a target — the agent never can, at any permission level.");
     expect(intro).toContain("Allow lets the agent act on its own, while Ask stops its turn and asks you in the chat before each action.");
     expect(intro).not.toMatch(/agent enables/);
     fireEvent.click(button("Chat permissions"));
@@ -132,6 +137,12 @@ describe("ComputerUsePanel", () => {
     expect(note.textContent).toContain(heading);
     expect(note.textContent).toMatch(detail);
     expect(note.textContent).not.toMatch(permission === "allow" ? /asks you/ : /without asking/);
+    // At the moment of the decision: the same row as the button, never behind
+    // the disclosure that holds the rest of the explanation.
+    expect(note.closest("details")).toBeNull();
+    const row = button("Enable").closest(".computer-use-toolbar");
+    expect(row).toBeTruthy();
+    expect(note.closest(".computer-use-toolbar")).toBe(row);
   });
 
   it("takes the level from the server, not from this tab's copy of the chat record", async () => {
@@ -145,31 +156,37 @@ describe("ComputerUsePanel", () => {
     expect(screen.getByRole("note", { name: "What Enable grants" }).textContent).toContain("This chat is set to Allow:");
   });
 
-  it.each(["codex", "claude-code", "pi", undefined])("explains the shared subagent grant for the engines whose subagents share the tool server (%s)", async (provider) => {
-    // Claude Code Task subagents run in the same CLI process against the same
-    // in-process server; Codex native subagents inherit the parent's per-turn
-    // socket. Both act under the parent chat's identity, so both must be told.
-    status.permission = "ask";
-    status.sessions = [
-      status.sessions[0],
-      { id: "request", kind: "browser", state: "pending_approval", controller: null, generation: 0, reason: "Approve access to this target" },
-    ];
-    render(<Viewer permission="ask" provider={provider} />);
-    await ready();
-    const note = screen.queryByText(/shared with any subagents the agent runs inside this chat's turn/);
-    if (provider !== "codex" && provider !== "claude-code") {
-      expect(note).toBeNull();
-      expect(button("Enable").hasAttribute("aria-describedby")).toBe(false);
-      expect(button("Confirm request").hasAttribute("aria-describedby")).toBe(false);
-      return;
-    }
-    expect(note!.getAttribute("role")).toBe("note");
-    expect(note!.textContent).toContain(provider === "codex" ? "Codex native subagents" : "Claude Code Task subagents");
-    expect(note!.textContent).toContain("recorded under this chat's identity");
-    // Both places a human grants access point at the same note.
-    expect(button("Enable").getAttribute("aria-describedby")).toBe(note!.id);
-    expect(button("Confirm request").getAttribute("aria-describedby")).toBe(note!.id);
-  });
+  it.each(["codex", "claude-code", "pi", undefined])(
+    "explains the shared subagent grant for the engines whose subagents share the tool server (%s)",
+    async (provider) => {
+      // Claude Code Task subagents run in the same CLI process against the same
+      // in-process server; Codex native subagents inherit the parent's per-turn
+      // socket. Both act under the parent chat's identity, so both must be told.
+      status.permission = "ask";
+      status.sessions = [
+        status.sessions[0],
+        { id: "request", kind: "browser", state: "pending_approval", controller: null, generation: 0, reason: "Approve access to this target" },
+      ];
+      render(<Viewer permission="ask" provider={provider} />);
+      await ready();
+      const note = screen.queryByText(/shared with any subagents the agent runs inside this chat's turn/);
+      if (provider !== "codex" && provider !== "claude-code") {
+        expect(note).toBeNull();
+        expect(button("Enable").hasAttribute("aria-describedby")).toBe(false);
+        expect(button("Confirm request").hasAttribute("aria-describedby")).toBe(false);
+        return;
+      }
+      expect(note!.getAttribute("role")).toBe("note");
+      // Demoted, but not inside the disclosure: a closed <details> takes the
+      // description these buttons point at out of the accessibility tree.
+      expect(note!.closest("details")).toBeNull();
+      expect(note!.textContent).toContain(provider === "codex" ? "Codex native subagents" : "Claude Code Task subagents");
+      expect(note!.textContent).toContain("recorded under this chat's identity");
+      // Both places a human grants access point at the same note.
+      expect(button("Enable").getAttribute("aria-describedby")).toBe(note!.id);
+      expect(button("Confirm request").getAttribute("aria-describedby")).toBe(note!.id);
+    },
+  );
 
   it("requires takeover and a fresh frame, then sends fenced manual actions", async () => {
     render(<Viewer permission="allow" />);

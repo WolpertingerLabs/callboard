@@ -1,24 +1,130 @@
-/* The panel is the chat's Computer view: it fills the content area and scrolls
-   as a whole, like the diff and debug views. */
+/* The panel is the chat's Computer view. It is a column of three parts: the
+   setup block (target, the Enable consent boundary, the notes), the session
+   stage, and the log footer. Only the stage grows, and inside it only the
+   screenshot does — on a desktop viewport the thing worth the height is the
+   frame, not the prose above it. */
 .computer-use-panel {
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
   background: var(--surface);
   font-size: 12px;
 }
 .computer-use-body {
+  height: 100%;
   padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
 }
 .computer-use-body p {
-  margin: 8px 0;
+  margin: 0;
   line-height: 1.5;
+}
+/* Measure, not width: prose stops well before the right edge of a wide
+   viewport. Controls, frames and logs are unaffected. */
+.computer-use-body p,
+.computer-use-body summary,
+.computer-use-body legend,
+.computer-use-body li {
+  max-width: 78ch;
+}
+.computer-use-setup,
+.computer-use-footer {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.computer-use-setup {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.computer-use-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+/* The diagnostic and the way out of this view: same row, last, and never
+   dressed like the action that grants control. */
+.computer-use-toolbar-aux {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.computer-use-consent {
+  flex: 1 1 32ch;
+  min-width: 0;
+  max-width: 60ch;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+.computer-use-consent strong {
+  color: var(--text);
+}
+.computer-use-brief,
+.computer-use-note,
+.computer-use-about summary,
+.computer-use-about p {
+  color: var(--text-muted);
+}
+.computer-use-about summary {
+  cursor: pointer;
+  width: fit-content;
+}
+/* Margins rather than a flex gap: a browser that wraps disclosure content in
+   its own ::details-content box swallows the gap, and the paragraphs then run
+   together. */
+.computer-use-about[open] summary {
+  margin-bottom: 6px;
+}
+.computer-use-about p + p {
+  margin-top: 6px;
+}
+.computer-use-target,
+.computer-use-session-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Server state — denied, unavailable, waiting — reads as a state, not as more
+   prose to skim past. */
+.computer-use-notice {
+  padding: 6px 8px;
+  border-left: 2px solid var(--border);
+  border-radius: 0 4px 4px 0;
+  background: var(--bg);
+}
+.computer-use-body [role="alert"] {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+/* Its own column: `.computer-use-body p` carries no margin, so the request
+   text would otherwise sit flush against the buttons that answer it. */
+.computer-use-request {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--bg);
 }
 .computer-use-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin: 8px 0;
+}
+.computer-use-controls-end {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 .computer-use-body button,
 .computer-use-body select,
@@ -30,30 +136,164 @@
   background: var(--bg);
   max-width: 100%;
 }
+/* Enable — and its approval twin — is the consent boundary, so it is the one
+   filled control in the panel. Everything else is an outline, a ghost or a link. */
+.computer-use-body button.computer-use-primary {
+  /* The border shorthand on purpose: the longhand form of it reads as the
+     brand painted as ink to theme-contrast.stylesheet.test.ts, and this is a
+     fill — the same accent, edge and face, under the ink token's own rule. */
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-weight: 600;
+}
+.computer-use-body button.computer-use-primary:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+.computer-use-body button.computer-use-quiet {
+  background: transparent;
+  color: var(--text-muted);
+}
+.computer-use-body button.computer-use-link {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent-text);
+  text-decoration: underline;
+}
+.computer-use-body button.computer-use-quiet:hover:not(:disabled) {
+  color: var(--text);
+}
+.computer-use-body button.computer-use-danger {
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
 .computer-use-body button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 .computer-use-body fieldset {
+  flex: 0 0 auto;
   border: 1px solid var(--border);
-  margin-top: 8px;
+  padding: 8px;
   min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 .computer-use-body form {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 8px 0;
 }
+/* The stage owns whatever height the setup block and footer leave — but never
+   less than its own content. Its automatic minimum size (min-height: auto ->
+   min-content) is what stops it: the setup block and footer do not shrink, so
+   `min-height: 0` here made the stage absorb every pixel of a short panel,
+   overflow its controls across the footer, and leave the body's scrollHeight
+   unchanged, i.e. unscrollable. Shrink the image instead — that is what
+   min-height: 0 on the viewport below is for. */
+.computer-use-stage {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.computer-use-session-meta {
+  color: var(--text-muted);
+}
+.computer-use-frame {
+  flex: 1 1 auto;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.computer-use-viewport {
+  flex: 1 1 auto;
+  /* A definite 0 that flex-grow then fills. It keeps the screenshot's intrinsic
+     height out of the stage's min-content — otherwise the stage's floor would
+     be the full-size frame and the panel would always scroll instead of fitting
+     the frame to the space. The image's `max-height: 100%` still resolves,
+     against the post-flex used height (css-flexbox §9.8). */
+  height: 0;
+  min-height: 0;
+  display: flex;
+  /* Load-bearing: without it the flex line stretches the replaced element and
+     the image's box stops matching its painted pixels, which is what the click
+     mapping in framePoint() reads. */
+  align-items: flex-start;
+  /* `safe`: when the frame is larger than the box, centring would push its top
+     left corner out of reach of the scroller. */
+  justify-content: safe center;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+/* Fit the frame to the space without ever distorting it: the click mapping is
+   proportional, so a uniform scale is the only safe fit. */
 .computer-use-frame img {
   display: block;
-  width: 100%;
+  width: auto;
   height: auto;
+  max-width: 100%;
+  max-height: 100%;
   user-select: none;
 }
 .computer-use-frame small {
   display: block;
-  margin: 4px 0;
+  color: var(--text-muted);
+}
+.computer-use-empty {
+  flex: 1 1 auto;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  text-align: center;
+}
+/* Phone widths keep the older behaviour deliberately: fitting a screenshot
+   into a short viewport there leaves it unreadable, so the frame takes the
+   width it needs and the panel scrolls, as it did before. */
+@media (max-width: 768px) {
+  .computer-use-stage,
+  .computer-use-frame,
+  .computer-use-viewport {
+    flex: 0 0 auto;
+  }
+  .computer-use-frame {
+    /* Give up the fit-to-height floor: here the frame is as tall as the image. */
+    min-height: 0;
+  }
+  .computer-use-viewport {
+    /* Undo the fit-to-height sizing: here the frame is as tall as it needs to
+       be, so a definite 0 height would collapse the box under the image. */
+    height: auto;
+    overflow: visible;
+  }
+  .computer-use-frame img {
+    width: 100%;
+    max-height: none;
+  }
+  .computer-use-empty {
+    min-height: 96px;
+  }
+}
+.computer-use-footer summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.computer-use-footer ol {
+  margin: 4px 0 0 16px;
   color: var(--text-muted);
 }
 .computer-use-header {

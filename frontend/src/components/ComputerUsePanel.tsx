@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Monitor } from "lucide-react";
 import type { ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession } from "shared/types/computerUse.js";
 import type { PermissionLevel } from "shared/types/permissions.js";
 import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
@@ -280,294 +281,352 @@ export default function ComputerUsePanel({
   return (
     <section className="computer-use-panel" aria-label="Browser & Computer Control">
       <div className="computer-use-body">
-        <p>
-          Controls Callboard&apos;s browser and desktop tools. Only you can enable a target — the agent never can, at any permission level. After that, Allow
-          lets the agent act on its own, while Ask stops its turn and asks you in the chat before each action. Agents with unrestricted code execution may
-          still run their own automation.
-        </p>
-        <p>Tools run on the configured service target, not on this viewer&apos;s computer. Model visual capability is not established by this viewer.</p>
-        <div className="computer-use-controls">
-          <label>
-            Target{" "}
-            <select value={kind} onChange={(event) => setKind(event.target.value as ComputerUseKind)}>
-              <option value="browser">Managed browser</option>
-              <option value="native">Native desktop (service host)</option>
-            </select>
-          </label>
-          <button
-            disabled={busy || denied || capability?.available !== true}
-            aria-describedby={sharedGrantNote}
-            onClick={() => {
-              void run("Enable requested", async (signal) => {
-                const acceptResponse = beginMutation();
-                // Keep stop-only knowledge even after this viewer closes. A
-                // fetch abort cannot cancel a server-accepted open.
-                const opened = await client.open(chatId, kind);
-                acceptResponse(opened.session, !signal.aborted);
-                if (!signal.aborted) {
-                  setSelected(opened.session.id);
-                }
-              });
-            }}
-          >
-            Enable
-          </button>
-          <button disabled={busy} onClick={() => void run("Status refreshed", async () => {}, true)}>
-            Retry status
-          </button>
-          {onPermissions && <button onClick={onPermissions}>Chat permissions</button>}
-        </div>
-        {/* Beside the button, not in the intro: the intro explains the two
-            levels in general, and this says which one this chat is — the only
-            place the difference is visible at the moment you consent to it. */}
-        {!denied && (
-          <p role="note" aria-label="What Enable grants">
-            {level === "allow" ? (
-              <>
-                <strong>This chat is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded in
-                the server log.
-              </>
-            ) : (
-              <>
-                <strong>This chat is set to Ask:</strong> the agent&apos;s turn stops and asks you here in the chat before every action on the target.
-              </>
-            )}
-          </p>
-        )}
-        {sharedGrantNote && (
-          <p id={sharedGrantNote} role="note">
-            <strong>Shared with subagents:</strong> a grant you enable or approve here is shared with any subagents the agent runs inside this chat&apos;s
-            turn ({provider === "codex" ? "Codex native subagents" : "Claude Code Task subagents"}), and their screenshots and actions are recorded under this
-            chat&apos;s identity.
-          </p>
-        )}
-        {(kind === "native" || session?.kind === "native") && (
-          <p role="note">
-            <strong>Same-machine native control:</strong> this targets the Callboard service host&apos;s existing desktop and applications. It requires a
-            configured display and OS capture/input consent. A remote viewer does not grant control of its own desktop. Stopping control does not close your
-            applications.
-          </p>
-        )}
-        {denied && (
-          <p role="status">
-            Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Ask confirms each agent
-            action with you in the chat; Allow lets the agent act unattended. Either way, only your Enable click starts a target.
-          </p>
-        )}
-        {!capability?.available && (
-          <p role="status">
-            {capability?.reason ??
-              "Target readiness has not been confirmed. Retry status; configure the browser runtime or a supported native display on the service host."}
-          </p>
-        )}
-        {(error || controller?.statusError) && <p role="alert">{error || controller?.statusError}</p>}
-        {/* Target requests only — your own Enable click under Ask. A GUI action
-            the agent wants to take is confirmed in the chat (under Ask, where
-            the agent is blocked waiting for it) or not at all (under Allow);
-            the server does not park those here. */}
-        {status?.sessions
-          .filter((item) => pending(item) && item.id !== session?.id)
-          .map((item) => (
-            <aside key={item.id} aria-label="Pending target approval">
-              <p>{item.reason ?? `Approve access to ${item.targetLabel ?? item.kind}`}</p>
-              <button
-                disabled={busy || denied}
-                aria-describedby={sharedGrantNote}
-                onClick={() =>
-                  void run("Request approved", async (signal) => {
-                    const acceptResponse = beginMutation(item);
-                    const result = await client.control(chatId, item.id, "approve", item.generation);
-                    acceptResponse(result, !signal.aborted);
-                  })
-                }
-              >
-                Confirm request
-              </button>
-              <button
-                onClick={() =>
-                  void run("Request denied", async (signal) => {
-                    const acceptResponse = beginMutation();
-                    const result = await client.control(chatId, item.id, "revoke", item.generation, signal);
-                    acceptResponse(result, !signal.aborted);
-                  })
-                }
-              >
-                Deny request
-              </button>
-            </aside>
-          ))}
-        {!!status?.sessions.length && (
-          <label>
-            Session{" "}
-            <select
-              disabled={busy}
-              value={session?.id ?? ""}
-              onChange={(event) => {
-                setSelected(event.target.value);
-                setObservation(null);
-                setText("");
+        <div className="computer-use-setup">
+          <div className="computer-use-toolbar">
+            <label className="computer-use-target">
+              Target{" "}
+              <select value={kind} onChange={(event) => setKind(event.target.value as ComputerUseKind)}>
+                <option value="browser">Managed browser</option>
+                <option value="native">Native desktop (service host)</option>
+              </select>
+            </label>
+            <button
+              className="computer-use-primary"
+              disabled={busy || denied || capability?.available !== true}
+              aria-describedby={sharedGrantNote}
+              onClick={() => {
+                void run("Enable requested", async (signal) => {
+                  const acceptResponse = beginMutation();
+                  // Keep stop-only knowledge even after this viewer closes. A
+                  // fetch abort cannot cancel a server-accepted open.
+                  const opened = await client.open(chatId, kind);
+                  acceptResponse(opened.session, !signal.aborted);
+                  if (!signal.aborted) {
+                    setSelected(opened.session.id);
+                  }
+                });
               }}
             >
-              {status.sessions.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.kind}: {item.targetLabel ?? item.id}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        {session && (
-          <>
-            <p>
-              Target:{" "}
-              <strong>{session.targetLabel ?? (session.kind === "native" ? "Native desktop on service host" : "Managed browser on service host")}</strong> ·
-              State: {session.state} · Controller: {session.controller ?? "none"} · Generation: {session.generation}
-            </p>
-            {session.reason && <p role="status">{session.reason}</p>}
-            <div className="computer-use-controls">
-              {pending(session) && status?.permission !== "deny" && (
-                <button disabled={busy || denied} aria-describedby={sharedGrantNote} onClick={() => control("approve")}>
-                  Approve this request
+              Enable
+            </button>
+            {/* Beside the button, and the only always-visible statement of the
+                level: the general Allow/Ask explanation moved into the
+                disclosure below, so what stays on screen is which one *this*
+                chat is — at the moment you consent to it. */}
+            {!denied && (
+              <span className="computer-use-consent" role="note" aria-label="What Enable grants">
+                {level === "allow" ? (
+                  <>
+                    <strong>This chat is set to Allow:</strong> once you enable a target, the agent acts on it without asking you again. Each action is recorded
+                    in the server log.
+                  </>
+                ) : (
+                  <>
+                    <strong>This chat is set to Ask:</strong> the agent&apos;s turn stops and asks you here in the chat before every action on the target.
+                  </>
+                )}
+              </span>
+            )}
+            <div className="computer-use-toolbar-aux">
+              <button className="computer-use-quiet" disabled={busy} onClick={() => void run("Status refreshed", async () => {}, true)}>
+                Retry status
+              </button>
+              {onPermissions && (
+                <button className="computer-use-link" onClick={onPermissions}>
+                  Chat permissions
                 </button>
               )}
-              <button
-                disabled={busy || denied || !active}
-                onClick={() => void run("Screenshot refreshed", (signal) => captureFrame(chatId, session.id, () => !signal.aborted))}
+            </div>
+          </div>
+          {/* What a viewer would otherwise assume wrongly: who can enable, whose
+              machine this is, and what the model can be relied on to see. Each
+              one limits a claim, so each stays on screen; the rest of the
+              explanation is read once and lives in the disclosure. */}
+          <p className="computer-use-brief">
+            Only you can enable a target — the agent never can, at any permission level. Tools run on the configured service target, not on this viewer&apos;s
+            computer. Model visual capability is not established by this viewer.
+          </p>
+          <details className="computer-use-about">
+            <summary>How browser &amp; computer control works</summary>
+            <p>
+              Controls Callboard&apos;s browser and desktop tools. Enabling a target is always your own action; after that, Allow lets the agent act on its own,
+              while Ask stops its turn and asks you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
+            </p>
+          </details>
+          {/* Demoted, but never hidden behind the disclosure: a description a
+              button points at has to stay in the accessibility tree, and the
+              native note only appears when native is the target in play. */}
+          {sharedGrantNote && (
+            <p className="computer-use-note" id={sharedGrantNote} role="note">
+              <strong>Shared with subagents:</strong> a grant you enable or approve here is shared with any subagents the agent runs inside this chat&apos;s
+              turn ({provider === "codex" ? "Codex native subagents" : "Claude Code Task subagents"}), and their screenshots and actions are recorded under this
+              chat&apos;s identity.
+            </p>
+          )}
+          {(kind === "native" || session?.kind === "native") && (
+            <p className="computer-use-note" role="note">
+              <strong>Same-machine native control:</strong> this targets the Callboard service host&apos;s existing desktop and applications. It requires a
+              configured display and OS capture/input consent. A remote viewer does not grant control of its own desktop. Stopping control does not close your
+              applications.
+            </p>
+          )}
+          {denied && (
+            <p className="computer-use-notice" role="status">
+              Computer control is denied. Set Browser &amp; Computer Control to Ask or Allow in chat permissions, then retry status. Ask confirms each agent
+              action with you in the chat; Allow lets the agent act unattended. Either way, only your Enable click starts a target.
+            </p>
+          )}
+          {!capability?.available && (
+            <p className="computer-use-notice" role="status">
+              {capability?.reason ??
+                "Target readiness has not been confirmed. Retry status; configure the browser runtime or a supported native display on the service host."}
+            </p>
+          )}
+          {(error || controller?.statusError) && <p role="alert">{error || controller?.statusError}</p>}
+          {/* Target requests only — your own Enable click under Ask. A GUI action
+              the agent wants to take is confirmed in the chat (under Ask, where
+              the agent is blocked waiting for it) or not at all (under Allow);
+              the server does not park those here. */}
+          {status?.sessions
+            .filter((item) => pending(item) && item.id !== session?.id)
+            .map((item) => (
+              <aside className="computer-use-request" key={item.id} aria-label="Pending target approval">
+                <p>{item.reason ?? `Approve access to ${item.targetLabel ?? item.kind}`}</p>
+                <div className="computer-use-controls">
+                  <button
+                    className="computer-use-primary"
+                    disabled={busy || denied}
+                    aria-describedby={sharedGrantNote}
+                    onClick={() =>
+                      void run("Request approved", async (signal) => {
+                        const acceptResponse = beginMutation(item);
+                        const result = await client.control(chatId, item.id, "approve", item.generation);
+                        acceptResponse(result, !signal.aborted);
+                      })
+                    }
+                  >
+                    Confirm request
+                  </button>
+                  <button
+                    onClick={() =>
+                      void run("Request denied", async (signal) => {
+                        const acceptResponse = beginMutation();
+                        const result = await client.control(chatId, item.id, "revoke", item.generation, signal);
+                        acceptResponse(result, !signal.aborted);
+                      })
+                    }
+                  >
+                    Deny request
+                  </button>
+                </div>
+              </aside>
+            ))}
+        </div>
+        <div className="computer-use-stage">
+          {!!status?.sessions.length && (
+            <label className="computer-use-session-select">
+              Session{" "}
+              <select
+                disabled={busy}
+                value={session?.id ?? ""}
+                onChange={(event) => {
+                  setSelected(event.target.value);
+                  setObservation(null);
+                  setText("");
+                }}
               >
-                Refresh screenshot
-              </button>
-              <button disabled={busy || denied || !active || human} onClick={() => control("takeover")}>
-                Take over
-              </button>
-              <button disabled={busy || denied || !human} aria-describedby={human ? resumePrivacyId : undefined} onClick={() => control("resume")}>
-                Resume agent
-              </button>
+                {status.sessions.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.kind}: {item.targetLabel ?? item.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {session && (
+            <>
+              <p className="computer-use-session-meta">
+                Target:{" "}
+                <strong>{session.targetLabel ?? (session.kind === "native" ? "Native desktop on service host" : "Managed browser on service host")}</strong> ·
+                State: {session.state} · Controller: {session.controller ?? "none"} · Generation: {session.generation}
+              </p>
+              {session.reason && (
+                <p className="computer-use-notice" role="status">
+                  {session.reason}
+                </p>
+              )}
+              <div className="computer-use-controls">
+                {pending(session) && status?.permission !== "deny" && (
+                  <button className="computer-use-primary" disabled={busy || denied} aria-describedby={sharedGrantNote} onClick={() => control("approve")}>
+                    Approve this request
+                  </button>
+                )}
+                <button
+                  disabled={busy || denied || !active}
+                  onClick={() => void run("Screenshot refreshed", (signal) => captureFrame(chatId, session.id, () => !signal.aborted))}
+                >
+                  Refresh screenshot
+                </button>
+                <button disabled={busy || denied || !active || human} onClick={() => control("takeover")}>
+                  Take over
+                </button>
+                <button disabled={busy || denied || !human} aria-describedby={human ? resumePrivacyId : undefined} onClick={() => control("resume")}>
+                  Resume agent
+                </button>
+                <label>
+                  <input type="checkbox" checked={preview} disabled={denied || !active} onChange={(event) => setPreview(event.target.checked)} /> Live preview
+                  (1 fps)
+                </label>
+                <button onClick={hideScreenshot}>Hide screenshot</button>
+                <span className="computer-use-controls-end">
+                  <button className="computer-use-danger" disabled={terminal(session)} onClick={() => control("stop")}>
+                    Stop
+                  </button>
+                  <button className="computer-use-danger" disabled={session.state === "revoked"} onClick={() => control("revoke")}>
+                    Revoke
+                  </button>
+                </span>
+              </div>
               {human && (
-                <p id={resumePrivacyId} role="note">
+                <p className="computer-use-note" id={resumePrivacyId} role="note">
                   Resuming immediately captures a new agent-visible screenshot of{" "}
                   {session.kind === "native" ? "the full native desktop on the service host" : "the managed browser page"}. Remove sensitive windows or content
                   from that target first. Previewing during takeover does not itself send those images to the agent.
                 </p>
               )}
-              <button disabled={terminal(session)} onClick={() => control("stop")}>
-                Stop
-              </button>
-              <button disabled={session.state === "revoked"} onClick={() => control("revoke")}>
-                Revoke
-              </button>
-              <label>
-                <input type="checkbox" checked={preview} disabled={denied || !active} onChange={(event) => setPreview(event.target.checked)} /> Live preview (1
-                fps)
-              </label>
-              <button onClick={hideScreenshot}>Hide screenshot</button>
-            </div>
-            {!frame && <p>No current screenshot. Refresh explicitly after enable, approval, takeover or a state change.</p>}
-            {frame && (
-              <div className="computer-use-frame">
-                <img
-                  src={`data:${frame.mimeType};base64,${frame.data}`}
-                  alt={`Current ${session.kind} screenshot`}
-                  draggable={false}
-                  style={{ cursor: canAct ? "crosshair" : "default", touchAction: canAct ? "none" : "auto" }}
-                  onContextMenu={(event) => event.preventDefault()}
-                  onPointerDown={(event) => {
-                    if (!canAct) return;
-                    dragStart.current = framePoint(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect(), frame.width, frame.height);
-                    event.currentTarget.setPointerCapture?.(event.pointerId);
-                  }}
-                  onPointerCancel={() => {
-                    dragStart.current = null;
-                  }}
-                  onPointerUp={(event) => {
-                    if (!canAct || !dragStart.current) return;
-                    const point = framePoint(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect(), frame.width, frame.height);
-                    const start = dragStart.current;
-                    dragStart.current = null;
-                    action(
-                      pointerMode === "drag"
-                        ? { type: "drag", fromX: start.x, fromY: start.y, toX: point.x, toY: point.y }
-                        : pointerMode === "move"
-                          ? { type: "move", ...point }
-                          : { type: "click", ...point, button: pointerMode === "right" ? "right" : "left" },
-                    );
-                  }}
-                />
-                <small>
-                  Screenshot pixels: {frame.width} × {frame.height}. Input uses these coordinates, not CSS pixels. Refresh if the target changed.
-                </small>
-              </div>
-            )}
-            <fieldset disabled={!canAct}>
-              <legend>Manual input — requires human takeover and a fresh screenshot</legend>
-              <label>
-                Pointer{" "}
-                <select value={pointerMode} onChange={(event) => setPointerMode(event.target.value as typeof pointerMode)}>
-                  <option value="click">Left click</option>
-                  <option value="right">Right click</option>
-                  <option value="move">Move</option>
-                  <option value="drag">Drag</option>
-                </select>
-              </label>
-              <button onClick={() => action({ type: "scroll", deltaX: 0, deltaY: -400 })}>Scroll up</button>
-              <button onClick={() => action({ type: "scroll", deltaX: 0, deltaY: 400 })}>Scroll down</button>
-              <div className="computer-use-controls">
-                {["Enter", "Tab", "Escape", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].map((key) => (
-                  <button key={key} onClick={() => action({ type: "key", key })}>
-                    {key}
-                  </button>
-                ))}
-              </div>
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  if (text) action({ type: "type", text });
-                }}
-              >
+              {!frame && (
+                <div className="computer-use-empty">
+                  <Monitor size={20} aria-hidden="true" />
+                  <p>No current screenshot. Refresh explicitly after enable, approval, takeover or a state change.</p>
+                </div>
+              )}
+              {frame && (
+                <div className="computer-use-frame">
+                  <div className="computer-use-viewport">
+                    <img
+                      src={`data:${frame.mimeType};base64,${frame.data}`}
+                      alt={`Current ${session.kind} screenshot`}
+                      draggable={false}
+                      style={{ cursor: canAct ? "crosshair" : "default", touchAction: canAct ? "none" : "auto" }}
+                      onContextMenu={(event) => event.preventDefault()}
+                      onPointerDown={(event) => {
+                        if (!canAct) return;
+                        dragStart.current = framePoint(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect(), frame.width, frame.height);
+                        event.currentTarget.setPointerCapture?.(event.pointerId);
+                      }}
+                      onPointerCancel={() => {
+                        dragStart.current = null;
+                      }}
+                      onPointerUp={(event) => {
+                        if (!canAct || !dragStart.current) return;
+                        const point = framePoint(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect(), frame.width, frame.height);
+                        const start = dragStart.current;
+                        dragStart.current = null;
+                        action(
+                          pointerMode === "drag"
+                            ? { type: "drag", fromX: start.x, fromY: start.y, toX: point.x, toY: point.y }
+                            : pointerMode === "move"
+                              ? { type: "move", ...point }
+                              : { type: "click", ...point, button: pointerMode === "right" ? "right" : "left" },
+                        );
+                      }}
+                    />
+                  </div>
+                  <small>
+                    Screenshot pixels: {frame.width} × {frame.height}. Input uses these coordinates, not CSS pixels. Refresh if the target changed.
+                  </small>
+                </div>
+              )}
+              <fieldset disabled={!canAct}>
+                <legend>Manual input — requires human takeover and a fresh screenshot</legend>
                 <label>
-                  Text to type <input value={text} maxLength={4096} autoComplete="off" onChange={(event) => setText(event.target.value)} />
+                  Pointer{" "}
+                  <select value={pointerMode} onChange={(event) => setPointerMode(event.target.value as typeof pointerMode)}>
+                    <option value="click">Left click</option>
+                    <option value="right">Right click</option>
+                    <option value="move">Move</option>
+                    <option value="drag">Drag</option>
+                  </select>
                 </label>
-                <button disabled={!canAct || !text}>Type text</button>
-              </form>
-              {session.kind === "browser" && (
+                <button onClick={() => action({ type: "scroll", deltaX: 0, deltaY: -400 })}>Scroll up</button>
+                <button onClick={() => action({ type: "scroll", deltaX: 0, deltaY: 400 })}>Scroll down</button>
+                <div className="computer-use-controls">
+                  {["Enter", "Tab", "Escape", "Backspace", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].map((key) => (
+                    <button key={key} onClick={() => action({ type: "key", key })}>
+                      {key}
+                    </button>
+                  ))}
+                </div>
                 <form
                   onSubmit={(event) => {
                     event.preventDefault();
-                    if (url) action({ type: "navigate", url });
+                    if (text) action({ type: "type", text });
                   }}
                 >
                   <label>
-                    Browser URL <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} />
+                    Text to type <input value={text} maxLength={4096} autoComplete="off" onChange={(event) => setText(event.target.value)} />
                   </label>
-                  <button disabled={!canAct || !url}>Navigate</button>
+                  <button disabled={!canAct || !text}>Type text</button>
                 </form>
-              )}
-            </fieldset>
-          </>
-        )}
-        {capturing && <p role="status">Capturing screenshot… Manual input is paused until a fresh frame is available.</p>}
-        {busy && <p role="status">Waiting for server…</p>}
-        {!!status?.events?.length && (
-          <details>
-            <summary>Service events (memory only)</summary>
-            <ol>
-              {status.events.map((event, index) => (
-                <li key={index}>
-                  {new Date(event.at).toLocaleTimeString()} · {event.type} · {event.sessionId} · generation {event.generation}
-                </li>
-              ))}
-            </ol>
-          </details>
-        )}
-        {!!timeline.length && (
-          <details>
-            <summary>Viewer actions (this tab)</summary>
-            <ol>
-              {timeline.map((item, index) => (
-                <li key={index}>{item}</li>
-              ))}
-            </ol>
-          </details>
-        )}
+                {session.kind === "browser" && (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (url) action({ type: "navigate", url });
+                    }}
+                  >
+                    <label>
+                      Browser URL <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} />
+                    </label>
+                    <button disabled={!canAct || !url}>Navigate</button>
+                  </form>
+                )}
+              </fieldset>
+            </>
+          )}
+          {!session && (
+            <div className="computer-use-empty">
+              <Monitor size={20} aria-hidden="true" />
+              {/* Denied already has its own notice above; repeating why here
+                  is the duplication this layout exists to remove. */}
+              <p>No target is enabled in this chat.{!denied && " Choose a target above and enable it; the screenshot appears here."}</p>
+            </div>
+          )}
+        </div>
+        <div className="computer-use-footer">
+          {capturing && (
+            <p className="computer-use-notice" role="status">
+              Capturing screenshot… Manual input is paused until a fresh frame is available.
+            </p>
+          )}
+          {busy && (
+            <p className="computer-use-notice" role="status">
+              Waiting for server…
+            </p>
+          )}
+          {!!status?.events?.length && (
+            <details>
+              <summary>Service events (memory only)</summary>
+              <ol>
+                {status.events.map((event, index) => (
+                  <li key={index}>
+                    {new Date(event.at).toLocaleTimeString()} · {event.type} · {event.sessionId} · generation {event.generation}
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
+          {!!timeline.length && (
+            <details>
+              <summary>Viewer actions (this tab)</summary>
+              <ol>
+                {timeline.map((item, index) => (
+                  <li key={index}>{item}</li>
+                ))}
+              </ol>
+            </details>
+          )}
+        </div>
       </div>
     </section>
   );
