@@ -116,7 +116,10 @@ function mcpFailure(content: unknown[]): Error & { code?: string } {
   } catch {
     code = raw ? "invalid_request" : undefined;
   }
-  return Object.assign(new Error(raw || "Driver reported a failure"), code ? { code } : {});
+  // No stack: this failure happened behind the MCP hop, so the extractor's own
+  // frames would describe where the text was parsed, not where anything broke —
+  // actively misleading now that `escalate` can put this line at error level.
+  return Object.assign(new Error(raw || "Driver reported a failure"), { stack: "" }, code ? { code } : {});
 }
 
 /**

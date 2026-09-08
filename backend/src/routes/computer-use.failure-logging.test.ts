@@ -124,17 +124,38 @@ it("keeps a refusal an operator must see at the default level, without calling i
   expect(String(logs.warn.mock.calls[0][0])).toContain("status chat=chat-77 code=denied refused: Chat permission metadata is unreadable");
 });
 
-it("strips control characters out of the message so error text cannot pose as its own line", async () => {
-  // A zod issue prints the offending key verbatim, newlines and all.
-  const zodish = 'Invalid arguments: [\n  {\n    "code": "unrecognized_keys",\n    "keys": [\n      "[error] forged"\n    ]\n  }\n]';
+it("folds a message onto our line, and does not let it forge a line or a frame", async () => {
+  // A zod issue prints the offending key verbatim, newlines and all. The last
+  // two entries are the separators that are not control characters: `less`
+  // ignores them, but CSS `white-space: pre` breaks on U+2028.
+  const zodish =
+    'Invalid arguments: [\n  {\n    "code": "unrecognized_keys",\n    "keys": [\n      "[error] forged"\n    ]\n  }\n]' +
+    "\n    at forged (/evil.js:1:1)\u2028[error] split\u0085more";
   vi.mocked(getComputerUseHost).mockResolvedValue({ observe: vi.fn().mockRejectedValue(new Error(zodish)) } as never);
 
   expect((await post("chat-77/sess-3/observe", {})).status).toBe(503);
 
   const [header, ...frames] = errorLine().split("\n");
   expect(header).toContain("unrecognized_keys");
-  expect(header).toContain("[error] forged"); // preserved, but on our line
-  expect(frames.every((line) => /^\s+at /.test(line))).toBe(true); // stack header dropped, so no second copy
+  expect(header).toContain("[error] forged"); // preserved — it is the diagnosis — but on our line
+  expect(header).toContain("[error] split");
+  expect(frames.length).toBeGreaterThan(0);
+  expect(frames.every((line) => /^\s+at /.test(line))).toBe(true);
+  // The message's own "at ..." line matches that filter, so it has to be cut
+  // with the header it lives in, not filtered out line by line.
+  expect(frames.some((line) => line.includes("/evil.js"))).toBe(false);
+  expect(errorLine()).toContain("computer-use.failure-logging.test.ts"); // real frames survived
+});
+
+it("keeps an errno greppable as a code even though it is not one of our own", async () => {
+  vi.mocked(getComputerUseHost).mockResolvedValue({
+    open: vi.fn().mockRejectedValue(Object.assign(new Error("spawn chromium ENOENT"), { code: "ENOENT" })),
+  } as never);
+
+  expect((await post("chat-77/open", { kind: "browser" })).status).toBe(503);
+
+  expect(logs.error).toHaveBeenCalledOnce();
+  expect(errorLine()).toContain("code=ENOENT");
 });
 
 it("never lets a request-supplied identifier forge a log line", async () => {

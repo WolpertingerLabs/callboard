@@ -47,6 +47,36 @@ const controlId = (value: unknown): string => (typeof value === "string" ? value
 const isAbort = (error: unknown): boolean =>
   error instanceof Error && (error.name === "AbortError" || (error as { code?: unknown }).code === 20 || (error as { code?: unknown }).code === "ABORT_ERR");
 
+/**
+ * Fold anything that could end a line or move the cursor into a space. Covers
+ * C0 and C1 (`\p{Cc}`, which includes NEL) and the format characters, plus the
+ * two Unicode separators outside those classes: `less` ignores U+2028, but CSS
+ * `white-space: pre` treats it as a forced break, so a log rendered in a
+ * browser would show it as one.
+ */
+const oneLine = (value: string): string => value.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ");
+
+/**
+ * The frames of an error, with the `Name: message` header removed.
+ *
+ * The header is dropped by *length*, not by taking everything after the first
+ * newline: a message can itself contain `\n    at forged (/evil.js:1:1)`, and
+ * that survives a per-line frame filter looking like the innermost call site.
+ * Slicing the message out of the stack removes the whole region it controls.
+ */
+function stackFrames(error: unknown): string {
+  if (!(error instanceof Error) || !error.stack) return "";
+  const cut = error.message ? error.stack.indexOf(error.message) : -1;
+  const body = cut >= 0 ? error.stack.slice(cut + error.message.length) : error.stack;
+  const frames = body
+    .split("\n")
+    .filter((line) => /^\s+at /.test(line))
+    .map(oneLine)
+    .join("\n")
+    .slice(0, 2000);
+  return frames ? `\n${frames}` : "";
+}
+
 export interface FailureContext {
   /** The caller's signal was aborted — a stopped turn, not a fault. Wins over `escalate`. */
   cancelled?: boolean;
@@ -81,17 +111,15 @@ export interface FailureContext {
 export function logComputerUseFailure(operation: string, ids: { chatId?: unknown; sessionId?: unknown }, error: unknown, context: FailureContext = {}): void {
   const raw = (error as { code?: unknown } | null | undefined)?.code;
   // Same treatment as the identifiers: a code can reach here from a recovered
-  // MCP payload, so bound it and keep it to the alphabet every real code uses.
-  const coded = typeof raw === "string" ? raw.slice(0, 64).replace(/[^a-z_]/g, "") : "";
+  // MCP payload, so bound it and drop anything that could act as a separator.
+  // The alphabet stays wide enough for an errno (`ENOENT`, `ERR_DLOPEN_FAILED`),
+  // which is the most greppable thing an uncoded throwable carries.
+  const coded = typeof raw === "string" ? raw.slice(0, 64).replace(/[^a-zA-Z0-9_]/g, "") : "";
   const label = context.cancelled || isAbort(error) ? "cancelled" : coded || "unavailable";
   const chatId = controlId(ids.chatId) || "-";
   const sessionId = controlId(ids.sessionId);
   const where = `${operation} chat=${chatId}${sessionId ? ` session=${sessionId}` : ""} code=${label}`;
-  // Control characters out: an error message can carry caller-supplied text
-  // (a zod issue names the offending key), and a newline in it would otherwise
-  // let that text pose as its own log line.
-  // eslint-disable-next-line no-control-regex
-  const detail = (error instanceof Error ? error.message : String(error ?? "")).replace(/[\x00-\x1f\x7f]+/g, " ").slice(0, 500);
+  const detail = oneLine(error instanceof Error ? error.message : String(error ?? "")).slice(0, 500);
   if (label === "cancelled" || (!context.escalate && ROUTINE_CONTROL_CODES.has(label))) {
     log.debug(`Computer control ${where} refused: ${detail}`);
     return;
@@ -100,17 +128,7 @@ export function logComputerUseFailure(operation: string, ids: { chatId?: unknown
     log.warn(`Computer control ${where} refused: ${detail}`);
     return;
   }
-  // Frames only. The message is already in `detail`, and dropping the stack's
-  // own header keeps the sanitizing above from being undone by a copy of it.
-  const frames =
-    error instanceof Error && error.stack
-      ? error.stack
-          .split("\n")
-          .filter((line) => /^\s+at /.test(line))
-          .join("\n")
-          .slice(0, 2000)
-      : "";
-  log.error(`Computer control ${where} failed: ${detail}${frames ? `\n${frames}` : ""}`);
+  log.error(`Computer control ${where} failed: ${detail}${stackFrames(error)}`);
 }
 
 export interface HostPolicy {
