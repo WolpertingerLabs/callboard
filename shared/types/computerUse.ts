@@ -27,6 +27,8 @@ export interface ComputerUseCapability {
   kind: ComputerUseKind;
   available: boolean;
   reason?: string;
+  /** Additive viewer guidance; older/custom probes may omit this. Never infer from reason. */
+  readiness?: "setup-required" | "unsupported" | "permission-blocked" | "unknown";
 }
 export interface ComputerUseSession {
   id: string;

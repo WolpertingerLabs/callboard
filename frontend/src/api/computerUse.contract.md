@@ -8,7 +8,7 @@ All paths start with `/api/computer-use/:chatId`. Cookies are sent with
 frontend calls. The backend owns Origin/CSRF, ownership, grant, human-controller
 lease and stale-frame enforcement.
 
-- GET `/status`: `{ capabilities: [{ kind, available, reason? }], sessions, permission }`.
+- GET `/status`: `{ capabilities: [{ kind, available, reason?, readiness? }], sessions, permission }`.
 - POST `/open`: `{ kind: "browser" | "native" }` → `{ session }`.
 - POST `/:sessionId/observe`: `{}` → `{ frame: { data, mimeType, width, height }, frameId, generation }`.
   Data is raw base64 raster bytes, not a URL. Screenshots are never stored in localStorage.
@@ -63,3 +63,13 @@ the viewer's machine for a native service-host target. Native availability on
 headless or unsupported hosts must be false with an actionable reason.
 
 The frameId is a UUID, not a lease generation or optional image label. Missing IDs return 400; stale IDs return 409. The viewer sends the exact ID paired with its displayed capture, then captures again after an action. A capture in another controlling tab supersedes the prior frame; subsequent captures cannot make an old ID valid again. Approval cards retain their exact frame/action snapshot. External asynchronous UI changes cannot be perfectly detected; re-observation remains necessary after suspected changes.
+
+
+Native capabilities may include optional `readiness`: `setup-required`,
+`unsupported`, `permission-blocked`, or `unknown`. This is driver/host metadata,
+never a classification derived from `reason`. Missing or unrecognized values
+retain generic retry/check guidance. Chat permission restrictions override
+driver classification, including when a probe throws. This metadata grants
+nothing: setup guidance is passive, and enabling a target remains a separate
+human action. Technical details are escaped text in the authenticated viewer;
+package `operatorDetail` remains excluded from model-visible MCP probe results.

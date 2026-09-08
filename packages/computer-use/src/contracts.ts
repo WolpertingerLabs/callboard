@@ -53,6 +53,8 @@ export interface Probe {
    * only an embedder holding the Probe itself may display it.
    */
   operatorDetail?: string;
+  /** Optional host-fact classification; missing/unknown values require generic guidance. */
+  readiness?: "setup-required" | "unsupported" | "permission-blocked" | "unknown";
   capabilities: readonly string[];
 }
 export interface Frame {

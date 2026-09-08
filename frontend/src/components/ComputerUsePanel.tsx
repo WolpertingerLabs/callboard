@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Monitor } from "lucide-react";
-import type { ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession } from "shared/types/computerUse.js";
+import type { ComputerUseCapability, ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession } from "shared/types/computerUse.js";
 import type { PermissionLevel } from "shared/types/permissions.js";
 import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 import "./ComputerUsePanel.css";
@@ -29,6 +29,43 @@ function captureFrame(chatId: string, sessionId: string, canStart: () => boolean
 
 const terminal = (session: ComputerUseSession) => ["stopped", "revoked", "closed", "failed", "expired"].includes(session.state);
 const pending = (session: ComputerUseSession) => ["pending", "awaiting_approval", "approval_required", "pending_approval"].includes(session.state);
+
+/** Classification is optional: never guess a diagnosis from a driver's prose. */
+function DesktopReadinessNotice({ capability }: { capability?: ComputerUseCapability }) {
+  const headingId = useId();
+  let heading = "Desktop readiness unconfirmed";
+  let guidance =
+    "Retry status to check the Callboard service host. If readiness remains unavailable, ask your agent in chat to diagnose it. Only you can enable control afterward.";
+  switch (capability?.readiness) {
+    case "setup-required":
+      heading = "Desktop setup required";
+      guidance =
+        "The desktop on this Callboard service host is not ready. Ask your agent in chat to check the display and desktop helpers and help configure or reconnect it. You'll still need to enable control afterward.";
+      break;
+    case "unsupported":
+      heading = "Desktop environment unsupported";
+      guidance =
+        "This Callboard service host needs a compatible native driver or supported environment. Ask your agent in chat to explain the options; setup alone may not make this environment supported.";
+      break;
+    case "permission-blocked":
+      heading = "Desktop permissions required";
+      guidance =
+        "Check this chat's permissions. Native desktop control on the Callboard service host requires file, network, and code permissions to be Allow because it cannot confine applications. Review that broader access before changing permissions; nothing is changed automatically.";
+      break;
+  }
+  return (
+    <div className="computer-use-notice computer-use-readiness" role="status" aria-labelledby={headingId}>
+      <h3 id={headingId}>{heading}</h3>
+      <p>{guidance}</p>
+      {capability?.reason && (
+        <details>
+          <summary>Technical details</summary>
+          <p>{capability.reason}</p>
+        </details>
+      )}
+    </div>
+  );
+}
 
 export function framePoint(clientX: number, clientY: number, rect: Pick<DOMRect, "left" | "top" | "width" | "height">, width: number, height: number) {
   return {
@@ -376,7 +413,8 @@ export default function ComputerUsePanel({
               action with you in the chat; Allow lets the agent act unattended. Either way, only your Enable click starts a target.
             </p>
           )}
-          {!capability?.available && (
+          {kind === "native" && !denied && !capability?.available && <DesktopReadinessNotice capability={capability} />}
+          {kind !== "native" && !capability?.available && (
             <p className="computer-use-notice" role="status">
               {capability?.reason ??
                 "Target readiness has not been confirmed. Retry status; configure the browser runtime or a supported native display on the service host."}
@@ -589,7 +627,10 @@ export default function ComputerUsePanel({
               <Monitor size={20} aria-hidden="true" />
               {/* Denied already has its own notice above; repeating why here
                   is the duplication this layout exists to remove. */}
-              <p>No target is enabled in this chat.{!denied && " Choose a target above and enable it; the screenshot appears here."}</p>
+              <p>
+                No target is enabled in this chat.
+                {!denied && (kind !== "native" || capability?.available) && " Choose a target above and enable it; the screenshot appears here."}
+              </p>
             </div>
           )}
         </div>

@@ -144,3 +144,13 @@ describe("the panel's vertical contract", () => {
     expect(values(viewport, "height", MOBILE)).toEqual(["auto"]);
   });
 });
+
+it("keeps desktop guidance and long diagnostics wrappable using theme tokens", async () => {
+  await panel();
+  fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+  const notice = screen.getByRole("heading", { name: "Desktop readiness unconfirmed" }).parentElement!;
+  expect(values(notice, "min-width")).toEqual(["0"]);
+  expect(values(notice, "overflow-wrap")).toEqual(["anywhere"]);
+  expect(values(notice, "color")).toEqual(["var(--text)"]);
+  expect(values(notice, "background")).toEqual(["var(--bg)"]);
+});

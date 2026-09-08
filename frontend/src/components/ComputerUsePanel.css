@@ -385,3 +385,20 @@
     flex-basis: 100%;
   }
 }
+
+.computer-use-readiness {
+  color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.computer-use-readiness h3 {
+  margin: 0 0 4px;
+  font-size: inherit;
+}
+.computer-use-readiness details {
+  margin-top: 6px;
+  color: var(--text-muted);
+}
+.computer-use-readiness summary {
+  cursor: pointer;
+}
