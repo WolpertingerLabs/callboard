@@ -60,6 +60,7 @@ async function main() {
           approvalPolicy: "never",
           directUiNamespaces: route.directUiNamespaces,
           directUiPolicy: route.directUiPolicy,
+          uiAliasPresence: route.uiAliasPresence,
         },
       });
       instructions = translated.instructionsFilePath;

@@ -23,18 +23,23 @@ namespace list and CLI version evidence. Enable the split only for the verified
 native route and CLI 0.153.4+ (0.x), plus a fresh `directUiPolicy: "unconfigured"`
 proof from that same effective config read. A namespace list alone cannot
 authorize splitting. Preserve boolean code-mode shorthand as its
-explicit `enabled` value when adding the nested setting. Unknown/older binaries,
-unreadable/malformed config, and alternate provider routes retain the previous
-unsplit behavior; they do not claim direct-rendering support. No new App Server
-execution transport or additional probe is introduced.
+explicit `enabled` value when adding the nested setting. Unknown/older binaries
+and alternate provider routes retain unsplit behavior when alias presence is known.
+Unreadable config fails closed before starting the turn because reserved-name
+safety cannot be proven. No new App Server execution transport is introduced;
+the existing read-only route probe is reused for every provider route.
 
 `callboard-ui` and `callboard_ui` are reserved. External Callboard MCP entries
-cannot overwrite them. Per-run atomic SDK `configOverrides` replace the reserved
-alias table (avoiding stale user URL/env/command leaves) and disable its underscore
-collision. The disabled entry includes an inert command because the native config
-parser requires a transport even when disabled. Other user configuration remains
-untouched. Socket lifetime, timeout, cancellation, and root-bound identity remain
-owned by the original handle. No handler infers caller identity from request IDs.
+cannot overwrite them. Native CLI 0.153.4 recursively merges even raw inline-table
+SDK overrides: these are **not atomic replacements**. The route probe projects
+only two presence booleans, including for alternate/injected provider routes. An
+existing reserved entry receives **only an enabled=false leaf**, preserving its
+HTTP/stdio transport, env, and policy without copying them. A proven-absent
+disabled entry receives an inert command/args because native config requires a
+transport even when disabled. Only a proven-absent alias can host the direct UI
+bridge. Unknown presence closes owned bridge handles and aborts before any model
+or foreign MCP launch. Other user configuration remains untouched. Socket
+lifetime, timeout, cancellation, and root-bound identity remain owned by the original handle. No handler infers caller identity from request IDs.
 
 ## Policy-preserving fallback (root review P1)
 
@@ -71,8 +76,22 @@ three regression cases retain these exact original-server policies:
 Native cases also cover empty/combined allow/deny lists, default/per-tool approvals,
 an unknown server field, trusted-project policy, and the policy-free positive
 control (the split still works and preserves the user's code-mode namespace list).
-Unit cases fail closed for malformed policy and plugin entries. The coordinating
-root's original standalone config probe also now passes unchanged.
+Unit cases fail closed for malformed policy and plugin entries. Options-only
+callers now also require the effective alias-presence proof.
+
+## Recursive-merge regression (independent configuration review P1)
+
+The initial disabled-table fallback could retain an existing HTTP URL alongside a
+generated stdio command and prevent the entire turn from bootstrapping. No
+scalar/table reset trick is used. The enabled-only correction is tested against
+the installed native CLI, not just generated strings: 24 cases cover both
+reserved names, HTTP and enabled/disabled stdio (with env and approval policy),
+and native, fallback, configured-alternate, and injected-alternate routes.
+A nonbillable executable stub captures the **actual SDK-emitted arguments**;
+native `config/read` and `codex mcp list --json` then consume those arguments.
+Tests require exact preservation of the existing entry except `enabled=false`,
+both aliases disabled, no widened tool availability, and intact code-mode policy.
+No authentication, model call, foreign handler, or production service is involved.
 
 ## Transcript and trust
 
@@ -87,7 +106,11 @@ ordering and duplicate delivery are covered; ambiguous IDs cannot authorize
 unwrapping. Exec output is never inspected for nested UI JSON. Foreign namespaces
 and lookalike suffixes stay generic. The frontend also validates the complete
 media/canvas contract before using the existing renderers, including the existing
-untrusted-media warning gate.
+untrusted-media warning gate. Production grouping pairs globally unique IDs in
+O(n), across arbitrary distance/order, while ambiguous/reused IDs stay unpaired
+and ID-less legacy adjacency remains compatible. URL protocol validation accepts
+uppercase HTTP(S) consistently with the renderer. These focused rendering fixes
+were integrated from independent developer commit `18dd34edb1d4d1447fba1b8a929af5f770a87c10`.
 
 A separate real failure probe found that 0.153.4 drops MCP `isError` from durable
 `response_item` output, even though SDK status is `failed`. The bridge therefore
@@ -132,8 +155,9 @@ Native generated canvas/call IDs are replaced with fixture IDs. The SDK fixture
 retains its small per-run `item_N` IDs, which can repeat after resume.
 
 The offline Chromium smoke passes that captured rollout through the real history
-parser and `ToolCallBubble`/`MediaRenderer`/`CanvasRenderer`, loads a synthetic PNG
+parser, production `groupToolMessages`, and `ToolCallBubble`/`MediaRenderer`/`CanvasRenderer`, loads a synthetic PNG
 and both HTML snapshots from an ephemeral loopback server, verifies ordinary exec
-stays generic, and repeats after browser reload. External requests are blocked.
+stays generic, and repeats after browser reload. Four scenarios cover normal,
+distant, reversed, and uppercase-URL records, plus ambiguous and failed results. External requests are blocked.
 It tests browser rendering without a desktop-access grant. It is an isolated
 component integration, not a production-daemon end-to-end test.

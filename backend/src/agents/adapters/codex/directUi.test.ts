@@ -62,14 +62,18 @@ describe("direct UI config", () => {
     handles.push(handle);
     const options = {
       mcpServers: { "callboard-tools": handle },
-      codex: { directUiNamespaces: ["custom", "mcp__callboard_ui"], directUiPolicy: "unconfigured" as const },
+      codex: {
+        directUiNamespaces: ["custom", "mcp__callboard_ui"],
+        directUiPolicy: "unconfigured" as const,
+        uiAliasPresence: { "callboard-ui": false, callboard_ui: false },
+      },
     };
     const translated = translateCodexOptions(options);
     const config = translated.codexOpts.config!;
     expect(config["features.code_mode.direct_only_tool_namespaces"]).toEqual(["custom", "mcp__callboard_ui"]);
     expect(config).not.toHaveProperty("features.code_mode.enabled");
-    expect(translated.codexOpts.configOverrides?.[0]).toContain("mcp_servers.callboard_ui={enabled=false,");
-    expect(translated.codexOpts.configOverrides?.[1]).toContain("mcp_servers.callboard-ui={command=");
+    expect(translated.codexOpts.configOverrides).toContain("mcp_servers.callboard_ui.enabled=false");
+    expect(translated.codexOpts.configOverrides?.some((value) => value.startsWith("mcp_servers.callboard-ui."))).toBe(false);
     const servers = collectCodexMcpServers(options.mcpServers, true);
     expect(servers.handles).toEqual([handle]);
     expect(servers.config!["callboard-ui"].args).toEqual(servers.config!["callboard-tools"].args);
@@ -77,13 +81,20 @@ describe("direct UI config", () => {
     expect(servers.config!["callboard-tools"].disabled_tools).toEqual(servers.config!["callboard-ui"].enabled_tools);
     for (const enabled of [true, false]) {
       expect(
-        translateCodexOptions({ ...options, codex: { directUiNamespaces: [], directUiPolicy: "unconfigured", directUiCodeModeEnabled: enabled } }).codexOpts
-          .config?.["features.code_mode.enabled"],
+        translateCodexOptions({
+          ...options,
+          codex: {
+            directUiNamespaces: [],
+            directUiPolicy: "unconfigured",
+            uiAliasPresence: { "callboard-ui": false, callboard_ui: false },
+            directUiCodeModeEnabled: enabled,
+          },
+        }).codexOpts.config?.["features.code_mode.enabled"],
       ).toBe(enabled);
     }
-    const legacy = translateCodexOptions({ ...options, codex: { useOpenRouter: true } });
+    const legacy = translateCodexOptions({ ...options, codex: { useOpenRouter: true, uiAliasPresence: { "callboard-ui": false, callboard_ui: false } } });
     expect(legacy.codexOpts.config).not.toHaveProperty("features.code_mode.direct_only_tool_namespaces");
-    expect(legacy.codexOpts.configOverrides?.[1]).toContain("mcp_servers.callboard-ui={enabled=false,");
+    expect(legacy.codexOpts.configOverrides).toContain("mcp_servers.callboard-ui.enabled=false");
     expect(collectCodexMcpServers(options.mcpServers).config).not.toHaveProperty("callboard-ui");
   });
   it("does not promote a third-party handle/command or let an external entry overwrite the reserved alias", () => {

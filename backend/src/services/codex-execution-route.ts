@@ -8,6 +8,9 @@ import { getApiEnvOverrides, getCodexExecutablePath, OPENROUTER_CODEX_BASE_URL }
 import { isCodexRoutedThroughOpenRouter } from "../agents/adapters/codex/codexAuth.js";
 const require = createRequire(import.meta.url);
 
+/** Presence only, never transport details, environment, or credentials. */
+export type CodexUiAliasPresence = { "callboard-ui": boolean; callboard_ui: boolean };
+
 export interface CodexExecutionRoute {
   route: "codex" | "openrouter" | "unknown";
   endpoint?: string;
@@ -25,6 +28,7 @@ export interface CodexExecutionRoute {
   directUiCodeModeEnabled?: boolean;
   /** No effective config for the identities being split/overridden. */
   directUiPolicy?: "unconfigured";
+  uiAliasPresence?: CodexUiAliasPresence;
 }
 interface RouteConfig {
   model_provider?: unknown;
@@ -70,10 +74,6 @@ export function routeFromCodexConfig(config: RouteConfig, env: NodeJS.ProcessEnv
 const inFlight = new Map<string, Promise<Omit<CodexExecutionRoute, "injectedOpenRouter">>>();
 export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: string): Promise<CodexExecutionRoute> {
   const injectedOpenRouter = isCodexRoutedThroughOpenRouter(settings);
-  if (injectedOpenRouter) {
-    const endpoint = safeApiRoot(settings.codexOpenRouterBaseUrl?.trim() || OPENROUTER_CODEX_BASE_URL);
-    return { route: endpoint ? "openrouter" : "unknown", endpoint, injectedOpenRouter };
-  }
   const env = { ...sanitizeInheritedAgentEnv(process.env), ...getApiEnvOverrides(settings) };
   const override = getCodexExecutablePath(settings);
   let command = override;
@@ -90,7 +90,7 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
   // Match SDK 0.153.4's baseUrl translation exactly (a CLI config override,
   // not merely an environment variable). No API key is needed for config/read.
   const args = [...prefix, "app-server", ...(baseUrlOverride ? ["--config", `openai_base_url=${JSON.stringify(baseUrlOverride)}`] : [])];
-  const key = JSON.stringify([command, env.CODEX_HOME, cwd, baseUrlOverride, env.OPENAI_BASE_URL]);
+  const key = JSON.stringify([command, env.CODEX_HOME, cwd, baseUrlOverride, env.OPENAI_BASE_URL, injectedOpenRouter]);
   let pending = inFlight.get(key);
   if (!pending) {
     pending = new Promise((resolve) => {
@@ -131,6 +131,8 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
             } else if (response.id === 2) {
               if (!response.result?.config) return finish();
               resolvedRoute = routeFromCodexConfig(response.result.config, env);
+              const uiAliasPresence = codexUiAliasPresence(response.result.config);
+              if (uiAliasPresence) resolvedRoute.uiAliasPresence = uiAliasPresence;
               if (resolvedRoute.route === "codex") {
                 const namespaces = directUiNamespacesFromConfig(cliUserAgent, response.result.config);
                 if (namespaces && canSplitCodexUiTools(response.result.config)) {
@@ -142,7 +144,7 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
               }
               // Only the CLI knows which model it runs unconfigured; the debug
               // catalog carries no default marker. Ask in the same session.
-              if (resolvedRoute.route === "unknown" || resolvedRoute.model) return finish(resolvedRoute);
+              if (injectedOpenRouter || resolvedRoute.route === "unknown" || resolvedRoute.model) return finish(resolvedRoute);
               send({ id: 3, method: "model/list", params: {} });
             } else if (response.id === 3) {
               const entries: unknown = response.result?.data;
@@ -162,7 +164,19 @@ export async function resolveCodexExecutionRoute(settings: AgentSettings, cwd?: 
     inFlight.set(key, pending);
     void pending.finally(() => inFlight.delete(key));
   }
-  return { ...(await pending), injectedOpenRouter };
+  const resolved = await pending;
+  if (injectedOpenRouter) {
+    // Still inspect effective alias presence for injected alternate routes. Do
+    // not leak native route/model/default or direct-only capability into them.
+    const endpoint = safeApiRoot(settings.codexOpenRouterBaseUrl?.trim() || OPENROUTER_CODEX_BASE_URL);
+    return {
+      route: endpoint ? "openrouter" : "unknown",
+      endpoint,
+      injectedOpenRouter,
+      ...(resolved.uiAliasPresence && { uiAliasPresence: resolved.uiAliasPresence }),
+    };
+  }
+  return { ...resolved, injectedOpenRouter };
 }
 
 /** Config/read is already our read-only CLI config probe, not an execution
@@ -218,4 +232,16 @@ export function canSplitCodexUiTools(config: unknown): boolean {
     }
   }
   return true;
+}
+
+/** config/read's effective map tells us whether an enabled-only override has
+ * a transport to inherit. Undefined is unknown, NOT evidence of absence. */
+export function codexUiAliasPresence(config: unknown): CodexUiAliasPresence | undefined {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return undefined;
+  const servers = (config as { mcp_servers?: unknown }).mcp_servers;
+  if (servers !== undefined && (!servers || typeof servers !== "object" || Array.isArray(servers))) return undefined;
+  return {
+    "callboard-ui": !!servers && Object.hasOwn(servers, "callboard-ui"),
+    callboard_ui: !!servers && Object.hasOwn(servers, "callboard_ui"),
+  };
 }

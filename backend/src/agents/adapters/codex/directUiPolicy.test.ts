@@ -3,10 +3,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawn, execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { canSplitCodexUiTools, resolveCodexExecutionRoute } from "../../../services/codex-execution-route.js";
+import { Codex, type CodexOptions } from "@openai/codex-sdk";
+import type { AgentSettings } from "shared";
+import { canSplitCodexUiTools, codexUiAliasPresence, resolveCodexExecutionRoute } from "../../../services/codex-execution-route.js";
 import { translateCodexOptions } from "./optionsAdapter.js";
 import { buildCodexToolServer, type CodexToolServerHandle } from "./toolAdapter.js";
 
@@ -122,10 +124,13 @@ describe("identity policy projection", () => {
       { directUiNamespaces: [], directUiPolicy: "unconfigured", useOpenRouter: true },
       { directUiNamespaces: [], directUiPolicy: "unconfigured", reasoningRoute: "openrouter" },
     ]) {
-      const { codexOpts } = translateCodexOptions({ mcpServers: { "callboard-tools": handle }, codex });
+      const { codexOpts } = translateCodexOptions({
+        mcpServers: { "callboard-tools": handle },
+        codex: { ...codex, uiAliasPresence: { "callboard-ui": false, callboard_ui: false } },
+      });
       expect(codexOpts.config?.mcp_servers).not.toHaveProperty("callboard-ui");
       expect(codexOpts.config?.mcp_servers).not.toHaveProperty("callboard-tools.disabled_tools");
-      expect(codexOpts.configOverrides?.[1]).toContain("enabled=false");
+      expect(codexOpts.configOverrides).toContain("mcp_servers.callboard-ui.enabled=false");
     }
   });
 });
@@ -151,7 +156,7 @@ describe("native config/read never widens availability or escapes approvals", ()
       expect(route.directUiNamespaces).toBeUndefined();
       const { codexOpts } = translateCodexOptions({
         mcpServers: { "callboard-tools": handle },
-        codex: { directUiNamespaces: route.directUiNamespaces, directUiPolicy: route.directUiPolicy },
+        codex: { directUiNamespaces: route.directUiNamespaces, uiAliasPresence: route.uiAliasPresence, directUiPolicy: route.directUiPolicy },
       });
       const after = await readConfig([...flatten(codexOpts.config ?? {}), ...(codexOpts.configOverrides ?? [])]);
       const oldServers = before.mcp_servers as Record<string, Config>;
@@ -181,7 +186,7 @@ describe("native config/read never widens availability or escapes approvals", ()
     const { codexOpts } = translateCodexOptions({
       cwd: project,
       mcpServers: { "callboard-tools": handle },
-      codex: { directUiNamespaces: route.directUiNamespaces, directUiPolicy: route.directUiPolicy },
+      codex: { directUiNamespaces: route.directUiNamespaces, uiAliasPresence: route.uiAliasPresence, directUiPolicy: route.directUiPolicy },
     });
     const after = await readConfig([...flatten(codexOpts.config ?? {}), ...(codexOpts.configOverrides ?? [])], project);
     const servers = after.mcp_servers as Record<string, Config>;
@@ -195,7 +200,7 @@ describe("native config/read never widens availability or escapes approvals", ()
     expect(route.directUiPolicy).toBe("unconfigured");
     const { codexOpts } = translateCodexOptions({
       mcpServers: { "callboard-tools": handle },
-      codex: { directUiNamespaces: route.directUiNamespaces, directUiPolicy: route.directUiPolicy },
+      codex: { directUiNamespaces: route.directUiNamespaces, uiAliasPresence: route.uiAliasPresence, directUiPolicy: route.directUiPolicy },
     });
     const after = await readConfig([...flatten(codexOpts.config ?? {}), ...(codexOpts.configOverrides ?? [])]);
     const servers = after.mcp_servers as Record<string, Config>;
@@ -203,4 +208,120 @@ describe("native config/read never widens availability or escapes approvals", ()
     expect(available(servers["callboard-tools"])).toEqual(tools.slice(3));
     expect(after.features).toMatchObject({ code_mode: { enabled: true, direct_only_tool_namespaces: ["existing-user-namespace", "mcp__callboard_ui"] } });
   }, 20_000);
+});
+
+/** Capture the REAL SDK's emitted config arguments with a local executable
+ * stub. The stub records only argv and emits an empty synthetic turn; no model,
+ * auth, or MCP server is involved. Replay those args through the native parser. */
+async function sdkConfigArguments(options: CodexOptions): Promise<string[]> {
+  const argvPath = join(home, "sdk-argv.json");
+  const stub = join(home, "sdk-argv.cjs");
+  await writeFile(
+    stub,
+    `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));
+process.stdin.resume();
+process.stdin.on('end', () => {
+  process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'config-only-stub'})+'\\n');
+  process.stdout.write(JSON.stringify({type:'turn.completed',usage:{input_tokens:0,output_tokens:0,cached_input_tokens:0}})+'\\n');
+});
+`,
+    { mode: 0o700 },
+  );
+  const sdk = new Codex({ ...options, codexPathOverride: stub, env: { ...process.env, CODEX_HOME: home } as Record<string, string> });
+  const { events } = await sdk
+    .startThread({ workingDirectory: home, skipGitRepoCheck: true })
+    .runStreamed("config-only test", { signal: AbortSignal.timeout(5000) });
+  for await (const event of events) expect(["thread.started", "turn.completed"]).toContain(event.type);
+  const args = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+  const overrides: string[] = [];
+  for (let i = 0; i < args.length - 1; i++) if (args[i] === "--config" || args[i] === "-c") overrides.push(args[++i]);
+  return overrides;
+}
+
+const aliasCases = (["callboard-ui", "callboard_ui"] as const).flatMap((alias) =>
+  (["http", "stdio-enabled", "stdio-disabled"] as const).flatMap((transport) =>
+    (["native", "fallback", "configured-alternate", "injected-alternate"] as const).map((route) => ({ alias, transport, route })),
+  ),
+);
+describe("native reserved alias merge semantics — SDK-captured arguments", () => {
+  it.each(aliasCases)(
+    "$alias / $transport / $route: disables without touching transport/env/policy",
+    async ({ alias, transport, route: mode }) => {
+      const entry =
+        transport === "http"
+          ? 'url="https://invalid.example/mcp"\n'
+          : `command=${JSON.stringify(process.execPath)}\nargs=["--version"]\nenabled=${transport === "stdio-enabled"}\n`;
+      const env = transport === "http" ? "" : `[mcp_servers.${alias}.env]\nPOLICY_SENTINEL="retain-me"\n`;
+      await writeFile(
+        join(home, "config.toml"),
+        base + `[mcp_servers.${alias}]\n` + entry + 'default_tools_approval_mode="prompt"\nenabled_tools=["render_file"]\n' + env,
+      );
+      const before = await readConfig();
+      const settings: AgentSettings = {
+        codexHome: home,
+        ...(mode === "configured-alternate" ? { codexAuthMode: "api-key", codexBaseUrl: "https://openrouter.ai/api/v1" } : {}),
+        ...(mode === "injected-alternate" ? { codexUseOpenRouter: true, codexOpenRouterApiKey: "synthetic-not-a-key" } : {}),
+      };
+      const route = await resolveCodexExecutionRoute(settings, home);
+      expect(route.uiAliasPresence).toEqual({ "callboard-ui": alias === "callboard-ui", callboard_ui: alias === "callboard_ui" });
+      expect(route.directUiPolicy).toBeUndefined();
+      expect(JSON.stringify(route)).not.toContain("retain-me");
+      expect(JSON.stringify(route)).not.toContain("invalid.example");
+      const codex = {
+        uiAliasPresence: route.uiAliasPresence,
+        // Even stale/direct-eligible hints cannot override known alias presence.
+        ...(mode === "native" ? { directUiPolicy: "unconfigured", directUiNamespaces: [] } : {}),
+        ...(mode === "configured-alternate" ? { authMode: "api-key", baseUrl: settings.codexBaseUrl, reasoningRoute: "openrouter" } : {}),
+        ...(mode === "injected-alternate" ? { useOpenRouter: true, reasoningRoute: "openrouter" } : {}),
+      };
+      const { codexOpts } = translateCodexOptions({ mcpServers: { "callboard-tools": handle }, codex });
+      const overrides = await sdkConfigArguments(codexOpts);
+      const after = await readConfig(overrides);
+      const oldServers = before.mcp_servers as Record<string, Config>;
+      const newServers = after.mcp_servers as Record<string, Config>;
+      // Enabled is the ONLY changed field on a preexisting alias. In particular
+      // HTTP gains no stdio fields, and stdio env/allow/approval state is retained.
+      expect(newServers[alias]).toEqual({ ...oldServers[alias], enabled: false });
+      expect(newServers["callboard-ui"].enabled).toBe(false);
+      expect(newServers.callboard_ui.enabled).toBe(false);
+      expect(after.features).toEqual(before.features);
+      expect(available(newServers["callboard-tools"])).toEqual(tools);
+      expect(available(newServers["callboard-ui"])).toEqual([]);
+      expect(available(newServers.callboard_ui)).toEqual([]);
+      // Independent native surface also accepts the exact SDK arguments and
+      // reports disabled aliases. No model or foreign server execution is needed.
+      const listed = JSON.parse(
+        execFileSync(process.execPath, [cli, "mcp", "list", "--json", ...overrides.flatMap((value) => ["--config", value])], {
+          cwd: home,
+          env: { ...process.env, CODEX_HOME: home },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 10_000,
+        }),
+      ) as Array<{ name: string; enabled: boolean }>;
+      for (const name of ["callboard-ui", "callboard_ui"]) expect(listed.find((server) => server.name === name)?.enabled).toBe(false);
+    },
+    20_000,
+  );
+
+  it("projects no transport/secrets and never treats an unreadable map as empty", () => {
+    expect(codexUiAliasPresence({})).toEqual({ "callboard-ui": false, callboard_ui: false });
+    expect(codexUiAliasPresence({ mcp_servers: { "callboard-ui": { url: "private", env: { secret: "private" } } } })).toEqual({
+      "callboard-ui": true,
+      callboard_ui: false,
+    });
+    for (const config of [null, [], { mcp_servers: null }, { mcp_servers: [] }, { mcp_servers: "unknown" }])
+      expect(codexUiAliasPresence(config)).toBeUndefined();
+  });
+
+  it("fails before starting Codex and reaps owned handles when alias presence is unknown", async () => {
+    const close = vi.spyOn(handle, "close");
+    expect(() =>
+      translateCodexOptions({ mcpServers: { "callboard-tools": handle }, codex: { directUiNamespaces: [], directUiPolicy: "unconfigured" } }),
+    ).toThrow("effective Codex MCP configuration is unavailable");
+    expect(close).toHaveBeenCalledOnce();
+    await handle.close();
+  });
 });

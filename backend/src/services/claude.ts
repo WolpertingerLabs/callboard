@@ -1705,6 +1705,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(requestedModel && { model: requestedModel }),
       ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
       ...(chatEffort && { reasoningEffort: chatEffort }),
+      uiAliasPresence: codexRoute.uiAliasPresence,
       ...(codexRoute.directUiNamespaces && {
         directUiNamespaces: codexRoute.directUiNamespaces,
         directUiCodeModeEnabled: codexRoute.directUiCodeModeEnabled,

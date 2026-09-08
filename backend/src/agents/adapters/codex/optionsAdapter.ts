@@ -1,3 +1,4 @@
+import type { CodexUiAliasPresence } from "../../../services/codex-execution-route.js";
 import { CALLBOARD_UI_NAMESPACE, CALLBOARD_UI_SERVER, CALLBOARD_UI_TOOLS } from "shared/types/callboard-ui-tools.js";
 /**
  * Options translation: Claude-SDK-shaped {@link AgentQueryRequest.options} →
@@ -53,6 +54,8 @@ export interface CodexOptionsExtras {
   directUiNamespaces?: string[];
   /** Required config/read proof; a namespace list alone never authorizes a split. */
   directUiPolicy?: "unconfigured";
+  /** Effective reserved-name presence, also required for unsplit/alternate routes. */
+  uiAliasPresence?: CodexUiAliasPresence;
   /** Preserve the boolean shorthand when adding a nested code_mode setting. */
   directUiCodeModeEnabled?: boolean;
   /** Subscription (ChatGPT login) vs raw API key. Default subscription — no key passed. */
@@ -462,25 +465,39 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // in-process (buildCodexToolServer) and exposed to Codex as an `mcp_servers`
   // entry pointing at the relay shim. The live handles ride out for cleanup.
   const directUi =
-    extras.directUiNamespaces !== undefined && extras.directUiPolicy === "unconfigured" && !extras.useOpenRouter && extras.reasoningRoute !== "openrouter";
+    extras.directUiNamespaces !== undefined &&
+    extras.directUiPolicy === "unconfigured" &&
+    extras.uiAliasPresence?.[CALLBOARD_UI_SERVER] === false &&
+    extras.uiAliasPresence.callboard_ui === false &&
+    !extras.useOpenRouter &&
+    extras.reasoningRoute !== "openrouter";
   const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers, directUi);
   if (mcpServersConfig) {
     codexOpts.config = { ...codexOpts.config, mcp_servers: mcpServersConfig };
   }
 
   if (toolServerHandles.some((handle) => handle.name === "callboard-tools")) {
-    // The new identity is reserved even in user config.toml. Disable the
-    // underscore spelling (same native namespace), and replace the alias as
-    // ONE table so a pre-existing external URL/env/command cannot survive the
-    // SDK's usual leaf-wise merge. These are per-run overrides, never edits.
-    const ui = mcpServersConfig?.[CALLBOARD_UI_SERVER];
-    codexOpts.configOverrides = [
-      `mcp_servers.callboard_ui={enabled=false,command=${JSON.stringify(process.execPath)},args=["--version"]}`,
-      ui
-        ? `mcp_servers.callboard-ui={command=${JSON.stringify(ui.command)},args=${JSON.stringify(ui.args)},tool_timeout_sec=${ui.tool_timeout_sec},enabled_tools=${JSON.stringify(ui.enabled_tools)}}`
-        : `mcp_servers.callboard-ui={enabled=false,command=${JSON.stringify(process.execPath)},args=["--version"]}`,
-    ];
+    const presence = extras.uiAliasPresence;
+    if (!presence || typeof presence[CALLBOARD_UI_SERVER] !== "boolean" || typeof presence.callboard_ui !== "boolean") {
+      // No model/foreign MCP server may start without a safe reservation. Reap
+      // the already-built in-process handles even though query construction
+      // fails before CodexAgentQuery can take ownership of them.
+      for (const handle of new Set(toolServerHandles)) void handle.close().catch(() => {});
+      throw new Error("Cannot safely reserve Callboard UI tool names: effective Codex MCP configuration is unavailable. No Codex turn was started.");
+    }
+    // CLI 0.153.4 recursively merges EVEN raw inline-table overrides. For an
+    // existing name change only enabled: leave HTTP/stdio/env/policy intact.
+    // A disabled placeholder transport is needed only for proven-absent names.
+    codexOpts.configOverrides = [];
+    for (const alias of [CALLBOARD_UI_SERVER, "callboard_ui"] as const) {
+      if (alias === CALLBOARD_UI_SERVER && mcpServersConfig?.[CALLBOARD_UI_SERVER]) continue; // Owned alias, proven absent above.
+      if (!presence[alias]) {
+        codexOpts.configOverrides.push(`mcp_servers.${alias}.command=${JSON.stringify(process.execPath)}`, `mcp_servers.${alias}.args=["--version"]`);
+      }
+      codexOpts.configOverrides.push(`mcp_servers.${alias}.enabled=false`);
+    }
   }
+
   if (mcpServersConfig?.[CALLBOARD_UI_SERVER] && extras.directUiNamespaces) {
     codexOpts.config = {
       ...codexOpts.config,
