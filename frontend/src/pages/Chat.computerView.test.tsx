@@ -82,40 +82,57 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
-it("places Computer in the existing desktop topbar switcher, not above the composer; preserves Chat/Diff/Debug navigation and independent generation stop", async () => {
-  mount();
-  const computer = await screen.findByRole("radio", { name: "Show computer control" });
-  expect(computer.closest("header")).toBeTruthy();
-  expect(computer.closest("header")!.parentElement!.classList.contains("chat-layout")).toBe(true);
-  expect(computer.closest("header")!.style.display).toBe("");
-  expect(screen.getByTitle("Stop generation").classList.contains("chat-header-generation-stop")).toBe(true);
-  expect(within(screen.getByRole("radiogroup", { name: "View mode" })).getAllByRole("radio")).toHaveLength(4);
-  expect(screen.queryByLabelText("Target")).toBeNull();
-  expect(screen.queryByRole("button", { name: /▸ Browser/ })).toBeNull();
-  await screen.findByText(/1 waiting/);
-  fireEvent.click(computer);
-  expect(screen.getByLabelText("Target")).toBeTruthy();
-  expect(screen.getByLabelText("Composer")).toBeTruthy();
-  expect(screen.getByLabelText("Target").closest(".computer-use-panel")).toBeTruthy();
-  fireEvent.click(screen.getByRole("radio", { name: "Show git diff" }));
-  expect(screen.getByText("Git diff view")).toBeTruthy();
-  fireEvent.click(screen.getByRole("radio", { name: "Show debug metrics" }));
-  expect(screen.getByText("Debug view")).toBeTruthy();
-  fireEvent.click(screen.getByRole("radio", { name: "Show chat" }));
-  expect(screen.queryByLabelText("Target")).toBeNull();
-  expect(client.open).not.toHaveBeenCalled();
-  expect(client.observe).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByTitle("Stop generation"));
-  await waitFor(() => expect(stopChat).toHaveBeenCalledWith("c1"));
-  expect(client.control).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Stop computer control" }));
-  await waitFor(() => expect(client.control).toHaveBeenCalledWith("c1", "s1", "stop", 0));
-  expect(stopChat).toHaveBeenCalledTimes(1);
-});
+it.each([768, 900, 1024, 1200, 1920])(
+  "separates desktop safety controls from navigation/actions at %s px; preserves view navigation and independent stops",
+  async (width) => {
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true });
+    mount();
+    const computer = await screen.findByRole("radio", { name: "Show computer control" });
+    expect(computer.closest("header")).toBeTruthy();
+    expect(computer.closest("header")!.parentElement!.classList.contains("chat-layout")).toBe(true);
+    expect(computer.closest("header")!.style.display).toBe("");
+    expect(screen.getByTitle("Stop generation").classList.contains("chat-header-generation-stop")).toBe(true);
+    expect(within(screen.getByRole("radiogroup", { name: "View mode" })).getAllByRole("radio")).toHaveLength(4);
+    expect(screen.queryByLabelText("Target")).toBeNull();
+    expect(screen.queryByRole("button", { name: /▸ Browser/ })).toBeNull();
+    await screen.findByText(/1 waiting/);
+    const strip = screen.getByRole("button", { name: "Stop computer control" }).parentElement!;
+    expect(strip.parentElement).toBe(computer.closest("header"));
+    expect(strip.closest(".chat-header-actions")).toBeNull();
+    expect(computer.closest(".chat-header-actions")).toBeTruthy();
+    expect(strip.previousElementSibling).toBe(screen.getByTitle("Stop generation"));
+    expect(screen.getAllByRole("button", { name: "Stop computer control" })).toHaveLength(1);
+    expect(client.status).toHaveBeenCalledTimes(1);
+    fireEvent.click(computer);
+    expect(screen.getByLabelText("Target")).toBeTruthy();
+    expect(screen.getByLabelText("Composer")).toBeTruthy();
+    expect(screen.getByLabelText("Target").closest(".computer-use-panel")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "Show git diff" }));
+    expect(screen.getByText("Git diff view")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "Show debug metrics" }));
+    expect(screen.getByText("Debug view")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "Show chat" }));
+    expect(screen.queryByLabelText("Target")).toBeNull();
+    expect(client.open).not.toHaveBeenCalled();
+    expect(client.observe).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTitle("Stop generation"));
+    await waitFor(() => expect(stopChat).toHaveBeenCalledWith("c1"));
+    expect(client.control).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Stop computer control" }));
+    await waitFor(() => expect(client.control).toHaveBeenCalledWith("c1", "s1", "stop", 0));
+    expect(stopChat).toHaveBeenCalledTimes(1);
+  },
+);
 it("uses the mobile secondary view bar, with status and emergency stop visible even while overflow is closed", async () => {
   Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
   mount();
   await screen.findByText(/1 waiting/);
+  const strip = screen.getByRole("button", { name: "Stop computer control" }).parentElement!;
+  expect(strip.previousElementSibling?.className).toBe("chat-header chat-header-mobile");
+  expect(strip.parentElement?.className).toBe("chat-layout");
+  expect(strip.className).toBe("computer-use-header");
+  expect(screen.getAllByRole("button", { name: "Stop computer control" })).toHaveLength(1);
+  expect(client.status).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole("radiogroup")).toBeNull();
   expect(screen.getByRole("button", { name: "Stop computer control" }).closest("[hidden]")).toBeNull();
   fireEvent.click(screen.getByTitle("Show actions"));
@@ -129,7 +146,11 @@ it("uses the mobile secondary view bar, with status and emergency stop visible e
     Object.defineProperty(window, "innerWidth", { value: 1200 });
     window.dispatchEvent(new Event("resize"));
   });
-  expect(screen.getByRole("radio", { name: "Show computer control" }).closest("header")).toBeTruthy();
+  const desktopStop = screen.getByRole("button", { name: "Stop computer control" });
+  expect(desktopStop.parentElement?.parentElement).toBe(screen.getByRole("radio", { name: "Show computer control" }).closest("header"));
+  expect(screen.getAllByRole("button", { name: "Stop computer control" })).toHaveLength(1);
+  // Resizing moves the presentation, not the chat-scoped controller.
+  expect(client.status).toHaveBeenCalledTimes(1);
 });
 it.each(["native child", "new chat"])("does not offer computer controls or polling for %s", async (kind) => {
   fixture.native = kind === "native child";
