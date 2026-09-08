@@ -17,7 +17,7 @@ export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | n
     }
     if (tool === "render_file") {
       const path = typeof p.file_path === "string" && p.file_path.length > 0;
-      const url = typeof p.url === "string" && /^https?:\/\//.test(p.url);
+      const url = typeof p.url === "string" && ["http:", "https:"].includes(new URL(p.url).protocol);
       if (
         p.type !== "render_file" ||
         (p.file_path !== undefined) === (p.url !== undefined) ||

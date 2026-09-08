@@ -35,6 +35,25 @@ function pair(name: string, payload: unknown = image, namespace?: string): [Pars
 }
 
 describe("trusted UI renderer contract", () => {
+  it.each(["HTTPS://example.com/smoke.png", "HtTp://example.com/smoke.png"])("accepts handler-valid URL %s unchanged", (url) => {
+    const [toolUse, toolResult] = pair("render_file", { ...image, url }, "mcp__callboard_ui");
+    expect(parseUiToolResult(toolUse, toolResult)).toEqual({ ...image, url });
+    const { container } = render(<ToolCallBubble toolUse={toolUse} toolResult={toolResult} isRunning={false} />);
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("/api/files/serve?url=" + encodeURIComponent(url));
+  });
+  it.each([
+    "https://",
+    "https://[invalid",
+    "https://exa mple.com/a.png",
+    "/relative.png",
+    "//example.com/a.png",
+    "javascript:alert(1)",
+    "data:image/png;base64,AA",
+    "file:///tmp/a.png",
+    "ftp://example.com/a.png",
+  ])("rejects invalid or non-HTTP URL %s", (url) => {
+    expect(parseUiToolResult(...pair("render_file", { ...image, url }))).toBeNull();
+  });
   it.each(["render_file", "mcp__callboard-tools__render_file", "callboard-tools__render_file", "callboard-ui__render_file", "mcp__callboard_ui__render_file"])(
     "preserves provider/history alias %s",
     (name) => {

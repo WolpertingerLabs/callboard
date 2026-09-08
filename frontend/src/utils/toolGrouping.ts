@@ -12,6 +12,7 @@
  * concerned.
  */
 import type { ParsedMessage } from "../api";
+import { TASK_LIST_TOOLS } from "shared/types/index.js";
 
 /** A `tool_use` and the result it was matched with, if any. */
 export interface ToolGroup {
@@ -30,66 +31,63 @@ export interface SingleMessage {
 
 export type DisplayItem = ToolGroup | SingleMessage;
 
-/** How far past a `tool_use` a matching result is still considered its own. */
-const FORWARD_SCAN_LIMIT = 10;
+/** Synthetic ACP plans have no result, including in old ID-less histories. */
+const isPlan = (message: ParsedMessage) => message.toolName === TASK_LIST_TOOLS.acp;
 
 /**
- * Group `tool_use` / `tool_result` pairs into combined display items.
- *
- * Ids win over adjacency wherever both are available: an adjacent result is
- * taken only if the two ids agree, or if either side has no id at all — which
- * is the compatibility path for transcripts written before callboard recorded
- * ids, not a general fallback. A result that is not adjacent is found by id
- * alone, within {@link FORWARD_SCAN_LIMIT} messages, and only if nothing else
- * has already claimed it.
+ * Reserve globally unique ID pairs first, in either order and at any distance.
+ * Reused/duplicate IDs are ambiguous: leave their results visible as orphans
+ * rather than guessing (even if adjacent). Never use message.id as a call ID.
+ * Then preserve forward adjacency for old histories missing one or both IDs,
+ * without stealing a reserved result or a result with a known ID-bearing call.
+ * Linear passes keep pairing O(n), including heavily duplicated histories.
  */
 export function groupToolMessages(messages: readonly ParsedMessage[]): DisplayItem[] {
-  const items: DisplayItem[] = [];
-  const consumedIndices = new Set<number>();
+  const uses = new Map<string, number>();
+  const results = new Map<string, number>();
+  const record = (map: Map<string, number>, id: string, index: number) => {
+    map.set(id, map.has(id) ? -1 : index);
+  };
+  messages.forEach((message, index) => {
+    if (!message.toolUseId) return;
+    if (message.type === "tool_use") record(uses, message.toolUseId, index);
+    if (message.type === "tool_result") record(results, message.toolUseId, index);
+  });
 
-  for (let i = 0; i < messages.length; i++) {
-    if (consumedIndices.has(i)) continue;
-    const msg = messages[i];
-
-    if (msg.type !== "tool_use") {
-      // Includes an orphaned tool_result — one whose tool_use was not found, or
-      // was already consumed by an earlier group.
-      items.push({ kind: "single", message: msg, originalIndex: i });
-      continue;
-    }
-
-    let matchedResultIndex: number | null = null;
-
-    if (i + 1 < messages.length && messages[i + 1].type === "tool_result") {
-      if (msg.toolUseId && messages[i + 1].toolUseId) {
-        // Both sides identify themselves — believe them, not the ordering.
-        if (messages[i + 1].toolUseId === msg.toolUseId) {
-          matchedResultIndex = i + 1;
-        }
-      } else {
-        // Old data without toolUseId: adjacency is all there is.
-        matchedResultIndex = i + 1;
-      }
-    }
-
-    if (matchedResultIndex === null && msg.toolUseId) {
-      for (let j = i + 1; j < messages.length && j < i + FORWARD_SCAN_LIMIT; j++) {
-        if (messages[j].type === "tool_result" && messages[j].toolUseId === msg.toolUseId && !consumedIndices.has(j)) {
-          matchedResultIndex = j;
-          break;
-        }
-      }
-    }
-
-    if (matchedResultIndex !== null) consumedIndices.add(matchedResultIndex);
-
-    items.push({
-      kind: "tool_group",
-      toolUse: msg,
-      toolResult: matchedResultIndex !== null ? messages[matchedResultIndex] : null,
-      originalIndices: [i, matchedResultIndex],
-    });
+  const pairs = new Map<number, number>();
+  const consumed = new Set<number>();
+  for (const [id, useIndex] of uses) {
+    const resultIndex = results.get(id);
+    if (useIndex < 0 || resultIndex === undefined || resultIndex < 0 || isPlan(messages[useIndex])) continue;
+    pairs.set(useIndex, resultIndex);
+    consumed.add(resultIndex);
   }
 
+  messages.forEach((use, index) => {
+    const result = messages[index + 1];
+    if (use.type !== "tool_use" || isPlan(use) || pairs.has(index) || !result || result.type !== "tool_result" || consumed.has(index + 1)) return;
+    // Both IDs present must have been resolved above, never by adjacency.
+    if (use.toolUseId && result.toolUseId) return;
+    if (use.toolUseId && (uses.get(use.toolUseId) === -1 || results.has(use.toolUseId))) return;
+    if (result.toolUseId && (results.get(result.toolUseId) === -1 || uses.has(result.toolUseId))) return;
+    pairs.set(index, index + 1);
+    consumed.add(index + 1);
+  });
+
+  const items: DisplayItem[] = [];
+  messages.forEach((message, index) => {
+    if (consumed.has(index)) return;
+    if (message.type === "tool_use") {
+      const resultIndex = pairs.get(index) ?? null;
+      items.push({
+        kind: "tool_group",
+        toolUse: message,
+        toolResult: resultIndex === null ? null : messages[resultIndex],
+        originalIndices: [index, resultIndex],
+      });
+    } else {
+      items.push({ kind: "single", message, originalIndex: index });
+    }
+  });
   return items;
 }

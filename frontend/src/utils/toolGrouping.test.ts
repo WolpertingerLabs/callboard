@@ -100,3 +100,72 @@ describe("ordinary tool pairing", () => {
     expect(group.toolResult?.content).toBe("legacy output");
   });
 });
+
+describe("stable IDs across mixed and replayed histories", () => {
+  const text = { role: "assistant", type: "text", content: "intervening text" } as ParsedMessage;
+  const gap = Array.from({ length: 30 }, () => text);
+
+  it.each([false, true])("pairs distant results, reversed=%s, exactly once", (reversed) => {
+    const calls = [toolUse("image", "render_file"), toolUse("canvas-1", "create_canvas"), toolUse("canvas-2", "update_canvas")];
+    const results = [toolResult("canvas-2", "v2"), toolResult("image", "png"), toolResult("canvas-1", "v1")];
+    const messages = reversed ? [...results, ...gap, ...calls] : [...calls, ...gap, ...results];
+    const items = groupToolMessages(messages);
+    expect(groups(items).map((g) => g.toolResult?.content)).toEqual(["png", "v1", "v2"]);
+    expect(items.filter((i) => i.kind === "single")).toHaveLength(gap.length);
+    const indices = items.flatMap((i) => (i.kind === "single" ? [i.originalIndex] : i.originalIndices.filter((n) => n !== null)));
+    expect(indices.sort((a, b) => a - b)).toEqual(messages.map((_, i) => i));
+    for (const group of groups(items)) expect(group.toolResult).toBe(messages[group.originalIndices[1]!]);
+  });
+
+  it.each([
+    [toolUse("same"), toolResult("same", "one"), toolUse("same"), toolResult("same", "two")],
+    [toolUse("same"), toolResult("same", "one"), toolResult("same", "one")],
+    [toolUse("same"), toolUse("same"), toolResult("same", "one")],
+    [toolResult("same", "one"), toolUse("same"), toolUse("same")],
+    [toolUse("same"), toolResult("", "idless"), toolUse("same")],
+    [toolUse(""), toolResult("same", "one"), toolResult("same", "two")],
+  ])("does not guess or hide results with ambiguous/replayed IDs %#", (...messages) => {
+    const items = groupToolMessages(messages);
+    expect(groups(items).every((g) => g.toolResult === null)).toBe(true);
+    expect(items.filter((i) => i.kind === "single")).toHaveLength(messages.filter((m) => m.type === "tool_result").length);
+  });
+
+  it.each([
+    ["", ""],
+    ["known", ""],
+    ["", "known"],
+  ])("retains legacy adjacency (%s, %s)", (useId, resultId) => {
+    expect(groups(groupToolMessages([toolUse(useId), toolResult(resultId, "legacy")]))[0].toolResult?.content).toBe("legacy");
+  });
+
+  it.each([false, true])("reserves stable pairs before ID-less adjacency, reversed=%s", (reversed) => {
+    const messages = reversed
+      ? [toolUse(""), toolResult("stable", "owned"), ...gap, toolUse("stable")]
+      : [toolUse("stable"), ...gap, toolUse(""), toolResult("stable", "owned")];
+    const paired = groups(groupToolMessages(messages));
+    expect(paired.find((g) => g.toolUse.toolUseId === "")?.toolResult).toBeNull();
+    expect(paired.find((g) => g.toolUse.toolUseId === "stable")?.toolResult?.content).toBe("owned");
+  });
+
+  it("prefers a distant stable result over an adjacent ID-less result", () => {
+    const messages = [toolUse("stable"), toolResult("", "not owned"), ...gap, toolResult("stable", "owned")];
+    const items = groupToolMessages(messages);
+    expect(groups(items)[0].toolResult?.content).toBe("owned");
+    expect(items[1]).toMatchObject({ kind: "single", originalIndex: 1, message: { content: "not owned" } });
+  });
+
+  it("never pairs synthetic or legacy ACP plans, even with an ID-less or matching result", () => {
+    for (const use of [plan(0), { ...plan(0), toolUseId: undefined }]) {
+      for (const result of [toolResult("", "legacy output"), toolResult(planId(0), "reserved")]) {
+        const items = groupToolMessages([use, result]);
+        expect(groups(items)[0].toolResult).toBeNull();
+        expect(items).toHaveLength(2);
+      }
+    }
+  });
+
+  it("does not use message IDs, mismatched IDs, or non-adjacent ID-less fallback", () => {
+    const messages = [{ ...toolUse(""), id: "same" }, text, { ...toolResult("", "orphan"), id: "same" }, toolUse("a"), toolResult("b", "foreign")];
+    expect(groups(groupToolMessages(messages)).every((g) => g.toolResult === null)).toBe(true);
+  });
+});
