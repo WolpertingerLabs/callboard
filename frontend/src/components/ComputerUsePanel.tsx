@@ -338,11 +338,13 @@ export default function ComputerUsePanel({
               )}
             </div>
           </div>
-          {/* The two facts a viewer mis-assumes if they are not on screen. The
-              rest of the explanation is read once, and lives in the disclosure. */}
+          {/* What a viewer would otherwise assume wrongly: who can enable, whose
+              machine this is, and what the model can be relied on to see. Each
+              one limits a claim, so each stays on screen; the rest of the
+              explanation is read once and lives in the disclosure. */}
           <p className="computer-use-brief">
             Only you can enable a target — the agent never can, at any permission level. Tools run on the configured service target, not on this viewer&apos;s
-            computer.
+            computer. Model visual capability is not established by this viewer.
           </p>
           <details className="computer-use-about">
             <summary>How browser &amp; computer control works</summary>
@@ -350,7 +352,6 @@ export default function ComputerUsePanel({
               Controls Callboard&apos;s browser and desktop tools. Enabling a target is always your own action; after that, Allow lets the agent act on its own,
               while Ask stops its turn and asks you in the chat before each action. Agents with unrestricted code execution may still run their own automation.
             </p>
-            <p>Model visual capability is not established by this viewer.</p>
           </details>
           {/* Demoted, but never hidden behind the disclosure: a description a
               button points at has to stay in the accessibility tree, and the

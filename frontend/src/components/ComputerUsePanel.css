@@ -102,7 +102,12 @@
   color: var(--danger);
   overflow-wrap: anywhere;
 }
+/* Its own column: `.computer-use-body p` carries no margin, so the request
+   text would otherwise sit flush against the buttons that answer it. */
 .computer-use-request {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px;
@@ -182,10 +187,15 @@
   flex-wrap: wrap;
   gap: 6px;
 }
-/* The stage owns whatever height the setup block and footer leave. */
+/* The stage owns whatever height the setup block and footer leave — but never
+   less than its own content. Its automatic minimum size (min-height: auto ->
+   min-content) is what stops it: the setup block and footer do not shrink, so
+   `min-height: 0` here made the stage absorb every pixel of a short panel,
+   overflow its controls across the footer, and leave the body's scrollHeight
+   unchanged, i.e. unscrollable. Shrink the image instead — that is what
+   min-height: 0 on the viewport below is for. */
 .computer-use-stage {
   flex: 1 1 auto;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -202,8 +212,17 @@
 }
 .computer-use-viewport {
   flex: 1 1 auto;
+  /* A definite 0 that flex-grow then fills. It keeps the screenshot's intrinsic
+     height out of the stage's min-content — otherwise the stage's floor would
+     be the full-size frame and the panel would always scroll instead of fitting
+     the frame to the space. The image's `max-height: 100%` still resolves,
+     against the post-flex used height (css-flexbox §9.8). */
+  height: 0;
   min-height: 0;
   display: flex;
+  /* Load-bearing: without it the flex line stretches the replaced element and
+     the image's box stops matching its painted pixels, which is what the click
+     mapping in framePoint() reads. */
   align-items: flex-start;
   /* `safe`: when the frame is larger than the box, centring would push its top
      left corner out of reach of the scroller. */
@@ -250,9 +269,15 @@
   .computer-use-frame,
   .computer-use-viewport {
     flex: 0 0 auto;
+  }
+  .computer-use-frame {
+    /* Give up the fit-to-height floor: here the frame is as tall as the image. */
     min-height: 0;
   }
   .computer-use-viewport {
+    /* Undo the fit-to-height sizing: here the frame is as tall as it needs to
+       be, so a definite 0 height would collapse the box under the image. */
+    height: auto;
     overflow: visible;
   }
   .computer-use-frame img {
