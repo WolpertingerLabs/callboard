@@ -7,11 +7,17 @@
  *              separately; then each agent action is confirmed.
  *  - `allow` — the human's Enable click opens the target immediately. Only a
  *              human can enable a target at any level (`cu_open` lists ready
- *              sessions and grants nothing). Each agent
- *              action STILL needs a human confirmation in the panel
- *              (`ComputerUseHost.requestAgentAction` is unconditional). The
- *              level does not grant autonomous control; any UI or description
- *              that says otherwise is wrong, not this table.
+ *              sessions and grants nothing). Each agent action STILL needs a
+ *              human confirmation — the agent's `cu_action` call blocks on a
+ *              prompt in the chat (`ComputerUseHost.requestAgentAction` is
+ *              unconditional and reads no level). The level does not grant
+ *              autonomous control; any UI or description that says otherwise
+ *              is wrong, not this table.
+ *
+ * Note that this table governs the FIRST gate only — whether the transport
+ * call is admitted. The per-action confirmation is a second, independent gate
+ * that exists precisely because the first one passed, and it takes no input
+ * from here. See `computer-use.invariant.test.ts`.
  */
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
 

@@ -26,14 +26,20 @@ export default function FeedbackPanel({ action, onRespond, agentName = "Claude" 
   const [planExpanded, setPlanExpanded] = useState(false);
 
   if (action.type === "permission_request") {
+    const guiAction = isComputerUseAction(action.toolName);
     return (
       <div style={panelStyle}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>Permission requested</div>
-        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>{action.toolName}</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>{guiAction ? "Confirm this GUI action" : "Permission requested"}</div>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>{guiAction ? "Computer control" : action.toolName}</div>
         {action.input && <pre style={preStyle}>{formatInput(action.toolName!, action.input)}</pre>}
+        {guiAction && (
+          <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
+            Every action needs this confirmation, whatever the chat&apos;s permission level: a pixel action may transmit data, change files or execute code.
+          </p>
+        )}
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={() => onRespond(true)} style={allowBtn}>
-            Allow
+            {guiAction ? "Confirm" : "Allow"}
           </button>
           <button onClick={() => onRespond(false)} style={denyBtn}>
             Deny
@@ -151,7 +157,23 @@ export default function FeedbackPanel({ action, onRespond, agentName = "Claude" 
   return null;
 }
 
+/**
+ * The chat's per-action computer-control gate. The backend raises it under one
+ * name on every engine (`CU_ACTION_TOOL_NAME`); the other spellings are the
+ * namespace variants `isComputerControlToolName` accepts on the backend, and
+ * the list is closed for the same reason it is closed there — `my_cu_action`
+ * from some other server must not borrow this panel's chrome.
+ */
+function isComputerUseAction(toolName?: string): boolean {
+  return !!toolName && /^(?:cu_action|computer_use(?:__|[_.:/])cu_action|mcp__computer_use__cu_action)$/.test(toolName);
+}
+
 function formatInput(toolName: string, input: Record<string, unknown>): string {
+  // The backend already wrote this one for a human: what will happen, where.
+  // The raw action follows so nothing is hidden behind the summary.
+  if (isComputerUseAction(toolName) && typeof input.summary === "string") {
+    return [String(input.summary), input.action ? JSON.stringify(input.action) : ""].filter(Boolean).join("\n\n");
+  }
   if (toolName === "Bash" && input.command) return String(input.command);
   if (toolName === "Write" && input.file_path) return `Write to ${input.file_path}`;
   if (toolName === "Edit" && input.file_path) return `Edit ${input.file_path}`;

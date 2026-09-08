@@ -102,11 +102,11 @@ describe("ComputerUsePanel", () => {
     expect(button("Enable").disabled).toBe(true);
     expect(button("Refresh screenshot").disabled).toBe(true);
     const denied = screen.getByText(/Computer control is denied/);
-    expect(denied.textContent).toContain("Allow only lets your Enable click open a target without a separate confirmation; each agent action still asks you.");
+    expect(denied.textContent).toContain("Allow only lets your Enable click open a target without a separate confirmation; each agent action still asks you in the chat.");
     const intro = screen.getByText(/Controls Callboard's browser and desktop tools/).textContent!;
     expect(intro).toContain("Only you can enable a target.");
     expect(intro).toContain("Allow lets your Enable click open it immediately; under Ask, Enable creates a request you confirm separately.");
-    expect(intro).toContain("Every action the agent takes still needs your confirmation here.");
+    expect(intro).toContain("Every action the agent takes still needs your confirmation — the agent's turn stops and asks you in the chat, not here.");
     expect(intro).not.toMatch(/agent enables/);
     fireEvent.click(button("Chat permissions"));
     expect(onPermissions).toHaveBeenCalled();

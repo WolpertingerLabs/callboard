@@ -4,7 +4,7 @@ import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { defineTool, type ToolCallResult, type ToolServerSpec } from "../agents/ports/tools.js";
-import { controlError, controlPrincipal, getComputerUseHost, logComputerUseFailure, type FailureContext } from "./computer-use.js";
+import { controlError, controlPrincipal, getComputerUseHost, isConfirmedFailure, logComputerUseFailure, type FailureContext } from "./computer-use.js";
 
 interface TurnBinding {
   token: string;
@@ -132,28 +132,46 @@ function mcpFailure(content: unknown[]): Error & { code?: string } {
  * id (see `codex/toolAdapter.ts`). Either way a subagent's `cu_*` calls arrive
  * — and are recorded — as the parent's. `assertNativeAgentControllable` only
  * stops a child chat id from enabling a target on its own; it cannot see this
- * path. The Enable approval text and the panel tell the granting human so.
+ * path. The Enable approval text and the panel tell the granting human so, and
+ * a subagent's GUI action blocks on a confirmation in the parent chat, which is
+ * the chat whose identity it is acting under.
  */
 export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSpec {
   type Context = { signal?: AbortSignal; toolCallId?: string };
-  async function call(name: string, input: Record<string, unknown>, context?: Context, approvedSignal?: AbortSignal): Promise<ToolCallResult> {
+  /**
+   * `confirmed` marks the one call that is executing a GUI action a human has
+   * already said yes to. It is the successor to the `approvedSignal` parameter
+   * this replaces, which did two jobs:
+   *
+   *  1. supply a signal for a call running OUTSIDE the turn, because approval
+   *     used to be redeemed later through the panel's approve endpoint;
+   *  2. mark that call as post-approval, so its failures escalate.
+   *
+   * Job 1 is gone: the confirmation now blocks inside the tool call that
+   * requested it, so the turn is live and `turn.signal` + `context.signal`
+   * already cover cancellation. Job 2 is not gone — a human clicking Confirm
+   * and the action then failing is still the failure an operator must see,
+   * and it is now the ONLY signal they get, since the human's click returns
+   * 200 from `/respond` before anything executes. So the flag survives as a
+   * flag.
+   */
+  async function call(name: string, input: Record<string, unknown>, context?: Context, confirmed?: boolean): Promise<ToolCallResult> {
     // Held outside the try so the catch can tell a stopped turn from a fault:
     // an abort surfaces from the MCP client as a numeric -32001, the same code
     // it uses for a genuine timeout.
     let signal: AbortSignal | undefined;
     // The approved execution is the one path where a human is waiting on the
     // result, so its failures are never routine, whatever code they carry.
-    const logContext = (): FailureContext => ({ cancelled: signal?.aborted, escalate: Boolean(approvedSignal) });
+    const logContext = (): FailureContext => ({ cancelled: signal?.aborted, escalate: confirmed });
     try {
       const chatId = getChatId();
       const turn = currentTurn(chatId);
-      if ((!turn && !approvedSignal) || approvedSignal?.aborted || turn?.signal.aborted) throw controlError("cancelled", "No active authorized chat turn");
-      const turnSignal = approvedSignal ?? turn!.signal;
-      signal = context?.signal ? AbortSignal.any([turnSignal, context.signal]) : turnSignal;
+      if (!turn || turn.signal.aborted) throw controlError("cancelled", "No active authorized chat turn");
+      signal = context?.signal ? AbortSignal.any([turn.signal, context.signal]) : turn.signal;
       signal.throwIfAborted();
       const result = await (await connection(chatId)).client.callTool({ name, arguments: input }, undefined, { signal, timeout: 35_000 });
       signal.throwIfAborted();
-      if (!approvedSignal && currentTurn(chatId)?.token !== turn?.token) throw controlError("cancelled", "The chat turn changed");
+      if (currentTurn(chatId)?.token !== turn.token) throw controlError("cancelled", "The chat turn changed");
       const content = Array.isArray(result.content) ? result.content : [];
       if (result.isError) logComputerUseFailure(name, { chatId, sessionId: input.sessionId }, mcpFailure(content), logContext());
       return {
@@ -206,7 +224,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
       ),
       defineTool(
         "cu_action",
-        "Request one bounded GUI input. A human must confirm every action in the Computer Control panel, whatever the chat's permission level, because pixel actions may send data or execute code. No shell/eval. Use cu_status/observe after confirmation.",
+        "Perform one bounded GUI input. This call BLOCKS while a human confirms it in this chat — every action needs that confirmation, whatever the chat's permission level, because pixel actions may send data or execute code. It returns the action's real outcome, or an error if the human refused or did not answer; a refusal is final, never retry it. No shell/eval. Observe again afterwards.",
         {
           ...ref,
           frameId: z.string().uuid().describe("Exact frameId returned by cu_observe; observe again after every action or target change."),
@@ -216,20 +234,36 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
               'Exactly one action object: {type:"click",x,y,button?:"left"|"middle"|"right"}; {type:"move",x,y}; {type:"drag",x,y,toX,toY,durationMs?}; {type:"scroll",deltaX,deltaY}; {type:"type",text}; {type:"key",key} (e.g. Control+a, Enter, ArrowUp); {type:"navigate",url} (browser http/https only); {type:"wait",durationMs}. Integer coordinates are screenshot pixels; waits/drag <=2000ms, text <=4096 chars. No script/console endpoint.',
             ),
         },
-        async (input) => {
+        async (input, context?: Context) => {
           try {
             const turn = currentTurn(getChatId());
             if (!turn || turn.signal.aborted) throw controlError("cancelled", "No active chat turn");
             input = structuredClone(input); // Approval and execution retain the same immutable request snapshot.
             const host = await getComputerUseHost();
-            return text(
-              await host.requestAgentAction(getChatId(), input.sessionId, input.generation, input.frameId, input.action, async (actionId) => {
+            // The call parks here until the human answers the prompt this
+            // raises in the chat, then executes and returns the real outcome.
+            // Both cancellation paths are handed over: the turn (Stop, a new
+            // message) and this MCP request (the harness giving up on the tool
+            // call). Either one denies the approval; neither can approve it.
+            return await host.requestAgentAction(
+              getChatId(),
+              input.sessionId,
+              input.generation,
+              input.frameId,
+              input.action,
+              async (actionId) => {
                 const lease = host.agentLease(getChatId(), input.sessionId, input.generation);
-                return call("computer_act", { ...lease, frameId: input.frameId, actionId, action: input.action }, { signal: turn.signal }, turn.signal);
-              }),
+                // `true`: this runs only after the human confirmed.
+                return call("computer_act", { ...lease, frameId: input.frameId, actionId, action: input.action }, context, true);
+              },
+              { signal: context?.signal ? AbortSignal.any([turn.signal, context.signal]) : turn.signal },
             );
           } catch (error) {
-            return failure(error, "cu_action", { chatId: getChatId(), sessionId: input.sessionId });
+            // The host tags anything it throws after the confirmation, which is
+            // the rest of "a human approved it and it did not happen": a scope
+            // change, a takeover or a fresh capture during their think-time.
+            // A refusal, a timeout or an occupied prompt slot is not tagged.
+            return failure(error, "cu_action", { chatId: getChatId(), sessionId: input.sessionId }, { escalate: isConfirmedFailure(error) });
           }
         },
       ),
