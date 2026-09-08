@@ -223,6 +223,21 @@ it("does not cache a failed probe, so a fixed prerequisite is seen on the next p
   expect(second.capabilities.find((c) => c.kind === "browser")?.available).toBe(true);
 });
 
+it("shows the human control plane the driver's operator diagnostics, which no agent surface carries", async () => {
+  const { host, probe } = fixture();
+  probe.mockResolvedValueOnce({
+    kind: "browser",
+    available: false,
+    capabilities: [],
+    reason: "Chromium executable not found; run \"npx playwright install chromium\"",
+    operatorDetail: "Checked /home/operator/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+  });
+  const capability = (await host.status("a")).capabilities.find((c) => c.kind === "browser");
+  expect(capability?.reason).toContain("/home/operator/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome");
+  expect(capability?.reason).toContain("Chromium executable not found");
+  expect(capability).not.toHaveProperty("operatorDetail");
+});
+
 it("does not cache an unavailable probe either: the shipped drivers resolve their failures, not reject them", async () => {
   const { host, probe } = fixture();
   // Both real drivers catch everything and resolve `{ available: false, reason }`.

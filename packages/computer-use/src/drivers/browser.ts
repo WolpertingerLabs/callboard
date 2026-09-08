@@ -38,23 +38,39 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
         reason: `Unsupported Chromium platform ${process.platform}/${process.arch}; configure a qualified external driver`,
       };
     }
-    try {
-      const { chromium } = await import("playwright");
-      await access(config.executablePath ?? chromium.executablePath());
+    const playwright = await import("playwright").catch(() => undefined);
+    if (!playwright) {
       return {
-        available: true,
+        available: false,
         kind: "browser",
-        capabilities: ["screenshot", "pointer", "keyboard", "navigation", "persistent-session"],
-        reason: "Executable found; sandbox support and launch/runtime qualification occur on open",
+        capabilities: [],
+        reason: "Optional playwright dependency is not installed or resolvable; install it on the service host to enable browser control",
       };
+    }
+    // `||`, not `??`: an operator's empty CALLBOARD_BROWSER_EXECUTABLE must resolve
+    // playwright's own path rather than reporting access("") as a resolution failure.
+    let executablePath = config.executablePath || undefined;
+    try {
+      executablePath ??= playwright.chromium.executablePath();
+      await access(executablePath);
     } catch {
       return {
         available: false,
         kind: "browser",
         capabilities: [],
-        reason: "Install optional playwright and provision its Chromium executable (no automatic downloads)",
+        reason: `Chromium executable ${executablePath ? "not found" : "path could not be resolved by playwright"}; run "npx playwright install chromium" or configure an explicit executablePath (no automatic downloads)`,
+        // A version-pinned miss (playwright's pin moving to a build the host has
+        // not provisioned) is indistinguishable from a missing dependency without
+        // the path, but the path is host layout: operator surfaces only.
+        ...(executablePath ? { operatorDetail: `Checked ${executablePath}` } : {}),
       };
     }
+    return {
+      available: true,
+      kind: "browser",
+      capabilities: ["screenshot", "pointer", "keyboard", "navigation", "persistent-session"],
+      reason: "Executable found; sandbox support and launch/runtime qualification occur on open",
+    };
   };
   return {
     kind: "browser",
