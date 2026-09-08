@@ -86,7 +86,7 @@ it("logs the driver's own diagnosis, with the operation and both identifiers, wi
 it("keeps routine refusals out of the error log", async () => {
   const host = {
     status: vi.fn().mockRejectedValue(Object.assign(new Error("Chat not found"), { code: "not_found" })),
-    approve: vi.fn().mockRejectedValue(Object.assign(new Error("Approval expired"), { code: "denied" })),
+    approve: vi.fn().mockRejectedValue(Object.assign(new Error("Approval expired"), { code: "approval_required" })),
     action: vi.fn(),
     stop: vi.fn().mockRejectedValue(Object.assign(new Error("Refresh the viewer"), { code: "stale_frame" })),
   };
@@ -106,6 +106,35 @@ it("keeps routine refusals out of the error log", async () => {
   expect(logs.warn).not.toHaveBeenCalled();
   expect(logs.debug).toHaveBeenCalledTimes(4);
   expect(String(logs.debug.mock.calls.at(-1)?.[0])).toContain("action chat=chat-77 session=sess-3 code=invalid_request");
+});
+
+it("keeps a refusal an operator must see at the default level, without calling it a fault", async () => {
+  vi.mocked(getComputerUseHost).mockResolvedValue({
+    status: vi.fn().mockRejectedValue(Object.assign(new Error("Chat permission metadata is unreadable"), { code: "denied" })),
+  } as never);
+
+  expect((await fetch(`${origin}/api/computer-use/chat-77/status`)).status).toBe(403);
+
+  // `denied` is not a driver fault, so not error — but it is the one refusal
+  // that is invisible at `info` everywhere else: the service emits no audit
+  // event for it, and a corrupt chat file lands here too.
+  expect(logs.error).not.toHaveBeenCalled();
+  expect(logs.debug).not.toHaveBeenCalled();
+  expect(logs.warn).toHaveBeenCalledOnce();
+  expect(String(logs.warn.mock.calls[0][0])).toContain("status chat=chat-77 code=denied refused: Chat permission metadata is unreadable");
+});
+
+it("strips control characters out of the message so error text cannot pose as its own line", async () => {
+  // A zod issue prints the offending key verbatim, newlines and all.
+  const zodish = 'Invalid arguments: [\n  {\n    "code": "unrecognized_keys",\n    "keys": [\n      "[error] forged"\n    ]\n  }\n]';
+  vi.mocked(getComputerUseHost).mockResolvedValue({ observe: vi.fn().mockRejectedValue(new Error(zodish)) } as never);
+
+  expect((await post("chat-77/sess-3/observe", {})).status).toBe(503);
+
+  const [header, ...frames] = errorLine().split("\n");
+  expect(header).toContain("unrecognized_keys");
+  expect(header).toContain("[error] forged"); // preserved, but on our line
+  expect(frames.every((line) => /^\s+at /.test(line))).toBe(true); // stack header dropped, so no second copy
 });
 
 it("never lets a request-supplied identifier forge a log line", async () => {

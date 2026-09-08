@@ -13,21 +13,17 @@ const log = createLogger("computer-use");
 
 /**
  * Codes the host or the driver package raises to tell a caller what to do
- * differently: a chat that does not exist, a malformed action, a permission
- * that says ask/deny, a stale frame, a turn that moved on. They are the normal
- * operation of the control plane, so they log at debug — an operator polling a
- * viewer would otherwise fill the log with `stale_frame` at error level.
+ * differently: a chat that does not exist, a malformed action, a stale frame,
+ * an approval the human has not given yet, a turn that moved on. They are the
+ * control plane working, so they log at debug — a viewer clicking against an
+ * old frame would otherwise fill the log with `stale_frame` at error level.
  *
- * Everything else (`driver_error`, `unsupported`, `timeout`, `disposed`, and
- * any uncoded throwable, which the routes report as `unavailable`) means the
- * driver or the host itself failed, and is what an operator needs after a
- * session lands in `failed` with nothing else to go on. Those log at error with
- * the underlying message and stack.
+ * `denied` is deliberately *not* here; see the level table in
+ * `logComputerUseFailure`.
  */
 const ROUTINE_CONTROL_CODES = new Set([
   "not_found",
   "invalid_request",
-  "denied",
   "approval_required",
   "queue_full",
   "lease_conflict",
@@ -38,8 +34,25 @@ const ROUTINE_CONTROL_CODES = new Set([
   "cancelled",
 ]);
 
-/** Identifiers are attacker-influenced; keep them to the id alphabet so nothing forges a log line. */
+/** Identifiers are caller-supplied; keep them to the id alphabet so nothing forges a log line. */
 const controlId = (value: unknown): string => (typeof value === "string" ? value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 160) : "");
+
+/**
+ * An abort is not a fault, and it does not always arrive as `cancelled`: the
+ * MCP client rejects an aborted call with a numeric `-32001` McpError, and a
+ * DOMException abort carries the numeric `code` 20. Callers that hold the
+ * signal say so explicitly (`context.cancelled`), because `-32001` is also the
+ * SDK's *timeout*, which is a genuine fault and must stay at error.
+ */
+const isAbort = (error: unknown): boolean =>
+  error instanceof Error && (error.name === "AbortError" || (error as { code?: unknown }).code === 20 || (error as { code?: unknown }).code === "ABORT_ERR");
+
+export interface FailureContext {
+  /** The caller's signal was aborted — a stopped turn, not a fault. Wins over `escalate`. */
+  cancelled?: boolean;
+  /** This failure is not routine whatever its code: a human approved it and it did not happen. */
+  escalate?: boolean;
+}
 
 /**
  * Record a computer-control failure for the operator.
@@ -49,20 +62,55 @@ const controlId = (value: unknown): string => (typeof value === "string" ? value
  * somewhere, and that somewhere is the server log. Error text and identifiers
  * only: browser sessions handle credentials and page content, and none of that
  * belongs here.
+ *
+ * The level follows *fault*, not HTTP status:
+ *
+ * - **debug** — the routine codes above, plus anything cancelled. Below the
+ *   default `info`, so a healthy host stays silent.
+ * - **warn** — `denied`. Nothing is broken, so it is not an error, but it is
+ *   the one refusal an operator must be able to see without raising the level:
+ *   the service emits no audit event for a denial, repeated ones are a
+ *   prompt-injection signal, and `loadComputerUsePolicy` also answers `denied`
+ *   for a chat file whose metadata will not parse — a corrupt chat silently
+ *   losing computer control.
+ * - **error** — `driver_error`, `unsupported`, `timeout`, `disposed` and any
+ *   uncoded throwable (reported to clients as `unavailable`). The driver or the
+ *   host itself failed; this is what is missing when a session lands in
+ *   `failed`. Logged with the message and the stack frames.
  */
-export function logComputerUseFailure(operation: string, ids: { chatId?: unknown; sessionId?: unknown }, error: unknown): void {
-  const code = (error as { code?: unknown } | null | undefined)?.code;
-  const label = typeof code === "string" && code ? code : "unavailable";
+export function logComputerUseFailure(operation: string, ids: { chatId?: unknown; sessionId?: unknown }, error: unknown, context: FailureContext = {}): void {
+  const raw = (error as { code?: unknown } | null | undefined)?.code;
+  // Same treatment as the identifiers: a code can reach here from a recovered
+  // MCP payload, so bound it and keep it to the alphabet every real code uses.
+  const coded = typeof raw === "string" ? raw.slice(0, 64).replace(/[^a-z_]/g, "") : "";
+  const label = context.cancelled || isAbort(error) ? "cancelled" : coded || "unavailable";
   const chatId = controlId(ids.chatId) || "-";
   const sessionId = controlId(ids.sessionId);
   const where = `${operation} chat=${chatId}${sessionId ? ` session=${sessionId}` : ""} code=${label}`;
-  const detail = (error instanceof Error ? error.message : String(error ?? "")).slice(0, 500);
-  if (ROUTINE_CONTROL_CODES.has(label)) {
+  // Control characters out: an error message can carry caller-supplied text
+  // (a zod issue names the offending key), and a newline in it would otherwise
+  // let that text pose as its own log line.
+  // eslint-disable-next-line no-control-regex
+  const detail = (error instanceof Error ? error.message : String(error ?? "")).replace(/[\x00-\x1f\x7f]+/g, " ").slice(0, 500);
+  if (label === "cancelled" || (!context.escalate && ROUTINE_CONTROL_CODES.has(label))) {
     log.debug(`Computer control ${where} refused: ${detail}`);
     return;
   }
-  const stack = error instanceof Error && error.stack ? `\n${error.stack.slice(0, 2000)}` : "";
-  log.error(`Computer control ${where} failed: ${detail}${stack}`);
+  if (label === "denied" && !context.escalate) {
+    log.warn(`Computer control ${where} refused: ${detail}`);
+    return;
+  }
+  // Frames only. The message is already in `detail`, and dropping the stack's
+  // own header keeps the sanitizing above from being undone by a copy of it.
+  const frames =
+    error instanceof Error && error.stack
+      ? error.stack
+          .split("\n")
+          .filter((line) => /^\s+at /.test(line))
+          .join("\n")
+          .slice(0, 2000)
+      : "";
+  log.error(`Computer control ${where} failed: ${detail}${frames ? `\n${frames}` : ""}`);
 }
 
 export interface HostPolicy {
