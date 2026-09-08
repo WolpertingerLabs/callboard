@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { ShieldAlert, Maximize2 } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 
-interface RenderFileData {
+export interface RenderFileData {
   type: "render_file";
   file_path?: string;
   url?: string;

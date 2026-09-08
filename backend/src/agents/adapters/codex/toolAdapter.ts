@@ -1,3 +1,4 @@
+import { CALLBOARD_UI_SERVER, isCallboardUiTool } from "shared/types/callboard-ui-tools.js";
 /**
  * Tool adapter: callboard {@link ToolServerSpec} → a live, in-process MCP server
  * that Codex reaches over stdio via the {@link file://./mcp-server-shim.ts shim}.
@@ -59,6 +60,8 @@ const log = createLogger("codex-adapter");
 // `config.mcp_servers`. Both transports' fields are optional on the one shape so
 // the union stays index-signature-assignable; exactly one set is populated.
 export type CodexMcpServerConfig = {
+  enabled_tools?: string[];
+  disabled_tools?: string[];
   command?: string;
   args?: string[];
   env?: Record<string, string>;
@@ -131,7 +134,7 @@ export function isCodexToolServerHandle(value: unknown): value is CodexToolServe
  * MCP content-block union, so the result passes through unchanged — only
  * `isError` needs forwarding.
  */
-function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
+function registerSpecTool(server: McpServer, def: AnyToolDefinition, uiTool = false): void {
   server.registerTool(
     def.name,
     {
@@ -141,7 +144,10 @@ function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
     async (args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
       const result = await def.handler(args as never, { signal: extra.signal, toolCallId: String(extra.requestId) });
       return {
-        content: result.content,
+        // Native 0.153.4 drops MCP isError from the durable response_item
+        // envelope (even while SDK status is "failed"). Keep that failure
+        // visible in text so refresh cannot promote a success-shaped error.
+        content: result.isError && uiTool ? [{ type: "text" as const, text: "Callboard UI tool failed." }, ...result.content] : result.content,
         ...(result.isError ? { isError: true } : {}),
       };
     },
@@ -171,7 +177,8 @@ export const CODEX_TOOL_IDENTITY_NOTE =
  *  socket connection — MCP servers own their transport 1:1. */
 function createServerForSpec(spec: ToolServerSpec): McpServer {
   const server = new McpServer({ name: spec.name, version: spec.version }, { instructions: CODEX_TOOL_IDENTITY_NOTE });
-  for (const def of spec.tools) registerSpecTool(server, def);
+  for (const def of spec.tools)
+    registerSpecTool(server, def, (spec.name === "callboard-tools" || spec.name === CALLBOARD_UI_SERVER) && isCallboardUiTool(def.name));
   return server;
 }
 

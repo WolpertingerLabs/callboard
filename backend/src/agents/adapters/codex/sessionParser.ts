@@ -1,3 +1,4 @@
+import { callboardUiTool, codexUiToolName } from "shared/types/callboard-ui-tools.js";
 /**
  * Codex session parser — reads a Codex CLI "rollout" file and projects it into
  * callboard's neutral {@link ParsedMessage} shape.
@@ -554,6 +555,21 @@ export function parseCodexRollout(filePath: string): ParsedMessage[] {
   // The installed CLI records the first child-local ordinal. Without it, fail closed.
   const lines = ownMeta?.isNativeThread ? (ownMeta.historyStartOrdinal === undefined ? [] : rawLines.slice(ownMeta.historyStartOrdinal)) : rawLines;
   const messages: ParsedMessage[] = [];
+  // Pair by native call_id, never by arrival order or payload resemblance.
+  // Ambiguous/reused IDs cannot authorize UI-envelope normalization.
+  const uiCalls = new Map<string, string | null>();
+  for (const line of lines) {
+    const p = line.payload;
+    if (line.type !== "response_item" || !p || !["function_call", "custom_tool_call"].includes(String(p.type)) || typeof p.call_id !== "string") continue;
+    const tool =
+      p.type === "function_call" && typeof p.name === "string"
+        ? callboardUiTool(p.name, typeof p.namespace === "string" ? p.namespace : p.namespace === undefined ? undefined : "<invalid>")
+        : undefined;
+    const identity = tool ? JSON.stringify([p.name, p.namespace, p.arguments]) : null;
+    if (!uiCalls.has(p.call_id)) uiCalls.set(p.call_id, identity);
+    else if (uiCalls.get(p.call_id) !== identity) uiCalls.set(p.call_id, null);
+  }
+  const seenToolRecords = new Set<string>();
   // Version-gate off the meta line even when a caller skips readCodexSessionMeta.
   const meta = lines.find((l) => l.type === "session_meta");
   if (meta) checkCliVersion(typeof meta.payload?.cli_version === "string" ? meta.payload.cli_version : undefined);
@@ -605,6 +621,14 @@ export function parseCodexRollout(filePath: string): ParsedMessage[] {
 
     if (line.type !== "response_item") continue;
     const parsed = translateResponseItem(line.payload, line.timestamp);
+    if (parsed?.toolUseId) {
+      const key = JSON.stringify([parsed.type, parsed.toolUseId, parsed.toolName, parsed.toolNamespace, parsed.content]);
+      if (seenToolRecords.has(key)) continue;
+      seenToolRecords.add(key);
+      if (parsed.type === "tool_result" && uiCalls.get(parsed.toolUseId)) {
+        parsed.content = directUiResultText(line.payload?.output) ?? parsed.content;
+      }
+    }
     if (!parsed) continue;
     if (parsed.role === "assistant") {
       if (currentModel) parsed.model = currentModel;
@@ -635,7 +659,12 @@ function translateResponseItem(payload: Record<string, unknown> | undefined, tim
     // `custom_tool_call` (the apply-patch / freeform tools) carries `input`.
     case "function_call":
     case "custom_tool_call": {
-      const name = typeof payload.name === "string" ? payload.name : "<unknown>";
+      const name =
+        typeof payload.name === "string"
+          ? payload.namespace !== undefined && typeof payload.namespace !== "string"
+            ? `invalid_namespace__${payload.name}`
+            : payload.name
+          : "<unknown>";
       const callId = typeof payload.call_id === "string" ? payload.call_id : undefined;
       const content =
         typeof payload.arguments === "string"
@@ -646,7 +675,10 @@ function translateResponseItem(payload: Record<string, unknown> | undefined, tim
       return {
         role: "assistant",
         type: "tool_use",
-        toolName: payload.namespace === "collaboration" && !name.startsWith("collaboration.") ? `collaboration.${name}` : name,
+        toolName:
+          payload.namespace === "collaboration" && !name.startsWith("collaboration.")
+            ? `collaboration.${name}`
+            : codexUiToolName(name, typeof payload.namespace === "string" ? payload.namespace : payload.namespace === undefined ? undefined : "<invalid>"),
         ...(typeof payload.namespace === "string" && { toolNamespace: payload.namespace }),
         content: collaborationArguments(name, payload.namespace, content),
         ...(callId && { toolUseId: callId }),
@@ -932,4 +964,14 @@ export function readFirstUserPrompt(filePath: string): string | null {
       return content;
     }) ?? null
   );
+}
+
+/** Captured Codex 0.153.4 direct MCP output envelope. Called ONLY after
+ * trusted call-id pairing. No searching JSON/text, no exec-result inspection. */
+function directUiResultText(output: unknown): string | undefined {
+  if (!Array.isArray(output) || output.length !== 2) return undefined;
+  const [header, body] = output;
+  if (header?.type !== "input_text" || typeof header.text !== "string" || !/^Wall time: [0-9]+(?:\.[0-9]+)? seconds\nOutput:$/.test(header.text))
+    return undefined;
+  return body?.type === "input_text" && typeof body.text === "string" ? body.text : undefined;
 }

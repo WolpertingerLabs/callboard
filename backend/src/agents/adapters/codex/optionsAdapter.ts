@@ -1,3 +1,5 @@
+import type { CodexUiAliasPresence } from "../../../services/codex-execution-route.js";
+import { CALLBOARD_UI_NAMESPACE, CALLBOARD_UI_SERVER, CALLBOARD_UI_TOOLS } from "shared/types/callboard-ui-tools.js";
 /**
  * Options translation: Claude-SDK-shaped {@link AgentQueryRequest.options} →
  * Codex `@openai/codex-sdk` construction inputs ({@link CodexOptions} +
@@ -48,6 +50,14 @@ const log = createLogger("codex-adapter");
  * `openRouter` extras pattern.
  */
 export interface CodexOptionsExtras {
+  /** Verified native CLI capability and its existing direct-only list; absent = legacy route. */
+  directUiNamespaces?: string[];
+  /** Required config/read proof; a namespace list alone never authorizes a split. */
+  directUiPolicy?: "unconfigured";
+  /** Effective reserved-name presence, also required for unsplit/alternate routes. */
+  uiAliasPresence?: CodexUiAliasPresence;
+  /** Preserve the boolean shorthand when adding a nested code_mode setting. */
+  directUiCodeModeEnabled?: boolean;
   /** Subscription (ChatGPT login) vs raw API key. Default subscription — no key passed. */
   authMode?: "subscription" | "api-key";
   /**
@@ -233,7 +243,10 @@ function sanitizeEnvRecord(env: unknown): Record<string, string> | undefined {
  *     since callboard doesn't own their lifecycle.
  * Anything that matches neither shape is logged and skipped.
  */
-export function collectCodexMcpServers(mcpServers: ClaudeShapedOptions["mcpServers"]): {
+export function collectCodexMcpServers(
+  mcpServers: ClaudeShapedOptions["mcpServers"],
+  directUi = false,
+): {
   config?: Record<string, CodexMcpServerConfig>;
   handles: CodexToolServerHandle[];
 } {
@@ -241,8 +254,18 @@ export function collectCodexMcpServers(mcpServers: ClaudeShapedOptions["mcpServe
   const config: Record<string, CodexMcpServerConfig> = {};
   const handles: CodexToolServerHandle[] = [];
   for (const [name, value] of Object.entries(mcpServers)) {
+    if (name === CALLBOARD_UI_SERVER || name === "callboard_ui") {
+      log.warn(`Ignoring external MCP server with reserved Callboard UI name "${name}"`);
+      continue;
+    }
     if (isCodexToolServerHandle(value)) {
       config[name] = value.toMcpServerConfig();
+      if (directUi && name === "callboard-tools" && value.name === "callboard-tools") {
+        // Two filtered views of ONE live handler bundle/socket, not two copies
+        // of stateful handlers. Codex owns selection; close/cancel remain unchanged.
+        config[name] = { ...config[name], disabled_tools: [...CALLBOARD_UI_TOOLS] };
+        config[CALLBOARD_UI_SERVER] = { ...value.toMcpServerConfig(), enabled_tools: [...CALLBOARD_UI_TOOLS] };
+      }
       handles.push(value);
       continue;
     }
@@ -441,9 +464,48 @@ export function translateCodexOptions(options: Record<string, unknown>): CodexTr
   // Codex connects OUT to MCP servers; each callboard tool bundle is hosted
   // in-process (buildCodexToolServer) and exposed to Codex as an `mcp_servers`
   // entry pointing at the relay shim. The live handles ride out for cleanup.
-  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers);
+  const directUi =
+    extras.directUiNamespaces !== undefined &&
+    extras.directUiPolicy === "unconfigured" &&
+    extras.uiAliasPresence?.[CALLBOARD_UI_SERVER] === false &&
+    extras.uiAliasPresence.callboard_ui === false &&
+    !extras.useOpenRouter &&
+    extras.reasoningRoute !== "openrouter";
+  const { config: mcpServersConfig, handles: toolServerHandles } = collectCodexMcpServers(opts.mcpServers, directUi);
   if (mcpServersConfig) {
     codexOpts.config = { ...codexOpts.config, mcp_servers: mcpServersConfig };
+  }
+
+  if (toolServerHandles.some((handle) => handle.name === "callboard-tools")) {
+    const presence = extras.uiAliasPresence;
+    if (!presence || typeof presence[CALLBOARD_UI_SERVER] !== "boolean" || typeof presence.callboard_ui !== "boolean") {
+      // No model/foreign MCP server may start without a safe reservation. Reap
+      // the already-built in-process handles even though query construction
+      // fails before CodexAgentQuery can take ownership of them.
+      for (const handle of new Set(toolServerHandles)) void handle.close().catch(() => {});
+      throw new Error("Cannot safely reserve Callboard UI tool names: effective Codex MCP configuration is unavailable. No Codex turn was started.");
+    }
+    // CLI 0.153.4 recursively merges EVEN raw inline-table overrides. For an
+    // existing name change only enabled: leave HTTP/stdio/env/policy intact.
+    // A disabled placeholder transport is needed only for proven-absent names.
+    codexOpts.configOverrides = [];
+    for (const alias of [CALLBOARD_UI_SERVER, "callboard_ui"] as const) {
+      if (alias === CALLBOARD_UI_SERVER && mcpServersConfig?.[CALLBOARD_UI_SERVER]) continue; // Owned alias, proven absent above.
+      if (!presence[alias]) {
+        codexOpts.configOverrides.push(`mcp_servers.${alias}.command=${JSON.stringify(process.execPath)}`, `mcp_servers.${alias}.args=["--version"]`);
+      }
+      codexOpts.configOverrides.push(`mcp_servers.${alias}.enabled=false`);
+    }
+  }
+
+  if (mcpServersConfig?.[CALLBOARD_UI_SERVER] && extras.directUiNamespaces) {
+    codexOpts.config = {
+      ...codexOpts.config,
+      // Leaf override only: preserve code_mode.enabled and every unrelated
+      // user setting. Do not turn code mode on (or off) for the user.
+      ...(extras.directUiCodeModeEnabled !== undefined ? { "features.code_mode.enabled": extras.directUiCodeModeEnabled } : {}),
+      "features.code_mode.direct_only_tool_namespaces": [...new Set([...extras.directUiNamespaces, CALLBOARD_UI_NAMESPACE])],
+    };
   }
 
   // A session with in-process tool servers gets the exec identity note once,

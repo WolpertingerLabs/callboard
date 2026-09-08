@@ -221,6 +221,7 @@ describe("translateCodexOptions — systemPrompt → temp model_instructions_fil
   it("says the exec identity note once, in the instructions, when the session has in-process tool servers", () => {
     const { instructionsFilePath } = translateCodexOptions({
       systemPrompt: "follow the rules",
+      codex: { uiAliasPresence: { "callboard-ui": false, callboard_ui: false } },
       mcpServers: { "callboard-tools": fakeHandle("callboard-tools", "/tmp/a/s.sock"), "job-tools": fakeHandle("job-tools", "/tmp/b/s.sock") },
     });
     trackTempFromFile(instructionsFilePath);
@@ -236,7 +237,10 @@ describe("translateCodexOptions — systemPrompt → temp model_instructions_fil
   });
 
   it("never writes a note-only instructions file: that would replace the CLI's built-in prompt", () => {
-    const { codexOpts, instructionsFilePath } = translateCodexOptions({ mcpServers: { "callboard-tools": fakeHandle("callboard-tools", "/tmp/a/s.sock") } });
+    const { codexOpts, instructionsFilePath } = translateCodexOptions({
+      codex: { uiAliasPresence: { "callboard-ui": false, callboard_ui: false } },
+      mcpServers: { "callboard-tools": fakeHandle("callboard-tools", "/tmp/a/s.sock") },
+    });
     expect(instructionsFilePath).toBeNull();
     expect((codexOpts.config as { model_instructions_file?: string }).model_instructions_file).toBeUndefined();
   });
@@ -423,6 +427,7 @@ describe("translateCodexOptions — mcp_servers threaded into codexOpts.config",
   it("tool handles land in config.mcp_servers and ride out as toolServerHandles", () => {
     const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
     const { codexOpts, toolServerHandles } = translateCodexOptions({
+      codex: { uiAliasPresence: { "callboard-ui": false, callboard_ui: false } },
       mcpServers: { "callboard-tools": a },
     });
     expect(codexOpts.config?.mcp_servers).toEqual({
@@ -435,6 +440,7 @@ describe("translateCodexOptions — mcp_servers threaded into codexOpts.config",
     const a = fakeHandle("callboard-tools", "/tmp/a/s.sock");
     const result = translateCodexOptions({
       systemPrompt: "be terse",
+      codex: { uiAliasPresence: { "callboard-ui": false, callboard_ui: false } },
       mcpServers: { "callboard-tools": a },
     });
     trackTempFromFile(result.instructionsFilePath);

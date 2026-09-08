@@ -1,3 +1,4 @@
+import { callboardUiTool, isCallboardUiTool } from "shared/types/callboard-ui-tools.js";
 /**
  * Provider-agnostic tool-call formatting for the chat UI.
  *
@@ -74,7 +75,8 @@ export function getToolDisplayName(raw: string): string {
  * convention: `mcp__callboard-tools__<tool>` (Claude), `callboard-tools__<tool>`
  * (Codex), or bare `<tool>` (pi's in-process tools carry no server prefix).
  */
-export function isCallboardTool(raw: string, tool: string): boolean {
+export function isCallboardTool(raw: string, tool: string, namespace?: string): boolean {
+  if (isCallboardUiTool(tool)) return callboardUiTool(raw, namespace) === tool;
   const parsed = parseToolName(raw);
   return parsed.tool === tool && (parsed.server === undefined || parsed.server === "callboard-tools");
 }

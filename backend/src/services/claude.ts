@@ -1649,6 +1649,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // block, keyed from OPENROUTER_API_KEY. Credentials may come from the stored
     // key or from an ambient OpenRouter setup — see isCodexRoutedThroughOpenRouter
     // for why the env case additionally requires an explicit endpoint override.
+    codexRoute ??= await resolveCodexExecutionRoute(agentSettings, folder);
     const reasoningTarget = await resolveReasoningTarget(
       { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, cwd: folder, codexRoute },
       agentSettings,
@@ -1704,6 +1705,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       ...(requestedModel && { model: requestedModel }),
       ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
       ...(chatEffort && { reasoningEffort: chatEffort }),
+      uiAliasPresence: codexRoute.uiAliasPresence,
+      ...(codexRoute.directUiNamespaces && {
+        directUiNamespaces: codexRoute.directUiNamespaces,
+        directUiCodeModeEnabled: codexRoute.directUiCodeModeEnabled,
+        directUiPolicy: codexRoute.directUiPolicy,
+      }),
       reasoningRoute: reasoningTarget.route === "openrouter" ? "openrouter" : reasoningTarget.route === "codex" ? "native" : "unknown",
       ...(permissions && { permissions }),
     };

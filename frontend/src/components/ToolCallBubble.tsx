@@ -1,8 +1,9 @@
+import { parseUiToolResult } from "./uiToolResult";
 import { useEffect, useState, useMemo } from "react";
 import { RotateCw, ChevronRight, ChevronDown } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import { parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge, ImageThumbnails } from "./MessageBubble";
-import { getToolSummary, getToolDisplayName, isCallboardTool } from "./toolFormatting";
+import { getToolSummary, getToolDisplayName } from "./toolFormatting";
 import MediaRenderer from "./MediaRenderer";
 import CanvasRenderer from "./CanvasRenderer";
 import JsonContentView from "./JsonContentView";
@@ -93,31 +94,9 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning, backgro
   // Special case: render_file renders as MediaRenderer. Matched by bare tool
   // name so all providers hit it (Claude: mcp__callboard-tools__render_file,
   // Codex: callboard-tools__render_file, pi: render_file).
-  const renderFileData = useMemo(() => {
-    if (toolUse.toolName && isCallboardTool(toolUse.toolName, "render_file") && toolResult) {
-      try {
-        const parsed = JSON.parse(toolResult.content);
-        if (parsed?.type === "render_file") return parsed;
-      } catch {
-        /* invalid JSON */
-      }
-    }
-    return null;
-  }, [toolUse, toolResult]);
-
-  // Special case: create_canvas / update_canvas renders as CanvasRenderer
-  const canvasData = useMemo(() => {
-    const isCanvasTool = !!toolUse.toolName && (isCallboardTool(toolUse.toolName, "create_canvas") || isCallboardTool(toolUse.toolName, "update_canvas"));
-    if (isCanvasTool && toolResult) {
-      try {
-        const parsed = JSON.parse(toolResult.content);
-        if (parsed?.type === "render_canvas") return parsed;
-      } catch {
-        /* invalid JSON */
-      }
-    }
-    return null;
-  }, [toolUse, toolResult]);
+  const uiData = useMemo(() => parseUiToolResult(toolUse, toolResult), [toolUse, toolResult]);
+  const renderFileData = uiData?.type === "render_file" ? uiData : null;
+  const canvasData = uiData?.type === "render_canvas" ? uiData : null;
 
   if (todoItems) {
     return <TodoList items={todoItems} />;
