@@ -94,3 +94,44 @@ test("browser import/probe never downloads and kind is never desktop", async () 
   assert.equal(p.available, false);
   assert.equal(p.kind, "browser");
 });
+// Optional dependency absence is an explicit skip, never a probe qualification.
+async function playwright(t) {
+  try {
+    return await import("playwright");
+  } catch {
+    t.skip("Probe diagnostics tests require the optional Playwright dependency");
+  }
+}
+test("probe names the absent executable it checked and never blames the optional dependency", async (t) => {
+  const module = await playwright(t);
+  if (!module) return;
+  const executablePath = "/nonexistent/ms-playwright/chromium-1243/chrome-linux64/chrome";
+  const explicit = await createBrowserDriver({ executablePath }).probe();
+  assert.equal(explicit.available, false);
+  assert.ok(explicit.reason.includes(executablePath), explicit.reason);
+  assert.match(explicit.reason, /playwright install chromium/);
+  assert.match(explicit.reason, /no automatic downloads/);
+  assert.doesNotMatch(explicit.reason, /not installed or resolvable/);
+  // The pinned-build miss: playwright resolves a path its host never provisioned.
+  const resolved = "/nonexistent/ms-playwright/chromium-1243/chrome-linux64/headless_shell";
+  t.mock.method(module.chromium, "executablePath", () => resolved);
+  const defaulted = await createBrowserDriver().probe();
+  assert.equal(defaulted.available, false);
+  assert.ok(defaulted.reason.includes(resolved), defaulted.reason);
+  assert.doesNotMatch(defaulted.reason, /not installed or resolvable/);
+});
+test("probe blames only the optional dependency when playwright cannot be imported", async (t) => {
+  const { registerHooks } = await import("node:module");
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (specifier === "playwright") throw new Error("Cannot find package 'playwright'");
+      return nextResolve(specifier, context);
+    },
+  });
+  t.after(() => hooks.deregister());
+  const p = await createBrowserDriver({ executablePath: "/nonexistent/computer-use-chromium" }).probe();
+  assert.equal(p.available, false);
+  assert.match(p.reason, /playwright/);
+  assert.match(p.reason, /not installed or resolvable/);
+  assert.doesNotMatch(p.reason, /chromium|executablePath|nonexistent/i);
+});

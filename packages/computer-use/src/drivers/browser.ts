@@ -38,23 +38,37 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
         reason: `Unsupported Chromium platform ${process.platform}/${process.arch}; configure a qualified external driver`,
       };
     }
-    try {
-      const { chromium } = await import("playwright");
-      await access(config.executablePath ?? chromium.executablePath());
+    const playwright = await import("playwright").catch(() => undefined);
+    if (!playwright) {
       return {
-        available: true,
+        available: false,
         kind: "browser",
-        capabilities: ["screenshot", "pointer", "keyboard", "navigation", "persistent-session"],
-        reason: "Executable found; sandbox support and launch/runtime qualification occur on open",
+        capabilities: [],
+        reason: "Optional playwright dependency is not installed or resolvable; install it on the service host to enable browser control",
       };
+    }
+    // Unlike open(), a probe reason is capability diagnostics for the signed-in
+    // human control plane and never reaches an agent tool, so it names the exact
+    // path checked: a version-pinned miss (playwright's pin moving to a build the
+    // host has not provisioned) is otherwise indistinguishable from a missing dep.
+    let executablePath = config.executablePath;
+    try {
+      executablePath ??= playwright.chromium.executablePath();
+      await access(executablePath);
     } catch {
       return {
         available: false,
         kind: "browser",
         capabilities: [],
-        reason: "Install optional playwright and provision its Chromium executable (no automatic downloads)",
+        reason: `Chromium executable ${executablePath ? `not found at ${executablePath}` : "path could not be resolved by playwright"}; run "npx playwright install chromium" or configure an explicit executablePath (no automatic downloads)`,
       };
     }
+    return {
+      available: true,
+      kind: "browser",
+      capabilities: ["screenshot", "pointer", "keyboard", "navigation", "persistent-session"],
+      reason: "Executable found; sandbox support and launch/runtime qualification occur on open",
+    };
   };
   return {
     kind: "browser",
