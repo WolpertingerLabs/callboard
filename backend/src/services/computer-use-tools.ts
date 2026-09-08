@@ -4,7 +4,7 @@ import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { defineTool, type ToolCallResult, type ToolServerSpec } from "../agents/ports/tools.js";
-import { controlError, controlPrincipal, getComputerUseHost } from "./computer-use.js";
+import { controlError, controlPrincipal, getComputerUseHost, logComputerUseFailure, type FailureContext } from "./computer-use.js";
 
 interface TurnBinding {
   token: string;
@@ -69,19 +69,58 @@ async function connection(chatId: string): Promise<Connection> {
   }
   return current;
 }
-const failure = (error: unknown): ToolCallResult => ({
-  isError: true,
-  content: [
-    {
-      type: "text",
-      text: JSON.stringify({
-        error: (error as { code?: string }).code ?? "unavailable",
-        message: error instanceof Error ? error.message : "Computer control unavailable",
-      }),
-    },
-  ],
-});
+/** The agent gets the tool result; the operator gets the same failure in the server log. */
+const failure = (error: unknown, operation: string, ids: { chatId: string; sessionId?: unknown }, context?: FailureContext): ToolCallResult => {
+  logComputerUseFailure(operation, ids, error, context);
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          error: (error as { code?: string }).code ?? "unavailable",
+          message: error instanceof Error ? error.message : "Computer control unavailable",
+        }),
+      },
+    ],
+  };
+};
 const text = (value: unknown): ToolCallResult => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+/**
+ * The MCP layer answers a fault as an `isError` result, not a throw, so nothing
+ * above it ever sees an exception. Recover what the operator needs.
+ *
+ * Exactly two things produce that text on this in-process pair, and both are
+ * safe to keep (checked against the SDK, not assumed):
+ *
+ * - our own handler's `{"error":"<code>"}` envelope (`mcp.ts`), a fixed enum;
+ * - the SDK's own argument validation, `MCP error -32602: Input validation
+ *   error: …`, which prints the schema and the *names* of the offending keys.
+ *
+ * Neither can carry page content — the one field that does, `frame.url`, only
+ * appears on a success result. So the text is preserved rather than dropped;
+ * the logger bounds it and strips its control characters. Anything that is not
+ * our envelope came from the SDK refusing the request before our handler ran,
+ * which is an `invalid_request`, not a driver fault: `cu_action`'s outer schema
+ * is a loose record, so a model can queue an action that only fails validation
+ * later, when the human approves it and `computer_act` is finally called.
+ */
+function mcpFailure(content: unknown[]): Error & { code?: string } {
+  const block = content.find((item) => (item as { type?: unknown } | null)?.type === "text") as { text?: unknown } | undefined;
+  const raw = typeof block?.text === "string" ? block.text : "";
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(raw) as { error?: unknown };
+    // Our envelope, but without a string code, is genuinely unknown: stay uncoded so it logs at error.
+    if (typeof parsed?.error === "string") code = parsed.error;
+  } catch {
+    code = raw ? "invalid_request" : undefined;
+  }
+  // No stack: this failure happened behind the MCP hop, so the extractor's own
+  // frames would describe where the text was parsed, not where anything broke —
+  // actively misleading now that `escalate` can put this line at error level.
+  return Object.assign(new Error(raw || "Driver reported a failure"), { stack: "" }, code ? { code } : {});
+}
 
 /**
  * Identity note: the spec is bound to the owning chat through `getChatId`, and
@@ -98,17 +137,25 @@ const text = (value: unknown): ToolCallResult => ({ content: [{ type: "text", te
 export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSpec {
   type Context = { signal?: AbortSignal; toolCallId?: string };
   async function call(name: string, input: Record<string, unknown>, context?: Context, approvedSignal?: AbortSignal): Promise<ToolCallResult> {
+    // Held outside the try so the catch can tell a stopped turn from a fault:
+    // an abort surfaces from the MCP client as a numeric -32001, the same code
+    // it uses for a genuine timeout.
+    let signal: AbortSignal | undefined;
+    // The approved execution is the one path where a human is waiting on the
+    // result, so its failures are never routine, whatever code they carry.
+    const logContext = (): FailureContext => ({ cancelled: signal?.aborted, escalate: Boolean(approvedSignal) });
     try {
       const chatId = getChatId();
       const turn = currentTurn(chatId);
       if ((!turn && !approvedSignal) || approvedSignal?.aborted || turn?.signal.aborted) throw controlError("cancelled", "No active authorized chat turn");
       const turnSignal = approvedSignal ?? turn!.signal;
-      const signal = context?.signal ? AbortSignal.any([turnSignal, context.signal]) : turnSignal;
+      signal = context?.signal ? AbortSignal.any([turnSignal, context.signal]) : turnSignal;
       signal.throwIfAborted();
       const result = await (await connection(chatId)).client.callTool({ name, arguments: input }, undefined, { signal, timeout: 35_000 });
       signal.throwIfAborted();
       if (!approvedSignal && currentTurn(chatId)?.token !== turn?.token) throw controlError("cancelled", "The chat turn changed");
       const content = Array.isArray(result.content) ? result.content : [];
+      if (result.isError) logComputerUseFailure(name, { chatId, sessionId: input.sessionId }, mcpFailure(content), logContext());
       return {
         content: content.flatMap<ToolCallResult["content"][number]>((block) => {
           if (block.type === "text" && typeof block.text === "string") return [{ type: "text" as const, text: block.text }];
@@ -119,7 +166,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
         ...(result.isError ? { isError: true } : {}),
       };
     } catch (error) {
-      return failure(error);
+      return failure(error, name, { chatId: getChatId(), sessionId: input.sessionId }, logContext());
     }
   }
   const ref = { sessionId: z.string().uuid(), generation: z.number().int().positive() };
@@ -147,7 +194,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
                 "If there is no ready session, ask the human to Enable this target in the Computer Control panel. Browser scope does not grant desktop access.",
             });
           } catch (error) {
-            return failure(error);
+            return failure(error, "cu_open", { chatId: getChatId() });
           }
         },
       ),
@@ -182,7 +229,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
               }),
             );
           } catch (error) {
-            return failure(error);
+            return failure(error, "cu_action", { chatId: getChatId(), sessionId: input.sessionId });
           }
         },
       ),
