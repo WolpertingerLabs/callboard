@@ -55,6 +55,15 @@ beforeAll(() => {
 });
 afterAll(() => remove?.());
 beforeEach(() => {
+  vi.stubGlobal(
+    "Image",
+    vi.fn(function () {
+      const image = document.createElement("img");
+      image.decode = vi.fn().mockResolvedValue(undefined);
+      queueMicrotask(() => fireEvent.load(image));
+      return image;
+    }),
+  );
   const status: ComputerUseStatus = {
     permission: "allow",
     capabilities: [{ kind: "browser", available: true }],
@@ -70,6 +79,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 /** The real panel, showing a frame, so every class asserted on is one it renders. */
