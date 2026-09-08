@@ -47,11 +47,9 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
         reason: "Optional playwright dependency is not installed or resolvable; install it on the service host to enable browser control",
       };
     }
-    // Unlike open(), a probe reason is capability diagnostics for the signed-in
-    // human control plane and never reaches an agent tool, so it names the exact
-    // path checked: a version-pinned miss (playwright's pin moving to a build the
-    // host has not provisioned) is otherwise indistinguishable from a missing dep.
-    let executablePath = config.executablePath;
+    // `||`, not `??`: an operator's empty CALLBOARD_BROWSER_EXECUTABLE must resolve
+    // playwright's own path rather than reporting access("") as a resolution failure.
+    let executablePath = config.executablePath || undefined;
     try {
       executablePath ??= playwright.chromium.executablePath();
       await access(executablePath);
@@ -60,7 +58,11 @@ export function createBrowserDriver(options: BrowserDriverOptions = {}): Driver 
         available: false,
         kind: "browser",
         capabilities: [],
-        reason: `Chromium executable ${executablePath ? `not found at ${executablePath}` : "path could not be resolved by playwright"}; run "npx playwright install chromium" or configure an explicit executablePath (no automatic downloads)`,
+        reason: `Chromium executable ${executablePath ? "not found" : "path could not be resolved by playwright"}; run "npx playwright install chromium" or configure an explicit executablePath (no automatic downloads)`,
+        // A version-pinned miss (playwright's pin moving to a build the host has
+        // not provisioned) is indistinguishable from a missing dependency without
+        // the path, but the path is host layout: operator surfaces only.
+        ...(executablePath ? { operatorDetail: `Checked ${executablePath}` } : {}),
       };
     }
     return {

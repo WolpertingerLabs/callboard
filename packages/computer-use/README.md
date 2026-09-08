@@ -140,7 +140,7 @@ One canonical tool surface, from `getToolDefinitions`:
 6. `computer_stop` — `{ sessionId }`
 7. `computer_revoke` — `{ sessionId }`
 
-Definitions are `{ name, description, inputSchema: z.ZodRawShape, handler(input, {signal}?) }`. The server wraps those same handlers with strict Zod schemas. An observation returns **MCP text metadata + a real `{type:'image', data, mimeType}` block**, not base64 in a text placeholder. Errors are sanitized text JSON with `isError: true`. There is no grant/approve/takeover/resume tool, no resource route for cached frames, and no provider/host SDK import. Harness discovery and image-to-model qualification remain integration work; an MCP image test alone does not prove model vision.
+Definitions are `{ name, description, inputSchema: z.ZodRawShape, handler(input, {signal}?) }`. The server wraps those same handlers with strict Zod schemas. An observation returns **MCP text metadata + a real `{type:'image', data, mimeType}` block**, not base64 in a text placeholder. Errors are sanitized text JSON with `isError: true`. Results are not sanitized by that boundary, so the one field carrying host layout — `Probe.operatorDetail`, e.g. the resolved Chromium path a browser probe checked — is stripped from `computer_probe` before serialization; `Probe.reason` stays safe for any principal. An embedder that displays `operatorDetail` must serve it only to an authenticated operator surface, never back over a tool result. There is no grant/approve/takeover/resume tool, no resource route for cached frames, and no provider/host SDK import. Harness discovery and image-to-model qualification remain integration work; an MCP image test alone does not prove model vision.
 
 ## Tests and qualification
 

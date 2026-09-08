@@ -45,7 +45,14 @@ export class ComputerUseError extends Error {
 export interface Probe {
   available: boolean;
   kind: Kind;
+  /** Model-visible: safe for any principal, so it never names host paths or environment. */
   reason?: string;
+  /**
+   * Operator-only diagnostics (resolved host paths and layout) for a trusted
+   * control plane. `getToolDefinitions` strips this before any MCP result, so
+   * only an embedder holding the Probe itself may display it.
+   */
+  operatorDetail?: string;
   capabilities: readonly string[];
 }
 export interface Frame {

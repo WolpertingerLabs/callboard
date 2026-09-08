@@ -59,7 +59,14 @@ export function getToolDefinitions(service: ComputerUseService, principal: Princ
       "computer_probe",
       "Check an explicitly configured target; never installs or launches applications.",
       { targetId: z.string().min(1).max(256) },
-      (input) => service.probe(p, input.targetId),
+      // Results bypass the error boundary's redaction below, and service.probe
+      // resolves rather than throws, so operator-only host diagnostics must be
+      // dropped here. Every MCP transport is model-visible whatever role the
+      // host asserts; a path belongs to the control plane holding the Probe.
+      async (input) => {
+        const { operatorDetail: _operatorDetail, ...probe } = await service.probe(p, input.targetId);
+        return probe;
+      },
     ),
     define(
       "computer_open",

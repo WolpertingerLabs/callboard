@@ -170,8 +170,12 @@ export class ComputerUseHost {
       (["browser", "desktop"] as const).map(async (kind) => {
         const restriction = computerUseScopeError(kind, policy);
         try {
-          const probe = await this.probe(kind);
-          return { ...probe, kind: kind === "browser" ? "browser" : "native", available: probe.available && !restriction, reason: restriction ?? probe.reason };
+          // This status is served only to a signed-in human (routes/computer-use.ts
+          // is requireSessionAuth-gated; the agent bridge returns sessions alone), so
+          // it is the one surface allowed to show the driver's operator diagnostics.
+          const { operatorDetail, ...probe } = await this.probe(kind);
+          const detailed = [probe.reason, operatorDetail].filter(Boolean).join(" ") || undefined;
+          return { ...probe, kind: kind === "browser" ? "browser" : "native", available: probe.available && !restriction, reason: restriction ?? detailed };
         } catch {
           return {
             kind: kind === "browser" ? "browser" : "native",
