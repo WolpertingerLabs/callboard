@@ -2761,7 +2761,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           <div className="chat-header-actions">
             {/* View mode switcher - Chat / Git diff / Debug / Job */}
             {viewModeSwitcher}
-            {computerChatId && <ComputerUseHeader controller={computerController} viewOpen={viewMode === "computer"} />}
 
             {id && userMessageIndices.length > 1 && (
               <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", border: "1px solid var(--border)" }}>
@@ -2973,6 +2972,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         >
           {stopping ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Square size={14} />}
         </button>
+
+        {/* Desktop safety strip: separate from view navigation and general actions.
+            The component returns null when unused, so no empty row is reserved. */}
+        {!isMobile && computerChatId && <ComputerUseHeader controller={computerController} viewOpen={viewMode === "computer"} />}
 
         {/* Mobile: toggle button for secondary action bar */}
         {isMobile && (

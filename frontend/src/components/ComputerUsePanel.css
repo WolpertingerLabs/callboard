@@ -308,11 +308,12 @@
   line-height: 1.4;
   color: var(--text);
 }
-/* The chat header's own layout (grid, wrapping, container query) lives in
-   index.css. Only the strip's placement inside that header is decided here:
-   it is the one action allowed to give up width. */
-.chat-header-actions > .computer-use-header {
-  flex-shrink: 1;
+/* Desktop safety controls occupy their own full-width grid row, below the
+   identity/actions and generation stop. The header owns its responsive grid. */
+.chat-header:not(.chat-header-mobile) > .computer-use-header {
+  grid-column: 1 / -1;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 .computer-use-summary {
   flex: 1 1 140px;
@@ -374,16 +375,6 @@
   padding: 4px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-sidebar);
-}
-
-/* A CHAT width, not a viewport breakpoint (see the header rules in index.css).
-   Keep view navigation and ancillary actions together; the persistent
-   computer summary and its stop then share the full available row. */
-@container chat-layout (max-width: 620px) {
-  .chat-header:not(.chat-header-mobile) .chat-header-actions > .computer-use-header {
-    order: 1;
-    flex-basis: 100%;
-  }
 }
 
 .computer-use-readiness {
