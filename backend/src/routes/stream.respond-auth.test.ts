@@ -1,5 +1,6 @@
 /**
- * Who may answer a computer-control confirmation.
+ * Who may answer a computer-control confirmation — the prompt a chat set to
+ * `computerControl: "ask"` raises before every GUI action.
  *
  * The gate moved from `POST /api/computer-use/:chatId/:sessionId/approve` —
  * which carries `requireSessionAuth` + `requireControlOrigin` under the comment
@@ -7,8 +8,8 @@
  * `POST /api/chats/:id/respond`, which sits under `requireAuth` and happily
  * accepts a Bearer `cbk_` key. Moving the gate must not weaken it: an agent
  * that has got hold of an API key must not be able to confirm its own GUI
- * action, which is the entire point of a second gate that runs after chat
- * policy has already said yes.
+ * action, which is the entire point of the prompt an `ask` chat raises after
+ * chat policy has already admitted the tool call.
  *
  * Ordinary tool permissions are deliberately NOT affected: answering "may I run
  * Bash" over the API is a supported, documented workflow, and the only in-repo

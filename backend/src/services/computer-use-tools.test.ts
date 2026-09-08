@@ -36,7 +36,7 @@ const textOf = (result: { content: { type: string }[] }) => {
   return block ? JSON.parse(block.text) : undefined;
 };
 
-it("the real host MCP hop blocks on the human, executes only what they confirmed, and fences a revoked grant", async () => {
+it("an ask chat's real host MCP hop blocks on the human, executes only what they confirmed, and fences a revoked grant", async () => {
   const act = vi.fn(async () => {});
   let targetChanged: (() => void) | undefined;
   let authorizeAction: (() => Promise<void>) | undefined = undefined;
@@ -64,7 +64,7 @@ it("the real host MCP hop blocks on the human, executes only what they confirmed
   host = new ComputerUseHost(
     service,
     { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
-    () => ({ policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow" }), signature: "scope" }),
+    () => ({ policy: readComputerUsePolicy({ computerControl: "ask", webAccess: "allow" }), signature: "scope" }),
     person.confirm,
   );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
@@ -72,7 +72,7 @@ it("the real host MCP hop blocks on the human, executes only what they confirmed
   const end = beginComputerUseTurn(() => "chat", controller.signal);
   const spec = buildComputerUseToolsSpec(() => "chat");
   const tool = (name: string) => spec.tools.find((item) => item.name === name)!;
-  const opened = await host.open("chat", "browser");
+  const opened = (await host.approve("chat", (await host.open("chat", "browser")).id)) as { id: string; generation: number };
   const ref = { sessionId: opened.id, generation: opened.generation };
   const pixels = await tool("cu_observe").handler(ref);
   expect(pixels.content).toContainEqual({ type: "image", data: "AA==", mimeType: "image/png" });
@@ -123,6 +123,47 @@ it("the real host MCP hop blocks on the human, executes only what they confirmed
   authorizeAction = undefined;
   await host.revoke("chat", opened.id);
   expect((await tool("cu_observe").handler(ref)).isError).toBe(true);
+  end();
+});
+
+it("an allow chat's MCP hop reaches the driver with nobody asked", async () => {
+  const act = vi.fn(async () => {});
+  const driver: Driver = {
+    kind: "browser",
+    probe: async () => ({ kind: "browser", available: true, capabilities: ["screenshot"] }),
+    open: async () => ({
+      act,
+      close: async () => {},
+      releaseInput: async () => {},
+      observe: async () => ({ data: "AA==", mimeType: "image/png", width: 100, height: 100, capturedAt: Date.now() }),
+    }),
+  };
+  const service = new ComputerUseService({
+    targets: [{ id: "managed-browser", enabled: true, driver }],
+    authorize: (request) => host?.authorize(request) ?? "deny",
+  });
+  // The confirmation double would say yes if it were reached; the point is that
+  // it is not, so a reintroduced prompt fails here as a call rather than a hang.
+  const confirm = vi.fn<ConfirmAgentAction>(async () => ({ approved: true, reason: "human" }));
+  host = new ComputerUseHost(
+    service,
+    { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
+    () => ({ policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow" }), signature: "scope" }),
+    confirm,
+  );
+  vi.mocked(getComputerUseHost).mockResolvedValue(host);
+  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
+  const spec = buildComputerUseToolsSpec(() => "chat");
+  const tool = (name: string) => spec.tools.find((item) => item.name === name)!;
+  const opened = await host.open("chat", "browser");
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+
+  const result = await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2 } });
+
+  expect(result.isError).toBeUndefined();
+  expect(act).toHaveBeenCalledOnce();
+  expect(confirm).not.toHaveBeenCalled();
   end();
 });
 

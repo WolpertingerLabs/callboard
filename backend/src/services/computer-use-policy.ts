@@ -4,20 +4,21 @@
  *  - `deny`  — no target can be enabled; `cu_*` calls are refused by the service
  *              (and, on Claude Code, by `canUseTool` before they reach it).
  *  - `ask`   — the human's Enable click creates a request the human confirms
- *              separately; then each agent action is confirmed.
- *  - `allow` — the human's Enable click opens the target immediately. Only a
- *              human can enable a target at any level (`cu_open` lists ready
- *              sessions and grants nothing). Each agent action STILL needs a
- *              human confirmation — the agent's `cu_action` call blocks on a
- *              prompt in the chat (`ComputerUseHost.requestAgentAction` is
- *              unconditional and reads no level). The level does not grant
- *              autonomous control; any UI or description that says otherwise
- *              is wrong, not this table.
+ *              separately; then EVERY agent GUI action blocks on its own prompt
+ *              in the chat, which only that signed-in human can answer.
+ *  - `allow` — the human's Enable click opens the target immediately, and the
+ *              agent then acts without a per-action prompt. The action is
+ *              recorded for the operator instead (`logUnattendedAction`).
  *
- * Note that this table governs the FIRST gate only — whether the transport
- * call is admitted. The per-action confirmation is a second, independent gate
- * that exists precisely because the first one passed, and it takes no input
- * from here. See `computer-use.invariant.test.ts`.
+ * The one thing no level changes: **only a human can enable a target.**
+ * `open`/`approve` are reached only from the signed-in human's control plane,
+ * and the agent's `cu_open` lists ready sessions and grants nothing. `allow`
+ * governs what happens after you enable, never who enables.
+ *
+ * This table governs the FIRST gate — whether the transport call is admitted —
+ * and, at `ask`, selects the second: the per-action confirmation, which reads
+ * no policy of its own and cannot be answered by anything but the human. See
+ * `computer-use.invariant.test.ts`.
  */
 import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js";
 

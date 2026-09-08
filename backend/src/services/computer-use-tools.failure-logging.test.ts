@@ -23,6 +23,7 @@ beforeEach(() => {
   logs.error.mockClear();
   logs.warn.mockClear();
   logs.debug.mockClear();
+  logs.info.mockClear();
 });
 afterEach(async () => {
   await closeComputerUseConnections();
@@ -34,11 +35,13 @@ const frame = { data: "AA==", mimeType: "image/png" as const, width: 100, height
 /**
  * A real service and host over a stub driver: the MCP hop is what is under test.
  *
- * `confirm` stands in for the human at the chat prompt, and every caller states
- * its own — there is no approving default here, because a fixture that silently
- * says yes is the shape `computer-use.invariant.test.ts` exists to forbid.
+ * The chat is set to `ask` unless a case says otherwise, because that is the
+ * level with a human to be blind to. `confirm` stands in for them at the chat
+ * prompt, and every caller states its own — there is no approving default here,
+ * because a fixture that silently says yes is the shape
+ * `computer-use.invariant.test.ts` exists to forbid.
  */
-function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAction) {
+function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAction, level: "ask" | "allow" = "ask") {
   const driver: Driver = {
     kind: "browser",
     probe: async () => ({ kind: "browser", available: true, capabilities: ["screenshot"] }),
@@ -51,23 +54,31 @@ function harness(observe: () => Promise<typeof frame>, confirm?: ConfirmAgentAct
   host = new ComputerUseHost(
     service,
     { browser: driver, desktop: { ...driver, kind: "native-desktop" } },
-    () => ({ policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow" }), signature: "scope" }),
+    () => ({ policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow" }), signature: "scope" }),
     confirm,
   );
   vi.mocked(getComputerUseHost).mockResolvedValue(host);
   const spec = buildComputerUseToolsSpec(() => "chat");
-  return { host: host!, tool: (name: string) => spec.tools.find((item) => item.name === name)! };
+  return {
+    host: host!,
+    tool: (name: string) => spec.tools.find((item) => item.name === name)!,
+    /** Enable a target as the human does — one click, plus the panel confirmation under `ask`. */
+    enable: async () => {
+      const request = await host!.open("chat", "browser");
+      return (request.state === "pending_approval" ? await host!.approve("chat", request.id) : request) as { id: string; generation: number };
+    },
+  };
 }
 
 /** The one call that reached the driver, or undefined. */
 const errorLine = (operation: string) => logs.error.mock.calls.map((call) => String(call[0])).find((line) => line.includes(operation));
 
 it("records a driver fault the model only sees as an error tool result", async () => {
-  const { host: live, tool } = harness(async () => {
+  const { tool, enable } = harness(async () => {
     throw new Error("Target page, context or browser has been closed");
   });
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
-  const opened = await live.open("chat", "browser");
+  const opened = await enable();
 
   const result = await tool("cu_observe").handler({ sessionId: opened.id, generation: opened.generation });
   end();
@@ -92,13 +103,13 @@ it("treats a turn stopped mid-call as cancelled, not as a fault", async () => {
   // The pre-check before the MCP hop is the easy case. This is the common one:
   // the abort lands while `client.callTool` is in flight, and comes back as a
   // numeric -32001 McpError that carries no string code at all.
-  const { host: live, tool } = harness(async () => {
+  const { tool, enable } = harness(async () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
     return frame;
   });
   const controller = new AbortController();
   beginComputerUseTurn(() => "chat", controller.signal);
-  const opened = await live.open("chat", "browser");
+  const opened = await enable();
 
   const inflight = tool("cu_observe").handler({ sessionId: opened.id, generation: opened.generation });
   setTimeout(() => controller.abort(), 60);
@@ -116,12 +127,12 @@ it("gives an approved action that never happened a cause, at a level the operato
   // later through the panel, so the escalation no longer keys on a signal that
   // only the redemption path held. It keys on the same condition: this human
   // said yes. Stand in for them saying it.
-  const { host: live, tool } = harness(
+  const { tool, enable } = harness(
     async () => frame,
     async () => ({ approved: true, reason: "human" }),
   );
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
-  const opened = await live.open("chat", "browser");
+  const opened = await enable();
   const ref = { sessionId: opened.id, generation: opened.generation };
   const observed = await tool("cu_observe").handler(ref);
   const frameId = JSON.parse((observed.content[0] as { text: string }).text).frameId;
@@ -163,7 +174,7 @@ it("escalates the rest of the confirmed window too: the human said yes and the w
   const deciding = new Promise<void>((resolve) => {
     decide = resolve;
   });
-  const { host: live, tool } = harness(
+  const { tool, enable } = harness(
     async () => frame,
     async () => {
       asked();
@@ -172,7 +183,7 @@ it("escalates the rest of the confirmed window too: the human said yes and the w
     },
   );
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
-  const opened = await live.open("chat", "browser");
+  const opened = await enable();
   const ref = { sessionId: opened.id, generation: opened.generation };
   const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
 
@@ -187,12 +198,12 @@ it("escalates the rest of the confirmed window too: the human said yes and the w
 });
 
 it("does not escalate a refusal, a timeout or an occupied prompt: nobody approved those", async () => {
-  const { host: live, tool } = harness(
+  const { tool, enable } = harness(
     async () => frame,
     async () => ({ approved: false, reason: "denied" }),
   );
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
-  const opened = await live.open("chat", "browser");
+  const opened = await enable();
   const ref = { sessionId: opened.id, generation: opened.generation };
   const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
 
@@ -210,9 +221,9 @@ it.each([
   ["approval_unavailable", { approved: false, reason: "no_session" as const }],
   ["approval_unavailable", { approved: false, reason: "prompt_busy" as const }],
 ])("logs %s at debug — the control plane working, not a fault", async (code, outcome) => {
-  const { host: live, tool } = harness(async () => frame, async () => outcome);
+  const { tool, enable } = harness(async () => frame, async () => outcome);
   const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
-  const opened = await live.open("chat", "browser");
+  const opened = await enable();
   const ref = { sessionId: opened.id, generation: opened.generation };
   const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
 
@@ -222,4 +233,53 @@ it.each([
   expect(logs.error).not.toHaveBeenCalled();
   expect(logs.warn).not.toHaveBeenCalled();
   expect(String(logs.debug.mock.calls.at(-1)?.[0])).toContain(`code=${code}`);
+});
+
+/**
+ * The `allow` half of the same blindness problem. Under `ask` the operator's
+ * record of an action is the chat itself: the confirmation is a
+ * `permission_request` the human answered, and it stays in the transcript.
+ * `allow` removes the prompt, so nothing outside the model's own transcript —
+ * the one artifact a prompt-injected page can influence — would say what an
+ * unattended agent did to a real browser. One `info` line per action closes it.
+ */
+it("records each unprompted action an allow chat performs, so an operator can reconstruct the session", async () => {
+  const { tool, enable } = harness(
+    async () => frame,
+    // Would say yes if it were reached. It is not: `allow` does not ask.
+    async () => ({ approved: true, reason: "human" }),
+    "allow",
+  );
+  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
+  const opened = await enable();
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+
+  expect((await tool("cu_action").handler({ ...ref, frameId, action: { type: "navigate", url: "https://example.com" } })).isError).toBeUndefined();
+  end();
+
+  const line = logs.info.mock.calls.map((call) => String(call[0])).find((entry) => entry.includes("performed unattended"))!;
+  expect(line).toBeDefined();
+  // The same identifiers the failure lines carry, and the same human-readable
+  // summary the `ask` prompt would have shown — no page content beyond it.
+  expect(line).toContain(`chat=chat session=${opened.id}`);
+  expect(line).toContain("computerControl=allow");
+  expect(line).toMatch(/Open https:\/\/example\.com in the managed browser on \S+$/);
+});
+
+it("does not escalate an allow chat's failure: nobody is waiting on it", async () => {
+  const { tool, enable } = harness(async () => frame, undefined, "allow");
+  const end = beginComputerUseTurn(() => "chat", new AbortController().signal);
+  const opened = await enable();
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frameId = JSON.parse(((await tool("cu_observe").handler(ref)).content[0] as { text: string }).text).frameId;
+
+  // The loose outer schema again: this only fails the strict `computer_act`
+  // schema, which is a routine `invalid_request` when no human was promised it
+  // would happen. It reaches the model as an error result either way.
+  expect((await tool("cu_action").handler({ ...ref, frameId, action: { type: "click", x: 1, y: 2, bogus: 9 } })).isError).toBe(true);
+  end();
+
+  expect(logs.error).not.toHaveBeenCalled();
+  expect(String(logs.debug.mock.calls.at(-1)?.[0])).toContain("code=invalid_request");
 });

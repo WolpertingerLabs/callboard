@@ -35,6 +35,15 @@ function human() {
 /** The impatient human: says yes without the test having to drive them. */
 const alwaysApproves: ConfirmAgentAction = async () => ({ approved: true, reason: "human" });
 
+/**
+ * Enable a target as the human does: one click under "allow", a click plus a
+ * confirmation in the panel under "ask". The agent has no route to either.
+ */
+async function enable(host: ComputerUseHost, chatId = "a") {
+  const request = await host.open(chatId, "browser");
+  return (request.state === "pending_approval" ? await host.approve(chatId, request.id) : request) as { id: string; generation: number };
+}
+
 function fixture(level = "allow", confirm: ConfirmAgentAction = alwaysApproves) {
   let current: HostPolicy = {
     policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
@@ -105,8 +114,8 @@ describe("computer-use human grants", () => {
   });
   it("mutation approval is scoped, blocks until answered, and is invalidated by takeover", async () => {
     const person = human();
-    const { host, service } = fixture("allow", person.confirm);
-    const opened = await host.open("a", "browser");
+    const { host, service } = fixture("ask", person.confirm);
+    const opened = await enable(host);
     const execute = vi.fn(async () => ({ done: true }));
     const call = host.requestAgentAction(
       "a",
@@ -127,8 +136,8 @@ describe("computer-use human grants", () => {
     expect(execute).not.toHaveBeenCalled();
   });
   it("does not report a failed MCP mutation as a successful human approval, and re-asks for the retry", async () => {
-    const { host, service } = fixture();
-    const opened = await host.open("a", "browser");
+    const { host, service } = fixture("ask");
+    const opened = await enable(host);
     const attempt = async () =>
       host.requestAgentAction(
         "a",
@@ -145,8 +154,8 @@ describe("computer-use human grants", () => {
   });
   it("reports a refusal as a refusal and never as something to retry", async () => {
     const person = human();
-    const { host, service } = fixture("allow", person.confirm);
-    const opened = await host.open("a", "browser");
+    const { host, service } = fixture("ask", person.confirm);
+    const opened = await enable(host);
     const execute = vi.fn(async () => ({ done: true }));
     const call = host.requestAgentAction(
       "a",
@@ -164,8 +173,8 @@ describe("computer-use human grants", () => {
   });
   it("asks in readable terms — the action and its target, not session and frame UUIDs", async () => {
     const person = human();
-    const { host, service } = fixture("allow", person.confirm);
-    const opened = await host.open("a", "browser");
+    const { host, service } = fixture("ask", person.confirm);
+    const opened = await enable(host);
     const frameId = (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId;
     const action = { type: "navigate", url: "https://example.com" };
     const execute = vi.fn(async () => ({}));
@@ -181,12 +190,12 @@ describe("computer-use human grants", () => {
     expect(question.action).toEqual({ type: "navigate", url: "https://example.com" });
     person.approve();
     await call;
-    expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "navigate", url: "https://example.com" });
+    expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "navigate", url: "https://example.com" }, { confirmedByHuman: true });
   });
   it("refuses a second concurrent GUI action rather than replacing the question the human is reading", async () => {
     const person = human();
-    const { host, service } = fixture("allow", person.confirm);
-    const opened = await host.open("a", "browser");
+    const { host, service } = fixture("ask", person.confirm);
+    const opened = await enable(host);
     const frameId = (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId;
     const first = host.requestAgentAction("a", opened.id, opened.generation, frameId, { type: "key", key: "Enter" }, async () => ({ done: true }));
     await person.questioned;
@@ -204,24 +213,75 @@ describe("computer-use human grants", () => {
   });
 });
 
-for (const level of ["allow", "ask"])
-  it(`a ${level} chat's confirmed action still cannot execute after another capture`, async () => {
-    const person = human();
-    const { host, service } = fixture(level, person.confirm);
-    let opened = await host.open("a", "browser");
-    if (level === "ask") opened = (await host.approve("a", opened.id)) as typeof opened;
-    const ref = { sessionId: opened.id, generation: opened.generation };
-    const frame = await service.observe(controlPrincipal("a", "agent"), ref);
-    const execute = vi.fn(async () => ({}));
-    const call = host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "click", x: 1, y: 2 }, execute);
-    const rejection = expect(call).rejects.toMatchObject({ code: "stale_frame" });
-    await person.questioned;
-    // Coordinates mean nothing once the pixels under them may have changed.
-    await service.observe(controlPrincipal("a", "agent"), ref);
-    person.approve();
-    await rejection;
-    expect(execute).not.toHaveBeenCalled();
+it("an ask chat's confirmed action still cannot execute after another capture", async () => {
+  const person = human();
+  const { host, service } = fixture("ask", person.confirm);
+  const opened = await enable(host);
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frame = await service.observe(controlPrincipal("a", "agent"), ref);
+  const execute = vi.fn(async () => ({}));
+  const call = host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "click", x: 1, y: 2 }, execute);
+  const rejection = expect(call).rejects.toMatchObject({ code: "stale_frame" });
+  await person.questioned;
+  // Coordinates mean nothing once the pixels under them may have changed.
+  await service.observe(controlPrincipal("a", "agent"), ref);
+  person.approve();
+  await rejection;
+  expect(execute).not.toHaveBeenCalled();
+});
+
+// An allow chat has no think-time window to invalidate, but the frame binding
+// is not the confirmation's — it is the action's, and it holds at both levels.
+it("an allow chat's action is still bound to the frame it was aimed at", async () => {
+  const { host, service } = fixture("allow");
+  const opened = await enable(host);
+  const ref = { sessionId: opened.id, generation: opened.generation };
+  const frame = await service.observe(controlPrincipal("a", "agent"), ref);
+  await service.observe(controlPrincipal("a", "agent"), ref);
+  const execute = vi.fn(async () => ({}));
+  await expect(host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "click", x: 1, y: 2 }, execute)).rejects.toMatchObject({
+    code: "stale_frame",
   });
+  expect(execute).not.toHaveBeenCalled();
+});
+
+/**
+ * The semantics `allow` was renamed to mean. The confirmation double here would
+ * answer yes if it were called — the assertion is that it is never reached, so
+ * a regression that reintroduced the prompt shows up as a call, not as a hang.
+ */
+it("an allow chat performs the action without asking anyone", async () => {
+  const person = human();
+  const { host, service, act } = fixture("allow", person.confirm);
+  const opened = await enable(host);
+  const frameId = (await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation })).frameId;
+  const execute = vi.fn(async (_id: string, action: Record<string, unknown>) => ({ ran: action }));
+
+  await expect(host.requestAgentAction("a", opened.id, opened.generation, frameId, { type: "navigate", url: "https://example.com" }, execute)).resolves.toEqual(
+    { ran: { type: "navigate", url: "https://example.com" } },
+  );
+  expect(person.confirm).not.toHaveBeenCalled();
+  expect(person.asked).toEqual([]);
+  // And `execute` is told nobody confirmed, so its failures do not escalate as
+  // "a human said yes and it did not happen".
+  expect(execute).toHaveBeenCalledWith(expect.any(String), { type: "navigate", url: "https://example.com" }, { confirmedByHuman: false });
+  void act;
+});
+
+it("an allow chat still cannot act after the human takes control", async () => {
+  const { host } = fixture("allow");
+  const opened = await enable(host);
+  const preview = await host.observe("a", opened.id);
+  const taken = await host.takeover("a", opened.id, opened.generation);
+  const execute = vi.fn(async () => ({}));
+  await expect(host.requestAgentAction("a", opened.id, opened.generation, preview.frameId, { type: "click", x: 1, y: 1 }, execute)).rejects.toMatchObject({
+    code: "stale_generation",
+  });
+  await expect(host.requestAgentAction("a", opened.id, taken.generation, preview.frameId, { type: "click", x: 1, y: 1 }, execute)).rejects.toMatchObject({
+    code: "lease_conflict",
+  });
+  expect(execute).not.toHaveBeenCalled();
+});
 
 // Viewer ledger contract: pending DTOs are consumable request IDs, not sessions.
 // Exercise the real host/package with only driver I/O faked.
@@ -243,8 +303,8 @@ it("an awaited GUI action is not a session: it never appears in the viewer's led
   // which is exactly the UI this refactor removed. The parent session must
   // still read as the live one throughout.
   const person = human();
-  const { host, service } = fixture("allow", person.confirm);
-  const opened = await host.open("a", "browser");
+  const { host, service } = fixture("ask", person.confirm);
+  const opened = await enable(host);
   const frame = await service.observe(controlPrincipal("a", "agent"), { sessionId: opened.id, generation: opened.generation });
   const execute = vi.fn(async () => ({ done: true }));
   const call = host.requestAgentAction("a", opened.id, opened.generation, frame.frameId, { type: "key", key: "Enter" }, execute);

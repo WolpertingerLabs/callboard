@@ -5,17 +5,16 @@ import PermissionSettings from "./PermissionSettings";
 import ChatPermissionsModal from "./ChatPermissionsModal";
 
 afterEach(cleanup);
-it("renders the fifth permission with the exact boundary note", () => {
+it("renders the fifth permission as one line, in the same register as the other four", () => {
   const onChange = vi.fn();
   render(<PermissionSettings permissions={normalizePermissions({ fileRead: "allow" })} onChange={onChange} />);
-  const description = screen.getByText(/Controls Callboard's browser and desktop tools\./);
-  // Allow is not "no confirmations", and the agent cannot enable a target at
-  // any level: Allow only lets the HUMAN's Enable click take effect at once.
-  expect(description.textContent).toContain("Only you can enable a target.");
-  expect(description.textContent).toContain("Allow lets your Enable click open it immediately; under Ask, Enable creates a request you confirm separately.");
-  expect(description.textContent).toContain("Every action the agent takes still needs your confirmation.");
-  expect(description.textContent).not.toMatch(/agent enables/);
-  expect(description.textContent).toContain("Agents with unrestricted code execution may still run their own automation.");
+  // Allow now means allow — the agent acts without a per-action prompt — so the
+  // row no longer needs a paragraph explaining away a label that did not match
+  // its behaviour. It reads like "Read files, search code, and list
+  // directories": what the axis governs, one line, no caveats.
+  const description = screen.getByText("Control a managed browser or desktop on the service host");
+  expect(description.textContent!.length).toBeLessThan(80);
+  expect(description.textContent).not.toMatch(/confirm/i);
   const row = screen.getByText("Browser & Computer Control").parentElement!.parentElement!;
   expect((within(row).getByRole("radio", { name: "Deny" }) as HTMLInputElement).checked).toBe(true);
   fireEvent.click(within(row).getByRole("radio", { name: "Ask" }));

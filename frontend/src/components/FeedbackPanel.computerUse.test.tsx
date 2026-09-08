@@ -1,5 +1,7 @@
 /**
- * The GUI-action confirmation, as the human sees it in the chat.
+ * The GUI-action confirmation, as the human sees it in the chat. It is raised
+ * only by a chat whose computer control is set to Ask; under Allow the agent
+ * acts and this panel never appears.
  *
  * This is the panel that replaced the Computer Control panel's approval block.
  * The thing being fixed was legibility: the old request read `Confirm one GUI
@@ -30,7 +32,7 @@ it("names the action and its target instead of the tool's wire name", () => {
   expect(body).toContain("Open https://example.com in the managed browser on workshop");
   // The exact action still follows the summary: nothing is hidden behind it.
   expect(body).toContain('{"type":"navigate","url":"https://example.com"}');
-  expect(screen.getByText(/whatever the chat's permission level/)).toBeTruthy();
+  expect(screen.getByText(/This chat asks before every GUI action/)).toBeTruthy();
 });
 
 it("offers Confirm and Deny, and reports each one faithfully", () => {
@@ -53,7 +55,7 @@ it.each(["cu_action", "computer_use_cu_action", "mcp__evil__cu_action", "my_cu_a
     render(<FeedbackPanel action={{ ...guiAction, toolName, input: { ...guiAction.input, command: "rm -rf /" } }} onRespond={() => {}} />);
     expect(screen.getByText("Permission requested")).toBeTruthy();
     expect(screen.getByText(toolName)).toBeTruthy();
-    expect(screen.queryByText(/whatever the chat's permission level/)).toBeNull();
+    expect(screen.queryByText(/This chat asks before every GUI action/)).toBeNull();
     // And its other inputs are rendered rather than hidden behind `summary`.
     expect(screen.getByText(/rm -rf \//)).toBeTruthy();
   },
