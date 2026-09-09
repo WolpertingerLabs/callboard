@@ -4,6 +4,7 @@ import type { ComputerUseCapability, ComputerUseAction, ComputerUseKind, Compute
 import type { PermissionLevel } from "shared/types/permissions.js";
 import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
 import "./ComputerUsePanel.css";
+import ComputerUseExpandedView from "./ComputerUseExpandedView";
 import type { ComputerUseController } from "../hooks/useComputerUseController";
 
 // A fetch abort is not server-side capture cancellation. Keep accepted captures
@@ -119,11 +120,19 @@ export default function ComputerUsePanel({
   // a human approves here is theirs too.
   const sharedGrantNote = provider === "codex" || provider === "claude-code" ? sharedGrantId : undefined;
   const [preview, setPreview] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const { readStatus, beginMutation, status } = controller;
   const [kind, setKind] = useState<ComputerUseKind>("browser");
   const [selected, setSelected] = useState("");
   const [observation, setObservation] = useState<
-    (ComputerUseObservation & { sessionId: string; controller: ComputerUseSession["controller"]; kind: ComputerUseKind; targetLabel?: string }) | null
+    | (ComputerUseObservation & {
+        chatId: string;
+        sessionId: string;
+        controller: ComputerUseSession["controller"];
+        kind: ComputerUseKind;
+        targetLabel?: string;
+      })
+    | null
   >(null);
   // Retained pixels are not authority: even pausing a pending preview must
   // leave the old token fenced until another fresh frame is ready.
@@ -155,17 +164,24 @@ export default function ComputerUsePanel({
   // reaches the panel through status first.
   const level = status?.permission ?? permission;
   const active =
-    session && ["active", "ready", "running"].includes(session.state) && status?.capabilities.some((item) => item.kind === session.kind && item.available);
+    !controller.statusError &&
+    !controller.stopping &&
+    session &&
+    ["active", "ready", "running"].includes(session.state) &&
+    status?.capabilities.some((item) => item.kind === session.kind && item.available);
   const frame =
     !denied &&
     active &&
-    observation?.sessionId === session.id &&
+    observation?.chatId === chatId &&
+    observation.sessionId === session.id &&
     observation.generation === session.generation &&
     observation.controller === session.controller &&
     observation.kind === session.kind &&
     observation.targetLabel === session.targetLabel
       ? observation.frame
       : null;
+  // Forget expansion as soon as authority is lost; a later frame must not reopen it.
+  if (expanded && !frame) setExpanded(false);
   const human = !!active && session.controller === "human";
   const canAct = human && !!frame && fresh && !busy && !capturing && !denied;
 
@@ -197,7 +213,7 @@ export default function ComputerUsePanel({
         if (nextFrame && session) {
           await readyFrame(nextFrame.frame);
           if (ticket !== sequence.current || epoch !== presentationEpoch.current) return;
-          setObservation({ ...nextFrame, sessionId: session.id, controller: session.controller, kind: session.kind, targetLabel: session.targetLabel });
+          setObservation({ ...nextFrame, chatId, sessionId: session.id, controller: session.controller, kind: session.kind, targetLabel: session.targetLabel });
           setFresh(true);
         }
         setTimeline((items) => [`${new Date().toLocaleTimeString()} — ${label}`, ...items].slice(0, 20));
@@ -288,7 +304,7 @@ export default function ComputerUsePanel({
         if (!alive || ticket !== sequence.current) return;
         await readyFrame(result.frame);
         if (alive && ticket === sequence.current) {
-          setObservation({ ...result, sessionId, controller: sessionController ?? null, kind: sessionKind, targetLabel: sessionTarget });
+          setObservation({ ...result, chatId, sessionId, controller: sessionController ?? null, kind: sessionKind, targetLabel: sessionTarget });
           setFresh(true);
         }
       } catch {
@@ -367,6 +383,16 @@ export default function ComputerUsePanel({
 
   return (
     <section className="computer-use-panel" aria-label="Browser & Computer Control">
+      {expanded && frame && session && (
+        <ComputerUseExpandedView
+          frame={frame}
+          session={session}
+          preview={preview}
+          onPreviewChange={setPreview}
+          onClose={() => setExpanded(false)}
+          controller={controller}
+        />
+      )}
       <div className="computer-use-body">
         <div className="computer-use-setup">
           <div className="computer-use-toolbar">
@@ -590,6 +616,9 @@ export default function ComputerUsePanel({
               )}
               {frame && (
                 <div className="computer-use-frame">
+                  <button aria-haspopup="dialog" onClick={() => setExpanded(true)}>
+                    Expand view
+                  </button>
                   <div className="computer-use-viewport">
                     <img
                       src={`data:${frame.mimeType};base64,${frame.data}`}

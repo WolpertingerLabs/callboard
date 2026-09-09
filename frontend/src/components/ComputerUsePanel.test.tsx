@@ -911,3 +911,175 @@ describe("live preview image readiness", () => {
     expect(button("Stop").disabled).toBe(false);
   });
 });
+
+// jsdom lacks the native top-layer implementation; actual isolation/geometry is
+// exercised by the disposable Chromium harness documented in the plan.
+describe("expanded watch view", () => {
+  beforeEach(() => {
+    HTMLDialogElement.prototype.showModal ??= function () {};
+    HTMLDialogElement.prototype.close ??= function () {};
+    vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (this: HTMLDialogElement) {
+      this.open = true;
+    });
+    vi.spyOn(HTMLDialogElement.prototype, "close").mockImplementation(function (this: HTMLDialogElement) {
+      this.open = false;
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(["browser", "native"] as const)("expands %s without capture, input, or changing paused state", async (kind) => {
+    status.capabilities = [{ kind, available: true }];
+    status.sessions[0] = { ...status.sessions[0], kind, controller: "human", targetLabel: "Mock target" };
+    render(<Viewer permission="allow" />);
+    await ready();
+    expect(screen.queryByRole("button", { name: "Expand view" })).toBeNull();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    const trigger = button("Expand view");
+    trigger.focus();
+    const captures = vi.mocked(client.observe).mock.calls.length;
+    const polls = vi.mocked(client.status).mock.calls.length;
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Expanded watch view" });
+    expect(dialog.textContent).toContain("Paused");
+    expect(dialog.textContent).toContain("Mock target");
+    expect(document.activeElement).toBe(button("Close expanded view"));
+    const image = dialog.querySelector("img")!;
+    fireEvent.pointerDown(image, { clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(image, { clientX: 20, clientY: 20 });
+    fireEvent.click(image);
+    fireEvent.keyDown(image, { key: "Enter" });
+    fireEvent.keyDown(button("Close expanded view"), { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(button("Stop computer control"));
+    fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+    expect(document.activeElement).toBe(button("Close expanded view"));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect((screen.getByRole("checkbox", { name: /Live preview/ }) as HTMLInputElement).checked).toBe(false);
+    expect(client.observe).toHaveBeenCalledTimes(captures);
+    expect(client.status).toHaveBeenCalledTimes(polls);
+    expect(client.action).not.toHaveBeenCalled();
+    expect(client.control).not.toHaveBeenCalled();
+    expect(client.open).not.toHaveBeenCalled();
+  });
+
+  it("retains decoded pixels through live capture, closes on failure and never auto reopens", async () => {
+    render(<Viewer permission="allow" />);
+    await ready();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    fireEvent.click(button("Expand view"));
+    autoLoad = false;
+    vi.mocked(client.observe).mockResolvedValue({ ...observation, frame: { ...observation.frame, data: "AQ==" } });
+    fireEvent.click(button("Live"));
+    await waitFor(() => expect(images).toHaveLength(2));
+    const image = screen.getByRole("dialog").querySelector("img")!;
+    expect(image.src).toContain("AA==");
+    await act(async () => fireEvent.load(images[1]));
+    expect(image.src).toContain("AQ==");
+    expect(screen.getByRole("dialog").textContent).toContain("Live (1 fps)");
+    fireEvent.click(button("Close expanded view"));
+    expect((screen.getByRole("checkbox", { name: /Live preview/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(button("Expand view"));
+    vi.mocked(client.observe).mockRejectedValue(new Error("mock capture failure"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 2000 });
+    autoLoad = true;
+    vi.mocked(client.observe).mockResolvedValue(observation);
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("stops every session immediately during held capture and fences its completion", async () => {
+    status.sessions.push({ ...status.sessions[0], id: "s2", kind: "native" });
+    render(<Viewer permission="allow" />);
+    await ready();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    fireEvent.click(button("Expand view"));
+    let release!: (value: typeof observation) => void;
+    vi.mocked(client.observe).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    fireEvent.click(button("Live"));
+    await waitFor(() => expect(release).toBeDefined());
+    fireEvent.click(button("Stop computer control"));
+    await waitFor(() => expect(client.control).toHaveBeenCalledWith("c1", "s2", "stop", 1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () => release(observation));
+    expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it.each(["generation", "controller", "target", "denied", "unavailable", "status failure", "hide"] as const)(
+    "clears the expanded view on %s and rejects a late decode",
+    async (reason) => {
+      render(<Viewer permission="allow" />);
+      await ready();
+      fireEvent.click(button("Refresh screenshot"));
+      await screen.findByRole("img");
+      fireEvent.click(button("Expand view"));
+      let release!: () => void;
+      decodeImage.mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      fireEvent.click(button("Live"));
+      await waitFor(() => expect(release).toBeDefined());
+      const releaseOldDecode = release;
+      if (reason === "hide") fireEvent.click(button("Hide screenshot"));
+      else {
+        if (reason === "generation") status.sessions[0].generation++;
+        if (reason === "controller") status.sessions[0].controller = "human";
+        if (reason === "target") status.sessions[0].targetLabel = "different target";
+        if (reason === "denied") status.permission = "deny";
+        if (reason === "unavailable") status.capabilities[0].available = false;
+        if (reason === "status failure") vi.mocked(client.status).mockRejectedValue(new Error("status failed"));
+        // The real shared polling controller invalidates authority.
+        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 4000 });
+      }
+      await act(async () => releaseOldDecode());
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.queryByRole("img")).toBeNull();
+    },
+  );
+
+  it("Pause retains the displayed frame and fences an in-flight replacement", async () => {
+    render(<Viewer permission="allow" />);
+    await ready();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    fireEvent.click(button("Expand view"));
+    autoLoad = false;
+    vi.mocked(client.observe).mockResolvedValue({ ...observation, frame: { ...observation.frame, data: "AQ==" } });
+    fireEvent.click(button("Live"));
+    await waitFor(() => expect(images).toHaveLength(2));
+    fireEvent.click(button("Pause"));
+    await act(async () => fireEvent.load(images[1]));
+    expect(screen.getByRole("dialog").querySelector("img")!.src).toContain("AA==");
+    expect(screen.getByRole("dialog").textContent).toContain("Paused");
+    fireEvent.click(button("Close expanded view"));
+    fireEvent.click(button("Expand view"));
+    expect(screen.getByRole("dialog").textContent).toContain("Paused");
+  });
+
+  it("closes on chat identity changes, including a late image load", async () => {
+    const view = render(<Viewer permission="allow" />);
+    await ready();
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    fireEvent.click(button("Expand view"));
+    autoLoad = false;
+    fireEvent.click(button("Live"));
+    await waitFor(() => expect(images).toHaveLength(2));
+    view.rerender(<Viewer chatId="c2" permission="allow" />);
+    await act(async () => fireEvent.load(images[1]));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("img")).toBeNull();
+  });
+});

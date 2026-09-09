@@ -235,3 +235,28 @@ it.each(["browser", "native"] as const)("reserves the %s capture notice through 
   fireEvent.click(preview);
   expect(footer.querySelector(".computer-use-capture-status")).toBeNull();
 });
+
+it("keeps the expanded frame outside inline mobile scrolling rules", async () => {
+  const { sheet: expandedSheet, remove: removeExpanded } = injectCss(readCss("components/ComputerUseExpandedView.css"));
+  const dialog = document.createElement("dialog");
+  dialog.className = "computer-use-expanded";
+  dialog.open = true;
+  dialog.innerHTML = '<div class="computer-use-expanded-image"><img /></div>';
+  document.body.append(dialog);
+  try {
+    const image = dialog.querySelector("img")!;
+    const viewport = image.parentElement!;
+    const declarations = (element: Element, property: string) =>
+      declarationsFor(expandedSheet, element, property)
+        .filter((d) => d.property === property)
+        .map((d) => d.value);
+    expect(declarations(image, "object-fit")).toEqual(["contain"]);
+    expect(declarations(image, "height")).toEqual(["100%"]);
+    expect(declarations(dialog, "height")).toContain("100dvh");
+    expect(declarations(viewport, "min-height")).toEqual(["0"]);
+    expect(declarationsFor(sheet, image, "height")).toEqual([]);
+  } finally {
+    dialog.remove();
+    removeExpanded();
+  }
+});

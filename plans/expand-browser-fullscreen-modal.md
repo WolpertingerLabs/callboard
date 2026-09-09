@@ -1,6 +1,6 @@
 # Expanded browser / desktop viewer investigation
 
-Status: investigation and proposed scope only; no runtime changes implemented.
+Status: recommended first version implemented; independent Callboard-session review pending.
 Inspected checkout: `19618c7`.
 
 ## Conclusion
@@ -111,9 +111,67 @@ window, not the computer on which the user opens Callboard.
 - Validate actual geometry and hit targets in a real browser; the existing
   jsdom layout tests explicitly cannot prove image fit or detect overlap.
 
+## Implementation (2026-09-09)
+
+- Added a separate, named Expand view button only while an authoritative frame
+  exists. The existing inline image and its pointer handlers are unchanged.
+- Added ComputerUseExpandedView: a body portal containing a native modal dialog
+  (not ModalOverlay). Native top-layer isolation suppresses background interaction;
+  initial Close focus, Tab wrapping, Escape/cancel dismissal, and connected-trigger
+  restoration are explicit. No Fullscreen API or additional controller is used.
+- The modal receives the current decoded frame directly. Expansion is only a
+  boolean, reset whenever frame authority disappears; it never copies pixels.
+  Live/Pause writes the existing preview state. Shared ComputerUseHeader exposes
+  all-session Stop, stopping state, and errors; the existing Chat header remains
+  responsible for stop failure/retry after the panel unmounts.
+- Frame authority now also explicitly checks chat identity, status failure, and
+  shared stopping state, including before effect cleanup. Existing capture queue,
+  decode gating, generation/controller/target fencing, and inline manual controls
+  are retained.
+- Scoped viewport/dynamic-viewport CSS uses contain fitting and safe-area padding.
+  Toolbar overflow is bounded so very short viewports retain screenshot space.
+- Added mocked integration tests and a reproducible disposable Chromium harness:
+  `node scripts/test-expanded-watch.mjs`. The harness runs the real panel,
+  controller, and styles with in-memory mock client methods and generated images.
+  It starts its own ephemeral loopback Vite server without a backend proxy,
+  launches its own headless browser, and removes temporary files on exit.
+
 ## Validation performed
 
-Read-only source and existing regression-test review. No desktop/browser target
-was enabled or captured. Runtime tests were not run: this checkout has no
-installed `node_modules`. Implementation and real-browser verification remain
-future work.
+Dependencies installed in this checkout using `npm ci --ignore-scripts`.
+No real target was enabled/captured, no application was reloaded/deployed, and
+no user settings or another worktree's dependencies/build outputs were changed.
+
+- `npm run build:shared`: passed.
+- `npm run build:computer-use`: passed.
+- `npm run build:frontend`: passed (TypeScript build + Vite production bundle);
+  existing large-chunk warning remains.
+- Focused Vitest command:
+  `npx vitest run frontend/src/components/ComputerUsePanel.test.tsx frontend/src/components/ComputerUsePanel.layout.test.tsx frontend/src/pages/Chat.computerView.test.tsx frontend/src/components/ComputerUseHeader.test.tsx frontend/src/hooks/useComputerUseController.test.tsx`.
+  Result: **5 files passed, 133 tests passed**, 26.28s.
+- ESLint on changed TS/TSX and the smoke script: no errors; three pre-existing
+  ComputerUsePanel hook warnings (two set-state-in-effect, one cleanup ref).
+- Chromium smoke: all 12 target/viewport combinations passed: browser 1280×800
+  source and native 1080×1920 source at 1440×900, 1280×600, 390×844, 844×390,
+  320×568, and 568×320. Checks cover full viewport bounds, non-overlapping
+  contain-fit image area, loaded images, 44px visible Close/Live/Stop hit targets,
+  native background focus suppression, Tab containment, keyboard open/Escape,
+  restoration, and absence of observe/action/control/open side effects.
+- Unit/integration coverage includes paused and live transitions, retained old
+  pixels until replacement load/decode, pause fencing, capture failures, hide,
+  generation/controller/target/permission/availability/status/chat invalidation,
+  held capture all-session emergency Stop, no watch-view input dispatch, and
+  non-reopening after invalidation.
+
+## Limitations / review handoff
+
+Native dialog support is required (modern supported browsers); no legacy dialog
+polyfill or broad modal refactor was introduced. Geometry/accessibility smoke is
+Chromium-only and does not replace physical-device or screen-reader testing.
+The browser harness measures contain geometry and loaded pixels, not video-level
+flash detection. Very long toolbar content can scroll within its bounded area.
+Existing inline live preview may obtain a new authoritative frame after a
+session authority change; that never reopens the dismissed expanded view.
+
+Implementation and review remain in this worktree/Callboard chat. Parent owns
+independent review sessions, subsequent fixes, push, PR, and merge.
