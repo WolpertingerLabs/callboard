@@ -761,6 +761,16 @@ export class ComputerUseHost {
       combined.throwIfAborted();
       if (!ready.available) throw controlError("unsupported", ready.reason ?? "Target is no longer available. Fix host setup before retrying.");
       const session = await this.openApproved(chatId, kind, current, combined);
+      // openApproved has its own await boundary. Stop/transport cancellation
+      // can land after it registers a grant but before this continuation gets
+      // to publish the alias. Fence that session before reporting failure.
+      try {
+        combined.throwIfAborted();
+        if (this.readPolicy(chatId).signature !== current.signature) throw controlError("denied", "Control authority changed during startup.");
+      } catch (error) {
+        await this.stop(chatId, session.id);
+        throw error;
+      }
       record.sessionId = session.id;
       record.expiresAt = session.expiresAt;
       complete({ ok: true });

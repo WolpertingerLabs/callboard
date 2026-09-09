@@ -216,3 +216,28 @@ it("unavailable native setup is actionable and never creates a target or consent
   expect(f.driver.open).not.toHaveBeenCalled();
   expect(getPendingRequest(CHAT)).toBeNull();
 });
+
+it.each(["stop", "transport", "policy"])("%s in the final startup handoff cannot publish an untracked session", async (cancellation) => {
+  const f = fixture();
+  const result = f.request();
+  const rejected = expect(result).rejects.toBeDefined();
+  await f.prompt();
+  const pendingId = (await host.status(CHAT)).sessions[0].id;
+  const open = f.service.open.bind(f.service);
+  vi.spyOn(f.service, "open").mockImplementation(async (...args) => {
+    const lease = await open(...args);
+    // Let openApproved register the grant, then cancel before requestControl
+    // resumes to publish its result and pending-ledger alias.
+    queueMicrotask(() =>
+      queueMicrotask(() => {
+        if (cancellation === "stop") void host.stop(CHAT, pendingId);
+        else if (cancellation === "policy") f.changePolicy();
+        else f.controller.abort();
+      }),
+    );
+    return lease;
+  });
+  f.answer();
+  await rejected;
+  expect(f.service.status(controlPrincipal(CHAT, "human")).some((s) => ["ready", "starting"].includes(s.state))).toBe(false);
+});
