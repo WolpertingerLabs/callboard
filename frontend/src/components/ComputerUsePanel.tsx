@@ -7,30 +7,61 @@ import "./ComputerUsePanel.css";
 import ComputerUseExpandedView from "./ComputerUseExpandedView";
 import type { ComputerUseController } from "../hooks/useComputerUseController";
 
+// Bound presentation, not server execution. Keep a little headroom over the
+// service's default 30 s driver timeout; a lost response or image load/decode must not
+// leave the previous run's pixels looking live forever.
+const SCREENSHOT_WAIT_MS = 35_000;
+async function waitForScreenshot<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort = () => {};
+  try {
+    return await Promise.race([
+      request,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Screenshot timed out. Retry capture, or stop and re-enable the target if it remains stuck.")),
+          SCREENSHOT_WAIT_MS,
+        );
+        onAbort = () => reject(new Error("Screenshot superseded."));
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 // A fetch abort is not server-side capture cancellation. Keep accepted captures
 // ordered across effect cleanup and panel remounts, and never reuse their old frame.
 const captures = new Map<string, Promise<ComputerUseObservation>>();
 const captureKey = (chatId: string, sessionId: string) => JSON.stringify([chatId, sessionId]);
-function captureFrame(chatId: string, sessionId: string, canStart: () => boolean): Promise<ComputerUseObservation> {
+function captureFrame(chatId: string, sessionId: string, canStart: () => boolean, signal?: AbortSignal): Promise<ComputerUseObservation> {
   const key = captureKey(chatId, sessionId);
   const previous = captures.get(key);
+  let waiting = true;
   const pending = (async () => {
     await previous?.catch(() => {});
-    if (!canStart()) throw new Error("Capture superseded before dispatch");
+    if (!waiting || signal?.aborted || !canStart()) throw new Error("Capture superseded before dispatch");
     return client.observe(chatId, sessionId, new AbortController().signal);
   })();
+  // This must remain the actual HTTP settlement, not the local timeout/abort:
+  // retrying the same session cannot overtake a still-accepted observation.
   captures.set(key, pending);
   void pending
     .finally(() => {
       if (captures.get(key) === pending) captures.delete(key);
     })
     .catch(() => {});
-  return pending;
+  return waitForScreenshot(pending, signal).finally(() => {
+    waiting = false; // A queued capture abandoned by its viewer must never start later.
+  });
 }
 
 /** Keep the old pixels until the replacement is loaded and decoded, not merely
  * until the observe HTTP request finishes. No screenshot leaves this tab. */
-async function readyFrame(frame: ComputerUseObservation["frame"]) {
+async function readyFrame(frame: ComputerUseObservation["frame"], signal?: AbortSignal) {
   const image = new Image();
   const loaded = new Promise<void>((resolve, reject) => {
     image.onload = () => resolve();
@@ -38,11 +69,17 @@ async function readyFrame(frame: ComputerUseObservation["frame"]) {
   });
   image.src = `data:${frame.mimeType};base64,${frame.data}`;
   try {
-    await loaded;
-    if (image.decode) await image.decode();
+    await waitForScreenshot(
+      loaded.then(async () => {
+        signal?.throwIfAborted();
+        if (image.decode) await image.decode();
+      }),
+      signal,
+    );
   } finally {
     image.onload = null;
     image.onerror = null;
+    image.removeAttribute("src");
   }
 }
 
@@ -187,8 +224,14 @@ export default function ComputerUsePanel({
 
   // Serialize normal operations; emergency stop/revoke can supersede any in-flight
   // request. The server remains responsible for cancelling already accepted work.
+  // Open/approval/status concern new sessions or metadata, not the selected
+  // session's old capture. They must not wait for that transport to settle.
   const run = useCallback(
-    async (label: string, work: (signal: AbortSignal) => Promise<ComputerUseObservation | void>, keepFrame = false) => {
+    async (
+      label: string,
+      work: (signal: AbortSignal) => Promise<ComputerUseObservation | void>,
+      { keepFrame = false, waitForCapture = true }: { keepFrame?: boolean; waitForCapture?: boolean } = {},
+    ) => {
       const ticket = ++sequence.current;
       const epoch = presentationEpoch.current;
       operationActive.current = true;
@@ -203,15 +246,15 @@ export default function ComputerUsePanel({
         setFresh(false);
       }
       try {
-        if (session && label !== "stop" && label !== "revoke") {
-          await captures.get(captureKey(chatId, session.id))?.catch(() => {});
+        if (session && waitForCapture) {
+          await waitForScreenshot(captures.get(captureKey(chatId, session.id))?.catch(() => {}) ?? Promise.resolve(), controller.signal);
           if (ticket !== sequence.current || controller.signal.aborted) return;
         }
         const nextFrame = await work(controller.signal);
         await readStatus(controller.signal);
         if (ticket !== sequence.current) return;
         if (nextFrame && session) {
-          await readyFrame(nextFrame.frame);
+          await readyFrame(nextFrame.frame, controller.signal);
           if (ticket !== sequence.current || epoch !== presentationEpoch.current) return;
           setObservation({ ...nextFrame, chatId, sessionId: session.id, controller: session.controller, kind: session.kind, targetLabel: session.targetLabel });
           setFresh(true);
@@ -292,6 +335,7 @@ export default function ComputerUsePanel({
     if (!preview || denied || !active || !sessionId || !sessionKind || busy) return;
     let alive = true;
     let inFlight = false;
+    const presentation = new AbortController();
     const capture = async () => {
       if (inFlight || operationActive.current) return;
       inFlight = true;
@@ -300,18 +344,21 @@ export default function ComputerUsePanel({
       setFresh(false);
       dragStart.current = null;
       try {
-        const result = await captureFrame(chatId, sessionId, () => alive && ticket === sequence.current && !operationActive.current);
+        const result = await captureFrame(chatId, sessionId, () => alive && ticket === sequence.current && !operationActive.current, presentation.signal);
         if (!alive || ticket !== sequence.current) return;
-        await readyFrame(result.frame);
+        await readyFrame(result.frame, presentation.signal);
         if (alive && ticket === sequence.current) {
           setObservation({ ...result, chatId, sessionId, controller: sessionController ?? null, kind: sessionKind, targetLabel: sessionTarget });
           setFresh(true);
         }
-      } catch {
+      } catch (err) {
         if (alive && ticket === sequence.current) {
+          // Stop synchronously, even if React has not committed preview=false
+          // before the next timer tick. A timeout must not start another capture.
+          window.clearInterval(timer);
           setObservation(null);
           setPreview(false);
-          setError("Preview capture failed. Refresh a new screenshot before acting.");
+          setError(`Preview capture failed. ${err instanceof Error ? err.message + " " : ""}Refresh a new screenshot before acting.`);
         }
       } finally {
         inFlight = false;
@@ -324,6 +371,7 @@ export default function ComputerUsePanel({
     void capture();
     return () => {
       alive = false;
+      presentation.abort(); // Cancels only local waiting/decode, never an accepted capture.
       setCapturing(false);
       window.clearInterval(timer);
     };
@@ -342,23 +390,27 @@ export default function ComputerUsePanel({
 
   const control = (operation: "takeover" | "resume" | "stop" | "revoke" | "approve") => {
     if (!session) return;
-    void run(operation, async (signal) => {
-      const acceptResponse = beginMutation(operation === "approve" ? session : undefined);
-      try {
-        // An approval creates a session the shared ledger must learn even if this
-        // view closes first; a fetch abort could not cancel the accepted approval.
-        const result = await client.control(chatId, session.id, operation, session.generation, operation === "approve" ? undefined : signal);
-        acceptResponse(result, !signal.aborted);
-      } catch (error) {
-        // Stopping a session the server no longer knows is settled, not failed:
-        // record it as closed so the shared emergency ledger stops retrying it.
-        if ((operation === "stop" || operation === "revoke") && controlErrorCode(error) === "not_found") {
-          acceptResponse({ id: session.id, state: "closed" }, !signal.aborted);
-          return;
+    void run(
+      operation,
+      async (signal) => {
+        const acceptResponse = beginMutation(operation === "approve" ? session : undefined);
+        try {
+          // An approval creates a session the shared ledger must learn even if this
+          // view closes first; a fetch abort could not cancel the accepted approval.
+          const result = await client.control(chatId, session.id, operation, session.generation, operation === "approve" ? undefined : signal);
+          acceptResponse(result, !signal.aborted);
+        } catch (error) {
+          // Stopping a session the server no longer knows is settled, not failed:
+          // record it as closed so the shared emergency ledger stops retrying it.
+          if ((operation === "stop" || operation === "revoke") && controlErrorCode(error) === "not_found") {
+            acceptResponse({ id: session.id, state: "closed" }, !signal.aborted);
+            return;
+          }
+          throw error;
         }
-        throw error;
-      }
-    });
+      },
+      { waitForCapture: operation === "takeover" || operation === "resume" },
+    );
   };
   const action = (value: ComputerUseAction) => {
     if (!canAct || !session || !frame || operationActive.current || captures.has(captureKey(chatId, session.id))) return;
@@ -377,7 +429,7 @@ export default function ComputerUsePanel({
         signal,
       );
       acceptResponse(result, !signal.aborted);
-      return captureFrame(chatId, session.id, () => !signal.aborted);
+      return captureFrame(chatId, session.id, () => !signal.aborted, signal);
     });
   };
 
@@ -408,16 +460,20 @@ export default function ComputerUsePanel({
               disabled={busy || denied || capability?.available !== true}
               aria-describedby={sharedGrantNote}
               onClick={() => {
-                void run("Enable requested", async (signal) => {
-                  const acceptResponse = beginMutation();
-                  // Keep stop-only knowledge even after this viewer closes. A
-                  // fetch abort cannot cancel a server-accepted open.
-                  const opened = await client.open(chatId, kind);
-                  acceptResponse(opened.session, !signal.aborted);
-                  if (!signal.aborted) {
-                    setSelected(opened.session.id);
-                  }
-                });
+                void run(
+                  "Enable requested",
+                  async (signal) => {
+                    const acceptResponse = beginMutation();
+                    // Keep stop-only knowledge even after this viewer closes. A
+                    // fetch abort cannot cancel a server-accepted open.
+                    const opened = await client.open(chatId, kind);
+                    acceptResponse(opened.session, !signal.aborted);
+                    if (!signal.aborted) {
+                      setSelected(opened.session.id);
+                    }
+                  },
+                  { waitForCapture: false },
+                );
               }}
             >
               Enable
@@ -441,7 +497,11 @@ export default function ComputerUsePanel({
               </span>
             )}
             <div className="computer-use-toolbar-aux">
-              <button className="computer-use-quiet" disabled={busy} onClick={() => void run("Status refreshed", async () => {}, true)}>
+              <button
+                className="computer-use-quiet"
+                disabled={busy}
+                onClick={() => void run("Status refreshed", async () => {}, { keepFrame: true, waitForCapture: false })}
+              >
                 Retry status
               </button>
               {onPermissions && (
@@ -512,22 +572,30 @@ export default function ComputerUsePanel({
                     disabled={busy || denied}
                     aria-describedby={sharedGrantNote}
                     onClick={() =>
-                      void run("Request approved", async (signal) => {
-                        const acceptResponse = beginMutation(item);
-                        const result = await client.control(chatId, item.id, "approve", item.generation);
-                        acceptResponse(result, !signal.aborted);
-                      })
+                      void run(
+                        "Request approved",
+                        async (signal) => {
+                          const acceptResponse = beginMutation(item);
+                          const result = await client.control(chatId, item.id, "approve", item.generation);
+                          acceptResponse(result, !signal.aborted);
+                        },
+                        { waitForCapture: false },
+                      )
                     }
                   >
                     Confirm request
                   </button>
                   <button
                     onClick={() =>
-                      void run("Request denied", async (signal) => {
-                        const acceptResponse = beginMutation();
-                        const result = await client.control(chatId, item.id, "revoke", item.generation, signal);
-                        acceptResponse(result, !signal.aborted);
-                      })
+                      void run(
+                        "Request denied",
+                        async (signal) => {
+                          const acceptResponse = beginMutation();
+                          const result = await client.control(chatId, item.id, "revoke", item.generation, signal);
+                          acceptResponse(result, !signal.aborted);
+                        },
+                        { waitForCapture: false },
+                      )
                     }
                   >
                     Deny request
@@ -577,7 +645,7 @@ export default function ComputerUsePanel({
                 )}
                 <button
                   disabled={busy || denied || !active}
-                  onClick={() => void run("Screenshot refreshed", (signal) => captureFrame(chatId, session.id, () => !signal.aborted))}
+                  onClick={() => void run("Screenshot refreshed", (signal) => captureFrame(chatId, session.id, () => !signal.aborted, signal))}
                 >
                   Refresh screenshot
                 </button>
