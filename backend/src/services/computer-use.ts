@@ -8,14 +8,15 @@ import { hostname } from "node:os";
 // nothing that the dynamic import in `getComputerUseHost` was avoiding.
 import { actionSchema } from "@wolpertingerlabs/computer-use";
 import type { Action, AuthorizationRequest, ComputerUseService, Driver, Lease, Principal, SessionStatus } from "@wolpertingerlabs/computer-use";
-import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
+import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
 import { assertNativeAgentControllable } from "./codex-native-agents.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveSessionContext } from "../utils/session-provenance.js";
 import { chatFileService } from "./chat-file-service.js";
 import { computerUseScopeError, readComputerUsePolicy, type ComputerTargetKind, type ComputerUsePolicy } from "./computer-use-policy.js";
-import { requestHumanApproval, type HumanApprovalOutcome } from "./pending-requests.js";
+import { sessionRegistry } from "./session-registry.js";
+import { getPendingRequest, requestHumanApproval, type HumanApprovalOutcome, type ApprovalCompletion } from "./pending-requests.js";
 
 const log = createLogger("computer-use");
 
@@ -322,13 +323,13 @@ interface Grant {
   lease: Lease;
 }
 /**
- * A human's pending decision to **enable a target** under `computerControl:
- * "ask"`. Nothing else lives here any more: a per-action approval is no longer
- * a parked record the human has to go and find, it is an awaited prompt in the
- * chat, raised only under `ask` (see
- * {@link ComputerUseHost.requestAgentAction}).
+ * A target request visible in the emergency-stop ledger. The Computer panel's
+ * legacy Ask request is redeemed by approve(); an in-chat request is reserved
+ * here throughout consent/startup and can ONLY be redeemed by its human-only
+ * prompt. controlRequests carries cancellation and the late-Stop alias.
  */
 interface Pending {
+  reason?: string;
   chatId: string;
   kind: ComputerTargetKind;
   signature: string;
@@ -528,9 +529,48 @@ const REFUSALS: Record<HumanApprovalOutcome["reason"], { code: string; message: 
   },
 };
 
+/** A readiness check cannot hold an agent or an accepted HTTP response forever. */
+export const CONTROL_PROBE_TIMEOUT_MS = 10_000;
+function boundedProbe(driver: Driver, signal: AbortSignal, expiresAt: number): ReturnType<Driver["probe"]> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, value?: Awaited<ReturnType<Driver["probe"]>>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(value!);
+    };
+    const abort = () => finish(controlError("cancelled", "Control readiness check cancelled; no target was enabled."));
+    const timer = setTimeout(
+      () => finish(controlError("approval_timeout", "Control readiness check timed out. Check host setup before requesting again.")),
+      Math.max(0, Math.min(CONTROL_PROBE_TIMEOUT_MS, expiresAt - Date.now())),
+    );
+    timer.unref?.();
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    // The driver may ignore cancellation. Its late resolution/rejection is
+    // consumed, but can neither settle this request again nor start a target.
+    Promise.resolve()
+      .then(() => {
+        signal.throwIfAborted();
+        return driver.probe();
+      })
+      .then(
+        (value) => finish(undefined, value),
+        (error) => finish(error),
+      );
+  });
+}
+
 export class ComputerUseHost {
   private readonly grants = new Map<string, Grant>();
   private readonly opening = new Map<string, HostPolicy>();
+  private readonly controlRequests = new Map<string, { chatId: string; abort: AbortController; sessionId?: string; expiresAt: number }>();
   private readonly pending = new Map<string, Pending>();
   private readonly events = new Map<string, unknown[]>();
   private readonly unsubscribers = new Map<string, () => void>();
@@ -589,6 +629,11 @@ export class ComputerUseHost {
       }
     }
     for (const [id, pending] of this.pending) if (pending.expiresAt <= Date.now()) this.pending.delete(id);
+    for (const [id, request] of this.controlRequests)
+      if (request.expiresAt <= Date.now()) {
+        request.abort.abort();
+        this.controlRequests.delete(id);
+      }
   }
   /**
    * Driver probes are host facts, not chat facts, and the native one execs
@@ -668,7 +713,7 @@ export class ComputerUseHost {
           targetLabel: hostname(),
           target: hostname(),
           targetId: targetId(pending.kind),
-          reason: PENDING_TARGET_REASON,
+          reason: pending.reason ?? PENDING_TARGET_REASON,
           state: "pending_approval" as SessionStatus["state"],
           generation: 0,
           controller: null,
@@ -686,6 +731,119 @@ export class ComputerUseHost {
       modelVision:
         "Runtime image delivery requires a tool/vision-capable configured model; live artistic/model qualification has not been established on this host.",
     };
+  }
+  /** Host-only initial consent. Never exported as an MCP open/approve capability. */
+  async requestControl(chatId: string, kind: ComputerTargetKind, reason: string, signal: AbortSignal) {
+    if (!["browser", "desktop"].includes(kind) || typeof reason !== "string" || !reason.trim() || reason.length > 500)
+      throw controlError("invalid_request", "Provide a target kind and a reason of 1–500 characters.");
+    signal.throwIfAborted();
+    const current = this.readPolicy(chatId);
+    const restriction = computerUseScopeError(kind, current.policy);
+    if (restriction) throw controlError("denied", `${restriction} The human can change scope explicitly in this chat's permissions dialog.`);
+    const existing = this.service
+      .status(controlPrincipal(chatId, "agent"))
+      .find((s) => s.targetId === targetId(kind) && ["ready", "starting"].includes(s.state));
+    if (existing) {
+      this.agentLease(chatId, existing.sessionId, existing.generation);
+      if (existing.state !== "ready") throw controlError("lease_conflict", "Target is already starting; check cu_open later.");
+      return this.presentation(existing);
+    }
+    if ([...this.pending.values()].some((p) => p.chatId === chatId)) throw controlError("queue_full", "Resolve the existing target request first.");
+    const id = randomUUID();
+    const abort = new AbortController();
+    const combined = AbortSignal.any([signal, abort.signal]);
+    const target = hostname();
+    const expiresAt = Date.now() + 300_000;
+    const record = { chatId, abort, expiresAt } as { chatId: string; abort: AbortController; sessionId?: string; expiresAt: number };
+    // Reserve before the first asynchronous probe. Stop can discover this even
+    // before the card arrives, and it stays discoverable throughout startup.
+    this.controlRequests.set(id, record);
+    this.pending.set(id, {
+      chatId,
+      kind,
+      signature: current.signature,
+      expiresAt,
+      reason: "Enablement is awaiting consent or starting in the chat. Answer the in-chat card; Stop cancels this request.",
+    });
+    let promptId: string | undefined;
+    let complete!: (result: ApprovalCompletion) => void;
+    const completion = new Promise<ApprovalCompletion>((resolve) => {
+      complete = resolve;
+    });
+    try {
+      const probe = await boundedProbe(this.drivers[kind], combined, expiresAt);
+      combined.throwIfAborted();
+      if (!probe.available) throw controlError("unsupported", probe.reason ?? "Target unavailable. Check native setup on the service host, then retry.");
+      if (this.readPolicy(chatId).signature !== current.signature) throw controlError("denied", "Permissions changed; request fresh consent.");
+      const previousPrompt = getPendingRequest(chatId)?.requestId;
+      const approval = requestHumanApproval(chatId, {
+        toolName: CU_REQUEST_CONTROL_TOOL_NAME,
+        controlRequest: true,
+        completion,
+        input: { kind, target, reason: reason.trim(), permission: current.policy.computerControl, durationMinutes: 15, expiresAt },
+        signal: combined,
+        timeoutMs: Math.max(1, expiresAt - Date.now()),
+      });
+      const createdPrompt = getPendingRequest(chatId)?.requestId;
+      promptId = createdPrompt !== previousPrompt ? createdPrompt : undefined;
+      const outcome = await approval;
+      if (!outcome.approved)
+        throw controlError(
+          REFUSALS[outcome.reason].code,
+          `Control was not enabled (${outcome.reason}). ${outcome.reason === "denied" ? "Do not repeat a refused request." : "Check current state before requesting again."}`,
+        );
+      combined.throwIfAborted();
+      if (expiresAt <= Date.now() || hostname() !== target || this.readPolicy(chatId).signature !== current.signature)
+        throw controlError("denied", "Control consent expired or permissions changed. Request fresh consent.");
+      const ready = await boundedProbe(this.drivers[kind], combined, expiresAt);
+      combined.throwIfAborted();
+      if (!ready.available) throw controlError("unsupported", ready.reason ?? "Target is no longer available. Fix host setup before retrying.");
+      const session = await this.openApproved(chatId, kind, current, combined);
+      // openApproved has its own await boundary. Stop/transport cancellation
+      // can land after it registers a grant but before this continuation gets
+      // to publish the alias. Fence that session before reporting failure.
+      try {
+        combined.throwIfAborted();
+        if (this.readPolicy(chatId).signature !== current.signature) throw controlError("denied", "Control authority changed during startup.");
+        this.agentLease(chatId, session.id, session.generation);
+        const actual = this.service.status(controlPrincipal(chatId, "agent")).find((s) => s.sessionId === session.id);
+        if (!actual || actual.state !== "ready" || actual.controller !== "agent" || actual.generation !== session.generation || actual.expiresAt <= Date.now())
+          throw controlError("revoked", "Control was stopped, taken over, or expired during startup. Request fresh consent.");
+      } catch (error) {
+        await this.stop(chatId, session.id);
+        throw error;
+      }
+      record.sessionId = session.id;
+      record.expiresAt = session.expiresAt;
+      complete({ ok: true });
+      // Keep the request → session alias through expiry: a Stop dispatched from
+      // a tab's pending ledger must also stop a just-completed open.
+      sessionRegistry.get(chatId)?.emitter?.emit("event", {
+        type: "tool_result",
+        content: "",
+        controlRequestResult: { requestId: promptId, message: `${kind === "browser" ? "Browser" : "Desktop"} control enabled.` },
+        toolName: CU_REQUEST_CONTROL_TOOL_NAME,
+      });
+      return session;
+    } catch (error) {
+      complete({
+        ok: false,
+        error: `${error instanceof Error ? error.message : "Control could not be enabled"} This request is finished; refresh pending state. Any retry needs fresh consent.`,
+      });
+      this.controlRequests.delete(id);
+      sessionRegistry.get(chatId)?.emitter?.emit("event", {
+        type: "tool_result",
+        content: "",
+        controlRequestResult: {
+          requestId: promptId,
+          message: error instanceof Error ? error.message : "Control could not be enabled. Check status and retry.",
+        },
+        toolName: CU_REQUEST_CONTROL_TOOL_NAME,
+      });
+      throw error;
+    } finally {
+      this.pending.delete(id);
+    }
   }
   async open(chatId: string, kind: ComputerTargetKind) {
     const current = this.readPolicy(chatId);
@@ -710,6 +868,7 @@ export class ComputerUseHost {
   }
   /** Confirm a human's own Enable request. GUI actions are confirmed in the chat, not here. */
   async approve(chatId: string, id: string, _generation?: unknown) {
+    if (this.controlRequests.has(id)) throw controlError("denied", "Answer this request in the chat using its request identity.");
     const pending = this.pending.get(id);
     if (pending && pending.chatId !== chatId) throw controlError("not_found", "Approval not found");
     this.pending.delete(id);
@@ -724,7 +883,7 @@ export class ComputerUseHost {
       throw controlError("denied", "Approval expired or its scope changed; enable the target again");
     return this.openApproved(chatId, pending.kind, current);
   }
-  private async openApproved(chatId: string, kind: ComputerTargetKind, current: HostPolicy) {
+  private async openApproved(chatId: string, kind: ComputerTargetKind, current: HostPolicy, signal?: AbortSignal) {
     const key = `${chatId}:${targetId(kind)}`;
     if (this.opening.has(key)) throw controlError("lease_conflict", "Target is already starting");
     if (this.service.status(controlPrincipal(chatId, "human")).some((s) => s.targetId === targetId(kind) && ["starting", "ready"].includes(s.state)))
@@ -732,7 +891,14 @@ export class ComputerUseHost {
     this.listen(chatId);
     this.opening.set(key, current);
     try {
-      const lease = await this.service.open(controlPrincipal(chatId, "agent"), targetId(kind));
+      const lease = await this.service.open(controlPrincipal(chatId, "agent"), targetId(kind), signal);
+      try {
+        if (signal?.aborted || this.readPolicy(chatId).signature !== current.signature)
+          throw controlError("cancelled", "Control startup was cancelled or its authority changed.");
+      } catch (error) {
+        await this.service.stop(controlPrincipal(chatId, "human"), lease.sessionId);
+        throw error;
+      }
       this.grants.set(lease.sessionId, { chatId, signature: current.signature, expiresAt: lease.expiresAt, lease });
       return this.presentation(lease);
     } finally {
@@ -793,6 +959,15 @@ export class ComputerUseHost {
     return this.presentation(grant.lease);
   }
   async stop(chatId: string, id: string, _generation?: unknown) {
+    const request = this.controlRequests.get(id);
+    if (request) {
+      if (request.chatId !== chatId) throw controlError("not_found", "Control request not found");
+      request.abort.abort();
+      if (request.sessionId) {
+        await this.stop(chatId, request.sessionId);
+        return { id, state: "stopped" };
+      }
+    }
     if (this.pending.get(id)?.chatId === chatId) {
       this.pending.delete(id);
       return { id, state: "stopped" };
@@ -803,6 +978,7 @@ export class ComputerUseHost {
     return this.presentation(result);
   }
   async revoke(chatId: string, id: string, _generation?: unknown) {
+    if (this.controlRequests.has(id)) return this.stop(chatId, id);
     if (this.pending.get(id)?.chatId === chatId) {
       this.pending.delete(id);
       return { id, state: "revoked" };
@@ -832,7 +1008,7 @@ export class ComputerUseHost {
    * What the level does NOT govern, at any value: **who enables a target.**
    * `open`/`approve` are reached only from the signed-in human's
    * `requireSessionAuth` + same-origin control plane, and the agent's `cu_open`
-   * only lists sessions a human already started. `allow` says what happens
+   * only lists sessions a human already started. `requestControl` always waits for authenticated in-chat target consent, under Ask AND Allow. `allow` says what happens
    * after you enable, never who enables.
    *
    * Under `ask`, everything the deferred `approve()` used to re-check on
@@ -945,6 +1121,8 @@ export class ComputerUseHost {
   }
   async dispose() {
     clearInterval(this.watchdog);
+    for (const request of this.controlRequests.values()) request.abort.abort();
+    this.controlRequests.clear();
     this.grants.clear();
     this.pending.clear();
     this.awaiting.clear();

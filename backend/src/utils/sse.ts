@@ -1,10 +1,24 @@
 import type { Request, Response } from "express";
 import type { EventEmitter } from "events";
 import type { StreamEvent } from "../services/claude.js";
+import { CLIENT_CAPS } from "shared/types/index.js";
 import { buildServerInfo, createStreamSession, type StreamSession } from "../services/stream-session.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("sse");
+const streamClients = new WeakMap<Response, StreamSession>();
+export const HUMAN_PROMPT_RELOAD =
+  "Reload this Callboard tab to confirm computer control. This browser bundle cannot safely identify the pending confirmation. No action has been approved. After reloading, answer the current prompt; if it expired, ask the agent to request it again.";
+/** Old browsers already render message_error in the transcript. Never send
+ * them an actionable consent card: their optimistic ID-less reply is unsafe.
+ * The server keeps the real prompt pending for a reloaded capable client.
+ */
+export function requiresPromptReload(data: Record<string, unknown>, client: StreamSession | undefined): boolean {
+  return data.humanOnly === true && !client?.supports(CLIENT_CAPS.humanPromptIdentity);
+}
+export function presentPendingPrompt(data: Record<string, unknown>, client: StreamSession | undefined): Record<string, unknown> {
+  return requiresPromptReload(data, client) ? { type: "message_error", content: HUMAN_PROMPT_RELOAD } : data;
+}
 
 /**
  * Write standard SSE headers to an Express response.
@@ -22,6 +36,7 @@ export function writeSSEHeaders(res: Response): void {
  * Send an SSE event as a JSON-encoded `data:` line.
  */
 export function sendSSE(res: Response, data: Record<string, unknown>): void {
+  data = presentPendingPrompt(data, streamClients.get(res));
   log.debug(`SSE send: type=${data.type}`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
@@ -43,6 +58,7 @@ export function sendSSE(res: Response, data: Record<string, unknown>): void {
 export function beginSSE(req: Request, res: Response): StreamSession {
   writeSSEHeaders(res);
   const session = createStreamSession(req);
+  streamClients.set(res, session);
   const info = buildServerInfo();
   log.debug(`SSE handshake: client protocol=${session.protocolVersion}, caps=[${session.capabilities.join(",")}]`);
   res.write(`event: server_info\ndata: ${JSON.stringify(info)}\n\n`);
@@ -122,7 +138,7 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
         ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
       });
     } else {
-      sendSSE(res, { type: "message_update" });
+      sendSSE(res, { type: "message_update", ...(event.controlRequestResult && { controlRequestResult: event.controlRequestResult }) });
     }
   };
 

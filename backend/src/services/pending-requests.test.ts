@@ -14,7 +14,8 @@ const CHAT = "pending-request-chat";
 const request = { toolName: "mcp__computer_use__cu_action", input: { summary: "Click at (1, 2)" } };
 
 afterEach(() => {
-  respondToPermission(CHAT, false);
+  vi.useRealTimers();
+  respondToPermission(CHAT, false, undefined, undefined, getPendingRequest(CHAT)?.requestId);
   sessionRegistry.unregister(CHAT);
 });
 
@@ -29,7 +30,9 @@ function liveChat() {
 it("parks the call, emits the chat's ordinary permission_request, and resolves only on the human's answer", async () => {
   const events = liveChat();
   const pending = requestHumanApproval(CHAT, request);
-  expect(events).toEqual([{ type: "permission_request", content: "", toolName: request.toolName, input: request.input }]);
+  expect(events).toEqual([
+    { type: "permission_request", content: "", toolName: request.toolName, input: request.input, requestId: expect.any(String), humanOnly: true },
+  ]);
   expect(hasPendingRequest(CHAT)).toBe(true);
   // `/pending` replays it verbatim after a page refresh, and it is marked as a
   // prompt only a signed-in human may answer — see stream.respond-auth.test.ts.
@@ -37,10 +40,11 @@ it("parks the call, emits the chat's ordinary permission_request, and resolves o
     toolName: request.toolName,
     input: request.input,
     eventType: "permission_request",
-    eventData: request,
+    eventData: { ...request, requestId: expect.any(String), humanOnly: true },
+    requestId: expect.any(String),
     humanOnly: true,
   });
-  respondToPermission(CHAT, true);
+  respondToPermission(CHAT, true, undefined, undefined, getPendingRequest(CHAT)?.requestId);
   await expect(pending).resolves.toEqual({ approved: true, reason: "human" });
   expect(hasPendingRequest(CHAT)).toBe(false);
 });
@@ -48,7 +52,7 @@ it("parks the call, emits the chat's ordinary permission_request, and resolves o
 it("a denial is a denial", async () => {
   liveChat();
   const pending = requestHumanApproval(CHAT, request);
-  respondToPermission(CHAT, false);
+  respondToPermission(CHAT, false, undefined, undefined, getPendingRequest(CHAT)?.requestId);
   await expect(pending).resolves.toEqual({ approved: false, reason: "denied" });
 });
 
@@ -76,7 +80,7 @@ it("fails closed with no live session, and never clobbers a prompt the human is 
   const first = requestHumanApproval(CHAT, request);
   await expect(requestHumanApproval(CHAT, request)).resolves.toEqual({ approved: false, reason: "prompt_busy" });
   // The first question survived the second's arrival and is still answerable.
-  expect(respondToPermission(CHAT, true)).toEqual({ ok: true, toolName: request.toolName });
+  expect(respondToPermission(CHAT, true, undefined, undefined, getPendingRequest(CHAT)?.requestId)).toEqual({ ok: true, toolName: request.toolName });
   await expect(first).resolves.toEqual({ approved: true, reason: "human" });
 });
 
@@ -87,7 +91,7 @@ it("a settled prompt never removes the entry that replaced it", async () => {
   const replacement = requestHumanApproval(CHAT, { ...request, toolName: "Bash", input: { command: "ls" } });
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(getPendingRequest(CHAT)).toMatchObject({ toolName: "Bash" });
-  respondToPermission(CHAT, true);
+  respondToPermission(CHAT, true, undefined, undefined, getPendingRequest(CHAT)?.requestId);
   await expect(replacement).resolves.toMatchObject({ approved: true });
 });
 
@@ -106,3 +110,26 @@ it("does not hold the process open while it waits", () => {
   expect(unref.mock.results.at(-1)!.value.hasRef()).toBe(false);
   unref.mockRestore();
 });
+
+it.each(["permission_request", "user_question", "plan_review"] as const)(
+  "stale control replies cannot consume an ordinary %s replacement",
+  async (eventType) => {
+    const { pendingRequests } = await import("./pending-requests.js");
+    for (const disposition of ["approved", "denied", "expired"] as const) {
+      vi.useFakeTimers();
+      liveChat();
+      const control = requestHumanApproval(CHAT, request);
+      const oldId = getPendingRequest(CHAT)!.requestId;
+      if (disposition === "expired") await vi.advanceTimersByTimeAsync(HUMAN_APPROVAL_TIMEOUT_MS + 1);
+      else respondToPermission(CHAT, disposition === "approved", undefined, undefined, oldId);
+      await control;
+      const resolve = vi.fn();
+      pendingRequests.set(CHAT, { toolName: "Bash", input: { command: "never run" }, eventType, eventData: {}, resolve });
+      for (const allow of [true, false]) expect(respondToPermission(CHAT, allow, undefined, undefined, oldId)).toEqual({ ok: false });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(respondToPermission(CHAT, false)).toMatchObject({ ok: true });
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ behavior: "deny" }));
+      vi.useRealTimers();
+    }
+  },
+);

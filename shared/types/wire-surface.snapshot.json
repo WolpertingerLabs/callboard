@@ -23,9 +23,21 @@
             "optional": false,
             "type": "string"
           },
+          "controlRequest": {
+            "optional": true,
+            "type": "boolean"
+          },
+          "controlRequestResult": {
+            "optional": true,
+            "type": "{ requestId?: string; message: string }"
+          },
           "costUsd": {
             "optional": true,
             "type": "number"
+          },
+          "humanOnly": {
+            "optional": true,
+            "type": "boolean"
           },
           "input": {
             "optional": true,
@@ -44,6 +56,10 @@
             "type": "unknown[]"
           },
           "reason": {
+            "optional": true,
+            "type": "string"
+          },
+          "requestId": {
             "optional": true,
             "type": "string"
           },
@@ -136,17 +152,19 @@
       "CLIENT_CAP_VALUES": [
         "tool_source",
         "budget_events",
-        "plan_review"
+        "plan_review",
+        "human_prompt_identity"
       ],
       "CLIENT_CAPS": {
         "toolSource": "tool_source",
         "budgetEvents": "budget_events",
-        "planReview": "plan_review"
+        "planReview": "plan_review",
+        "humanPromptIdentity": "human_prompt_identity"
       },
       "handshakeHeaders": {
         "(returns)": {
           "X-Callboard-Protocol": "2",
-          "X-Callboard-Caps": "tool_source,budget_events,plan_review"
+          "X-Callboard-Caps": "tool_source,budget_events,plan_review,human_prompt_identity"
         }
       },
       "MIN_PROTOCOL_VERSION": 1,
@@ -155,7 +173,8 @@
       "SERVER_FEATURES": [
         "tool_source",
         "budget_events",
-        "plan_review"
+        "plan_review",
+        "human_prompt_identity"
       ]
     }
   }

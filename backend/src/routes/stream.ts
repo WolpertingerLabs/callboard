@@ -21,7 +21,8 @@ import { findSessionLogPath } from "../utils/session-log.js";
 import { assertChatContextUnchanged, chatContextFingerprint, ChatContextChangedError } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { findChatForStatus, withSessionProvider } from "../utils/chat-lookup.js";
-import { beginSSE, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
+import { createStreamSession } from "../services/stream-session.js";
+import { beginSSE, requiresPromptReload, HUMAN_PROMPT_RELOAD, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
 import { captureWorktreeWorkspace } from "../services/workspace-store.js";
@@ -368,7 +369,7 @@ streamRouter.post("/new/message", async (req, res) => {
           ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
         });
       } else {
-        sendSSE(res, { type: "message_update" });
+        sendSSE(res, { type: "message_update", ...(event.controlRequestResult && { controlRequestResult: event.controlRequestResult }) });
       }
     };
 
@@ -558,7 +559,7 @@ streamRouter.get("/:id/stream", (req, res) => {
   const chatId = req.params.id;
   const session = getActiveSession(chatId);
 
-  beginSSE(req, res);
+  const client = beginSSE(req, res);
 
   // If there's an active web session, connect to it
   if (session) {
@@ -570,6 +571,16 @@ streamRouter.get("/:id/stream", (req, res) => {
       stopHeartbeat();
       session.emitter.removeListener("event", onEvent);
     });
+    // Subscribe before inspecting pending state, without an await gap: a
+    // prompt produced before subscription is recovered here; one produced
+    // afterward is delivered live. Old bundles ignore /pending.reloadRequired,
+    // so their existing message_error reader must receive the migration notice
+    // even when this chat was blocked before the tab connected. Capable clients
+    // and ordinary prompts retain REST replay (no duplicate/reset of answers).
+    const pending = getPendingRequest(chatId);
+    if (pending && requiresPromptReload(pending.eventData, client)) {
+      sendSSE(res, { type: pending.eventType, ...pending.eventData });
+    }
     return;
   }
 
@@ -740,12 +751,13 @@ streamRouter.get("/:id/pending", (req, res) => {
   /* #swagger.responses[200] = { description: "Pending request or null" } */
   const pending = getPendingRequest(req.params.id);
   if (!pending) return res.json({ pending: null });
-  res.json({
-    pending: {
-      type: pending.eventType,
-      ...pending.eventData,
-    },
-  });
+  if (requiresPromptReload(pending.eventData, createStreamSession(req))) {
+    // Old browser chat views also attach SSE and see the persistent reload
+    // message there. REST-only consumers get explicit migration guidance, not
+    // an answerable placeholder that could redeem an unrelated replacement.
+    return res.json({ pending: null, reloadRequired: HUMAN_PROMPT_RELOAD });
+  }
+  res.json({ pending: { type: pending.eventType, ...pending.eventData } });
 });
 
 /**
@@ -802,7 +814,7 @@ streamRouter.post("/:id/activity/:activityId/release", (req, res) => {
 });
 
 // Respond to a pending permission/question/plan request
-streamRouter.post("/:id/respond", (req, res) => {
+streamRouter.post("/:id/respond", async (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Respond to pending request'
   // #swagger.description = 'Respond to a pending permission, user question, or plan review request.'
@@ -815,6 +827,7 @@ streamRouter.post("/:id/respond", (req, res) => {
           type: "object",
           properties: {
             allow: { type: "boolean", description: "Whether to allow the permission" },
+            requestId: { type: "string", description: "Current server-issued prompt identity; required for human-only confirmations" },
             updatedInput: { type: "string", description: "Updated input for the tool (optional)" },
             updatedPermissions: { type: "object", description: "Updated permissions (optional)" }
           }
@@ -824,8 +837,10 @@ streamRouter.post("/:id/respond", (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Response accepted" } */
   /* #swagger.responses[403] = { description: "This prompt requires a signed-in, same-origin human session (computer-control confirmations)" } */
+  /* #swagger.responses[409] = { description: "Missing or stale human-only request identity; prompt was not consumed" } */
   /* #swagger.responses[404] = { description: "No pending request" } */
-  const { allow, updatedInput, updatedPermissions } = req.body;
+  const { allow, updatedInput, updatedPermissions, requestId } = req.body ?? {};
+  if (typeof allow !== "boolean") return res.status(400).json({ error: "allow must be a boolean" });
   if (!hasPendingRequest(req.params.id)) {
     return res.status(404).json({ error: "No pending request" });
   }
@@ -842,13 +857,17 @@ streamRouter.post("/:id/respond", (req, res) => {
       return res.status(403).json({ error: "This confirmation requires a logged-in session, not an API key.", code: "denied" });
     }
     // Belt to the SameSite=strict cookie's braces, and the same check the
-    // Enable/approve endpoint makes. Anyone who can reach this prompt has
-    // already passed it there to enable the target, so it adds no new way to
-    // be locked out.
+    // Enable/approve endpoint makes. In-chat initial enablement and per-action
+    // confirmations must retain the same authenticated-human boundary.
     const originError = controlOriginError(req);
     if (originError) return res.status(403).json({ error: originError, code: "denied" });
   }
-  const result = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions);
+  const result = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions, requestId);
+  if (!result.ok) return res.status(409).json({ error: "This prompt changed or expired. Refresh the pending request before answering." });
+  if (result.completion) {
+    const completed = await result.completion;
+    if (!completed.ok) return res.status(409).json({ ok: false, error: completed.error });
+  }
   res.json({ ok: result.ok, toolName: result.toolName });
 });
 

@@ -14,12 +14,18 @@
  *
  * @see requestHumanApproval — the producer that is not a harness callback.
  */
+import { randomUUID } from "node:crypto";
 import type { StreamEvent } from "shared/types/index.js";
 import type { PermissionResult } from "../agents/adapters/claude-code/types.js";
 import { sessionRegistry } from "./session-registry.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("pending-requests");
+
+export interface ApprovalCompletion {
+  ok: boolean;
+  error?: string;
+}
 
 export interface PendingRequest {
   toolName: string;
@@ -39,6 +45,9 @@ export interface PendingRequest {
    * token for them.
    */
   humanOnly?: true;
+  requestId?: string;
+  /** Host startup result; never serialized into the replay or SSE payload. */
+  completion?: Promise<ApprovalCompletion>;
 }
 
 /**
@@ -74,10 +83,10 @@ export function pendingRequestFingerprint(): string {
   return [...pendingRequests.keys()].sort().join(",");
 }
 
-export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve"> | null {
+export function getPendingRequest(chatId: string): Omit<PendingRequest, "resolve" | "completion"> | null {
   const p = pendingRequests.get(chatId);
   if (!p) return null;
-  const { resolve: _, ...rest } = p;
+  const { resolve: _, completion: _completion, ...rest } = p;
   return rest;
 }
 
@@ -112,9 +121,13 @@ export function respondToPermission(
   allow: boolean,
   updatedInput?: Record<string, unknown>,
   updatedPermissions?: unknown[],
-): { ok: boolean; toolName?: string } {
+  requestId?: string,
+): { ok: boolean; toolName?: string; completion?: Promise<ApprovalCompletion> } {
   const pending = pendingRequests.get(chatId);
-  if (!pending) return { ok: false };
+  if (!pending || typeof allow !== "boolean") return { ok: false };
+  // An old consent must never answer a replacement ordinary prompt either.
+  if (requestId !== undefined && requestId !== pending.requestId) return { ok: false };
+  if (pending.humanOnly && !requestId) return { ok: false };
   const toolName = pending.toolName;
   pendingRequests.delete(chatId);
 
@@ -123,16 +136,20 @@ export function respondToPermission(
     // The SDK tool requires the original `questions` to remain in the input
     // (it builds `{...input, answers}`), so merge rather than replace — otherwise
     // `questions` is undefined and the tool crashes mapping over it.
-    const resolvedInput = updatedInput && pending.eventType === "user_question" ? { ...pending.input, ...updatedInput } : updatedInput || pending.input;
+    const resolvedInput = pending.humanOnly
+      ? pending.input
+      : updatedInput && pending.eventType === "user_question"
+        ? { ...pending.input, ...updatedInput }
+        : updatedInput || pending.input;
     pending.resolve({
       behavior: "allow",
       updatedInput: resolvedInput,
-      updatedPermissions: updatedPermissions as never,
+      updatedPermissions: (pending.humanOnly ? undefined : updatedPermissions) as never,
     });
   } else {
     pending.resolve({ behavior: "deny", message: "User denied", interrupt: true });
   }
-  return { ok: true, toolName };
+  return { ok: true, toolName, ...(allow && pending.completion ? { completion: pending.completion } : {}) };
 }
 
 /**
@@ -162,6 +179,10 @@ export interface HumanApprovalRequest {
   toolName: string;
   /** Payload the prompt renders. Keep it human-readable, not wire internals. */
   input: Record<string, unknown>;
+  /** Trusted host UI discriminator, never derived from tool input. */
+  controlRequest?: true;
+  /** Optional host result so /respond does not report successful startup early. */
+  completion?: Promise<ApprovalCompletion>;
   timeoutMs?: number;
   /** Transport/turn cancellation. An abort denies rather than hanging. */
   signal?: AbortSignal;
@@ -199,6 +220,9 @@ export function requestHumanApproval(chatId: string, request: HumanApprovalReque
   if (pendingRequests.has(chatId)) return Promise.resolve({ approved: false, reason: "prompt_busy" });
   if (request.signal?.aborted) return Promise.resolve({ approved: false, reason: "aborted" });
 
+  const requestId = randomUUID();
+  const input = structuredClone(request.input);
+  const metadata = { requestId, humanOnly: true, ...(request.controlRequest ? { controlRequest: true } : {}) };
   const timeoutMs = request.timeoutMs ?? HUMAN_APPROVAL_TIMEOUT_MS;
   return new Promise<HumanApprovalOutcome>((resolvePromise) => {
     let settled = false;
@@ -219,9 +243,11 @@ export function requestHumanApproval(chatId: string, request: HumanApprovalReque
 
     const entry: PendingRequest = {
       toolName: request.toolName,
-      input: request.input,
+      input,
+      requestId,
+      ...(request.completion ? { completion: request.completion } : {}),
       eventType: "permission_request",
-      eventData: { toolName: request.toolName, input: request.input },
+      eventData: { toolName: request.toolName, input, ...metadata },
       humanOnly: true,
       resolve: (result) => settle(result.behavior === "allow" ? { approved: true, reason: "human" } : { approved: false, reason: "denied" }),
     };
@@ -234,7 +260,8 @@ export function requestHumanApproval(chatId: string, request: HumanApprovalReque
       type: "permission_request",
       content: "",
       toolName: request.toolName,
-      input: request.input,
+      input,
+      ...metadata,
     } as StreamEvent);
   });
 }

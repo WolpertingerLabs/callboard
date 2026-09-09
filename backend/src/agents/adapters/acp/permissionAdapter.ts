@@ -303,11 +303,11 @@ export function categorizeAcpToolName(name: string): PermissionCategory | null {
 /**
  * The complete input vocabulary of the managed `cu_*` tools
  * (`backend/src/services/computer-use-tools.ts`): `cu_status` takes nothing,
- * `cu_open` a target `kind`, and observe/action/stop a session ref plus
+ * `cu_open` a target `kind`, `cu_request_control` a `kind` and bounded `reason`, and observe/action/stop a session ref plus
  * `frameId`/`action`. Any other key means the call is some other tool wearing
  * a managed-looking title.
  */
-const MANAGED_COMPUTER_INPUT_KEYS: ReadonlySet<string> = new Set(["sessionId", "generation", "frameId", "action", "kind"]);
+const MANAGED_COMPUTER_INPUT_KEYS: ReadonlySet<string> = new Set(["sessionId", "generation", "frameId", "action", "kind", "reason"]);
 
 function hasManagedComputerInputShape(rawInput: unknown): boolean {
   if (rawInput === undefined || rawInput === null) return true; // nothing to contradict the title

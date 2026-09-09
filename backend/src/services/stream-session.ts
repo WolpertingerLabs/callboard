@@ -5,16 +5,11 @@
  * connection opens, and the wire boundary asks it one question at each
  * serialization site: `session.supports(CLIENT_CAPS.someCapability)`.
  *
- * Phase 1 (`plans/wire-capability-negotiation.md`) installs the mechanism
- * without using it — every emit site still emits unconditionally. The point of
- * shipping it inert is that a capability can only gate against clients that
- * were already advertising when they connected, so every release that goes out
- * without the handshake is one more client we can never gate against.
- *
- * Backwards compatibility is the property that matters most here: a client
- * that sends no headers is protocol 1 with an empty capability set, and
- * `supports()` answers false for everything. Since nothing is gated yet, false
- * everywhere changes nothing at all.
+ * Human-only pending prompts use this capability boundary to require identity-
+ * aware clients. Legacy connections receive a supported message_error reload
+ * notice; /pending parses the same headers for replay. This gates presentation,
+ * never authority: /respond independently requires the exact human prompt ID.
+ * A client without headers is protocol 1 with an empty capability set.
  */
 import { readFileSync } from "fs";
 import path from "path";

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { assertStoredReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
 import { resolveCodexExecutionRoute, type CodexExecutionRoute } from "./codex-execution-route.js";
 import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
@@ -782,20 +783,24 @@ export function buildCanUseTool(
     }
 
     return new Promise<PermissionResult>((resolve) => {
+      const requestId = randomUUID();
       if (toolName === "AskUserQuestion") {
         emitter.emit("event", {
           type: "user_question",
+          requestId,
           content: "",
           questions: input.questions as unknown[],
         } as StreamEvent);
       } else if (toolName === "ExitPlanMode") {
         emitter.emit("event", {
           type: "plan_review",
+          requestId,
           content: JSON.stringify(input),
         } as StreamEvent);
       } else {
         emitter.emit("event", {
           type: "permission_request",
+          requestId,
           content: "",
           toolName,
           input,
@@ -817,7 +822,8 @@ export function buildCanUseTool(
       }
 
       const trackingId = getTrackingId();
-      const entry: PendingRequest = { toolName, input, suggestions, eventType, eventData, resolve };
+      eventData.requestId = requestId;
+      const entry: PendingRequest = { toolName, input, suggestions, eventType, eventData, resolve, requestId };
       pendingRequests.set(trackingId, entry);
 
       signal.addEventListener("abort", () => {

@@ -1,10 +1,13 @@
 import { useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
-import { CU_ACTION_TOOL_NAME } from "shared/types/index.js";
+import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 
 export interface PendingAction {
   type: "permission_request" | "user_question" | "plan_review";
+  requestId?: string;
+  humanOnly?: boolean;
+  controlRequest?: boolean;
   toolName?: string;
   input?: Record<string, unknown>;
   questions?: any[];
@@ -15,16 +18,64 @@ export interface PendingAction {
 }
 
 interface Props {
+  responding?: boolean;
   action: PendingAction;
   onRespond: (allow: boolean, updatedInput?: Record<string, unknown>) => void;
   /** Display name of the harness running this chat (e.g. "Claude", "Codex", "OpenCode") */
   agentName?: string;
 }
 
-export default function FeedbackPanel({ action, onRespond, agentName = "Claude" }: Props) {
+export default function FeedbackPanel(props: Props) {
+  return (
+    <fieldset disabled={props.responding} aria-busy={props.responding} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      {props.responding && <div role="status">Submitting response — waiting for the result…</div>}
+      <FeedbackContent {...props} />
+    </fieldset>
+  );
+}
+function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
   const [answers, setAnswers] = useState<Record<number, string | string[]>>({});
   const [otherText, setOtherText] = useState<Record<number, string>>({});
   const [planExpanded, setPlanExpanded] = useState(false);
+
+  if (
+    action.type === "permission_request" &&
+    action.toolName === CU_REQUEST_CONTROL_TOOL_NAME &&
+    action.humanOnly === true &&
+    action.controlRequest === true &&
+    action.requestId
+  ) {
+    const desktop = action.input?.kind === "desktop";
+    const label = desktop ? "desktop" : "browser";
+    return (
+      <div style={questionPanelStyle}>
+        <strong>Enable {label} control</strong>
+        <div style={questionScrollArea}>
+          <p>Target: {String(action.input?.target ?? "")}</p>
+          <p style={{ whiteSpace: "pre-wrap" }}>{String(action.input?.reason ?? "")}</p>
+          <p>Screenshots of this target are sent to the configured model when requested. Pixel actions may transmit data, change files or execute code.</p>
+          <p>
+            {action.input?.permission === "ask"
+              ? "Ask: each agent action requires a separate confirmation here in chat."
+              : "Allow: the agent can act unattended after you enable control."}
+          </p>
+          <p>Grant duration: up to 15 minutes. You can Stop computer control at any time.</p>
+          {desktop && (
+            <p>Native desktop control covers the full desktop and existing app windows on the service host, not an isolated browser or your viewing device.</p>
+          )}
+          <p>Subagents running inside this chat’s turn share this grant and this chat’s permissions.</p>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button onClick={() => onRespond(true)} style={allowBtn}>
+            Enable {label} control
+          </button>
+          <button onClick={() => onRespond(false)} style={denyBtn}>
+            Deny
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (action.type === "permission_request") {
     const guiAction = isComputerUseAction(action.toolName);

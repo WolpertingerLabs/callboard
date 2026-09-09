@@ -3,7 +3,8 @@ import type { PermissionLevel } from "./permissions.js";
 /**
  * The tool name the per-action computer-control confirmation is raised under,
  * on every engine — that is, in a chat whose `computerControl` is `ask`; under
- * `allow` no confirmation is raised at all.
+ * `allow` no per-action confirmation is raised. Initial enablement always
+ * requires human consent under both policies (CU_REQUEST_CONTROL_TOOL_NAME).
  *
  * Shared because both sides of one contract need the *same* string and neither
  * may widen it. The backend raises exactly this name
@@ -20,6 +21,9 @@ import type { PermissionLevel } from "./permissions.js";
  * went unrendered behind a server-chosen `summary`.
  */
 export const CU_ACTION_TOOL_NAME = "mcp__computer_use__cu_action";
+
+/** Only host-issued human-only prompts with this exact name may render the enablement security card. */
+export const CU_REQUEST_CONTROL_TOOL_NAME = "mcp__computer_use__cu_request_control";
 
 /** Callboard HTTP viewer DTOs. Driver/package types stay outside shared. */
 export type ComputerUseKind = "browser" | "native";

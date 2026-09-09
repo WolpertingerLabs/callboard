@@ -1,5 +1,6 @@
 import { normalizePermissions } from "shared/types/permissions.js";
 import ComputerUseHeader from "../components/ComputerUseHeader";
+import { usePendingFeedback } from "../hooks/usePendingFeedback";
 import { useComputerUseController } from "../hooks/useComputerUseController";
 import ComputerUsePanel from "../components/ComputerUsePanel";
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
@@ -264,7 +265,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // button stays in this state until the run's terminal event arrives (or the
   // confirmation deadline passes), so it never claims a cancel it hasn't got.
   const [stopping, setStopping] = useState(false);
-  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [responseError, setResponseError] = useState("");
+  const [controlNotice, setControlNotice] = useState("");
+  const { pendingAction, pendingKey, responding, setPendingAction, capturePending, isCurrentPending, isUnchangedPending, beginResponse, finishResponse } =
+    usePendingFeedback(id ?? `new:${location.key}`);
   // What this chat is blocked on right now — a wait countdown, a delegated
   // session, an open condition watch. Fetched rather than streamed: the
   // countdown is derived from `expiresAt` client-side, so the dock only needs
@@ -980,6 +984,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 return;
               }
 
+              if (event.controlRequestResult) {
+                const result = event.controlRequestResult;
+                setControlNotice(result.message);
+                if (result.requestId) setPendingAction((value) => (value?.requestId === result.requestId ? null : value));
+              }
+
               if (event.type === "message_complete") {
                 if (currentIdRef.current !== streamChatId) return;
                 setCompacting(false);
@@ -1176,14 +1186,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
               if (event.type === "permission_request" || event.type === "user_question" || event.type === "plan_review") {
                 if (currentIdRef.current !== streamChatId) return;
-                setPendingAction({
-                  type: event.type,
-                  toolName: event.toolName,
-                  input: event.input,
-                  questions: event.questions,
-                  suggestions: event.suggestions,
-                  content: event.content,
-                });
+                setPendingAction(
+                  {
+                    type: event.type,
+                    toolName: event.toolName,
+                    requestId: event.requestId,
+                    humanOnly: event.humanOnly,
+                    controlRequest: event.controlRequest,
+                    input: event.input,
+                    questions: event.questions,
+                    suggestions: event.suggestions,
+                    content: event.content,
+                  },
+                  true,
+                );
                 continue;
               }
             } catch {}
@@ -1331,10 +1347,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (currentIdRef.current !== id) return;
         setChat(chatData);
       });
+      const pendingSnapshot = capturePending();
       Promise.all([getMessages(id), getPending(id)]).then(([msgs, pending]) => {
         if (currentIdRef.current !== id) return;
         setMessages(Array.isArray(msgs) ? msgs : []);
-        if (pending) {
+        if (pending && isUnchangedPending(pendingSnapshot)) {
           setPendingAction(pending);
           setStreaming(true);
         }
@@ -1556,6 +1573,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // Mark chat as read (fire-and-forget — best-effort background update)
     markAsRead(id!).catch(() => {});
     refreshActivity(id!);
+    const pendingSnapshot = capturePending();
     Promise.all([getMessages(id!), getPending(id!)]).then(([msgs, pending]) => {
       if (currentIdRef.current !== id) return;
       const messageArray = Array.isArray(msgs) ? msgs : [];
@@ -1567,6 +1585,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         onChatListRefreshRef.current?.();
       }
 
+      if (!isUnchangedPending(pendingSnapshot)) return;
       if (pending) {
         setPendingAction(pending);
         setStreaming(true);
@@ -2201,19 +2220,31 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     acknowledgeBranchDriftRef.current = false;
   }, [branchDriftConfirm, handleSend]);
 
+  useEffect(() => {
+    setResponseError("");
+    setControlNotice("");
+  }, [id]);
+
   const handleRespond = useCallback(
     async (allow: boolean, updatedInput?: Record<string, unknown>) => {
       const wasReconnect = !abortRef.current; // no active SSE = page was refreshed
       const currentAction = pendingAction; // Capture before clearing
-      setPendingAction(null);
+      const ticket = beginResponse();
+      if (!ticket) return;
+      setResponseError("");
 
       // Use id if available, fall back to tempChatIdRef for new chat mode
       const chatId = id || tempChatIdRef.current;
-      if (!chatId) return;
+      if (!chatId) {
+        finishResponse(ticket);
+        return;
+      }
 
       // Stale plan review: no live backend session to resolve, so start a new
       // conversation turn with an appropriate message instead
       if (currentAction?.stale && currentAction.type === "plan_review") {
+        setPendingAction(null);
+        finishResponse(ticket);
         if (allow) {
           handleSend("Proceed with the plan.");
         } else {
@@ -2222,7 +2253,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         return;
       }
 
-      const result = await respondToChat(chatId, allow, updatedInput);
+      let result;
+      try {
+        result = await respondToChat(chatId, allow, updatedInput, undefined, currentAction?.requestId);
+        if (!isCurrentPending(ticket)) return;
+        if (!result.ok) {
+          setResponseError(result.error || "This prompt changed or expired. Refresh the pending request before answering.");
+          return;
+        }
+        setPendingAction(null);
+      } catch (error) {
+        if (!isCurrentPending(ticket)) return;
+        setResponseError(error instanceof Error ? error.message : "Could not submit the answer. Retry.");
+        return;
+      } finally {
+        finishResponse(ticket);
+      }
 
       // Track if this was an ExitPlanMode approval - the SDK conversation may end
       // after plan approval, so we need to auto-send a continuation message
@@ -2236,7 +2282,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         connectToStream();
       }
     },
-    [id, connectToStream, pendingAction, handleSend],
+    [id, connectToStream, pendingAction, handleSend, beginResponse, finishResponse, isCurrentPending, setPendingAction],
   );
 
   /**
@@ -2369,10 +2415,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const handleReconnect = useCallback(async () => {
     setNetworkError(null);
     // Refetch chat data and messages to capture any missing content
-    getChat(id!).then(setChat);
+    getChat(id!).then((data) => {
+      if (currentIdRef.current === id) setChat(data);
+    });
+    const pendingSnapshot = capturePending();
     Promise.all([getMessages(id!), getPending(id!)]).then(([msgs, pending]) => {
       const messageArray = Array.isArray(msgs) ? msgs : [];
       setMessages(messageArray);
+      if (!isUnchangedPending(pendingSnapshot)) return;
       if (pending) {
         setPendingAction(pending);
         setStreaming(true);
@@ -3611,7 +3661,37 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         </div>
       )}
 
-      {pendingAction && <FeedbackPanel action={pendingAction} onRespond={handleRespond} agentName={providerDisplayName} />}
+      {controlNotice && (
+        <div role="status" style={{ padding: 12 }}>
+          {controlNotice}
+          <button onClick={() => setControlNotice("")}>Dismiss</button>
+        </div>
+      )}
+      {responseError && (
+        <div role="alert" style={{ padding: 12 }}>
+          {responseError}
+          <button
+            onClick={async () => {
+              const snapshot = capturePending();
+              try {
+                const chatId = id || tempChatIdRef.current;
+                const next = chatId ? await getPending(chatId) : null;
+                if (!isUnchangedPending(snapshot)) return;
+                setPendingAction(next);
+                setResponseError("");
+              } catch {
+                if (!isUnchangedPending(snapshot)) return;
+                setResponseError("Could not refresh the pending request. Retry.");
+              }
+            }}
+          >
+            Refresh pending request
+          </button>
+        </div>
+      )}
+      {pendingAction && (
+        <FeedbackPanel key={pendingKey} action={pendingAction} responding={responding} onRespond={handleRespond} agentName={providerDisplayName} />
+      )}
       {/* Wrap the composer in a positioned container so the model/effort
           popover can anchor to the composer's edges (not the hamburger menu
           that opens it — anchoring to a button inside the composer would

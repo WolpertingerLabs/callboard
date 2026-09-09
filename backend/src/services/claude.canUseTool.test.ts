@@ -289,7 +289,7 @@ describe("buildCanUseTool — the prompt slot holds one question", () => {
       // Still the GUI confirmation, still answerable, still human-only.
       expect(getPendingRequest(trackingId)).toMatchObject({ toolName: CU_ACTION_TOOL_NAME, humanOnly: true });
 
-      respondToPermission(trackingId, false);
+      respondToPermission(trackingId, false, undefined, undefined, getPendingRequest(trackingId)?.requestId);
       await expect(approval).resolves.toEqual({ approved: false, reason: "denied" });
     } finally {
       sessionRegistry.unregister(trackingId);

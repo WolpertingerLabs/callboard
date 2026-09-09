@@ -272,3 +272,60 @@ describe("legacy client (no handshake) is unaffected", () => {
     expect(complete).toEqual({ type: "message_complete", reason: "max_turns", costUsd: 0.5, maxBudgetUsd: 5, objectiveComplete: true });
   });
 });
+
+it("forwards trusted prompt identity and outcome without inventing a new wire event type", () => {
+  const f = fakeResponse();
+  beginSSE(fakeRequest(handshakeAsReceived()), f.res);
+  f.chunks.length = 0;
+  const emitter = new EventEmitter();
+  const handler = createSSEHandler(f.res, emitter);
+  handler({
+    type: "permission_request",
+    content: "",
+    toolName: "mcp__computer_use__cu_request_control",
+    requestId: "issued",
+    humanOnly: true,
+    controlRequest: true,
+    input: { kind: "browser" },
+  });
+  handler({ type: "tool_result", content: "", controlRequestResult: { requestId: "issued", message: "Browser control enabled." } });
+  expect(parseAsFrontend(f.chunks)).toEqual([
+    {
+      type: "permission_request",
+      content: "",
+      toolName: "mcp__computer_use__cu_request_control",
+      requestId: "issued",
+      humanOnly: true,
+      controlRequest: true,
+      input: { kind: "browser" },
+    },
+    { type: "message_update", controlRequestResult: { requestId: "issued", message: "Browser control enabled." } },
+  ]);
+  expect(f.ended).toBe(false);
+});
+
+it("legacy cu_action clients receive visible reload guidance, never a confirmable ID-less card", async () => {
+  const { HUMAN_PROMPT_RELOAD } = await import("./sse.js");
+  for (const headers of [{}, { "x-callboard-caps": "tool_source,budget_events,plan_review" }]) {
+    const f = fakeResponse();
+    beginSSE(fakeRequest(headers), f.res);
+    const handler = createSSEHandler(f.res, new EventEmitter());
+    handler({
+      type: "permission_request",
+      content: "",
+      toolName: "mcp__computer_use__cu_action",
+      humanOnly: true,
+      requestId: "new-id",
+      input: { summary: "Click" },
+    });
+    const frames = parseAsFrontend(f.chunks);
+    // The shipped reader renders message_error.content in the transcript and
+    // only mounts FeedbackPanel for the three pending event types. It drops
+    // requestId when constructing that panel, so never give it that card.
+    const oldClientCards = frames.filter((e) => ["permission_request", "user_question", "plan_review"].includes(String(e.type)));
+    const oldClientErrors = frames.filter((e) => e.type === "message_error").map((e) => e.content);
+    expect(oldClientCards).toEqual([]);
+    expect(oldClientErrors).toEqual([HUMAN_PROMPT_RELOAD]);
+    expect(f.ended).toBe(false); // migration did not cancel the agent/prompt
+  }
+});

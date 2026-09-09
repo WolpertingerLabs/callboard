@@ -28,7 +28,12 @@ function human() {
     while (queue.length <= index) await new Promise<void>((resolve) => waiters.push(resolve));
     return queue[index].request;
   };
-  return { confirm, asked, approve: (index = 0) => queue[index].answer({ approved: true, reason: "human" }), deny: (index = 0) => queue[index].answer({ approved: false, reason: "denied" }) };
+  return {
+    confirm,
+    asked,
+    approve: (index = 0) => queue[index].answer({ approved: true, reason: "human" }),
+    deny: (index = 0) => queue[index].answer({ approved: false, reason: "denied" }),
+  };
 }
 
 const textOf = (result: { content: { type: string }[] }) => {
@@ -172,4 +177,61 @@ it("an idle facade cannot call the service, even if a model supplies a session i
   const result = await tool.handler({ sessionId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", generation: 1 });
   expect(result.isError).toBe(true);
   expect(result.content).toEqual([{ type: "text", text: expect.stringContaining("No active authorized chat turn") }]);
+});
+
+it("cu_request_control blocks through the provider-neutral spec, then returns the enabled session to the agent", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { sessionRegistry } = await import("./session-registry.js");
+  const { getPendingRequest, respondToPermission } = await import("./pending-requests.js");
+  const controller = new AbortController();
+  sessionRegistry.register("enable-tool-chat", { type: "web", emitter: new EventEmitter(), abortController: controller });
+  const driver: Driver = {
+    kind: "browser",
+    probe: async () => ({ kind: "browser", available: true, capabilities: [] }),
+    open: vi.fn(async () => ({
+      close: async () => {},
+      releaseInput: async () => {},
+      act: async () => {},
+      observe: async () => ({ data: "AA==", mimeType: "image/png" as const, width: 100, height: 100, capturedAt: Date.now() }),
+    })),
+  };
+  const service = new ComputerUseService({ targets: [{ id: "managed-browser", enabled: true, driver }], authorize: (request) => host!.authorize(request) });
+  host = new ComputerUseHost(service, { browser: driver, desktop: driver }, () => ({
+    policy: readComputerUsePolicy({ computerControl: "allow", webAccess: "allow" }),
+    signature: "scope",
+  }));
+  vi.mocked(getComputerUseHost).mockResolvedValue(host);
+  const end = beginComputerUseTurn(() => "enable-tool-chat", controller.signal);
+  try {
+    const spec = buildComputerUseToolsSpec(() => "enable-tool-chat");
+    const tool = spec.tools.find((tool) => tool.name === "cu_request_control")!;
+    const result = tool.handler({ kind: "browser", reason: "Read the page" });
+    await vi.waitFor(() => expect(getPendingRequest("enable-tool-chat")?.humanOnly).toBe(true));
+    expect(driver.open).not.toHaveBeenCalled();
+    respondToPermission("enable-tool-chat", true, undefined, undefined, getPendingRequest("enable-tool-chat")?.requestId);
+    expect(textOf(await result)).toMatchObject({ state: "ready", kind: "browser", controller: "agent", generation: 1 });
+    expect(driver.open).toHaveBeenCalledTimes(1);
+    end();
+    expect(textOf(await tool.handler({ kind: "browser", reason: "Again" }))).toMatchObject({ error: "cancelled" });
+  } finally {
+    end();
+    sessionRegistry.unregister("enable-tool-chat");
+  }
+});
+
+it("a replacement turn cancels an older pending enable request before provider cleanup", async () => {
+  const requestControl = vi.fn(async (_chat: string, _kind: string, _reason: string, signal: AbortSignal) => {
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    signal.throwIfAborted();
+  });
+  vi.mocked(getComputerUseHost).mockResolvedValue({ requestControl } as unknown as ComputerUseHost);
+  const endOld = beginComputerUseTurn(() => "replace-chat", new AbortController().signal);
+  const tool = buildComputerUseToolsSpec(() => "replace-chat").tools.find((tool) => tool.name === "cu_request_control")!;
+  const result = tool.handler({ kind: "browser", reason: "Check page" });
+  await vi.waitFor(() => expect(requestControl).toHaveBeenCalled());
+  const endNew = beginComputerUseTurn(() => "replace-chat", new AbortController().signal);
+  expect(await result).toMatchObject({ isError: true });
+  expect(requestControl.mock.calls[0][3].aborted).toBe(true);
+  endOld();
+  endNew();
 });

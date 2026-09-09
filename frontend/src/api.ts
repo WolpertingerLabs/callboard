@@ -1,3 +1,4 @@
+import { handshakeHeaders } from "shared/types/index.js";
 import type { ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type {
@@ -509,7 +510,7 @@ export async function getMessages(id: string): Promise<ParsedMessage[]> {
 }
 
 export async function getPending(id: string): Promise<any | null> {
-  const res = await fetch(`${BASE}/chats/${id}/pending`);
+  const res = await fetch(`${BASE}/chats/${id}/pending`, { headers: handshakeHeaders() });
   await assertOk(res, "Failed to get pending action");
   const data = await res.json();
   return data.pending;
@@ -568,14 +569,16 @@ export async function respondToChat(
   allow: boolean,
   updatedInput?: Record<string, unknown>,
   updatedPermissions?: unknown[],
-): Promise<{ ok: boolean; toolName?: string }> {
+  requestId?: string,
+): Promise<{ ok: boolean; toolName?: string; error?: string }> {
   const res = await fetch(`${BASE}/chats/${id}/respond`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allow, updatedInput, updatedPermissions }),
+    body: JSON.stringify({ allow, updatedInput, updatedPermissions, requestId }),
   });
   if (!res.ok) {
-    return { ok: false };
+    const body = await res.json().catch(() => ({}));
+    return { ok: false, error: body.error || "Could not answer this prompt. Retry or refresh the pending request." };
   }
   return res.json();
 }

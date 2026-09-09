@@ -152,7 +152,17 @@ for (const engine of ["cline", "pi"] as const)
 
 it("all five engines categorize explicit control names, never guessed display labels", () => {
   for (const engine of ["claude-code", "codex", "cline", "pi", "acp"] as const) {
-    for (const name of ["cu_open", "cu_observe", "cu_action", "cu_status", "cu_stop", "mcp__computer_use__cu_action", "computer_use_cu_observe"]) {
+    for (const name of [
+      "cu_request_control",
+      "mcp__computer_use__cu_request_control",
+      "cu_open",
+      "cu_observe",
+      "cu_action",
+      "cu_status",
+      "cu_stop",
+      "mcp__computer_use__cu_action",
+      "computer_use_cu_observe",
+    ]) {
       expect(getToolCategorizer(engine)(name), `${engine}/${name}`).toBe("computerControl");
     }
   }
