@@ -529,6 +529,44 @@ const REFUSALS: Record<HumanApprovalOutcome["reason"], { code: string; message: 
   },
 };
 
+/** A readiness check cannot hold an agent or an accepted HTTP response forever. */
+export const CONTROL_PROBE_TIMEOUT_MS = 10_000;
+function boundedProbe(driver: Driver, signal: AbortSignal, expiresAt: number): ReturnType<Driver["probe"]> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, value?: Awaited<ReturnType<Driver["probe"]>>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(value!);
+    };
+    const abort = () => finish(controlError("cancelled", "Control readiness check cancelled; no target was enabled."));
+    const timer = setTimeout(
+      () => finish(controlError("approval_timeout", "Control readiness check timed out. Check host setup before requesting again.")),
+      Math.max(0, Math.min(CONTROL_PROBE_TIMEOUT_MS, expiresAt - Date.now())),
+    );
+    timer.unref?.();
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    // The driver may ignore cancellation. Its late resolution/rejection is
+    // consumed, but can neither settle this request again nor start a target.
+    Promise.resolve()
+      .then(() => {
+        signal.throwIfAborted();
+        return driver.probe();
+      })
+      .then(
+        (value) => finish(undefined, value),
+        (error) => finish(error),
+      );
+  });
+}
+
 export class ComputerUseHost {
   private readonly grants = new Map<string, Grant>();
   private readonly opening = new Map<string, HostPolicy>();
@@ -733,7 +771,7 @@ export class ComputerUseHost {
       complete = resolve;
     });
     try {
-      const probe = await this.drivers[kind].probe();
+      const probe = await boundedProbe(this.drivers[kind], combined, expiresAt);
       combined.throwIfAborted();
       if (!probe.available) throw controlError("unsupported", probe.reason ?? "Target unavailable. Check native setup on the service host, then retry.");
       if (this.readPolicy(chatId).signature !== current.signature) throw controlError("denied", "Permissions changed; request fresh consent.");
@@ -757,7 +795,7 @@ export class ComputerUseHost {
       combined.throwIfAborted();
       if (expiresAt <= Date.now() || hostname() !== target || this.readPolicy(chatId).signature !== current.signature)
         throw controlError("denied", "Control consent expired or permissions changed. Request fresh consent.");
-      const ready = await this.drivers[kind].probe();
+      const ready = await boundedProbe(this.drivers[kind], combined, expiresAt);
       combined.throwIfAborted();
       if (!ready.available) throw controlError("unsupported", ready.reason ?? "Target is no longer available. Fix host setup before retrying.");
       const session = await this.openApproved(chatId, kind, current, combined);
@@ -767,6 +805,10 @@ export class ComputerUseHost {
       try {
         combined.throwIfAborted();
         if (this.readPolicy(chatId).signature !== current.signature) throw controlError("denied", "Control authority changed during startup.");
+        this.agentLease(chatId, session.id, session.generation);
+        const actual = this.service.status(controlPrincipal(chatId, "agent")).find((s) => s.sessionId === session.id);
+        if (!actual || actual.state !== "ready" || actual.controller !== "agent" || actual.generation !== session.generation || actual.expiresAt <= Date.now())
+          throw controlError("revoked", "Control was stopped, taken over, or expired during startup. Request fresh consent.");
       } catch (error) {
         await this.stop(chatId, session.id);
         throw error;

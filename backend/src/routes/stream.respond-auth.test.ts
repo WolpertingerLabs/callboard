@@ -197,3 +197,44 @@ it.each([true, false])("respond waits for actual host startup (success=%s), with
   expect(state.status).toBe(ok ? 200 : 409);
   expect(state.body).toMatchObject(ok ? { ok: true } : { ok: false, error: "Startup failed; request fresh consent" });
 });
+
+it("legacy pending replay requests reload without an answerable card; upgraded replay redeems the same prompt", async () => {
+  liveChat();
+  const approval = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_action", input: { summary: "Click" } });
+  const { handshakeHeaders } = await import("shared/types/index.js");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handler = (streamRouter as any).stack.find((l: any) => l.route?.path === "/:id/pending").route.stack[0].handle;
+  const oldRes = fakeResponse("session");
+  handler({ params: { id: CHAT }, headers: {} }, oldRes.res);
+  expect(oldRes.state.body).toMatchObject({ pending: null, reloadRequired: expect.stringContaining("Reload this Callboard tab") });
+  const legacyReply = fakeRequest(sameOrigin);
+  legacyReply.body = { allow: true }; // exactly what the old optimistic frontend sends
+  const replyRes = fakeResponse("session");
+  await respondHandler(legacyReply, replyRes.res);
+  expect(replyRes.state.status).toBe(409);
+  expect(hasPendingRequest(CHAT)).toBe(true);
+  const modernRes = fakeResponse("session");
+  handler({ params: { id: CHAT }, headers: Object.fromEntries(Object.entries(handshakeHeaders()).map(([k, v]) => [k.toLowerCase(), v])) }, modernRes.res);
+  expect(modernRes.state.body).toMatchObject({ pending: { toolName: "mcp__computer_use__cu_action", requestId: pendingRequests.get(CHAT)?.requestId } });
+  expect(respond("session").status).toBe(200);
+  await expect(approval).resolves.toMatchObject({ approved: true });
+});
+it.each([true, false])("a delayed human-only %s reply cannot consume an ordinary replacement over HTTP", async (allow) => {
+  liveChat();
+  const consent = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_request_control", input: {} });
+  const staleId = pendingRequests.get(CHAT)!.requestId;
+  respond("session");
+  await consent;
+  const resolve = vi.fn();
+  pendingRequests.set(CHAT, { toolName: "Bash", input: { command: "never run" }, eventType: "permission_request", eventData: {}, resolve });
+  const req = fakeRequest(sameOrigin);
+  req.body = { allow, requestId: staleId };
+  const { res, state } = fakeResponse("session");
+  await respondHandler(req, res);
+  expect(state.status).toBe(409);
+  expect(resolve).not.toHaveBeenCalled();
+  expect(hasPendingRequest(CHAT)).toBe(true);
+  req.body = { allow: false };
+  await respondHandler(req, res);
+  expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ behavior: "deny" }));
+});

@@ -1,3 +1,4 @@
+import { handshakeHeaders } from "shared/types/index.js";
 import type { ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type {
@@ -509,7 +510,7 @@ export async function getMessages(id: string): Promise<ParsedMessage[]> {
 }
 
 export async function getPending(id: string): Promise<any | null> {
-  const res = await fetch(`${BASE}/chats/${id}/pending`);
+  const res = await fetch(`${BASE}/chats/${id}/pending`, { headers: handshakeHeaders() });
   await assertOk(res, "Failed to get pending action");
   const data = await res.json();
   return data.pending;

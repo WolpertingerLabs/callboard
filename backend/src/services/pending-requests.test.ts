@@ -14,6 +14,7 @@ const CHAT = "pending-request-chat";
 const request = { toolName: "mcp__computer_use__cu_action", input: { summary: "Click at (1, 2)" } };
 
 afterEach(() => {
+  vi.useRealTimers();
   respondToPermission(CHAT, false, undefined, undefined, getPendingRequest(CHAT)?.requestId);
   sessionRegistry.unregister(CHAT);
 });
@@ -109,3 +110,26 @@ it("does not hold the process open while it waits", () => {
   expect(unref.mock.results.at(-1)!.value.hasRef()).toBe(false);
   unref.mockRestore();
 });
+
+it.each(["permission_request", "user_question", "plan_review"] as const)(
+  "stale control replies cannot consume an ordinary %s replacement",
+  async (eventType) => {
+    const { pendingRequests } = await import("./pending-requests.js");
+    for (const disposition of ["approved", "denied", "expired"] as const) {
+      vi.useFakeTimers();
+      liveChat();
+      const control = requestHumanApproval(CHAT, request);
+      const oldId = getPendingRequest(CHAT)!.requestId;
+      if (disposition === "expired") await vi.advanceTimersByTimeAsync(HUMAN_APPROVAL_TIMEOUT_MS + 1);
+      else respondToPermission(CHAT, disposition === "approved", undefined, undefined, oldId);
+      await control;
+      const resolve = vi.fn();
+      pendingRequests.set(CHAT, { toolName: "Bash", input: { command: "never run" }, eventType, eventData: {}, resolve });
+      for (const allow of [true, false]) expect(respondToPermission(CHAT, allow, undefined, undefined, oldId)).toEqual({ ok: false });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(respondToPermission(CHAT, false)).toMatchObject({ ok: true });
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ behavior: "deny" }));
+      vi.useRealTimers();
+    }
+  },
+);

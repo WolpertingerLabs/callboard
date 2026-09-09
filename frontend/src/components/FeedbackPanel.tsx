@@ -18,13 +18,22 @@ export interface PendingAction {
 }
 
 interface Props {
+  responding?: boolean;
   action: PendingAction;
   onRespond: (allow: boolean, updatedInput?: Record<string, unknown>) => void;
   /** Display name of the harness running this chat (e.g. "Claude", "Codex", "OpenCode") */
   agentName?: string;
 }
 
-export default function FeedbackPanel({ action, onRespond, agentName = "Claude" }: Props) {
+export default function FeedbackPanel(props: Props) {
+  return (
+    <fieldset disabled={props.responding} aria-busy={props.responding} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      {props.responding && <div role="status">Submitting response — waiting for the result…</div>}
+      <FeedbackContent {...props} />
+    </fieldset>
+  );
+}
+function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
   const [answers, setAnswers] = useState<Record<number, string | string[]>>({});
   const [otherText, setOtherText] = useState<Record<number, string>>({});
   const [planExpanded, setPlanExpanded] = useState(false);

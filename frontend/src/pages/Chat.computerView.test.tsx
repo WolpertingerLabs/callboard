@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import Chat from "./Chat";
 import { computerUseClient as client } from "../api/computerUse";
 import { stopChat, getPending, respondToChat } from "../api";
@@ -47,7 +47,10 @@ const mount = (path = "/chat/c1") =>
   );
 beforeEach(() => {
   fixture.native = false;
-  vi.mocked(getPending).mockResolvedValue(null);
+  vi.mocked(getPending).mockReset().mockResolvedValue(null);
+  vi.mocked(respondToChat)
+    .mockReset()
+    .mockImplementation(() => new Promise(() => {}));
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
   Element.prototype.scrollTo = vi.fn();
   Element.prototype.scrollIntoView = vi.fn();
@@ -313,4 +316,218 @@ it("SSE renders the trusted card and the actual creation failure without changin
   expect(screen.queryByLabelText("Target")).toBeNull();
   expect(composer.value).toBe("retain this draft");
   expect(client.observe).not.toHaveBeenCalled();
+});
+
+it("review: replacing an answered question before its HTTP response must not inherit answers", async () => {
+  let emit!: (event: unknown) => void;
+  let resolve!: (value: { ok: boolean }) => void;
+  vi.mocked(respondToChat)
+    .mockReturnValueOnce(
+      new Promise((yes) => {
+        resolve = yes;
+      }),
+    )
+    .mockResolvedValue({ ok: true });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (!String(url).endsWith("/stream")) return { ok: true, json: async () => ({}) };
+      return {
+        ok: true,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            emit = (event) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+            init?.signal?.addEventListener("abort", () => {
+              try {
+                controller.close();
+              } catch {}
+            });
+          },
+        }),
+      };
+    }),
+  );
+  mount();
+  await waitFor(() => expect(emit).toBeDefined());
+  act(() => emit({ type: "user_question", questions: [{ question: "First question", options: [{ label: "First answer" }] }] }));
+  fireEvent.click(await screen.findByRole("button", { name: "First answer" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+  act(() => emit({ type: "user_question", questions: [{ question: "Second question", options: [{ label: "Second answer" }] }] }));
+  await screen.findByText("Second question");
+  await act(async () => resolve({ ok: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+  expect(vi.mocked(respondToChat).mock.calls.at(-1)?.[2]).toEqual({ answers: {} });
+});
+
+it("review: a pending enablement HTTP response must not block another chat's answers", async () => {
+  const prompt = (id: string) => ({
+    type: "permission_request",
+    toolName: "mcp__computer_use__cu_request_control",
+    requestId: id,
+    humanOnly: true,
+    controlRequest: true,
+    input: { kind: "browser", target: "host", reason: id, permission: "allow" },
+  });
+  vi.mocked(getPending).mockImplementation(async (id) => prompt(id));
+  vi.mocked(respondToChat).mockImplementation(() => new Promise(() => {}));
+  function Jump() {
+    const navigate = useNavigate();
+    return <button onClick={() => navigate("/chat/c2")}>Other chat</button>;
+  }
+  render(
+    <MemoryRouter initialEntries={["/chat/c1"]}>
+      <Jump />
+      <Routes>
+        <Route path="/chat/:id" element={<Chat />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Enable browser control" }));
+  expect(respondToChat).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Other chat" }));
+  await screen.findByText("c2");
+  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+  expect(respondToChat).toHaveBeenCalledTimes(2);
+});
+
+it("review: pending refresh from previous chat must not replace current chat's card", async () => {
+  const prompt = (id: string) => ({
+    type: "permission_request",
+    toolName: "mcp__computer_use__cu_request_control",
+    requestId: id,
+    humanOnly: true,
+    controlRequest: true,
+    input: { kind: "browser", target: "host", reason: id, permission: "allow" },
+  });
+  vi.mocked(getPending).mockImplementation(async (id) => prompt(id));
+  vi.mocked(respondToChat).mockResolvedValue({ ok: false, error: "Refresh required" });
+  function Jump() {
+    const navigate = useNavigate();
+    return <button onClick={() => navigate("/chat/c2")}>Other chat</button>;
+  }
+  render(
+    <MemoryRouter initialEntries={["/chat/c1"]}>
+      <Jump />
+      <Routes>
+        <Route path="/chat/:id" element={<Chat />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Enable browser control" }));
+  await screen.findByText(/Refresh required/);
+  let resolve!: (value: any) => void;
+  vi.mocked(getPending).mockReturnValueOnce(
+    new Promise((yes) => {
+      resolve = yes;
+    }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Refresh pending request" }));
+  fireEvent.click(screen.getByRole("button", { name: "Other chat" }));
+  await screen.findByText("c2");
+  await act(async () => resolve(prompt("c1")));
+  expect(screen.queryByText("c1")).toBeNull();
+  expect(screen.queryByText("c2")).not.toBeNull();
+});
+
+function streamFixture() {
+  let emit!: (event: unknown) => void;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (!String(url).endsWith("/stream")) return { ok: true, json: async () => ({}) };
+      return {
+        ok: true,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            emit = (event) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+            init?.signal?.addEventListener("abort", () => {
+              try {
+                controller.close();
+              } catch {
+                /* closed */
+              }
+            });
+          },
+        }),
+      };
+    }),
+  );
+  return { emit: (event: unknown) => emit(event), ready: () => waitFor(() => expect(emit).toBeDefined()) };
+}
+it("replacement prompt can submit while A is pending and A's finally cannot unlock B", async () => {
+  const stream = streamFixture();
+  let resolveA!: (result: { ok: boolean }) => void;
+  let resolveB!: (result: { ok: boolean }) => void;
+  vi.mocked(respondToChat)
+    .mockReturnValueOnce(
+      new Promise((r) => {
+        resolveA = r;
+      }),
+    )
+    .mockReturnValueOnce(
+      new Promise((r) => {
+        resolveB = r;
+      }),
+    );
+  mount();
+  await stream.ready();
+  act(() => stream.emit(enablePrompt));
+  fireEvent.click(await screen.findByRole("button", { name: "Enable browser control" }));
+  await screen.findByText(/Submitting response/);
+  act(() => stream.emit({ ...enablePrompt, requestId: "B", input: { ...enablePrompt.input, reason: "B request" } }));
+  await screen.findByText("B request");
+  fireEvent.click(await screen.findByRole("button", { name: "Enable browser control" }));
+  expect(respondToChat).toHaveBeenCalledTimes(2);
+  await act(async () => resolveA({ ok: true }));
+  expect(screen.getByRole("button", { name: "Deny" }).closest("fieldset")?.disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+  expect(respondToChat).toHaveBeenCalledTimes(2);
+  await act(async () => resolveB({ ok: false }));
+  expect(screen.getByRole("button", { name: "Deny" }).closest("fieldset")?.disabled).toBe(false);
+});
+it.each(["success", "failure"])("late pending refresh %s cannot overwrite newer SSE state", async (outcome) => {
+  const stream = streamFixture();
+  vi.mocked(getPending).mockResolvedValue(enablePrompt);
+  vi.mocked(respondToChat).mockResolvedValue({ ok: false, error: "Refresh required" });
+  mount();
+  await stream.ready();
+  fireEvent.click(await screen.findByRole("button", { name: "Enable browser control" }));
+  await screen.findByText(/Refresh required/);
+  let resolve!: (value: unknown) => void;
+  let reject!: (error: Error) => void;
+  vi.mocked(getPending).mockReturnValueOnce(
+    new Promise((yes, no) => {
+      resolve = yes;
+      reject = no;
+    }),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Refresh pending request" }));
+  act(() => stream.emit({ type: "user_question", questions: [{ question: "Newer question", options: [] }] }));
+  await screen.findByText("Newer question");
+  await act(async () => (outcome === "success" ? resolve(enablePrompt) : reject(new Error("old refresh error"))));
+  expect(screen.getByText("Newer question")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Enable browser control" })).toBeNull();
+  expect(screen.queryByText(/Could not refresh/)).toBeNull();
+});
+it("same-question retry retains its answer after network failure", async () => {
+  const stream = streamFixture();
+  vi.mocked(respondToChat).mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ ok: true });
+  mount();
+  await stream.ready();
+  act(() => stream.emit({ type: "user_question", questions: [{ question: "Question", options: [{ label: "Answer" }] }] }));
+  fireEvent.click(await screen.findByRole("button", { name: "Answer" }));
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+  await screen.findByText(/offline/);
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+  await waitFor(() => expect(respondToChat).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(respondToChat).mock.calls[1][2]).toEqual({ answers: { Question: "Answer" } });
+});
+it("the existing message_error reader shows migration guidance without mounting an obsolete consent card", async () => {
+  const stream = streamFixture();
+  mount();
+  await stream.ready();
+  act(() => stream.emit({ type: "message_error", content: "Reload this Callboard tab to confirm computer control. No action has been approved." }));
+  await screen.findByText(/Reload this Callboard tab/);
+  expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+  expect(respondToChat).not.toHaveBeenCalled();
 });

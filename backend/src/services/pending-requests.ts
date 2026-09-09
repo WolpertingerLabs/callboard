@@ -125,7 +125,9 @@ export function respondToPermission(
 ): { ok: boolean; toolName?: string; completion?: Promise<ApprovalCompletion> } {
   const pending = pendingRequests.get(chatId);
   if (!pending || typeof allow !== "boolean") return { ok: false };
-  if (pending.humanOnly && (!requestId || requestId !== pending.requestId)) return { ok: false };
+  // An old consent must never answer a replacement ordinary prompt either.
+  if (requestId !== undefined && requestId !== pending.requestId) return { ok: false };
+  if (pending.humanOnly && !requestId) return { ok: false };
   const toolName = pending.toolName;
   pendingRequests.delete(chatId);
 

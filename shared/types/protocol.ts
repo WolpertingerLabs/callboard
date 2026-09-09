@@ -9,9 +9,9 @@
  * connection and can ask one question at a serialization site —
  * `session.supports(CLIENT_CAPS.someCapability)`.
  *
- * Phase 1 (this file) installs the negotiation and nothing else: every emit
- * site still emits unconditionally, so a client that sends no handshake is
- * byte-for-byte unaffected apart from one extra leading frame it ignores.
+ * Human-only prompts require human_prompt_identity: older clients receive an
+ * existing message_error reload notice, never an unidentifiable consent card.
+ * Ordinary prompts remain compatible with ID-less legacy responses.
  *
  * These constants live in `shared/` rather than next to the server that reads
  * them because both sides must agree on the exact strings — a duplicated cap
@@ -27,7 +27,7 @@ export const PROTOCOL_VERSION = 2;
  * the floor stays at 1 until we deliberately choose to cut those clients off,
  * at which point the caps below the new floor can be deleted too.
  *
- * Nothing enforces this floor yet: Phase 1 rejects no one.
+ * The floor is informational; individual capabilities can require a reload.
  */
 export const MIN_PROTOCOL_VERSION = 1;
 
@@ -52,12 +52,15 @@ export const CAPS_HEADER = "X-Callboard-Caps";
  *
  * Capabilities gate new *enum values* (a new `type`, a new `toolSource`), not
  * new optional *fields* — old clients ignore unknown keys, so adding a field
- * needs no gate. That asymmetry keeps the common case friction-free.
+ * normally needs no gate. Security-required response identities are the
+ * exception: clients must echo them, not merely ignore the new field.
  */
 export const CLIENT_CAPS = {
   toolSource: "tool_source",
   budgetEvents: "budget_events",
   planReview: "plan_review",
+  /** Sends prompt identities on /respond; older bundles must reload for human consent. */
+  humanPromptIdentity: "human_prompt_identity",
 } as const;
 
 /** Union of the capability strings in {@link CLIENT_CAPS}. */
@@ -86,12 +89,11 @@ export const CLIENT_CAP_VALUES: readonly ClientCapability[] = Object.values(CLIE
  * - `plan_review` — forwarded over SSE as a pending request, and also served
  *   over REST by `getPending` when a tab resumes.
  *
- * A REST request has no `StreamSession`, so a per-connection `supports()` call
- * can only gate `budget_events` as things stand. That is a Phase 4
- * prerequisite, not a Phase 1 defect (nothing is gated yet) — see section 4b of
- * `plans/wire-capability-negotiation.md`.
+ * Pending REST replay also reads the handshake. A legacy client receives
+ * pending:null plus reloadRequired; its active SSE connection displays the
+ * reload notice using the already-supported message_error event.
  *
- * Features and caps carry the same three strings today. They are separate lists
+ * Features and caps carry the same strings today. They are separate lists
  * because they answer different questions and will diverge as soon as one side
  * gains something the other doesn't need to know about.
  */

@@ -15,8 +15,9 @@ afterEach(async () => {
 function fixture(level: "ask" | "allow" | "deny" = "ask", kind: "browser" | "desktop" = "browser") {
   const driverKind = kind === "browser" ? ("browser" as const) : ("native-desktop" as const);
   const controller = new AbortController();
+  const turnController = new AbortController();
   const emitter = new EventEmitter();
-  sessionRegistry.register(CHAT, { type: "web", emitter, abortController: controller });
+  sessionRegistry.register(CHAT, { type: "web", emitter, abortController: turnController });
   const close = vi.fn(async () => {});
   const observe = vi.fn(async () => ({ data: "AA==", mimeType: "image/png" as const, width: 100, height: 100, capturedAt: Date.now() }));
   const handle = { close, observe, releaseInput: async () => {}, act: async () => {} };
@@ -35,13 +36,14 @@ function fixture(level: "ask" | "allow" | "deny" = "ask", kind: "browser" | "des
     policy: readComputerUsePolicy({ computerControl: level, webAccess: "allow", fileRead: "allow", fileWrite: "allow", codeExecution: "allow" }),
     signature,
   }));
-  const request = () => host.requestControl(CHAT, kind, "Check the requested page", controller.signal);
+  const request = () => host.requestControl(CHAT, kind, "Check the requested page", AbortSignal.any([controller.signal, turnController.signal]));
   const answer = (allow = true) => respondToPermission(CHAT, allow, { kind: "desktop", approved: true }, [], getPendingRequest(CHAT)?.requestId);
   const prompt = () => vi.waitFor(() => expect(getPendingRequest(CHAT)?.eventData.controlRequest).toBe(true));
   return {
     service,
     driver,
     controller,
+    turnController,
     close,
     observe,
     handle,
@@ -240,4 +242,90 @@ it.each(["stop", "transport", "policy"])("%s in the final startup handoff cannot
   f.answer();
   await rejected;
   expect(f.service.status(controlPrincipal(CHAT, "human")).some((s) => ["ready", "starting"].includes(s.state))).toBe(false);
+});
+
+it.each(["stop", "revoke", "takeover", "expiry"])("actual session ID %s during handoff refuses HTTP and tool success", async (change) => {
+  const f = fixture();
+  const result = f.request();
+  const rejected = expect(result).rejects.toBeDefined();
+  await f.prompt();
+  const open = f.service.open.bind(f.service);
+  let mutation: Promise<unknown> | undefined;
+  let clock: ReturnType<typeof vi.spyOn> | undefined;
+  vi.spyOn(f.service, "open").mockImplementation(async (...args) => {
+    const lease = await open(...args);
+    queueMicrotask(() =>
+      queueMicrotask(() => {
+        if (change === "expiry") clock = vi.spyOn(Date, "now").mockReturnValue(lease.expiresAt + 1);
+        else if (change === "takeover") {
+          /* tested at the completed transition below */
+        } else mutation = host[change as "stop" | "revoke"](CHAT, lease.sessionId);
+      }),
+    );
+    return lease;
+  });
+  if (change === "takeover") {
+    // Takeover itself awaits authorization. Hold the outer handoff until the
+    // real service/controller transition has completed, rather than testing a
+    // takeover that has only been requested and is not yet authoritative.
+    const internal = host as unknown as { openApproved: (...args: unknown[]) => Promise<{ id: string; generation: number }> };
+    const approved = internal.openApproved.bind(host);
+    vi.spyOn(internal, "openApproved").mockImplementation(async (...args) => {
+      const session = await approved(...args);
+      await host.takeover(CHAT, session.id, session.generation);
+      return session;
+    });
+  }
+  const completion = f.answer().completion;
+  try {
+    await rejected;
+    await expect(completion).resolves.toMatchObject({ ok: false });
+    await mutation;
+    expect(f.service.status(controlPrincipal(CHAT, "human")).some((s) => ["ready", "starting"].includes(s.state))).toBe(false);
+  } finally {
+    clock?.mockRestore();
+  }
+});
+
+it.each(["initial", "post-consent"])("%s readiness probes settle promptly on cancellation, Stop and deadline", async (phase) => {
+  const { CONTROL_PROBE_TIMEOUT_MS } = await import("./computer-use.js");
+  for (const cancellation of ["abort", "turn", "stop", "timeout"]) {
+    vi.useFakeTimers();
+    const f = fixture();
+    let release!: (value: Awaited<ReturnType<Driver["probe"]>>) => void;
+    const held = () =>
+      new Promise<Awaited<ReturnType<Driver["probe"]>>>((resolve) => {
+        release = resolve;
+      });
+    if (phase === "initial") vi.mocked(f.driver.probe).mockImplementationOnce(held);
+    const result = f.request();
+    const rejected = expect(result).rejects.toBeDefined();
+    let completion: Promise<unknown> | undefined;
+    try {
+      if (phase === "post-consent") {
+        await f.prompt();
+        vi.mocked(f.driver.probe).mockImplementationOnce(held);
+        completion = f.answer().completion;
+      }
+      await vi.waitFor(() => expect(release).toBeDefined());
+      if (cancellation === "abort") f.controller.abort();
+      if (cancellation === "turn") f.turnController.abort();
+      if (cancellation === "stop") {
+        const pending = (await host.status(CHAT)).sessions.find((s) => s.generation === 0)!;
+        await host.stop(CHAT, pending.id);
+      }
+      if (cancellation === "timeout") await vi.advanceTimersByTimeAsync(CONTROL_PROBE_TIMEOUT_MS + 1);
+      await rejected;
+      if (completion) await expect(completion).resolves.toMatchObject({ ok: false });
+      expect(getPendingRequest(CHAT)).toBeNull();
+      release({ kind: "browser", available: true, capabilities: [] });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(f.driver.open).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose();
+      sessionRegistry.unregister(CHAT);
+      vi.useRealTimers();
+    }
+  }
 });
