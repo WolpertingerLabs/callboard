@@ -114,7 +114,12 @@ function recordingProvider() {
 /** Run one turn to completion and hand back the options the provider was given. */
 async function optionsForOneTurn(provider: AgentProvider, requests: AgentQueryRequest[], sendOpts: Record<string, unknown>): Promise<any> {
   setAgentProviderForTesting(provider, (sendOpts.provider as any) ?? "claude-code");
-  const emitter = await sendMessage({ prompt: "hello", folder: workDir, ...sendOpts } as any);
+  // This seam is only about the primary chat query. A manual new chat also
+  // starts detached title generation when `session_started` arrives; that
+  // second query can outlive the assertion and log while Vitest is tearing its
+  // worker down. Mark the fixture as triggered, as the other sendMessage seam
+  // harnesses do, so it deliberately has no title-generation side task.
+  const emitter = await sendMessage({ prompt: "hello", folder: workDir, ...sendOpts, triggered: true } as any);
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("session did not finish within 15s")), 15_000);
     emitter.on("event", (e: StreamEvent) => {
@@ -124,7 +129,7 @@ async function optionsForOneTurn(provider: AgentProvider, requests: AgentQueryRe
       }
     });
   });
-  expect(requests.length).toBeGreaterThan(0);
+  expect(requests).toHaveLength(1);
   return requests[0].options as any;
 }
 
