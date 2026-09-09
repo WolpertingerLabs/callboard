@@ -45,36 +45,39 @@ describe("computer control origin boundary", () => {
   });
 });
 
-it("HTTP requires and forwards the exact frame token and preserves stale-frame conflict errors", async () => {
-  const action = vi.fn(async () => ({}));
-  vi.mocked(getComputerUseHost).mockResolvedValue({ action } as never);
-  const app = express();
-  app.use(express.json());
-  app.use("/api/computer-use", computerUseRouter);
-  const server = app.listen(0, "127.0.0.1");
-  await new Promise<void>((resolve) => server.once("listening", resolve));
-  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  const post = (body: unknown) =>
-    fetch(`${origin}/api/computer-use/chat/session/action`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Origin: origin },
-      body: JSON.stringify(body),
-    });
-  try {
-    for (const frameId of [undefined, "legacy", "x".repeat(4096)]) {
-      expect((await post({ frameId, expectedGeneration: 2, action: { type: "click", x: 1, y: 2 } })).status).toBe(400);
+it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")(
+  "HTTP requires and forwards the exact frame token and preserves stale-frame conflict errors",
+  async () => {
+    const action = vi.fn(async () => ({}));
+    vi.mocked(getComputerUseHost).mockResolvedValue({ action } as never);
+    const app = express();
+    app.use(express.json());
+    app.use("/api/computer-use", computerUseRouter);
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const post = (body: unknown) =>
+      fetch(`${origin}/api/computer-use/chat/session/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify(body),
+      });
+    try {
+      for (const frameId of [undefined, "legacy", "x".repeat(4096)]) {
+        expect((await post({ frameId, expectedGeneration: 2, action: { type: "click", x: 1, y: 2 } })).status).toBe(400);
+      }
+      expect(action).not.toHaveBeenCalled();
+      const frameId = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
+      const mutation = { type: "click", x: 1, y: 2 };
+      expect((await post({ frameId, expectedGeneration: 2, action: mutation })).status).toBe(200);
+      expect(action).toHaveBeenCalledWith("chat", "session", mutation, 2, frameId);
+      action.mockRejectedValueOnce(Object.assign(new Error("Capture again"), { code: "stale_frame" }));
+      const stale = await post({ frameId, expectedGeneration: 2, action: mutation });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ code: "stale_frame" });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    expect(action).not.toHaveBeenCalled();
-    const frameId = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
-    const mutation = { type: "click", x: 1, y: 2 };
-    expect((await post({ frameId, expectedGeneration: 2, action: mutation })).status).toBe(200);
-    expect(action).toHaveBeenCalledWith("chat", "session", mutation, 2, frameId);
-    action.mockRejectedValueOnce(Object.assign(new Error("Capture again"), { code: "stale_frame" }));
-    const stale = await post({ frameId, expectedGeneration: 2, action: mutation });
-    expect(stale.status).toBe(409);
-    expect(await stale.json()).toMatchObject({ code: "stale_frame" });
-  } finally {
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
-});
+  },
+);

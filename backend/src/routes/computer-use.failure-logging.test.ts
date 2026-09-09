@@ -31,19 +31,25 @@ const SANITIZED = "Computer control is unavailable. Check the configured driver 
 const SANDBOX =
   "Sandboxed Chromium launch failed. Provision a supported browser and its OS libraries; on Linux use a non-root user and permit Chromium's sandbox (user namespaces/seccomp or a supported sandbox helper). No unsandboxed fallback is permitted.";
 
-let server: Server;
+const loopbackUnavailable = process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1";
+
+let server: Server | undefined;
 let origin: string;
 beforeAll(async () => {
+  if (loopbackUnavailable) return;
   const app = express();
   app.use(express.json());
   app.use("/api/computer-use", computerUseRouter);
-  server = app.listen(0, "127.0.0.1");
-  await new Promise<void>((resolve) => server.once("listening", resolve));
-  origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const listeningServer = app.listen(0, "127.0.0.1");
+  server = listeningServer;
+  await new Promise<void>((resolve) => listeningServer.once("listening", resolve));
+  origin = `http://127.0.0.1:${(listeningServer.address() as { port: number }).port}`;
 });
 afterAll(async () => {
-  server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (!server) return;
+  const listeningServer = server;
+  listeningServer.closeAllConnections();
+  await new Promise<void>((resolve) => listeningServer.close(() => resolve()));
 });
 beforeEach(() => {
   logs.error.mockClear();
@@ -54,8 +60,9 @@ beforeEach(() => {
 const post = (path: string, body: unknown) =>
   fetch(`${origin}/api/computer-use/${path}`, { method: "POST", headers: { "Content-Type": "application/json", Origin: origin }, body: JSON.stringify(body) });
 const errorLine = () => String(logs.error.mock.calls.at(0)?.[0] ?? "");
+const httpIt = it.skipIf(loopbackUnavailable);
 
-it("logs an uncoded driver launch failure in full while the client still gets only the sanitized message", async () => {
+httpIt("logs an uncoded driver launch failure in full while the client still gets only the sanitized message", async () => {
   const open = vi.fn().mockRejectedValue(new Error("spawn /opt/chromium/chrome-sandbox EACCES"));
   vi.mocked(getComputerUseHost).mockResolvedValue({ open } as never);
 
@@ -74,7 +81,7 @@ it("logs an uncoded driver launch failure in full while the client still gets on
   expect(errorLine()).toContain("computer-use.failure-logging.test.ts"); // the stack came along
 });
 
-it("logs the driver's own diagnosis, with the operation and both identifiers, without widening the response", async () => {
+httpIt("logs the driver's own diagnosis, with the operation and both identifiers, without widening the response", async () => {
   const observe = vi.fn().mockRejectedValue(Object.assign(new Error(SANDBOX), { code: "unsupported" }));
   vi.mocked(getComputerUseHost).mockResolvedValue({ observe } as never);
 
@@ -89,7 +96,7 @@ it("logs the driver's own diagnosis, with the operation and both identifiers, wi
   expect(errorLine()).toContain("permit Chromium's sandbox");
 });
 
-it("keeps routine refusals out of the error log", async () => {
+httpIt("keeps routine refusals out of the error log", async () => {
   const host = {
     status: vi.fn().mockRejectedValue(Object.assign(new Error("Chat not found"), { code: "not_found" })),
     approve: vi.fn().mockRejectedValue(Object.assign(new Error("Approval expired"), { code: "approval_required" })),
@@ -114,7 +121,7 @@ it("keeps routine refusals out of the error log", async () => {
   expect(String(logs.debug.mock.calls.at(-1)?.[0])).toContain("action chat=chat-77 session=sess-3 code=invalid_request");
 });
 
-it("keeps a refusal an operator must see at the default level, without calling it a fault", async () => {
+httpIt("keeps a refusal an operator must see at the default level, without calling it a fault", async () => {
   vi.mocked(getComputerUseHost).mockResolvedValue({
     status: vi.fn().mockRejectedValue(Object.assign(new Error("Chat permission metadata is unreadable"), { code: "denied" })),
   } as never);
@@ -130,7 +137,7 @@ it("keeps a refusal an operator must see at the default level, without calling i
   expect(String(logs.warn.mock.calls[0][0])).toContain("status chat=chat-77 code=denied refused: Chat permission metadata is unreadable");
 });
 
-it("folds a message onto our line, and does not let it forge a line or a frame", async () => {
+httpIt("folds a message onto our line, and does not let it forge a line or a frame", async () => {
   // A zod issue prints the offending key verbatim, newlines and all. The last
   // two entries are the separators that are not control characters: `less`
   // ignores them, but CSS `white-space: pre` breaks on U+2028.
@@ -153,7 +160,7 @@ it("folds a message onto our line, and does not let it forge a line or a frame",
   expect(errorLine()).toContain("computer-use.failure-logging.test.ts"); // real frames survived
 });
 
-it("keeps an errno greppable as a code even though it is not one of our own", async () => {
+httpIt("keeps an errno greppable as a code even though it is not one of our own", async () => {
   vi.mocked(getComputerUseHost).mockResolvedValue({
     open: vi.fn().mockRejectedValue(Object.assign(new Error("spawn chromium ENOENT"), { code: "ENOENT" })),
   } as never);
@@ -164,7 +171,7 @@ it("keeps an errno greppable as a code even though it is not one of our own", as
   expect(errorLine()).toContain("code=ENOENT");
 });
 
-it("never lets a request-supplied identifier forge a log line", async () => {
+httpIt("never lets a request-supplied identifier forge a log line", async () => {
   vi.mocked(getComputerUseHost).mockResolvedValue({ status: vi.fn() } as never);
 
   expect((await fetch(`${origin}/api/computer-use/ch%0a%5BERROR%5D%20at/status`)).status).toBe(400);

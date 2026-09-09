@@ -23,7 +23,9 @@ const bounded = <T>(promise: Promise<T>) =>
   ]);
 
 for (const engine of ["claude-code", "codex", "acp"] as const)
-  describe(`${engine} native MCP relay`, () => {
+  // Claude Code uses an in-memory transport. Codex and ACP use the production
+  // Unix-socket relay, which the managed Codex sandbox explicitly forbids.
+  describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1" && engine !== "claude-code")(`${engine} native MCP relay`, () => {
     async function connect(spec: ToolServerSpec) {
       const client = new Client({ name: "offline-fixture", version: "1" });
       if (engine === "claude-code") {

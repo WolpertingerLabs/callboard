@@ -114,7 +114,10 @@ describe("buildCodexToolServer", () => {
   });
 });
 
-describe("live connectivity (Codex ⇄ shim ⇄ in-process server over stdio)", () => {
+// The relay's private Unix socket is forbidden in Codex's network-disabled
+// sandbox. Unit coverage above still runs there; the real transport proof runs
+// in normal development and CI environments.
+describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")("live connectivity (Codex ⇄ shim ⇄ in-process server over stdio)", () => {
   // A spec whose handler observably runs in THIS process — the call asserts the
   // backend-hosted handler executed, not a child rebuild.
   let handlerCalls: Array<{ name: string }> = [];

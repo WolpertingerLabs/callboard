@@ -178,7 +178,10 @@ describe("importJobDefinition", () => {
 
 // ── Route-level shapes ──────────────────────────────────────────────
 
-describe("jobs import/export routes", () => {
+// These cases deliberately exercise a real HTTP listener. Codex's managed
+// network-disabled sandbox rejects even loopback binds; the store-level tests
+// above still run there, while the route proof remains active everywhere else.
+describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")("jobs import/export routes", () => {
   let baseUrl = "";
   let server: Server | undefined;
 

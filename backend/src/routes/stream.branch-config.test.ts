@@ -220,7 +220,11 @@ describe("POST /new/message — when git refuses", () => {
     // A readable string in `error`, which is the field Chat.tsx renders
     // verbatim when the status is not one of the two 409s it has modals for.
     expect(typeof answered.body?.error).toBe("string");
-    expect(answered.body.error).toMatch(/invalid reference: does-not-exist/);
+    // Git 2.51 says "invalid reference" here while Git 2.52 says "not a
+    // valid object name". The route must preserve the real fatal diagnostic,
+    // not normalize one Git version's wording into another's.
+    expect(answered.body.error).toContain("fatal:");
+    expect(answered.body.error).toContain("does-not-exist");
     // The stream was never opened, so nothing was handed to sendMessage.
     expect(lastSendOptions).toBeUndefined();
   });

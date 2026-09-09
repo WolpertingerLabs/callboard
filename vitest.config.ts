@@ -43,7 +43,7 @@ export default defineConfig({
           exclude: ["**/node_modules/**", "**/dist/**", "frontend/**", "packages/computer-use/test/**"],
           // Runs before each test file is imported, so module-level constants
           // like paths.ts's DATA_DIR resolve to the scratch dir. See the file.
-          setupFiles: ["./vitest.setup.node.ts"],
+          setupFiles: ["./vitest.setup.git.ts", "./vitest.setup.node.ts"],
         },
       },
       {
@@ -57,7 +57,7 @@ export default defineConfig({
           // jsdom 25 has no PointerEvent, and its absence is silent rather
           // than loud — see the file for why that turns pointer tests green
           // for the wrong reason.
-          setupFiles: ["./vitest.setup.frontend.ts"],
+          setupFiles: ["./vitest.setup.git.ts", "./vitest.setup.frontend.ts"],
         },
       },
     ],
