@@ -6,7 +6,7 @@
  * running this test, and a random name is not installed by construction.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { acpProviderAvailability, acpProviderVersion, listAcpProviderAvailability, resetAcpAvailabilityCache, resolveAcpBinaryPath } from "./availability.js";
@@ -74,14 +74,20 @@ describe("off the event loop", () => {
    */
   const SLOW_MS = 300;
   let shimDir: string;
+  let shimCalls: string;
   let realPath: string | undefined;
+  let realShimCalls: string | undefined;
 
   beforeEach(() => {
     shimDir = mkdtempSync(join(tmpdir(), "cb-slow-which-"));
     const shim = join(shimDir, "which");
-    writeFileSync(shim, `#!/bin/sh\nsleep ${SLOW_MS / 1000}\nexec /usr/bin/which "$@"\n`);
+    shimCalls = join(shimDir, "calls");
+    writeFileSync(shimCalls, "");
+    writeFileSync(shim, `#!/bin/sh\nprintf x >> "$CALLBOARD_TEST_ACP_WHICH_CALLS"\nsleep ${SLOW_MS / 1000}\nexec /usr/bin/which "$@"\n`);
     chmodSync(shim, 0o755);
     realPath = process.env.PATH;
+    realShimCalls = process.env.CALLBOARD_TEST_ACP_WHICH_CALLS;
+    process.env.CALLBOARD_TEST_ACP_WHICH_CALLS = shimCalls;
     process.env.PATH = `${shimDir}:${realPath ?? ""}`;
     resetAcpAvailabilityCache();
   });
@@ -89,6 +95,8 @@ describe("off the event loop", () => {
   afterEach(() => {
     if (realPath === undefined) delete process.env.PATH;
     else process.env.PATH = realPath;
+    if (realShimCalls === undefined) delete process.env.CALLBOARD_TEST_ACP_WHICH_CALLS;
+    else process.env.CALLBOARD_TEST_ACP_WHICH_CALLS = realShimCalls;
     rmSync(shimDir, { recursive: true, force: true });
     resetAcpAvailabilityCache();
   });
@@ -110,13 +118,13 @@ describe("off the event loop", () => {
   it.skipIf(process.platform === "win32")("shares one slow probe between concurrent callers", async () => {
     // Five vendors on a settings-page load must not become five spawns of a
     // binary that takes a third of a second each.
-    const started = Date.now();
     const all = await Promise.all([resolveAcpBinaryPath("node"), resolveAcpBinaryPath("node"), resolveAcpBinaryPath("node")]);
-    const elapsed = Date.now() - started;
 
     expect(new Set(all).size).toBe(1);
-    // Three serialised spawns would be ~3x SLOW_MS; one shared probe is ~1x.
-    expect(elapsed).toBeLessThan(SLOW_MS * 2);
+    // Count executions of the real shim instead of imposing a wall-clock
+    // budget. A loaded test host can delay one 300ms child beyond 600ms without
+    // changing the property under test: every caller still shared that child.
+    expect(readFileSync(shimCalls, "utf8")).toBe("x");
   });
 });
 
