@@ -30,7 +30,7 @@ vi.mock("../services/claude.js", async () => {
   const real = await import("../services/pending-requests.js");
   return {
     sendMessage: async () => new EventEmitter(),
-    getActiveSession: () => null,
+    getActiveSession: (id: string) => sessionRegistry.get(id),
     stopSession: () => false,
     respondToPermission: real.respondToPermission,
     hasPendingRequest: real.hasPendingRequest,
@@ -237,4 +237,90 @@ it.each([true, false])("a delayed human-only %s reply cannot consume an ordinary
   req.body = { allow: false };
   await respondHandler(req, res);
   expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ behavior: "deny" }));
+});
+
+// Equivalent to the reviewer's already-blocked-chat reproduction: the prompt
+// predates attachment, so future-event forwarding alone cannot recover it.
+function attachStream(headers: Record<string, string> = {}) {
+  const req = Object.assign(new EventEmitter(), { params: { id: CHAT }, headers });
+  const chunks: string[] = [];
+  const res = { writeHead: vi.fn(), write: (chunk: string) => chunks.push(chunk), end: vi.fn() };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handler = (streamRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/stream").route.stack[0].handle;
+  handler(req, res);
+  return { chunks, res, close: () => req.emit("close") };
+}
+const controlTools = ["mcp__computer_use__cu_action", "mcp__computer_use__cu_request_control"];
+it.each(controlTools)("legacy attachment recovers already-pending %s without an answerable card", async (toolName) => {
+  liveChat();
+  const approval = requestHumanApproval(CHAT, { toolName, input: { summary: "Click" } });
+  const stream = attachStream();
+  try {
+    const wire = stream.chunks.join("");
+    expect(wire).toContain("Reload this Callboard tab");
+    expect(wire).not.toContain('"type":"permission_request"');
+    expect(wire.match(/Reload this Callboard tab/g)).toHaveLength(1);
+    expect(stream.res.end).not.toHaveBeenCalled();
+    expect(hasPendingRequest(CHAT)).toBe(true);
+  } finally {
+    stream.close();
+    respond("session");
+    await approval;
+  }
+});
+it.each(controlTools)("capable reconnect recovers %s via REST without duplicate SSE cards", async (toolName) => {
+  const { handshakeHeaders } = await import("shared/types/index.js");
+  liveChat();
+  const approval = requestHumanApproval(CHAT, { toolName, input: { summary: "Click" } });
+  const headers = Object.fromEntries(Object.entries(handshakeHeaders()).map(([key, value]) => [key.toLowerCase(), value]));
+  const identity = pendingRequests.get(CHAT)!.requestId;
+  for (let connection = 0; connection < 2; connection++) {
+    const stream = attachStream(headers);
+    try {
+      expect(stream.chunks).toHaveLength(1); // server_info only
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const handler = (streamRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/pending").route.stack[0].handle;
+      const replay = fakeResponse("session");
+      handler({ params: { id: CHAT }, headers }, replay.res);
+      expect(replay.state.body).toMatchObject({ pending: { toolName, requestId: identity, humanOnly: true } });
+    } finally {
+      stream.close();
+    }
+  }
+  respond("session");
+  await expect(approval).resolves.toMatchObject({ approved: true });
+});
+it.each([false, true])("attachment (capable=%s) preserves ordinary REST replies and forwards future prompts", async (capable) => {
+  const { handshakeHeaders } = await import("shared/types/index.js");
+  liveChat();
+  const resolve = vi.fn();
+  pendingRequests.set(CHAT, { toolName: "Bash", input: {}, eventType: "permission_request", eventData: { toolName: "Bash", input: {} }, resolve });
+  const headers = capable ? Object.fromEntries(Object.entries(handshakeHeaders()).map(([key, value]) => [key.toLowerCase(), value])) : {};
+  const stream = attachStream(headers);
+  try {
+    expect(stream.chunks).toHaveLength(1); // no duplicate/reset of the REST card
+    expect(respond("bearer")).toMatchObject({ status: 200 });
+    expect(resolve).toHaveBeenCalled();
+    sessionRegistry.get(CHAT)!.emitter!.emit("event", { type: "user_question", questions: [{ question: "Next question" }], content: "" });
+    expect(stream.chunks.join("")).toContain("Next question");
+  } finally {
+    stream.close();
+  }
+});
+it("a prompt created synchronously while subscribing is recovered after subscription", async () => {
+  liveChat();
+  const emitter = sessionRegistry.get(CHAT)!.emitter!;
+  let approval: ReturnType<typeof requestHumanApproval> | undefined;
+  emitter.once("newListener", () => {
+    approval = requestHumanApproval(CHAT, { toolName: controlTools[0], input: {} });
+  });
+  const stream = attachStream();
+  try {
+    expect(stream.chunks.join("")).toContain("Reload this Callboard tab");
+    expect(hasPendingRequest(CHAT)).toBe(true);
+  } finally {
+    stream.close();
+    respond("session");
+    await approval;
+  }
 });

@@ -559,7 +559,7 @@ streamRouter.get("/:id/stream", (req, res) => {
   const chatId = req.params.id;
   const session = getActiveSession(chatId);
 
-  beginSSE(req, res);
+  const client = beginSSE(req, res);
 
   // If there's an active web session, connect to it
   if (session) {
@@ -571,6 +571,16 @@ streamRouter.get("/:id/stream", (req, res) => {
       stopHeartbeat();
       session.emitter.removeListener("event", onEvent);
     });
+    // Subscribe before inspecting pending state, without an await gap: a
+    // prompt produced before subscription is recovered here; one produced
+    // afterward is delivered live. Old bundles ignore /pending.reloadRequired,
+    // so their existing message_error reader must receive the migration notice
+    // even when this chat was blocked before the tab connected. Capable clients
+    // and ordinary prompts retain REST replay (no duplicate/reset of answers).
+    const pending = getPendingRequest(chatId);
+    if (pending && requiresPromptReload(pending.eventData, client)) {
+      sendSSE(res, { type: pending.eventType, ...pending.eventData });
+    }
     return;
   }
 
