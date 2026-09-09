@@ -829,7 +829,8 @@ describe("live preview image readiness", () => {
         fireEvent.load(images[1]);
       });
     await act(async () => {
-      resolveDecode();
+      // Cleanup can cancel local image loading before decode ever starts.
+      resolveDecode?.();
     });
     if (mode === "pause") {
       expect(screen.getByRole("img").getAttribute("src")).toBe(source(observation));
@@ -837,6 +838,7 @@ describe("live preview image readiness", () => {
       fireEvent.click(button("Enter"));
       expect(client.action).not.toHaveBeenCalled();
       autoLoad = true;
+      decodeImage.mockReset().mockResolvedValue(undefined);
       fireEvent.click(button("Refresh screenshot"));
       await waitFor(() => expect(manualInput().disabled).toBe(false));
     } else {
@@ -910,6 +912,282 @@ describe("live preview image readiness", () => {
     expect(manualInput().disabled).toBe(true);
     expect(button("Stop").disabled).toBe(false);
   });
+
+  it.each((["capture", "load", "decode"] as const).flatMap((phase) => (["preview", "refresh"] as const).map((mode) => ({ phase, mode }))))(
+    "times out a stalled $phase on a second $mode run",
+    async ({ phase, mode }) => {
+      const { view } = await setup("native");
+      // The first preview works, then is paused with its last frame retained.
+      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+      await waitFor(() => expect(images).toHaveLength(2));
+      await waitFor(() => expect(manualInput().disabled).toBe(false));
+      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+
+      let release!: () => void;
+      vi.mocked(client.observe).mockResolvedValue(next);
+      if (phase === "capture")
+        vi.mocked(client.observe).mockReturnValueOnce(
+          new Promise((resolve) => {
+            release = () => resolve(next);
+          }),
+        );
+      if (phase === "load") {
+        autoLoad = false;
+        release = () => fireEvent.load(images[2]);
+      }
+      if (phase === "decode")
+        decodeImage.mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              release = resolve;
+            }),
+        );
+      vi.useFakeTimers();
+      try {
+        fireEvent.click(mode === "preview" ? screen.getByRole("checkbox", { name: /Live preview/ }) : button("Refresh screenshot"));
+        await act(async () => {});
+        if (mode === "preview") expect(screen.getByRole("img").getAttribute("src")).toBe(source(observation));
+        else expect(screen.queryByRole("img")).toBeNull();
+        expect(manualInput().disabled).toBe(true);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(36_000);
+        });
+        expect(screen.queryByRole("img")).toBeNull();
+        expect(screen.getByRole("alert").textContent).toMatch(/timed out/i);
+        expect((screen.getByRole("checkbox", { name: /Live preview/ }) as HTMLInputElement).checked).toBe(false);
+        expect(button("Stop").disabled).toBe(false);
+        expect(button("Refresh screenshot").disabled).toBe(false);
+        expect(client.observe).toHaveBeenCalledTimes(3); // No overlapping accepted captures.
+
+        await act(async () => release());
+        expect(screen.queryByRole("img")).toBeNull(); // A late success cannot revive the first run.
+        autoLoad = true;
+        vi.mocked(client.observe).mockResolvedValue(third);
+        fireEvent.click(button("Refresh screenshot"));
+        await act(async () => {});
+        expect(screen.getByRole("img").getAttribute("src")).toBe(source(third));
+        expect(manualInput().disabled).toBe(false);
+      } finally {
+        view.unmount();
+        await act(async () => release());
+      }
+    },
+  );
+
+  it.each([
+    ["Confirm request", "approve"],
+    ["Deny request", "revoke"],
+  ] as const)("dispatches %s independently of the selected session's pending capture", async (label, operation) => {
+    const { view, readStatus } = await setup("native");
+    status.sessions.push({ id: "request", kind: "native", state: "pending", controller: null, generation: 0 });
+    await act(async () => {
+      await readStatus();
+    });
+    vi.mocked(client.control).mockResolvedValue(undefined);
+    let release!: () => void;
+    vi.mocked(client.observe).mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = () => resolve(next);
+      }),
+    );
+    try {
+      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+      await waitFor(() => expect(client.observe).toHaveBeenCalledTimes(2));
+      fireEvent.click(button(label));
+      await waitFor(() => expect(client.control).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(client.control).mock.calls[0].slice(0, 4)).toEqual(["c1", "request", operation, 0]);
+      await waitFor(() => expect(button("Retry status").disabled).toBe(false));
+      await act(async () => release());
+      expect(screen.queryByRole("img")).toBeNull();
+      expect(manualInput().disabled).toBe(true);
+    } finally {
+      view.unmount();
+      await act(async () => release());
+    }
+  });
+
+  it.each(["Refresh screenshot", "Resume agent"])("abandons a timed-out %s barrier without dispatching it later", async (operation) => {
+    const { view } = await setup("native");
+    let release!: () => void;
+    vi.mocked(client.observe).mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = () => resolve(next);
+      }),
+    );
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+      await act(async () => {});
+      fireEvent.click(button(operation));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(36_000);
+      });
+      expect(screen.getByRole("alert").textContent).toMatch(/timed out/i);
+      expect(button(operation).disabled).toBe(false);
+      expect(client.control).not.toHaveBeenCalled();
+      expect(client.observe).toHaveBeenCalledTimes(2);
+      expect(manualInput().disabled).toBe(true);
+      await act(async () => release());
+      expect(client.control).not.toHaveBeenCalled();
+      expect(client.observe).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("img")).toBeNull();
+    } finally {
+      view.unmount();
+      await act(async () => release());
+    }
+  });
+
+  it("cancels a paused queued preview while a restarted preview waits for the raw response", async () => {
+    const { view } = await setup("native");
+    let release!: () => void;
+    vi.mocked(client.observe).mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = () => resolve(next);
+      }),
+    );
+    vi.useFakeTimers();
+    try {
+      const preview = screen.getByRole("checkbox", { name: /Live preview/ });
+      fireEvent.click(preview);
+      await act(async () => {});
+      fireEvent.click(preview); // Abandon presentation, not the accepted capture.
+      fireEvent.click(preview); // Queue behind it.
+      await act(async () => {});
+      fireEvent.click(preview); // This queued capture must never dispatch.
+      fireEvent.click(preview);
+      await act(async () => {});
+      expect(client.observe).toHaveBeenCalledTimes(2);
+      expect(manualInput().disabled).toBe(true);
+      expect(screen.getByRole("img").getAttribute("src")).toBe(source(observation));
+      vi.mocked(client.observe).mockResolvedValue(third);
+      await act(async () => release());
+      expect(client.observe).toHaveBeenCalledTimes(3);
+      expect(screen.getByRole("img").getAttribute("src")).toBe(source(third));
+      expect(manualInput().disabled).toBe(false);
+      expect(screen.queryByRole("alert")).toBeNull();
+    } finally {
+      view.unmount();
+      await act(async () => release());
+    }
+  });
+
+  it("keeps accepted captures serialized after timeout, but never blocks Retry status or dispatches expired queued previews", async () => {
+    const { view } = await setup("native");
+    let release!: () => void;
+    vi.mocked(client.observe).mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = () => resolve(next);
+      }),
+    );
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(36_000);
+      });
+      expect(screen.getByRole("alert").textContent).toMatch(/timed out/i);
+      expect(vi.mocked(client.observe).mock.calls[1][2]?.aborted).toBe(false);
+
+      const reads = vi.mocked(client.status).mock.calls.length;
+      fireEvent.click(button("Retry status"));
+      await act(async () => {});
+      expect(client.status).toHaveBeenCalledTimes(reads + 1);
+      expect(button("Retry status").disabled).toBe(false);
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // A second preview cannot overtake that accepted capture. It must time out
+      // locally without ever dispatching, even after the first response arrives.
+      fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(36_000);
+      });
+      expect(screen.getByRole("alert").textContent).toMatch(/timed out/i);
+      expect(client.observe).toHaveBeenCalledTimes(2);
+      await act(async () => release());
+      expect(client.observe).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("img")).toBeNull();
+
+      vi.mocked(client.observe).mockResolvedValue(third);
+      fireEvent.click(button("Refresh screenshot"));
+      await act(async () => {});
+      expect(screen.getByRole("img").getAttribute("src")).toBe(source(third));
+      expect(manualInput().disabled).toBe(false);
+    } finally {
+      view.unmount();
+      await act(async () => release());
+    }
+  });
+});
+
+it.each(["stop", "revoke"] as const)("can enable a second desktop after %s without waiting for the first run's capture response", async (operation) => {
+  status.capabilities[1].available = true;
+  status.sessions[0].kind = "native";
+  vi.mocked(client.control).mockImplementation(async (_chat, id) => {
+    const session = status.sessions.find((item) => item.id === id)!;
+    session.state = operation === "stop" ? "stopped" : "revoked";
+    session.controller = null;
+    session.generation++;
+    return structuredClone(session);
+  });
+  vi.mocked(client.open).mockImplementation(async () => {
+    const session = { id: "s2", kind: "native" as const, state: "ready", controller: "agent" as const, generation: 1 };
+    status.sessions.push(session);
+    return { session };
+  });
+  const second = { ...observation, frame: { ...observation.frame, data: "AQ==" } };
+  const third = { ...observation, frame: { ...observation.frame, data: "Ag==" } };
+  let release!: () => void;
+  const view = render(<Viewer chatId={`native-rerun-${operation}`} permission="allow" />);
+  try {
+    await ready();
+    fireEvent.change(screen.getByLabelText("Target"), { target: { value: "native" } });
+    fireEvent.click(button("Refresh screenshot"));
+    await screen.findByRole("img");
+    await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
+    vi.mocked(client.observe).mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = () => resolve(observation);
+      }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await waitFor(() => expect(client.observe).toHaveBeenCalledTimes(2));
+    // The server has stopped the target; delivery of its old HTTP capture response
+    // is still held. A new session must not depend on that old transport settling.
+    fireEvent.click(button(operation === "stop" ? "Stop" : "Revoke"));
+    await waitFor(() => expect(button("Stop").disabled).toBe(true));
+    await waitFor(() => expect(button("Enable").disabled).toBe(false));
+    fireEvent.click(button("Enable"));
+    await waitFor(() => expect(client.open).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button("Refresh screenshot").disabled).toBe(false));
+    expect((screen.getByLabelText("Session") as HTMLSelectElement).value).toBe("s2");
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(client.observe).toHaveBeenCalledTimes(2); // Enable never opts into capture.
+
+    vi.mocked(client.observe).mockResolvedValue(second);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await waitFor(() => expect(screen.getByRole("img").getAttribute("src")).toBe("data:image/png;base64,AQ=="));
+    await act(async () => release());
+    expect(screen.getByRole("img").getAttribute("src")).toBe("data:image/png;base64,AQ==");
+    vi.useFakeTimers();
+    // Restart with fake timers so the next live frame is deterministic.
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Live preview/ }));
+    await act(async () => {});
+    vi.mocked(client.observe).mockResolvedValue(third);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(screen.getByRole("img").getAttribute("src")).toBe("data:image/png;base64,Ag==");
+    expect(
+      vi
+        .mocked(client.observe)
+        .mock.calls.slice(2)
+        .every(([, id]) => id === "s2"),
+    ).toBe(true);
+  } finally {
+    view.unmount();
+    if (release) await act(async () => release());
+  }
 });
 
 // jsdom lacks the native top-layer implementation; actual isolation/geometry is
