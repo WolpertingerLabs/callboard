@@ -23,9 +23,21 @@
             "optional": false,
             "type": "string"
           },
+          "controlRequest": {
+            "optional": true,
+            "type": "boolean"
+          },
+          "controlRequestResult": {
+            "optional": true,
+            "type": "{ requestId?: string; message: string }"
+          },
           "costUsd": {
             "optional": true,
             "type": "number"
+          },
+          "humanOnly": {
+            "optional": true,
+            "type": "boolean"
           },
           "input": {
             "optional": true,
@@ -44,6 +56,10 @@
             "type": "unknown[]"
           },
           "reason": {
+            "optional": true,
+            "type": "string"
+          },
+          "requestId": {
             "optional": true,
             "type": "string"
           },

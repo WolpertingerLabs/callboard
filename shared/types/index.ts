@@ -201,7 +201,7 @@ export type {
 } from "./jobs.js";
 
 export * from "./reasoning.js";
-export { CU_ACTION_TOOL_NAME } from "./computerUse.js";
+export { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "./computerUse.js";
 export type {
   ComputerUseKind,
   ComputerUseCapability,

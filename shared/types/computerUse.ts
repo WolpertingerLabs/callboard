@@ -21,6 +21,9 @@ import type { PermissionLevel } from "./permissions.js";
  */
 export const CU_ACTION_TOOL_NAME = "mcp__computer_use__cu_action";
 
+/** Only host-issued human-only prompts with this exact name may render the enablement security card. */
+export const CU_REQUEST_CONTROL_TOOL_NAME = "mcp__computer_use__cu_request_control";
+
 /** Callboard HTTP viewer DTOs. Driver/package types stay outside shared. */
 export type ComputerUseKind = "browser" | "native";
 export interface ComputerUseCapability {

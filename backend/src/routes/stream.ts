@@ -368,7 +368,7 @@ streamRouter.post("/new/message", async (req, res) => {
           ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
         });
       } else {
-        sendSSE(res, { type: "message_update" });
+        sendSSE(res, { type: "message_update", ...(event.controlRequestResult && { controlRequestResult: event.controlRequestResult }) });
       }
     };
 
@@ -802,7 +802,7 @@ streamRouter.post("/:id/activity/:activityId/release", (req, res) => {
 });
 
 // Respond to a pending permission/question/plan request
-streamRouter.post("/:id/respond", (req, res) => {
+streamRouter.post("/:id/respond", async (req, res) => {
   // #swagger.tags = ['Stream']
   // #swagger.summary = 'Respond to pending request'
   // #swagger.description = 'Respond to a pending permission, user question, or plan review request.'
@@ -815,6 +815,7 @@ streamRouter.post("/:id/respond", (req, res) => {
           type: "object",
           properties: {
             allow: { type: "boolean", description: "Whether to allow the permission" },
+            requestId: { type: "string", description: "Current server-issued prompt identity; required for human-only confirmations" },
             updatedInput: { type: "string", description: "Updated input for the tool (optional)" },
             updatedPermissions: { type: "object", description: "Updated permissions (optional)" }
           }
@@ -824,8 +825,10 @@ streamRouter.post("/:id/respond", (req, res) => {
   } */
   /* #swagger.responses[200] = { description: "Response accepted" } */
   /* #swagger.responses[403] = { description: "This prompt requires a signed-in, same-origin human session (computer-control confirmations)" } */
+  /* #swagger.responses[409] = { description: "Missing or stale human-only request identity; prompt was not consumed" } */
   /* #swagger.responses[404] = { description: "No pending request" } */
-  const { allow, updatedInput, updatedPermissions } = req.body;
+  const { allow, updatedInput, updatedPermissions, requestId } = req.body ?? {};
+  if (typeof allow !== "boolean") return res.status(400).json({ error: "allow must be a boolean" });
   if (!hasPendingRequest(req.params.id)) {
     return res.status(404).json({ error: "No pending request" });
   }
@@ -842,13 +845,17 @@ streamRouter.post("/:id/respond", (req, res) => {
       return res.status(403).json({ error: "This confirmation requires a logged-in session, not an API key.", code: "denied" });
     }
     // Belt to the SameSite=strict cookie's braces, and the same check the
-    // Enable/approve endpoint makes. Anyone who can reach this prompt has
-    // already passed it there to enable the target, so it adds no new way to
-    // be locked out.
+    // Enable/approve endpoint makes. In-chat initial enablement and per-action
+    // confirmations must retain the same authenticated-human boundary.
     const originError = controlOriginError(req);
     if (originError) return res.status(403).json({ error: originError, code: "denied" });
   }
-  const result = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions);
+  const result = respondToPermission(req.params.id, allow, updatedInput, updatedPermissions, requestId);
+  if (!result.ok) return res.status(409).json({ error: "This prompt changed or expired. Refresh the pending request before answering." });
+  if (result.completion) {
+    const completed = await result.completion;
+    if (!completed.ok) return res.status(409).json({ ok: false, error: completed.error });
+  }
   res.json({ ok: result.ok, toolName: result.toolName });
 });
 

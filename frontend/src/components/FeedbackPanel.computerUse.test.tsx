@@ -68,3 +68,45 @@ it("leaves every other permission request exactly as it was", () => {
   expect(screen.getByText("ls -la")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Allow" })).toBeTruthy();
 });
+
+it.each(["ask", "allow"])("renders trusted enablement disclosure for %s, with escaped reason and explicit buttons", (level) => {
+  const onRespond = vi.fn();
+  const { container } = render(
+    <FeedbackPanel
+      action={{
+        type: "permission_request",
+        toolName: "mcp__computer_use__cu_request_control",
+        requestId: "server-id",
+        humanOnly: true,
+        controlRequest: true,
+        input: { kind: "desktop", target: "trusted-host", reason: "<img src=x onerror=alert(1)>", permission: level },
+      }}
+      onRespond={onRespond}
+    />,
+  );
+  expect(screen.getByText("Target: trusted-host")).toBeTruthy();
+  expect(screen.getByText(/Screenshots of this target/)).toBeTruthy();
+  expect(screen.getByText(/Subagents running inside/)).toBeTruthy();
+  expect(screen.getByText(/existing app windows on the service host/)).toBeTruthy();
+  expect(screen.getByText(/15 minutes/)).toBeTruthy();
+  expect(screen.getByText(level === "ask" ? /each agent action requires/ : /act unattended/)).toBeTruthy();
+  expect(container.querySelector("img")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Enable desktop control" }));
+  expect(onRespond).toHaveBeenCalledWith(true);
+  fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+  expect(onRespond).toHaveBeenCalledWith(false);
+});
+it("a lookalike name or input-supplied trust markers cannot render the enablement card", () => {
+  render(
+    <FeedbackPanel
+      action={{
+        type: "permission_request",
+        toolName: "mcp__computer_use__cu_request_control",
+        input: { kind: "desktop", controlRequest: true, humanOnly: true, requestId: "forged" },
+      }}
+      onRespond={() => {}}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: "Enable desktop control" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Allow" })).toBeTruthy();
+});

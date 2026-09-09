@@ -264,6 +264,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // button stays in this state until the run's terminal event arrives (or the
   // confirmation deadline passes), so it never claims a cancel it hasn't got.
   const [stopping, setStopping] = useState(false);
+  const [responseError, setResponseError] = useState("");
+  const [controlNotice, setControlNotice] = useState("");
+  const respondingRef = useRef(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   // What this chat is blocked on right now — a wait countdown, a delegated
   // session, an open condition watch. Fetched rather than streamed: the
@@ -980,6 +983,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 return;
               }
 
+              if (event.controlRequestResult) {
+                const result = event.controlRequestResult;
+                setControlNotice(result.message);
+                if (result.requestId) setPendingAction((value) => (value?.requestId === result.requestId ? null : value));
+              }
+
               if (event.type === "message_complete") {
                 if (currentIdRef.current !== streamChatId) return;
                 setCompacting(false);
@@ -1179,6 +1188,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 setPendingAction({
                   type: event.type,
                   toolName: event.toolName,
+                  requestId: event.requestId,
+                  humanOnly: event.humanOnly,
+                  controlRequest: event.controlRequest,
                   input: event.input,
                   questions: event.questions,
                   suggestions: event.suggestions,
@@ -2201,11 +2213,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     acknowledgeBranchDriftRef.current = false;
   }, [branchDriftConfirm, handleSend]);
 
+  useEffect(() => {
+    setResponseError("");
+    setControlNotice("");
+  }, [id]);
+
   const handleRespond = useCallback(
     async (allow: boolean, updatedInput?: Record<string, unknown>) => {
       const wasReconnect = !abortRef.current; // no active SSE = page was refreshed
       const currentAction = pendingAction; // Capture before clearing
-      setPendingAction(null);
+      if (respondingRef.current) return;
+      setResponseError("");
 
       // Use id if available, fall back to tempChatIdRef for new chat mode
       const chatId = id || tempChatIdRef.current;
@@ -2214,6 +2232,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Stale plan review: no live backend session to resolve, so start a new
       // conversation turn with an appropriate message instead
       if (currentAction?.stale && currentAction.type === "plan_review") {
+        setPendingAction(null);
         if (allow) {
           handleSend("Proceed with the plan.");
         } else {
@@ -2222,7 +2241,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         return;
       }
 
-      const result = await respondToChat(chatId, allow, updatedInput);
+      respondingRef.current = true;
+      let result;
+      try {
+        result = await respondToChat(chatId, allow, updatedInput, undefined, currentAction?.requestId);
+        if (currentIdRef.current !== id) return;
+        if (!result.ok) {
+          setResponseError(result.error || "This prompt changed or expired. Refresh the pending request before answering.");
+          return;
+        }
+        setPendingAction((value) => (value === currentAction ? null : value));
+      } catch (error) {
+        if (currentIdRef.current !== id) return;
+        setResponseError(error instanceof Error ? error.message : "Could not submit the answer. Retry.");
+        return;
+      } finally {
+        respondingRef.current = false;
+      }
 
       // Track if this was an ExitPlanMode approval - the SDK conversation may end
       // after plan approval, so we need to auto-send a continuation message
@@ -3611,6 +3646,30 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         </div>
       )}
 
+      {controlNotice && (
+        <div role="status" style={{ padding: 12 }}>
+          {controlNotice}
+          <button onClick={() => setControlNotice("")}>Dismiss</button>
+        </div>
+      )}
+      {responseError && (
+        <div role="alert" style={{ padding: 12 }}>
+          {responseError}
+          <button
+            onClick={async () => {
+              try {
+                const chatId = id || tempChatIdRef.current;
+                if (chatId) setPendingAction(await getPending(chatId));
+                setResponseError("");
+              } catch {
+                setResponseError("Could not refresh the pending request. Retry.");
+              }
+            }}
+          >
+            Refresh pending request
+          </button>
+        </div>
+      )}
       {pendingAction && <FeedbackPanel action={pendingAction} onRespond={handleRespond} agentName={providerDisplayName} />}
       {/* Wrap the composer in a positioned container so the model/effort
           popover can anchor to the composer's edges (not the hamburger menu

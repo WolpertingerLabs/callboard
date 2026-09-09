@@ -42,7 +42,7 @@ const hosts: ComputerUseHost[] = [];
 afterEach(async () => {
   await Promise.all(hosts.splice(0).map((host) => host.dispose()));
   sessionRegistry.unregister(CHAT);
-  respondToPermission(CHAT, false);
+  respondToPermission(CHAT, false, undefined, undefined, getPendingRequest(CHAT)?.requestId);
 });
 
 /** A chat whose every other permission axis is "allow" — the maximum a user can grant. */
@@ -130,7 +130,7 @@ it('a chat with computerControl "ask" cannot perform a GUI action without an exp
   expect(JSON.stringify(input)).not.toContain(opened.id);
 
   // Only the human's answer, arriving by the route the UI posts to, releases it.
-  expect(respondToPermission(CHAT, true)).toEqual({ ok: true, toolName: CU_ACTION_TOOL_NAME });
+  expect(respondToPermission(CHAT, true, undefined, undefined, getPendingRequest(CHAT)?.requestId)).toEqual({ ok: true, toolName: CU_ACTION_TOOL_NAME });
   await expect(call).resolves.toEqual({ done: true });
   expect(execute).toHaveBeenCalledOnce();
 });
@@ -142,7 +142,7 @@ it('a chat with computerControl "ask" reports the human\'s refusal as a refusal,
 
   const call = host.requestAgentAction(CHAT, opened.id, opened.generation, frameId, { type: "click", x: 10, y: 20 }, execute);
   await vi.waitFor(() => expect(hasPendingRequest(CHAT)).toBe(true));
-  expect(respondToPermission(CHAT, false)).toMatchObject({ ok: true });
+  expect(respondToPermission(CHAT, false, undefined, undefined, getPendingRequest(CHAT)?.requestId)).toMatchObject({ ok: true });
 
   await expect(call).rejects.toMatchObject({ code: "denied", message: expect.stringContaining("Do not repeat it") });
   expect(execute).not.toHaveBeenCalled();
@@ -207,9 +207,9 @@ it('a chat with computerControl "deny" refuses the action outright, prompting no
 
 /**
  * The boundary that keeps `allow` sane, and the one thing the level never
- * governs. `cu_open` — the only enable-shaped tool the agent has — resolves to
+ * governs. `cu_open` resolves to
  * `host.status`, which lists what a human already started and grants nothing.
- * `open`/`approve` are reachable only through `routes/computer-use.ts`, which
+ * `cu_request_control` requires separate human consent. `open`/`approve` are reachable only through `routes/computer-use.ts`, which
  * is `requireSessionAuth` + same-origin.
  */
 it.each(["allow", "ask", "deny"] as const)('an agent cannot enable a target under computerControl "%s"', async (level) => {

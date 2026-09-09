@@ -46,12 +46,12 @@ const CHAT = "respond-auth-chat";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const respondHandler = (streamRouter as any).stack.find((layer: any) => layer.route?.path === "/:id/respond" && layer.route.methods.post).route.stack[0]
-  .handle as (req: Request, res: Response) => void;
+  .handle as (req: Request, res: Response) => Promise<unknown>;
 
 function fakeRequest(headers: Record<string, string>): Request {
   return {
     params: { id: CHAT },
-    body: { allow: true },
+    body: { allow: true, requestId: pendingRequests.get(CHAT)?.requestId },
     get: (name: string) => headers[name.toLowerCase()],
   } as unknown as Request;
 }
@@ -141,4 +141,59 @@ it("still lets an API key answer an ordinary tool permission, from anywhere", as
 
   expect(respond("bearer", { origin: "http://somewhere.else", host: "localhost:8000" })).toMatchObject({ status: 200, body: { ok: true, toolName: "Bash" } });
   await expect(answered).resolves.toMatchObject({ behavior: "allow" });
+});
+
+it("requires a matching identity and boolean without consuming a human prompt", async () => {
+  liveChat();
+  const approval = requestHumanApproval(CHAT, { toolName: "mcp__computer_use__cu_request_control", input: { kind: "browser" } });
+  for (const body of [{ allow: true }, { allow: true, requestId: "stale-id" }, { allow: "true", requestId: pendingRequests.get(CHAT)?.requestId }]) {
+    const req = fakeRequest(sameOrigin);
+    req.body = body;
+    const { res, state } = fakeResponse("session");
+    respondHandler(req, res);
+    expect(state.status).toBe(body.allow === "true" ? 400 : 409);
+    expect(hasPendingRequest(CHAT)).toBe(true);
+  }
+  expect(respond("session").status).toBe(200);
+  await expect(approval).resolves.toMatchObject({ approved: true });
+});
+
+it("a stale tab cannot answer a replacement prompt and a second tab cannot redeem an answer twice", async () => {
+  liveChat();
+  const first = requestHumanApproval(CHAT, { toolName: "first", input: {} });
+  const oldRequest = fakeRequest(sameOrigin);
+  expect(respond("session").status).toBe(200);
+  await first;
+  const second = requestHumanApproval(CHAT, { toolName: "second", input: {} });
+  const { res, state } = fakeResponse("session");
+  respondHandler(oldRequest, res);
+  expect(state.status).toBe(409);
+  expect(hasPendingRequest(CHAT)).toBe(true);
+  expect(respond("session").status).toBe(200);
+  await second;
+  expect(respond("session").status).toBe(404);
+});
+
+it.each([true, false])("respond waits for actual host startup (success=%s), without serializing the completion promise", async (ok) => {
+  liveChat();
+  let complete!: (result: { ok: boolean; error?: string }) => void;
+  const completion = new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    complete = resolve;
+  });
+  const approval = requestHumanApproval(CHAT, {
+    toolName: "mcp__computer_use__cu_request_control",
+    controlRequest: true,
+    input: { kind: "browser" },
+    completion,
+  });
+  const { getPendingRequest } = await import("../services/pending-requests.js");
+  expect(getPendingRequest(CHAT)).not.toHaveProperty("completion");
+  const { res, state } = fakeResponse("session");
+  const response = respondHandler(fakeRequest(sameOrigin), res);
+  await expect(approval).resolves.toMatchObject({ approved: true });
+  expect(state.body).toBeUndefined();
+  complete(ok ? { ok: true } : { ok: false, error: "Startup failed; request fresh consent" });
+  await response;
+  expect(state.status).toBe(ok ? 200 : 409);
+  expect(state.body).toMatchObject(ok ? { ok: true } : { ok: false, error: "Startup failed; request fresh consent" });
 });

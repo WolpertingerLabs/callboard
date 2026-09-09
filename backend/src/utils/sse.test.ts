@@ -272,3 +272,32 @@ describe("legacy client (no handshake) is unaffected", () => {
     expect(complete).toEqual({ type: "message_complete", reason: "max_turns", costUsd: 0.5, maxBudgetUsd: 5, objectiveComplete: true });
   });
 });
+
+it("forwards trusted prompt identity and outcome without inventing a new wire event type", () => {
+  const f = fakeResponse();
+  const emitter = new EventEmitter();
+  const handler = createSSEHandler(f.res, emitter);
+  handler({
+    type: "permission_request",
+    content: "",
+    toolName: "mcp__computer_use__cu_request_control",
+    requestId: "issued",
+    humanOnly: true,
+    controlRequest: true,
+    input: { kind: "browser" },
+  });
+  handler({ type: "tool_result", content: "", controlRequestResult: { requestId: "issued", message: "Browser control enabled." } });
+  expect(parseAsFrontend(f.chunks)).toEqual([
+    {
+      type: "permission_request",
+      content: "",
+      toolName: "mcp__computer_use__cu_request_control",
+      requestId: "issued",
+      humanOnly: true,
+      controlRequest: true,
+      input: { kind: "browser" },
+    },
+    { type: "message_update", controlRequestResult: { requestId: "issued", message: "Browser control enabled." } },
+  ]);
+  expect(f.ended).toBe(false);
+});

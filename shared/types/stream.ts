@@ -70,6 +70,11 @@ export interface StreamEvent {
     | "nudge"
     | "auto_recovery";
   content: string;
+  /** Host enablement outcome, forwarded on message_update; old clients safely ignore it. */
+  controlRequestResult?: { requestId?: string; message: string };
+  requestId?: string;
+  humanOnly?: boolean;
+  controlRequest?: boolean;
   toolName?: string;
   /**
    * Where the tool executed — "openrouter_server" for OpenRouter server

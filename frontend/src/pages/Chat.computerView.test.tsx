@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import Chat from "./Chat";
 import { computerUseClient as client } from "../api/computerUse";
-import { stopChat } from "../api";
+import { stopChat, getPending, respondToChat } from "../api";
 
 const fixture = vi.hoisted(() => ({ native: false, active: { type: "web" } }));
 vi.mock("../api/computerUse", async (importOriginal) => ({
@@ -47,6 +47,7 @@ const mount = (path = "/chat/c1") =>
   );
 beforeEach(() => {
   fixture.native = false;
+  vi.mocked(getPending).mockResolvedValue(null);
   Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
   Element.prototype.scrollTo = vi.fn();
   Element.prototype.scrollIntoView = vi.fn();
@@ -233,5 +234,83 @@ it.each([390, 1200])("keeps pending unused Stop visible after switching to Chat 
   expect(screen.queryByRole("alert")).toBeNull();
   expect(client.control).not.toHaveBeenCalled();
   expect(client.open).not.toHaveBeenCalled();
+  expect(client.observe).not.toHaveBeenCalled();
+});
+
+const enablePrompt = {
+  type: "permission_request",
+  toolName: "mcp__computer_use__cu_request_control",
+  requestId: "enable-server-id",
+  humanOnly: true,
+  controlRequest: true,
+  input: { kind: "browser", target: "service-host", reason: "Check the page", permission: "ask" },
+};
+it("replays in-chat enablement after refresh, preserves composer draft and view, and retains failed approvals for retry", async () => {
+  vi.mocked(getPending).mockResolvedValue(enablePrompt);
+  vi.mocked(respondToChat).mockResolvedValueOnce({ ok: false, error: "This prompt changed" }).mockResolvedValueOnce({ ok: true });
+  mount();
+  const enable = await screen.findByRole("button", { name: "Enable browser control" });
+  const composer = screen.getByLabelText("Composer") as HTMLTextAreaElement;
+  fireEvent.change(composer, { target: { value: "my unfinished draft" } });
+  fireEvent.click(enable);
+  await screen.findByRole("alert");
+  expect(screen.getByRole("button", { name: "Enable browser control" })).toBeTruthy();
+  expect(respondToChat).toHaveBeenCalledWith("c1", true, undefined, undefined, "enable-server-id");
+  expect(screen.queryByLabelText("Target")).toBeNull();
+  expect(composer.value).toBe("my unfinished draft");
+  fireEvent.click(enable);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Enable browser control" })).toBeNull());
+  expect(composer.value).toBe("my unfinished draft");
+  expect(client.open).not.toHaveBeenCalled();
+  expect(client.observe).not.toHaveBeenCalled();
+});
+it("network failure keeps consent visible and refresh replaces a stale card without approving it", async () => {
+  vi.mocked(getPending).mockResolvedValue(enablePrompt);
+  vi.mocked(respondToChat).mockRejectedValueOnce(new Error("Network offline"));
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Enable browser control" }));
+  await screen.findByText(/Network offline/);
+  vi.mocked(getPending).mockResolvedValue({ ...enablePrompt, requestId: "replacement", input: { ...enablePrompt.input, reason: "New reason" } });
+  fireEvent.click(screen.getByRole("button", { name: "Refresh pending request" }));
+  await screen.findByText("New reason");
+  expect(respondToChat).toHaveBeenCalledTimes(1);
+});
+it("SSE renders the trusted card and the actual creation failure without changing view or losing draft", async () => {
+  let emit!: (event: unknown) => void;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if (!String(_url).endsWith("/stream")) return { ok: true, json: async () => ({}) };
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          emit = (event) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+          init?.signal?.addEventListener("abort", () => {
+            try {
+              controller.close();
+            } catch {
+              /* already closed */
+            }
+          });
+        },
+      });
+      return { ok: true, body };
+    }),
+  );
+  mount();
+  await waitFor(() => expect(emit).toBeDefined());
+  const composer = screen.getByLabelText("Composer") as HTMLTextAreaElement;
+  fireEvent.change(composer, { target: { value: "retain this draft" } });
+  act(() => emit(enablePrompt));
+  await screen.findByRole("button", { name: "Enable browser control" });
+  act(() =>
+    emit({
+      type: "message_update",
+      controlRequestResult: { requestId: "enable-server-id", message: "Target is no longer available. Fix host setup before retrying." },
+    }),
+  );
+  await screen.findByText(/Target is no longer available/);
+  expect(screen.queryByRole("button", { name: "Enable browser control" })).toBeNull();
+  expect(screen.queryByLabelText("Target")).toBeNull();
+  expect(composer.value).toBe("retain this draft");
   expect(client.observe).not.toHaveBeenCalled();
 });

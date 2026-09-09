@@ -568,14 +568,16 @@ export async function respondToChat(
   allow: boolean,
   updatedInput?: Record<string, unknown>,
   updatedPermissions?: unknown[],
-): Promise<{ ok: boolean; toolName?: string }> {
+  requestId?: string,
+): Promise<{ ok: boolean; toolName?: string; error?: string }> {
   const res = await fetch(`${BASE}/chats/${id}/respond`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allow, updatedInput, updatedPermissions }),
+    body: JSON.stringify({ allow, updatedInput, updatedPermissions, requestId }),
   });
   if (!res.ok) {
-    return { ok: false };
+    const body = await res.json().catch(() => ({}));
+    return { ok: false, error: body.error || "Could not answer this prompt. Retry or refresh the pending request." };
   }
   return res.json();
 }

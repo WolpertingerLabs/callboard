@@ -9,6 +9,7 @@ import { controlError, controlPrincipal, getComputerUseHost, isConfirmedFailure,
 interface TurnBinding {
   token: string;
   signal: AbortSignal;
+  cancel: () => void;
   getChatId: () => string;
 }
 const active = new Set<TurnBinding>();
@@ -17,9 +18,14 @@ function currentTurn(chatId: string): TurnBinding | undefined {
 }
 /** Fresh turn binding; resident custom-tool closures resolve current authority, not old grants. */
 export function beginComputerUseTurn(getChatId: () => string, signal: AbortSignal): () => void {
-  const binding = { token: randomUUID(), signal, getChatId };
+  const lifetime = new AbortController();
+  // A replacement turn fences old pending/starting calls even while its provider
+  // is still unwinding and has not run the previous cleanup callback yet.
+  for (const previous of active) if (previous.getChatId() === getChatId()) previous.cancel();
+  const binding = { token: randomUUID(), signal: AbortSignal.any([signal, lifetime.signal]), cancel: () => lifetime.abort(), getChatId };
   active.add(binding);
   return () => {
+    lifetime.abort();
     active.delete(binding);
     const chatId = getChatId();
     if (!currentTurn(chatId)) {
@@ -201,19 +207,37 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
       ),
       defineTool(
         "cu_open",
-        "Find an enabled session. A human must explicitly Enable the browser or desktop in this chat's Computer Control panel; this tool never grants access.",
+        "Find an enabled, agent-controlled session. If none exists, use cu_request_control for explicit human consent here in chat. This tool only lists sessions; it never grants access.",
         { kind: z.enum(["browser", "desktop"]) },
         async (input) => {
           try {
             const host = await getComputerUseHost();
             const state = await host.status(getChatId());
             return text({
-              sessions: state.sessions.filter((s) => s.kind === (input.kind === "desktop" ? "native" : "browser") && s.state === "ready"),
+              sessions: state.sessions.filter(
+                (s) => s.kind === (input.kind === "desktop" ? "native" : "browser") && s.state === "ready" && s.controller === "agent",
+              ),
               instruction:
-                "If there is no ready session, ask the human to Enable this target in the Computer Control panel. Browser scope does not grant desktop access.",
+                "If there is no ready session, use cu_request_control to ask the human to enable this target here in chat. Browser scope does not grant desktop access.",
             });
           } catch (error) {
             return failure(error, "cu_open", { chatId: getChatId() });
+          }
+        },
+      ),
+      defineTool(
+        "cu_request_control",
+        "Request initial human consent here in chat to enable managed browser or native desktop control. Always waits for the human, under Ask and Allow. Returns the enabled session only after creation succeeds. Denial is final; never retry a refusal. Does not change permissions or resume human-controlled sessions.",
+        { kind: z.enum(["browser", "desktop"]), reason: z.string().trim().min(1).max(500) },
+        async (input, context?: Context) => {
+          try {
+            const chatId = getChatId();
+            const turn = currentTurn(chatId);
+            if (!turn) throw controlError("cancelled", "No active authorized chat turn");
+            const signal = context?.signal ? AbortSignal.any([turn.signal, context.signal]) : turn.signal;
+            return text(await (await getComputerUseHost()).requestControl(chatId, input.kind, input.reason, signal));
+          } catch (error) {
+            return failure(error, "cu_request_control", { chatId: getChatId() });
           }
         },
       ),
@@ -286,6 +310,7 @@ export function buildComputerUseToolsSpec(getChatId: () => string): ToolServerSp
 export async function closeComputerUseConnections(): Promise<void> {
   const entries = [...connections.values()];
   connections.clear();
+  for (const turn of active) turn.cancel();
   active.clear();
   await Promise.allSettled(entries.map(async (entry) => (await entry).close()));
 }

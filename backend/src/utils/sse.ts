@@ -122,7 +122,7 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
         ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
       });
     } else {
-      sendSSE(res, { type: "message_update" });
+      sendSSE(res, { type: "message_update", ...(event.controlRequestResult && { controlRequestResult: event.controlRequestResult }) });
     }
   };
 
