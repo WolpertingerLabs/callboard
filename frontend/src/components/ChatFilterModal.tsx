@@ -131,11 +131,23 @@ function SwitchRow({
  * effect until Apply, so a half-typed regex never reshuffles the list.
  *
  * All of them but one: `showArchived` is a toggle button in the filter bar,
- * which commits on the click. It passes through here unedited.
+ * which commits on the click. This modal does not display it, and therefore
+ * must not write it — it reads the LIVE `viewOptions` prop on the way out
+ * rather than the `localView` snapshot, in both Apply and Reset All.
+ *
+ * That is not hypothetical tidiness. This modal is a sibling of the filter
+ * bar, not a child of it, and the overlay stops the mouse but not the
+ * keyboard: from the filters button, one Tab lands on the "Archived" toggle
+ * and Space commits it. `localView` was seeded at mount and never re-syncs, so
+ * an Apply after that would have handed back the stale `false` — reverting a
+ * change the user had just watched take effect, from a dialog with no archived
+ * control in it. A focus trap would hide that particular route; it would not
+ * stop the modal from writing a value it doesn't show.
  *
  * The caller mounts this only while it is open, which is what makes the
- * `useState(prop)` seeding correct: every open starts from the live values, so
- * Cancel genuinely discards instead of leaving edits staged for next time.
+ * `useState(prop)` seeding correct FOR THE CONTROLS IT OWNS: every open starts
+ * from the live values, so Cancel genuinely discards instead of leaving edits
+ * staged for next time.
  */
 export default function ChatFilterModal({ onClose, filters, viewOptions, onApply }: ChatFilterModalProps) {
   const [local, setLocal] = useState<ChatFilters>(filters);
@@ -151,7 +163,10 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
   };
 
   const handleApply = () => {
-    onApply(local, localView);
+    // `showArchived` comes off the live prop, not `localView`: the bar can have
+    // committed it while this dialog was open, and applying the mount-time
+    // snapshot would revert it. See the note above.
+    onApply(local, { ...localView, showArchived: viewOptions.showArchived });
     onClose();
   };
 
@@ -165,8 +180,11 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
     setLocal(reset);
     // `showArchived` survives Reset All, because this modal is not where it is
     // set: resetting it from here would silently flip a toggle button the user
-    // can see in the bar behind this dialog, from a control they cannot.
-    setLocalView({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: localView.showArchived });
+    // can see in the bar behind this dialog, from a control they cannot. Off
+    // the live prop rather than `localView` for the same reason Apply is —
+    // preserving the mount-time snapshot only preserves it when nothing
+    // changed underneath, which is the case that needed no preserving.
+    setLocalView({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: viewOptions.showArchived });
   };
 
   const includeRegexValid = !local.directoryInclude.value || isValidRegex(local.directoryInclude.value);

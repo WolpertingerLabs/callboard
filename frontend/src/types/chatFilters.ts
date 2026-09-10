@@ -93,13 +93,24 @@ export function cardLifecycleFor({ showArchived, searching }: { showArchived: bo
  * A set rather than a hardcoded omission because the criterion generalises —
  * anything promoted out of the modal to its own control belongs here on the
  * way out.
+ *
+ * It generalises no further than that. In particular this is NOT the list of
+ * options an empty sidebar cannot be blamed on. That is a different question —
+ * "can this option only ever ADD rows?" — with a different answer, and
+ * `ChatList`'s `isFiltered` asks it separately and explicitly for exactly this
+ * reason. The two agree about `showArchived` and about nothing else: a
+ * `bookmarked` promoted to the bar would belong here and NOT there, since it
+ * can empty the list on its own, and an empty state blaming nothing would then
+ * tell a user with thousands of chats and no bookmarks that they have none.
+ * Adding a key here is not licence to drop the exclusion over there.
  */
 const BADGE_EXEMPT_VIEW_OPTIONS = new Set<keyof ChatViewOptions>(["showArchived"]);
 
 /**
  * How many view options are off their default — drives the filter button's
- * badge. Options with their own control in the filter bar are exempt; see
- * {@link BADGE_EXEMPT_VIEW_OPTIONS}.
+ * badge, and only that. Options with their own control in the filter bar are
+ * exempt; see {@link BADGE_EXEMPT_VIEW_OPTIONS}, including the note on what
+ * the exemption does not extend to.
  */
 export function activeViewOptionCount(options: ChatViewOptions): number {
   return (Object.keys(DEFAULT_CHAT_VIEW_OPTIONS) as (keyof ChatViewOptions)[]).filter(
