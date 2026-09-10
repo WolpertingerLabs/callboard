@@ -34,7 +34,19 @@ import MenuRow from "./MenuRow";
  * the moment it exists.
  */
 export interface ChatCardMenu {
-  card?: { title: string; lifecycle: "open" | "closed" };
+  card?: {
+    title: string;
+    lifecycle: "open" | "closed";
+    /**
+     * Every chat on the card, the root included — `CardSummary.chatCount`.
+     *
+     * Carried so the menu can say what the click actually reaches. The entry
+     * is worded per chat ("Archive chat"), but a card is a lineage tree and
+     * the toggle archives the whole of it, which used to be invisible until
+     * six rows faded at once.
+     */
+    chatCount: number;
+  };
   onToggleLifecycle?: () => void;
 }
 
@@ -63,6 +75,21 @@ interface Props {
 
 /** Rough popup height used to decide whether the menu opens downward or upward. */
 const MENU_ESTIMATED_HEIGHT = 210;
+
+/**
+ * The lifecycle entry's tooltip: what is about to happen, and to how much.
+ *
+ * The count clause exists only where it is news. On the 97% of cards that are
+ * one chat, "all 1 chats" would be noise about a card whose blast radius is
+ * the row you are pointing at; past that, the number IS the warning, because
+ * nothing else on the row says the card has a tree under it.
+ */
+function cardLifecycleTitle({ title, lifecycle, chatCount }: NonNullable<ChatCardMenu["card"]>): string {
+  if (lifecycle !== "open") return `Unarchive "${title}" — it returns to the board`;
+  return chatCount > 1
+    ? `Archive "${title}" — all ${chatCount} chats on this card move to the board's Archived strip`
+    : `Archive "${title}" — it moves to the board's Archived strip`;
+}
 
 export default function ChatListItem({
   chat,
@@ -483,11 +510,7 @@ export default function ChatListItem({
                     <MenuRow
                       icon={cardMenu.card.lifecycle === "open" ? <Archive size={16} /> : <ArchiveRestore size={16} />}
                       label={cardMenu.card.lifecycle === "open" ? "Archive chat" : "Unarchive chat"}
-                      title={
-                        cardMenu.card.lifecycle === "open"
-                          ? `Archive "${cardMenu.card.title}" — it moves to the board's Archived strip`
-                          : `Unarchive "${cardMenu.card.title}" — it returns to the board`
-                      }
+                      title={cardLifecycleTitle(cardMenu.card)}
                       onClick={() => {
                         setMenuPos(null);
                         cardMenu.onToggleLifecycle!();

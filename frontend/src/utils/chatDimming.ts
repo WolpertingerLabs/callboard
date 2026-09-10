@@ -75,9 +75,14 @@ export interface DimContext {
 /**
  * Whether a row is a candidate for dimming.
  *
- * Candidate, not verdict: `ChatListItem` still exempts rows that need the user
- * (running, summoning, unread), because it is the component that already
- * parses those out of the chat's metadata.
+ * Candidate, not verdict: `ChatListItem` still exempts four kinds of row, and
+ * it is the component that holds them — the open chat (`activeChatId`), plus
+ * the summon, unread and job-awaiting-approval flags it already parses out of
+ * the chat's metadata. Note what is NOT in that list: a *running* session. A
+ * chat on an archived or absent card fades while it is running, which is
+ * intended — running is not the same question as "is this work still open" —
+ * but it is now everyone's default rather than an opt-in, so do not describe
+ * the exemptions as "rows that need the user" and leave it at that.
  *
  * Fades a chat whose card is archived *or* absent — the same predicate the dim
  * has always used, now with no toggle in front of it.

@@ -36,11 +36,12 @@ describe("sectionByActive", () => {
     const items = [chat("closed", "closed-card"), chat("none"), chat("open", "open-card")];
     const sections = sectionByActive(items, byCard, true)!;
 
+    // Keys and labels are deliberately different words for the same two
+    // buckets: the headers read "Open"/"Archived", while the keys stay
+    // "active"/"inactive" because the expand/collapse preference is stored
+    // under them and a rename would forget every user's collapsed section.
     expect(sections.map((s) => s.key)).toEqual(["active", "inactive"]);
-    // Labels, not keys: the keys stay "active"/"inactive" because the
-    // expand/collapse preference is stored under them.
     expect(sections.map((s) => s.label)).toEqual(["Open", "Archived"]);
-    expect(sections.map((s) => s.key)).toEqual(["active", "inactive"]);
     expect(ids(sections)).toEqual([["open"], ["closed", "none"]]);
   });
 

@@ -158,7 +158,7 @@
   /* Chat list */
   --chatlist-header-bg: transparent;
   --chatlist-header-border: var(--border);
-  /* The Active/Inactive section headers inside the list, which need to read as
+  /* The Open/Archived section headers inside the list, which need to read as
      raised off the rows they introduce — unlike --chatlist-header-bg (the
      sidebar's own top header), which is transparent in both themes. Its own
      variable rather than a shared one because "raised" is a different token

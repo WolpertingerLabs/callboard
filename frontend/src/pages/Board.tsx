@@ -374,9 +374,9 @@ export default function Board() {
   }, [selectionMode, exitSelection, selectAllInScope]);
 
   /**
-   * No confirmation and no undo, by decision: close is reversible, its inverse
-   * is one gesture away, and the archived strip is on the same screen. A modal
-   * on a reversible bulk action only trains people to dismiss modals.
+   * No confirmation and no undo, by decision: archiving is reversible, its
+   * inverse is one gesture away, and the archived strip is on the same screen.
+   * A modal on a reversible bulk action only trains people to dismiss modals.
    */
   const runBulkLifecycle = async () => {
     if (selectionLifecycle === null || selectedIds.size === 0) return;

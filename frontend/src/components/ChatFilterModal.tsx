@@ -314,7 +314,7 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
               label="Open chats first"
               hint={
                 localView.cardLifecycle !== "all"
-                  ? `Nothing to split — the list is already scoped to ${CARD_LIFECYCLE_LABELS[localView.cardLifecycle].toLowerCase()} chats`
+                  ? `Nothing to split — the list is already scoped to ${CARD_LIFECYCLE_LABELS[localView.cardLifecycle].toLowerCase()} cards`
                   : "Group chats on an open card above the rest, under headers"
               }
               checked={localView.sortByCardActive}

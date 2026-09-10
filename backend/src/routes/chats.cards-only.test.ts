@@ -241,7 +241,8 @@ describe("GET /api/chats?cardsOnly=true", () => {
  * The gap it closes: after #392 the sidebar had no way to ask for the INVERSE
  * of `cardsOnly`. With 804 of 805 cards closed on the data dir this was
  * diagnosed against, `cardsOnly` collapsed 8,319 chats to 1 and there was no
- * "show me the inactive ones" at all — `dimCardless` only fades and
+ * "show me the inactive ones" at all — the dim (a `dimCardless` switch then,
+ * unconditional now) only fades and
  * `sortByCardActive` suppresses its own headers when either bucket is empty,
  * which that board state guarantees.
  */

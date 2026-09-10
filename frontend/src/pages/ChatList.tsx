@@ -456,7 +456,7 @@ export default function ChatList({
   const cardMenuFor = (chat: Chat): ChatCardMenu => {
     const card = cardOf(chat);
     return {
-      ...(card && { card: { title: card.title, lifecycle: card.lifecycle } }),
+      ...(card && { card: { title: card.title, lifecycle: card.lifecycle, chatCount: card.chatCount } }),
       onToggleLifecycle: () => handleToggleCardLifecycle(chat),
     };
   };

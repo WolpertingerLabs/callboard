@@ -225,17 +225,21 @@ describe("ChatTreeList dimming", () => {
   });
 
   /**
-   * No option gates the dim any more, so the only way a loaded list comes back
-   * undimmed is if every row is on an open card. Stated as a test because the
-   * removed switch used to be the answer to "why is nothing faded?".
+   * The archived half of the predicate, on its own and with no option gating
+   * it. The test above dims three rows for two different reasons at once; here
+   * every card in the fixture is present and open EXCEPT the archived one, so
+   * the single faded row can only be faded for the reason this test names.
+   * Stated separately because the removed switch used to be the answer to "why
+   * is nothing faded?", and now there is no answer but this rule.
    */
-  it("dims once loaded with no option to turn it off", () => {
-    const allOpen: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
+  it("dims an archived-card row once loaded, with no option to turn it off", () => {
+    const allPresentOneArchived: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
       ["root", { lifecycle: "open" }],
       ["open-card", { lifecycle: "open" }],
       ["solo-none", { lifecycle: "open" }],
+      ["closed-card", { lifecycle: "closed" }],
     ]);
-    const { container } = renderMixed({ cardsLoaded: true }, allOpen);
+    const { container } = renderMixed({ cardsLoaded: true }, allPresentOneArchived);
     expect(dimmedRows(container)).toEqual(["chat solo-closed"]);
   });
 });

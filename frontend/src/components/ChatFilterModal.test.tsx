@@ -124,12 +124,14 @@ describe("ChatFilterModal view options", () => {
   it.each([
     ["active", "open"],
     ["inactive", "archived"],
-  ] as const)("makes the open-first switch inert while the scope is %s, and says why", (cardLifecycle, label) => {
+  ] as const)("makes the open-first switch inert while the scope is %s, and says why", (cardLifecycle, scopeWord) => {
     const { onApply } = renderModal({ cardLifecycle });
 
     const sortSwitch = screen.getByText("Open chats first").closest("button")!;
     expect(sortSwitch.disabled).toBe(true);
-    expect(screen.getByText(new RegExp(`Nothing to split — the list is already scoped to ${label} chats`))).toBeTruthy();
+    // The reason, and the scope word in the new vocabulary — not the whole
+    // sentence, which is copy and free to be reworded.
+    expect(screen.getByText(/Nothing to split/).textContent).toContain(scopeWord);
 
     fireEvent.click(sortSwitch);
     fireEvent.click(screen.getByText("Apply"));

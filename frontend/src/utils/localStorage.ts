@@ -62,9 +62,12 @@ interface LocalStorageData {
    * The old "Dim inactive chats" switch.
    *
    * @deprecated The dim is unconditional now, so nothing reads or writes this.
-   * Declared, not deleted, so a value written by an older bundle survives a
-   * round-trip through {@link getStorageData}/{@link setStorageData} instead of
-   * being silently dropped on the first unrelated preference change.
+   * Left declared to document that an older bundle still writes it and still
+   * reads it back, so it must not be stripped. The declaration is not what
+   * preserves it: `getStorageData` casts the whole parsed blob and
+   * `setStorageData` re-serialises it, so every key round-trips whether this
+   * interface names it or not. Anything that starts picking fields out of the
+   * parsed object would break that, and this is the note saying why not to.
    */
   chatsDimCardless?: boolean;
   /** Sidebar splits into Open/Archived sections, chats on an open card first. */

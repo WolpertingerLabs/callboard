@@ -9,14 +9,21 @@
  */
 import { describe, expect, it } from "vitest";
 import type { Chat, CardSummary } from "../api";
-import { chatCardId, isChatDimmed } from "./chatDimming";
+import { chatCardId, isChatDimmed, type DimContext } from "./chatDimming";
 
 type Cards = ReadonlyMap<string, Pick<CardSummary, "lifecycle">>;
 
 const chat = (metadata: Record<string, unknown>, id = "chat-1"): Pick<Chat, "id" | "metadata"> => ({ id, metadata: JSON.stringify(metadata) });
 
-const LOADED = { cardsLoaded: true };
-const LOADING = { cardsLoaded: false };
+/**
+ * Annotated, not inferred, and that is the assertion: `cardsLoaded` is the
+ * dim's sole gate, so a second *required* one — another toggle sneaking back
+ * in — stops these being assignable and fails `tsc`, which the frontend
+ * tsconfig runs over `src`, tests included. A runtime check could not do this;
+ * `Object.keys` over a literal this file wrote only ever agrees with itself.
+ */
+const LOADED: DimContext = { cardsLoaded: true };
+const LOADING: DimContext = { cardsLoaded: false };
 
 const CARDS: Cards = new Map([
   ["open-card", { lifecycle: "open" as const }],
@@ -66,14 +73,13 @@ describe("isChatDimmed", () => {
   });
 
   /**
-   * There is no view option in front of the dim any more, so the only thing a
-   * caller can hand it is `cardsLoaded`. This pins that: the context type has
-   * exactly one key, and a stale `dimCardless: false` — the shape a bundle
-   * predating the removal passed — cannot switch the dim back off.
+   * There is no view option in front of the dim any more, so a stale
+   * `dimCardless: false` — the shape a bundle predating the removal passed —
+   * cannot switch it back off. The gate count itself is pinned at compile time
+   * where `LOADED` is declared, not here.
    */
   it("dims with no toggle in front of it", () => {
-    expect(Object.keys(LOADED)).toEqual(["cardsLoaded"]);
-    const legacy = { dimCardless: false, cardsLoaded: true } as unknown as typeof LOADED;
+    const legacy = { dimCardless: false, cardsLoaded: true } as unknown as DimContext;
     expect(isChatDimmed(chat({}), CARDS, legacy)).toBe(true);
     expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, legacy)).toBe(true);
     expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, legacy)).toBe(false);
