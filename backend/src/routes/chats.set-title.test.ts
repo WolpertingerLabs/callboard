@@ -27,21 +27,49 @@ process.env.CALLBOARD_DATA_DIR = DATA_DIR;
 
 /** The chat findChat resolves, or null for "no such chat". */
 let chat: any;
+/**
+ * The stored record, or null for a chat that has only ever existed as a
+ * session log — which is most of them, and the case the write path has to get
+ * right. Separate from `chat` above on purpose: `findChat` answers for chats
+ * with no record at all, so "found" and "stored" are genuinely different
+ * states and the route treats them differently.
+ */
+let record: any = null;
 
-const upsertChat = vi.fn((id: string, folder: string, sessionId: string, updates: Record<string, unknown>) => ({
-  id,
-  folder,
-  session_id: sessionId,
-  ...updates,
-}));
+/** Mirrors the real service closely enough to test the route's decisions. */
+const updateChatMetadata = vi.fn((_id: string, fields: Record<string, unknown>, opts?: { touch?: boolean }) => {
+  if (!record) return false;
+  let meta: Record<string, unknown>;
+  try {
+    meta = JSON.parse(record.metadata);
+  } catch {
+    return false; // Fails closed on a record it cannot read — the real one does too.
+  }
+  record.metadata = JSON.stringify({ ...meta, ...fields });
+  if (opts?.touch !== false) record.updated_at = "2026-09-10T00:00:00.000Z";
+  return true;
+});
+const upsertChat = vi.fn((id: string, folder: string, sessionId: string, updates: Record<string, unknown>) => {
+  record = { id, folder, session_id: sessionId, ...updates };
+  return record;
+});
 const notifyMetadata = vi.fn();
+const clearListCaches = vi.fn();
 
 vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../utils/chat-lookup.js")>()),
   findChat: () => chat,
 }));
 vi.mock("../services/chat-file-service.js", () => ({
-  chatFileService: { upsertChat: (...args: any[]) => (upsertChat as any)(...args), getChat: () => chat },
+  chatFileService: {
+    upsertChat: (...args: any[]) => (upsertChat as any)(...args),
+    updateChatMetadata: (...args: any[]) => (updateChatMetadata as any)(...args),
+    getChat: () => record,
+  },
+}));
+vi.mock("../services/list-caches.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/list-caches.js")>()),
+  clearListCaches: () => clearListCaches(),
 }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args) } }));
 vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false }));
@@ -75,22 +103,37 @@ function setTitle(body: unknown, id = "chat-1"): Promise<{ code: number; body: a
   });
 }
 
-function setChat(meta: Record<string, unknown> = {}) {
+/** Timestamps the session log gave the derived chat — nothing may rewrite them. */
+const BORN = "2026-06-01T09:00:00.000Z";
+const LAST_SAID = "2026-08-20T11:00:00.000Z";
+
+/**
+ * A chat that is both found and stored. `stored: false` leaves the record out,
+ * for the filesystem-only case; `metadata` overrides the record's blob, for the
+ * unreadable one.
+ */
+function setChat(meta: Record<string, unknown> = {}, opts: { stored?: boolean; metadata?: string } = {}) {
+  const blob = JSON.stringify({ session_ids: ["session-1", "session-2"], preview: "add a dark mode toggle", title: "Old Title", ...meta });
   chat = {
     id: "chat-1",
     folder: "/repo",
     session_id: "session-2",
     session_log_path: "/tmp/session-2.jsonl",
-    metadata: JSON.stringify({ session_ids: ["session-1", "session-2"], preview: "add a dark mode toggle", title: "Old Title", ...meta }),
+    metadata: blob,
+    created_at: BORN,
+    updated_at: LAST_SAID,
   };
+  record = opts.stored === false ? null : { ...chat, metadata: opts.metadata ?? blob };
 }
 
-/** The metadata blob the route wrote, parsed. */
-const writtenMeta = () => JSON.parse((upsertChat.mock.calls.at(-1)![3] as any).metadata);
+/** The metadata the route left behind, however it got there. */
+const storedMeta = () => JSON.parse(record.metadata);
 
 beforeEach(() => {
   upsertChat.mockClear();
+  updateChatMetadata.mockClear();
   notifyMetadata.mockClear();
+  clearListCaches.mockClear();
   setChat();
 });
 
@@ -101,22 +144,37 @@ describe("PATCH /api/chats/:id/title", () => {
     expect(res.code).toBe(200);
     expect(res.body).toEqual({ title: "Dark mode toggle" });
 
-    expect(upsertChat).toHaveBeenCalledTimes(1);
-    expect(upsertChat.mock.calls[0].slice(0, 3)).toEqual(["chat-1", "/repo", "session-2"]);
-    expect(writtenMeta().title).toBe("Dark mode toggle");
-    // The write replaces the whole blob, so everything else has to survive it.
-    expect(writtenMeta().session_ids).toEqual(["session-1", "session-2"]);
-    expect(writtenMeta().preview).toBe("add a dark mode toggle");
+    expect(storedMeta().title).toBe("Dark mode toggle");
+    // A read-merge-write in the store, not a blob replacement, so everything
+    // else on the record survives untouched.
+    expect(storedMeta().session_ids).toEqual(["session-1", "session-2"]);
+    expect(storedMeta().preview).toBe("add a dark mode toggle");
+    expect(upsertChat).not.toHaveBeenCalled();
 
     // Without this every open tab keeps the old title until its next poll.
     expect(notifyMetadata).toHaveBeenCalledWith("chat-1", { title: "Dark mode toggle" });
+    // And without this a folder row keeps serving the old one out of cache
+    // until the five-minute backstop expires. Invisible when omitted, so it
+    // is asserted rather than trusted.
+    expect(clearListCaches).toHaveBeenCalled();
+  });
+
+  it("renames without resurfacing the chat", async () => {
+    // A title is a label, not activity. `updated_at` drives `lastActivityAt`
+    // and `unread` in the card rollup, so a touch here sorts a card quiet for
+    // weeks to the top of the board wearing an unread dot for a conversation
+    // nobody added to. Same `touch: false` the card-title write already uses.
+    await setTitle({ title: "Dark mode toggle" });
+
+    expect(updateChatMetadata).toHaveBeenCalledWith("chat-1", { title: "Dark mode toggle" }, { touch: false });
+    expect(record.updated_at).toBe(LAST_SAID);
   });
 
   it("trims what the user typed", async () => {
     const res = await setTitle({ title: "  Dark mode toggle \n" });
 
     expect(res.body).toEqual({ title: "Dark mode toggle" });
-    expect(writtenMeta().title).toBe("Dark mode toggle");
+    expect(storedMeta().title).toBe("Dark mode toggle");
   });
 
   it("clears the title when the field is emptied", async () => {
@@ -127,9 +185,28 @@ describe("PATCH /api/chats/:id/title", () => {
 
     expect(res.code).toBe(200);
     expect(res.body).toEqual({ title: null });
-    expect(writtenMeta().title).toBeNull();
-    expect(writtenMeta().preview).toBe("add a dark mode toggle");
+    expect(storedMeta().title).toBeNull();
+    expect(storedMeta().preview).toBe("add a dark mode toggle");
     expect(notifyMetadata).toHaveBeenCalledWith("chat-1", { title: null });
+  });
+
+  it("refuses to overwrite a record whose metadata cannot be read", async () => {
+    // `saveChat` is a plain writeFileSync, so a crash mid-write leaves a
+    // truncated record. Merging into it is impossible, and a blob replacement
+    // would take `session_ids` (the chat's whole history), `card`,
+    // `parentChatId` and the rest down with it. `parseChatMetadata` cannot
+    // report the difference — it answers {} for unreadable and empty alike —
+    // so the store's own fail-closed read is what stands between the two.
+    setChat({}, { metadata: '{"session_ids":["session-1"],"car' });
+
+    const res = await setTitle({ title: "Named by hand" });
+
+    expect(res.code).toBe(500);
+    expect(res.body.error).toMatch(/could not be read/i);
+    // Untouched, not partially rewritten.
+    expect(record.metadata).toBe('{"session_ids":["session-1"],"car');
+    expect(upsertChat).not.toHaveBeenCalled();
+    expect(notifyMetadata).not.toHaveBeenCalled();
   });
 
   it("creates a record on disk for a chat that only exists on the filesystem", async () => {
@@ -138,17 +215,23 @@ describe("PATCH /api/chats/:id/title", () => {
     // the chat being renamed here. The spy cannot tell an upsert that created
     // from one that updated, so this one call uses the real store and looks
     // for the file in a data dir where it provably was not before.
+    setChat({}, { stored: false });
     upsertChat.mockImplementationOnce((...args: any[]) => (realChatFileService.upsertChat as any)(...args));
 
-    const record = join(DATA_DIR, "chats", "session-2.json");
-    expect(existsSync(record)).toBe(false);
+    const path = join(DATA_DIR, "chats", "session-2.json");
+    expect(existsSync(path)).toBe(false);
 
     const res = await setTitle({ title: "Named by hand" });
 
     expect(res.code).toBe(200);
-    const written = JSON.parse(readFileSync(record, "utf8"));
+    const written = JSON.parse(readFileSync(path, "utf8"));
     expect(written.id).toBe("chat-1");
     expect(JSON.parse(written.metadata).title).toBe("Named by hand");
+    // Dated from the session log, not from the rename. Left to default, the
+    // create branch stamps `now` for both and the chat's real birthtime — the
+    // only copy of it, since the record now shadows the log — is gone.
+    expect(written.created_at).toBe(BORN);
+    expect(written.updated_at).toBe(LAST_SAID);
     // And reachable through the store's own lookup, not just as bytes.
     expect(JSON.parse(realChatFileService.getChat("chat-1")!.metadata).title).toBe("Named by hand");
   });

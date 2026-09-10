@@ -1387,6 +1387,48 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
  */
 const MAX_TITLE_LENGTH = 240;
 
+/**
+ * Persist a chat's title, whoever chose it — typed by the user or produced by
+ * the titler. Both routes below go through here, because both are renames and
+ * a rename has two properties that a naive metadata write gets wrong.
+ *
+ * **It must not resurface the chat.** A title is a label, not activity, and
+ * `upsertChat` stamps `updated_at = now` on every existing record it touches.
+ * The sidebar hides that (its list route overrides both timestamps from the
+ * session log) but the board does not: card rollup takes `lastActivityAt` from
+ * `max(member.updated_at)` and computes `unread` as `updated_at > lastReadAt`,
+ * so renaming one member of a card quiet for three weeks sorts it to the top
+ * of the board wearing an unread dot for a conversation nobody added to. Hence
+ * `touch: false`, the same flag `patchCardFields` already uses to write a card
+ * title without faking activity — and hence the *created* record carrying the
+ * timestamps the session log gave it rather than today's.
+ *
+ * **It must not be able to destroy what it cannot read.** `updateChatMetadata`
+ * read-merge-writes and fails closed on a record whose metadata does not
+ * parse; a bare upsert replaces the blob wholesale, so a truncated record —
+ * `saveChat` is a plain `writeFileSync`, so a crash mid-write leaves one —
+ * would have `session_ids`, `card`, `parentChatId` and the rest silently
+ * replaced by `{"title":"..."}`. `parseChatMetadata` cannot report that: it
+ * answers `{}` for unreadable and for empty alike.
+ *
+ * Returns "corrupt" for that case, so the caller can refuse instead of
+ * reporting a success that ate the record. `false` from `updateChatMetadata`
+ * has two causes and they want opposite answers, so the absence of a record —
+ * the common case, since most chats have only ever existed as a session log —
+ * is distinguished by asking for it directly.
+ */
+function writeChatTitle(chat: any, title: string | null): "ok" | "corrupt" {
+  if (chatFileService.updateChatMetadata(chat.id, { title }, { touch: false })) return "ok";
+  if (chatFileService.getChat(chat.id)) return "corrupt";
+
+  chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, {
+    metadata: JSON.stringify({ ...parseChatMetadata(chat.metadata), title }),
+    created_at: chat.created_at,
+    updated_at: chat.updated_at,
+  });
+  return "ok";
+}
+
 // Set a chat's title by hand
 chatsRouter.patch("/:id/title", (req, res) => {
   // #swagger.tags = ['Chats']
@@ -1410,6 +1452,7 @@ chatsRouter.patch("/:id/title", (req, res) => {
   /* #swagger.responses[200] = { description: "{ title }: the stored title, or null if it was cleared" } */
   /* #swagger.responses[400] = { description: "Invalid request body" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
+  /* #swagger.responses[500] = { description: "The chat's stored metadata could not be read, so it was not overwritten" } */
   const { title } = req.body ?? {};
   if (typeof title !== "string") {
     return res.status(400).json({ error: "title must be a string" });
@@ -1423,20 +1466,14 @@ chatsRouter.patch("/:id/title", (req, res) => {
     const chat = findChat(req.params.id, false) as any;
     if (!chat) return res.status(404).json({ error: "Chat not found" });
 
-    let meta: Record<string, any> = {};
-    try {
-      meta = parseChatMetadata(chat.metadata);
-    } catch {}
-
     // null rather than "" for the cleared case, matching `set_chat_title`: every
     // reader spells the fallback `meta.title || preview`, and a stored empty
     // string would take the same branch while looking like a deliberate blank.
     const stored = trimmed || null;
 
-    // Upsert for the same reason the regeneration below uses it: most chats
-    // have never had a record written, and `updateChatMetadata` answers false
-    // for those and drops the write.
-    chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: JSON.stringify({ ...meta, title: stored }) });
+    if (writeChatTitle(chat, stored) === "corrupt") {
+      return res.status(500).json({ error: "This chat's stored metadata could not be read, so it was left untouched rather than overwritten" });
+    }
 
     sessionRegistry.notifyMetadata(chat.id, { title: stored });
     clearListCaches();
@@ -1547,21 +1584,18 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
       return res.status(502).json({ error: "Could not generate a title for this chat — try again" });
     }
 
-    // Re-read the record rather than reusing the metadata parsed above: a
-    // model call sits between the two, and upsertChat replaces the metadata
-    // blob wholesale, so writing the pre-generation copy would silently drop
+    // Re-read the record rather than reusing the one found above: a model call
+    // sits between the two, and the fallback inside `writeChatTitle` writes a
+    // metadata blob wholesale, so a pre-generation copy would silently drop
     // any field (lastReadAt, cardId, chatStatus, ...) written while we waited.
+    // On the common path this is belt and braces — `updateChatMetadata` merges
+    // against whatever is on disk at write time — but the fallback runs off
+    // the record handed to it.
     const fresh = (findChat(req.params.id, false) as any) ?? chat;
-    let freshMeta: Record<string, any> = {};
-    try {
-      freshMeta = parseChatMetadata(fresh.metadata);
-    } catch {}
 
-    // Upsert rather than updateChatMetadata: the latter is a read-merge-write
-    // over an existing record and returns false for a chat that has only ever
-    // existed as a session log — the exact chats whose auto-title is most
-    // likely to be stale. Upsert creates the record so the title lands.
-    chatFileService.upsertChat(fresh.id, fresh.folder, fresh.session_id, { metadata: JSON.stringify({ ...freshMeta, title }) });
+    if (writeChatTitle(fresh, title) === "corrupt") {
+      return res.status(500).json({ error: "This chat's stored metadata could not be read, so it was left untouched rather than overwritten" });
+    }
 
     sessionRegistry.notifyMetadata(fresh.id, { title });
     clearListCaches();
