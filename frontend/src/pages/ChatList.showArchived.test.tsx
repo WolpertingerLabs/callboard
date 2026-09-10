@@ -14,8 +14,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import type { Chat, ChatListResponse } from "../api";
-import { listChats, listCards, getDrafts } from "../api";
+import type { CardSummary, Chat, ChatListResponse } from "../api";
+import { listChats, listCards, getDrafts, searchChatContents } from "../api";
 import ChatList from "./ChatList";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -23,6 +23,7 @@ vi.mock("../api", async (importOriginal) => ({
   listChats: vi.fn(),
   listCards: vi.fn(),
   getDrafts: vi.fn(),
+  searchChatContents: vi.fn(),
 }));
 
 vi.mock("../contexts/SessionContext", () => ({
@@ -39,6 +40,7 @@ vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
 vi.mock("../components/NewChatPanel", () => ({ default: () => <div /> }));
 
 const mockListChats = vi.mocked(listChats);
+const mockSearch = vi.mocked(searchChatContents);
 
 const FOLDER = "/home/cybil/projects/callboard";
 const KEY = "claude-code-settings";
@@ -136,12 +138,111 @@ describe("Show archived → cardLifecycle", () => {
     expect(scopeOf(mockListChats.mock.calls)).toEqual(["all"]);
   });
 
+  it("carries the scope into the stale-response refetch", async () => {
+    // A cached response triggers an immediate second request for fresh data.
+    // It builds its own argument list, so it is a third place the scope can be
+    // dropped — and the one no other test covers, since every other fixture
+    // here answers stale:false.
+    mockListChats.mockResolvedValueOnce({ ...listResponse([makeChat("chat-1", { preview: "open chat" })]), stale: true });
+    await renderList();
+    await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
+    expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "active"]);
+    // The refetch is the fresh-data one, not a repeat of the cached request.
+    expect(mockListChats.mock.calls[1][4]).toBe(false);
+  });
+
   it("seeds itself from the three-way scope it replaced", async () => {
     // A user who was on the old "All" scope was seeing archived chats; the new
     // default would silently take them away.
     localStorage.setItem(KEY, JSON.stringify({ chatsCardLifecycle: "all" }));
     await renderList();
     expect(scopeOf(mockListChats.mock.calls)).toEqual(["all"]);
+  });
+});
+
+/**
+ * Content search against a narrowed browse scope.
+ *
+ * Search is a server-side query over full history whose hits are applied as an
+ * INTERSECTION against the loaded list. With the list scoped to open cards
+ * that intersection does not narrow the results, it DELETES them — silently,
+ * since a partial loss shows no empty state and no count. On the data dir this
+ * was measured against, 4 of 133 rows are on open cards, so the default scope
+ * would have thrown away most of every search.
+ */
+describe("content search widens the scope", () => {
+  const OPEN = makeChat("chat-1", { preview: "open chat" });
+  const ARCHIVED = makeChat("chat-2", { preview: "archived chat" });
+
+  const card = (id: string, lifecycle: "open" | "closed"): CardSummary =>
+    ({ id, lifecycle, memberChats: [{ chatId: id }], memberRuns: [], chatCount: 1 }) as unknown as CardSummary;
+
+  beforeEach(() => {
+    // The server, as far as this test is concerned: `active` withholds the
+    // archived chat, `all` returns both.
+    mockListChats.mockImplementation((...args: Parameters<typeof listChats>) =>
+      Promise.resolve(listResponse(args[7] === "active" ? [OPEN] : [OPEN, ARCHIVED])),
+    );
+    // Both chats match the query — the question is which ones survive the scope.
+    mockSearch.mockResolvedValue({ chatIds: ["chat-1", "chat-2"] } as Awaited<ReturnType<typeof searchChatContents>>);
+    vi.mocked(listCards).mockResolvedValue({ cards: [card("chat-1", "open"), card("chat-2", "closed")] });
+  });
+
+  const submitSearch = (query: string) => {
+    const input = screen.getByPlaceholderText(/Search chat contents/);
+    fireEvent.change(input, { target: { value: query } });
+    fireEvent.keyDown(input, { key: "Enter" });
+  };
+
+  /**
+   * Asserted on the LAST scope rather than the whole sequence: a search
+   * refetches twice by design — once when the query is submitted (this
+   * widening) and once when its hits land and `anyFilterActive` flips — and
+   * pinning the exact call count would break on a change to either.
+   */
+  const lastScope = () => scopeOf(mockListChats.mock.calls).at(-1);
+
+  it("asks for everything while a search is active, with the toggle still off", async () => {
+    await renderList();
+    expect(scopeOf(mockListChats.mock.calls)).toEqual(["active"]);
+
+    submitSearch("deploy script");
+    await waitFor(() => expect(lastScope()).toBe("all"));
+    // The browse preference is untouched — only this request was widened.
+    expect(JSON.parse(localStorage.getItem(KEY) || "{}").chatsShowArchived).toBeUndefined();
+  });
+
+  it("returns the archived hit, dimmed, rather than dropping it", async () => {
+    await renderList();
+    expect(screen.queryByText("archived chat")).toBeNull();
+
+    submitSearch("deploy script");
+    const hit = await screen.findByText("archived chat");
+    // Present AND faded: the dim is what tells the user this result is on
+    // archived work, which is why widening the scope does not lose the
+    // distinction the toggle was drawing.
+    await waitFor(() => expect(hit.closest(".chatlist-item-dimmed")).toBeTruthy());
+    expect(screen.getByText("open chat").closest(".chatlist-item-dimmed")).toBeNull();
+  });
+
+  it("narrows back to open cards when the search is cleared", async () => {
+    await renderList();
+    submitSearch("deploy script");
+    await waitFor(() => expect(lastScope()).toBe("all"));
+
+    submitSearch("");
+    await waitFor(() => expect(lastScope()).toBe("active"));
+    // Not merely the scope: the archived row is gone from the list again, so
+    // the widening really was scoped to the search and not left latched on.
+    await waitFor(() => expect(screen.queryByText("archived chat")).toBeNull());
+  });
+
+  it("keeps the widening when the toggle is on, rather than fighting it", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true }));
+    await renderList();
+    submitSearch("deploy script");
+    await waitFor(() => expect(screen.getByText("archived chat")).toBeTruthy());
+    expect(scopeOf(mockListChats.mock.calls).every((s) => s === "all")).toBe(true);
   });
 });
 
@@ -154,8 +255,11 @@ describe("the empty sidebar", () => {
       </MemoryRouter>,
     );
     // Not "No chats yet": a folder whose cards are all archived now shows
-    // nothing at all, where before it showed a list of faded rows.
-    expect(await screen.findByText(/Show archived/)).toBeTruthy();
+    // nothing at all, where before it showed a list of faded rows. Matched on
+    // the sentence, not on "Show archived" alone — that string is also the
+    // filter modal's switch label, so the loose match would pass on a page
+    // that never rendered an empty state.
+    expect(await screen.findByText(/^No chats on an open card\./)).toBeTruthy();
   });
 
   it("falls back to the plain message once archived chats are shown", async () => {

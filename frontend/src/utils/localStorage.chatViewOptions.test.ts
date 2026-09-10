@@ -61,9 +61,24 @@ describe("persisted chat view options", () => {
     expect(getChatsShowArchived()).toBe(expected);
   });
 
-  it("seeds OFF from the older cardsOnly boolean, which had no archived side", () => {
+  /**
+   * Note what this does NOT do: discriminate. `cardsOnly: true` resolves to
+   * the old "active" scope, which seeds OFF — and OFF is also where a store
+   * with no recognised key lands, so deleting the key from the fixture leaves
+   * the test passing. It is here to pin the *intent* (this user had chosen to
+   * hide archived chats; they are not an unmigrated blank) against the day the
+   * default flips and the two stop agreeing.
+   */
+  it("treats a legacy cardsOnly:true as a choice to hide archived, not as a blank store", () => {
     localStorage.setItem(KEY, JSON.stringify({ chatsCardsOnly: true }));
     expect(getChatsShowArchived()).toBe(false);
+  });
+
+  it("lets an explicit legacy scope win over the cardsOnly alias", () => {
+    // Discriminating, unlike the case above: read the alias first and this
+    // store seeds OFF, losing the archived rows the user was looking at.
+    localStorage.setItem(KEY, JSON.stringify({ chatsCardLifecycle: "inactive", chatsCardsOnly: true }));
+    expect(getChatsShowArchived()).toBe(true);
   });
 
   it("prefers an explicit choice over the legacy scope, however they disagree", () => {

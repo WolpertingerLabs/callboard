@@ -83,12 +83,24 @@ describe("activeViewOptionCount", () => {
  */
 describe("cardLifecycleFor", () => {
   it("asks for open-card trees when archived chats are hidden", () => {
-    expect(cardLifecycleFor(false)).toBe("active");
+    expect(cardLifecycleFor({ showArchived: false, searching: false })).toBe("active");
   });
 
   it("asks for everything when they are shown, rather than for the archived side alone", () => {
     // "all", not "inactive": archived rows come back interleaved with the open
     // ones and dimmed in place, which is the entire design of the toggle.
-    expect(cardLifecycleFor(true)).toBe("all");
+    expect(cardLifecycleFor({ showArchived: true, searching: false })).toBe("all");
+  });
+
+  /**
+   * The reason this is one function and not an expression at each call site.
+   * Search hits are intersected against the loaded list, so a narrow scope
+   * deletes results instead of filtering them — silently, because a partial
+   * loss renders no empty state. Searching therefore overrides the browse
+   * preference, and it has to do so everywhere a request is built.
+   */
+  it("widens to everything while searching, whatever the toggle says", () => {
+    expect(cardLifecycleFor({ showArchived: false, searching: true })).toBe("all");
+    expect(cardLifecycleFor({ showArchived: true, searching: true })).toBe("all");
   });
 });

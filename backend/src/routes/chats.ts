@@ -929,9 +929,10 @@ chatsRouter.get("/", (req, res) => {
         // scope filter: appending an unstarred relative would smuggle back
         // exactly what "Bookmarked only" drops. It costs nothing to expansion —
         // opening a group fetches the authoritative tree from
-        // GET /chats/:id/tree, which no list filter has ever narrowed — but it
-        // keeps the tally honest, because the section headers count the chats
-        // the list returned and would otherwise count relatives no row shows.
+        // GET /chats/:id/tree, which no list filter has ever narrowed — and it
+        // keeps the response honest about its own scope: a lineage relative is
+        // appended to complete a tree the page touches, not to re-admit a chat
+        // the caller's filter just excluded.
         if (bookmarkedFilter && !isBookmarked(fc)) continue;
         const session = sessionByChatId.get(id);
         // This is the one path in the list route that can emit a chat

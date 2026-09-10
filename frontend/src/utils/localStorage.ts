@@ -407,9 +407,17 @@ export function saveShowTriggeredChats(value: boolean): void {
  * so it seeds OFF. A store with neither seeds OFF, the new default, rather than
  * inheriting the old "all": hiding archived chats IS the change.
  *
- * `typeof === "boolean"` rather than `??` because this is JSON another bundle
- * version or a hand edit could have written anything into, and the answer
- * decides which scope goes out as a query param.
+ * The legacy pair is resolved the way the bundle that wrote it did (explicit
+ * scope wins; else `cardsOnly: true` meant "active") rather than by reading
+ * `chatsCardLifecycle` alone. That is deliberate and it changes no answer
+ * today: every branch `cardsOnly` can reach returns `false`, which is also
+ * where an unrecognised store lands. It is here to state which preference is
+ * being migrated, so that flipping the default later cannot quietly turn "this
+ * user asked for open cards only" into "this user never chose".
+ *
+ * `typeof === "boolean"` on the new key rather than `??` because this is JSON
+ * another bundle version or a hand edit could have written anything into, and
+ * the answer decides which scope goes out as a query param.
  *
  * The legacy keys are read, never written back — {@link saveChatsShowArchived}
  * touches only the new one, so they stop tracking the user's choice from the
@@ -419,7 +427,8 @@ export function saveShowTriggeredChats(value: boolean): void {
 export function getChatsShowArchived(): boolean {
   const data = getStorageData();
   if (typeof data.chatsShowArchived === "boolean") return data.chatsShowArchived;
-  return data.chatsCardLifecycle === "all" || data.chatsCardLifecycle === "inactive";
+  const legacyScope = data.chatsCardLifecycle ?? (data.chatsCardsOnly === true ? "active" : undefined);
+  return legacyScope === "all" || legacyScope === "inactive";
 }
 
 export function saveChatsShowArchived(value: boolean): void {

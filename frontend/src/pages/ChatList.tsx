@@ -177,11 +177,24 @@ export default function ChatList({
   // Determine if any filter is active (advanced filters, content search, or bookmarks)
   const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
 
+  /**
+   * A content search is on the wire, which widens the request scope — see
+   * {@link cardLifecycleFor}.
+   *
+   * Keyed on the submitted query rather than on `matchingChatIds`, so the
+   * widening starts when the query is sent instead of when its hits land.
+   * Otherwise the first render of a result set intersects it against a list
+   * still scoped to open cards, and the user watches most of their results
+   * appear a moment later. Trimmed to match `useChatSearch`, which decides a
+   * search is running by the same rule.
+   */
+  const searching = submittedQuery.trim() !== "";
+
   const load = useCallback(async () => {
     const { bookmarked, showTriggered, showArchived } = viewOptions;
     // The whole of "Show archived", on the request side: off asks the server
     // for open-card trees only, so the rows the dim would fade never arrive.
-    const cardLifecycle = cardLifecycleFor(showArchived);
+    const cardLifecycle = cardLifecycleFor({ showArchived, searching });
     // When advanced filters or content search are active, fetch all chats
     // to avoid missing matches due to pagination
     const shouldFetchAll = anyFilterActive || bookmarked;
@@ -215,7 +228,10 @@ export default function ChatList({
       const chatDirectories = response.chats.map((chat) => chat.displayFolder || chat.folder);
       initializeSuggestedDirectories(chatDirectories);
     }
-  }, [viewOptions, anyFilterActive]);
+    // `searching` is a dependency, not just a read: submitting or clearing a
+    // query changes the scope, and the effect below refetches only because
+    // this callback is recreated.
+  }, [viewOptions, anyFilterActive, searching]);
 
   const loadMore = async () => {
     if (isLoadingMore || !hasMore) return;
@@ -234,7 +250,10 @@ export default function ChatList({
         undefined,
         true,
         undefined,
-        cardLifecycleFor(viewOptions.showArchived),
+        // "Load next page" is hidden while a search is active, so this cannot
+        // fire mid-search today — it passes the same state anyway, so the two
+        // request paths cannot come to disagree about scope.
+        cardLifecycleFor({ showArchived: viewOptions.showArchived, searching }),
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
       // this page was in flight — its offset no longer lines up, so drop the
@@ -426,7 +445,10 @@ export default function ChatList({
    * render decision over cards already on the page, so there is no request to
    * change and nothing for the user to switch off. "Show archived" is the
    * other half of the same idea and not an exception to it: it decides whether
-   * these rows are fetched, so with it off this has nothing left to fade.
+   * these rows are fetched, so with it off this has almost nothing left to
+   * fade. Almost — `cards` and `chats` are separately timed requests here (the
+   * 15s poll refetches one, the kebab menu patches the other), which is one of
+   * the two ways a faded row reaches the toggle-off view. See `isChatDimmed`.
    */
   const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsByChatId, { cardsLoaded });
 
@@ -536,14 +558,19 @@ export default function ChatList({
    * the default, so it never reaches the badge, yet it is now the likeliest
    * reason for an empty sidebar — a folder whose cards are all archived shows
    * nothing at all, where before it showed a list of faded rows.
+   *
+   * `searching` cancels that, because it cancels the scope: a search runs
+   * against everything, so blaming an empty result on hidden archived chats
+   * would send the user to a switch that would not have changed the answer.
    */
+  const archivedHidden = !viewOptions.showArchived && !searching;
   const emptyMessage = isFiltered
-    ? viewOptions.showArchived
-      ? "No chats match the current filters"
-      : "No chats match the current filters. Archived chats are hidden."
-    : viewOptions.showArchived
-      ? "No chats yet. Create one to get started."
-      : "No chats on an open card. Turn on “Show archived” in filters to include chats on archived cards.";
+    ? archivedHidden
+      ? "No chats match the current filters. Archived chats are hidden."
+      : "No chats match the current filters"
+    : archivedHidden
+      ? "No chats on an open card. Turn on “Show archived” in filters to include chats on archived cards."
+      : "No chats yet. Create one to get started.";
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
   if (sidebarCollapsed) {
