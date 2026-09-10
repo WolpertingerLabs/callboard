@@ -1,19 +1,16 @@
 /**
- * The two counters behind the filter button's badge. They decide whether the
- * user is told their list is narrowed, so an off-by-one here silently hides a
- * filter that is quietly dropping chats.
+ * The counter behind the filter button's badge. It decides whether the user is
+ * told their list is narrowed, so an off-by-one here silently hides a filter
+ * that is quietly dropping chats.
+ *
+ * There were two. `activeViewOptionCount` was added to this one, past a set of
+ * options exempted for having their own visible control — and when the last of
+ * the three scopes moved out to the filter bar, every key was exempt and it
+ * could only return 0. Deleted rather than kept as a constant; the badge counts
+ * what is inside the modal, and the modal is these four fields.
  */
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_CHAT_FILTERS,
-  DEFAULT_CHAT_VIEW_OPTIONS,
-  activeFilterCount,
-  activeViewOptionCount,
-  cardLifecycleFor,
-  hasActiveFilters,
-  type ChatFilters,
-  type ChatViewOptions,
-} from "./chatFilters";
+import { DEFAULT_CHAT_FILTERS, activeFilterCount, cardLifecycleFor, hasActiveFilters, type ChatFilters } from "./chatFilters";
 
 describe("activeFilterCount", () => {
   it("is zero for the defaults", () => {
@@ -39,53 +36,6 @@ describe("activeFilterCount", () => {
     };
     expect(activeFilterCount(filters)).toBe(2);
     expect(hasActiveFilters(filters)).toBe(true);
-  });
-});
-
-describe("activeViewOptionCount", () => {
-  it("is zero for the defaults", () => {
-    expect(activeViewOptionCount(DEFAULT_CHAT_VIEW_OPTIONS)).toBe(0);
-  });
-
-  it("counts each option that differs from its default", () => {
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, bookmarked: true })).toBe(1);
-    // Spelled out rather than spread, so a new option that forgets its default
-    // shows up here as a type error instead of a silently uncounted badge.
-    // Two, not three: `showArchived` is exempt — see below.
-    expect(activeViewOptionCount({ bookmarked: true, showTriggered: true, showArchived: true })).toBe(2);
-  });
-
-  /**
-   * The badge sits on the button that OPENS the filters modal, and
-   * `showArchived` is not in the modal any more — it is the "Archived" toggle
-   * button in the filter bar, lit up right next to the badge. Counting it
-   * would put "1 active" on a modal that has nothing to show for it, sending
-   * the user to look for an edit that isn't there.
-   */
-  it("does not count showArchived, which has its own control in the filter bar", () => {
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true })).toBe(0);
-    // And it does not mask a real one either.
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true, bookmarked: true })).toBe(1);
-  });
-
-  it("counts showTriggered as active only when ON — hidden is the default", () => {
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, showTriggered: false })).toBe(0);
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, showTriggered: true })).toBe(1);
-  });
-
-  /**
-   * Three options have been retired from this type — the dim switch, the
-   * three-way lifecycle scope and its `cardsOnly` alias, and "Open chats
-   * first" — and every one of them is still sitting in the localStorage of
-   * anyone who ever opened the filters modal. The count walks the DEFAULTS'
-   * keys, not the stored object's, which is what makes a retired key inert
-   * rather than a phantom badge over an option that no longer exists.
-   */
-  it("ignores retired keys left in a persisted store", () => {
-    const stored = { ...DEFAULT_CHAT_VIEW_OPTIONS, dimCardless: true, cardLifecycle: "inactive", cardsOnly: true, sortByCardActive: true } as ChatViewOptions;
-    expect(() => activeViewOptionCount(stored)).not.toThrow();
-    expect(activeViewOptionCount(stored)).toBe(0);
-    expect(activeViewOptionCount({ ...stored, showTriggered: true })).toBe(1);
   });
 });
 

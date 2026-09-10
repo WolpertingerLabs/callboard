@@ -1,13 +1,16 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
-import { Bookmark, Zap } from "lucide-react";
+import { useState, type CSSProperties } from "react";
 import ModalOverlay from "./ModalOverlay";
-import { DEFAULT_CHAT_VIEW_OPTIONS, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
+import type { ChatFilters, ChatViewOptions } from "../types/chatFilters";
 
 interface ChatFilterModalProps {
   onClose: () => void;
   filters: ChatFilters;
+  /**
+   * Not edited here — carried, so that `onApply` keeps its one signature and
+   * this dialog cannot reset a scope it does not show. See the note below.
+   */
   viewOptions: ChatViewOptions;
-  /** Both halves are staged locally and committed together on Apply. */
+  /** The filters are staged locally and committed on Apply. */
   onApply: (filters: ChatFilters, viewOptions: ChatViewOptions) => void;
 }
 
@@ -52,108 +55,33 @@ const labelStyle: CSSProperties = {
   marginBottom: 4,
 };
 
-const sectionHeadingStyle: CSSProperties = {
-  fontSize: 11,
-  fontWeight: 600,
-  letterSpacing: 0.6,
-  textTransform: "uppercase",
-  color: "var(--text-muted)",
-  marginBottom: 10,
-};
-
-/** One switch row: icon, label, one line of why-you'd-want-it, and the switch. */
-function SwitchRow({
-  icon,
-  label,
-  hint,
-  checked,
-  onChange,
-}: {
-  icon: ReactNode;
-  label: string;
-  hint: string;
-  checked: boolean;
-  onChange: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onChange}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        width: "100%",
-        padding: "8px 10px",
-        borderRadius: 8,
-        border: "none",
-        background: checked ? "var(--accent-bg)" : "transparent",
-        cursor: "pointer",
-        textAlign: "left",
-        transition: "background 0.15s",
-      }}
-    >
-      <span style={{ display: "flex", color: checked ? "var(--accent-text)" : "var(--text-muted)", flexShrink: 0, transition: "color 0.15s" }}>{icon}</span>
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: "block", fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{label}</span>
-        <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>{hint}</span>
-      </span>
-      <span
-        style={{
-          position: "relative",
-          width: 36,
-          height: 20,
-          borderRadius: 999,
-          flexShrink: 0,
-          background: checked ? "var(--accent)" : "var(--border)",
-          transition: "background 0.15s",
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            top: 2,
-            left: checked ? 18 : 2,
-            width: 16,
-            height: 16,
-            borderRadius: "50%",
-            background: "var(--toggle-knob)",
-            transition: "left 0.15s",
-          }}
-        />
-      </span>
-    </button>
-  );
-}
-
 /**
- * Staged editor for the sidebar's filters AND view options — nothing takes
- * effect until Apply, so a half-typed regex never reshuffles the list.
+ * Staged editor for the sidebar's four field filters — nothing takes effect
+ * until Apply, so a half-typed regex never reshuffles the list.
  *
- * All of them but one: `showArchived` is a toggle button in the filter bar,
- * which commits on the click. This modal does not display it, and therefore
- * must not write it — it reads the LIVE `viewOptions` prop on the way out
- * rather than the `localView` snapshot, in both Apply and Reset All.
+ * It owns nothing else. All three view options are toggle buttons in the filter
+ * bar now, committed on the click, and this dialog does not display them — so
+ * `viewOptions` is carried from prop straight back to `onApply` and never
+ * copied into state.
  *
- * That is not hypothetical tidiness. This modal is a sibling of the filter
- * bar, not a child of it, and the overlay stops the mouse but not the
- * keyboard: from the filters button, one Tab lands on the "Archived" toggle
- * and Space commits it. `localView` was seeded at mount and never re-syncs, so
- * an Apply after that would have handed back the stale `false` — reverting a
- * change the user had just watched take effect, from a dialog with no archived
- * control in it. A focus trap would hide that particular route; it would not
- * stop the modal from writing a value it doesn't show.
+ * That is the whole defence, and it is worth knowing what it replaced. A
+ * `localView` snapshot used to be seeded at mount and never re-synced, which
+ * made this modal capable of writing a value it did not show: the bar and the
+ * modal are siblings and the overlay stops the mouse but not the keyboard, so
+ * one Tab out of the filters button reaches a scope toggle and Space commits
+ * it — and an Apply after that handed back the stale mount-time value,
+ * reverting a change the user had just watched take effect. Reading the live
+ * prop instead removes the hazard rather than guarding against it; there is no
+ * staged copy left to go stale, and Reset All resets the filters only for the
+ * same reason.
  *
  * The caller mounts this only while it is open, which is what makes the
- * `useState(prop)` seeding correct FOR THE CONTROLS IT OWNS: every open starts
- * from the live values, so Cancel genuinely discards instead of leaving edits
- * staged for next time.
+ * `useState(prop)` seeding correct for the filters it DOES own: every open
+ * starts from the live values, so Cancel genuinely discards instead of leaving
+ * edits staged for next time.
  */
 export default function ChatFilterModal({ onClose, filters, viewOptions, onApply }: ChatFilterModalProps) {
   const [local, setLocal] = useState<ChatFilters>(filters);
-  const [localView, setLocalView] = useState<ChatViewOptions>(viewOptions);
-
-  const toggleView = (key: keyof ChatViewOptions) => setLocalView((prev) => ({ ...prev, [key]: !prev[key] }));
 
   const update = <K extends keyof ChatFilters>(key: K, field: Partial<ChatFilters[K]>) => {
     setLocal((prev) => ({
@@ -163,10 +91,9 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
   };
 
   const handleApply = () => {
-    // `showArchived` comes off the live prop, not `localView`: the bar can have
-    // committed it while this dialog was open, and applying the mount-time
-    // snapshot would revert it. See the note above.
-    onApply(local, { ...localView, showArchived: viewOptions.showArchived });
+    // The view options come off the live prop: the bar can have committed one
+    // while this dialog was open, and this dialog has no opinion about them.
+    onApply(local, viewOptions);
     onClose();
   };
 
@@ -178,13 +105,10 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
       dateMax: { value: "", active: false },
     };
     setLocal(reset);
-    // `showArchived` survives Reset All, because this modal is not where it is
-    // set: resetting it from here would silently flip a toggle button the user
-    // can see in the bar behind this dialog, from a control they cannot. Off
-    // the live prop rather than `localView` for the same reason Apply is —
-    // preserving the mount-time snapshot only preserves it when nothing
-    // changed underneath, which is the case that needed no preserving.
-    setLocalView({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: viewOptions.showArchived });
+    // "All" is all of what this dialog shows. The scopes survive it, because
+    // resetting them from here would silently switch off toggle buttons the
+    // user can see lit in the bar behind the dialog, from a control they
+    // cannot see at all.
   };
 
   const includeRegexValid = !local.directoryInclude.value || isValidRegex(local.directoryInclude.value);
@@ -200,44 +124,15 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
           width: "90%",
           maxWidth: 480,
           border: "1px solid var(--border)",
-          // The View section doubles this modal's height — on a phone in
-          // landscape it would otherwise run off the bottom with Apply
-          // unreachable.
+          // Four fields fit on a phone in landscape; the View section that used
+          // to sit above them did not, and Apply went off the bottom with it.
+          // Kept anyway, because a scrollable dialog costs nothing when it does
+          // not need to scroll.
           maxHeight: "85vh",
           overflowY: "auto",
         }}
       >
         <h2 style={{ margin: "0 0 20px 0", fontSize: 18 }}>Chat Filters</h2>
-
-        {/* View — what the sidebar is scoped to. Resolved server-side, unlike
-            the client-side field filters below. */}
-        <div style={{ marginBottom: 20 }}>
-          <div style={sectionHeadingStyle}>View</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {/* "Show archived" is NOT here: it is the "Archived" toggle button
-                in the filter bar, committed on the click without an Apply,
-                because it is flipped far more often than anything below. It
-                still travels through `localView` untouched so that applying
-                this modal does not clobber it. */}
-            <SwitchRow
-              icon={<Bookmark size={16} fill={localView.bookmarked ? "currentColor" : "none"} />}
-              label="Bookmarked only"
-              hint="Chats you've starred"
-              checked={localView.bookmarked}
-              onChange={() => toggleView("bookmarked")}
-            />
-            <SwitchRow
-              icon={<Zap size={16} fill={localView.showTriggered ? "currentColor" : "none"} />}
-              label="Show triggered chats"
-              hint="Include runs started by cron, triggers and jobs"
-              checked={localView.showTriggered}
-              onChange={() => toggleView("showTriggered")}
-            />
-          </div>
-        </div>
-
-        <div style={{ height: 1, background: "var(--border)", margin: "0 0 20px 0" }} />
-        <div style={sectionHeadingStyle}>Filters</div>
 
         {/* Directory Include Regex */}
         <div style={{ marginBottom: 16 }}>

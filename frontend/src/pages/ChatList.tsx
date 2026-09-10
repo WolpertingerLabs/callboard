@@ -32,7 +32,6 @@ import { chatCardId, isChatDimmed } from "../utils/chatDimming";
 import {
   DEFAULT_CHAT_FILTERS,
   DEFAULT_CHAT_VIEW_OPTIONS,
-  activeViewOptionCount,
   cardLifecycleFor,
   hasActiveFilters,
   type ChatFilters,
@@ -755,9 +754,15 @@ export default function ChatList({
 
   /**
    * Commit both halves of the sidebar's filter state. Called by the filters
-   * modal on Apply, and by the filter bar's "Archived" toggle straight from
-   * the click — one commit path, so persistence and the refetch cannot differ
-   * between them.
+   * modal on Apply, and by all three of the filter bar's scope toggles straight
+   * from the click — one commit path, so persistence and the refetch cannot
+   * differ between them.
+   *
+   * Two of the three scopes are persisted here and `bookmarked` is not, which
+   * is deliberate rather than an omission: it is the one scope that can empty
+   * the sidebar on its own, so remembering it would greet the user with a blank
+   * list they have no memory of asking for. Pinned in
+   * ChatList.showArchived.test.tsx.
    *
    * No explicit reload: `load` closes over `viewOptions`, so changing it
    * recreates the callback and the effect that depends on it refetches.
@@ -1227,25 +1232,30 @@ export default function ChatList({
     }).length;
   }, [chats, viewOptions.showTriggered]);
 
-  // Determine the empty state message. `showArchived` is normalised away
-  // first, and explicitly, even though `activeViewOptionCount` happens to
-  // exclude it too — the two exclusions are NOT the same question and must not
-  // be allowed to share an answer:
+  // Determine the empty state message. Of the three view options only
+  // `bookmarked` is named here, and the criterion it is named by is "can this
+  // option have EMPTIED the list?":
   //
-  //   - the badge excludes it because it has its own control outside the modal;
-  //   - this excludes it because switching it ON only ever ADDS rows, so an
-  //     empty list is never its doing and "No chats match the current filters"
-  //     would be a lie.
+  //   - `bookmarked` can, on its own, and routinely does — a user with
+  //     thousands of chats and no bookmarks gets nothing back;
+  //   - `showTriggered` and `showArchived` cannot EMPTY a non-empty list.
+  //     Both only widen what the server is asked for, and the widened request
+  //     still comes back with up to `limit` rows, so a list that had rows keeps
+  //     rows. (Not the stronger "they only ever add rows": under fixed-limit
+  //     pagination — `limit = Math.max(20, loadedCountRef.current)` — widening
+  //     the scope can push rows that were visible out of the window. That
+  //     reshuffles the page; it cannot empty it.) An empty list is therefore
+  //     never their doing, and "No chats match the current filters" would be a
+  //     lie.
   //
-  // They coincide for `showArchived` and for nothing else. Promote
-  // `bookmarked` to the filter bar and it earns the badge exemption while
-  // still being able to empty the list all by itself — at which point riding
-  // on the badge's set here would tell a user with thousands of chats, and no
-  // bookmarks, that they have none. So this states its own criterion.
-  const isFiltered =
-    activeViewOptionCount({ ...viewOptions, showArchived: DEFAULT_CHAT_VIEW_OPTIONS.showArchived }) > 0 ||
-    hasActiveFilters(filters) ||
-    matchingChatIds !== null;
+  // All three now have their own toggle button in the filter bar, so all three
+  // are exempt from the filter button's badge — which is why that exemption is
+  // NOT what this reads. The badge asks "is there an edit inside the modal?";
+  // this asks whether anything could have taken rows away. The two questions
+  // were once close enough to be confused, and the answers have now separated
+  // completely: the badge counts none of the view options and this one counts
+  // one of them.
+  const isFiltered = viewOptions.bookmarked || hasActiveFilters(filters) || matchingChatIds !== null;
 
   /**
    * The other direction gets said out loud: OFF is the default, and it is now

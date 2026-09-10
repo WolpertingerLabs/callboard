@@ -18,12 +18,12 @@ export const DEFAULT_CHAT_FILTERS: ChatFilters = {
 };
 
 /**
- * Sidebar scope — mostly edited alongside {@link ChatFilters} in the filters
- * modal (`showArchived` has its own toggle button in the filter bar), but
- * deliberately a separate type: these are resolved SERVER-side, while
- * ChatFilters is client-side post-filtering. Folding them together would drag
- * them into {@link hasActiveFilters}, which forces the list to fetch everything
- * and hides "Load next page" — wrong for options that paginate perfectly well.
+ * Sidebar scope — the three toggle buttons in the filter bar, and deliberately
+ * a separate type from {@link ChatFilters}: these are resolved SERVER-side,
+ * while ChatFilters is client-side post-filtering. Folding them together would
+ * drag them into {@link hasActiveFilters}, which forces the list to fetch
+ * everything and hides "Load next page" — wrong for options that paginate
+ * perfectly well.
  */
 export interface ChatViewOptions {
   /** Only bookmarked chats. Session-only — deliberately not persisted. */
@@ -39,8 +39,8 @@ export interface ChatViewOptions {
    * chats": nothing triggered can be a card, so the rows that option admitted
    * this one removed again.
    *
-   * The one view option with its own control in the filter bar rather than the
-   * modal, because it is flipped far more often than the rest put together.
+   * The most-flipped of the three, and the one that was promoted to the filter
+   * bar first, on its own, before the other two followed it.
    *
    * A browse scope, and near enough the complement of the unconditional dim in
    * `utils/chatDimming`: off, the rows that would have been faded are not
@@ -96,44 +96,23 @@ export function cardLifecycleFor({ showArchived, searching }: { showArchived: bo
 }
 
 /**
- * Options the badge deliberately does not count, because the sidebar shows
- * their state directly.
+ * Fields that are both switched on and actually carry a value.
  *
- * The badge sits on the button that OPENS the filters modal, so what it
- * promises is "there are edits in here". `showArchived` is a toggle button in
- * the filter bar itself now: counting it would put a "1 active" badge on a
- * modal that contains nothing to see, pointing the user at a control which is
- * already lit up right next to it.
+ * This is the whole of the filter button's badge now. There used to be an
+ * `activeViewOptionCount` added to it, past a `BADGE_EXEMPT_VIEW_OPTIONS` set
+ * that excluded any option with its own visible control — and once all three
+ * scopes moved to the filter bar, every key was in the exemption set and the
+ * function could only ever return 0. It was deleted rather than left computing
+ * a constant: the badge promises "there are edits inside this modal", and the
+ * modal now contains exactly these four fields.
  *
- * A set rather than a hardcoded omission because the criterion generalises —
- * anything promoted out of the modal to its own control belongs here on the
- * way out.
- *
- * It generalises no further than that. In particular this is NOT the list of
- * options an empty sidebar cannot be blamed on. That is a different question —
- * "can this option only ever ADD rows?" — with a different answer, and
- * `ChatList`'s `isFiltered` asks it separately and explicitly for exactly this
- * reason. The two agree about `showArchived` and about nothing else: a
- * `bookmarked` promoted to the bar would belong here and NOT there, since it
- * can empty the list on its own, and an empty state blaming nothing would then
- * tell a user with thousands of chats and no bookmarks that they have none.
- * Adding a key here is not licence to drop the exclusion over there.
+ * What the deletion must NOT take with it is `ChatList`'s `isFiltered`, which
+ * looks like it was asking the same question and was not. Its question is "can
+ * this option have EMPTIED the list?", and it names `bookmarked` explicitly
+ * because that one can, badge or no badge — an empty state that blamed nothing
+ * would tell a user with thousands of chats and no bookmarks that they have
+ * none.
  */
-const BADGE_EXEMPT_VIEW_OPTIONS = new Set<keyof ChatViewOptions>(["showArchived"]);
-
-/**
- * How many view options are off their default — drives the filter button's
- * badge, and only that. Options with their own control in the filter bar are
- * exempt; see {@link BADGE_EXEMPT_VIEW_OPTIONS}, including the note on what
- * the exemption does not extend to.
- */
-export function activeViewOptionCount(options: ChatViewOptions): number {
-  return (Object.keys(DEFAULT_CHAT_VIEW_OPTIONS) as (keyof ChatViewOptions)[]).filter(
-    (key) => !BADGE_EXEMPT_VIEW_OPTIONS.has(key) && options[key] !== DEFAULT_CHAT_VIEW_OPTIONS[key],
-  ).length;
-}
-
-/** Fields that are both switched on and actually carry a value. */
 export function activeFilterCount(filters: ChatFilters): number {
   return (Object.keys(filters) as (keyof ChatFilters)[]).filter((key) => filters[key].active && filters[key].value !== "").length;
 }
