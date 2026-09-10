@@ -30,14 +30,17 @@ export function chatCardId(chat: Pick<Chat, "id" | "metadata">): string | undefi
 /**
  * Whether the chat is filed under a card that is currently open.
  *
- * The shared question behind two features: the dim fades the rows this returns
- * false for, and "Open chats first" files them under the Archived header.
- * A dangling id — the root chat was deleted — is a chat with no live card,
- * same as never having had one, so it answers false like an unfiled chat.
+ * The question behind the dim: it fades the rows this returns false for. A
+ * dangling id — the root chat was deleted — is a chat with no live card, same
+ * as never having had one, so it answers false like an unfiled chat.
  *
- * Says nothing about whether the cards have loaded: callers hold that flag
- * (see {@link DimContext.cardsLoaded}) because they differ in what to do with
- * it — the dim suppresses itself, the sectioning renders as if it were off.
+ * The same rows the server withholds under `cardLifecycle=active`, which is
+ * what the "Show archived" toggle asks for when it is off. Two implementations
+ * of one predicate, deliberately: with the toggle off nothing here has anything
+ * to fade, and with it on the fade is the only thing marking what came back.
+ *
+ * Says nothing about whether the cards have loaded: the caller holds that flag
+ * (see {@link DimContext.cardsLoaded}).
  */
 export function isChatCardActive(
   chat: Pick<Chat, "id" | "metadata">,
@@ -85,7 +88,9 @@ export interface DimContext {
  * the exemptions as "rows that need the user" and leave it at that.
  *
  * Fades a chat whose card is archived *or* absent — the same predicate the dim
- * has always used, now with no toggle in front of it.
+ * has always used, now with no toggle in front of it. "Show archived" is not
+ * such a toggle: it decides whether these rows are fetched at all, so with it
+ * off this simply never has a row to fade.
  */
 export function isChatDimmed(
   chat: Pick<Chat, "id" | "metadata">,

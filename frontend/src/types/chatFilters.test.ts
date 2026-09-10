@@ -9,8 +9,8 @@ import {
   DEFAULT_CHAT_VIEW_OPTIONS,
   activeFilterCount,
   activeViewOptionCount,
+  cardLifecycleFor,
   hasActiveFilters,
-  resolveCardLifecycle,
   type ChatFilters,
   type ChatViewOptions,
 } from "./chatFilters";
@@ -48,21 +48,10 @@ describe("activeViewOptionCount", () => {
   });
 
   it("counts each option that differs from its default", () => {
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardLifecycle: "active" })).toBe(1);
+    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true })).toBe(1);
     // Spelled out rather than spread, so a new option that forgets its default
     // shows up here as a type error instead of a silently uncounted badge.
-    // Five fields are non-default here but only four count: cardsOnly is the
-    // deprecated alias of cardLifecycle and would badge one choice twice.
-    expect(activeViewOptionCount({ bookmarked: true, showTriggered: true, cardLifecycle: "active", cardsOnly: true, sortByCardActive: true })).toBe(4);
-  });
-
-  it("counts either non-default lifecycle scope, and never double-counts its alias", () => {
-    // The badge must fire for "inactive" too — the whole point of the filter is
-    // that the archived side is a real answer, not the absence of one.
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardLifecycle: "inactive" })).toBe(1);
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardLifecycle: "active", cardsOnly: true })).toBe(1);
-    // A store where the pair disagrees (downgrade, hand edit) still badges once.
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardsOnly: true })).toBe(0);
+    expect(activeViewOptionCount({ bookmarked: true, showTriggered: true, showArchived: true })).toBe(3);
   });
 
   it("counts showTriggered as active only when ON — hidden is the default", () => {
@@ -71,13 +60,15 @@ describe("activeViewOptionCount", () => {
   });
 
   /**
-   * The dim is unconditional now, so `dimCardless` is gone from the type — but
-   * it is still sitting in the localStorage of every user who ever opened the
-   * filters modal. The count walks the DEFAULTS' keys, not the stored object's,
-   * which is what makes a retired key inert rather than a phantom badge.
+   * Three options have been retired from this type — the dim switch, the
+   * three-way lifecycle scope and its `cardsOnly` alias, and "Open chats
+   * first" — and every one of them is still sitting in the localStorage of
+   * anyone who ever opened the filters modal. The count walks the DEFAULTS'
+   * keys, not the stored object's, which is what makes a retired key inert
+   * rather than a phantom badge over an option that no longer exists.
    */
-  it("ignores a retired dimCardless key left in a persisted store", () => {
-    const stored = { ...DEFAULT_CHAT_VIEW_OPTIONS, dimCardless: true } as ChatViewOptions;
+  it("ignores retired keys left in a persisted store", () => {
+    const stored = { ...DEFAULT_CHAT_VIEW_OPTIONS, dimCardless: true, cardLifecycle: "inactive", cardsOnly: true, sortByCardActive: true } as ChatViewOptions;
     expect(() => activeViewOptionCount(stored)).not.toThrow();
     expect(activeViewOptionCount(stored)).toBe(0);
     expect(activeViewOptionCount({ ...stored, showTriggered: true })).toBe(1);
@@ -85,27 +76,19 @@ describe("activeViewOptionCount", () => {
 });
 
 /**
- * Back-compat for the persisted pref. A user who left "Cards only" on before
- * this filter existed has `cardsOnly: true` in localStorage and no
- * `cardLifecycle` — losing that would silently widen their sidebar from open
- * cards to all 8k chats on upgrade.
+ * The one thing "Show archived" does to a request. Off is the default, so this
+ * mapping decides what the overwhelming majority of sidebar loads ask for —
+ * getting it backwards would either hide every open chat or quietly restore the
+ * old unscoped list.
  */
-describe("resolveCardLifecycle", () => {
-  it("reads a legacy cardsOnly pref as active", () => {
-    expect(resolveCardLifecycle({ cardsOnly: true })).toBe("active");
-    expect(resolveCardLifecycle({ cardsOnly: false })).toBe("all");
-    expect(resolveCardLifecycle({})).toBe("all");
+describe("cardLifecycleFor", () => {
+  it("asks for open-card trees when archived chats are hidden", () => {
+    expect(cardLifecycleFor(false)).toBe("active");
   });
 
-  it("prefers an explicit cardLifecycle over the alias", () => {
-    expect(resolveCardLifecycle({ cardLifecycle: "inactive", cardsOnly: true })).toBe("inactive");
-    expect(resolveCardLifecycle({ cardLifecycle: "all", cardsOnly: true })).toBe("all");
-  });
-
-  it("rejects a value the store should not hold", () => {
-    // Comes out of JSON any bundle version or hand edit could have written,
-    // and goes straight into a query param.
-    expect(resolveCardLifecycle({ cardLifecycle: "archived" as never })).toBe("all");
-    expect(resolveCardLifecycle({ cardLifecycle: "archived" as never, cardsOnly: true })).toBe("active");
+  it("asks for everything when they are shown, rather than for the archived side alone", () => {
+    // "all", not "inactive": archived rows come back interleaved with the open
+    // ones and dimmed in place, which is the entire design of the toggle.
+    expect(cardLifecycleFor(true)).toBe("all");
   });
 });

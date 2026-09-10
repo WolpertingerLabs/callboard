@@ -1,12 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, ListTree, Loader2 } from "lucide-react";
 import { getChatTree, type Chat, type ChatTreeNode, type ChatTreeResponse } from "../api";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
-import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
-import { sectionByActive } from "../utils/chatSections";
-import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 
 /**
  * The sidebar chat list.
@@ -43,15 +40,6 @@ interface Props {
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
   /** Whether this row's card is archived or absent — see `utils/chatDimming`. */
   isDimmed?: (chat: Chat) => boolean;
-  /**
-   * "Open chats first": whether a chat is on an open card. A predicate rather
-   * than a pre-sorted list of chats, because a lineage group collapses into one
-   * row and can straddle both buckets — a partitioned array would interleave
-   * its members and file the group by whichever one happened to sort first.
-   * Absent means the option is off (or the cards have not loaded): no headers,
-   * original order.
-   */
-  isCardActive?: (chat: Chat) => boolean;
 }
 
 interface LineageInfo {
@@ -64,20 +52,6 @@ interface Row {
   chat: Chat;
   rootKey: string;
   isGroup: boolean;
-  /**
-   * Chats from the `chats` prop this row stands for — 1 for a lone chat, the
-   * group's size for a group. The section headers count chats, not rows, so a
-   * group has to carry its own weight to the tally.
-   *
-   * Deliberately *not* "chats visible under this row": expanding a group
-   * renders `trees[rootKey]`, the server's authoritative tree, which no client
-   * filter has been applied to — expand a group under "Show triggered chats:
-   * off" and more rows can appear than this counted. Following that would make
-   * the header's number jump on every expand, and jump to a figure the section
-   * above it does not share. The count answers "how many of the chats this
-   * list loaded are filed here", which is stable.
-   */
-  size: number;
 }
 
 /** Defense cap against corrupt parent-pointer chains (mirrors the server). */
@@ -236,7 +210,6 @@ export default function ChatTreeList({
   cardMenuFor,
   sessionStatusFor,
   isDimmed,
-  isCardActive,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -265,7 +238,7 @@ export default function ChatTreeList({
       // Always set: this row's own chat counted itself into the bucket above.
       const size = groupSizes.get(rootKey)!;
       const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
-      result.push({ chat, rootKey, isGroup, size });
+      result.push({ chat, rootKey, isGroup });
     }
     return result;
   }, [chats]);
@@ -351,20 +324,6 @@ export default function ChatTreeList({
 
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
 
-  // Each group is filed by its header row's chat — the one actually rendered
-  // and labelled — so a group whose members straddle both buckets still
-  // appears exactly once. Cheap enough to redo per render; `rows` above is the
-  // memoized part.
-  const sections = sectionByActive(
-    rows,
-    (row) => !!isCardActive?.(row.chat),
-    !!isCardActive,
-    (row) => row.size,
-  );
-
-  /** Collapse state for those headers, persisted via localStorage. */
-  const sectionExpansion = useChatSectionExpansion();
-
   const renderRow = ({ chat, rootKey, isGroup }: Row) => {
     if (!isGroup) {
       return (
@@ -437,24 +396,6 @@ export default function ChatTreeList({
       </div>
     );
   };
-
-  if (sections) {
-    return (
-      <>
-        {sections.map((section) => (
-          <Fragment key={section.key}>
-            <ChatSectionHeader
-              label={section.label}
-              count={section.count}
-              expanded={sectionExpansion.isExpanded(section.key)}
-              onToggle={() => sectionExpansion.toggle(section.key)}
-            />
-            {sectionExpansion.isExpanded(section.key) && section.items.map(renderRow)}
-          </Fragment>
-        ))}
-      </>
-    );
-  }
 
   return <>{rows.map(renderRow)}</>;
 }

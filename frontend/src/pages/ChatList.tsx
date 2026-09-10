@@ -24,11 +24,11 @@ import ConfirmModal from "../components/ConfirmModal";
 import EditTitleModal from "../components/EditTitleModal";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { chatCardId, isChatDimmed } from "../utils/chatDimming";
-import { activeSectionPredicate } from "../utils/chatSections";
 import {
   DEFAULT_CHAT_FILTERS,
   DEFAULT_CHAT_VIEW_OPTIONS,
   activeViewOptionCount,
+  cardLifecycleFor,
   hasActiveFilters,
   type ChatFilters,
   type ChatViewOptions,
@@ -37,10 +37,8 @@ import {
   initializeSuggestedDirectories,
   getShowTriggeredChats,
   saveShowTriggeredChats,
-  getChatsCardLifecycle,
-  saveChatsCardLifecycle,
-  getChatsSortByCardActive,
-  saveChatsSortByCardActive,
+  getChatsShowArchived,
+  saveChatsShowArchived,
   type SidebarViewMode,
 } from "../utils/localStorage";
 
@@ -85,12 +83,7 @@ export default function ChatList({
   const [viewOptions, setViewOptions] = useState<ChatViewOptions>(() => ({
     ...DEFAULT_CHAT_VIEW_OPTIONS,
     showTriggered: getShowTriggeredChats(),
-    cardLifecycle: getChatsCardLifecycle(),
-    // The deprecated alias, kept consistent with the scope above so nothing
-    // reading the pair (a downgraded bundle, a stale persisted store) sees
-    // them disagree.
-    cardsOnly: getChatsCardLifecycle() === "active",
-    sortByCardActive: getChatsSortByCardActive(),
+    showArchived: getChatsShowArchived(),
   }));
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
@@ -185,7 +178,10 @@ export default function ChatList({
   const anyFilterActive = hasActiveFilters(filters) || matchingChatIds !== null;
 
   const load = useCallback(async () => {
-    const { bookmarked, showTriggered, cardLifecycle } = viewOptions;
+    const { bookmarked, showTriggered, showArchived } = viewOptions;
+    // The whole of "Show archived", on the request side: off asks the server
+    // for open-card trees only, so the rows the dim would fade never arrive.
+    const cardLifecycle = cardLifecycleFor(showArchived);
     // When advanced filters or content search are active, fetch all chats
     // to avoid missing matches due to pagination
     const shouldFetchAll = anyFilterActive || bookmarked;
@@ -238,7 +234,7 @@ export default function ChatList({
         undefined,
         true,
         undefined,
-        viewOptions.cardLifecycle,
+        cardLifecycleFor(viewOptions.showArchived),
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
       // this page was in flight — its offset no longer lines up, so drop the
@@ -428,16 +424,11 @@ export default function ChatList({
   /**
    * Fade rows whose card is archived or absent. Unconditional — purely a
    * render decision over cards already on the page, so there is no request to
-   * change and nothing for the user to switch off.
+   * change and nothing for the user to switch off. "Show archived" is the
+   * other half of the same idea and not an exception to it: it decides whether
+   * these rows are fetched, so with it off this has nothing left to fade.
    */
   const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsByChatId, { cardsLoaded });
-
-  /**
-   * "Open chats first": the per-chat verdict the Open/Archived split reads,
-   * or `undefined` for "render as if the option were off" — which `cardsLoaded`
-   * makes load-bearing, for the reason spelled out at the predicate itself.
-   */
-  const isCardActive = activeSectionPredicate(cardsByChatId, { sortByCardActive: viewOptions.sortByCardActive, cardsLoaded });
 
   const handleToggleCardLifecycle = async (chat: Chat) => {
     const card = cardOf(chat);
@@ -470,8 +461,7 @@ export default function ChatList({
     setFilters(nextFilters);
     setViewOptions(nextView);
     saveShowTriggeredChats(nextView.showTriggered);
-    saveChatsCardLifecycle(nextView.cardLifecycle);
-    saveChatsSortByCardActive(nextView.sortByCardActive);
+    saveChatsShowArchived(nextView.showArchived);
   };
 
   // Client-side filtering for advanced filters and content search
@@ -531,18 +521,29 @@ export default function ChatList({
     }).length;
   }, [chats, viewOptions.showTriggered]);
 
-  // Determine the empty state message. `sortByCardActive` is normalised away
-  // first: it only reorders rows and never removes one, so an empty list is
-  // never its doing and "No chats match the current filters" would be a lie.
-  // It still counts toward the filter button's badge, where "you have changed
-  // the view" is exactly what the badge means.
+  // Determine the empty state message. `showArchived` is normalised away
+  // first, for the reason its predecessor was: switching it ON only ever ADDS
+  // rows, so an empty list is never its doing and "No chats match the current
+  // filters" would be a lie. It still counts toward the filter button's badge,
+  // where "you have changed the view" is exactly what the badge means.
   const isFiltered =
-    activeViewOptionCount({
-      ...viewOptions,
-      sortByCardActive: DEFAULT_CHAT_VIEW_OPTIONS.sortByCardActive,
-    }) > 0 ||
+    activeViewOptionCount({ ...viewOptions, showArchived: DEFAULT_CHAT_VIEW_OPTIONS.showArchived }) > 0 ||
     hasActiveFilters(filters) ||
     matchingChatIds !== null;
+
+  /**
+   * The other direction is not normalised away, and gets said out loud: OFF is
+   * the default, so it never reaches the badge, yet it is now the likeliest
+   * reason for an empty sidebar — a folder whose cards are all archived shows
+   * nothing at all, where before it showed a list of faded rows.
+   */
+  const emptyMessage = isFiltered
+    ? viewOptions.showArchived
+      ? "No chats match the current filters"
+      : "No chats match the current filters. Archived chats are hidden."
+    : viewOptions.showArchived
+      ? "No chats yet. Create one to get started."
+      : "No chats on an open card. Turn on “Show archived” in filters to include chats on archived cards.";
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
   if (sidebarCollapsed) {
@@ -730,9 +731,7 @@ export default function ChatList({
           </div>
         )}
         {filteredChats.length === 0 && !isInitialLoading && (
-          <p style={{ padding: 20, color: "var(--chatlist-empty-text)", textAlign: "center" }}>
-            {isFiltered ? "No chats match the current filters" : "No chats yet. Create one to get started."}
-          </p>
+          <p style={{ padding: 20, color: "var(--chatlist-empty-text)", textAlign: "center" }}>{emptyMessage}</p>
         )}
         <ChatTreeList
           chats={filteredChats}
@@ -745,9 +744,6 @@ export default function ChatList({
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isDimmed={isDimmed}
-          // The predicate, not a pre-sorted list: the tree collapses a
-          // lineage group into one row and must file it whole.
-          isCardActive={isCardActive}
         />
 
         {viewOptions.showTriggered && triggeredCount > 0 && (
