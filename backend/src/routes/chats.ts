@@ -1388,6 +1388,15 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
 const MAX_TITLE_LENGTH = 240;
 
 /**
+ * Answer for every way the store can decline the write. Deliberately does not
+ * say *which* — the three causes are not distinguishable from here, and naming
+ * one ("its metadata could not be read") would misdirect diagnosis on a full
+ * disk, at the moment the record has in fact just been damaged. What it can
+ * promise is the part the user needs: the title they asked for is not stored.
+ */
+const TITLE_WRITE_FAILED = "Could not update this chat's record, so its title is unchanged — its stored metadata may be unreadable, or the write itself failed";
+
+/**
  * Persist a chat's title, whoever chose it — typed by the user or produced by
  * the titler. Both routes below go through here, because both are renames and
  * a rename has two properties that a naive metadata write gets wrong.
@@ -1411,15 +1420,25 @@ const MAX_TITLE_LENGTH = 240;
  * replaced by `{"title":"..."}`. `parseChatMetadata` cannot report that: it
  * answers `{}` for unreadable and for empty alike.
  *
- * Returns "corrupt" for that case, so the caller can refuse instead of
- * reporting a success that ate the record. `false` from `updateChatMetadata`
- * has two causes and they want opposite answers, so the absence of a record —
- * the common case, since most chats have only ever existed as a session log —
- * is distinguished by asking for it directly.
+ * Returns "unwritten" for that case, so the caller can refuse instead of
+ * reporting a success that ate the record.
+ *
+ * `false` from `updateChatMetadata` means only *the store did not write*, and
+ * three things produce it: no record to merge into, metadata that would not
+ * parse, and `saveChat` itself throwing (`ENOSPC` and friends — its `catch`
+ * swallows those into the same `false`). Only the first wants a different
+ * answer, and it is settled *before* the call rather than after: `findChat`
+ * sets `_from_filesystem` in exactly the branch where the store had nothing,
+ * so the record-less case — roughly a third of chats, which have only ever
+ * existed as a session log — is already known here. Asking `getChat` instead
+ * would be two more uncached full-corpus directory scans (~44ms each on ~9k
+ * records) of synchronous blocked event loop, on the very chats this path
+ * exists to serve.
  */
-function writeChatTitle(chat: any, title: string | null): "ok" | "corrupt" {
-  if (chatFileService.updateChatMetadata(chat.id, { title }, { touch: false })) return "ok";
-  if (chatFileService.getChat(chat.id)) return "corrupt";
+function writeChatTitle(chat: any, title: string | null): "ok" | "unwritten" {
+  if (!chat._from_filesystem) {
+    return chatFileService.updateChatMetadata(chat.id, { title }, { touch: false }) ? "ok" : "unwritten";
+  }
 
   chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, {
     metadata: JSON.stringify({ ...parseChatMetadata(chat.metadata), title }),
@@ -1452,7 +1471,7 @@ chatsRouter.patch("/:id/title", (req, res) => {
   /* #swagger.responses[200] = { description: "{ title }: the stored title, or null if it was cleared" } */
   /* #swagger.responses[400] = { description: "Invalid request body" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
-  /* #swagger.responses[500] = { description: "The chat's stored metadata could not be read, so it was not overwritten" } */
+  /* #swagger.responses[500] = { description: "The chat's record could not be updated, so its title is unchanged" } */
   const { title } = req.body ?? {};
   if (typeof title !== "string") {
     return res.status(400).json({ error: "title must be a string" });
@@ -1471,8 +1490,8 @@ chatsRouter.patch("/:id/title", (req, res) => {
     // string would take the same branch while looking like a deliberate blank.
     const stored = trimmed || null;
 
-    if (writeChatTitle(chat, stored) === "corrupt") {
-      return res.status(500).json({ error: "This chat's stored metadata could not be read, so it was left untouched rather than overwritten" });
+    if (writeChatTitle(chat, stored) === "unwritten") {
+      return res.status(500).json({ error: TITLE_WRITE_FAILED });
     }
 
     sessionRegistry.notifyMetadata(chat.id, { title: stored });
@@ -1547,6 +1566,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
   /* #swagger.responses[400] = { description: "The chat ran on a removed harness and cannot be titled" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[422] = { description: "The chat has no readable conversation to title" } */
+  /* #swagger.responses[500] = { description: "The chat's record could not be updated, so its title is unchanged" } */
   /* #swagger.responses[502] = { description: "The model produced no usable title" } */
   const chat = findChat(req.params.id, false) as any;
   if (!chat) return res.status(404).json({ error: "Chat not found" });
@@ -1593,8 +1613,8 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
     // the record handed to it.
     const fresh = (findChat(req.params.id, false) as any) ?? chat;
 
-    if (writeChatTitle(fresh, title) === "corrupt") {
-      return res.status(500).json({ error: "This chat's stored metadata could not be read, so it was left untouched rather than overwritten" });
+    if (writeChatTitle(fresh, title) === "unwritten") {
+      return res.status(500).json({ error: TITLE_WRITE_FAILED });
     }
 
     sessionRegistry.notifyMetadata(fresh.id, { title });

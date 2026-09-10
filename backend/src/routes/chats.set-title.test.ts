@@ -53,6 +53,7 @@ const upsertChat = vi.fn((id: string, folder: string, sessionId: string, updates
   record = { id, folder, session_id: sessionId, ...updates };
   return record;
 });
+const getChat = vi.fn(() => record);
 const notifyMetadata = vi.fn();
 const clearListCaches = vi.fn();
 
@@ -64,7 +65,7 @@ vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
     upsertChat: (...args: any[]) => (upsertChat as any)(...args),
     updateChatMetadata: (...args: any[]) => (updateChatMetadata as any)(...args),
-    getChat: () => record,
+    getChat: () => getChat(),
   },
 }));
 vi.mock("../services/list-caches.js", async (importOriginal) => ({
@@ -123,7 +124,16 @@ function setChat(meta: Record<string, unknown> = {}, opts: { stored?: boolean; m
     created_at: BORN,
     updated_at: LAST_SAID,
   };
-  record = opts.stored === false ? null : { ...chat, metadata: opts.metadata ?? blob };
+  // `findChat` stamps `_from_filesystem` in exactly the branch where the store
+  // had no record, and the route now reads that instead of probing `getChat`
+  // (two more uncached full-corpus scans). The fake has to carry it too, or
+  // the record-less case is not the one the route actually sees.
+  if (opts.stored === false) {
+    chat._from_filesystem = true;
+    record = null;
+  } else {
+    record = { ...chat, metadata: opts.metadata ?? blob };
+  }
 }
 
 /** The metadata the route left behind, however it got there. */
@@ -132,6 +142,7 @@ const storedMeta = () => JSON.parse(record.metadata);
 beforeEach(() => {
   upsertChat.mockClear();
   updateChatMetadata.mockClear();
+  getChat.mockClear();
   notifyMetadata.mockClear();
   clearListCaches.mockClear();
   setChat();
@@ -190,7 +201,7 @@ describe("PATCH /api/chats/:id/title", () => {
     expect(notifyMetadata).toHaveBeenCalledWith("chat-1", { title: null });
   });
 
-  it("refuses to overwrite a record whose metadata cannot be read", async () => {
+  it("refuses to write rather than reporting a success the store did not make", async () => {
     // `saveChat` is a plain writeFileSync, so a crash mid-write leaves a
     // truncated record. Merging into it is impossible, and a blob replacement
     // would take `session_ids` (the chat's whole history), `card`,
@@ -202,7 +213,10 @@ describe("PATCH /api/chats/:id/title", () => {
     const res = await setTitle({ title: "Named by hand" });
 
     expect(res.code).toBe(500);
-    expect(res.body.error).toMatch(/could not be read/i);
+    // The message does not name a cause: unreadable metadata, a full disk and
+    // any other write failure are indistinguishable from the route, and
+    // naming one would misdirect diagnosis on the others.
+    expect(res.body.error).toMatch(/title is unchanged/i);
     // Untouched, not partially rewritten.
     expect(record.metadata).toBe('{"session_ids":["session-1"],"car');
     expect(upsertChat).not.toHaveBeenCalled();
@@ -234,6 +248,22 @@ describe("PATCH /api/chats/:id/title", () => {
     expect(written.updated_at).toBe(LAST_SAID);
     // And reachable through the store's own lookup, not just as bytes.
     expect(JSON.parse(realChatFileService.getChat("chat-1")!.metadata).title).toBe("Named by hand");
+  });
+
+  it("does not go looking for a record it already knows is absent", async () => {
+    // `getChat` is uncached: a miss is a readdir + readFile + JSON.parse over
+    // every record — ~44ms of blocked event loop on ~9k of them. Probing it to
+    // find out whether a record exists would spend that twice over, on the
+    // roughly one chat in three that has never had one. `findChat` already
+    // answered the question via `_from_filesystem`, so nothing asks again.
+    setChat({}, { stored: false });
+
+    const res = await setTitle({ title: "Named by hand" });
+
+    expect(res.code).toBe(200);
+    expect(getChat).not.toHaveBeenCalled();
+    expect(updateChatMetadata).not.toHaveBeenCalled();
+    expect(upsertChat).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a title that is not a string", async () => {

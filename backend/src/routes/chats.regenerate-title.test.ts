@@ -148,7 +148,15 @@ function setChat(meta: Record<string, unknown> = {}, fields: Record<string, unkn
     updated_at: LAST_SAID,
     ...fields,
   };
-  record = opts.stored === false ? null : { ...chat };
+  // `findChat` stamps `_from_filesystem` in exactly the branch where the store
+  // had no record, and `writeChatTitle` reads that rather than probing
+  // `getChat`. The fake carries it so the record-less case is the real one.
+  if (opts.stored === false) {
+    chat._from_filesystem = true;
+    record = null;
+  } else {
+    record = { ...chat };
+  }
 }
 
 /** The metadata the route left behind, however it got there. */
