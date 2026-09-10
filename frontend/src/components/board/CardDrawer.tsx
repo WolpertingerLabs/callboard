@@ -378,7 +378,7 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
           )}
           <button
             onClick={() => onPatch({ lifecycle: closed ? "open" : "closed" })}
-            title={closed ? "Reopen this card" : "Close: hides the card from the open board; chats and sessions are untouched"}
+            title={closed ? "Unarchive this chat" : "Archive: hides the card from the open board; chats and sessions are untouched"}
             style={{
               display: "flex",
               alignItems: "center",
@@ -394,7 +394,7 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
             }}
           >
             {closed ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-            {closed ? "Reopen" : "Close card"}
+            {closed ? "Unarchive" : "Archive chat"}
           </button>
         </div>
       </div>

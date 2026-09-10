@@ -11,8 +11,8 @@ import {
   Bell,
   Workflow,
   EllipsisVertical,
-  CircleCheck,
-  RotateCcw,
+  Archive,
+  ArchiveRestore,
   Pencil,
 } from "lucide-react";
 import type { Chat } from "../api";
@@ -54,7 +54,7 @@ interface Props {
   cardMenu?: ChatCardMenu;
   sessionStatus?: { active: boolean; type: string };
   /**
-   * The list's verdict on "this chat's card is closed or absent" (see
+   * The list's verdict on "this chat's card is archived or absent" (see
    * `utils/chatDimming`). A *request* to fade, not the last word — the
    * exemptions below can veto it.
    */
@@ -157,7 +157,7 @@ export default function ChatListItem({
    *
    * A faded row that is the open one, has a summon on it, has unread output,
    * or is the row a job run is waiting on for approval is the precise inverse
-   * of what this option is for — the point is to make live work stand out, and
+   * of what the dim is for — the point is to make live work stand out, and
    * those are the loudest live work there is. The exemption lives here rather
    * than in the list because each is already parsed out of the chat's metadata
    * a few lines up.
@@ -481,12 +481,12 @@ export default function ChatListItem({
                   )}
                   {cardMenu?.card && cardMenu.onToggleLifecycle && (
                     <MenuRow
-                      icon={cardMenu.card.lifecycle === "open" ? <CircleCheck size={16} /> : <RotateCcw size={16} />}
-                      label={cardMenu.card.lifecycle === "open" ? "Close card" : "Reopen card"}
+                      icon={cardMenu.card.lifecycle === "open" ? <Archive size={16} /> : <ArchiveRestore size={16} />}
+                      label={cardMenu.card.lifecycle === "open" ? "Archive chat" : "Unarchive chat"}
                       title={
                         cardMenu.card.lifecycle === "open"
-                          ? `Close "${cardMenu.card.title}" — it moves to the board's Closed strip`
-                          : `Reopen "${cardMenu.card.title}" — it returns to the board`
+                          ? `Archive "${cardMenu.card.title}" — it moves to the board's Archived strip`
+                          : `Unarchive "${cardMenu.card.title}" — it returns to the board`
                       }
                       onClick={() => {
                         setMenuPos(null);

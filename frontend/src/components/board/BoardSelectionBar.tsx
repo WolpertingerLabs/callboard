@@ -21,11 +21,12 @@ interface BoardSelectionBarProps {
 /**
  * The bar that appears while a multi-select gesture is live.
  *
- * Generic in its actions so a later "archive" or "recategorise" needs no
- * change here, though today the board wires exactly one: close, or reopen.
+ * Generic in its actions so a later "recategorise" needs no change here,
+ * though today the board wires exactly one: archive, or unarchive.
  * That singularity is the point — selection is scoped to one lifecycle, so
  * the bar always offers one unambiguous verb rather than asking the user to
- * work out what "Close 3 / Reopen 2" would do to their five selected cards.
+ * work out what "Archive 3 / Unarchive 2" would do to their five selected
+ * cards.
  */
 export default function BoardSelectionBar({
   count,

@@ -241,7 +241,7 @@ describe("ChatTreeList dimming", () => {
 });
 
 /**
- * "Active cards first" over grouped rows.
+ * "Open chats first" over grouped rows.
  *
  * The case this exists for: a lineage group collapses into ONE row but its
  * members can straddle both buckets. Handing this component a pre-partitioned
@@ -264,7 +264,7 @@ describe("ChatTreeList active-first sections", () => {
    */
   // Lowercase-only id class, because textContent runs a row's preview straight
   // into its timestamp ("chat solo-noneJul 28…") with no separator.
-  const outline = (container: HTMLElement) => container.textContent?.match(/Inactive|Active|chat [a-z0-9-]+/g) ?? [];
+  const outline = (container: HTMLElement) => container.textContent?.match(/Archived|Open|chat [a-z0-9-]+/g) ?? [];
 
   function renderSectioned(chats: Chat[], sectioned = true, cards: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = CARDS) {
     return render(
@@ -290,35 +290,35 @@ describe("ChatTreeList active-first sections", () => {
   it("files a group that straddles both buckets once, in its header row's section", () => {
     const { container } = renderSectioned(STRADDLING);
     // "chat child-1" is absent throughout: it is folded into the group's one
-    // row, which sits under Active with its parent — not pulled out into
-    // Inactive on its own account.
-    expect(outline(container)).toEqual(["Active", "chat root", "chat solo-open", "Inactive", "chat solo-none"]);
+    // row, which sits under Open with its parent — not pulled out into
+    // Archived on its own account.
+    expect(outline(container)).toEqual(["Open", "chat root", "chat solo-open", "Archived", "chat solo-none"]);
   });
 
   it("follows the header row when the straddle points the other way", () => {
     // Same group with the root's card not loaded (a closed or dangling card
     // reads the same here): the group goes wherever its header row goes, so
-    // the whole group is Inactive even though solo-open is Active.
+    // the whole group is Archived even though solo-open is Open.
     const soloOpenOnly = new Map([["solo-open", { lifecycle: "open" as const }]]);
     const { container } = renderSectioned(
       [makeChat("solo-open"), makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" })],
       true,
       soloOpenOnly,
     );
-    expect(outline(container)).toEqual(["Active", "chat solo-open", "Inactive", "chat root"]);
+    expect(outline(container)).toEqual(["Open", "chat solo-open", "Archived", "chat root"]);
   });
 
   it("renders no headers and the original order without the predicate", () => {
     // What the sidebar passes while the option is off — and, load-bearingly,
     // while the first listCards is still in flight: every chat looks card-less
-    // then, so sectioning would file the list under Inactive and then move the
+    // then, so sectioning would file the list under Archived and then move the
     // rows when the fetch lands.
     const { container } = renderSectioned(STRADDLING, false);
     expect(outline(container)).toEqual(["chat solo-none", "chat root", "chat solo-open"]);
   });
 
   it("renders no headers when every row falls in one bucket", () => {
-    // No cards loaded at all: every row is Inactive, and a one-bucket list
+    // No cards loaded at all: every row is Archived, and a one-bucket list
     // must not grow a section header for it.
     const { container } = renderSectioned(
       [makeChat("solo-none"), makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" })],
@@ -348,33 +348,33 @@ describe("ChatTreeList active-first sections", () => {
     });
 
     // STRADDLING is 4 chats in 3 rows: the root group (root + folded child-1)
-    // and solo-open under Active, solo-none under Inactive.
+    // and solo-open under Open, solo-none under Archived.
     it("counts chats rather than rows, so a folded group's members are included", () => {
       renderSectioned(STRADDLING);
       // 3, not 2: the group row speaks for its child as well as its header.
-      expect(screen.getByText(/^Active \(3\)$/)).toBeTruthy();
-      expect(screen.getByText(/^Inactive \(1\)$/)).toBeTruthy();
+      expect(screen.getByText(/^Open \(3\)$/)).toBeTruthy();
+      expect(screen.getByText(/^Archived \(1\)$/)).toBeTruthy();
     });
 
     it("collapses a section's rows while keeping its header and count", () => {
       const { container } = renderSectioned(STRADDLING);
-      fireEvent.click(screen.getByText(/^Inactive \(1\)$/));
+      fireEvent.click(screen.getByText(/^Archived \(1\)$/));
       // The hidden row is gone from the list, but the header still says how
       // many are behind it — that count is the only thing left pointing at them.
-      expect(outline(container)).toEqual(["Active", "chat root", "chat solo-open", "Inactive"]);
-      expect(screen.getByText(/^Inactive \(1\)$/)).toBeTruthy();
+      expect(outline(container)).toEqual(["Open", "chat root", "chat solo-open", "Archived"]);
+      expect(screen.getByText(/^Archived \(1\)$/)).toBeTruthy();
     });
 
     it("remembers a collapsed section across a remount", () => {
       renderSectioned(STRADDLING);
-      fireEvent.click(screen.getByText(/^Active \(3\)$/));
+      fireEvent.click(screen.getByText(/^Open \(3\)$/));
       cleanup();
 
       // This component remounting. The neighbouring case — two consumers of
       // one preference, mounted at once — lives in
       // hooks/useChatSectionExpansion.test.tsx.
       const { container } = renderSectioned(STRADDLING);
-      expect(outline(container)).toEqual(["Active", "Inactive", "chat solo-none"]);
+      expect(outline(container)).toEqual(["Open", "Archived", "chat solo-none"]);
     });
   });
 });

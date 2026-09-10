@@ -1,5 +1,5 @@
 /**
- * The "Active cards first" split.
+ * The "Open chats first" split.
  *
  * Every fixture here is deliberately in the WRONG order to start with —
  * inactive first, or interleaved. A partition test whose input already happens
@@ -8,7 +8,7 @@
  *
  * The `!cardsLoaded` case lives in the callers (they own that flag) and is
  * covered as "predicate absent" here: `enabled: false` must give back the
- * option-off rendering, not an all-Inactive list.
+ * option-off rendering, not an all-Archived list.
  */
 import { describe, expect, it } from "vitest";
 import type { CardSummary, Chat } from "../api";
@@ -30,14 +30,17 @@ const byCard = (c: Pick<Chat, "id" | "metadata">) => isChatCardActive(c, CARDS);
 const ids = (sections: { items: Pick<Chat, "id">[] }[]) => sections.map((s) => s.items.map((i) => i.id));
 
 describe("sectionByActive", () => {
-  it("puts Active before Inactive even when the input is the other way round", () => {
+  it("puts Open before Archived even when the input is the other way round", () => {
     // Input order is inactive-first: if the partition were dropped and the
     // array returned as-is, this would come back reversed.
     const items = [chat("closed", "closed-card"), chat("none"), chat("open", "open-card")];
     const sections = sectionByActive(items, byCard, true)!;
 
     expect(sections.map((s) => s.key)).toEqual(["active", "inactive"]);
-    expect(sections.map((s) => s.label)).toEqual(["Active", "Inactive"]);
+    // Labels, not keys: the keys stay "active"/"inactive" because the
+    // expand/collapse preference is stored under them.
+    expect(sections.map((s) => s.label)).toEqual(["Open", "Archived"]);
+    expect(sections.map((s) => s.key)).toEqual(["active", "inactive"]);
     expect(ids(sections)).toEqual([["open"], ["closed", "none"]]);
   });
 
@@ -60,7 +63,7 @@ describe("sectionByActive", () => {
   });
 
   it("returns null when every item is active, and when every item is inactive", () => {
-    // A lone "Active" header over an undivided list is noise.
+    // A lone "Open" header over an undivided list is noise.
     expect(sectionByActive([chat("a", "open-card"), chat("b", "open-card")], byCard, true)).toBeNull();
     expect(sectionByActive([chat("a", "closed-card"), chat("b")], byCard, true)).toBeNull();
     expect(sectionByActive([], byCard, true)).toBeNull();
@@ -118,7 +121,7 @@ describe("activeSectionPredicate", () => {
 
   it("withholds the predicate until the first listCards returns", () => {
     // `cards` is empty for as long as the fetch takes, so every chat looks
-    // card-less. Sectioning on that files the whole list under Inactive and
+    // card-less. Sectioning on that files the whole list under Archived and
     // then MOVES the rows when the fetch lands — worse than the dim's flash,
     // which only changes a shade.
     expect(activeSectionPredicate(new Map(), { sortByCardActive: true, cardsLoaded: false })).toBeUndefined();

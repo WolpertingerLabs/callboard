@@ -1,5 +1,8 @@
 /**
- * Expand/collapse state for the sidebar's Active/Inactive card sections.
+ * Expand/collapse state for the sidebar's Open/Archived card sections.
+ *
+ * Keyed `active`/`inactive` because the keys are persisted; the headers above
+ * them read "Open" and "Archived".
  *
  * One module-level store rather than `useState` per caller. `ChatTreeList` is
  * currently the only consumer, but the store is the point: this is a stored

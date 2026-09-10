@@ -142,7 +142,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "list_cards",
     qualifiedName: "mcp__callboard-tools__list_cards",
-    description: "List cards (tickets) with lifecycle and narrative status. Includes closed cards by default.",
+    description: "List cards (tickets) with lifecycle and narrative status. Includes archived cards by default.",
     parameters: [
       {
         name: "lifecycle",

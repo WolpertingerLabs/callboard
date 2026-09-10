@@ -41,10 +41,10 @@ interface Props {
   /** Card (ticket) actions for a row's kebab menu. */
   cardMenuFor: (chat: Chat) => ChatCardMenu;
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
-  /** "Dim inactive chats" verdict per row. */
+  /** Whether this row's card is archived or absent — see `utils/chatDimming`. */
   isDimmed?: (chat: Chat) => boolean;
   /**
-   * "Active cards first": whether a chat is on an open card. A predicate rather
+   * "Open chats first": whether a chat is on an open card. A predicate rather
    * than a pre-sorted list of chats, because a lineage group collapses into one
    * row and can straddle both buckets — a partitioned array would interleave
    * its members and file the group by whichever one happened to sort first.

@@ -110,7 +110,7 @@ export default function ChatList({
   const [editTitleFor, setEditTitleFor] = useState<{ chatId: string; currentTitle: string; fallbackName: string } | null>(null);
   // Card-picker modal state for the per-chat "Add to card…" action.
   // Every card, kept loaded rather than fetched when the picker opens: the row
-  // menu needs each filed chat's card lifecycle to label Close vs Reopen, and
+  // menu needs each filed chat's card lifecycle to label Archive vs Unarchive, and
   // the sidebar is the one place all card actions live now.
   const [cards, setCards] = useState<CardSummary[]>([]);
   // Whether the first listCards has come back. Only the dim reads it, and only
@@ -281,7 +281,7 @@ export default function ChatList({
 
   // Refetch when chat metadata changes (status, summon, title) via SSE. Card
   // events ride the same signal, so the row menu's lifecycle labels follow a
-  // close/reopen done on the board.
+  // archive/unarchive done on the board.
   useEffect(() => {
     if (metadataVersion === 0) return; // skip initial
     const timer = setTimeout(() => {

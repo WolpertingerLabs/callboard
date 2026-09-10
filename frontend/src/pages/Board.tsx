@@ -191,9 +191,9 @@ export default function Board() {
   const [rawSelectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   // Non-null IS "in selection mode", and it scopes the selection to one
   // lifecycle. That scoping is what lets the action bar offer exactly one
-  // verb — "Close 5" — instead of "Close 3 / Reopen 2", which is a small
-  // puzzle every time. It costs little because closed cards already live in
-  // their own collapsed strip.
+  // verb — "Archive 5" — instead of "Archive 3 / Unarchive 2", which is a
+  // small puzzle every time. It costs little because archived cards already
+  // live in their own collapsed strip.
   const [selectionLifecycle, setSelectionLifecycle] = useState<CardSummary["lifecycle"] | null>(null);
   const [anchorId, setAnchorId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -246,7 +246,7 @@ export default function Board() {
   // selects a range the user never saw, and that drift stays invisible until
   // someone reorders a section.
   const closed = cards.filter((c) => c.lifecycle === "closed").sort((a, b) => (b.closedAt ?? b.updatedAt).localeCompare(a.closedAt ?? a.updatedAt));
-  // Datalist suggestions for the category inputs — includes closed cards so a
+  // Datalist suggestions for the category inputs — includes archived cards so a
   // category doesn't vanish from autocomplete when its last open card closes.
   const knownCategories = uniqueCategories(cards);
 
@@ -266,7 +266,7 @@ export default function Board() {
   const openCard = openCardId ? cards.find((c) => c.id === openCardId) : undefined;
 
   // The one order that shift+click ranges are read from — flattened out of
-  // the very arrays rendered above, open sections first then the closed strip.
+  // the very arrays rendered above, open sections first then the archived strip.
   // Ranges cross section boundaries, matching Finder and Explorer.
   const orderedIds = [...sections.flatMap((s) => s.groups.flatMap((g) => g.cards.map((c) => c.id))), ...closed.map((c) => c.id)];
 
@@ -375,7 +375,7 @@ export default function Board() {
 
   /**
    * No confirmation and no undo, by decision: close is reversible, its inverse
-   * is one gesture away, and the closed strip is on the same screen. A modal
+   * is one gesture away, and the archived strip is on the same screen. A modal
    * on a reversible bulk action only trains people to dismiss modals.
    */
   const runBulkLifecycle = async () => {
@@ -453,7 +453,7 @@ export default function Board() {
   const listColumn: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4 };
 
   /**
-   * One card container, used by every section, group and the closed strip.
+   * One card container, used by every section, group and the archived strip.
    *
    * View mode swaps the container and the face and NOTHING else — same array,
    * same order. `orderedIds` is flattened out of these very arrays, so a list
@@ -672,7 +672,7 @@ export default function Board() {
               </div>
             ))}
 
-            {/* Closed strip */}
+            {/* Archived strip — `lifecycle: "closed"` on the wire. */}
             {closed.length > 0 && (
               <div>
                 <button
@@ -697,7 +697,7 @@ export default function Board() {
                   }}
                 >
                   {closedExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  Closed
+                  Archived
                   <span style={{ fontWeight: 400 }}>{closed.length}</span>
                 </button>
                 {closedExpanded && cardContainer(closed)}
@@ -732,7 +732,7 @@ export default function Board() {
           actions={[
             {
               key: "lifecycle",
-              label: selectionLifecycle === "open" ? `Close ${selectedIds.size}` : `Reopen ${selectedIds.size}`,
+              label: selectionLifecycle === "open" ? `Archive ${selectedIds.size}` : `Unarchive ${selectedIds.size}`,
               onRun: runBulkLifecycle,
             },
           ]}

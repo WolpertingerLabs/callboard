@@ -2756,8 +2756,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 nothing when the chat has no lineage and no descendants. */}
             {id && <ChatTreeIndicator key={id} chatId={id} folder={chat?.folder} compact={isMobile} />}
             {/* Card pill — which ticket this chat sits on, and whether it's
-                still open. Closing/reopening lives in the composer menu; this
-                is what makes that state visible without opening it. */}
+                still open. Archiving/unarchiving lives in the sidebar row's
+                menu; this is what makes that state visible without opening it. */}
             {id && chatCard && !chatCard.hidden && (
               <div
                 onClick={() => navigate("/board")}
@@ -2782,7 +2782,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 }}
                 title={
                   chatCard.lifecycle === "closed"
-                    ? `On the closed card "${chatCard.title}". Click to open the board.`
+                    ? `On the archived card "${chatCard.title}". Click to open the board.`
                     : `On the card "${chatCard.title}". Click to open the board.`
                 }
               >

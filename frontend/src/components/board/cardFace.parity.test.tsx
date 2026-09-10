@@ -284,11 +284,11 @@ describe.each(FACES)("%s — the shared selection contract", (_name, Face) => {
       expect(screen.getByText("Idle")).toBeDefined();
     });
 
-    it("says Closed over whatever the rollup still claims", () => {
+    it("says Archived over whatever the rollup still claims", () => {
       // A closed card's rollup is not recomputed on close, so the lifecycle
       // has to win here or a closed card reads as live.
       render(<Face card={card({ lifecycle: "closed", rollup: "needs_you" })} onClick={vi.fn()} />);
-      expect(screen.getByText("Closed")).toBeDefined();
+      expect(screen.getByText("Archived")).toBeDefined();
       expect(screen.queryByText("Needs you")).toBeNull();
     });
   });

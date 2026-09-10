@@ -74,28 +74,28 @@ describe("ChatListItem card menu", () => {
     onToggleLifecycle: vi.fn(),
   };
 
-  it("offers close for a chat on an open card", () => {
+  it("offers Archive chat for a chat on an open card", () => {
     const chat = makeChat({ metadata: JSON.stringify({ title: "My Chat", rootChatId: "card-1" }) });
     const { container } = render(
       <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open" } }} />,
     );
     openRowMenu(container);
 
-    expect(screen.getByText("Close card")).toBeTruthy();
+    expect(screen.getByText("Archive chat")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Close card"));
+    fireEvent.click(screen.getByText("Archive chat"));
     expect(CARD_MENU.onToggleLifecycle).toHaveBeenCalledTimes(1);
   });
 
-  it("flips the label to Reopen for a chat on a closed card", () => {
+  it("flips the label to Unarchive for a chat on an archived card", () => {
     const chat = makeChat({ metadata: JSON.stringify({ rootChatId: "card-1" }) });
     const { container } = render(
       <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Shipped", lifecycle: "closed" } }} />,
     );
     openRowMenu(container);
 
-    expect(screen.getByText("Reopen card")).toBeTruthy();
-    expect(screen.queryByText("Close card")).toBeNull();
+    expect(screen.getByText("Unarchive chat")).toBeTruthy();
+    expect(screen.queryByText("Archive chat")).toBeNull();
   });
 
   it("omits the lifecycle entry when the card record has not loaded", () => {
@@ -105,16 +105,16 @@ describe("ChatListItem card menu", () => {
     const { container } = render(<ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={CARD_MENU} />);
     openRowMenu(container);
 
-    expect(screen.queryByText("Close card")).toBeNull();
-    expect(screen.queryByText("Reopen card")).toBeNull();
+    expect(screen.queryByText("Archive chat")).toBeNull();
+    expect(screen.queryByText("Unarchive chat")).toBeNull();
   });
 
   it("renders no card entries at all without a cardMenu", () => {
     const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
     openRowMenu(container);
 
-    expect(screen.queryByText("Close card")).toBeNull();
-    expect(screen.queryByText("Reopen card")).toBeNull();
+    expect(screen.queryByText("Archive chat")).toBeNull();
+    expect(screen.queryByText("Unarchive chat")).toBeNull();
     expect(screen.getByText("Delete")).toBeTruthy();
   });
 
@@ -132,7 +132,7 @@ describe("ChatListItem card menu", () => {
     );
     openRowMenu(container);
 
-    fireEvent.click(screen.getByText("Close card"));
+    fireEvent.click(screen.getByText("Archive chat"));
 
     expect(CARD_MENU.onToggleLifecycle).toHaveBeenCalledTimes(1);
     expect(onClick).not.toHaveBeenCalled();
