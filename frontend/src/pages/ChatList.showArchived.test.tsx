@@ -377,7 +377,7 @@ describe("content search widens the scope", () => {
 
     // A directory filter that matches both fixtures, so it narrows nothing
     // client-side and only its effect on `anyFilterActive` is under test.
-    fireEvent.click(screen.getByTitle(/^Filters and view/));
+    fireEvent.click(screen.getByTitle(/^Filters/));
     const regex = screen.getByPlaceholderText("e.g. my-project|other-repo");
     fireEvent.change(regex, { target: { value: "callboard" } });
     fireEvent.click(regex.parentElement!.querySelector("button")!);
@@ -548,15 +548,15 @@ describe("the empty sidebar", () => {
   });
 
   /**
-   * The criterion `isFiltered` actually applies, stated as a test because the
-   * code that implements it looks like it could be replaced by the filter
+   * The criterion `isFiltered` actually applies, stated as two tests because
+   * the code that implements it looks like it could be replaced by the filter
    * badge's exemption set and cannot.
    *
-   * The badge asks "is there an edit inside the modal?". This asks "could this
-   * option have emptied the list?" — and only `showArchived` answers no, by
-   * only ever ADDING rows. `bookmarked` answers yes and must be blamed;
-   * promote it to the filter bar and it would earn the badge exemption while
-   * still deserving the blame here.
+   * All three scopes are toggle buttons in the bar now, so all three are exempt
+   * from the badge — the badge counts what is inside the modal, and none of
+   * them is. This asks a different question, "could this option have EMPTIED
+   * the list?", and the answers no longer coincide at all: `bookmarked` alone
+   * answers yes.
    */
   it("blames a view option that can empty the list all by itself", async () => {
     mockListChats.mockResolvedValue(listResponse([]));
@@ -567,14 +567,49 @@ describe("the empty sidebar", () => {
     );
     await screen.findByText(/^No unarchived chats\./);
 
-    fireEvent.click(screen.getByTitle(/^Filters and view/));
-    fireEvent.click(screen.getByText("Bookmarked only"));
-    fireEvent.click(screen.getByText("Apply"));
+    fireEvent.click(screen.getByRole("button", { name: "Bookmarked" }));
 
     expect(await screen.findByText(/^No chats match the current filters/)).toBeTruthy();
     // Not "No chats yet. Create one to get started." — a flat lie to anyone
     // who has chats but no bookmarks.
     expect(screen.queryByText(/No chats yet/)).toBeNull();
+  });
+
+  /**
+   * The other side of the same criterion, and the one that would break if
+   * `isFiltered` were re-pointed at the badge's exemption set: "Show triggered
+   * chats" only ever ADDS rows, so an empty list is never its doing and
+   * blaming it would send the user to switch off the one thing that could only
+   * have helped.
+   */
+  it("does not blame a view option that can only add rows", async () => {
+    mockListChats.mockResolvedValue(listResponse([]));
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+    await screen.findByText(/^No unarchived chats\./);
+
+    fireEvent.click(screen.getByRole("button", { name: "Triggered" }));
+
+    // Still the archived-hidden message: the scope is unchanged and that is
+    // still the likeliest reason for an empty sidebar.
+    expect(await screen.findByText(/^No unarchived chats\./)).toBeTruthy();
+    expect(screen.queryByText(/No chats match/)).toBeNull();
+  });
+
+  it("does not blame it once archived chats are shown either", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true, showTriggeredChats: true }));
+    mockListChats.mockResolvedValue(listResponse([]));
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+    // Both of the add-only scopes on and nothing to show: the honest message is
+    // that there are no chats, not that something is filtering them out.
+    expect(await screen.findByText("No chats yet. Create one to get started.")).toBeTruthy();
   });
 
   it("falls back to the plain message once archived chats are shown", async () => {

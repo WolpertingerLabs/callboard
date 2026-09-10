@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Settings, Bot, PanelLeftClose, List, FolderOpen, AlertTriangle, Plus, LayoutGrid } from "lucide-react";
 import { fetchInstanceName } from "../api";
+import { HEADER_BUTTON_STYLE, HEADER_ROW_GAP } from "./headerButtonStyle";
 import type { SidebarViewMode } from "../utils/localStorage";
 
 interface SidebarHeaderProps {
@@ -17,19 +18,6 @@ const VIEW_MODES: { mode: SidebarViewMode; label: string; Icon: typeof List }[] 
   { mode: "folders", label: "Folders", Icon: FolderOpen },
   { mode: "chats", label: "Chats", Icon: List },
 ];
-
-// Give the new-chat/sidebar-view controls and the main-page navigation controls
-// one explicit footprint. Their different active borders (and the selectively
-// suppressed borders inside each group) must not change the controls' size.
-const HEADER_BUTTON_STYLE = {
-  width: 28,
-  height: 28,
-  padding: 0,
-  boxSizing: "border-box",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-} as const;
 
 export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange, claudeLoggedIn, onShowClaudeModal, onToggleSidebar }: SidebarHeaderProps) {
   const [instanceName, setInstanceName] = useState("");
@@ -63,7 +51,7 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
         <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 1, color: "var(--chatlist-title-text)" }}>Callboard</h1>
         {instanceName && <div style={{ fontSize: 10, color: "var(--chatlist-subtitle-text)", fontWeight: 400, letterSpacing: 0.3 }}>{instanceName}</div>}
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: HEADER_ROW_GAP }}>
         <button
           onClick={onToggleNew}
           style={{
