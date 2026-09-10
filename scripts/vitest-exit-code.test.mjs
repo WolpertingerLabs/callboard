@@ -41,6 +41,25 @@
  * its own distinctive marker string in the output: `status !== 0` alone passes
  * vacuously for *any* non-zero exit, including one where the vitest binary was
  * never found.
+ *
+ * ## Environment
+ *
+ * The child inherits the parent's env, and the parent's env is not the same on a
+ * developer's machine as on a runner. That difference took this file red in CI
+ * once already: vitest calls `disableDefaultColors()` when std-env reports an
+ * agent, std-env reports one when `AI_AGENT` / `CLAUDECODE` is present, and
+ * Claude Code sets both — so locally the child's report was plain text and
+ * `/Tests\s+1 passed/` matched, while on the runner the child colourised and the
+ * same line arrived as `Tests` + CSI codes + `1 passed`.
+ *
+ * So `childEnv()` pins everything that changes the child's *output shape*, and
+ * matching happens on ANSI-stripped text. Two independent defences, because the
+ * failure mode is silent in exactly one direction: it passes locally.
+ *
+ * Note there is nothing coverage-specific to scrub. `@vitest/coverage-v8` drives
+ * the inspector in-process and injects no environment variable, so a child of a
+ * `--coverage` run sees the same env as a child of a plain one — verified by
+ * dumping a worker's env under both.
  */
 import { describe, it, expect, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
@@ -57,9 +76,61 @@ afterAll(() => {
   for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
+// CSI escape sequences. The assertions below match on the child's report text,
+// which must not depend on whether the child decided to colourise it.
+const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, "g");
+const stripAnsi = (text) => text.replace(ANSI, "");
+
+/**
+ * The child's environment, pinned so its output is byte-identical on a
+ * developer's machine and on a CI runner. See "Environment" in the header —
+ * every entry here is load-bearing, and the ones set to `undefined` are dropped
+ * by `child_process` rather than passed as the string "undefined".
+ */
+function childEnv() {
+  return {
+    ...process.env,
+    CI: "true",
+    // The decisive switch: tinyrainbow checks NO_COLOR before anything else.
+    // Without it the child colourises whenever no agent is detected, and the
+    // report regexes below stop matching. FORCE_COLOR has to go or Node warns
+    // that NO_COLOR is being ignored.
+    NO_COLOR: "1",
+    FORCE_COLOR: undefined,
+    // std-env reads these to decide `isAgent`, and vitest calls
+    // `disableDefaultColors()` when it is true. Leaving them in is what made
+    // this file pass locally and fail in CI.
+    AI_AGENT: undefined,
+    CLAUDECODE: undefined,
+    CLAUDE_CODE: undefined,
+    // Otherwise the child emits `::error` workflow annotations for fixtures
+    // that are *supposed* to fail, attaching them to the real CI run.
+    GITHUB_ACTIONS: undefined,
+    // Leaked from the outer vitest's own worker env.
+    VITEST: undefined,
+    TEST: undefined,
+    VITEST_MODE: undefined,
+    VITEST_POOL_ID: undefined,
+    VITEST_WORKER_ID: undefined,
+    FORCE_TTY: undefined,
+  };
+}
+
+/** A failure message that says what the child actually did. */
+function describeRun({ status, signal, error, stdout, stderr }) {
+  return [
+    `status: ${status}`,
+    `signal: ${signal}`,
+    `error: ${error ? `${error.name}: ${error.message}` : "none"}`,
+    `--- child stdout ---\n${stdout ?? ""}`,
+    `--- child stderr ---\n${stderr ?? ""}`,
+  ].join("\n");
+}
+
 /**
  * Run `vitest run` over a set of fixture files in an isolated scratch root.
  * `files` maps filename to contents; `fixture.test.js` is the usual entry.
+ * `output` is ANSI-stripped for matching; `detail` carries the raw streams.
  */
 function runFixture(files, args = []) {
   const root = mkdtempSync(join(tmpdir(), "cb-exitcode-"));
@@ -70,9 +141,20 @@ function runFixture(files, args = []) {
     cwd: root,
     encoding: "utf8",
     timeout: 120_000,
-    env: { ...process.env, CI: "true", VITEST: undefined, TEST: undefined, VITEST_POOL_ID: undefined, VITEST_WORKER_ID: undefined },
+    env: childEnv(),
   });
-  return { ...result, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+  const raw = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  return { ...result, raw, output: stripAnsi(raw), detail: describeRun(result) };
+}
+
+/**
+ * Every assertion about a child run goes through here first: a child killed by
+ * a signal, or one that never started, produces `status: null`, which would
+ * otherwise surface as a baffling "expected null to be 0".
+ */
+function expectRanToCompletion({ signal, error, detail }) {
+  expect(error, detail).toBeUndefined();
+  expect(signal, detail).toBeNull();
 }
 
 const outOfTestRejection =
@@ -128,29 +210,52 @@ const RED_RUNS = [
 
 describe("vitest exit code", () => {
   it.each(RED_RUNS)("is non-zero for $name", ({ files, marker }) => {
-    const { status, output, error } = runFixture(files);
-    expect(error, output).toBeUndefined();
+    const run = runFixture(files);
+    expectRanToCompletion(run);
     // Proves vitest actually ran and reached the failure. Without this the
     // status assertion below would pass for a missing binary or a bad flag.
-    expect(output).toMatch(marker);
-    expect(status, output).not.toBe(0);
+    expect(run.output, run.detail).toMatch(marker);
+    expect(run.status, run.detail).not.toBe(0);
   });
 
   it("is non-zero even when no test failed and only the out-of-test error is red", () => {
-    const { status, output } = runFixture({ "fixture.test.js": outOfTestRejection });
+    const run = runFixture({ "fixture.test.js": outOfTestRejection });
+    expectRanToCompletion(run);
     // The distinguishing signature: vitest counts the error separately from the
     // tests, so this run reports a passing test *and* a non-zero exit code.
-    expect(output).toMatch(/Tests\s+1 passed/);
-    expect(output).toMatch(/Errors\s+1 error/);
-    expect(status, output).not.toBe(0);
+    expect(run.output, run.detail).toMatch(/Tests\s+1 passed/);
+    expect(run.output, run.detail).toMatch(/Errors\s+1 error/);
+    expect(run.status, run.detail).not.toBe(0);
   });
 
   it("is zero once the suppression flag is passed — the direction of the knob", () => {
     // Positive control. This is the whole reason the config and package.json
     // assertions below exist: the same red run goes green on this one flag.
-    const { status, output } = runFixture({ "fixture.test.js": outOfTestRejection }, ["--dangerouslyIgnoreUnhandledErrors"]);
-    expect(output).toMatch(/Tests\s+1 passed/);
-    expect(status, output).toBe(0);
+    //
+    // It is the one assertion here that requires a *zero* exit, so unlike its
+    // neighbours no environmental death can satisfy it. That asymmetry is worth
+    // knowing about — but it is not what broke this file in CI. That was the
+    // report regexes above matching against colourised output; the status
+    // assertion was never reached. `expectRanToCompletion` now separates the
+    // two cases, so a killed child says so instead of reporting `null`.
+    const run = runFixture({ "fixture.test.js": outOfTestRejection }, ["--dangerouslyIgnoreUnhandledErrors"]);
+    expectRanToCompletion(run);
+    expect(run.output, run.detail).toMatch(/Tests\s+1 passed/);
+    expect(run.status, run.detail).toBe(0);
+  });
+
+  it("reports identically regardless of the environment it inherits", () => {
+    // The regression that took this file red in CI: locally the child inherited
+    // Claude Code's `AI_AGENT`, vitest detected an agent and disabled colour, so
+    // the report was plain text and the regexes matched. A CI runner sets no
+    // agent variable, the child colourised, and `Tests  1 passed` came back as
+    // `Tests` + CSI codes + `1 passed`.
+    //
+    // `childEnv` pins NO_COLOR so this cannot recur, and the assertions match on
+    // stripped output so they would survive it anyway. If this fails, colour
+    // handling has changed and the strip is doing the work alone.
+    const run = runFixture({ "fixture.test.js": outOfTestRejection });
+    expect(run.raw, run.detail).not.toMatch(ANSI);
   });
 
   it("is zero when a globalSetup teardown throws — a known hole, pinned deliberately", () => {
@@ -163,14 +268,15 @@ describe("vitest exit code", () => {
     // This asserts the broken behaviour on purpose, so that if vitest ever
     // fixes it this test fails and we find out. When that happens: delete this
     // test and the globalSetup ban below.
-    const { status, output } = runFixture({
+    const run = runFixture({
       "vitest.config.js": `export default { test: { globalSetup: ["./gs.js"] } };\n`,
       "gs.js": `export function setup() {}\nexport function teardown() { throw new Error("MARKER_global_teardown"); }\n`,
       "fixture.test.js": `import { it, expect } from "vitest";\nit("passes", () => { expect(1).toBe(1); });\n`,
     });
-    expect(output).toMatch(/MARKER_global_teardown/);
-    expect(output).toMatch(/error during close/);
-    expect(status, output).toBe(0);
+    expectRanToCompletion(run);
+    expect(run.output, run.detail).toMatch(/MARKER_global_teardown/);
+    expect(run.output, run.detail).toMatch(/error during close/);
+    expect(run.status, run.detail).toBe(0);
   });
 });
 
