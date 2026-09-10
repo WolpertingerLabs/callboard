@@ -9,8 +9,9 @@
  *
  * The verdict for a group is the caller's to supply, and `ChatTreeList` gives
  * it as "any member is pinned" — see `Row.pinnedMembers` for why the header
- * row's own flag is not enough. This module only insists that whatever the
- * verdict is, it is asked once per row.
+ * row's own flag is not enough. This module asks for it once per partition
+ * pass, so twice per row: keep the predicate pure and cheap, and do any real
+ * work building the items instead.
  */
 
 import type { Chat } from "../api";

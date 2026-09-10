@@ -248,6 +248,38 @@ describe("pinning from the kebab", () => {
     await waitFor(() => expect(headers()).toEqual([]));
   });
 
+  it("keeps the chats that succeeded when one of a group's PATCHes fails", async () => {
+    // Unpinning a group is one PATCH per pinned member. `Promise.all` rejects
+    // on the first failure without writing ANY of them — so a half-unpinned
+    // server was rendered as a fully pinned group, and the local state
+    // disagreed with the server about the chat whose write had actually taken.
+    const parent = makeChat("chat-parent", { preview: "parent chat", pinned: true });
+    const child = makeChat("chat-child", { preview: "child chat", parentChatId: "chat-parent", rootChatId: "chat-parent", pinned: true });
+    mockListChats.mockResolvedValue(listResponse([parent, child]));
+    await renderList("parent chat");
+    expect(headers()).toEqual(["Pinned (2)"]);
+
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockTogglePin.mockImplementation((id: string) => (id === "chat-parent" ? Promise.reject(new Error("server said no")) : Promise.resolve({} as Chat)));
+
+    openRowMenu("parent chat");
+    fireEvent.click(screen.getByText("Unpin"));
+    await waitFor(() => expect(mockTogglePin).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(errors).toHaveBeenCalled());
+
+    // The group still reads as pinned, correctly — the parent's pin is really
+    // still there. What must have changed is the child's, and the only way to
+    // see it is what the NEXT unpin reaches for.
+    expect(headers()).toEqual(["Pinned (2)"]);
+    mockTogglePin.mockClear();
+    openRowMenu("parent chat");
+    fireEvent.click(screen.getByText("Unpin"));
+
+    await waitFor(() => expect(mockTogglePin).toHaveBeenCalledTimes(1));
+    expect(mockTogglePin).toHaveBeenCalledWith("chat-parent", false);
+    errors.mockRestore();
+  });
+
   it("does not touch the bookmark, in either direction", async () => {
     // The kebab offers both, and they are independent flags: pinning a chat
     // must not star it, and the row's bookmark entry must still read as unset.
@@ -267,18 +299,31 @@ describe("pinning from the kebab", () => {
 });
 
 /**
- * A refresh in flight when the pin lands.
+ * A request already on the wire when the pin lands.
  *
- * `load` claims the list with `loadGenRef` and stands down if anything newer
- * has claimed it since. `handleTogglePin` writes to `chats` and so is one of
- * those newer things — without the bump, a `load` that went to the wire before
- * the PATCH commits its pre-pin response afterwards, and the pin reverts,
- * taking the whole Pinned section down with it until the next poll puts it
- * back. The sidebar polls every 15s while a session is active, so that is a
- * long time to watch a section you just created flicker out.
+ * Three cases, and they pull in opposite directions — which is the whole point
+ * of this block. The response predates the pin, so committing it verbatim
+ * reverts the pin and takes the Pinned section down with it; but the response
+ * is still the answer to a question the user asked, so dropping it loses that
+ * answer. `pinOverridesRef` re-applies the pin to the response instead of
+ * choosing between them.
+ *
+ * The two "must still take" cases are regressions this suite once had.
+ * `handleTogglePin` briefly bumped `loadGenRef`, which fixed the flicker by
+ * making `load`/`loadMore` reject their responses — losing a page (recoverable)
+ * and losing a filter change (not: the list renders the old scope while the
+ * filter bar reads the new one, and only the 15s poll could correct it, which
+ * does not run unless a session is active).
  */
-describe("a stale refresh landing after the pin", () => {
-  it("does not undo the pin", async () => {
+describe("a request in flight when the pin lands", () => {
+  /** Hand back the resolver for the next `listChats`, so it can be held open. */
+  function holdNextListChats() {
+    let release: (response: ChatListResponse) => void = () => {};
+    mockListChats.mockImplementationOnce(() => new Promise<ChatListResponse>((resolve) => (release = resolve)));
+    return (response: ChatListResponse) => act(async () => release(response));
+  }
+
+  it("keeps the pin when the response predates it", async () => {
     // A stable identity: the mount effect depends on `onRefresh`, so a fresh
     // arrow per render would re-run it every commit.
     let refresh = () => {};
@@ -294,8 +339,7 @@ describe("a stale refresh landing after the pin", () => {
     await screen.findByText("loose chat");
 
     // A refresh goes to the wire and hangs there.
-    let release: (response: ChatListResponse) => void = () => {};
-    mockListChats.mockImplementationOnce(() => new Promise<ChatListResponse>((resolve) => (release = resolve)));
+    const release = holdNextListChats();
     act(() => refresh());
     await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
 
@@ -304,11 +348,83 @@ describe("a stale refresh landing after the pin", () => {
     fireEvent.click(screen.getByText("Pin"));
     await waitFor(() => expect(headers()).toEqual(["Pinned (1)"]));
 
-    // The response was assembled before the pin existed. Committing it now
+    // The response was assembled before the pin existed. Committed verbatim it
     // would be the last response to LAND winning over the last write made.
-    await act(async () => release(listResponse([LOOSE])));
+    await release(listResponse([LOOSE]));
     expect(headers()).toEqual(["Pinned (1)"]);
     expect(screen.getByText("loose chat")).toBeTruthy();
+  });
+
+  it("still renders a 'Load next page' that was out when the pin landed", async () => {
+    // Reproduction 1 of the loadGenRef regression: the page arrived and was
+    // discarded, so its rows never appeared at all.
+    mockListChats.mockResolvedValue(listResponse([LOOSE], true));
+    await renderList();
+
+    const release = holdNextListChats();
+    fireEvent.click(screen.getByText("Load next page"));
+    await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
+
+    openRowMenu("loose chat");
+    fireEvent.click(screen.getByText("Pin"));
+    await waitFor(() => expect(headers()).toEqual(["Pinned (1)"]));
+
+    await release(listResponse([makeChat("chat-page2", { preview: "page two chat" })]));
+    // The page's rows are on screen...
+    expect(screen.getByText("page two chat")).toBeTruthy();
+    // ...and the pin that landed while it was out survived it.
+    expect(headers()).toEqual(["Pinned (1)", "Recent (1)"]);
+  });
+
+  it("still applies a filter change that was out when the pin landed", async () => {
+    // Reproduction 2, and the worse one: the scope refetch was dropped, so the
+    // list kept rendering the old scope while the "Archived" button read as on,
+    // with nothing scheduled to correct it.
+    mockListChats.mockResolvedValue(listResponse([LOOSE]));
+    await renderList();
+
+    const release = holdNextListChats();
+    fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+    await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
+    // The refetch really is the widened scope — otherwise this proves nothing.
+    expect(mockListChats.mock.calls[1][7]).toBe("all");
+
+    openRowMenu("loose chat");
+    fireEvent.click(screen.getByText("Pin"));
+    await waitFor(() => expect(headers()).toEqual(["Pinned (1)"]));
+
+    await release(listResponse([LOOSE, makeChat("chat-archived", { preview: "archived chat" })]));
+    // The rows the widened scope fetched are on screen.
+    expect(screen.getByText("archived chat")).toBeTruthy();
+    expect(headers()).toEqual(["Pinned (1)", "Recent (1)"]);
+  });
+
+  it("stops re-applying a pin once a response built after it has landed", async () => {
+    // The override's lifecycle. Left in place it would fight the server: unpin
+    // in this tab, re-pin in another, and a stale override would write the
+    // chat back to unpinned on the next refresh.
+    let refresh = () => {};
+    const captureRefresh = (fn: () => void) => {
+      refresh = fn;
+    };
+    mockListChats.mockResolvedValue(listResponse([LOOSE]));
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={captureRefresh} />
+      </MemoryRouter>,
+    );
+    await screen.findByText("loose chat");
+
+    openRowMenu("loose chat");
+    fireEvent.click(screen.getByText("Pin"));
+    await waitFor(() => expect(headers()).toEqual(["Pinned (1)"]));
+
+    // A refresh issued AFTER the pin committed: the server has it, so its
+    // answer is authoritative — including when the answer is "not pinned any
+    // more", which is what another tab unpinning looks like from here.
+    mockListChats.mockResolvedValue(listResponse([LOOSE]));
+    await act(async () => refresh());
+    await waitFor(() => expect(headers()).toEqual([]));
   });
 });
 

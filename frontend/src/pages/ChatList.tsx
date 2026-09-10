@@ -133,6 +133,35 @@ export default function ChatList({
   // One counter serves both because both only ever test inequality: "something
   // newer than me has happened, so I am not the writer any more".
   const loadGenRef = useRef(0);
+  /**
+   * Pin changes made while a request was on the wire, re-applied to that
+   * request's response instead of throwing the response away.
+   *
+   * The distinction that matters, and the reason this is not `loadGenRef`:
+   * `loadGenRef` means "the response you are holding answers a question nobody
+   * is asking any more", and a pin does not make a response that. It sets one
+   * boolean on specific ids. `loadedCountRef` is untouched, so a "Load next
+   * page" still lines up; a scope refetch is still the scope the user asked
+   * for. Rejecting those responses loses a page (recoverable — `hasMore` is
+   * untouched, click again) or, worse, loses a FILTER CHANGE: the list keeps
+   * rendering the old scope while the filter bar reads the new state, and
+   * nothing retries, because the 15s poll only runs while a session is active.
+   * A user-initiated action silently not taking is far worse than the flicker
+   * this exists to stop.
+   *
+   * So: re-apply, don't reject. The in-flight response is valid, it is just
+   * missing one field on a handful of known rows.
+   *
+   * Entries are stamped with {@link pinEpochRef} and retired by the first
+   * response whose request went out AFTER the stamp — such a response was
+   * built by the server after the PATCH cleared its list caches, so it already
+   * carries the change. That bounds the map and, more importantly, stops it
+   * fighting a pin some other tab removed later: a stale override is never
+   * re-applied, because it is dropped rather than kept.
+   */
+  const pinOverridesRef = useRef(new Map<string, { pinned: boolean; epoch: number }>());
+  /** Bumped once per committed pin; see {@link pinOverridesRef}. */
+  const pinEpochRef = useRef(0);
   // Same signal as loadGenRef, but as state so the tree view can react to it:
   // fetched subtrees are snapshots and go stale when the list refreshes.
   const [listVersion, setListVersion] = useState(0);
@@ -276,6 +305,42 @@ export default function ChatList({
    */
   const searching = submittedQuery.trim() !== "";
 
+  /**
+   * Fold pending pin changes into a response, and retire the ones it already
+   * reflects.
+   *
+   * `epochAtRequest` is {@link pinEpochRef} as it stood when the request went
+   * out. An override stamped at or below it was already committed server-side
+   * before the request was built, so the response carries it: retire the
+   * override rather than re-apply it, which is what keeps a value the user has
+   * since changed elsewhere from being written back over a fresher one. An
+   * override stamped ABOVE it landed while this request was in flight — the
+   * race — so the response predates it and it is re-applied.
+   *
+   * Called outside the `setChats` updater, deliberately: it mutates the ref,
+   * and React may invoke an updater more than once.
+   */
+  const applyPinOverrides = (incoming: Chat[], epochAtRequest: number): Chat[] => {
+    const overrides = pinOverridesRef.current;
+    if (overrides.size === 0) return incoming;
+    const fresh = new Map<string, boolean>();
+    for (const [id, override] of overrides) {
+      if (override.epoch > epochAtRequest) fresh.set(id, override.pinned);
+      else overrides.delete(id);
+    }
+    if (fresh.size === 0) return incoming;
+    return incoming.map((chat) => {
+      if (!fresh.has(chat.id)) return chat;
+      try {
+        const meta = JSON.parse(chat.metadata || "{}");
+        meta.pinned = fresh.get(chat.id);
+        return { ...chat, metadata: JSON.stringify(meta) };
+      } catch {
+        return chat;
+      }
+    });
+  };
+
   const load = useCallback(async () => {
     const { bookmarked, showTriggered, showArchived } = viewOptions;
     // The whole of "Show archived", on the request side: off asks the server to
@@ -306,6 +371,11 @@ export default function ChatList({
     let gen = (loadGenRef.current += 1);
     const superseded = () => gen !== loadGenRef.current;
 
+    // Taken per REQUEST, not per invocation: the stale refetch below is a
+    // second request, and a pin that lands between the two is in flight for
+    // it too. See applyPinOverrides.
+    let pinEpoch = pinEpochRef.current;
+
     // includeLineage is always on: the list needs every member of a parentage
     // tree the page touches, even those outside the pagination window.
     // includePinned is on for the same reason and always for the same reason:
@@ -319,17 +389,18 @@ export default function ChatList({
     // meaning "someone ELSE moved it" across the stale refetch below.
     gen = loadGenRef.current += 1;
     setListVersion((v) => v + 1);
-    setChats(response.chats);
+    setChats(applyPinOverrides(response.chats, pinEpoch));
     setHasMore(shouldFetchAll ? false : response.hasMore);
     if (!shouldFetchAll) loadedCountRef.current = response.windowRows;
 
     // If the response was stale (cached), immediately fetch fresh data
     if (response.stale) {
+      pinEpoch = pinEpochRef.current;
       const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, true, undefined, cardLifecycle, true);
       if (superseded()) return;
       gen = loadGenRef.current += 1;
       setListVersion((v) => v + 1);
-      setChats(freshResponse.chats);
+      setChats(applyPinOverrides(freshResponse.chats, pinEpoch));
       setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
       if (!shouldFetchAll) loadedCountRef.current = freshResponse.windowRows;
     }
@@ -352,6 +423,7 @@ export default function ChatList({
     setIsLoadingMore(true);
     try {
       const gen = loadGenRef.current;
+      const pinEpoch = pinEpochRef.current;
       const excludeTriggered = !viewOptions.showTriggered;
       // Offset advances by the server-reported window size (tree rows) —
       // lineage-appended relatives sit outside the pagination window
@@ -380,10 +452,14 @@ export default function ChatList({
       // this page was in flight — its offset no longer lines up, so drop the
       // stale page.
       if (gen !== loadGenRef.current) return;
+      // A pin landing mid-page does NOT invalidate this page — see
+      // pinOverridesRef. Applied before the append so a row pinned while the
+      // page was out arrives already carrying it.
+      const incoming = applyPinOverrides(response.chats, pinEpoch);
       // Later pages can re-include chats already appended as lineage relatives
       setChats((prev) => {
         const seen = new Set(prev.map((c) => c.id));
-        return [...prev, ...response.chats.filter((c) => !seen.has(c.id))];
+        return [...prev, ...incoming.filter((c) => !seen.has(c.id))];
       });
       setHasMore(response.hasMore);
       loadedCountRef.current += response.windowRows;
@@ -555,11 +631,19 @@ export default function ChatList({
    * off the loaded chats, so patching them re-files the row on the next render
    * instead of at the next refetch.
    *
-   * `loadGenRef` is bumped for the reason `load` bumps it — this is a write to
-   * `chats`, and a `load` that went to the wire before the PATCH landed is now
-   * holding a pre-pin list. Without the bump it commits that list afterwards
-   * and the pin visibly reverts, taking the section headers down with it until
-   * the next poll puts them back.
+   * A `load` already on the wire is NOT rejected for this. It is holding a
+   * pre-pin list, but it is still answering the question that was asked, so
+   * the pin is recorded in {@link pinOverridesRef} and re-applied to whatever
+   * that request brings back. Bumping `loadGenRef` here instead — which this
+   * did briefly — throws the response away, and that silently loses a page or,
+   * worse, a filter change the user just made.
+   *
+   * `allSettled`, not `all`: unpinning a group fires one PATCH per pinned
+   * member, and `all` rejects on the first failure without writing ANY of
+   * them, including the ones the server took. The sidebar would then show a
+   * group as fully pinned while the server had half-unpinned it. Each id that
+   * succeeded is written; each that failed is logged and left alone, which is
+   * what the next refetch will agree with.
    *
    * Unlike the bookmark's, this can never need to REMOVE a row: pinning is not
    * a filter, so no view exists that a chat drops out of by being unpinned. It
@@ -568,25 +652,29 @@ export default function ChatList({
    */
   const handleTogglePin = async (targets: Chat[], pinned: boolean) => {
     if (targets.length === 0) return;
-    try {
-      await Promise.all(targets.map((target) => togglePin(target.id, pinned)));
-      loadGenRef.current += 1;
-      const targetIds = new Set(targets.map((target) => target.id));
-      setChats((prev) =>
-        prev.map((c) => {
-          if (!targetIds.has(c.id)) return c;
-          try {
-            const meta = JSON.parse(c.metadata || "{}");
-            meta.pinned = pinned;
-            return { ...c, metadata: JSON.stringify(meta) };
-          } catch {
-            return c;
-          }
-        }),
-      );
-    } catch (err) {
-      console.error("Failed to toggle pin:", err);
-    }
+    const results = await Promise.allSettled(targets.map((target) => togglePin(target.id, pinned)));
+    const written = new Set<string>();
+    results.forEach((result, i) => {
+      if (result.status === "fulfilled") written.add(targets[i].id);
+      else console.error(`Failed to toggle pin on ${targets[i].id}:`, result.reason);
+    });
+    if (written.size === 0) return;
+
+    const epoch = (pinEpochRef.current += 1);
+    for (const id of written) pinOverridesRef.current.set(id, { pinned, epoch });
+
+    setChats((prev) =>
+      prev.map((c) => {
+        if (!written.has(c.id)) return c;
+        try {
+          const meta = JSON.parse(c.metadata || "{}");
+          meta.pinned = pinned;
+          return { ...c, metadata: JSON.stringify(meta) };
+        } catch {
+          return c;
+        }
+      }),
+    );
   };
 
   /**

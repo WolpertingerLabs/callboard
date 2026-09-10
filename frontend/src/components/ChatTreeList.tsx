@@ -118,10 +118,19 @@ export interface Row {
    * group, which is the honest reading of a list that renders one row per
    * tree: that row IS the tree, and there is no other row to move.
    *
-   * "Loaded" is the real qualifier and it is not a gap in practice: the list
-   * always requests `includeLineage`, so every member of a group whose row is
-   * on the page comes back with it, and `includePinned` brings back pinned
-   * chats from outside the page window on top of that.
+   * "Loaded" is the real qualifier: this is a verdict over the rows the list
+   * currently HOLDS, not over the group as the server knows it. Mostly that is
+   * the same set — the list always requests `includeLineage`, so every member
+   * of a group whose row is on the page comes back with it, and `includePinned`
+   * brings back pinned chats from outside the page window on top of that.
+   *
+   * The exception, left unfixed on purpose because reaching it means having
+   * pinned a triggered chat: `includeLineage`'s append re-applies
+   * `excludeTriggered` and the bookmark filter, so a pinned member those hide
+   * is not loaded and does not count here. The group then reads unpinned, Pin
+   * adds a second pin to the header row, and a later Unpin clears only what it
+   * can see. Turning "Show triggered chats" on makes the hidden pin visible
+   * and clearable again.
    */
   pinnedMembers: Chat[];
 }

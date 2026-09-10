@@ -457,8 +457,19 @@ describe("GET /api/chats?cardLifecycle=unarchived", () => {
     // Both are reachable from one row, and only the unarchived one comes back.
     expect(idsOf(await listChats({ cardLifecycle: "unarchived", includeLineage: "true", limit: "50" }))).toEqual(["orphan-open"]);
 
-    // Two controls. Unscoped, both are returned — so the fixture really does
-    // put them in one traversal and the scope is what withheld the second.
+    // Three controls, and the first is the load-bearing one: paginated by ROW,
+    // a limit of 1 returns BOTH chats and reports ONE row. That is the shared
+    // dangling parent, asserted rather than described — give the two orphans
+    // different dangling parents and this is two rows, at which point nothing
+    // reaches from one to the other and the case above passes for no reason.
+    // (The unscoped assertion alone cannot show it: both have discovered
+    // sessions, so unscoped they arrive on the page directly rather than
+    // through the traversal.)
+    const oneRow = await listChats({ includeLineage: "true", limit: "1" });
+    expect(idsOf(oneRow)).toEqual(["orphan-closed", "orphan-open"]);
+    expect(oneRow).toMatchObject({ total: 1, windowRows: 1, hasMore: false });
+
+    // Unscoped, both come back — so the scope is what withheld the second.
     expect(idsOf(await listChats({ includeLineage: "true", limit: "50" }))).toEqual(["orphan-closed", "orphan-open"]);
     // And they really are separate cards: closing the OTHER one flips which
     // survives, which a single shared root could not do.
