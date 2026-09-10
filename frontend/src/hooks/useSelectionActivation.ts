@@ -110,5 +110,3 @@ export function useSelectionActivation({
     checkboxFocusProps: { onFocus: () => setCheckboxFocused(true), onBlur: () => setCheckboxFocused(false) },
   };
 }
-
-export default useSelectionActivation;

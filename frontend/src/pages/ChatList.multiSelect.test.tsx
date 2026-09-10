@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { CardSummary, Chat, ChatListResponse } from "../api";
-import { listChats, listCards, getDrafts, bulkSetCardLifecycle, bulkDeleteChats } from "../api";
+import { listChats, listCards, getDrafts, bulkSetCardLifecycle, bulkDeleteChats, searchChatContents } from "../api";
 import ChatList from "./ChatList";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -30,6 +30,7 @@ vi.mock("../api", async (importOriginal) => ({
   getDrafts: vi.fn(),
   bulkSetCardLifecycle: vi.fn(),
   bulkDeleteChats: vi.fn(),
+  searchChatContents: vi.fn(),
 }));
 
 vi.mock("../contexts/SessionContext", () => ({
@@ -136,20 +137,46 @@ async function mount(chats: Chat[] = CHATS, cards: CardSummary[] = CARDS) {
       />
     </MemoryRouter>,
   );
-  await screen.findByText("chat one");
-  // The dim, the row menu and the selection scope all read the cards; a
-  // selection entered before they land would be reconciled away.
-  await waitFor(() => expect(listCards).toHaveBeenCalled());
+  const firstPreview = JSON.parse(chats[0].metadata ?? "{}").preview as string;
+  await screen.findByText(firstPreview);
+  // Wait for the CARDS, not just the chats. Selection is withheld until the
+  // card index exists, because a row's scope is its card's lifecycle (see
+  // `scopeOf`) — so "a hovered row offers a checkbox" is the observable proof
+  // that the second request landed, and every test below would otherwise race
+  // it.
+  await waitFor(() => {
+    fireEvent.mouseEnter(row(firstPreview));
+    expect(screen.queryByRole("checkbox")).toBeTruthy();
+  });
+  fireEvent.mouseLeave(row(firstPreview));
   return view;
 }
 
-/** One row's clickable surface, by its preview text. */
+/**
+ * One row's clickable surface, by its preview text.
+ *
+ * By the inline `border-bottom` the row root sets, as the sibling
+ * ChatList.showArchived suite does — the row carries no role, deliberately
+ * (see ChatListItem.selection.test.tsx), so there is nothing semantic to
+ * anchor to.
+ */
 function row(preview: string) {
-  return screen.getByText(preview).closest('[role="button"]') as HTMLElement;
+  return screen.getByText(preview).closest('div[style*="border-bottom"]') as HTMLElement;
 }
 
 function count() {
-  return screen.queryByText(/\d+ selected/)?.textContent ?? null;
+  return screen.queryByText(/\d+ chats? selected/)?.textContent ?? null;
+}
+
+/**
+ * A key press aimed at the list.
+ *
+ * Dispatched on a row rather than on `document`, because the handler is bound
+ * to the list root and not to the document — see the keydown effect in
+ * ChatList, and the test at the bottom of "Ctrl+A" that pins the difference.
+ */
+function pressInList(init: Partial<KeyboardEventInit> & { key: string }) {
+  fireEvent.keyDown(row("chat one"), init);
 }
 
 /** Previews of every currently-selected row, in rendered order. */
@@ -171,6 +198,7 @@ function actionLabels() {
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(getDrafts).mockResolvedValue([]);
+  vi.mocked(searchChatContents).mockResolvedValue({ chatIds: [] } as Awaited<ReturnType<typeof searchChatContents>>);
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
 });
 
@@ -188,7 +216,7 @@ describe("entering selection mode", () => {
     await mount();
     fireEvent.click(row("chat one"), init);
 
-    expect(count()).toBe("1 selected");
+    expect(count()).toBe("1 chat selected");
     expect(selectedPreviews()).toEqual(["chat one"]);
   });
 
@@ -202,12 +230,12 @@ describe("entering selection mode", () => {
   it("right-click enters selection mode, and the click that may follow does not undo it", async () => {
     await mount();
     fireEvent.contextMenu(row("chat one"));
-    expect(count()).toBe("1 selected");
+    expect(count()).toBe("1 chat selected");
 
     // macOS turns Ctrl+click into a synthetic right-click and may deliver BOTH
     // contextmenu and a ctrl-click.
     fireEvent.click(row("chat one"), { ctrlKey: true });
-    expect(count()).toBe("1 selected");
+    expect(count()).toBe("1 chat selected");
   });
 
   it("does not open a chat while selecting", async () => {
@@ -215,7 +243,7 @@ describe("entering selection mode", () => {
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat two"));
 
-    expect(count()).toBe("2 selected");
+    expect(count()).toBe("2 chats selected");
   });
 });
 
@@ -286,7 +314,7 @@ describe("shift+click ranges", () => {
     fireEvent.click(row("chat three"), { shiftKey: true });
 
     expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three"]);
-    expect(count()).toBe("3 selected");
+    expect(count()).toBe("3 chats selected");
   });
 });
 
@@ -319,16 +347,19 @@ describe("the archive scope", () => {
     fireEvent.click(row("chat one"), { metaKey: true });
 
     for (const preview of ["chat old", "chat robot"]) {
-      expect(row(preview).getAttribute("aria-disabled")).toBe("true");
+      // Inert, not merely dimmed: no checkbox to press, and the row's own
+      // click does nothing at all — not even navigate.
+      expect(row(preview).style.opacity).toBe("0.35");
       fireEvent.click(row(preview));
     }
-    expect(count()).toBe("1 selected");
+    expect(count()).toBe("1 chat selected");
+    expect(selectedPreviews()).toEqual(["chat one"]);
   });
 
   it("keeps a card-less chat out of an open selection even by Ctrl+A", async () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
-    fireEvent.keyDown(document, { key: "a", ctrlKey: true });
+    pressInList({ key: "a", ctrlKey: true });
 
     expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three", "chat four"]);
   });
@@ -338,7 +369,7 @@ describe("leaving selection mode", () => {
   it("Escape exits", async () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
-    fireEvent.keyDown(document, { key: "Escape" });
+    pressInList({ key: "Escape" });
 
     expect(count()).toBeNull();
   });
@@ -348,7 +379,7 @@ describe("leaving selection mode", () => {
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.keyDown(screen.getByPlaceholderText(/Search chat contents/), { key: "Escape" });
 
-    expect(count()).toBe("1 selected");
+    expect(count()).toBe("1 chat selected");
   });
 
   it("Cancel exits", async () => {
@@ -372,14 +403,14 @@ describe("Ctrl+A", () => {
   it("selects every row in scope, and only those", async () => {
     await mount();
     fireEvent.click(row("chat old"), { metaKey: true });
-    fireEvent.keyDown(document, { key: "a", ctrlKey: true });
+    pressInList({ key: "a", ctrlKey: true });
 
     expect(selectedPreviews()).toEqual(["chat old"]);
   });
 
   it("does nothing before selection mode is entered", async () => {
     await mount();
-    fireEvent.keyDown(document, { key: "a", metaKey: true });
+    pressInList({ key: "a", metaKey: true });
 
     expect(count()).toBeNull();
   });
@@ -390,7 +421,7 @@ describe("Ctrl+A", () => {
     fireEvent.keyDown(screen.getByPlaceholderText(/Search chat contents/), { key: "a", ctrlKey: true });
 
     // Select-all inside a text field is select-all of the TEXT.
-    expect(count()).toBe("1 selected");
+    expect(count()).toBe("1 chat selected");
   });
 });
 
@@ -439,7 +470,7 @@ describe("bulk archive", () => {
     // Two rows selected, ONE card behind them. The count and the label carry
     // different nouns deliberately — the alternative is promising to archive
     // 2 and moving every chat on the card.
-    expect(count()).toBe("2 selected");
+    expect(count()).toBe("2 chats selected");
     const button = screen.getByRole("button", { name: "Archive 1 card" });
 
     mockBulkLifecycle.mockResolvedValue({ updated: [card("c-shared", "closed", ["three", "four"])], failed: [] });
@@ -507,7 +538,7 @@ describe("bulk archive", () => {
     });
     await screen.findByText("network down");
 
-    fireEvent.keyDown(document, { key: "Escape" });
+    pressInList({ key: "Escape" });
     expect(screen.queryByText("network down")).toBeNull();
   });
 
@@ -521,7 +552,7 @@ describe("bulk archive", () => {
     });
 
     await screen.findByText("network down");
-    expect(count()).toBe("1 selected");
+    expect(count()).toBe("1 chat selected");
   });
 });
 
@@ -548,6 +579,27 @@ describe("bulk delete", () => {
 
     expect(screen.getByText("Delete Chat")).toBeTruthy();
     expect(screen.getByText(/delete this chat\?/)).toBeTruthy();
+  });
+
+  it("says nothing about forks when no selected row fronts a group", async () => {
+    await mount();
+    selectAndPressDelete("chat one", "chat two");
+
+    // Every row in this fixture is a lone chat, so the sentence would be noise
+    // about something that cannot happen to this selection.
+    expect(screen.queryByText(/not the chats forked from them/)).toBeNull();
+  });
+
+  it("names what it does NOT delete when a selected row fronts a lineage group", async () => {
+    // `child` folds into `one`'s row, so that row fronts a group of two and
+    // only its front chat is selectable.
+    await mount([CHATS[0], makeChat("child", "chat child", { parentChatId: "one", rootChatId: "one" }), CHATS[1]], CARDS);
+    selectAndPressDelete("chat one");
+
+    // "Delete 1 chat" is true and is not the whole truth: the fork survives
+    // and the group comes back fronted by it. Doing forty at once is what
+    // makes that visible, so the dialog says it.
+    expect(screen.getByText(/This deletes the selected chats, not the chats forked from them/)).toBeTruthy();
   });
 
   it("deletes the selected chats in rendered order and drops them from the list", async () => {
@@ -595,7 +647,7 @@ describe("bulk delete", () => {
     fireEvent.click(cancels[cancels.length - 1]);
 
     expect(mockBulkDelete).not.toHaveBeenCalled();
-    expect(count()).toBe("2 selected");
+    expect(count()).toBe("2 chats selected");
   });
 });
 
@@ -604,7 +656,7 @@ describe("reconciling against a refresh", () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat two"));
-    expect(count()).toBe("2 selected");
+    expect(count()).toBe("2 chats selected");
 
     // Another client deleted "chat two"; the next refresh no longer returns it.
     mockListChats.mockResolvedValue(listResponse(CHATS.filter((c) => c.id !== "two")));
@@ -615,7 +667,7 @@ describe("reconciling against a refresh", () => {
     await waitFor(() => expect(screen.queryByText("chat two")).toBeNull());
     // A count of 2 with one row on screen is a number the user cannot
     // reconcile with what they can see.
-    expect(count()).toBe("1 selected");
+    expect(count()).toBe("1 chat selected");
   });
 
   it("leaves selection mode when every selected chat has vanished", async () => {
@@ -635,7 +687,7 @@ describe("reconciling against a refresh", () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat two"));
-    expect(count()).toBe("2 selected");
+    expect(count()).toBe("2 chats selected");
 
     // Someone archived c-two on the board. The row is still here (Archived is
     // on) but it is no longer in this selection's scope, and an archived card
@@ -645,19 +697,79 @@ describe("reconciling against a refresh", () => {
       refreshList();
     });
 
-    await waitFor(() => expect(count()).toBe("1 selected"));
+    await waitFor(() => expect(count()).toBe("1 chat selected"));
     expect(selectedPreviews()).toEqual(["chat one"]);
   });
 });
 
 describe("the list's own layout", () => {
-  it("grows room for the bar while it is up, so it never covers the last row", async () => {
-    const { container } = await mount();
-    const scroller = container.querySelector('[style*="overflow: auto"]') as HTMLElement;
-    expect(scroller.style.paddingBottom).toBe("");
+  /**
+   * Make every element in the document report `height` px tall.
+   *
+   * jsdom measures nothing — `offsetHeight` is 0 for everything — which is
+   * exactly why the clearance used to be a constant asserted against itself.
+   * Stubbing the geometry is what lets this file test the MECHANISM (the list
+   * pads by what the bar reports) while the real numbers are guarded in a real
+   * browser by scripts/test-selection-bar-clearance.mjs.
+   */
+  function stubOffsetHeight(height: number) {
+    const proto = window.HTMLElement.prototype;
+    const original = Object.getOwnPropertyDescriptor(proto, "offsetHeight");
+    Object.defineProperty(proto, "offsetHeight", { configurable: true, get: () => height });
+    return () => {
+      if (original) Object.defineProperty(proto, "offsetHeight", original);
+      else Reflect.deleteProperty(proto, "offsetHeight");
+    };
+  }
 
+  const scroller = (container: HTMLElement) => container.querySelector('[style*="overflow: auto"]') as HTMLElement;
+
+  it("pads by the height the bar REPORTS, not by a constant", async () => {
+    // 111px is what the bar actually measures at 320px wide with a mobile
+    // "Select all" — the case the old 76px constant was 35px short of.
+    const restore = stubOffsetHeight(111);
+    try {
+      const { container } = await mount();
+      expect(scroller(container).style.paddingBottom).toBe("");
+
+      fireEvent.click(row("chat one"), { metaKey: true });
+      await waitFor(() => expect(scroller(container).style.paddingBottom).toBe("111px"));
+    } finally {
+      restore();
+    }
+  });
+
+  it("falls back to a clearance that covers the widest measured bar until one is reported", async () => {
+    // No layout at all, so `onMeasure` never fires (it refuses to report 0 —
+    // a 0 would read as "the bar needs no room"). The list has to pad by
+    // something, and the fallback is sized from the browser harness's worst
+    // case (111px at 320px mobile) rather than from the bar at rest.
+    const { container } = await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
-    expect(scroller.style.paddingBottom).toBe("76px");
+
+    const padding = Number.parseInt(scroller(container).style.paddingBottom, 10);
+    expect(padding).toBeGreaterThanOrEqual(111);
+  });
+
+  it("re-reports its height when the wording changes under it", async () => {
+    let height = 84;
+    const restore = stubOffsetHeight(0);
+    try {
+      const proto = window.HTMLElement.prototype;
+      Object.defineProperty(proto, "offsetHeight", { configurable: true, get: () => height });
+      const { container } = await mount();
+      fireEvent.click(row("chat one"), { metaKey: true });
+      await waitFor(() => expect(scroller(container).style.paddingBottom).toBe("84px"));
+
+      // A second row selected changes every label on the bar, which is enough
+      // to wrap it — and jsdom has no ResizeObserver, so the measurement has
+      // to be re-taken on the wording rather than left to the observer.
+      height = 98;
+      fireEvent.click(row("chat two"));
+      await waitFor(() => expect(scroller(container).style.paddingBottom).toBe("98px"));
+    } finally {
+      restore();
+    }
   });
 
   it("confines the bar to the list column rather than the viewport", async () => {
@@ -668,8 +780,129 @@ describe("the list's own layout", () => {
     // confines it is the pair: `absolute` on the bar, `relative` on the list
     // root it is a child of. jsdom computes no layout, so the relationship is
     // asserted structurally rather than through offsetParent.
-    const bar = screen.getByText("1 selected").parentElement as HTMLElement;
+    const bar = screen.getByText("1 chat selected").parentElement as HTMLElement;
     expect(bar.style.position).toBe("absolute");
     expect((bar.parentElement as HTMLElement).style.position).toBe("relative");
+  });
+});
+
+/**
+ * The selection is DERIVED from the loaded rows, which hides it when they go —
+ * and hiding is not forgetting. These are the tests for the difference.
+ */
+describe("a selection whose rows all go away", () => {
+  const submitSearch = (query: string) => {
+    const input = screen.getByPlaceholderText(/Search chat contents/);
+    fireEvent.change(input, { target: { value: query } });
+    fireEvent.keyDown(input, { key: "Enter" });
+  };
+
+  it("does not come back when the rows do", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+    fireEvent.click(row("chat two"));
+    expect(count()).toBe("2 chats selected");
+
+    // A search that matches nothing empties the list. The bar goes with it,
+    // which the user reads as "the selection is gone".
+    submitSearch("nothing matches this");
+    await waitFor(() => expect(count()).toBeNull());
+
+    submitSearch("");
+    await waitFor(() => expect(screen.getByText("chat one")).toBeTruthy());
+    // Derivation alone would have kept both ids in the raw set and put the bar
+    // straight back at "2 chats selected", over rows the user stopped thinking
+    // about — with the action buttons live. The reaper is what forgets them.
+    expect(count()).toBeNull();
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
+  it("forgets its anchor too, so a later shift+click does not extend from it", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+    submitSearch("nothing matches this");
+    await waitFor(() => expect(count()).toBeNull());
+    submitSearch("");
+    await waitFor(() => expect(screen.getByText("chat four")).toBeTruthy());
+
+    fireEvent.click(row("chat four"), { shiftKey: true });
+    // A surviving anchor on "chat one" would have swept the whole open list.
+    expect(selectedPreviews()).toEqual(["chat four"]);
+  });
+});
+
+/**
+ * The sidebar is a docked column with a transcript open beside it, so its
+ * shortcuts are bound to the list root rather than to the document. The board
+ * can bind to the document because the board IS the viewport.
+ */
+describe("the shortcuts stay inside the list", () => {
+  it("leaves a Cmd+A aimed at the rest of the window alone", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+
+    // Not prevented — `fireEvent` returns false when preventDefault was
+    // called — so the browser's own select-all still happens wherever the user
+    // was actually pointing.
+    expect(fireEvent.keyDown(document.body, { key: "a", metaKey: true })).toBe(true);
+    expect(selectedPreviews()).toEqual(["chat one"]);
+  });
+
+  it("still answers a Cmd+A inside the list", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+    pressInList({ key: "a", metaKey: true });
+
+    expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three", "chat four"]);
+  });
+
+  it("focuses the list when a selection starts, so the shortcuts have somewhere to arrive", async () => {
+    const { container } = await mount();
+    expect(container.firstElementChild).not.toBe(document.activeElement);
+
+    fireEvent.click(row("chat one"), { metaKey: true });
+    // Nothing in a row is focusable, so without this the focus stays on
+    // <body> and a root-scoped handler could never fire.
+    await waitFor(() => expect(document.activeElement).toBe(container.firstElementChild));
+  });
+
+  it("leaves an Escape aimed elsewhere alone, which is the cost of scoping them", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    // Deliberate: the same rule that protects Cmd+A applies to Escape, so an
+    // Escape the transcript is handling does not also drop the selection. The
+    // bar's Cancel button is always available.
+    expect(count()).toBe("1 chat selected");
+  });
+});
+
+describe("before the cards land", () => {
+  it("offers no selection at all, rather than one scoped from an empty card index", async () => {
+    let releaseCards: (value: { cards: CardSummary[] }) => void = () => {};
+    vi.mocked(listCards).mockReturnValue(new Promise((resolve) => (releaseCards = resolve)) as ReturnType<typeof listCards>);
+    mockListChats.mockResolvedValue(listResponse(CHATS));
+    localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true }));
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+    await screen.findByText("chat one");
+
+    // The rows are here; the scope is not. A row's scope is its card's
+    // lifecycle, and `/api/cards` is the slow uncached request of the two.
+    fireEvent.mouseEnter(row("chat one"));
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    fireEvent.click(row("chat one"), { metaKey: true });
+    expect(count()).toBeNull();
+
+    await act(async () => {
+      releaseCards({ cards: CARDS });
+    });
+
+    fireEvent.click(row("chat one"), { metaKey: true });
+    expect(count()).toBe("1 chat selected");
   });
 });

@@ -29,7 +29,7 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import { normalizePermissions, type ParsedMessage } from "shared/types/index.js";
+import { normalizePermissions, type ParsedMessage, type Chat as SharedChat } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildFolderSummaries } from "../services/folder-summaries.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
@@ -1876,8 +1876,13 @@ class ChatDeleteError extends Error {
  *
  * Caches and notifications are the caller's: the single route clears and
  * notifies once per chat, the bulk route once per batch.
+ *
+ * `storedRecord` is the batch's escape from paying for the store lookup twice
+ * per id — see {@link findChat}'s parameter of the same name, and the snapshot
+ * the bulk route builds. `undefined` means "look it up", which is what the
+ * single route wants.
  */
-function deleteOneChat(id: string): string {
+function deleteOneChat(id: string, storedRecord?: SharedChat | null): string {
   try {
     assertNativeAgentControllable(id);
   } catch (error) {
@@ -1885,7 +1890,7 @@ function deleteOneChat(id: string): string {
     throw new ChatDeleteError(409, { error: "native_child_read_only", message }, message);
   }
   // Find the chat (checks file storage + filesystem)
-  const chat = findChat(id, false);
+  const chat = findChat(id, false, storedRecord);
 
   if (!chat) throw new ChatDeleteError(404, { error: "Chat not found" }, "Chat not found");
   if (chat._provider_resolution_error) {
@@ -1896,10 +1901,58 @@ function deleteOneChat(id: string): string {
   // Delete only the authoritative namespace, and only then remove metadata.
   // A routing failure must not partially delete a stored chat.
   if (provider) provider.deleteSessionFiles(chat.session_id, { acpProviderId: meta.acpProviderId });
-  const fileChat = chatFileService.getChat(id);
+  // The same record `findChat` resolved above, not a second lookup for it: on
+  // a miss that lookup is the whole-directory scan this parameter exists to
+  // avoid, and it would answer identically — nothing between here and there
+  // touches the record.
+  const fileChat = storedRecord !== undefined ? storedRecord : chatFileService.getChat(id);
   if (fileChat) chatFileService.deleteChat(fileChat.session_id);
   return fileChat?.id ?? id;
 }
+
+/**
+ * Every stored record, indexed by both keys an id can arrive as.
+ *
+ * One `getAllChats()` (a readdir plus a stat per file, reading only what
+ * changed: ~30 ms warm over 9.2k records) in place of one full readdir + parse
+ * per id (~45 ms each). Both keys, because `chatFileService.getChat` resolves
+ * a session id by filename first and a `chat.id` by scan, and callers of this
+ * route pass whichever the sidebar had.
+ *
+ * A `null` from this map has to mean "there is definitely no record", not
+ * "not in the snapshot" — that is what lets the lookup below skip the scan
+ * rather than merely reorder it. It does: the snapshot is every file in the
+ * records directory, so an id absent from both indexes is an id `getChat`
+ * would have scanned for and not found.
+ */
+function snapshotRecords(): Map<string, SharedChat> {
+  const byId = new Map<string, SharedChat>();
+  for (const chat of chatFileService.getAllChats()) {
+    byId.set(chat.session_id, chat);
+    // `id` second: where the two differ, a lookup by `chat.id` must not be
+    // answered with a different record that happens to share the filename.
+    byId.set(chat.id, chat);
+  }
+  return byId;
+}
+
+/**
+ * How many ids the bulk delete gets through before it lets the event loop
+ * breathe.
+ *
+ * The snapshot above removes the cost that made this urgent, but not every
+ * cost: a successful delete calls into the provider, and Codex's
+ * `deleteSessionFiles` resolves the rollout through a listing memoised on
+ * directory mtimes — which its own `unlinkSync` then invalidates, so the next
+ * id in the batch re-walks the sessions tree (measured 420 ms cold / 2 ms warm
+ * over 447 rollouts). Yielding bounds what any one uninterrupted block costs
+ * everything else in the daemon — SSE frames, the sidebar's own polls — rather
+ * than reducing the total. 25 is small enough that a pathological id is not
+ * held behind 24 more of them, large enough that the yields are not the cost.
+ */
+const BULK_DELETE_YIELD_EVERY = 25;
+
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /**
  * Bulk delete for the sidebar's multi-select.
@@ -1918,10 +1971,21 @@ function deleteOneChat(id: string): string {
  *
  * No id cap, matching that endpoint: #394 removed the 200-id cap there when
  * "Select all" over 804 cards made batches that size routine, and a sidebar
- * with thousands of rows has the same "Select all". A batch is a bounded
- * amount of work per id, and the ids come from a list the client already holds.
+ * with thousands of rows has the same "Select all". Uncapped is only safe
+ * because of the two things below it, and neither is optional:
+ *
+ *  - **One record snapshot for the batch** ({@link snapshotRecords}). Without
+ *    it every id pays `getChat`'s miss path, a readdir + parse of all ~9.2k
+ *    records at ~45 ms — so 200 ids is ~9 s of *fully blocked* event loop, and
+ *    that is not the exotic case: the client keeps failed ids selected so they
+ *    can be retried, and the dominant failure is "not found", so the retry is
+ *    a batch of ids guaranteed to miss. A second tab on a 15 s poll sends the
+ *    same thing.
+ *  - **A yield every {@link BULK_DELETE_YIELD_EVERY} ids**, which bounds the
+ *    longest uninterrupted block whatever the remaining per-id cost turns out
+ *    to be (the provider's own file lookups, mostly — see that constant).
  */
-chatsRouter.post("/bulk-delete", (req, res) => {
+chatsRouter.post("/bulk-delete", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Delete many chats in one call; per-id failures are reported, not fatal'
   // #swagger.description = 'Per id this is exactly DELETE /api/chats/:id — session files plus the stored record, and NO cascade to the chat\'s children. Per-id failures are reported in failed[], not fatal.'
@@ -1934,14 +1998,28 @@ chatsRouter.post("/bulk-delete", (req, res) => {
   try {
     const deleted: string[] = [];
     const failed: { id: string; error: string }[] = [];
+    /** Resolved record ids, for the one notification the batch sends. */
+    const notifyIds: string[] = [];
+    // Taken once, before any delete. Deleting a record does not invalidate the
+    // other entries — they are separate files — and re-taking it per id would
+    // reintroduce exactly the per-id directory read it exists to remove.
+    const records = snapshotRecords();
     // Deduped, so an id repeated in one batch is one delete and one report
     // rather than a success followed by a spurious "Chat not found".
     const seen = new Set<string>();
+    let sinceYield = 0;
     for (const id of ids as string[]) {
       if (seen.has(id)) continue;
       seen.add(id);
+      if (++sinceYield >= BULK_DELETE_YIELD_EVERY) {
+        sinceYield = 0;
+        await yieldToEventLoop();
+      }
       try {
-        deleteOneChat(id);
+        // `?? null` is load-bearing: `null` asserts "no stored record, do not
+        // go looking" (the snapshot is authoritative), where `undefined` would
+        // mean "look it up yourself" and buy back the scan.
+        notifyIds.push(deleteOneChat(id, records.get(id) ?? null));
         // The REQUESTED id, not the resolved record id: the client selected
         // rows keyed by what it asked for, and `deleted` is what it filters
         // its list by.
@@ -1965,7 +2043,9 @@ chatsRouter.post("/bulk-delete", (req, res) => {
       // bump (300ms debounce), so N notifications would be N SSE frames
       // driving one identical refetch.
       clearListCaches();
-      sessionRegistry.notifyMetadata(deleted[0], { cardEvent: "updated" });
+      // The RESOLVED record id, as the single route sends — an id can arrive
+      // as a session id, and the notification names the chat that changed.
+      sessionRegistry.notifyMetadata(notifyIds[0], { cardEvent: "updated" });
     }
     res.json({ deleted, failed });
   } catch (err: any) {

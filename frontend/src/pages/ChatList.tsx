@@ -87,8 +87,19 @@ function indexByChat(list: CardSummary[]): Map<string, CardSummary> {
  */
 type ChatScope = "open" | "closed" | "none";
 
-/** Bottom padding the list grows while the selection bar is over its last row. */
-const SELECTION_BAR_CLEARANCE = 76;
+/**
+ * Bottom padding the list falls back to while the bar is up and has not
+ * reported its height — see `SelectionBar`'s `onMeasure`, which is the real
+ * source and the reason this is a fallback rather than the answer.
+ *
+ * 76 used to be the answer, and it was wrong everywhere the bar wraps: measured
+ * in Chromium with the app's own font stack, the bar is 84px at the 350px
+ * minimum sidebar width (desktop is `flexWrap: nowrap`, so the labels wrap
+ * INSIDE the buttons), 98px at 390px mobile and 111px at 320px. 120 clears the
+ * worst of those with room for one longer label; `scripts/test-selection-bar-clearance.mjs`
+ * is what keeps that claim true, since jsdom measures nothing.
+ */
+const SELECTION_BAR_FALLBACK_CLEARANCE = 120;
 
 export default function ChatList({
   activeChatId,
@@ -174,6 +185,15 @@ export default function ChatList({
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  /** The bar's measured height, or null until it has reported one. */
+  const [barHeight, setBarHeight] = useState<number | null>(null);
+  /**
+   * The list column, for two jobs that both need "inside this list" to be a
+   * real boundary: the selection bar is positioned against it, and the
+   * selection's keyboard shortcuts are bound to it rather than to the document
+   * — see the keydown effect.
+   */
+  const listRootRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const isSettingsActive = location.pathname === "/settings";
@@ -671,8 +691,19 @@ export default function ChatList({
   const rowChats = useMemo(() => new Map(rows.map((row) => [row.chat.id, row.chat])), [rows]);
   const orderedIds = useMemo(() => rows.map((row) => row.chat.id), [rows]);
 
-  /** A row's archive scope — see {@link ChatScope}. */
-  const scopeOf = useCallback((chat: Chat): ChatScope => cardOf(chat)?.lifecycle ?? "none", [cardOf]);
+  /**
+   * A row's archive scope — see {@link ChatScope}.
+   *
+   * Gated on `cardsLoaded`, exactly as `isDimmed` is and for the same reason:
+   * before the first `listCards` returns, "no card in the index" and "no card"
+   * are indistinguishable, and `/api/cards` is the expensive uncached request
+   * while `/api/chats` is a paginated window — the gap between them is two
+   * round trips, not a paint. Answering `"none"` there is not a guess dressed
+   * up as an answer, because nothing can be selected until it closes: the list
+   * withholds selection entirely while `!cardsLoaded` (see the `selectionFor`
+   * prop), so no selection can be scoped from an index that has not arrived.
+   */
+  const scopeOf = useCallback((chat: Chat): ChatScope => (cardsLoaded ? cardOf(chat)?.lifecycle ?? "none" : "none"), [cardOf, cardsLoaded]);
 
   /**
    * The selection, reconciled against the rows that actually exist — derived
@@ -686,13 +717,6 @@ export default function ChatList({
    * Deriving the set means there is no second copy to fall out of step — the
    * dead id is gone the moment the response lands, and it can never reach a
    * bulk call.
-   *
-   * One consequence worth knowing rather than discovering: the cards are a
-   * separately timed request, so a selection made in the beat before the FIRST
-   * `listCards` lands is scoped `"none"` (no card is visible yet) and is
-   * dropped when the cards arrive and re-scope its rows. That is the right way
-   * round — the alternative is a bar that offers to archive under a scope it
-   * computed from an empty card index — and it is one paint wide.
    */
   const selectedIds = new Set(
     [...rawSelectedIds].filter((id) => {
@@ -701,19 +725,44 @@ export default function ChatList({
     }),
   );
   // Losing every selected chat to that reconciliation also leaves selection
-  // mode — an action bar over an empty selection has nothing to act on.
+  // mode — an action bar over an empty selection has nothing to act on. The
+  // raw set behind it is cleared by the reaper below; the derivation alone
+  // only HIDES the bar, and a hidden selection is one that can come back.
   const selectionMode = selectionScope !== null && selectedIds.size > 0;
   const selectionScopeCount = rows.filter((row) => scopeOf(row.chat) === selectionScope).length;
 
-  const exitSelection = useCallback(() => {
+  /** Forget the selection itself, leaving any message about it standing. */
+  const resetSelection = useCallback(() => {
     setSelectedIds(new Set());
     setSelectionScope(null);
     setAnchorId(null);
+  }, []);
+
+  const exitSelection = useCallback(() => {
+    resetSelection();
     // The message goes with the selection it was about — "2 of 5 could not be
     // updated" over a list with nothing selected describes a gesture the user
     // has already abandoned.
     setBulkError(null);
-  }, []);
+  }, [resetSelection]);
+
+  /**
+   * The reaper: a selection whose every row has been reconciled away is
+   * forgotten, not merely hidden.
+   *
+   * Derivation is the wrong tool on its own, because the RAW set survives it.
+   * Select two rows, search until neither matches — the bar goes, which reads
+   * as "selection gone" — then clear the search: without this, `rawSelectedIds`
+   * is still holding both ids, they match the rows again, and the bar comes
+   * back saying "2 chats selected" over rows the user stopped thinking about
+   * minutes ago. The next button press acts on them.
+   *
+   * `bulkError` is deliberately left alone: a "2 of 5 could not be deleted"
+   * message is still true when the rows it named have since gone.
+   */
+  useEffect(() => {
+    if (selectionScope !== null && selectedIds.size === 0) resetSelection();
+  }, [selectionScope, selectedIds.size, resetSelection]);
 
   /**
    * Long press or context menu. Idempotent — both triggers can fire for one
@@ -785,8 +834,23 @@ export default function ChatList({
     setSelectedIds(new Set(rows.filter((row) => scopeOf(row.chat) === selectionScope).map((row) => row.chat.id)));
   }, [rows, scopeOf, selectionScope]);
 
+  /**
+   * The selection's keyboard shortcuts, bound to the LIST — not to the
+   * document, which is what the board does and what the board is entitled to
+   * do, being the whole viewport.
+   *
+   * The sidebar is one docked column with a transcript open beside it. A
+   * document-level handler there turns any Cmd+A in the window into "select
+   * every chat in the sidebar", `preventDefault` included, so a user reaching
+   * for the messages they were reading gets their sidebar selected instead.
+   * Bound to the root, the shortcuts only fire while the focus is inside the
+   * list — which is why entering selection mode focuses it (below). The
+   * INPUT/TEXTAREA exemption still matters, because the search box is inside
+   * this root and Cmd+A there means the text.
+   */
   useEffect(() => {
-    if (!selectionMode) return;
+    const root = listRootRef.current;
+    if (!selectionMode || !root) return;
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
@@ -799,9 +863,25 @@ export default function ChatList({
         selectAllInScope();
       }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    root.addEventListener("keydown", onKeyDown);
+    return () => root.removeEventListener("keydown", onKeyDown);
   }, [selectionMode, exitSelection, selectAllInScope]);
+
+  /**
+   * Give the list the focus when a selection starts, so its shortcuts have
+   * somewhere to arrive.
+   *
+   * `tabIndex={-1}` on the root: programmatic focus, no new tab stop. Nothing
+   * in a row is focusable, so clicking one leaves the focus on `body` and a
+   * root-scoped handler would never fire — this is what makes scoping them
+   * possible at all. Only on the transition into selection mode, so it cannot
+   * pull the focus back out of whatever the user moved on to.
+   */
+  const hadSelectionRef = useRef(false);
+  useEffect(() => {
+    if (selectionMode && !hadSelectionRef.current) listRootRef.current?.focus({ preventScroll: true });
+    hadSelectionRef.current = selectionMode;
+  }, [selectionMode]);
 
   /** Selected chat ids, in rendered order, so a bulk request is deterministic. */
   const selectedInOrder = orderedIds.filter((id) => selectedIds.has(id));
@@ -925,18 +1005,22 @@ export default function ChatList({
   /**
    * The bar's actions, and the one wording decision worth reading twice.
    *
-   * The count and the archive label deliberately carry DIFFERENT nouns —
-   * "5 selected" over a button reading "Archive 2 cards" — because two
-   * different things are being counted and the honest thing is to say which.
-   * Archive acts on cards, and a card is a lineage tree: five selected chats
-   * can live on two cards, and archiving those two moves every chat on them,
-   * which may be forty. "Archive 5" would name neither the thing being acted
-   * on nor the blast radius, and the user would watch forty rows fade after
-   * being promised five. Naming the unit in the label is what keeps the two
-   * numbers from looking like a bug — and the row menu already sets that
-   * precedent, spelling out "all N chats on this card" in its tooltip.
+   * Every number on the bar names its unit — "5 chats selected" over
+   * "Archive 2 cards" and "Delete 5 chats" — because two different things are
+   * being counted and the honest thing is to say which. Archive acts on cards,
+   * and a card is a lineage tree: five selected chats can live on two cards,
+   * and archiving those two moves every chat on them, which may be forty.
+   * "Archive 5" would name neither the thing being acted on nor the blast
+   * radius, and the user would watch forty rows fade after being promised
+   * five. The row menu already sets that precedent, spelling out "all N chats
+   * on this card" in its tooltip.
    *
-   * Delete is per chat, so it counts chats, and says so for the same reason.
+   * The count's own noun is what stops the pair reading as a bug: "5 selected"
+   * beside "Archive 2 cards" is a puzzle, and "5 chats selected" is a fact.
+   *
+   * Delete counts chats because it acts on chats — one per selected ROW, and
+   * that is the limitation the confirmation has to spell out; see
+   * `bulkDeleteMessage`.
    */
   const bulkActions: SelectionAction[] = [
     ...(selectionScope === "open" || selectionScope === "closed"
@@ -955,6 +1039,32 @@ export default function ChatList({
       danger: true,
     },
   ];
+
+  /**
+   * What the delete confirmation says, and why it says more than the count.
+   *
+   * A selected row can be a lineage GROUP — `buildRows` folds a tree into one
+   * row fronted by its most recently updated member, and only that front chat
+   * is selectable. Delete has no cascade (that is what `DELETE /api/chats/:id`
+   * has always done, and the bulk route deliberately did not invent a
+   * different rule), so the other members survive and the group comes straight
+   * back, fronted by the next member down. "Select all" then "Delete 40 chats"
+   * reads as "clear the list"; what actually happens is that it half-empties
+   * and refills with different titles.
+   *
+   * Not a regression — the single-row delete always behaved this way — but
+   * doing forty at once is what makes it visible, so the dialog says it. Only
+   * when a selected row actually fronts a group, because on a selection of
+   * lone chats there is nothing to warn about and the sentence would be noise.
+   */
+  const selectionFrontsAGroup = rows.some((row) => row.isGroup && selectedIds.has(row.chat.id));
+  const bulkDeleteMessage = [
+    `Are you sure you want to delete ${selectedIds.size === 1 ? "this chat" : `these ${selectedIds.size} chats`}?`,
+    selectionFrontsAGroup ? "This deletes the selected chats, not the chats forked from them — those stay, and their group will reappear." : "",
+    "This action cannot be undone.",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   // Count triggered chats currently in the response (visible when "Show triggered chats" is ON)
   const triggeredCount = useMemo(() => {
@@ -1141,7 +1251,13 @@ export default function ChatList({
     // here would lie across the chat pane beside it. On mobile this column IS
     // the screen, so the same absolute bar reads as a bottom action bar there
     // with no second branch — see SelectionBar's `position` prop.
-    <div style={{ position: "relative", height: "100%", display: "flex", flexDirection: "column" }}>
+    <div
+      ref={listRootRef}
+      // Focusable programmatically only — it takes no tab stop, and it is what
+      // gives the selection's shortcuts a scope. See the keydown effect.
+      tabIndex={-1}
+      style={{ position: "relative", height: "100%", display: "flex", flexDirection: "column", outline: "none" }}
+    >
       <SidebarHeader
         viewMode="chats"
         onToggleNew={() => setShowNew(!showNew)}
@@ -1186,10 +1302,15 @@ export default function ChatList({
         style={{
           flex: 1,
           overflow: "auto",
-          // Room for the bar while it is up, so it never covers the last row —
-          // paid at the scroll container, exactly as the board pays it at its
-          // own.
-          paddingBottom: selectionMode ? SELECTION_BAR_CLEARANCE : undefined,
+          // Room for the bar while it is up, paid at the scroll container
+          // exactly as the board pays it at its own — but from the bar's
+          // MEASURED height, not a constant. The bar's labels are this page's
+          // words and its row wraps at narrow widths, so its height is a
+          // function of the sidebar's width and of what is selected; a
+          // constant was 76 and the bar is 84px at the 350px minimum. The
+          // fallback only applies before the first measurement (or in an
+          // environment with no layout at all).
+          paddingBottom: selectionMode ? (barHeight ?? SELECTION_BAR_FALLBACK_CLEARANCE) : undefined,
         }}
       >
         {drafts.length > 0 && (
@@ -1255,7 +1376,13 @@ export default function ChatList({
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isDimmed={isDimmed}
-          selectionFor={selectionProps}
+          // Withheld until the cards are in: a row's selection scope is its
+          // card's lifecycle, and there is no honest scope to put a row in
+          // before the card index exists. See `scopeOf`. (If `listCards` keeps
+          // failing, `cardsLoaded` stays false and the list offers no bulk
+          // selection at all — the row kebab's own actions are unaffected,
+          // which is the same way the dim degrades.)
+          selectionFor={cardsLoaded ? selectionProps : undefined}
         />
 
         {viewOptions.showTriggered && triggeredCount > 0 && (
@@ -1298,6 +1425,10 @@ export default function ChatList({
         <SelectionBar
           position="absolute"
           count={selectedIds.size}
+          // The count names its unit, so it does not read as the same number
+          // as the archive label's — see `bulkActions`.
+          noun={selectedIds.size === 1 ? "chat selected" : "chats selected"}
+          onMeasure={setBarHeight}
           // Mobile has no Ctrl/Cmd+A, so the button is the only way to reach
           // "all of them" there.
           onSelectAll={isMobile ? selectAllInScope : undefined}
@@ -1309,14 +1440,14 @@ export default function ChatList({
       )}
 
       {/* Delete is irreversible, so it asks — the one bulk action here that
-          does. The wording follows the single-chat confirmation above it,
-          counting chats because that is what a delete acts on. */}
+          does. The wording follows the single-chat confirmation below it, and
+          names what a bulk delete does NOT reach; see `bulkDeleteMessage`. */}
       <ConfirmModal
         isOpen={bulkDeleteConfirm}
         onClose={() => setBulkDeleteConfirm(false)}
         onConfirm={runBulkDelete}
         title={selectedIds.size === 1 ? "Delete Chat" : "Delete Chats"}
-        message={`Are you sure you want to delete ${selectedIds.size === 1 ? "this chat" : `these ${selectedIds.size} chats`}? This action cannot be undone.`}
+        message={bulkDeleteMessage}
         confirmText="Delete"
         confirmStyle="danger"
       />

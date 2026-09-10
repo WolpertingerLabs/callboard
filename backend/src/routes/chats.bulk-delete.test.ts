@@ -38,14 +38,32 @@ const deleteChat = vi.fn((sessionId: string) => {
 });
 const notifyMetadata = vi.fn();
 const clearListCaches = vi.fn();
+/**
+ * The two store lookups, spied separately, because which one the route uses is
+ * the difference between a bounded batch and a stalled daemon: `getChat`'s miss
+ * path is a readdir + parse of every record (~45 ms across 9.2k on a real data
+ * dir) and `getAllChats` is one stat-gated pass for the whole batch.
+ */
+const getChat = vi.fn((id: string) => corpus.get(id) ?? null);
+const getAllChats = vi.fn(() => [...corpus.values()]);
+/** The `storedRecord` hint each `findChat` call received — undefined means "look it up yourself". */
+const storedRecordArgs: unknown[] = [];
 
 vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../utils/chat-lookup.js")>()),
-  findChat: (id: string) => corpus.get(id) ?? null,
+  // Mirrors the real signature's contract: a passed hint (record or null) is
+  // used as-is, an omitted one is looked up. chat-lookup.storedRecord.test.ts
+  // holds the real implementation to the same rule.
+  findChat: (id: string, _includeGitInfo?: boolean, storedRecord?: unknown) => {
+    storedRecordArgs.push(storedRecord);
+    if (storedRecord !== undefined) return storedRecord;
+    return getChat(id);
+  },
 }));
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
-    getChat: (id: string) => corpus.get(id) ?? null,
+    getChat: (...args: any[]) => (getChat as any)(...args),
+    getAllChats: (...args: any[]) => (getAllChats as any)(...args),
     deleteChat: (...args: any[]) => (deleteChat as any)(...args),
   },
 }));
@@ -125,12 +143,12 @@ function dispatch(method: string, url: string, body: unknown): Promise<{ matched
 }
 
 /** Put a chat in the corpus. `parentChatId` makes it a fork of another. */
-function makeChat(id: string, meta: Record<string, unknown> = {}) {
+function makeChat(id: string, meta: Record<string, unknown> = {}, sessionId = `session-${id}`) {
   corpus.set(id, {
     id,
     folder: "/repo",
-    session_id: `session-${id}`,
-    session_log_path: `/tmp/session-${id}.jsonl`,
+    session_id: sessionId,
+    session_log_path: `/tmp/${sessionId}.jsonl`,
     metadata: JSON.stringify(meta),
     created_at: "2026-08-20T10:00:00.000Z",
     updated_at: "2026-08-20T11:00:00.000Z",
@@ -145,6 +163,9 @@ beforeEach(() => {
   deleteChat.mockClear();
   notifyMetadata.mockClear();
   clearListCaches.mockClear();
+  getChat.mockClear();
+  getAllChats.mockClear();
+  storedRecordArgs.length = 0;
 });
 
 describe("POST /api/chats/bulk-delete", () => {
@@ -274,6 +295,20 @@ describe("POST /api/chats/bulk-delete", () => {
     expect(clearListCaches).not.toHaveBeenCalled();
   });
 
+  it("notifies with the RESOLVED record id, as the single route does", async () => {
+    // An id can arrive as a session id — the sidebar sends whatever it holds —
+    // and the notification names the chat that changed, not the key it was
+    // asked about.
+    makeChat("record-id", {}, "session-alias");
+
+    const res = await bulkDelete({ ids: ["session-alias"] });
+
+    // `deleted` is keyed by what the client asked for, so it can filter its own
+    // rows; the notification is keyed by the record.
+    expect(res.body.deleted).toEqual(["session-alias"]);
+    expect(notifyMetadata).toHaveBeenCalledWith("record-id", { cardEvent: "updated" });
+  });
+
   it("resolves POST /bulk-delete to the bulk handler — never a 404 from a /:id route", async () => {
     const id = makeChat("routed");
 
@@ -338,5 +373,66 @@ describe("DELETE /api/chats/:id after the shared-helper refactor", () => {
 
     expect(res.code).toBe(409);
     expect(res.body).toEqual({ error: "Unknown provider 'ghost'" });
+  });
+});
+
+/**
+ * The cost of a batch, which is the reason this route can be uncapped.
+ *
+ * `POST /api/cards/bulk-lifecycle` gets away with an uncapped batch because it
+ * builds `createCardContext()` once and resolves every id off a Map. This route
+ * had no such context: each id went through `findChat` → `chatFileService.getChat`,
+ * whose miss path is a readdir + parse of the whole records directory (~45 ms
+ * across 9.2k records, measured) — ~9 s of blocked event loop for 200 ids, and
+ * the ids most likely to miss are the ones the client retries, since it keeps
+ * failed ids selected and the dominant failure is "not found".
+ */
+describe("the batch's cost", () => {
+  it("takes ONE record snapshot for the whole batch and never scans per id", async () => {
+    const ids = [makeChat("real-a"), makeChat("real-b"), "ghost-1", "ghost-2", "ghost-3"];
+
+    await bulkDelete({ ids });
+
+    // One stat-gated pass, not one per id...
+    expect(getAllChats).toHaveBeenCalledTimes(1);
+    // ...and the whole-directory scan is never reached, for a hit OR a miss.
+    // This is the assertion that fails if the snapshot is removed or if a
+    // second lookup creeps back into `deleteOneChat`.
+    expect(getChat).not.toHaveBeenCalled();
+  });
+
+  it("tells findChat there is no record, rather than letting it look again", async () => {
+    const present = makeChat("present");
+
+    await bulkDelete({ ids: [present, "absent"] });
+
+    // `null`, not `undefined`: the snapshot is authoritative over the records
+    // directory, so "absent from it" is "there is no record" and findChat can
+    // go straight to its filesystem fallback. `undefined` would mean "look it
+    // up yourself" and buy back the scan this exists to remove.
+    expect(storedRecordArgs).toHaveLength(2);
+    expect(storedRecordArgs[0]).toMatchObject({ id: present });
+    expect(storedRecordArgs[1]).toBeNull();
+  });
+
+  it("yields the event loop mid-batch instead of blocking it for the whole run", async () => {
+    const ids = Array.from({ length: 60 }, (_, i) => makeChat(`many-${i}`));
+
+    /** How many deletes had happened when a task queued from OUTSIDE the batch got to run. */
+    let deletesAtInterleave = -1;
+    const pending = bulkDelete({ ids });
+    setImmediate(() => {
+      deletesAtInterleave = deleteChat.mock.calls.length;
+    });
+    const res = await pending;
+
+    expect(res.body.deleted).toHaveLength(60);
+    // A handler that never yielded would finish all 60 before anything else in
+    // the daemon ran, and this would be 60. Some SSE frame, some poll, some
+    // other request gets a turn instead — which is the whole property, since
+    // the remaining per-id cost is the provider's own file lookups (Codex
+    // re-walks its rollout tree after each unlink invalidates the memo).
+    expect(deletesAtInterleave).toBeGreaterThan(0);
+    expect(deletesAtInterleave).toBeLessThan(60);
   });
 });

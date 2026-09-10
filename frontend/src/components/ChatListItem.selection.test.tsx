@@ -6,18 +6,24 @@
  * hook the board's two faces also run on, held to one contract by
  * `board/cardFace.parity.test.tsx`. So this file deliberately does not re-test
  * them. What it tests is the half that cannot be shared: this row's own markup
- * decisions, and the two places they differ from `CardRow` on purpose.
+ * decisions, and the three places they differ from `CardRow` on purpose.
  *
  *  - the checkbox rides in the row's existing action cluster rather than taking
  *    a left-hand slot, so it is revealed by the same hover the kebab always
  *    was, and by keyboard focus;
+ *  - it is MOUNTED only while shown, where CardRow keeps its own mounted at
+ *    `opacity: 0`. A sidebar of 50 rows doing that is 50 invisible tab stops,
+ *    so the trade is one tab stop while pointing at a row (and one per row
+ *    during a selection, where they are visible) instead of one per row always;
  *  - the checkbox is a DESCENDANT of the row's clickable surface, not a
  *    sibling of it as on a card face, so its click has to stop the row's own
  *    handler from toggling straight back.
  *
- * Plus the aria a screen reader reads off it, which must say what CardRow's
- * says: `role="checkbox"` + `aria-checked` on the box, `aria-pressed` on the
- * row, and neither of them on a row the list offers no selection for.
+ * And the aria, where the departure is the sharpest: the ROW carries no role
+ * and no `aria-pressed`. It cannot honour them — it is a div that contains
+ * buttons, so it cannot become one, and it has no tab stop and no key handler.
+ * The state lives on the checkbox instead, which is a real button with
+ * `role="checkbox"` and `aria-checked`.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -62,20 +68,20 @@ function renderSelectable(props: Partial<React.ComponentProps<typeof ChatListIte
 }
 
 describe("the checkbox affordance", () => {
-  it("is not rendered until something asks for it", () => {
+  it("adds no tab stop to a row at rest", () => {
     const { container } = renderSelectable();
+    // Not merely invisible — absent. This is the departure from CardRow, and
+    // the whole of its justification: an always-mounted box would be one tab
+    // stop per row, on a list that has fifty.
     expect(screen.queryByRole("checkbox")).toBeNull();
-
-    fireEvent.mouseEnter(row(container));
-    expect(screen.getByRole("checkbox")).toBeTruthy();
+    expect(container.querySelectorAll("button")).toHaveLength(0);
   });
 
   it("is revealed by hover, alongside the kebab that was already there", () => {
     const { container } = renderSelectable();
     fireEvent.mouseEnter(row(container));
 
-    expect(screen.getByRole("checkbox").style.opacity).toBe("1");
-    expect(screen.getByRole("checkbox").style.pointerEvents).toBe("auto");
+    expect(screen.getByRole("checkbox")).toBeTruthy();
     // The cluster's other occupant is untouched: revealing a checkbox must not
     // cost the row its menu.
     expect(screen.getByTitle("Chat actions")).toBeTruthy();
@@ -93,7 +99,7 @@ describe("the checkbox affordance", () => {
     // `checkboxFocusProps` is the whole point: a control that vanished out
     // from under its own focus ring would be unusable by keyboard even where
     // a keyboard can reach it.
-    expect(screen.getByRole("checkbox").style.opacity).toBe("1");
+    expect(screen.getByRole("checkbox")).toBeTruthy();
 
     fireEvent.blur(screen.getByRole("checkbox"));
     expect(screen.queryByRole("checkbox")).toBeNull();
@@ -101,7 +107,7 @@ describe("the checkbox affordance", () => {
 
   it("is shown in selection mode with no hover at all", () => {
     renderSelectable({ selectionMode: true });
-    expect(screen.getByRole("checkbox").style.opacity).toBe("1");
+    expect(screen.getByRole("checkbox")).toBeTruthy();
   });
 
   it("names itself by what the row says, not by the chat's folder", () => {
@@ -112,13 +118,11 @@ describe("the checkbox affordance", () => {
     expect(screen.getByRole("checkbox").getAttribute("aria-label")).toBe("Select Fix the rebase");
   });
 
-  it("tracks selection in aria-checked, and draws a checkmark rather than only a colour", () => {
+  it("draws a checkmark rather than only a colour", () => {
     const { container, rerender } = renderSelectable({ selectionMode: true });
-    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe("false");
     expect(container.querySelector("svg.lucide-check")).toBeNull();
 
     rerender(<ChatListItem chat={makeChat()} onClick={noop} onDelete={noop} onToggleSelect={vi.fn()} selectionMode selected />);
-    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe("true");
     expect(container.querySelector("svg.lucide-check")).toBeTruthy();
   });
 
@@ -154,20 +158,28 @@ describe("the selected row", () => {
     expect(row(container).style.borderLeft).toContain("var(--chatlist-item-active-border)");
   });
 
-  it("exposes aria-pressed only while a selection is live", () => {
-    const { container, rerender } = renderSelectable();
-    // Same rule as CardRow's `aria-pressed={selectionMode ? selected : undefined}`.
+  it("puts the state on the checkbox and NOT on the row", () => {
+    const { container, rerender } = renderSelectable({ selectionMode: true });
+
+    // The row is a div with an onClick: no tab stop, no key handler, and it
+    // cannot become a <button> because it contains buttons. So it claims
+    // neither a role nor a pressed state — announcing a button that cannot be
+    // reached or activated is worse than announcing nothing. CardRow can do
+    // the opposite precisely because it IS a button.
+    expect(row(container).getAttribute("role")).toBeNull();
     expect(row(container).getAttribute("aria-pressed")).toBeNull();
-    expect(row(container).getAttribute("role")).toBe("button");
+
+    // What a screen reader gets instead, and it is a real control:
+    const box = screen.getByRole("checkbox");
+    expect(box.tagName).toBe("BUTTON");
+    expect(box.getAttribute("aria-checked")).toBe("false");
 
     rerender(<ChatListItem chat={makeChat()} onClick={noop} onDelete={noop} onToggleSelect={vi.fn()} selectionMode selected />);
-    expect(row(container).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe("true");
   });
 
   it("is an unnamed clickable div when the list offers no selection at all", () => {
     const { container } = render(<ChatListItem chat={makeChat()} onClick={noop} onDelete={noop} />);
-    // A role announcing a keyboard contract this div does not implement would
-    // be worse than no role — so a plain row stays exactly what it was.
     expect(row(container).getAttribute("role")).toBeNull();
     expect(row(container).getAttribute("aria-pressed")).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
@@ -187,7 +199,6 @@ describe("out of the selection's scope", () => {
     fireEvent.click(row(container));
     expect(onClick).not.toHaveBeenCalled();
     expect(onToggleSelect).not.toHaveBeenCalled();
-    expect(row(container).getAttribute("aria-disabled")).toBe("true");
   });
 
   it("is dimmed, and offers no checkbox to press", () => {

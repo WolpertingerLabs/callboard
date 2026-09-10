@@ -282,14 +282,25 @@ export default function ChatListItem({
         hoverProps.onMouseLeave();
       }}
       {...gestureProps}
-      // `role`/`aria-pressed` only once the list offers selection, matching
-      // CardRow's `aria-pressed={selectionMode ? selected : undefined}`. A
-      // plain row stays an unnamed clickable div, exactly as it has been: a
-      // role announcing a keyboard contract this div does not implement would
-      // be worse than no role at all.
-      role={onToggleSelect ? "button" : undefined}
-      aria-pressed={onToggleSelect && selectionMode ? selected : undefined}
-      aria-disabled={inert || undefined}
+      /*
+       * No `role` and no `aria-pressed` on this element, deliberately, and
+       * that is a departure from `CardRow` — which carries
+       * `aria-pressed={selectionMode ? selected : undefined}` and can, because
+       * it IS a `<button>`: focusable, `onKeyDown`-driven, `disabled` when
+       * inert.
+       *
+       * This row is a div with an onClick, and it cannot become a button — it
+       * contains buttons (the kebab, the folder pill, the summon badge), and a
+       * button inside a button is markup the parser splits apart. So a `role`
+       * here would announce a keyboard contract that does not exist: a control
+       * with no tab stop, no Enter/Space handler and no accessible name.
+       * Announcing it as a pressed button and then not being reachable is
+       * worse than announcing nothing.
+       *
+       * What carries the state instead is the checkbox below — a real
+       * `<button role="checkbox">` with `aria-checked`, `aria-label` and
+       * `disabled`, which is the ordinary shape for a list of selectable rows.
+       */
       className={faded ? "chatlist-item-dimmed" : undefined}
       style={{
         position: "relative",
@@ -538,14 +549,20 @@ export default function ChatListItem({
            * so putting the checkbox there adds no movement the row did not
            * already have.
            *
-           * The cost of not being always-mounted is a tab stop, and it is one
-           * this row never had: the row itself carries no tabindex, and the
-           * kebab beside it has been hover-gated since it was written. So
-           * there is no keyboard path this takes away. `checkboxFocusProps` is
-           * still wired, which is what keeps the control from vanishing out
-           * from under a focus ring the moment the pointer leaves.
+           * MOUNTED ONLY WHEN SHOWN, which is the other departure and the one
+           * with a keyboard cost, stated plainly: `CardRow` keeps its checkbox
+           * mounted at `opacity: 0` so Tab can find it, and a sidebar of 50
+           * rows doing that is 50 tab stops between the filter bar and "Load
+           * next page" — 50 invisible ones at rest, since nothing reveals them
+           * except hover. So it is mounted when the row is hovered, when its
+           * checkbox holds focus, and on every in-scope row while a selection
+           * is live. That means one new tab stop while pointing at a row, and
+           * one per row during a selection (where they are visible and are the
+           * point), instead of one per row always. `checkboxFocusProps` is
+           * what keeps it from vanishing out from under its own focus ring
+           * when the pointer leaves.
            */}
-          {onToggleSelect && (
+          {showCheckbox && (
             <button
               role="checkbox"
               aria-checked={selected}
@@ -555,9 +572,14 @@ export default function ChatListItem({
               // handler from running as well and toggling straight back.
               onClick={(e) => {
                 e.stopPropagation();
-                onToggleSelect(e);
+                onToggleSelect?.(e);
               }}
-              disabled={inert}
+              // No `disabled={inert}` guard, unlike CardRow's: `showCheckbox`
+              // requires `selectable`, and `inert` is `selectionMode &&
+              // !selectable`, so an inert row has no checkbox for the guard to
+              // protect. CardRow needs one because it mounts its box always.
+              // The row's own inertness is enforced in the shared hook, which
+              // returns before any handler runs.
               {...stopGesture}
               {...checkboxFocusProps}
               style={{
@@ -573,9 +595,7 @@ export default function ChatListItem({
                 border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
                 background: selected ? "var(--accent)" : "var(--chatlist-item-bg)",
                 color: "var(--text-on-accent)",
-                cursor: inert ? "default" : "pointer",
-                opacity: showCheckbox ? 1 : 0,
-                pointerEvents: showCheckbox ? "auto" : "none",
+                cursor: "pointer",
               }}
             >
               {/* A checkmark, not just a colour — colour alone is not a state. */}

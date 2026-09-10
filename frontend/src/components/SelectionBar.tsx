@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 
 export interface SelectionAction {
@@ -29,6 +30,21 @@ interface SelectionBarProps {
    * `absolute` bar reads as a bottom action bar there without a second branch.
    */
   position?: "fixed" | "absolute";
+  /**
+   * The bar's rendered height in px, reported on mount and on every resize.
+   *
+   * A surface that has to keep its last row clear of the bar needs the bar's
+   * height, and the bar is the only thing that knows it: the labels are the
+   * caller's words, the button row wraps, and a label can wrap *inside* a
+   * button when the row does not. So it is measured rather than assumed —
+   * a constant is only ever right at the width it was written at.
+   *
+   * Never fires with 0. A layout-less environment (jsdom) reports 0 for every
+   * element, and a caller that took that as "the bar needs no room" would
+   * silently lose its clearance; leaving its own fallback in place is the safe
+   * failure.
+   */
+  onMeasure?: (height: number) => void;
 }
 
 /**
@@ -53,9 +69,36 @@ export default function SelectionBar({
   onCancel,
   busy = false,
   position = "fixed",
+  onMeasure,
 }: SelectionBarProps) {
+  const barRef = useRef<HTMLDivElement>(null);
+  // What the bar SAYS, as a dependency. The labels carry the counts, so a
+  // changed selection can change the bar's height without resizing anything
+  // the observer watches — but depending on the `actions` array itself would
+  // re-measure on every render of the caller (a fresh array literal each
+  // time), forcing a layout flush on every 15s poll for nothing.
+  const wording = `${count}|${noun}|${onSelectAll ? "all" : ""}|${actions.map((a) => a.label).join("|")}`;
+
+  // Re-measured on every resize, not only on mount: the sidebar is
+  // user-resizable, and dragging it narrower is exactly what makes a label
+  // wrap and the bar grow.
+  useEffect(() => {
+    const el = barRef.current;
+    if (!el || !onMeasure) return;
+    const report = () => {
+      const height = el.offsetHeight;
+      if (height > 0) onMeasure(height);
+    };
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [onMeasure, wording]);
+
   return (
     <div
+      ref={barRef}
       style={{
         position,
         left: 0,
