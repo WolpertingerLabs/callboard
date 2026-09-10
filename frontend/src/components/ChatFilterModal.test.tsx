@@ -24,9 +24,20 @@ function renderModal(viewOptions: Partial<ChatViewOptions> = {}) {
 describe("ChatFilterModal view options", () => {
   it("renders every scope option", () => {
     renderModal();
-    for (const label of ["Card lifecycle", "Dim inactive chats", "Active cards first", "Bookmarked only", "Show triggered chats"]) {
+    for (const label of ["Card lifecycle", "Open chats first", "Bookmarked only", "Show triggered chats"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
+  });
+
+  /**
+   * The dim is unconditional now: chats on an archived card (or on no card at
+   * all) always fade. The switch that used to gate it must not come back as a
+   * control the user can leave off and then wonder why rows are faded.
+   */
+  it("no longer offers a dim switch", () => {
+    renderModal();
+    expect(screen.queryByText("Dim inactive chats")).toBeNull();
+    expect(screen.queryByText(/Dim/)).toBeNull();
   });
 
   /**
@@ -56,12 +67,16 @@ describe("ChatFilterModal view options", () => {
    * The gap this filter closes: before it, the sidebar could only ask for OPEN
    * cards ("Cards only"), and with 804 of 805 cards closed on a real data dir
    * that collapsed 8,319 chats to 1 with no way to ask for the other side. So
-   * the assertion that matters is that "Inactive" is reachable at all.
+   * the assertion that matters is that "Archived" is reachable at all.
+   *
+   * The label is "Archived"; the value it stages stays `inactive`, because that
+   * is what goes out as `GET /api/chats?cardLifecycle=`.
    */
   it("stages each of the three lifecycle scopes", () => {
     const { onApply } = renderModal();
 
-    fireEvent.click(screen.getByText("Inactive"));
+    for (const label of ["All", "Open", "Archived"]) expect(screen.getByText(label)).toBeTruthy();
+    fireEvent.click(screen.getByText("Archived"));
     fireEvent.click(screen.getByText("Apply"));
     expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardLifecycle: "inactive" });
   });
@@ -71,13 +86,13 @@ describe("ChatFilterModal view options", () => {
     // the same scope instead of silently widening the sidebar to everything.
     const { onApply } = renderModal();
 
-    fireEvent.click(screen.getByText("Active"));
+    fireEvent.click(screen.getByText("Open"));
     fireEvent.click(screen.getByText("Apply"));
     expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle: "active", cardsOnly: true });
 
     cleanup();
     const second = renderModal({ cardLifecycle: "active", cardsOnly: true });
-    fireEvent.click(screen.getByText("Inactive"));
+    fireEvent.click(screen.getByText("Archived"));
     fireEvent.click(screen.getByText("Apply"));
     expect(second.onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle: "inactive", cardsOnly: false });
   });
@@ -101,54 +116,30 @@ describe("ChatFilterModal view options", () => {
   });
 
   /**
-   * Either non-default scope already narrows the list to one side of the
-   * split, so there is nothing left for "Dim inactive chats" to fade. A switch
-   * that silently does nothing reads as a bug, so it goes inert and says why.
+   * A scoped list is entirely on one side of the split, so there is no second
+   * bucket for "Open chats first" to make a header over. A switch that silently
+   * does nothing reads as a bug, so it goes inert and says why — in the new
+   * vocabulary, not the `active`/`inactive` value behind it.
    */
-  it.each(["active", "inactive"] as const)("makes the dim switch inert while the scope is %s, and says why", (cardLifecycle) => {
+  it.each([
+    ["active", "open"],
+    ["inactive", "archived"],
+  ] as const)("makes the open-first switch inert while the scope is %s, and says why", (cardLifecycle, label) => {
     const { onApply } = renderModal({ cardLifecycle });
 
-    const dimSwitch = screen.getByText("Dim inactive chats").closest("button")!;
-    expect(dimSwitch.disabled).toBe(true);
-    expect(screen.getByText(/Nothing to dim/)).toBeTruthy();
-
-    fireEvent.click(dimSwitch);
-    fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle, dimCardless: false });
-  });
-
-  it("leaves the dim switch live while the scope is All", () => {
-    const { onApply } = renderModal();
-
-    const dimSwitch = screen.getByText("Dim inactive chats").closest("button")!;
-    expect(dimSwitch.disabled).toBe(false);
-
-    fireEvent.click(dimSwitch);
-    fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, dimCardless: true });
-  });
-
-  /**
-   * Same reasoning as the dim switch, and the reason the two sit next to each
-   * other: a scoped list is entirely on one side of the split, so there is no
-   * second bucket for "Active cards first" to make a header over.
-   */
-  it("makes the active-first switch inert while the scope is not All, and says why", () => {
-    const { onApply } = renderModal({ cardLifecycle: "active", cardsOnly: true });
-
-    const sortSwitch = screen.getByText("Active cards first").closest("button")!;
+    const sortSwitch = screen.getByText("Open chats first").closest("button")!;
     expect(sortSwitch.disabled).toBe(true);
-    expect(screen.getByText(/Nothing to split/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`Nothing to split — the list is already scoped to ${label} chats`))).toBeTruthy();
 
     fireEvent.click(sortSwitch);
     fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle: "active", sortByCardActive: false });
+    expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle, sortByCardActive: false });
   });
 
-  it("round-trips the active-first switch through Apply", () => {
+  it("round-trips the open-first switch through Apply", () => {
     const { onApply } = renderModal();
 
-    const sortSwitch = screen.getByText("Active cards first").closest("button")!;
+    const sortSwitch = screen.getByText("Open chats first").closest("button")!;
     expect(sortSwitch.disabled).toBe(false);
 
     fireEvent.click(sortSwitch);

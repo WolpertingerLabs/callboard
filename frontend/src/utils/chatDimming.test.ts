@@ -1,5 +1,5 @@
 /**
- * The "Dim inactive chats" decision.
+ * The archived-chat dim.
  *
  * The case worth a test file is the first paint: `cards` is `[]` for as long as
  * the card fetch takes, and a dim that reads only "no card record" fades the
@@ -15,8 +15,8 @@ type Cards = ReadonlyMap<string, Pick<CardSummary, "lifecycle">>;
 
 const chat = (metadata: Record<string, unknown>, id = "chat-1"): Pick<Chat, "id" | "metadata"> => ({ id, metadata: JSON.stringify(metadata) });
 
-const ON = { dimCardless: true, cardsLoaded: true };
-const LOADING = { dimCardless: true, cardsLoaded: false };
+const LOADED = { cardsLoaded: true };
+const LOADING = { cardsLoaded: false };
 
 const CARDS: Cards = new Map([
   ["open-card", { lifecycle: "open" as const }],
@@ -48,26 +48,34 @@ describe("isChatDimmed", () => {
     expect(isChatDimmed(chat({ rootChatId: "closed-card" }), new Map(), LOADING)).toBe(false);
     // Control: a chat on an open card is undimmed in this state too, so the
     // assertion above is not just reporting "everything is false".
-    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, ON)).toBe(false);
+    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, LOADED)).toBe(false);
   });
 
   it("dims a card-less chat and a closed-card chat, but not an open-card one", () => {
     // Card-less here means a root the cards map does not know — e.g. a
     // triggered chat, which is not a card at all.
-    expect(isChatDimmed(chat({ triggered: true }, "triggered-root"), CARDS, ON)).toBe(true);
-    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, ON)).toBe(true);
-    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, ON)).toBe(false);
-    expect(isChatDimmed(chat({ forkedFrom: "intermediate" }, "legacy-leaf"), CARDS, ON)).toBe(false);
+    expect(isChatDimmed(chat({ triggered: true }, "triggered-root"), CARDS, LOADED)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, LOADED)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, LOADED)).toBe(false);
+    expect(isChatDimmed(chat({ forkedFrom: "intermediate" }, "legacy-leaf"), CARDS, LOADED)).toBe(false);
   });
 
   it("dims a chat whose root was deleted (dangling lineage)", () => {
-    expect(isChatDimmed(chat({ rootChatId: "deleted-card" }), CARDS, ON)).toBe(true);
-    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, ON)).toBe(false);
+    expect(isChatDimmed(chat({ rootChatId: "deleted-card" }), CARDS, LOADED)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, LOADED)).toBe(false);
   });
 
-  it("dims nothing while the option is off", () => {
-    const off = { dimCardless: false, cardsLoaded: true };
-    expect(isChatDimmed(chat({}), CARDS, off)).toBe(false);
-    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, off)).toBe(false);
+  /**
+   * There is no view option in front of the dim any more, so the only thing a
+   * caller can hand it is `cardsLoaded`. This pins that: the context type has
+   * exactly one key, and a stale `dimCardless: false` — the shape a bundle
+   * predating the removal passed — cannot switch the dim back off.
+   */
+  it("dims with no toggle in front of it", () => {
+    expect(Object.keys(LOADED)).toEqual(["cardsLoaded"]);
+    const legacy = { dimCardless: false, cardsLoaded: true } as unknown as typeof LOADED;
+    expect(isChatDimmed(chat({}), CARDS, legacy)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, legacy)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, legacy)).toBe(false);
   });
 });

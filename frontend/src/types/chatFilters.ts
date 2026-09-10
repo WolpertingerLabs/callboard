@@ -29,11 +29,14 @@ export const DEFAULT_CHAT_FILTERS: ChatFilters = {
  * The sidebar's card-lifecycle scope. Resolved server-side by
  * `GET /api/chats?cardLifecycle=`.
  *
- *  - `all`      — no scoping (the default).
+ *  - `all`      — no scoping (the default). Labelled "All".
  *  - `active`   — chats whose lineage root is an OPEN, visible card, plus
- *                 every chat in those trees.
- *  - `inactive` — the complement: a closed or hidden card's tree, and chats
- *                 whose root is not a card at all.
+ *                 every chat in those trees. Labelled "Open".
+ *  - `inactive` — the complement: an archived or hidden card's tree, and chats
+ *                 whose root is not a card at all. Labelled "Archived".
+ *
+ * The values are the query string an older browser bundle may still send, so
+ * they stay `active`/`inactive` however the UI reads. Relabel, never rename.
  *
  * Three-way rather than two booleans because the states are mutually
  * exclusive and "neither" has to mean "unscoped": a pair of toggles both off
@@ -48,7 +51,7 @@ export interface ChatViewOptions {
   showTriggered: boolean;
   /**
    * Scope by the lifecycle of each chat's card — the filter that lets the user
-   * ask for the INACTIVE side, which {@link cardsOnly} never could.
+   * ask for the ARCHIVED side, which {@link cardsOnly} never could.
    */
   cardLifecycle: CardLifecycleFilter;
   /**
@@ -60,16 +63,10 @@ export interface ChatViewOptions {
    */
   cardsOnly: boolean;
   /**
-   * Fade — never hide — chats whose card is closed or absent. Purely a render
-   * modifier over the cards the list already holds: it changes no request, so
-   * unlike {@link cardsOnly} it costs nothing and pages normally.
-   */
-  dimCardless: boolean;
-  /**
-   * Float chats on an open card above the rest, under "Active"/"Inactive"
-   * headers. Like {@link dimCardless} this is a render decision over the chats
-   * already loaded: it changes no request, so it pages normally and never
-   * removes a row.
+   * Float chats on an open card above the rest, under "Open"/"Archived"
+   * headers. A render decision over the chats already loaded: it changes no
+   * request, so unlike {@link cardsOnly} it pages normally and never removes a
+   * row.
    */
   sortByCardActive: boolean;
 }
@@ -79,7 +76,6 @@ export const DEFAULT_CHAT_VIEW_OPTIONS: ChatViewOptions = {
   showTriggered: false,
   cardLifecycle: "all",
   cardsOnly: false,
-  dimCardless: false,
   sortByCardActive: false,
 };
 

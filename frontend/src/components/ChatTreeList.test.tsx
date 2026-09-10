@@ -187,7 +187,7 @@ describe("ChatTreeList dimming", () => {
     makeChat("solo-none"),
   ];
 
-  function renderMixed(ctx: { dimCardless: boolean; cardsLoaded: boolean }, cards = CARDS) {
+  function renderMixed(ctx: { cardsLoaded: boolean }, cards = CARDS) {
     return render(
       <MemoryRouter>
         <ChatTreeList
@@ -209,24 +209,34 @@ describe("ChatTreeList dimming", () => {
     [...container.querySelectorAll(".chatlist-item-dimmed")].map((el) => el.textContent?.match(/chat [\w-]+/)?.[0]).sort();
 
   it("dims no row before the first listCards returns", () => {
-    const { container } = renderMixed({ dimCardless: true, cardsLoaded: false }, new Map());
+    const { container } = renderMixed({ cardsLoaded: false }, new Map());
     expect(dimmedRows(container)).toEqual([]);
     // Control for the assertion itself: the very same rows, once loaded, are
     // not all undimmed — so an empty result above is the flag, not the matcher.
     cleanup();
-    expect(dimmedRows(renderMixed({ dimCardless: true, cardsLoaded: true }).container).length).toBeGreaterThan(0);
+    expect(dimmedRows(renderMixed({ cardsLoaded: true }).container).length).toBeGreaterThan(0);
   });
 
-  it("dims the card-less and closed-card rows in both render paths, and leaves the open-card row alone", () => {
-    const { container } = renderMixed({ dimCardless: true, cardsLoaded: true });
+  it("dims the card-less and archived-card rows in both render paths, and leaves the open-card row alone", () => {
+    const { container } = renderMixed({ cardsLoaded: true });
     // "chat root" is the group header row (ChatListItem inside a group);
     // "chat solo-*" are lone rows. Both paths appear here.
     expect(dimmedRows(container)).toEqual(["chat root", "chat solo-closed", "chat solo-none"]);
   });
 
-  it("dims nothing while the option is off", () => {
-    const { container } = renderMixed({ dimCardless: false, cardsLoaded: true });
-    expect(dimmedRows(container)).toEqual([]);
+  /**
+   * No option gates the dim any more, so the only way a loaded list comes back
+   * undimmed is if every row is on an open card. Stated as a test because the
+   * removed switch used to be the answer to "why is nothing faded?".
+   */
+  it("dims once loaded with no option to turn it off", () => {
+    const allOpen: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
+      ["root", { lifecycle: "open" }],
+      ["open-card", { lifecycle: "open" }],
+      ["solo-none", { lifecycle: "open" }],
+    ]);
+    const { container } = renderMixed({ cardsLoaded: true }, allOpen);
+    expect(dimmedRows(container)).toEqual(["chat solo-closed"]);
   });
 });
 

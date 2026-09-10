@@ -176,9 +176,9 @@
   --chatlist-item-title-text: var(--text);
   --chatlist-item-path-text: var(--text-muted);
   --chatlist-item-time-text: var(--text-muted);
-  /* Fade applied to a chat row whose card is closed or absent ("Dim inactive
-     chats"). Per mode, and measured rather than chosen: opacity composites the
-     whole row against --bg-sidebar, so the row title (--chatlist-item-title-text
+  /* Fade applied to a chat row whose card is archived or absent. Per mode, and
+     measured rather than chosen: opacity composites the whole row against
+     --bg-sidebar, so the row title (--chatlist-item-title-text
      = --text) drops below AA at 0.492 here, and at 0.652 in light. These two
      values clear 4.5:1 with margin — 5.31:1 dark, 5.20:1 light — which is the
      only reason they differ. What opacity costs the row's *secondary* text is
@@ -501,7 +501,7 @@ a {
   text-decoration: none;
 }
 
-/* A sidebar chat row faded by the "Dim inactive chats" view option. A class
+/* A sidebar chat row faded because its card is archived or absent. A class
    rather than an inline style so the opacity stays a themed token: `opacity:
    var(--x)` set through React's style prop is legal CSS but is what jsdom
    turns into NaN, which would make every test of this feature assert on a
