@@ -1,6 +1,5 @@
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { DefaultPermissions } from "../api";
-import { resolveCardLifecycle, type CardLifecycleFilter } from "../types/chatFilters";
 import type { EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
 
 export type { EffortLevel };
@@ -16,14 +15,6 @@ interface RecentDirectory {
 }
 
 export type ThemeMode = "light" | "dark" | "system";
-
-/**
- * The sidebar's "Open chats first" sections, as `sectionByActive` keys them.
- *
- * The keys are persisted, so they stay `active`/`inactive` even though the
- * headers above them now read "Open" and "Archived".
- */
-export type ChatSectionKey = "active" | "inactive";
 
 interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;
@@ -49,15 +40,26 @@ interface LocalStorageData {
   worktreeByDefault?: boolean;
   showTriggeredChats?: boolean;
   /**
+   * Whether the sidebar includes chats on an archived (or absent) card.
+   * Absent means "never chosen" — see {@link getChatsShowArchived}, which seeds
+   * it from the two keys below rather than defaulting blindly.
+   */
+  chatsShowArchived?: boolean;
+  /**
    * Sidebar scoped to chats on an open card (and their descendants).
    *
-   * @deprecated Superseded by {@link chatsCardLifecycle}. Still written, so
-   * downgrading to an older bundle keeps the user's scope; still read, so a
-   * store written by one keeps it on upgrade.
+   * @deprecated Superseded by {@link chatsShowArchived}. Read once, to seed it;
+   * never written again. Still declared because an older bundle open in another
+   * tab both reads and writes it.
    */
   chatsCardsOnly?: boolean;
-  /** Sidebar's card-lifecycle scope: "all" | "active" | "inactive". */
-  chatsCardLifecycle?: CardLifecycleFilter;
+  /**
+   * The old three-way card-lifecycle scope: "all" | "active" | "inactive".
+   *
+   * @deprecated See {@link chatsCardsOnly}. Typed loosely because it is now
+   * only ever compared against, never sent anywhere.
+   */
+  chatsCardLifecycle?: string;
   /**
    * The old "Dim inactive chats" switch.
    *
@@ -70,15 +72,6 @@ interface LocalStorageData {
    * parsed object would break that, and this is the note saying why not to.
    */
   chatsDimCardless?: boolean;
-  /** Sidebar splits into Open/Archived sections, chats on an open card first. */
-  chatsSortByCardActive?: boolean;
-  /**
-   * Which of those sections are expanded. Absent — and an absent key within it
-   * — means expanded: the sections only exist when both buckets are non-empty,
-   * so a first-run default of collapsed would hide chats the user never chose
-   * to hide.
-   */
-  chatSectionsExpanded?: Partial<Record<ChatSectionKey, boolean>>;
   /**
    * The daemon build id whose reload prompt the user waved off. Keyed by the
    * id, not a boolean, so the *next* upgrade is announced again — see
@@ -406,57 +399,41 @@ export function saveShowTriggeredChats(value: boolean): void {
 }
 
 /**
- * The persisted lifecycle scope, falling back to the deprecated `cardsOnly`
- * boolean so a pref set before this filter existed still means "active".
- * Validated on read rather than trusted: this comes out of JSON a hand edit or
- * another bundle version could have written anything into, and the value is
- * sent straight to the server as a query param.
- */
-export function getChatsCardLifecycle(): CardLifecycleFilter {
-  const data = getStorageData();
-  return resolveCardLifecycle({ cardLifecycle: data.chatsCardLifecycle, cardsOnly: data.chatsCardsOnly });
-}
-
-/**
- * Write both halves. `chatsCardsOnly` is kept in lock-step so a downgrade to a
- * bundle that only knows the boolean still lands the user on "active" rather
- * than silently widening their sidebar to everything.
- */
-export function saveChatsCardLifecycle(value: CardLifecycleFilter): void {
-  const data = getStorageData();
-  data.chatsCardLifecycle = value;
-  data.chatsCardsOnly = value === "active";
-  setStorageData(data);
-}
-
-export function getChatsSortByCardActive(): boolean {
-  const data = getStorageData();
-  return data.chatsSortByCardActive ?? false;
-}
-
-export function saveChatsSortByCardActive(value: boolean): void {
-  const data = getStorageData();
-  data.chatsSortByCardActive = value;
-  setStorageData(data);
-}
-
-/**
- * Expanded unless explicitly collapsed — see the field's note.
+ * Whether the sidebar includes chats on an archived (or absent) card.
  *
- * `!== false` rather than `?? true` so the return is always a real boolean:
- * this value is parsed out of JSON, so a hand-edited or cross-version store
- * can hold anything, and the callers render `isExpanded(key) && rows`. A
- * stored `0` reaching that would put a literal "0" in the sidebar where the
- * rows belong. Matches `getBoardClosedExpanded`'s `=== true` next door.
+ * Migrates the three-way scope this replaced, once, on first read: a stored
+ * scope of "all" or "inactive" was showing the user archived rows, so it seeds
+ * ON; "active" — or the older `cardsOnly` boolean it aliased — was hiding them,
+ * so it seeds OFF. A store with neither seeds OFF, the new default, rather than
+ * inheriting the old "all": hiding archived chats IS the change.
+ *
+ * The legacy pair is resolved the way the bundle that wrote it did (explicit
+ * scope wins; else `cardsOnly: true` meant "active") rather than by reading
+ * `chatsCardLifecycle` alone. That is deliberate and it changes no answer
+ * today: every branch `cardsOnly` can reach returns `false`, which is also
+ * where an unrecognised store lands. It is here to state which preference is
+ * being migrated, so that flipping the default later cannot quietly turn "this
+ * user asked for open cards only" into "this user never chose".
+ *
+ * `typeof === "boolean"` on the new key rather than `??` because this is JSON
+ * another bundle version or a hand edit could have written anything into, and
+ * the answer decides which scope goes out as a query param.
+ *
+ * The legacy keys are read, never written back — {@link saveChatsShowArchived}
+ * touches only the new one, so they stop tracking the user's choice from the
+ * first save. They are not deleted either: the store round-trips every key it
+ * holds, and an older bundle in another tab still reads them.
  */
-export function getChatSectionExpanded(key: ChatSectionKey): boolean {
+export function getChatsShowArchived(): boolean {
   const data = getStorageData();
-  return data.chatSectionsExpanded?.[key] !== false;
+  if (typeof data.chatsShowArchived === "boolean") return data.chatsShowArchived;
+  const legacyScope = data.chatsCardLifecycle ?? (data.chatsCardsOnly === true ? "active" : undefined);
+  return legacyScope === "all" || legacyScope === "inactive";
 }
 
-export function saveChatSectionExpanded(key: ChatSectionKey, expanded: boolean): void {
+export function saveChatsShowArchived(value: boolean): void {
   const data = getStorageData();
-  data.chatSectionsExpanded = { ...data.chatSectionsExpanded, [key]: expanded };
+  data.chatsShowArchived = value;
   setStorageData(data);
 }
 

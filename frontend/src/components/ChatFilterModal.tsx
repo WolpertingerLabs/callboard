@@ -1,7 +1,7 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowUpNarrowWide, Bookmark, Zap, LayoutGrid } from "lucide-react";
+import { Archive, Bookmark, Zap } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
-import { DEFAULT_CHAT_VIEW_OPTIONS, type CardLifecycleFilter, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
+import { DEFAULT_CHAT_VIEW_OPTIONS, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
 interface ChatFilterModalProps {
   onClose: () => void;
@@ -68,21 +68,17 @@ function SwitchRow({
   hint,
   checked,
   onChange,
-  disabled,
 }: {
   icon: ReactNode;
   label: string;
   hint: string;
   checked: boolean;
   onChange: () => void;
-  /** Inert because another option has already decided this one. The hint says which. */
-  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onChange}
-      disabled={disabled}
       style={{
         display: "flex",
         alignItems: "center",
@@ -91,9 +87,8 @@ function SwitchRow({
         padding: "8px 10px",
         borderRadius: 8,
         border: "none",
-        background: checked && !disabled ? "var(--accent-bg)" : "transparent",
-        cursor: disabled ? "default" : "pointer",
-        opacity: disabled ? 0.5 : 1,
+        background: checked ? "var(--accent-bg)" : "transparent",
+        cursor: "pointer",
         textAlign: "left",
         transition: "background 0.15s",
       }}
@@ -132,96 +127,6 @@ function SwitchRow({
 }
 
 /**
- * One three-way choice: icon, label, hint, and a segmented control.
- *
- * A segmented control rather than a third switch because the states are
- * mutually exclusive and one of them is the default: two toggles would need a
- * rule for what both-off means, and the whole point of this option is that
- * "neither open nor archived" is a real, distinct answer (show everything).
- */
-function ChoiceRow<T extends string>({
-  icon,
-  label,
-  hint,
-  value,
-  options,
-  onChange,
-}: {
-  icon: ReactNode;
-  label: string;
-  hint: string;
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (next: T) => void;
-}) {
-  const isDefault = value === options[0].value;
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        width: "100%",
-        padding: "8px 10px",
-        borderRadius: 8,
-        background: isDefault ? "transparent" : "var(--accent-bg)",
-        transition: "background 0.15s",
-      }}
-    >
-      <span style={{ display: "flex", color: isDefault ? "var(--text-muted)" : "var(--accent-text)", flexShrink: 0, transition: "color 0.15s" }}>{icon}</span>
-      <span style={{ flex: 1, minWidth: 0 }}>
-        <span style={{ display: "block", fontSize: 13, fontWeight: 500, color: "var(--text)" }}>{label}</span>
-        <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>{hint}</span>
-      </span>
-      <span style={{ display: "flex", gap: 4, flexShrink: 0 }} role="group" aria-label={label}>
-        {options.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={value === option.value}
-            onClick={() => onChange(option.value)}
-            style={{
-              padding: "4px 8px",
-              borderRadius: 4,
-              fontSize: 11,
-              fontWeight: 600,
-              border: "none",
-              cursor: "pointer",
-              background: value === option.value ? "var(--accent)" : "var(--bg-secondary)",
-              color: value === option.value ? "var(--text-on-accent)" : "var(--text-muted)",
-              transition: "background 0.15s, color 0.15s",
-            }}
-          >
-            {option.label}
-          </button>
-        ))}
-      </span>
-    </div>
-  );
-}
-
-/**
- * Labels only. The values are the `GET /api/chats?cardLifecycle=` query an
- * older bundle may still send, so `active`/`inactive` stay on the wire while
- * the UI reads "Open"/"Archived".
- */
-const CARD_LIFECYCLE_LABELS: Record<CardLifecycleFilter, string> = {
-  all: "All",
-  active: "Open",
-  inactive: "Archived",
-};
-
-const CARD_LIFECYCLE_OPTIONS: { value: CardLifecycleFilter; label: string }[] = (
-  ["all", "active", "inactive"] as const
-).map((value) => ({ value, label: CARD_LIFECYCLE_LABELS[value] }));
-
-const CARD_LIFECYCLE_HINTS: Record<CardLifecycleFilter, string> = {
-  all: "Every chat, whatever its card is doing",
-  active: "Only chats on an open card, plus their descendants",
-  inactive: "Only chats on an archived card — or on no card at all",
-};
-
-/**
  * Staged editor for the sidebar's filters AND view options — nothing takes
  * effect until Apply, so a half-typed regex never reshuffles the list.
  *
@@ -233,17 +138,7 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
   const [local, setLocal] = useState<ChatFilters>(filters);
   const [localView, setLocalView] = useState<ChatViewOptions>(viewOptions);
 
-  const toggleView = (key: "bookmarked" | "showTriggered" | "sortByCardActive") =>
-    setLocalView((prev) => ({ ...prev, [key]: !prev[key] }));
-
-  /**
-   * `cardsOnly` is written alongside, in lock-step: it is the deprecated alias
-   * of `active`, persisted by older bundles, and keeping the pair consistent is
-   * what makes a downgrade land on the same scope instead of silently widening
-   * the sidebar to everything.
-   */
-  const setCardLifecycle = (cardLifecycle: CardLifecycleFilter) =>
-    setLocalView((prev) => ({ ...prev, cardLifecycle, cardsOnly: cardLifecycle === "active" }));
+  const toggleView = (key: keyof ChatViewOptions) => setLocalView((prev) => ({ ...prev, [key]: !prev[key] }));
 
   const update = <K extends keyof ChatFilters>(key: K, field: Partial<ChatFilters[K]>) => {
     setLocal((prev) => ({
@@ -290,36 +185,28 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
       >
         <h2 style={{ margin: "0 0 20px 0", fontSize: 18 }}>Chat Filters</h2>
 
-        {/* View — what the sidebar is scoped to. Resolved server-side (or by
-            how the list renders what it holds), unlike the client-side field
-            filters below. */}
+        {/* View — what the sidebar is scoped to. Resolved server-side, unlike
+            the client-side field filters below. */}
         <div style={{ marginBottom: 20 }}>
           <div style={sectionHeadingStyle}>View</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <ChoiceRow
-              icon={<LayoutGrid size={16} />}
-              label="Card lifecycle"
-              hint={CARD_LIFECYCLE_HINTS[localView.cardLifecycle]}
-              value={localView.cardLifecycle}
-              options={CARD_LIFECYCLE_OPTIONS}
-              onChange={setCardLifecycle}
-            />
-            {/* Directly under the scope rather than last in the block: it is
-                the option that makes this one inert, and a disabled switch whose
-                reason is three rows away reads as a bug. Either non-default
-                scope already answers the question this one asks — every row on
-                screen is then on the same side of the split. */}
+            {/* The one control over the card lifecycle: with it off the list
+                asks the server for open cards only, so the rows the dim would
+                fade are never fetched. Hence "in place" in the on-hint —
+                turning it on adds them back where their recency puts them,
+                faded, rather than collecting them under a header.
+
+                The off-hint says "browsing" because that is the honest scope.
+                A content search widens past this switch (see
+                `cardLifecycleFor`), so a hint promising "only chats on open
+                cards" would be contradicted by the dimmed archived hits on
+                screen behind this modal. */}
             <SwitchRow
-              icon={<ArrowUpNarrowWide size={16} />}
-              label="Open chats first"
-              hint={
-                localView.cardLifecycle !== "all"
-                  ? `Nothing to split — the list is already scoped to ${CARD_LIFECYCLE_LABELS[localView.cardLifecycle].toLowerCase()} cards`
-                  : "Group chats on an open card above the rest, under headers"
-              }
-              checked={localView.sortByCardActive}
-              onChange={() => toggleView("sortByCardActive")}
-              disabled={localView.cardLifecycle !== "all"}
+              icon={<Archive size={16} />}
+              label="Show archived"
+              hint={localView.showArchived ? "Include chats on archived cards, dimmed and in place" : "Browse open cards only — search still finds everything"}
+              checked={localView.showArchived}
+              onChange={() => toggleView("showArchived")}
             />
             <SwitchRow
               icon={<Bookmark size={16} fill={localView.bookmarked ? "currentColor" : "none"} />}

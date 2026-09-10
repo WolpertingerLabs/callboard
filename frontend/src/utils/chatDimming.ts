@@ -30,16 +30,21 @@ export function chatCardId(chat: Pick<Chat, "id" | "metadata">): string | undefi
 /**
  * Whether the chat is filed under a card that is currently open.
  *
- * The shared question behind two features: the dim fades the rows this returns
- * false for, and "Open chats first" files them under the Archived header.
- * A dangling id — the root chat was deleted — is a chat with no live card,
- * same as never having had one, so it answers false like an unfiled chat.
+ * The question behind the dim: it fades the rows this returns false for. A
+ * dangling id — the root chat was deleted — is a chat with no live card, same
+ * as never having had one, so it answers false like an unfiled chat.
  *
- * Says nothing about whether the cards have loaded: callers hold that flag
- * (see {@link DimContext.cardsLoaded}) because they differ in what to do with
- * it — the dim suppresses itself, the sectioning renders as if it were off.
+ * Very nearly the rows the server withholds under `cardLifecycle=active`, the
+ * scope "Show archived" asks for when it is off — but two implementations of
+ * one question, which can disagree at the edges. {@link isChatDimmed} lists
+ * how.
+ *
+ * Says nothing about whether the cards have loaded: its one caller,
+ * {@link isChatDimmed}, holds that flag (see {@link DimContext.cardsLoaded}).
+ * Module-private since the sectioning that was the second caller went away —
+ * it is a step of the dim now, not a shared predicate.
  */
-export function isChatCardActive(
+function isChatCardActive(
   chat: Pick<Chat, "id" | "metadata">,
   cardsById: ReadonlyMap<string, Pick<CardSummary, "lifecycle">>,
 ): boolean {
@@ -85,7 +90,33 @@ export interface DimContext {
  * the exemptions as "rows that need the user" and leave it at that.
  *
  * Fades a chat whose card is archived *or* absent — the same predicate the dim
- * has always used, now with no toggle in front of it.
+ * has always used, now with no toggle in front of it. "Show archived" is not
+ * such a toggle: it decides whether these rows are fetched at all, so with it
+ * off this has almost nothing to fade.
+ *
+ * Almost. Three ways a faded row reaches the toggle-off view — one of them on
+ * purpose, and much the commonest:
+ *
+ *  - **a search is running.** Content search widens the request to `all`
+ *    whatever the toggle says (see `cardLifecycleFor`), because hits are
+ *    intersected against the list and a narrow scope would delete results
+ *    rather than filter them. So archived rows arrive in bulk and the fade is
+ *    what marks them as archived. The toggle scopes *browsing*; search covers
+ *    everything.
+ *  - **skew.** The scope is the server's verdict over stored records; the fade
+ *    is the `/api/cards` rollup's, and they are separate requests. The 15s
+ *    session poll calls `load()` without `loadCards()`, and archiving from a
+ *    row's kebab menu patches `cards` locally without refetching the list, so
+ *    one is briefly newer than the other.
+ *  - **native Codex.** `services/card-context.ts` refuses to promote a native
+ *    record to a card (and stops early when `nativeDiscoveryIncomplete`), while
+ *    the list route's open-root scan has no such term. Such a root is in scope
+ *    and in no card.
+ *
+ * So: faded rows with the toggle off and the search box empty are the last
+ * two, and rare. None of the three brings the sections back — what justified
+ * deleting them is that the rows the dim exists for are the ones the toggle
+ * already removed, not that the fade is provably unreachable.
  */
 export function isChatDimmed(
   chat: Pick<Chat, "id" | "metadata">,

@@ -24,7 +24,7 @@ function renderModal(viewOptions: Partial<ChatViewOptions> = {}) {
 describe("ChatFilterModal view options", () => {
   it("renders every scope option", () => {
     renderModal();
-    for (const label of ["Card lifecycle", "Open chats first", "Bookmarked only", "Show triggered chats"]) {
+    for (const label of ["Show archived", "Bookmarked only", "Show triggered chats"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
   });
@@ -50,6 +50,19 @@ describe("ChatFilterModal view options", () => {
     expect(screen.queryByText("Tree layout")).toBeNull();
   });
 
+  /**
+   * The three controls "Show archived" replaced. They are gone as controls, not
+   * merely as fields: the archived rows are told apart by the dim alone now, so
+   * a segmented All/Open/Archived scope or an "Open chats first" split coming
+   * back would be a second, contradicting answer to the same question.
+   */
+  it("no longer offers the lifecycle scope or the open-first split", () => {
+    renderModal();
+    expect(screen.queryByText("Card lifecycle")).toBeNull();
+    expect(screen.queryByText("Open chats first")).toBeNull();
+    for (const label of ["All", "Open", "Archived"]) expect(screen.queryByText(label)).toBeNull();
+  });
+
   it("stages a toggle and commits it on Apply", () => {
     const { onApply, onClose } = renderModal();
 
@@ -64,37 +77,41 @@ describe("ChatFilterModal view options", () => {
   });
 
   /**
-   * The gap this filter closes: before it, the sidebar could only ask for OPEN
-   * cards ("Cards only"), and with 804 of 805 cards closed on a real data dir
-   * that collapsed 8,319 chats to 1 with no way to ask for the other side. So
-   * the assertion that matters is that "Archived" is reachable at all.
-   *
-   * The label is "Archived"; the value it stages stays `inactive`, because that
-   * is what goes out as `GET /api/chats?cardLifecycle=`.
+   * The gap this toggle closes: the sidebar hides chats on an archived card by
+   * default, and with 804 of 805 cards closed on a real data dir that is most
+   * of them. So the assertion that matters is that they are reachable at all,
+   * from one switch, in one click.
    */
-  it("stages each of the three lifecycle scopes", () => {
+  it("stages Show archived and commits it on Apply", () => {
     const { onApply } = renderModal();
 
-    for (const label of ["All", "Open", "Archived"]) expect(screen.getByText(label)).toBeTruthy();
-    fireEvent.click(screen.getByText("Archived"));
+    fireEvent.click(screen.getByText("Show archived"));
+    expect(onApply).not.toHaveBeenCalled();
+
     fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardLifecycle: "inactive" });
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true });
   });
 
-  it("keeps the deprecated cardsOnly alias in lock-step with the scope", () => {
-    // Written so a downgrade to a bundle that only knows the boolean lands on
-    // the same scope instead of silently widening the sidebar to everything.
-    const { onApply } = renderModal();
+  it("switches Show archived back off again", () => {
+    const { onApply } = renderModal({ showArchived: true });
 
-    fireEvent.click(screen.getByText("Open"));
+    fireEvent.click(screen.getByText("Show archived"));
     fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle: "active", cardsOnly: true });
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: false });
+  });
 
-    cleanup();
-    const second = renderModal({ cardLifecycle: "active", cardsOnly: true });
-    fireEvent.click(screen.getByText("Archived"));
-    fireEvent.click(screen.getByText("Apply"));
-    expect(second.onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle: "inactive", cardsOnly: false });
+  it("says what each position of Show archived does", () => {
+    // The hint is the only place the dim is explained, now that it is not a
+    // switch of its own — on, it warns the extra rows arrive faded and in
+    // place rather than collected at the bottom; off, it has to say "browse",
+    // because a content search widens past this switch and the user would
+    // otherwise be promised something the sidebar behind the modal contradicts.
+    renderModal();
+    expect(screen.getByText(/Browse open cards only/)).toBeTruthy();
+    expect(screen.getByText(/search still finds everything/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Show archived"));
+    expect(screen.getByText(/dimmed and in place/)).toBeTruthy();
   });
 
   it("discards staged toggles on Cancel", () => {
@@ -108,51 +125,15 @@ describe("ChatFilterModal view options", () => {
   });
 
   it("seeds the switches from the live values", () => {
-    const { onApply } = renderModal({ cardLifecycle: "inactive", bookmarked: true });
+    const { onApply } = renderModal({ showArchived: true, bookmarked: true });
 
     // Applying without touching anything hands back exactly what came in.
     fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, cardLifecycle: "inactive", bookmarked: true });
-  });
-
-  /**
-   * A scoped list is entirely on one side of the split, so there is no second
-   * bucket for "Open chats first" to make a header over. A switch that silently
-   * does nothing reads as a bug, so it goes inert and says why — in the new
-   * vocabulary, not the `active`/`inactive` value behind it.
-   */
-  it.each([
-    ["active", "open"],
-    ["inactive", "archived"],
-  ] as const)("makes the open-first switch inert while the scope is %s, and says why", (cardLifecycle, scopeWord) => {
-    const { onApply } = renderModal({ cardLifecycle });
-
-    const sortSwitch = screen.getByText("Open chats first").closest("button")!;
-    expect(sortSwitch.disabled).toBe(true);
-    // The reason, and the scope word in the new vocabulary — not the whole
-    // sentence, which is copy and free to be reworded.
-    expect(screen.getByText(/Nothing to split/).textContent).toContain(scopeWord);
-
-    fireEvent.click(sortSwitch);
-    fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toMatchObject({ cardLifecycle, sortByCardActive: false });
-  });
-
-  it("round-trips the open-first switch through Apply", () => {
-    const { onApply } = renderModal();
-
-    const sortSwitch = screen.getByText("Open chats first").closest("button")!;
-    expect(sortSwitch.disabled).toBe(false);
-
-    fireEvent.click(sortSwitch);
-    expect(onApply).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, sortByCardActive: true });
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true, bookmarked: true });
   });
 
   it("Reset All clears the view options too, not just the field filters", () => {
-    const { onApply } = renderModal({ cardLifecycle: "inactive", showTriggered: true, bookmarked: true, sortByCardActive: true });
+    const { onApply } = renderModal({ showArchived: true, showTriggered: true, bookmarked: true });
 
     fireEvent.click(screen.getByText("Reset All"));
     fireEvent.click(screen.getByText("Apply"));

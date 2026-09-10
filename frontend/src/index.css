@@ -158,13 +158,17 @@
   /* Chat list */
   --chatlist-header-bg: transparent;
   --chatlist-header-border: var(--border);
-  /* The Open/Archived section headers inside the list, which need to read as
-     raised off the rows they introduce — unlike --chatlist-header-bg (the
-     sidebar's own top header), which is transparent in both themes. Its own
-     variable rather than a shared one because "raised" is a different token
-     per theme: dark layers lighten from --bg-sidebar to --bg-secondary, while
-     in light mode --bg-secondary sits a hair off --bg-sidebar and --surface is
-     the step that actually separates. */
+  /* Retained with no consumer. It coloured the Open/Archived section headers
+     inside the chat list, which "Show archived" replaced — a dim in place
+     needs no band to separate anything from anything. Kept because the token
+     list is a contract, not a usage set: it is mirrored in
+     services/theme-contrast-palette.ts, pinned by theme-contrast.stylesheet
+     .test.ts, and every user theme in ~/.callboard/themes must define it.
+     Dropping it is a theme-format change, not a cleanup. If a raised band
+     inside the list ever comes back, this is the token for it: "raised" is a
+     different step per theme — dark lightens from --bg-sidebar to
+     --bg-secondary, while in light mode --bg-secondary sits a hair off
+     --bg-sidebar and --surface is what actually separates. */
   --chatlist-section-header-bg: var(--bg-secondary);
   --chatlist-title-text: var(--text);
   --chatlist-subtitle-text: var(--text-muted);

@@ -19,88 +19,70 @@ export const DEFAULT_CHAT_FILTERS: ChatFilters = {
 
 /**
  * Sidebar scope, edited alongside {@link ChatFilters} in the filters modal but
- * deliberately a separate type: these are resolved SERVER-side (or by how the
- * list renders what it already holds), while ChatFilters is client-side
- * post-filtering. Folding them together would drag them into
- * {@link hasActiveFilters}, which forces the list to fetch everything and hides
- * "Load next page" — wrong for options that paginate perfectly well.
+ * deliberately a separate type: these are resolved SERVER-side, while
+ * ChatFilters is client-side post-filtering. Folding them together would drag
+ * them into {@link hasActiveFilters}, which forces the list to fetch everything
+ * and hides "Load next page" — wrong for options that paginate perfectly well.
  */
-/**
- * The sidebar's card-lifecycle scope. Resolved server-side by
- * `GET /api/chats?cardLifecycle=`.
- *
- *  - `all`      — no scoping (the default). Labelled "All".
- *  - `active`   — chats whose lineage root is an OPEN, visible card, plus
- *                 every chat in those trees. Labelled "Open".
- *  - `inactive` — the complement: an archived or hidden card's tree, and chats
- *                 whose root is not a card at all. Labelled "Archived".
- *
- * The values are the query string an older browser bundle may still send, so
- * they stay `active`/`inactive` however the UI reads. Relabel, never rename.
- *
- * Three-way rather than two booleans because the states are mutually
- * exclusive and "neither" has to mean "unscoped": a pair of toggles both off
- * would either show nothing or need a rule about what off+off means.
- */
-export type CardLifecycleFilter = "all" | "active" | "inactive";
-
 export interface ChatViewOptions {
   /** Only bookmarked chats. Session-only — deliberately not persisted. */
   bookmarked: boolean;
   /** Include chats started by automation (cron, triggers, jobs). */
   showTriggered: boolean;
   /**
-   * Scope by the lifecycle of each chat's card — the filter that lets the user
-   * ask for the ARCHIVED side, which {@link cardsOnly} never could.
+   * Whether chats on an archived card — or on no card at all — are in the list.
+   *
+   * A browse scope, and near enough the complement of the unconditional dim in
+   * `utils/chatDimming`: off, the rows that would have been faded are not
+   * fetched, so a browsed sidebar is essentially undimmed; on, they come back
+   * in place, in recency order, faded. That is the whole design — the dim is
+   * the only signal telling archived from open, and this decides whether those
+   * rows exist, which is why the list needs no headers, sections or
+   * reordering.
+   *
+   * Browse scope: {@link cardLifecycleFor} overrides it while a search is
+   * running, which is the commonest reason to see faded rows with it off.
+   * `isChatDimmed` lists that and the two rarer ones; none of them is a reason
+   * to bring the headers back.
    */
-  cardLifecycle: CardLifecycleFilter;
-  /**
-   * @deprecated Superseded by `cardLifecycle: "active"`, which it is exactly
-   * equivalent to. Kept as a field (not deleted) because it is persisted in
-   * localStorage: a user who left "Cards only" on must still get that scope
-   * after upgrading, so it is read once at startup to seed `cardLifecycle` and
-   * then written in lock-step with it. Nothing should branch on it.
-   */
-  cardsOnly: boolean;
-  /**
-   * Float chats on an open card above the rest, under "Open"/"Archived"
-   * headers. A render decision over the chats already loaded: it changes no
-   * request, so unlike {@link cardsOnly} it pages normally and never removes a
-   * row.
-   */
-  sortByCardActive: boolean;
+  showArchived: boolean;
 }
 
 export const DEFAULT_CHAT_VIEW_OPTIONS: ChatViewOptions = {
   bookmarked: false,
   showTriggered: false,
-  cardLifecycle: "all",
-  cardsOnly: false,
-  sortByCardActive: false,
+  showArchived: false,
 };
+
+/**
+ * The `GET /api/chats?cardLifecycle=` scope the sidebar asks for. Every
+ * request the list makes goes through here, so the two inputs cannot drift
+ * apart at one call site.
+ *
+ * `searching` widens to `all` whatever the toggle says. Content search is a
+ * server-side query over full history whose hits are applied as an
+ * INTERSECTION against the loaded list, so a narrowed scope does not filter
+ * the results — it deletes them, silently, with no count of what was dropped.
+ * Searching is an explicit hunt for one specific thing and must not be
+ * truncated by a browse preference set for a different purpose; the archived
+ * hits still arrive dimmed, which is the signal that says why a result looks
+ * different.
+ *
+ * Only ever `active` or `all`: the server still accepts `inactive` (an older
+ * bundle may still send it) but no UI can ask for it — "archived only" was a
+ * third state this toggle deliberately gave up, since a list of nothing but
+ * faded rows is not a view anyone wanted.
+ */
+export function cardLifecycleFor({ showArchived, searching }: { showArchived: boolean; searching: boolean }): "all" | "active" {
+  return showArchived || searching ? "all" : "active";
+}
 
 /**
  * How many view options are off their default — drives the filter button's
  * badge.
- *
- * `cardsOnly` is excluded: it is the deprecated alias of
- * `cardLifecycle: "active"` and is written in lock-step with it, so counting
- * both would badge one user-visible choice as two.
  */
 export function activeViewOptionCount(options: ChatViewOptions): number {
-  return (Object.keys(DEFAULT_CHAT_VIEW_OPTIONS) as (keyof ChatViewOptions)[])
-    .filter((key) => key !== "cardsOnly")
-    .filter((key) => options[key] !== DEFAULT_CHAT_VIEW_OPTIONS[key]).length;
-}
-
-/**
- * Reconcile the persisted pair on load. `cardLifecycle` wins when it is set;
- * otherwise a stored `cardsOnly: true` — written by a bundle that predates
- * this filter — means `active`.
- */
-export function resolveCardLifecycle(stored: { cardLifecycle?: CardLifecycleFilter; cardsOnly?: boolean }): CardLifecycleFilter {
-  if (stored.cardLifecycle === "active" || stored.cardLifecycle === "inactive" || stored.cardLifecycle === "all") return stored.cardLifecycle;
-  return stored.cardsOnly ? "active" : "all";
+  return (Object.keys(DEFAULT_CHAT_VIEW_OPTIONS) as (keyof ChatViewOptions)[]).filter((key) => options[key] !== DEFAULT_CHAT_VIEW_OPTIONS[key]).length;
 }
 
 /** Fields that are both switched on and actually carry a value. */

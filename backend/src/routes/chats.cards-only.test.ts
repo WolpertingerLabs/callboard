@@ -242,9 +242,13 @@ describe("GET /api/chats?cardsOnly=true", () => {
  * of `cardsOnly`. With 804 of 805 cards closed on the data dir this was
  * diagnosed against, `cardsOnly` collapsed 8,319 chats to 1 and there was no
  * "show me the inactive ones" at all — the dim (a `dimCardless` switch then,
- * unconditional now) only fades and
- * `sortByCardActive` suppresses its own headers when either bucket is empty,
- * which that board state guarantees.
+ * unconditional now) only fades the rows a request already returned, so it
+ * could never widen one.
+ *
+ * The sidebar has since collapsed to a single "Show archived" toggle that asks
+ * for `active` or `all` only, which leaves `inactive` with no caller in this
+ * repo. It stays supported and stays tested: it is a wire value older bundles
+ * still send.
  */
 describe("GET /api/chats?cardLifecycle", () => {
   it("active is exactly the old cardsOnly set", async () => {
