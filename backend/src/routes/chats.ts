@@ -1380,6 +1380,130 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
 });
 
 /**
+ * The longest title a chat may carry, matching the `set_chat_title` tool's cap
+ * so a title a session can set is one the user can type back, and the other way
+ * round. Generated titles never come close — the titler is asked for a handful
+ * of words — so this only ever binds on a hand-written one.
+ */
+const MAX_TITLE_LENGTH = 240;
+
+/**
+ * Answer for every way the store can decline the write. Deliberately does not
+ * say *which* — the three causes are not distinguishable from here, and naming
+ * one ("its metadata could not be read") would misdirect diagnosis on a full
+ * disk, at the moment the record has in fact just been damaged. What it can
+ * promise is the part the user needs: the title they asked for is not stored.
+ */
+const TITLE_WRITE_FAILED = "Could not update this chat's record, so its title is unchanged — its stored metadata may be unreadable, or the write itself failed";
+
+/**
+ * Persist a chat's title, whoever chose it — typed by the user or produced by
+ * the titler. Both routes below go through here, because both are renames and
+ * a rename has two properties that a naive metadata write gets wrong.
+ *
+ * **It must not resurface the chat.** A title is a label, not activity, and
+ * `upsertChat` stamps `updated_at = now` on every existing record it touches.
+ * The sidebar hides that (its list route overrides both timestamps from the
+ * session log) but the board does not: card rollup takes `lastActivityAt` from
+ * `max(member.updated_at)` and computes `unread` as `updated_at > lastReadAt`,
+ * so renaming one member of a card quiet for three weeks sorts it to the top
+ * of the board wearing an unread dot for a conversation nobody added to. Hence
+ * `touch: false`, the same flag `patchCardFields` already uses to write a card
+ * title without faking activity — and hence the *created* record carrying the
+ * timestamps the session log gave it rather than today's.
+ *
+ * **It must not be able to destroy what it cannot read.** `updateChatMetadata`
+ * read-merge-writes and fails closed on a record whose metadata does not
+ * parse; a bare upsert replaces the blob wholesale, so a truncated record —
+ * `saveChat` is a plain `writeFileSync`, so a crash mid-write leaves one —
+ * would have `session_ids`, `card`, `parentChatId` and the rest silently
+ * replaced by `{"title":"..."}`. `parseChatMetadata` cannot report that: it
+ * answers `{}` for unreadable and for empty alike.
+ *
+ * Returns "unwritten" for that case, so the caller can refuse instead of
+ * reporting a success that ate the record.
+ *
+ * `false` from `updateChatMetadata` means only *the store did not write*, and
+ * three things produce it: no record to merge into, metadata that would not
+ * parse, and `saveChat` itself throwing (`ENOSPC` and friends — its `catch`
+ * swallows those into the same `false`). Only the first wants a different
+ * answer, and it is settled *before* the call rather than after: `findChat`
+ * sets `_from_filesystem` in exactly the branch where the store had nothing,
+ * so the record-less case — roughly a third of chats, which have only ever
+ * existed as a session log — is already known here. Asking `getChat` instead
+ * would be two more uncached full-corpus directory scans (~44ms each on ~9k
+ * records) of synchronous blocked event loop, on the very chats this path
+ * exists to serve.
+ */
+function writeChatTitle(chat: any, title: string | null): "ok" | "unwritten" {
+  if (!chat._from_filesystem) {
+    return chatFileService.updateChatMetadata(chat.id, { title }, { touch: false }) ? "ok" : "unwritten";
+  }
+
+  chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, {
+    metadata: JSON.stringify({ ...parseChatMetadata(chat.metadata), title }),
+    created_at: chat.created_at,
+    updated_at: chat.updated_at,
+  });
+  return "ok";
+}
+
+// Set a chat's title by hand
+chatsRouter.patch("/:id/title", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Set a chat title'
+  // #swagger.description = 'Stores a user-supplied title in chat metadata and notifies open clients. An empty (or whitespace-only) title clears the stored one, so the chat falls back to its auto-derived preview — the same reset the set_chat_title tool offers. Creates a file storage record if the chat only exists on the filesystem.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["title"],
+          properties: {
+            title: { type: "string", description: "New title (max 240 chars). Empty resets to the auto-derived preview." }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "{ title }: the stored title, or null if it was cleared" } */
+  /* #swagger.responses[400] = { description: "Invalid request body" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  /* #swagger.responses[500] = { description: "The chat's record could not be updated, so its title is unchanged" } */
+  const { title } = req.body ?? {};
+  if (typeof title !== "string") {
+    return res.status(400).json({ error: "title must be a string" });
+  }
+  const trimmed = title.trim();
+  if (trimmed.length > MAX_TITLE_LENGTH) {
+    return res.status(400).json({ error: `Title must be ${MAX_TITLE_LENGTH} characters or fewer` });
+  }
+
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    // null rather than "" for the cleared case, matching `set_chat_title`: every
+    // reader spells the fallback `meta.title || preview`, and a stored empty
+    // string would take the same branch while looking like a deliberate blank.
+    const stored = trimmed || null;
+
+    if (writeChatTitle(chat, stored) === "unwritten") {
+      return res.status(500).json({ error: TITLE_WRITE_FAILED });
+    }
+
+    sessionRegistry.notifyMetadata(chat.id, { title: stored });
+    clearListCaches();
+    res.json({ title: stored });
+  } catch (err: any) {
+    log.error(`Error setting chat title: ${err}`);
+    res.status(500).json({ error: "Failed to set chat title", details: err.message });
+  }
+});
+
+/**
  * How much of a conversation the titler is shown.
  *
  * Generous for a 3-8 word title and nowhere near a working chat's real size,
@@ -1442,6 +1566,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
   /* #swagger.responses[400] = { description: "The chat ran on a removed harness and cannot be titled" } */
   /* #swagger.responses[404] = { description: "Chat not found" } */
   /* #swagger.responses[422] = { description: "The chat has no readable conversation to title" } */
+  /* #swagger.responses[500] = { description: "The chat's record could not be updated, so its title is unchanged" } */
   /* #swagger.responses[502] = { description: "The model produced no usable title" } */
   const chat = findChat(req.params.id, false) as any;
   if (!chat) return res.status(404).json({ error: "Chat not found" });
@@ -1479,21 +1604,18 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
       return res.status(502).json({ error: "Could not generate a title for this chat — try again" });
     }
 
-    // Re-read the record rather than reusing the metadata parsed above: a
-    // model call sits between the two, and upsertChat replaces the metadata
-    // blob wholesale, so writing the pre-generation copy would silently drop
+    // Re-read the record rather than reusing the one found above: a model call
+    // sits between the two, and the fallback inside `writeChatTitle` writes a
+    // metadata blob wholesale, so a pre-generation copy would silently drop
     // any field (lastReadAt, cardId, chatStatus, ...) written while we waited.
+    // On the common path this is belt and braces — `updateChatMetadata` merges
+    // against whatever is on disk at write time — but the fallback runs off
+    // the record handed to it.
     const fresh = (findChat(req.params.id, false) as any) ?? chat;
-    let freshMeta: Record<string, any> = {};
-    try {
-      freshMeta = parseChatMetadata(fresh.metadata);
-    } catch {}
 
-    // Upsert rather than updateChatMetadata: the latter is a read-merge-write
-    // over an existing record and returns false for a chat that has only ever
-    // existed as a session log — the exact chats whose auto-title is most
-    // likely to be stale. Upsert creates the record so the title lands.
-    chatFileService.upsertChat(fresh.id, fresh.folder, fresh.session_id, { metadata: JSON.stringify({ ...freshMeta, title }) });
+    if (writeChatTitle(fresh, title) === "unwritten") {
+      return res.status(500).json({ error: TITLE_WRITE_FAILED });
+    }
 
     sessionRegistry.notifyMetadata(fresh.id, { title });
     clearListCaches();

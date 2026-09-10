@@ -5,7 +5,6 @@ import {
   listChats,
   deleteChat,
   toggleBookmark,
-  regenerateChatTitle,
   getDrafts,
   deleteDraft,
   listCards,
@@ -22,6 +21,7 @@ import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
+import EditTitleModal from "../components/EditTitleModal";
 import { useChatSearch } from "../hooks/useChatSearch";
 import { chatCardId, isChatDimmed } from "../utils/chatDimming";
 import { activeSectionPredicate } from "../utils/chatSections";
@@ -104,22 +104,13 @@ export default function ChatList({
     chatId: "",
     chatName: "",
   });
-  const [regenerateTitleModal, setRegenerateTitleModal] = useState<{ isOpen: boolean; chatId: string; chatName: string }>({
-    isOpen: false,
-    chatId: "",
-    chatName: "",
-  });
   /**
-   * Chats with a title regeneration in flight, and the reason the set lives up
-   * here rather than in the row that renders the disabled entry: a refresh —
-   * the 15s poll, an SSE metadata bump, a filter change — can change a row's
-   * shape as well as its contents. A chat that gains a relative folds into a
-   * lineage group, and one whose card closes moves to the Inactive section;
-   * either remounts the `ChatListItem`, dropping any state it held mid-request
-   * and re-enabling the entry — the double-fire this lock exists to prevent.
-   * Purely client-side: a page reload clears it, and that is fine.
+   * The chat whose title is being edited, or null for "the dialog is closed".
+   * Null rather than an `isOpen` flag because the dialog seeds its field from
+   * the title captured here and is unmounted in between, so each open starts
+   * from what the row currently says rather than from the last edit.
    */
-  const [regeneratingTitleIds, setRegeneratingTitleIds] = useState<Set<string>>(new Set());
+  const [editTitleFor, setEditTitleFor] = useState<{ chatId: string; currentTitle: string; fallbackName: string } | null>(null);
   // Card-picker modal state for the per-chat "Add to card…" action.
   // Every card, kept loaded rather than fetched when the picker opens: the row
   // menu needs each filed chat's card lifecycle to label Close vs Reopen, and
@@ -333,58 +324,43 @@ export default function ChatList({
     load();
   };
 
-  /** Open the confirmation. Nothing is requested until the user confirms. */
-  const handleRegenerateTitle = (chat: Chat) => {
-    let displayName = (chat.displayFolder || chat.folder)?.split("/").pop() || "Chat";
+  /** Open the editor. Nothing is written until the dialog asks for it. */
+  const handleEditTitle = (chat: Chat) => {
+    let currentTitle = "";
+    let preview: string | undefined;
     try {
       const meta = JSON.parse(chat.metadata || "{}");
-      // Whatever the row is currently labelled with, so the prompt names the
-      // title that is about to be replaced.
-      displayName = meta.title || meta.preview || displayName;
+      currentTitle = typeof meta.title === "string" ? meta.title : "";
+      preview = meta.preview;
     } catch {}
-    if (displayName.length > 60) displayName = displayName.slice(0, 60) + "...";
-    setRegenerateTitleModal({ isOpen: true, chatId: chat.id, chatName: displayName });
+    // What the row would say with no stored title, by the same rule
+    // ChatListItem labels it — the dialog shows it as the field's placeholder,
+    // so an emptied field previews what clearing the title actually gets you.
+    let fallbackName = (chat.displayFolder || chat.folder)?.split("/").pop() || "Chat";
+    if (preview) fallbackName = preview.length > 60 ? preview.slice(0, 60) + "..." : preview;
+    setEditTitleFor({ chatId: chat.id, currentTitle, fallbackName });
   };
 
-  const confirmRegenerateTitle = async () => {
-    const chatId = regenerateTitleModal.chatId;
-    if (!chatId) return;
-    setRegeneratingTitleIds((prev) => new Set(prev).add(chatId));
-    try {
-      const { title } = await regenerateChatTitle(chatId);
-      // Reflect it now rather than waiting for the next refetch — the write
-      // has already landed server-side, and the row is what the user is
-      // looking at.
-      setChats((prev) =>
-        prev.map((c) => {
-          if (c.id !== chatId) return c;
-          try {
-            const meta = JSON.parse(c.metadata || "{}");
-            meta.title = title;
-            return { ...c, metadata: JSON.stringify(meta) };
-          } catch {
-            return c;
-          }
-        }),
-      );
-    } catch (err) {
-      console.error("Failed to regenerate chat title:", err);
-      // The route answers each failure with its own prose (no readable
-      // conversation, a retired harness, a model that produced nothing), and
-      // `assertOk` carries it through as the Error message. Without this the
-      // 422 is pixel-identical to a successful regeneration that happened to
-      // pick the same title. Same alert the fork action uses in Chat.tsx —
-      // there is no toast infrastructure in this app.
-      window.alert(err instanceof Error ? err.message : "Failed to regenerate chat title");
-    } finally {
-      // In a finally so a failed request releases the row instead of wedging
-      // its menu entry disabled for the life of the page.
-      setRegeneratingTitleIds((prev) => {
-        const next = new Set(prev);
-        next.delete(chatId);
-        return next;
-      });
-    }
+  /**
+   * Reflect a title the dialog has already persisted, rather than waiting for
+   * the next refetch — the row is what the user is looking at. `null` is the
+   * cleared case: the key is removed rather than set to null, leaving the row's
+   * metadata shaped like that of a chat that never had a title at all.
+   */
+  const applyTitle = (chatId: string, title: string | null) => {
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id !== chatId) return c;
+        try {
+          const meta = JSON.parse(c.metadata || "{}");
+          if (title === null) delete meta.title;
+          else meta.title = title;
+          return { ...c, metadata: JSON.stringify(meta) };
+        } catch {
+          return c;
+        }
+      }),
+    );
   };
 
   const handleChatClick = (chat: Chat) => {
@@ -771,8 +747,7 @@ export default function ChatList({
           onChatClick={handleChatClick}
           onDelete={handleDelete}
           onToggleBookmark={handleToggleBookmark}
-          onRegenerateTitle={handleRegenerateTitle}
-          regeneratingTitleIds={regeneratingTitleIds}
+          onEditTitle={handleEditTitle}
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isDimmed={isDimmed}
@@ -827,14 +802,26 @@ export default function ChatList({
         confirmStyle="danger"
       />
 
-      <ConfirmModal
-        isOpen={regenerateTitleModal.isOpen}
-        onClose={() => setRegenerateTitleModal({ isOpen: false, chatId: "", chatName: "" })}
-        onConfirm={confirmRegenerateTitle}
-        title="Regenerate Title"
-        message={`Replace the title of "${regenerateTitleModal.chatName}" with one derived from the chat's current contents?`}
-        confirmText="Regenerate"
-      />
+      {/*
+       * Mounted HERE, at the page, and not inside the row whose title it edits
+       * — the dialog holds in-flight request state (a regeneration is a model
+       * call several seconds long), and a row is remounted by any refresh that
+       * changes its shape: the 15s poll folding it into a lineage group, an SSE
+       * metadata bump, a filter change moving it between sections. State held
+       * down there is dropped mid-request. This is the surviving half of the
+       * reasoning that used to justify hoisting `regeneratingTitleIds` to the
+       * page; the set itself is gone because nothing in a row fires a request
+       * any more, but the constraint that made it necessary has not moved.
+       */}
+      {editTitleFor && (
+        <EditTitleModal
+          chatId={editTitleFor.chatId}
+          currentTitle={editTitleFor.currentTitle}
+          fallbackName={editTitleFor.fallbackName}
+          onClose={() => setEditTitleFor(null)}
+          onSaved={(title) => applyTitle(editTitleFor.chatId, title)}
+        />
+      )}
     </div>
   );
 }

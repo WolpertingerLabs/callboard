@@ -13,7 +13,7 @@ import {
   EllipsisVertical,
   CircleCheck,
   RotateCcw,
-  Sparkles,
+  Pencil,
 } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
@@ -45,18 +45,11 @@ interface Props {
   onDelete: () => void;
   onToggleBookmark?: (bookmarked: boolean) => void;
   /**
-   * Re-derive this chat's title from its current contents. Omit to leave the
-   * entry out of the menu entirely. The handler is expected to confirm before
-   * it fires anything — this row only reports the click.
+   * Open the title editor for this chat. Omit to leave the entry out of the
+   * menu entirely. Nothing is written from here — the dialog the handler opens
+   * owns both the typed rename and the regenerate that shares it.
    */
-  onRegenerateTitle?: () => void;
-  /**
-   * Whether a regeneration for this chat is already running. Owned by the list,
-   * not by this row: a refresh that folds the row into a lineage group or moves
-   * it between sections remounts it, so a lock held here would be dropped
-   * mid-request and re-enable the entry.
-   */
-  regeneratingTitle?: boolean;
+  onEditTitle?: () => void;
   /** Card actions for the row menu. Omit to render no card entries at all. */
   cardMenu?: ChatCardMenu;
   sessionStatus?: { active: boolean; type: string };
@@ -77,8 +70,7 @@ export default function ChatListItem({
   onClick,
   onDelete,
   onToggleBookmark,
-  onRegenerateTitle,
-  regeneratingTitle,
+  onEditTitle,
   cardMenu,
   sessionStatus,
   dimmed,
@@ -502,15 +494,14 @@ export default function ChatListItem({
                       }}
                     />
                   )}
-                  {onRegenerateTitle && (
+                  {onEditTitle && (
                     <MenuRow
-                      icon={<Sparkles size={16} />}
-                      label={regeneratingTitle ? "Regenerating title…" : "Regenerate title"}
-                      title={regeneratingTitle ? "Already regenerating this chat's title" : "Re-derive this chat's title from what the conversation has become"}
-                      disabled={regeneratingTitle}
+                      icon={<Pencil size={16} />}
+                      label="Edit title"
+                      title="Rename this chat, or have a title re-derived from what the conversation has become"
                       onClick={() => {
                         setMenuPos(null);
-                        onRegenerateTitle();
+                        onEditTitle();
                       }}
                     />
                   )}

@@ -338,6 +338,21 @@ export async function toggleBookmark(id: string, bookmarked: boolean): Promise<C
 }
 
 /**
+ * Store a hand-written title for the chat. Pass an empty string to clear it and
+ * fall back to the auto-derived preview; the response carries what was stored,
+ * which is `null` in that case.
+ */
+export async function setChatTitle(id: string, title: string): Promise<{ title: string | null }> {
+  const res = await fetch(`${BASE}/chats/${id}/title`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  await assertOk(res, "Failed to save chat title");
+  return res.json();
+}
+
+/**
  * Re-derive the chat's title from its current contents and persist it. Slow by
  * nature — it runs a model call server-side — so callers are expected to hold
  * a lock while it is in flight rather than let it be fired twice.

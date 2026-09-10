@@ -40,12 +40,28 @@ let parsedSessionIds: string[][] = [];
 let transcripts: string[] = [];
 let generatedTitle: string | null = "A Regenerated Title";
 
-const upsertChat = vi.fn((id: string, folder: string, sessionId: string, updates: Record<string, unknown>) => ({
-  id,
-  folder,
-  session_id: sessionId,
-  ...updates,
-}));
+const upsertChat = vi.fn((id: string, folder: string, sessionId: string, updates: Record<string, unknown>) => {
+  record = { id, folder, session_id: sessionId, ...updates };
+  return record;
+});
+/**
+ * The stored record, or null for a chat that has only ever existed as a
+ * session log. Mirrors the real service closely enough to test the route's
+ * write decisions — see chats.set-title.test.ts, which shares the write path.
+ */
+let record: any = null;
+const updateChatMetadata = vi.fn((_id: string, fields: Record<string, unknown>, opts?: { touch?: boolean }) => {
+  if (!record) return false;
+  let meta: Record<string, unknown>;
+  try {
+    meta = JSON.parse(record.metadata);
+  } catch {
+    return false;
+  }
+  record.metadata = JSON.stringify({ ...meta, ...fields });
+  if (opts?.touch !== false) record.updated_at = "2026-09-10T00:00:00.000Z";
+  return true;
+});
 const notifyMetadata = vi.fn();
 
 vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
@@ -53,7 +69,11 @@ vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
   findChat: () => chat,
 }));
 vi.mock("../services/chat-file-service.js", () => ({
-  chatFileService: { upsertChat: (...args: any[]) => (upsertChat as any)(...args), getChat: () => chat },
+  chatFileService: {
+    upsertChat: (...args: any[]) => (upsertChat as any)(...args),
+    updateChatMetadata: (...args: any[]) => (updateChatMetadata as any)(...args),
+    getChat: () => record,
+  },
 }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: (...args: unknown[]) => notifyMetadata(...args) } }));
 vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false }));
@@ -113,22 +133,38 @@ function text(role: "user" | "assistant", content: string): ParsedMessage {
   return { role, type: "text", content };
 }
 
-function setChat(meta: Record<string, unknown> = {}, fields: Record<string, unknown> = {}) {
+/** Timestamps the session log gave the derived chat — a retitle may not move them. */
+const BORN = "2026-06-01T09:00:00.000Z";
+const LAST_SAID = "2026-08-20T11:00:00.000Z";
+
+function setChat(meta: Record<string, unknown> = {}, fields: Record<string, unknown> = {}, opts: { stored?: boolean } = {}) {
   chat = {
     id: "chat-1",
     folder: "/repo",
     session_id: "session-2",
     session_log_path: "/tmp/session-2.jsonl",
     metadata: JSON.stringify({ session_ids: ["session-1", "session-2"], title: "Stale Opening Title", ...meta }),
+    created_at: BORN,
+    updated_at: LAST_SAID,
     ...fields,
   };
+  // `findChat` stamps `_from_filesystem` in exactly the branch where the store
+  // had no record, and `writeChatTitle` reads that rather than probing
+  // `getChat`. The fake carries it so the record-less case is the real one.
+  if (opts.stored === false) {
+    chat._from_filesystem = true;
+    record = null;
+  } else {
+    record = { ...chat };
+  }
 }
 
-/** The metadata blob the route wrote, parsed. */
-const writtenMeta = () => JSON.parse((upsertChat.mock.calls.at(-1)![3] as any).metadata);
+/** The metadata the route left behind, however it got there. */
+const writtenMeta = () => JSON.parse(record.metadata);
 
 beforeEach(() => {
   upsertChat.mockClear();
+  updateChatMetadata.mockClear();
   notifyMetadata.mockClear();
   parsedSessionIds = [];
   transcripts = [];
@@ -144,12 +180,14 @@ describe("POST /api/chats/:id/regenerate-title", () => {
     expect(res.code).toBe(200);
     expect(res.body).toEqual({ title: "A Regenerated Title" });
 
-    expect(upsertChat).toHaveBeenCalledTimes(1);
-    expect(upsertChat.mock.calls[0].slice(0, 3)).toEqual(["chat-1", "/repo", "session-2"]);
     expect(writtenMeta().title).toBe("A Regenerated Title");
-    // A metadata write here replaces the whole blob, so the rest of it has to
-    // survive the round trip.
+    // The rest of the blob has to survive the write.
     expect(writtenMeta().session_ids).toEqual(["session-1", "session-2"]);
+    // And a retitle is not activity: `updated_at` drives `lastActivityAt` and
+    // `unread` in the card rollup, so touching it would sort a long-quiet card
+    // to the top of the board with an unread dot nobody earned.
+    expect(updateChatMetadata).toHaveBeenCalledWith("chat-1", { title: "A Regenerated Title" }, { touch: false });
+    expect(record.updated_at).toBe(LAST_SAID);
 
     // The write alone leaves every open tab showing the old title until its
     // next poll; the notify is the half that makes it live.
@@ -175,7 +213,7 @@ describe("POST /api/chats/:id/regenerate-title", () => {
     // upsert that created from one that updated. So the file has to be there
     // afterwards, in a data dir where it provably was not before.
     upsertChat.mockImplementationOnce((...args: any[]) => (realChatFileService.upsertChat as any)(...args));
-    setChat({ session_ids: ["session-2"] });
+    setChat({ session_ids: ["session-2"] }, {}, { stored: false });
 
     const record = join(DATA_DIR, "chats", "session-2.json");
     expect(existsSync(record)).toBe(false);
@@ -188,6 +226,10 @@ describe("POST /api/chats/:id/regenerate-title", () => {
     expect(written.id).toBe("chat-1");
     expect(written.folder).toBe("/repo");
     expect(JSON.parse(written.metadata).title).toBe("A Regenerated Title");
+    // Dated from the session log, not from the retitle — the created record
+    // shadows the log, so a defaulted `now` would lose the real birthtime.
+    expect(written.created_at).toBe(BORN);
+    expect(written.updated_at).toBe(LAST_SAID);
     // And reachable through the store's own lookup, not just as bytes.
     expect(JSON.parse(realChatFileService.getChat("chat-1")!.metadata).title).toBe("A Regenerated Title");
   });
