@@ -46,6 +46,14 @@ interface Props {
  */
 export default function EditTitleModal({ chatId, currentTitle, fallbackName, onClose, onSaved }: Props) {
   const [value, setValue] = useState(currentTitle);
+  /**
+   * What the chat is called on the server right now — the baseline Save is
+   * measured against. Not `currentTitle`, which is the title at open time and
+   * goes stale the moment a regeneration lands: comparing against the prop
+   * would leave Save lit up over a value that is already persisted, offering a
+   * write that says nothing.
+   */
+  const [savedTitle, setSavedTitle] = useState(currentTitle);
   const [busy, setBusy] = useState<"saving" | "regenerating" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -60,7 +68,7 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
   // chat actually has counts as a change; clearing one it never had does not.
   // The field's own maxLength keeps the value inside the route's cap, so there
   // is no over-length state to guard here.
-  const dirty = trimmed !== currentTitle.trim();
+  const dirty = trimmed !== savedTitle.trim();
 
   const handleSave = async () => {
     if (busy || !dirty) return;
@@ -86,6 +94,7 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
     try {
       const { title } = await regenerateChatTitle(chatId);
       setValue(title);
+      setSavedTitle(title);
       onSaved(title);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to regenerate chat title");
@@ -218,7 +227,10 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
               borderRadius: 6,
               fontSize: 14,
               background: busy !== null || !dirty ? "var(--border)" : "var(--accent)",
-              color: "var(--text-on-accent)",
+              // Accent ink on the accent fill, muted on the disabled one:
+              // `--text-on-accent` is chosen for contrast against `--accent`
+              // and is nearly invisible on `--border` in the light theme.
+              color: busy !== null || !dirty ? "var(--text-muted)" : "var(--text-on-accent)",
               border: "none",
               cursor: busy !== null || !dirty ? "default" : "pointer",
             }}

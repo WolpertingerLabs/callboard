@@ -214,6 +214,25 @@ describe("ChatList edit title", () => {
     expect(mockSetTitle).not.toHaveBeenCalled();
   });
 
+  it("treats a regenerated title as the new baseline for Save", async () => {
+    // Caught in the real app: the dialog measured "changed" against the title
+    // it was OPENED with, so a regeneration — which is already persisted —
+    // left Save lit up, offering a write that would store the string the
+    // server had just stored itself.
+    await renderList();
+    openEditor();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Regenerate"));
+    });
+
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+
+    // And editing the generated words re-arms it.
+    fireEvent.change(titleField(), { target: { value: "A Much Better Title, edited" } });
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+  });
+
   it("locks the dialog while a regeneration is in flight", async () => {
     const pending = deferred<{ title: string }>();
     mockRegenerate.mockReturnValue(pending.promise);
