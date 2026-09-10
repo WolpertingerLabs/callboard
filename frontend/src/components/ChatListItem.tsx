@@ -14,10 +14,12 @@ import {
   Archive,
   ArchiveRestore,
   Pencil,
+  Check,
 } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useSelectionActivation } from "../hooks/useSelectionActivation";
 import ProviderBadge from "./ProviderBadge";
 import FolderPathPill from "./FolderPathPill";
 import MenuRow from "./MenuRow";
@@ -71,7 +73,35 @@ interface Props {
    * the last word — the exemptions below can veto it.
    */
   dimmed?: boolean;
+  /**
+   * Multi-select, wired by the list. Every field below is optional and named
+   * exactly as `CardTile`/`CardRow`'s are, because they answer one contract —
+   * `useSelectionActivation`. With none passed the row behaves precisely as it
+   * did before multi-select existed.
+   */
+  selectionMode?: boolean;
+  selected?: boolean;
+  /** False for rows outside the selection's scope — rendered inert and dimmed. */
+  selectable?: boolean;
+  /** Receives the event so the list can read shift/meta/ctrl for range and toggle. */
+  onToggleSelect?: (e: React.MouseEvent) => void;
+  onLongPress?: () => void;
 }
+
+/**
+ * Spread onto a control inside the row that owns its own click, so the row's
+ * long press does not also fire on it.
+ *
+ * BOTH triggers, for the reason `CardRow` spells out at its own copy: the
+ * held-pointer timer that `pointerdown` starts and the `contextmenu` Android
+ * Chrome fires are independent, and `contextmenu` bubbles on its own even when
+ * the pointer event beneath it was stopped. Guarding only `pointerdown` leaves
+ * the gesture live on exactly the platform the second trigger exists for.
+ */
+const stopGesture = {
+  onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+  onContextMenu: (e: React.MouseEvent) => e.stopPropagation(),
+};
 
 /** Rough popup height used to decide whether the menu opens downward or upward. */
 const MENU_ESTIMATED_HEIGHT = 210;
@@ -101,6 +131,11 @@ export default function ChatListItem({
   cardMenu,
   sessionStatus,
   dimmed,
+  selectionMode = false,
+  selected = false,
+  selectable = true,
+  onToggleSelect,
+  onLongPress,
 }: Props) {
   const [hovered, setHovered] = useState(false);
   // The kebab popup escapes the sidebar's overflow:auto scroll container via
@@ -111,6 +146,19 @@ export default function ChatListItem({
   // On touch/mobile there is no hover, so keep the row actions visible. Also
   // keep the kebab mounted while its menu is open (hover is lost to the popup).
   const showActions = isMobile || hovered || menuOpen;
+  // The kebab stands down while a selection is live: a click anywhere on the
+  // row toggles it now, and a menu that acts on this one chat inside a gesture
+  // aimed at five of them is a way to lose the selection by accident.
+  const showMenuButton = showActions && !selectionMode;
+
+  // An open menu goes with it. `menuOpen` is this row's own state and outlives
+  // the button that set it, so without this a right-click that entered
+  // selection mode from a row whose menu was already up would leave the popup
+  // floating over the selection — and it would come back when the selection
+  // ended, anchored to a rect from minutes earlier.
+  useEffect(() => {
+    if (selectionMode) setMenuPos(null);
+  }, [selectionMode]);
 
   // The menu is anchored to the kebab's viewport rect at open time, so close
   // it on any scroll (else it detaches from its row) and on Escape — matching
@@ -204,21 +252,80 @@ export default function ChatListItem({
    */
   const faded = !!dimmed && !isActive && !summon && !hasUnread && !jobAwaitingApproval;
 
+  // The same hook the board's two faces run on, so a click, a long press and a
+  // modified click mean here what they mean there. `displayName` is the label
+  // because it is what the row says — a checkbox announcing the folder path of
+  // a chat titled "Fix the rebase" names a control the user cannot see.
+  const { handleClick, gestureProps, inert, showCheckbox, checkboxLabel, hoverProps, checkboxFocusProps } = useSelectionActivation({
+    label: displayName,
+    selectionMode,
+    selectable,
+    onClick,
+    onToggleSelect,
+    onLongPress,
+  });
+
   return (
     <div
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onClick={handleClick}
+      // Both hover consumers, chained: the row has kept its own `hovered` for
+      // the kebab since long before selection existed, and the hook keeps its
+      // own for the checkbox. Chaining rather than merging them leaves the
+      // shared hook self-contained — it is not the sidebar's business what
+      // else this row does on hover.
+      onMouseEnter={() => {
+        setHovered(true);
+        hoverProps.onMouseEnter();
+      }}
+      onMouseLeave={() => {
+        setHovered(false);
+        hoverProps.onMouseLeave();
+      }}
+      {...gestureProps}
+      /*
+       * No `role` and no `aria-pressed` on this element, deliberately, and
+       * that is a departure from `CardRow` — which carries
+       * `aria-pressed={selectionMode ? selected : undefined}` and can, because
+       * it IS a `<button>`: focusable, `onKeyDown`-driven, `disabled` when
+       * inert.
+       *
+       * This row is a div with an onClick, and it cannot become a button — it
+       * contains buttons (the kebab, the folder pill, the summon badge), and a
+       * button inside a button is markup the parser splits apart. So a `role`
+       * here would announce a keyboard contract that does not exist: a control
+       * with no tab stop, no Enter/Space handler and no accessible name.
+       * Announcing it as a pressed button and then not being reachable is
+       * worse than announcing nothing.
+       *
+       * What carries the state instead is the checkbox below — a real
+       * `<button role="checkbox">` with `aria-checked`, `aria-label` and
+       * `disabled`, which is the ordinary shape for a list of selectable rows.
+       */
       className={faded ? "chatlist-item-dimmed" : undefined}
       style={{
+        position: "relative",
         padding: "12px 14px",
         borderBottom: "1px solid var(--chatlist-item-border)",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        cursor: "pointer",
+        cursor: inert ? "default" : "pointer",
         background: isActive ? "var(--chatlist-item-active-bg)" : "var(--chatlist-item-bg)",
-        borderLeft: isActive ? "3px solid var(--chatlist-item-active-border)" : "3px solid transparent",
+        // The selected row says so with the accent on the left bar and a ring,
+        // the same pair CardRow uses. The bar is 3px on every row, coloured or
+        // transparent, so selecting one never nudges the text beside it — and
+        // the active chat keeps its own bar, since "selected" and "open" are
+        // different facts that can both be true.
+        borderLeft: `3px solid ${selected ? "var(--accent)" : isActive ? "var(--chatlist-item-active-border)" : "transparent"}`,
+        outline: selected ? "1px solid var(--accent)" : "none",
+        outlineOffset: -1,
+        // A selected row is never dimmed; an out-of-scope one always is.
+        opacity: selected ? 1 : inert ? 0.35 : undefined,
+        // Deliberately NOT `touch-action: none`: owning the gesture that way
+        // breaks sidebar scrolling and suppresses the pointercancel that tells
+        // us a press became a scroll.
+        userSelect: selectionMode ? "none" : undefined,
+        WebkitTouchCallout: selectionMode ? "none" : undefined,
       }}
     >
       <div style={{ minWidth: 0, flex: 1 }}>
@@ -417,7 +524,7 @@ export default function ChatListItem({
           </div>
         )}
       </div>
-      {showActions && (
+      {(showActions || showCheckbox) && (
         <div
           style={{
             display: "flex",
@@ -427,33 +534,104 @@ export default function ChatListItem({
             flexShrink: 0,
           }}
         >
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (menuOpen) {
-                setMenuPos(null);
-                return;
-              }
-              const rect = e.currentTarget.getBoundingClientRect();
-              const right = Math.max(8, window.innerWidth - rect.right);
-              // Flip upward when there isn't room below in the viewport.
-              if (rect.bottom + MENU_ESTIMATED_HEIGHT > window.innerHeight) {
-                setMenuPos({ bottom: window.innerHeight - rect.top + 4, right });
-              } else {
-                setMenuPos({ top: rect.bottom + 4, right });
-              }
-            }}
-            title="Chat actions"
-            style={{
-              background: "none",
-              color: menuOpen ? "var(--chatlist-icon-active)" : "var(--chatlist-icon)",
-              padding: "2px 4px",
-              display: "flex",
-              alignItems: "center",
-            }}
-          >
-            <EllipsisVertical size={14} />
-          </button>
+          {/*
+           * The checkbox rides in the row's existing action cluster rather
+           * than taking a slot of its own on the left, and that is a
+           * deliberate departure from CardRow — worth stating, because the
+           * board's checkbox is left-aligned and always mounted.
+           *
+           * Left is not available: a card face opens with a fixed 18px emoji
+           * cell that the checkbox swaps over, and this row opens with a dense
+           * line of timestamp, branch and folder pills. There is nothing to
+           * swap, so a left-hand checkbox either overlaps that line or shifts
+           * the whole row's text sideways on hover. The cluster on the right
+           * already appears on hover (it always has — the kebab lives in it),
+           * so putting the checkbox there adds no movement the row did not
+           * already have.
+           *
+           * MOUNTED ONLY WHEN SHOWN, which is the other departure and the one
+           * with a keyboard cost, stated plainly: `CardRow` keeps its checkbox
+           * mounted at `opacity: 0` so Tab can find it, and a sidebar of 50
+           * rows doing that is 50 tab stops between the filter bar and "Load
+           * next page" — 50 invisible ones at rest, since nothing reveals them
+           * except hover. So it is mounted when the row is hovered, when its
+           * checkbox holds focus, and on every in-scope row while a selection
+           * is live. That means one new tab stop while pointing at a row, and
+           * one per row during a selection (where they are visible and are the
+           * point), instead of one per row always. `checkboxFocusProps` is
+           * what keeps it from vanishing out from under its own focus ring
+           * when the pointer leaves.
+           */}
+          {showCheckbox && (
+            <button
+              role="checkbox"
+              aria-checked={selected}
+              aria-label={checkboxLabel}
+              // Not a sibling of the row's clickable surface — it is a
+              // descendant of it, so the toggle has to stop the row's own
+              // handler from running as well and toggling straight back.
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelect?.(e);
+              }}
+              // No `disabled={inert}` guard, unlike CardRow's: `showCheckbox`
+              // requires `selectable`, and `inert` is `selectionMode &&
+              // !selectable`, so an inert row has no checkbox for the guard to
+              // protect. CardRow needs one because it mounts its box always.
+              // The row's own inertness is enforced in the shared hook, which
+              // returns before any handler runs.
+              {...stopGesture}
+              {...checkboxFocusProps}
+              style={{
+                width: 18,
+                height: 18,
+                marginRight: 6,
+                padding: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                borderRadius: 4,
+                border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+                background: selected ? "var(--accent)" : "var(--chatlist-item-bg)",
+                color: "var(--text-on-accent)",
+                cursor: "pointer",
+              }}
+            >
+              {/* A checkmark, not just a colour — colour alone is not a state. */}
+              {selected && <Check size={12} strokeWidth={3} />}
+            </button>
+          )}
+          {showMenuButton && (
+            <button
+              {...stopGesture}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (menuOpen) {
+                  setMenuPos(null);
+                  return;
+                }
+                const rect = e.currentTarget.getBoundingClientRect();
+                const right = Math.max(8, window.innerWidth - rect.right);
+                // Flip upward when there isn't room below in the viewport.
+                if (rect.bottom + MENU_ESTIMATED_HEIGHT > window.innerHeight) {
+                  setMenuPos({ bottom: window.innerHeight - rect.top + 4, right });
+                } else {
+                  setMenuPos({ top: rect.bottom + 4, right });
+                }
+              }}
+              title="Chat actions"
+              style={{
+                background: "none",
+                color: menuOpen ? "var(--chatlist-icon-active)" : "var(--chatlist-icon)",
+                padding: "2px 4px",
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <EllipsisVertical size={14} />
+            </button>
+          )}
           {/*
            * Portaled to the body, not rendered in place. A dimmed row carries
            * `opacity` (see `faded` above), which both fades every descendant —

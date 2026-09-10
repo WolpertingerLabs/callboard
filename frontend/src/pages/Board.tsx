@@ -16,7 +16,7 @@ import {
 import { uniqueCategories } from "../utils/cardCategories";
 import CardTile from "../components/board/CardTile";
 import CardRow from "../components/board/CardRow";
-import BoardSelectionBar from "../components/board/BoardSelectionBar";
+import SelectionBar from "../components/SelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
 import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -725,7 +725,7 @@ export default function Board() {
 
 
       {selectionMode && (
-        <BoardSelectionBar
+        <SelectionBar
           count={selectedIds.size}
           onSelectAll={isMobile ? selectAllInScope : undefined}
           allSelected={selectedIds.size === selectionScopeCount}

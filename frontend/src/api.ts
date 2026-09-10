@@ -527,6 +527,40 @@ export async function deleteChat(id: string): Promise<void> {
   await assertOk(res, "Failed to delete chat");
 }
 
+/**
+ * Per-id outcome of a bulk delete, shaped exactly like
+ * {@link BulkLifecycleFailure} — same field names, same reason: the endpoint is
+ * deliberately partial rather than all-or-nothing, so one chat failing must not
+ * strand the other six, and the caller retries exactly the ids named here.
+ */
+export interface BulkDeleteFailure {
+  id: string;
+  error: string;
+}
+
+export interface BulkDeleteResponse {
+  /** The ids actually deleted — the caller can drop exactly these from its list. */
+  deleted: string[];
+  failed: BulkDeleteFailure[];
+}
+
+/**
+ * Delete many chats at once; see BulkDeleteResponse on partial failure.
+ *
+ * Per id this is exactly `DELETE /api/chats/:id`, children included — which is
+ * to say NOT included: deleting a chat has never cascaded to the chats forked
+ * from it, and the bulk path deliberately does not invent a different rule.
+ */
+export async function bulkDeleteChats(ids: string[]): Promise<BulkDeleteResponse> {
+  const res = await fetch(`${BASE}/chats/bulk-delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  await assertOk(res, "Failed to delete chats");
+  return res.json();
+}
+
 export async function getChat(id: string): Promise<Chat> {
   const res = await fetch(`${BASE}/chats/${id}`);
   await assertOk(res, "Failed to get chat");

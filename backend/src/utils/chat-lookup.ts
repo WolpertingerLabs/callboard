@@ -1,3 +1,4 @@
+import type { Chat } from "shared/types/index.js";
 import { parseChatMetadata } from "./chat-metadata.js";
 import { nativeMetadata, refreshNativeMetadata } from "../services/codex-native-agents.js";
 import { statSync } from "fs";
@@ -27,16 +28,30 @@ export function readChatSessionMessages(chat: { metadata?: string | null; sessio
  * Returns null if chat not found in either location. Does not throw errors.
  *
  * Used by both chats.ts and stream.ts routes.
+ *
+ * `storedRecord` answers the store lookup on the caller's behalf, and exists
+ * for the one caller that can answer it better: a BATCH. `chatFileService.getChat`
+ * misses at the price of a readdir + parse of every record (~45 ms across 9.2k
+ * records on a real data dir), so a loop over N ids pays that N times, while
+ * one `getAllChats()` snapshot answers "is there a record, and which" for the
+ * whole batch. Pass the record, or `null` to assert there is none and go
+ * straight to the filesystem fallback; omit it and this looks the record up
+ * itself, exactly as it always has. Everything after the lookup is shared, so
+ * a batch cannot drift from a single request on what a chat IS.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function findChat(id: string, includeGitInfo: boolean = true): any | null {
+export function findChat(id: string, includeGitInfo: boolean = true, storedRecord?: Chat | null): any | null {
   try {
     // Try file storage first
     let fileChat = null;
-    try {
-      fileChat = chatFileService.getChat(id);
-    } catch (err) {
-      log.error(`Error reading chat from file storage: ${err}`);
+    if (storedRecord !== undefined) {
+      fileChat = storedRecord;
+    } else {
+      try {
+        fileChat = chatFileService.getChat(id);
+      } catch (err) {
+        log.error(`Error reading chat from file storage: ${err}`);
+      }
     }
 
     if (fileChat) {
