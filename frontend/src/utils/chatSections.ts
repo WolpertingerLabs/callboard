@@ -2,11 +2,15 @@
  * The Pinned/Recent split.
  *
  * The sidebar sections **rows**, not chats — a parentage group collapses into
- * one row and can straddle both buckets (the group's header row unpinned, a
- * descendant pinned), so it must be filed whole, by its header row, rather
- * than have its members partitioned out from under it. Hence the generic item
- * type and the separate `countOf`: the thing being partitioned and the thing
- * being counted are not the same thing.
+ * one row and its members can disagree about the pin, so it must be filed
+ * whole rather than have its members partitioned out from under it. Hence the
+ * generic item type and the separate `countOf`: the thing being partitioned
+ * and the thing being counted are not the same thing.
+ *
+ * The verdict for a group is the caller's to supply, and `ChatTreeList` gives
+ * it as "any member is pinned" — see `Row.pinnedMembers` for why the header
+ * row's own flag is not enough. This module only insists that whatever the
+ * verdict is, it is asked once per row.
  */
 
 import type { Chat } from "../api";
@@ -24,10 +28,11 @@ export interface ChatSection<T> {
    * a whole lineage group, so a group's members are counted where the group is
    * filed.
    *
-   * A lineage group is filed **whole**, by its header row, so a group whose
-   * members straddle both buckets counts entirely under its header row's
-   * section. That is the deliberate filing rule, not a counting bug — a group
-   * is one row and cannot be in two sections. The list also requests
+   * A lineage group is filed **whole**, so a group with one pinned member
+   * counts all of them under "Pinned". That is the deliberate filing rule, not
+   * a counting bug — a group is one row and cannot be in two sections, and a
+   * count that reported only the pinned members would not match the rows the
+   * section actually holds. The list also requests
    * `includeLineage`, so group members from outside the pagination window are
    * on screen (folded into their group) and counted too; totals can therefore
    * exceed the page size, which is honest about what is being shown.

@@ -540,22 +540,41 @@ export default function ChatList({
   };
 
   /**
-   * Pin or unpin, then patch the row in place.
+   * Pin or unpin, then patch the affected rows in place.
    *
-   * The optimistic update is what moves the row between sections — the
-   * partition reads `metadata.pinned` off the loaded chats, so writing it here
-   * re-files the row on the next render rather than after the next refetch.
+   * Takes a list because a sidebar row is not always one chat: unpinning a
+   * lineage group has to clear the pin wherever in the group it was set, or
+   * the row goes on displaying a pin the menu just offered to remove. See
+   * `ChatTreeList`'s `Row.pinnedMembers`.
+   *
+   * Written to `chats` only AFTER the server has taken it — NOT an optimistic
+   * update, deliberately. A failed PATCH leaves the sidebar exactly as it was
+   * rather than showing a pin that does not exist and will vanish at the next
+   * poll; the request is one small write and the wait is imperceptible. What
+   * the write buys is the beat after it: the partition reads `metadata.pinned`
+   * off the loaded chats, so patching them re-files the row on the next render
+   * instead of at the next refetch.
+   *
+   * `loadGenRef` is bumped for the reason `load` bumps it — this is a write to
+   * `chats`, and a `load` that went to the wire before the PATCH landed is now
+   * holding a pre-pin list. Without the bump it commits that list afterwards
+   * and the pin visibly reverts, taking the section headers down with it until
+   * the next poll puts them back.
+   *
    * Unlike the bookmark's, this can never need to REMOVE a row: pinning is not
    * a filter, so no view exists that a chat drops out of by being unpinned. It
    * moves down into Recent, and if that was the last pin the headers go with
    * it.
    */
-  const handleTogglePin = async (chat: Chat, pinned: boolean) => {
+  const handleTogglePin = async (targets: Chat[], pinned: boolean) => {
+    if (targets.length === 0) return;
     try {
-      await togglePin(chat.id, pinned);
+      await Promise.all(targets.map((target) => togglePin(target.id, pinned)));
+      loadGenRef.current += 1;
+      const targetIds = new Set(targets.map((target) => target.id));
       setChats((prev) =>
         prev.map((c) => {
-          if (c.id !== chat.id) return c;
+          if (!targetIds.has(c.id)) return c;
           try {
             const meta = JSON.parse(c.metadata || "{}");
             meta.pinned = pinned;

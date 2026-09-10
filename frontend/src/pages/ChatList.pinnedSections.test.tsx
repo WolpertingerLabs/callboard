@@ -12,7 +12,7 @@
  * user notices immediately if it does not.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Chat, ChatListResponse } from "../api";
 import { listChats, listCards, getDrafts, togglePin } from "../api";
@@ -167,10 +167,33 @@ describe("pinning from the kebab", () => {
     fireEvent.click(screen.getByText("Pin"));
 
     await waitFor(() => expect(mockTogglePin).toHaveBeenCalledWith("chat-loose", true));
-    // The optimistic metadata write is what re-files the row: the sections are
-    // a partition over the loaded chats, so nothing moves until `metadata.pinned`
-    // does.
+    // The local metadata write is what re-files the row: the sections are a
+    // partition over the loaded chats, so nothing moves until `metadata.pinned`
+    // does. It happens after the PATCH resolves, not before it — see
+    // `handleTogglePin` on why this is deliberately not optimistic — so what
+    // is pinned here is that the row moves without waiting for a REFETCH.
     await waitFor(() => expect(headers()).toEqual(["Pinned (1)"]));
+    expect(mockListChats).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not move the row until the server has taken the pin", async () => {
+    // Not optimistic, deliberately: a failed PATCH must leave the sidebar
+    // exactly as it was rather than show a section that will vanish at the
+    // next poll. The doc-comment claimed the opposite for a while; this is the
+    // assertion that stops it drifting back.
+    mockListChats.mockResolvedValue(listResponse([LOOSE]));
+    await renderList();
+
+    let settle: (chat: Chat) => void = () => {};
+    mockTogglePin.mockImplementationOnce(() => new Promise<Chat>((resolve) => (settle = resolve)));
+
+    openRowMenu("loose chat");
+    fireEvent.click(screen.getByText("Pin"));
+    await waitFor(() => expect(mockTogglePin).toHaveBeenCalled());
+    expect(headers()).toEqual([]);
+
+    await act(async () => settle({} as Chat));
+    expect(headers()).toEqual(["Pinned (1)"]);
   });
 
   it("takes the headers away entirely when the last pin is removed", async () => {
@@ -185,6 +208,44 @@ describe("pinning from the kebab", () => {
     // Not "Recent (2)" — with nothing pinned there is no section at all.
     await waitFor(() => expect(headers()).toEqual([]));
     expect(screen.getByText("pinned chat")).toBeTruthy();
+  });
+
+  it("pins a chat that has lineage, which renders through the group branch", async () => {
+    // Most chats that matter in this repo: anything forked, spawned or run as
+    // a job step has lineage, so it renders as a group row rather than a lone
+    // one. Every other fixture in this file is lineage-free, which is exactly
+    // how the group branch shipped without a pin handler at all.
+    const parent = makeChat("chat-parent", { preview: "parent chat" });
+    const child = makeChat("chat-child", { preview: "child chat", parentChatId: "chat-parent", rootChatId: "chat-parent" });
+    mockListChats.mockResolvedValue(listResponse([parent, child]));
+    await renderList("parent chat");
+    expect(headers()).toEqual([]);
+
+    openRowMenu("parent chat");
+    fireEvent.click(screen.getByText("Pin"));
+
+    await waitFor(() => expect(mockTogglePin).toHaveBeenCalledWith("chat-parent", true));
+    // (2), not (1): the group is filed whole, so the count is its chats.
+    await waitFor(() => expect(headers()).toEqual(["Pinned (2)"]));
+  });
+
+  it("clears a group's pin from whichever member is holding it", async () => {
+    // The pin was set while the chat was standalone; a subagent spawned off it
+    // since, and it is no longer the row's header chat. The kebab still has to
+    // reach it — see `ChatTreeList`'s `Row.pinnedMembers`.
+    const parent = makeChat("chat-parent", { preview: "parent chat" });
+    const child = makeChat("chat-child", { preview: "child chat", parentChatId: "chat-parent", rootChatId: "chat-parent", pinned: true });
+    mockListChats.mockResolvedValue(listResponse([parent, child]));
+    await renderList("parent chat");
+    expect(headers()).toEqual(["Pinned (2)"]);
+
+    openRowMenu("parent chat");
+    fireEvent.click(screen.getByText("Unpin"));
+
+    // The PATCH goes to the child, not to the row's own chat.
+    await waitFor(() => expect(mockTogglePin).toHaveBeenCalledWith("chat-child", false));
+    expect(mockTogglePin).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(headers()).toEqual([]));
   });
 
   it("does not touch the bookmark, in either direction", async () => {
@@ -202,6 +263,52 @@ describe("pinning from the kebab", () => {
     expect(screen.queryByText("Remove bookmark")).toBeNull();
     // ...and the pin entry now offers the inverse.
     expect(screen.getByText("Unpin")).toBeTruthy();
+  });
+});
+
+/**
+ * A refresh in flight when the pin lands.
+ *
+ * `load` claims the list with `loadGenRef` and stands down if anything newer
+ * has claimed it since. `handleTogglePin` writes to `chats` and so is one of
+ * those newer things — without the bump, a `load` that went to the wire before
+ * the PATCH commits its pre-pin response afterwards, and the pin reverts,
+ * taking the whole Pinned section down with it until the next poll puts it
+ * back. The sidebar polls every 15s while a session is active, so that is a
+ * long time to watch a section you just created flicker out.
+ */
+describe("a stale refresh landing after the pin", () => {
+  it("does not undo the pin", async () => {
+    // A stable identity: the mount effect depends on `onRefresh`, so a fresh
+    // arrow per render would re-run it every commit.
+    let refresh = () => {};
+    const captureRefresh = (fn: () => void) => {
+      refresh = fn;
+    };
+    mockListChats.mockResolvedValue(listResponse([LOOSE]));
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={captureRefresh} />
+      </MemoryRouter>,
+    );
+    await screen.findByText("loose chat");
+
+    // A refresh goes to the wire and hangs there.
+    let release: (response: ChatListResponse) => void = () => {};
+    mockListChats.mockImplementationOnce(() => new Promise<ChatListResponse>((resolve) => (release = resolve)));
+    act(() => refresh());
+    await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
+
+    // ...and the user pins while it is still out.
+    openRowMenu("loose chat");
+    fireEvent.click(screen.getByText("Pin"));
+    await waitFor(() => expect(headers()).toEqual(["Pinned (1)"]));
+
+    // The response was assembled before the pin existed. Committing it now
+    // would be the last response to LAND winning over the last write made.
+    await act(async () => release(listResponse([LOOSE])));
+    expect(headers()).toEqual(["Pinned (1)"]);
+    expect(screen.getByText("loose chat")).toBeTruthy();
   });
 });
 

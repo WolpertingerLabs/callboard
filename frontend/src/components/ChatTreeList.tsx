@@ -37,13 +37,19 @@ interface Props {
   onDelete: (chat: Chat) => void;
   onToggleBookmark: (chat: Chat, bookmarked: boolean) => void;
   /**
-   * Pin or unpin, which moves the row between this list's two sections. The
-   * verdict itself is NOT a prop: unlike the dim, which needs the separately
-   * fetched card rollup, the pin is on the chat's own metadata, so there is no
-   * loading window in which reading it early would file the list wrongly and
-   * then move every row when a second request lands.
+   * Pin or unpin, which moves a row between this list's two sections.
+   *
+   * Takes a LIST of chats because a row is not always one chat. Pinning a
+   * group pins the chat that fronts it; unpinning one has to clear the pin
+   * wherever in the group it was set, or the menu entry cannot undo the state
+   * the row is displaying. For a lone chat both are the single-element case.
+   *
+   * The verdict itself is NOT a prop: unlike the dim, which needs the
+   * separately fetched card rollup, the pin is on the chats' own metadata, so
+   * there is no loading window in which reading it early would file the list
+   * wrongly and then move every row when a second request lands.
    */
-  onTogglePin: (chat: Chat, pinned: boolean) => void;
+  onTogglePin: (chats: Chat[], pinned: boolean) => void;
   /** Ask the list to open its title editor for this chat. */
   onEditTitle?: (chat: Chat) => void;
   /** Card (ticket) actions for a row's kebab menu. */
@@ -97,7 +103,31 @@ export interface Row {
    * list loaded are filed here", which is stable.
    */
   size: number;
+  /**
+   * The loaded chats in this row's group that carry the pin — `[chat]` or `[]`
+   * for a lone row, and for a group row every pinned member, not just the one
+   * fronting it.
+   *
+   * **A group is pinned if ANY member is.** The alternative — only the header
+   * row's own pin counts — is unstable in a way that silently breaks the
+   * feature: the header row is "the group's most recently updated loaded
+   * chat", so it changes as work moves around inside a tree. Pin chat C, spawn
+   * a subagent off it, and C stops fronting its group; under a header-only
+   * rule its pin would stop having any effect, with no row displaying it and
+   * no menu entry able to clear it. Pinning a child therefore floats its whole
+   * group, which is the honest reading of a list that renders one row per
+   * tree: that row IS the tree, and there is no other row to move.
+   *
+   * "Loaded" is the real qualifier and it is not a gap in practice: the list
+   * always requests `includeLineage`, so every member of a group whose row is
+   * on the page comes back with it, and `includePinned` brings back pinned
+   * chats from outside the page window on top of that.
+   */
+  pinnedMembers: Chat[];
 }
+
+/** Shared empty bucket, so an unpinned row allocates nothing per render. */
+const NO_PINNED_MEMBERS: Chat[] = [];
 
 /** Defense cap against corrupt parent-pointer chains (mirrors the server). */
 const MAX_LINEAGE_DEPTH = 50;
@@ -159,11 +189,20 @@ export function buildRows(chats: Chat[]): Row[] {
   const infoById = new Map<string, LineageInfo>();
   const groupSizes = new Map<string, number>();
   const groupLineage = new Map<string, boolean>();
+  // Collected per group, not per chat: a pin set on any member files the
+  // whole group — see Row.pinnedMembers for why the header row's own flag
+  // is not enough.
+  const groupPinned = new Map<string, Chat[]>();
   for (const chat of chats) {
     const info = lineageOf(chat, byId);
     infoById.set(chat.id, info);
     groupSizes.set(info.rootKey, (groupSizes.get(info.rootKey) || 0) + 1);
     if (info.hasLineage) groupLineage.set(info.rootKey, true);
+    if (isChatPinned(chat)) {
+      const pinned = groupPinned.get(info.rootKey);
+      if (pinned) pinned.push(chat);
+      else groupPinned.set(info.rootKey, [chat]);
+    }
   }
   const seen = new Set<string>();
   const result: Row[] = [];
@@ -174,7 +213,7 @@ export function buildRows(chats: Chat[]): Row[] {
     // Always set: this row's own chat counted itself into the bucket above.
     const size = groupSizes.get(rootKey)!;
     const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
-    result.push({ chat, rootKey, isGroup, size });
+    result.push({ chat, rootKey, isGroup, size, pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS });
   }
   return result;
 }
@@ -394,14 +433,27 @@ export default function ChatTreeList({
   // memoized part.
   const sections = sectionByPinned(
     rows,
-    (row) => isChatPinned(row.chat),
+    (row) => row.pinnedMembers.length > 0,
     (row) => row.size,
   );
 
   /** Collapse state for those headers, persisted via localStorage. */
   const sectionExpansion = useChatSectionExpansion();
 
-  const renderRow = ({ chat, rootKey, isGroup }: Row) => {
+  const renderRow = ({ chat, rootKey, isGroup, pinnedMembers }: Row) => {
+    /**
+     * Pin the chat this row is labelled with; unpin every member holding a pin.
+     *
+     * Deliberately identical in both branches below. A lone row is the
+     * single-element case of the same rule — `pinnedMembers` is `[chat]` when
+     * it is pinned — so there is no second semantic to keep in step, which is
+     * exactly how the group branch came to be missing this handler entirely.
+     */
+    const pinProps = {
+      pinned: pinnedMembers.length > 0,
+      onTogglePin: (next: boolean) => onTogglePin(next ? [chat] : pinnedMembers, next),
+    };
+
     if (!isGroup) {
       return (
         <ChatListItem
@@ -411,7 +463,7 @@ export default function ChatTreeList({
           onClick={() => onChatClick(chat)}
           onDelete={() => onDelete(chat)}
           onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
-          onTogglePin={(pinned) => onTogglePin(chat, pinned)}
+          {...pinProps}
           onEditTitle={onEditTitle && (() => onEditTitle(chat))}
           cardMenu={cardMenuFor(chat)}
           sessionStatus={sessionStatusFor(chat.id)}
@@ -460,6 +512,7 @@ export default function ChatTreeList({
               onClick={() => onChatClick(chat)}
               onDelete={() => onDelete(chat)}
               onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
+              {...pinProps}
               onEditTitle={onEditTitle && (() => onEditTitle(chat))}
               cardMenu={cardMenuFor(chat)}
               sessionStatus={sessionStatusFor(chat.id)}

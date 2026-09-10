@@ -8,11 +8,12 @@
  * `../api` is mocked so getChatTree resolves without network.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Chat, CardSummary, ChatTreeNode, ChatTreeResponse } from "../api";
 import { getChatTree } from "../api";
 import { isChatDimmed } from "../utils/chatDimming";
+import { resetChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import ChatTreeList from "./ChatTreeList";
 
 vi.mock("../api", () => ({
@@ -25,6 +26,8 @@ const mockGetChatTree = vi.mocked(getChatTree);
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  localStorage.clear();
+  resetChatSectionExpansion();
 });
 
 const FOLDER = "/home/cybil/projects/callboard";
@@ -341,4 +344,131 @@ it("labels a native child unknown and read-only rather than completed", async ()
   await expandGroup();
   expect(await screen.findByText(/unknown · read-only/)).toBeTruthy();
   expect(screen.getByTitle("Ask parent to manage this child")).toBeTruthy();
+});
+
+/**
+ * Pinning through a row, which is the ONLY way anything gets pinned: the pin
+ * has one call site, the sidebar kebab, and `TreeNodeRow` (the expanded
+ * members of a group) has no kebab at all.
+ *
+ * The bug this suite exists for: `renderRow` has two branches, and only the
+ * lone-chat one passed `onTogglePin`. Since `isGroup` is true for anything
+ * with lineage — every forked, spawned or job-step chat, and anything with
+ * children — a chat pinned while standalone became UNPINNABLE the moment
+ * someone spawned a subagent off it, with no way back short of editing the
+ * chat's JSON by hand. Nothing caught it because the group branch's props were
+ * only ever type-checked, never exercised.
+ */
+describe("pinning a row", () => {
+  const spy = () => vi.fn();
+
+  function renderWithPin(chats: Chat[], onTogglePin: (chats: Chat[], pinned: boolean) => void) {
+    return render(
+      <MemoryRouter>
+        <ChatTreeList
+          chats={chats}
+          refreshToken={0}
+          onChatClick={() => {}}
+          onDelete={() => {}}
+          onToggleBookmark={() => {}}
+          onTogglePin={onTogglePin}
+          cardMenuFor={() => ({})}
+          sessionStatusFor={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  /** Open the kebab on the row displaying `text`. It only exists while hovered. */
+  function openRowMenu(text: string) {
+    const row = screen.getByText(text).closest('div[style*="border-bottom"]')!;
+    fireEvent.mouseEnter(row);
+    fireEvent.click(row.querySelector('[title="Chat actions"]')!);
+  }
+
+  const headers = () =>
+    screen
+      .queryAllByRole("button")
+      .map((el) => el.textContent ?? "")
+      .filter((text) => /^(Pinned|Recent) \(\d+\)$/.test(text));
+
+  it("offers Pin on a GROUP row, not just a lone one", () => {
+    // The regression case. GROUP_CHATS is parent + child, so this row goes
+    // through the branch that used to drop the handler on the floor.
+    const onTogglePin = spy();
+    renderWithPin(GROUP_CHATS, onTogglePin);
+
+    openRowMenu("chat root");
+    fireEvent.click(screen.getByText("Pin"));
+
+    // Pinning a group pins the chat it is labelled with.
+    expect(onTogglePin).toHaveBeenCalledWith([expect.objectContaining({ id: "root" })], true);
+  });
+
+  it("offers Pin on a lone row", () => {
+    // The control: both branches share one `pinProps`, and this is what says
+    // the shared expression did not regress the branch that always worked.
+    const onTogglePin = spy();
+    renderWithPin([makeChat("solo")], onTogglePin);
+
+    openRowMenu("chat solo");
+    fireEvent.click(screen.getByText("Pin"));
+
+    expect(onTogglePin).toHaveBeenCalledWith([expect.objectContaining({ id: "solo" })], true);
+  });
+
+  it("files a group into Pinned when a NON-header member carries the pin", () => {
+    // The stated decision: a group is pinned if ANY member is. The header row
+    // is "the group's most recently updated loaded chat" and therefore moves
+    // around — so a header-only rule would let a pin stop working the moment a
+    // sibling got busier, with nothing on screen showing it and no way to
+    // clear it.
+    const onTogglePin = spy();
+    renderWithPin([makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true })], onTogglePin);
+
+    expect(headers()).toEqual(["Pinned (2)"]);
+    // Counted whole — both chats, not just the pinned one — because the
+    // section holds the whole group as one row.
+    expect(screen.getByText("chat root")).toBeTruthy();
+  });
+
+  it("lets that group's kebab clear the pin it is displaying", () => {
+    // The other half of the same decision. The row shows a pin it does not own,
+    // so "Unpin" has to reach the member that does — otherwise the menu offers
+    // an action that visibly does nothing.
+    const onTogglePin = spy();
+    renderWithPin([makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true })], onTogglePin);
+
+    openRowMenu("chat root");
+    // Not "Pin": the row is displaying the group's verdict, and the entry must
+    // agree with it.
+    expect(screen.queryByText("Pin")).toBeNull();
+    fireEvent.click(screen.getByText("Unpin"));
+
+    expect(onTogglePin).toHaveBeenCalledWith([expect.objectContaining({ id: "child-1" })], false);
+  });
+
+  it("clears every pinned member at once, not just the first", () => {
+    const onTogglePin = spy();
+    renderWithPin(
+      [
+        makeChat("root", { pinned: true }),
+        makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true }),
+        makeChat("child-2", { parentChatId: "root", rootChatId: "root" }),
+      ],
+      onTogglePin,
+    );
+
+    openRowMenu("chat root");
+    fireEvent.click(screen.getByText("Unpin"));
+
+    const [targets, pinned] = onTogglePin.mock.calls[0];
+    expect(targets.map((c: Chat) => c.id)).toEqual(["root", "child-1"]);
+    expect(pinned).toBe(false);
+  });
+
+  it("renders no headers when a group holds no pin at all", () => {
+    renderWithPin(GROUP_CHATS, spy());
+    expect(headers()).toEqual([]);
+  });
 });

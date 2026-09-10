@@ -65,8 +65,24 @@ interface Props {
    * Omit to leave the entry out of the menu entirely — the sibling of
    * `onToggleBookmark` and, like it, a different question: a bookmark is
    * something you filter down to later, a pin is somewhere you put a chat now.
+   *
+   * Takes the value being moved TO, so the caller decides which chats that
+   * means. For a row fronting a lineage group it is not necessarily this row's
+   * own chat — see {@link Props.pinned}.
    */
   onTogglePin?: (pinned: boolean) => void;
+  /**
+   * The list's verdict on "this row is pinned", which for a row fronting a
+   * lineage group is "any member of the group is". Defaults to the chat's own
+   * `metadata.pinned`, which is the answer for every row that stands for one
+   * chat.
+   *
+   * A list-level override for the same reason `dimmed` is one: the row cannot
+   * see the other chats it stands for. Without it a group could sit under the
+   * "Pinned" header showing no pin glyph and offering "Pin" — a menu entry
+   * that cannot undo the state the section it is in is asserting.
+   */
+  pinned?: boolean;
   /**
    * Open the title editor for this chat. Omit to leave the entry out of the
    * menu entirely. Nothing is written from here — the dialog the handler opens
@@ -142,6 +158,7 @@ export default function ChatListItem({
   onDelete,
   onToggleBookmark,
   onTogglePin,
+  pinned,
   onEditTitle,
   cardMenu,
   sessionStatus,
@@ -205,7 +222,7 @@ export default function ChatListItem({
   let title: string | undefined;
   let preview: string | undefined;
   let isBookmarked = false;
-  let isPinned = false;
+  let ownPinned = false;
   let agentAlias: string | undefined;
   let isTriggered = false;
   let lastReadAt: string | undefined;
@@ -222,7 +239,7 @@ export default function ChatListItem({
     title = meta.title;
     preview = meta.preview;
     isBookmarked = meta.bookmarked === true;
-    isPinned = meta.pinned === true;
+    ownPinned = meta.pinned === true;
     agentAlias = meta.agentAlias;
     isTriggered = meta.triggered === true;
     lastReadAt = meta.lastReadAt;
@@ -237,6 +254,9 @@ export default function ChatListItem({
     // every chat it ever opened, so the status alone would flag all of them.
     jobNeedsYou = meta.jobRunNeedsYou === true;
   } catch {}
+
+  /** The list's verdict where it has one; this chat's own flag otherwise. */
+  const isPinned = pinned ?? ownPinned;
 
   const jobAwaitingApproval = !!jobRunId && jobNeedsYou;
 
@@ -388,7 +408,9 @@ export default function ChatListItem({
           {/* Before the bookmark, and kept even inside the Pinned section: the
               section says where the row is filed, this says why, and the two
               are not the same thing once a section is collapsed or the list is
-              rendered with nothing pinned at all. */}
+              rendered with nothing pinned at all. On a group row it reports
+              the group's verdict, which may come from a member this row does
+              not display — see {@link Props.pinned}. */}
           {isPinned && <Pin size={14} style={{ color: "var(--chatlist-pin-icon)", flexShrink: 0 }} fill="var(--chatlist-pin-icon)" />}
           {isBookmarked && <Bookmark size={14} style={{ color: "var(--chatlist-bookmark-icon)", flexShrink: 0 }} fill="var(--chatlist-bookmark-icon)" />}
           {agentAlias && (
@@ -716,7 +738,9 @@ export default function ChatListItem({
                         )
                       }
                       label={isPinned ? "Unpin" : "Pin"}
-                      title={isPinned ? "Unpin — the chat returns to the list in date order" : "Pin this chat to the top of the sidebar"}
+                      // "the row", not "the chat": on a group row this clears
+                      // the pin wherever in the group it was set.
+                      title={isPinned ? "Unpin — the row returns to the list in date order" : "Pin this chat to the top of the sidebar"}
                       onClick={() => {
                         setMenuPos(null);
                         onTogglePin(!isPinned);

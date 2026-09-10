@@ -427,4 +427,43 @@ describe("GET /api/chats?cardLifecycle=unarchived", () => {
     const all = await listChats({ cardLifecycle: "unarchived", includeLineage: "true", limit: "50" });
     expect(idsOf(all)).toEqual(UNARCHIVED);
   });
+
+  /**
+   * The scope guard inside the lineage-append pass, on the only fixture that
+   * can actually reach it.
+   *
+   * Everywhere else in this file a tree has ONE lifecycle: membership resolves
+   * through `existingRootIdOf`, so every member of a tree shares its root's
+   * verdict and the append pass never sees an excluded relative. The case that
+   * splits them is a DELETED parent. `rootKeyOf` — which the traversal starts
+   * from, and which mirrors the client's grouping — falls back to the dangling
+   * parent id, so both orphans still fold into one sidebar row; but
+   * `existingRootIdOf` promotes each surviving orphan to a root of its own, so
+   * they are two cards with two independent lifecycles.
+   *
+   * That is a real sequence, not a contrivance: delete a parent chat, and its
+   * children become cards you can archive one at a time. Archive one, and the
+   * page holding its sibling traverses `childrenByParent` straight into it.
+   * Without the guard the archived orphan is appended back — a faded row in
+   * the one view whose whole claim is that it has none.
+   */
+  it("does not append an orphaned sibling whose own card is archived", async () => {
+    fileChats = [
+      chat("orphan-open", { parentChatId: "deleted-parent", card: { lifecycle: "open" } }),
+      chat("orphan-closed", { parentChatId: "deleted-parent", card: { lifecycle: "closed" } }),
+    ];
+    sessionIds = ["orphan-open", "orphan-closed"];
+
+    // Both are reachable from one row, and only the unarchived one comes back.
+    expect(idsOf(await listChats({ cardLifecycle: "unarchived", includeLineage: "true", limit: "50" }))).toEqual(["orphan-open"]);
+
+    // Two controls. Unscoped, both are returned — so the fixture really does
+    // put them in one traversal and the scope is what withheld the second.
+    expect(idsOf(await listChats({ includeLineage: "true", limit: "50" }))).toEqual(["orphan-closed", "orphan-open"]);
+    // And they really are separate cards: closing the OTHER one flips which
+    // survives, which a single shared root could not do.
+    patchCardFields("orphan-open", { lifecycle: "closed" });
+    patchCardFields("orphan-closed", { lifecycle: "open" });
+    expect(idsOf(await listChats({ cardLifecycle: "unarchived", includeLineage: "true", limit: "50" }))).toEqual(["orphan-closed"]);
+  });
 });

@@ -427,6 +427,19 @@ chatsRouter.get("/", (req, res) => {
 
     // Create lookup map for file data by session ID
     const fileChatsBySessionId = new Map<string, any>();
+    /**
+     * The pinned records, collected here rather than re-scanned later.
+     *
+     * A second pass would be a second `JSON.parse` of every stored record's
+     * metadata, on the sidebar's polled hot path, to answer a question this
+     * loop has the parsed object in hand for. Unconditional because the test
+     * is one property read on an object that already exists — cheaper than
+     * threading the `includePinned` flag up here to gate it.
+     *
+     * A record whose metadata will not parse is not pinned, which is the same
+     * answer the discarded `isPinned` helper's catch gave.
+     */
+    const pinnedFileChats: any[] = [];
 
     for (const chat of fileChats) {
       // Index by session_id
@@ -442,6 +455,7 @@ chatsRouter.get("/", (req, res) => {
             fileChatsBySessionId.set(sid, chat);
           }
         }
+        if (meta.pinned === true && chat?.id) pinnedFileChats.push(chat);
       } catch {}
     }
 
@@ -581,21 +595,6 @@ chatsRouter.get("/", (req, res) => {
     const isBookmarked = (chat: { metadata?: string | null } | undefined): boolean => {
       try {
         return parseChatMetadata(chat?.metadata).bookmarked === true;
-      } catch {
-        return false;
-      }
-    };
-
-    /**
-     * The pin verdict, read from the same place and for the same reason as
-     * {@link isBookmarked} — the flag lives in the file record and nowhere
-     * else. Independent of the bookmark: "keep this at the top of the list"
-     * and "let me filter down to this later" are two different requests, and a
-     * chat routinely wants one without the other.
-     */
-    const isPinned = (chat: { metadata?: string | null } | undefined): boolean => {
-      try {
-        return parseChatMetadata(chat?.metadata).pinned === true;
       } catch {
         return false;
       }
@@ -1084,8 +1083,8 @@ chatsRouter.get("/", (req, res) => {
     if (includePinned) {
       const alreadyReturned = new Set(chatsFromLogs.map((c: any) => c.id));
       const pinned: any[] = [];
-      for (const fc of fileChats) {
-        if (!fc?.id || alreadyReturned.has(fc.id) || !isPinned(fc)) continue;
+      for (const fc of pinnedFileChats) {
+        if (alreadyReturned.has(fc.id)) continue;
         const augmented = appendableRow(fc);
         if (!augmented) continue;
         pinned.push({ ...augmented, _pinned_appended: true });
