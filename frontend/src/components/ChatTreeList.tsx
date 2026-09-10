@@ -38,7 +38,8 @@ interface Props {
   /** Card (ticket) actions for a row's kebab menu. */
   cardMenuFor: (chat: Chat) => ChatCardMenu;
   sessionStatusFor: (chatId: string) => { active: boolean; type: string } | undefined;
-  /** Whether this row's card is archived or absent — see `utils/chatDimming`. */
+  /** Whether this row's card is archived — closed or hidden. A row on no card
+   * is not archived; see `utils/chatDimming`. */
   isDimmed?: (chat: Chat) => boolean;
 }
 

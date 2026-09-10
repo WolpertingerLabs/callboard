@@ -171,18 +171,25 @@ describe("ChatTreeList refresh", () => {
  * not returned, which is the state the sidebar is in on every mount.
  */
 describe("ChatTreeList dimming", () => {
-  const CARDS: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
+  const CARDS: ReadonlyMap<string, Pick<CardSummary, "lifecycle" | "hidden">> = new Map([
+    // The group's root is the archived row on the header-row render path.
+    ["root", { lifecycle: "closed" }],
     ["open-card", { lifecycle: "open" }],
     ["closed-card", { lifecycle: "closed" }],
+    // Hidden is the other half of "archived": the server withholds a hidden
+    // card's tree from cardLifecycle=unarchived, so the dim has to fade it too.
+    ["hidden-card", { lifecycle: "open", hidden: true }],
   ]);
 
-  // A group (root + child, so the header row is a ChatListItem) plus three lone
-  // rows: one on an open card, one on a closed card, one filed nowhere.
+  // A group (root + child, so the header row is a ChatListItem) plus four lone
+  // rows: one on an open card, one on a closed card, one on a hidden card, one
+  // filed nowhere.
   const MIXED = [
     makeChat("root"),
     makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
     makeChat("solo-open", { rootChatId: "open-card" }),
     makeChat("solo-closed", { rootChatId: "closed-card" }),
+    makeChat("solo-hidden", { rootChatId: "hidden-card" }),
     makeChat("solo-none"),
   ];
 
@@ -216,11 +223,20 @@ describe("ChatTreeList dimming", () => {
     expect(dimmedRows(renderMixed({ cardsLoaded: true }).container).length).toBeGreaterThan(0);
   });
 
-  it("dims the card-less and archived-card rows in both render paths, and leaves the open-card row alone", () => {
+  /**
+   * The change of rule, at the render layer: "no card" used to fade, and now
+   * only "archived card" does.
+   *
+   * `solo-none` is the row that swapped sides. It is what a triggered chat, a
+   * job step or an unrecorded session looks like from here — nothing eligible
+   * to be a card, so nothing that can be archived — and the sidebar shows it
+   * undimmed and in scope by default.
+   */
+  it("dims the archived-card rows in both render paths, and leaves the open-card and card-less rows alone", () => {
     const { container } = renderMixed({ cardsLoaded: true });
     // "chat root" is the group header row (ChatListItem inside a group);
     // "chat solo-*" are lone rows. Both paths appear here.
-    expect(dimmedRows(container)).toEqual(["chat root", "chat solo-closed", "chat solo-none"]);
+    expect(dimmedRows(container)).toEqual(["chat root", "chat solo-closed", "chat solo-hidden"]);
   });
 
   /**
@@ -232,10 +248,11 @@ describe("ChatTreeList dimming", () => {
    * is nothing faded?", and now there is no answer but this rule.
    */
   it("dims an archived-card row once loaded, with no option to turn it off", () => {
-    const allPresentOneArchived: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
+    const allPresentOneArchived: ReadonlyMap<string, Pick<CardSummary, "lifecycle" | "hidden">> = new Map([
       ["root", { lifecycle: "open" }],
       ["open-card", { lifecycle: "open" }],
       ["solo-none", { lifecycle: "open" }],
+      ["hidden-card", { lifecycle: "open" }],
       ["closed-card", { lifecycle: "closed" }],
     ]);
     const { container } = renderMixed({ cardsLoaded: true }, allPresentOneArchived);

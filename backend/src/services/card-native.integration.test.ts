@@ -83,12 +83,14 @@ function rollout(id: string, parent = IMPL, event = "task_complete", extra = {},
   );
   return path;
 }
-async function rest(method: string, path: string, id = "", body = {}) {
+async function rest(method: string, path: string, id = "", body = {}, query: Record<string, string> = {}) {
   const handler = (cardsRouter as any).stack.find((layer: any) => layer.route?.path === path && layer.route.methods[method]).route.stack[0].handle;
   let code = 200;
   let payload: any;
   await handler(
-    { params: { id }, body },
+    // `query` is always present on a real Express request — the list handler
+    // reads `includeHidden` off it — so the fake has to supply it too.
+    { params: { id }, body, query },
     {
       status(n: number) {
         code = n;

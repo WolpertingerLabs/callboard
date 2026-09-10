@@ -145,6 +145,43 @@ describe("ChatListItem card menu", () => {
     expect(screen.queryByText("Unarchive chat")).toBeNull();
   });
 
+  /**
+   * The third way to reach that shape, and the only one that is a decision
+   * rather than a timing: a HIDDEN card.
+   *
+   * `ChatList.cardOf` reads the board cards, so a card with `hidden: true`
+   * answers undefined and this menu is handed no `card` — while the row is
+   * faded regardless, because the dim reads the full set including hidden. A
+   * dimmed row with no lifecycle entry is therefore the intended pairing, not
+   * a gap.
+   *
+   * Both labels below are written about the board — "moves to the board's
+   * Archived strip", "returns to the board" — and a hidden card is on the board
+   * under neither lifecycle. Worse, the entry could not do what the row implies
+   * it would: archiving a hidden card leaves it dimmed (it already was), and
+   * unarchiving leaves it dimmed too, because `hidden` is still set and nothing
+   * in the sidebar can unset it.
+   */
+  it("offers no lifecycle entry for a hidden card, whose row is dimmed all the same", () => {
+    const chat = makeChat({ metadata: JSON.stringify({ rootChatId: "hidden-card" }) });
+    const { container } = render(<ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={CARD_MENU} dimmed />);
+    openRowMenu(container);
+
+    expect(screen.queryByText("Archive chat")).toBeNull();
+    expect(screen.queryByText("Unarchive chat")).toBeNull();
+    // The row really is faded — the assertion above is about the withheld card,
+    // not about a row the list decided to leave alone.
+    expect(container.querySelector(".chatlist-item-dimmed")).toBeTruthy();
+    // And the same menu WITH a board card does offer the entry, so the absence
+    // is the card and not a broken fixture.
+    cleanup();
+    const withCard = render(
+      <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 } }} dimmed />,
+    );
+    openRowMenu(withCard.container);
+    expect(screen.getByText("Archive chat")).toBeTruthy();
+  });
+
   it("renders no card entries at all without a cardMenu", () => {
     const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
     openRowMenu(container);
@@ -193,8 +230,13 @@ describe("ChatListItem card menu", () => {
 /**
  * `dimmed` arrives already decided (utils/chatDimming has that half); what is
  * tested here is the veto — the row states that must stay at full opacity
- * however card-less they are, because a faded row you are being asked to look
- * at is the exact inverse of the option's purpose.
+ * however archived their card is, because a faded row you are being asked to
+ * look at is the exact inverse of the point of asking.
+ *
+ * Not "however card-less they are": a card-less row does not dim in the first
+ * place, so it never reaches the veto. What does reach it is a row on a closed
+ * or hidden card that is nevertheless summoning, unread, awaiting a job
+ * approval, or open.
  *
  * Every case renders an undimmed control alongside, so an assertion that
  * silently matched every row could not pass.

@@ -1,17 +1,23 @@
 /**
  * The archived-chat dim.
  *
- * The case worth a test file is the first paint: `cards` is `[]` for as long as
- * the card fetch takes, and a dim that reads only "no card record" fades the
- * entire sidebar until it lands. Every case here carries a row that must NOT be
- * dimmed — an assertion that matched everything would pass a fixture where
- * everything is dimmed, which is precisely the bug.
+ * The rule under test: a row fades when its lineage root is an ARCHIVED card —
+ * closed, or hidden from the board — and only then. A row on no card does not
+ * fade. That is the narrow reading, and the narrowing is the point: nothing
+ * triggered or job-stepped can be a card (`isCardEligible`), so the wide
+ * reading faded every such chat and, worse, its server-side twin withheld them
+ * from the list entirely — which is what made "Show triggered chats" look like
+ * a dead switch.
+ *
+ * Every case here carries a row that must NOT be dimmed — an assertion that
+ * matched everything would pass a fixture where everything is dimmed, which is
+ * precisely the bug the wide rule was.
  */
 import { describe, expect, it } from "vitest";
 import type { Chat, CardSummary } from "../api";
 import { chatCardId, isChatDimmed, type DimContext } from "./chatDimming";
 
-type Cards = ReadonlyMap<string, Pick<CardSummary, "lifecycle">>;
+type Cards = ReadonlyMap<string, Pick<CardSummary, "lifecycle" | "hidden">>;
 
 const chat = (metadata: Record<string, unknown>, id = "chat-1"): Pick<Chat, "id" | "metadata"> => ({ id, metadata: JSON.stringify(metadata) });
 
@@ -28,6 +34,10 @@ const LOADING: DimContext = { cardsLoaded: false };
 const CARDS: Cards = new Map([
   ["open-card", { lifecycle: "open" as const }],
   ["closed-card", { lifecycle: "closed" as const }],
+  // A card opted out of the board. Archived for this purpose whatever its
+  // lifecycle says — `cardLifecycle=unarchived` withholds its tree, so a dim
+  // that read only `lifecycle` would leave those rows unfaded under a search.
+  ["hidden-card", { lifecycle: "open" as const, hidden: true }],
   // Callers also index CardSummary.memberChats by chat id, which is the
   // authoritative answer for legacy multi-level trees.
   ["legacy-leaf", { lifecycle: "open" as const }],
@@ -48,28 +58,58 @@ describe("chatCardId", () => {
 
 describe("isChatDimmed", () => {
   it("dims nothing before the first listCards returns", () => {
-    // Both of these dim once loaded — see the next test. Before then an empty
-    // card map is indistinguishable from "nobody has a card", so the whole list
-    // would flash faded on every mount.
+    // An empty card map is indistinguishable from "nobody has a card", and
+    // nobody having a card now means nobody is archived — so the pre-fetch
+    // state renders undimmed by the rule as well as by the flag.
     expect(isChatDimmed(chat({}), new Map(), LOADING)).toBe(false);
     expect(isChatDimmed(chat({ rootChatId: "closed-card" }), new Map(), LOADING)).toBe(false);
-    // Control: a chat on an open card is undimmed in this state too, so the
-    // assertion above is not just reporting "everything is false".
-    expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, LOADED)).toBe(false);
+    // Control: the same chat with its card present and closed DOES dim, so the
+    // assertions above are about the state and not about the matcher.
+    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, LOADED)).toBe(true);
   });
 
-  it("dims a card-less chat and a closed-card chat, but not an open-card one", () => {
-    // Card-less here means a root the cards map does not know — e.g. a
-    // triggered chat, which is not a card at all.
-    expect(isChatDimmed(chat({ triggered: true }, "triggered-root"), CARDS, LOADED)).toBe(true);
+  /**
+   * The rule, stated as the pair it has to be: a closed card fades, an open one
+   * does not, and a chat on NO card is not archived and does not fade either.
+   *
+   * That last clause is the whole of this change. `isCardEligible` refuses to
+   * make a card of a triggered or job-step chat, so under the old rule those
+   * chats were permanently faded — and, since the server scope was the same
+   * predicate, permanently absent from the default list. Turning on "Show
+   * triggered chats" admitted them and the archived scope took them straight
+   * back out.
+   */
+  it("dims a closed-card chat but not an open-card or card-less one", () => {
     expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, LOADED)).toBe(true);
     expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, LOADED)).toBe(false);
     expect(isChatDimmed(chat({ forkedFrom: "intermediate" }, "legacy-leaf"), CARDS, LOADED)).toBe(false);
+    // Card-less: a root the cards map does not know, which is what a triggered
+    // chat, a job step and a never-recorded session all look like from here.
+    expect(isChatDimmed(chat({ triggered: true }, "triggered-root"), CARDS, LOADED)).toBe(false);
+    expect(isChatDimmed(chat({ jobRunId: "run-1" }, "job-step"), CARDS, LOADED)).toBe(false);
+    expect(isChatDimmed(chat({}, "unfiled"), CARDS, LOADED)).toBe(false);
   });
 
-  it("dims a chat whose root was deleted (dangling lineage)", () => {
-    expect(isChatDimmed(chat({ rootChatId: "deleted-card" }), CARDS, LOADED)).toBe(true);
+  /**
+   * Hidden is the second way to be archived, and it is in the predicate for
+   * one reason: the server's `unarchived` scope withholds a hidden card's tree
+   * exactly as it withholds a closed one's. A dim that read `lifecycle` alone
+   * would disagree with it, and the sidebar's two halves are only safe while
+   * they are exact complements.
+   */
+  it("dims a hidden card's chat even though its lifecycle is open", () => {
+    expect(isChatDimmed(chat({ rootChatId: "hidden-card" }), CARDS, LOADED)).toBe(true);
     expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, LOADED)).toBe(false);
+  });
+
+  /**
+   * A dangling root — the card was deleted — leaves a chat on no live card,
+   * which is now the undimmed case. It reads as an ordinary unfiled chat
+   * because that is what it has become; there is no archived card to point at.
+   */
+  it("does not dim a chat whose root was deleted (dangling lineage)", () => {
+    expect(isChatDimmed(chat({ rootChatId: "deleted-card" }), CARDS, LOADED)).toBe(false);
+    expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, LOADED)).toBe(true);
   });
 
   /**
@@ -80,8 +120,8 @@ describe("isChatDimmed", () => {
    */
   it("dims with no toggle in front of it", () => {
     const legacy = { dimCardless: false, cardsLoaded: true } as unknown as DimContext;
-    expect(isChatDimmed(chat({}), CARDS, legacy)).toBe(true);
     expect(isChatDimmed(chat({ rootChatId: "closed-card" }), CARDS, legacy)).toBe(true);
+    expect(isChatDimmed(chat({ rootChatId: "hidden-card" }), CARDS, legacy)).toBe(true);
     expect(isChatDimmed(chat({ rootChatId: "open-card" }), CARDS, legacy)).toBe(false);
   });
 });
