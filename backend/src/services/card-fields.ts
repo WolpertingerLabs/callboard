@@ -242,7 +242,7 @@ export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
     const currentLifecycle: CardLifecycle = existing.lifecycle === "closed" ? "closed" : "open";
     // `closedAt` describes the transition, not the most recent idempotent
     // PATCH. Re-sending { lifecycle: "closed" } must not make an old card look
-    // newly closed (or reorder the Closed strip).
+    // newly closed (or reorder the board's Archived strip).
     if (patch.lifecycle !== currentLifecycle) {
       existing.lifecycle = patch.lifecycle;
       if (patch.lifecycle === "closed") {
