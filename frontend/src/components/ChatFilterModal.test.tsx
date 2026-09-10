@@ -102,10 +102,13 @@ describe("ChatFilterModal view options", () => {
 
   it("says what each position of Show archived does", () => {
     // The hint is the only place the dim is explained, now that it is not a
-    // switch of its own — off, it reads as a scope; on, it warns the extra rows
-    // arrive faded and in place rather than collected at the bottom.
+    // switch of its own — on, it warns the extra rows arrive faded and in
+    // place rather than collected at the bottom; off, it has to say "browse",
+    // because a content search widens past this switch and the user would
+    // otherwise be promised something the sidebar behind the modal contradicts.
     renderModal();
-    expect(screen.getByText(/Only chats on open cards/)).toBeTruthy();
+    expect(screen.getByText(/Browse open cards only/)).toBeTruthy();
+    expect(screen.getByText(/search still finds everything/)).toBeTruthy();
 
     fireEvent.click(screen.getByText("Show archived"));
     expect(screen.getByText(/dimmed and in place/)).toBeTruthy();

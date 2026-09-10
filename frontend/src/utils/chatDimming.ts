@@ -94,22 +94,29 @@ export interface DimContext {
  * such a toggle: it decides whether these rows are fetched at all, so with it
  * off this has almost nothing to fade.
  *
- * Almost. The scope is the server's verdict over stored records
- * (`cardLifecycle=active`); the fade is the `/api/cards` rollup's. Two sources,
- * so a row CAN come back under the toggle-off view and still dim:
+ * Almost. Three ways a faded row reaches the toggle-off view — one of them on
+ * purpose, and much the commonest:
  *
- *  - **skew.** They are separate requests. The 15s session poll calls `load()`
- *    without `loadCards()`, and archiving from a row's kebab menu patches
- *    `cards` locally without refetching the list, so one is briefly newer.
+ *  - **a search is running.** Content search widens the request to `all`
+ *    whatever the toggle says (see `cardLifecycleFor`), because hits are
+ *    intersected against the list and a narrow scope would delete results
+ *    rather than filter them. So archived rows arrive in bulk and the fade is
+ *    what marks them as archived. The toggle scopes *browsing*; search covers
+ *    everything.
+ *  - **skew.** The scope is the server's verdict over stored records; the fade
+ *    is the `/api/cards` rollup's, and they are separate requests. The 15s
+ *    session poll calls `load()` without `loadCards()`, and archiving from a
+ *    row's kebab menu patches `cards` locally without refetching the list, so
+ *    one is briefly newer than the other.
  *  - **native Codex.** `services/card-context.ts` refuses to promote a native
  *    record to a card (and stops early when `nativeDiscoveryIncomplete`), while
  *    the list route's open-root scan has no such term. Such a root is in scope
  *    and in no card.
  *
- * A stray faded row with the toggle off is one of those two. Neither brings
- * the sections back: what justified deleting them is that the rows the dim
- * exists for are the ones the toggle already removed, not that the fade is
- * provably unreachable.
+ * So: faded rows with the toggle off and the search box empty are the last
+ * two, and rare. None of the three brings the sections back — what justified
+ * deleting them is that the rows the dim exists for are the ones the toggle
+ * already removed, not that the fade is provably unreachable.
  */
 export function isChatDimmed(
   chat: Pick<Chat, "id" | "metadata">,

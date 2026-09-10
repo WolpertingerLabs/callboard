@@ -193,7 +193,8 @@ export default function ChatList({
   const load = useCallback(async () => {
     const { bookmarked, showTriggered, showArchived } = viewOptions;
     // The whole of "Show archived", on the request side: off asks the server
-    // for open-card trees only, so the rows the dim would fade never arrive.
+    // for open-card trees only, so while the user is browsing, the rows the dim
+    // would fade never arrive. A search overrides it — see cardLifecycleFor.
     const cardLifecycle = cardLifecycleFor({ showArchived, searching });
     // When advanced filters or content search are active, fetch all chats
     // to avoid missing matches due to pagination
@@ -250,9 +251,11 @@ export default function ChatList({
         undefined,
         true,
         undefined,
-        // "Load next page" is hidden while a search is active, so this cannot
-        // fire mid-search today — it passes the same state anyway, so the two
-        // request paths cannot come to disagree about scope.
+        // Reachable mid-search: the button hides on `anyFilterActive`, which
+        // is still false for the whole window between submitting a query and
+        // its hits landing. So this really does need the search state, and it
+        // takes it from the same function `load` does — the two request paths
+        // cannot come to disagree about scope.
         cardLifecycleFor({ showArchived: viewOptions.showArchived, searching }),
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
@@ -445,10 +448,12 @@ export default function ChatList({
    * render decision over cards already on the page, so there is no request to
    * change and nothing for the user to switch off. "Show archived" is the
    * other half of the same idea and not an exception to it: it decides whether
-   * these rows are fetched, so with it off this has almost nothing left to
-   * fade. Almost — `cards` and `chats` are separately timed requests here (the
-   * 15s poll refetches one, the kebab menu patches the other), which is one of
-   * the two ways a faded row reaches the toggle-off view. See `isChatDimmed`.
+   * these rows are fetched, so while the user is browsing with it off this has
+   * almost nothing left to fade. Browsing — a search widens the scope past the
+   * toggle, and then this fades in bulk, on purpose. `isChatDimmed` lists that
+   * and the two rarer causes, one of which is local to this file: `cards` and
+   * `chats` are separately timed requests here (the 15s poll refetches one,
+   * the kebab menu patches the other).
    */
   const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsByChatId, { cardsLoaded });
 
@@ -757,7 +762,12 @@ export default function ChatList({
             <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
           </div>
         )}
-        {filteredChats.length === 0 && !isInitialLoading && (
+        {/* `!isSearching`: a submitted query has already widened the scope but
+            its hits have not landed, so `isFiltered` is still false and the
+            message below would tell a user with thousands of chats that they
+            have none. Nothing at all is the honest thing to render for the one
+            beat it takes — the search box is showing its own spinner. */}
+        {filteredChats.length === 0 && !isInitialLoading && !isSearching && (
           <p style={{ padding: 20, color: "var(--chatlist-empty-text)", textAlign: "center" }}>{emptyMessage}</p>
         )}
         <ChatTreeList

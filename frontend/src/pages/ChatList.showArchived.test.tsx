@@ -5,11 +5,14 @@
  * pinned here is that mapping and nothing else.
  *
  * Worth testing from the page rather than the pure function alone, because the
- * mapping has to survive three separate paths that each construct their own
- * request — the initial load, the "Load next page" pagination, and the refetch
- * triggered by applying the filters modal. It is also the whole reason the list
- * needs no sections: with the toggle off the server never sends a chat the dim
- * would fade, so there is nothing left to separate out.
+ * mapping has to survive four separate paths that each construct their own
+ * request — the initial load, the stale-response refetch, the "Load next page"
+ * pagination, and the refetch triggered by applying the filters modal. It is
+ * also the reason the list needs no sections: while the user is BROWSING with
+ * the toggle off the server sends no chat the dim would fade, so there is
+ * nothing to separate out. Searching is the deliberate exception, and the
+ * suite below pins it: a query widens the scope and the archived hits come
+ * back faded.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -237,6 +240,38 @@ describe("content search widens the scope", () => {
     await waitFor(() => expect(screen.queryByText("archived chat")).toBeNull());
   });
 
+  /**
+   * The case that actually pins `searching` as a dependency of `load`.
+   *
+   * Every other test here survives the dependency being deleted: their hits
+   * land while `anyFilterActive` flips null → Set, which recreates the
+   * callback anyway and picks `searching` out of that render's closure one
+   * request later. With an advanced filter already on, `anyFilterActive` goes
+   * true → true, nothing else changes, and a missing dependency means the list
+   * is never refetched at all — the search runs against the open-card scope
+   * and silently drops every archived hit, which is the entire bug this
+   * widening exists to prevent.
+   *
+   * `react-hooks/exhaustive-deps` is a warning in this repo, among a thousand
+   * others, so it is not the thing standing guard here. This is.
+   */
+  it("widens the scope even when an advanced filter is already active", async () => {
+    await renderList();
+
+    // A directory filter that matches both fixtures, so it narrows nothing
+    // client-side and only its effect on `anyFilterActive` is under test.
+    fireEvent.click(screen.getByTitle(/^Filters and view/));
+    const regex = screen.getByPlaceholderText("e.g. my-project|other-repo");
+    fireEvent.change(regex, { target: { value: "callboard" } });
+    fireEvent.click(regex.parentElement!.querySelector("button")!);
+    fireEvent.click(screen.getByText("Apply"));
+    await waitFor(() => expect(lastScope()).toBe("active"));
+
+    submitSearch("deploy script");
+    await waitFor(() => expect(lastScope()).toBe("all"));
+    expect(await screen.findByText("archived chat")).toBeTruthy();
+  });
+
   it("keeps the widening when the toggle is on, rather than fighting it", async () => {
     localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true }));
     await renderList();
@@ -260,6 +295,57 @@ describe("the empty sidebar", () => {
     // filter modal's switch label, so the loose match would pass on a page
     // that never rendered an empty state.
     expect(await screen.findByText(/^No chats on an open card\./)).toBeTruthy();
+  });
+
+  /**
+   * The window between submitting a query and its hits landing. `searching` is
+   * already true (so the archived-hidden message is correctly suppressed) but
+   * `matchingChatIds` is still null, so `isFiltered` is still false — and
+   * without a guard the message falls through to the branch that tells a user
+   * with thousands of chats they have none.
+   */
+  it("claims nothing at all while a search is in flight", async () => {
+    // Both halves of a submitted search are held open, because the window
+    // under test is the one where NEITHER has landed: the widened list request
+    // is still out (so the rendered list is the old, empty, open-card one) and
+    // the hits are still out (so `matchingChatIds` is null and `isFiltered` is
+    // false). Without a guard the message falls through to the branch that
+    // tells a user with thousands of chats that they have none.
+    let releaseList: () => void = () => {};
+    const listGate = new Promise<void>((resolve) => {
+      releaseList = resolve;
+    });
+    mockListChats.mockImplementation(async (...args: Parameters<typeof listChats>) => {
+      if (args[7] !== "active") await listGate;
+      return listResponse(args[7] === "active" ? [] : [makeChat("chat-2", { preview: "archived chat" })]);
+    });
+    let land: (value: { chatIds: string[] }) => void = () => {};
+    mockSearch.mockReturnValue(
+      new Promise<{ chatIds: string[] }>((resolve) => {
+        land = resolve;
+      }) as ReturnType<typeof searchChatContents>,
+    );
+
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+    await screen.findByText(/^No chats on an open card\./);
+
+    const input = screen.getByPlaceholderText(/Search chat contents/);
+    fireEvent.change(input, { target: { value: "deploy script" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // The archived-hidden message correctly goes: the scope has widened past it.
+    await waitFor(() => expect(screen.queryByText(/^No chats on an open card/)).toBeNull());
+    // And nothing replaces it. Not this message, not any message.
+    expect(screen.queryByText(/No chats yet/)).toBeNull();
+    expect(screen.queryByText(/No chats match/)).toBeNull();
+
+    releaseList();
+    land({ chatIds: ["chat-2"] });
+    expect(await screen.findByText("archived chat")).toBeTruthy();
   });
 
   it("falls back to the plain message once archived chats are shown", async () => {

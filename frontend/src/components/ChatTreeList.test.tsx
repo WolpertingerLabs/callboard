@@ -250,9 +250,10 @@ describe("ChatTreeList dimming", () => {
  * Worth pinning because it used to do the opposite: an "Open chats first"
  * option split these same rows under Open/Archived headers. The archived rows
  * a user sees now arrive dimmed and in recency order among the open ones — the
- * sidebar asks the server not to send them at all unless "Show archived" is on
- * — so a header reappearing here would be a second answer to a question the
- * dim already answers.
+ * sidebar asks the server not to send them at all while browsing with "Show
+ * archived" off, and asks for them regardless during a content search — so a
+ * header reappearing here would be a second answer to a question the dim
+ * already answers.
  */
 describe("ChatTreeList order", () => {
   // Lowercase-only id class, because textContent runs a row's preview straight

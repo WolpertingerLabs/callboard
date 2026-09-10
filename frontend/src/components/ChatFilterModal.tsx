@@ -190,16 +190,21 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
         <div style={{ marginBottom: 20 }}>
           <div style={sectionHeadingStyle}>View</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {/* The one control over the card lifecycle, and the only thing
-                between the user and a dimmed row: with it off the list asks the
-                server for open cards only, so the rows the dim would fade are
-                never fetched. Hence "in place" in the hint — turning it on adds
-                them back where their recency puts them, faded, rather than
-                collecting them under a header. */}
+            {/* The one control over the card lifecycle: with it off the list
+                asks the server for open cards only, so the rows the dim would
+                fade are never fetched. Hence "in place" in the on-hint —
+                turning it on adds them back where their recency puts them,
+                faded, rather than collecting them under a header.
+
+                The off-hint says "browsing" because that is the honest scope.
+                A content search widens past this switch (see
+                `cardLifecycleFor`), so a hint promising "only chats on open
+                cards" would be contradicted by the dimmed archived hits on
+                screen behind this modal. */}
             <SwitchRow
               icon={<Archive size={16} />}
               label="Show archived"
-              hint={localView.showArchived ? "Include chats on archived cards, dimmed and in place" : "Only chats on open cards"}
+              hint={localView.showArchived ? "Include chats on archived cards, dimmed and in place" : "Browse open cards only — search still finds everything"}
               checked={localView.showArchived}
               onChange={() => toggleView("showArchived")}
             />

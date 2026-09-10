@@ -32,14 +32,18 @@ export interface ChatViewOptions {
   /**
    * Whether chats on an archived card — or on no card at all — are in the list.
    *
-   * Near enough the complement of the unconditional dim in
+   * A browse scope, and near enough the complement of the unconditional dim in
    * `utils/chatDimming`: off, the rows that would have been faded are not
-   * fetched, so the sidebar is essentially undimmed; on, they come back in
-   * place, in recency order, faded. That is the whole design — the dim is the
-   * only signal telling archived from open, and this decides whether those
+   * fetched, so a browsed sidebar is essentially undimmed; on, they come back
+   * in place, in recency order, faded. That is the whole design — the dim is
+   * the only signal telling archived from open, and this decides whether those
    * rows exist, which is why the list needs no headers, sections or
-   * reordering. `isChatDimmed` names the two cases where a row slips through
-   * and fades anyway; neither is a reason to bring the headers back.
+   * reordering.
+   *
+   * Browse scope: {@link cardLifecycleFor} overrides it while a search is
+   * running, which is the commonest reason to see faded rows with it off.
+   * `isChatDimmed` lists that and the two rarer ones; none of them is a reason
+   * to bring the headers back.
    */
   showArchived: boolean;
 }
