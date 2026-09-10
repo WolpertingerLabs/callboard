@@ -96,8 +96,19 @@ describe("activeViewOptionCount", () => {
  * old unscoped list.
  */
 describe("cardLifecycleFor", () => {
-  it("asks for open-card trees when archived chats are hidden", () => {
-    expect(cardLifecycleFor({ showArchived: false, searching: false })).toBe("active");
+  /**
+   * `unarchived`, not `active` — the distinction the whole scope turns on.
+   * `active` is the narrower "lineage root is an OPEN, visible card", so it
+   * drops every chat that is on no card at all: triggered chats, job steps, and
+   * sessions with no stored record. Asking for it here is what made "Show
+   * triggered chats" appear to do nothing.
+   *
+   * `active` was NOT widened to mean this. It is a published query value with
+   * a `cardsOnly=true` alias, and older bundles still send both; redefining it
+   * would change what an already-open tab sees and turn that alias into a lie.
+   */
+  it("asks for everything outside archived cards when archived chats are hidden", () => {
+    expect(cardLifecycleFor({ showArchived: false, searching: false })).toBe("unarchived");
   });
 
   it("asks for everything when they are shown, rather than for the archived side alone", () => {

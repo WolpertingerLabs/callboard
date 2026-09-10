@@ -130,7 +130,10 @@ export default function ChatList({
 
   const loadCards = useCallback(async () => {
     try {
-      const res = await listCards();
+      // includeHidden: the dim counts a hidden card as archived, exactly as
+      // `cardLifecycle=unarchived` does, and it cannot do that for a card the
+      // board's default rollup left out. See api.listCards.
+      const res = await listCards(true);
       setCards(res.cards);
       setCardsLoaded(true);
     } catch {
@@ -201,9 +204,10 @@ export default function ChatList({
 
   const load = useCallback(async () => {
     const { bookmarked, showTriggered, showArchived } = viewOptions;
-    // The whole of "Show archived", on the request side: off asks the server
-    // for open-card trees only, so while the user is browsing, the rows the dim
-    // would fade never arrive. A search overrides it — see cardLifecycleFor.
+    // The whole of "Show archived", on the request side: off asks the server to
+    // withhold the trees of archived cards, so while the user is browsing, the
+    // rows the dim would fade never arrive. A search overrides it — see
+    // cardLifecycleFor.
     const cardLifecycle = cardLifecycleFor({ showArchived, searching });
     // When advanced filters or content search are active, fetch all chats
     // to avoid missing matches due to pagination
@@ -474,7 +478,8 @@ export default function ChatList({
   };
 
   /**
-   * Fade rows whose card is archived or absent. Unconditional — purely a
+   * Fade rows whose card is archived — closed or hidden. A row on no card is
+   * not archived and is not faded. Unconditional — purely a
    * render decision over cards already on the page, so there is no request to
    * change and nothing for the user to switch off. "Show archived" is the
    * other half of the same idea and not an exception to it: it decides whether
@@ -610,6 +615,14 @@ export default function ChatList({
    * which is the whole benefit of it being there: the fix is one click away,
    * in view, rather than two clicks deep in a modal.
    *
+   * What it must NOT say any more is "no chats on an open card". The scope
+   * withholds the archived trees and nothing else, so a chat on no card at all
+   * — triggered, a job step, a session nothing recorded — IS in this list, and
+   * blaming its absence on not having a card would point the user at a toggle
+   * that could not have produced it. "No unarchived chats" is the narrower
+   * claim and the true one; it also stays true when there are simply no chats,
+   * which "every chat here is archived" would not.
+   *
    * `searching` cancels that, because it cancels the scope: a search runs
    * against everything, so blaming an empty result on hidden archived chats
    * would send the user to a button that would not have changed the answer.
@@ -620,7 +633,7 @@ export default function ChatList({
       ? "No chats match the current filters. Archived chats are hidden."
       : "No chats match the current filters"
     : archivedHidden
-      ? "No chats on an open card. Turn on “Archived” above to include chats on archived cards."
+      ? "No unarchived chats. Turn on “Archived” above to include chats on archived cards."
       : "No chats yet. Create one to get started.";
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons

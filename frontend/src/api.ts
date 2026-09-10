@@ -269,12 +269,17 @@ export async function listChats(
    */
   cardsOnly?: boolean,
   /**
-   * Scope by the lifecycle of each chat's card: "active" is the open-card
-   * trees (what `cardsOnly` meant), "inactive" their complement, "all" no
-   * scoping. Omitted when "all", so the default request is byte-identical to
-   * what it was.
+   * Scope by the lifecycle of each chat's card. "unarchived" is what the
+   * sidebar sends: everything except the trees of closed or hidden cards, so a
+   * chat on no card at all (triggered, job-step, or simply never recorded) is
+   * IN. "active" is the narrower open-card trees (what `cardsOnly` meant),
+   * "inactive" their complement, "all" no scoping. Omitted when "all", so the
+   * default request is byte-identical to what it was.
+   *
+   * "active"/"inactive" have no caller left in this bundle and are kept because
+   * an older one still sends them — relabel these values, never rename them.
    */
-  cardLifecycle?: "all" | "active" | "inactive",
+  cardLifecycle?: "all" | "active" | "inactive" | "unarchived",
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -391,8 +396,18 @@ export async function dismissSummon(id: string): Promise<Chat> {
 
 // ── Cards (board view) ──────────────────────────────────────────────
 
-export async function listCards(): Promise<CardListResponse> {
-  const res = await fetch(`${BASE}/cards`);
+/**
+ * `includeHidden` is off by default because the board — the caller this was
+ * written for — is exactly what a hidden card opted out of.
+ *
+ * The sidebar passes it, and not as a nicety: `utils/chatDimming` fades a chat
+ * whose card is closed *or hidden*, which it can only do for cards it was
+ * given. Omit them there and a hidden card's chats look card-less, so the dim
+ * says "not archived" while `cardLifecycle=unarchived` withholds them for being
+ * archived — the two halves out of step in the one way #440 set out to prevent.
+ */
+export async function listCards(includeHidden?: boolean): Promise<CardListResponse> {
+  const res = await fetch(`${BASE}/cards${includeHidden ? "?includeHidden=true" : ""}`);
   await assertOk(res, "Failed to list cards");
   return res.json();
 }

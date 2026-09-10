@@ -31,7 +31,14 @@ export interface ChatViewOptions {
   /** Include chats started by automation (cron, triggers, jobs). */
   showTriggered: boolean;
   /**
-   * Whether chats on an archived card — or on no card at all — are in the list.
+   * Whether chats on an archived card are in the list. Archived means the
+   * chat's lineage root is a card that is closed or hidden — and nothing else:
+   * a chat on NO card (triggered, a job step, a session with no stored record)
+   * is an ordinary chat and is in the list either way. It did once mean "or on
+   * no card at all", which made this toggle silently override "Show triggered
+   * chats": nothing triggered can be a card, so the rows that option admitted
+   * this one removed again.
+   *
    * The one view option with its own control in the filter bar rather than the
    * modal, because it is flipped far more often than the rest put together.
    *
@@ -71,13 +78,21 @@ export const DEFAULT_CHAT_VIEW_OPTIONS: ChatViewOptions = {
  * hits still arrive dimmed, which is the signal that says why a result looks
  * different.
  *
- * Only ever `active` or `all`: the server still accepts `inactive` (an older
- * bundle may still send it) but no UI can ask for it — "archived only" was a
- * third state this toggle deliberately gave up, since a list of nothing but
- * faded rows is not a view anyone wanted.
+ * Only ever `unarchived` or `all`. The server still accepts `active` (with its
+ * `cardsOnly` alias) and `inactive`, because older bundles send them, but no UI
+ * can ask for either:
+ *
+ *  - `active` is the strictly narrower "lineage root is an OPEN, visible card",
+ *    which is what `cardsOnly` says in English and what an old tab expects to
+ *    get. It was not widened to admit card-less chats — a published value's
+ *    meaning does not change; a new meaning gets a new value. Hence
+ *    `unarchived`, added alongside it. **Relabel, never rename** applies to
+ *    what these values MEAN as much as to how they are spelled.
+ *  - `inactive` is "archived only", a third state this toggle deliberately gave
+ *    up, since a list of nothing but faded rows is not a view anyone wanted.
  */
-export function cardLifecycleFor({ showArchived, searching }: { showArchived: boolean; searching: boolean }): "all" | "active" {
-  return showArchived || searching ? "all" : "active";
+export function cardLifecycleFor({ showArchived, searching }: { showArchived: boolean; searching: boolean }): "all" | "unarchived" {
+  return showArchived || searching ? "all" : "unarchived";
 }
 
 /**

@@ -392,7 +392,7 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
-  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement: chats on the tree of a CLOSED card, plus chats that are on no card at all). Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record." } */
+  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), unarchived (everything EXCEPT the trees of closed or hidden cards — so chats on no card at all, such as triggered and job-step chats, are included; this is the scope the sidebar asks for when its Archived toggle is off), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement of active: chats on the tree of a CLOSED or hidden card, plus chats that are on no card at all). active/inactive are retained for client bundles older than the unarchived scope. Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record; a discovered session with no stored record is admitted by unarchived and by neither active nor inactive." } */
   /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'Back-compatible alias for cardLifecycle=active, kept for persisted prefs and older client bundles. Ignored when cardLifecycle is given.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields" } */
@@ -457,13 +457,21 @@ chatsRouter.get("/", (req, res) => {
      * silently widen those sidebars from "open cards" to everything. An
      * explicit `cardLifecycle` wins when both are present.
      *
+     * `unarchived` is the sidebar's scope since "archived" was narrowed to mean
+     * *on an archived card* rather than *not on an open one*. It was ADDED
+     * rather than folded into `active` for the same back-compat reason: an
+     * older bundle sending `active` (or `cardsOnly`) must keep getting open-card
+     * trees and nothing else, and `cardsOnly` would become a lie the moment
+     * `active` admitted chats that are on no card at all. `active` and
+     * `inactive` are therefore unreachable from this UI and still supported.
+     *
      * Anything unrecognised degrades to `all` rather than 400: this is a view
      * scope, and answering an unknown scope with an error would break a
      * sidebar over a typo where showing everything merely ignores it.
      */
     const rawLifecycle = typeof req.query.cardLifecycle === "string" ? req.query.cardLifecycle : undefined;
-    const cardLifecycleFilter: "all" | "active" | "inactive" =
-      rawLifecycle === "active" || rawLifecycle === "inactive"
+    const cardLifecycleFilter: "all" | "active" | "inactive" | "unarchived" =
+      rawLifecycle === "active" || rawLifecycle === "inactive" || rawLifecycle === "unarchived"
         ? rawLifecycle
         : rawLifecycle === "all"
           ? "all"
@@ -479,10 +487,11 @@ chatsRouter.get("/", (req, res) => {
     const lineageIndex = includeLineage || scopedByCardLifecycle ? buildLineageIndex(withNativeCodexChats(fileChats)) : null;
 
     /**
-     * Chat ids the card-lifecycle filter admits. Membership is derived from
-     * the tree — existingRootIdOf walks parent pointers (and job-step chats'
-     * stamped rootChatId) to the highest surviving root, whose own record says
-     * whether its card is open, closed or hidden. Null when the filter is off.
+     * Whether the card-lifecycle scope admits a chat id — null when the scope
+     * is off. Membership is derived from the tree — existingRootIdOf walks
+     * parent pointers (and job-step chats' stamped rootChatId) to the highest
+     * surviving root, whose own record says whether its card is open, closed or
+     * hidden.
      *
      * `active` is the old `cardsOnly` set exactly: chats whose root is an
      * open, visible card. `inactive` is its complement over the enriched
@@ -492,22 +501,49 @@ chatsRouter.get("/", (req, res) => {
      * on the data dir this was diagnosed against, a filter that also hid every
      * card-less chat would answer "show me the inactive ones" with a list that
      * omits most of what the user is looking at.
+     *
+     * `unarchived` divides the same lineage on the other question — "is this
+     * chat's root an ARCHIVED card", where archived means closed or hidden —
+     * so a chat whose root is not a card at all is admitted rather than hidden.
+     * That is the whole point of it: `isCardEligible` refuses to make a card of
+     * a triggered or job-step root, so under `active` those chats were removed
+     * from the sidebar again the instant "Show triggered chats" admitted them.
+     *
+     * A predicate rather than a Set because the two scopes disagree about ids
+     * nobody has a record for. An allow set can only ever be built by walking
+     * `lineageIndex.byId`, which is STORED records — so a session discovered
+     * under `~/.claude/projects/` with no `~/.callboard/chats/<id>.json` is in
+     * neither the `active` set nor the `inactive` one and is dropped whatever
+     * the caller asked for (pinned by the "inactive is the complement over
+     * chats that have a record" test). Such a chat has no card, so `unarchived`
+     * must admit it — and it does, by being a DENY set: not knowing an id means
+     * not knowing it to be archived.
      */
-    let cardScopedChatIds: Set<string> | null = null;
+    let cardScopeAdmits: ((chatId: string) => boolean) | null = null;
     if (scopedByCardLifecycle && lineageIndex) {
       const openRootIds = new Set<string>();
+      const archivedRootIds = new Set<string>();
       for (const chat of fileChats) {
         // Only the highest existing eligible ancestor can be a card. Using
         // existingRootIdOf (rather than the sidebar's synthetic dangling row
         // key) promotes surviving descendants after a parent is deleted.
-        if (lineageIndex.existingRootIdOf(chat.id) === chat.id && isCardEligible(chat) && !isCardHidden(chat) && cardLifecycleOf(chat) === "open") {
-          openRootIds.add(chat.id);
-        }
+        if (lineageIndex.existingRootIdOf(chat.id) !== chat.id || !isCardEligible(chat)) continue;
+        if (isCardHidden(chat) || cardLifecycleOf(chat) !== "open") archivedRootIds.add(chat.id);
+        else openRootIds.add(chat.id);
       }
-      cardScopedChatIds = new Set<string>();
-      for (const chat of lineageIndex.byId.values()) {
-        const onActiveCard = openRootIds.has(lineageIndex.existingRootIdOf(chat.id));
-        if (onActiveCard === (cardLifecycleFilter === "active")) cardScopedChatIds.add(chat.id);
+      if (cardLifecycleFilter === "unarchived") {
+        const archivedChatIds = new Set<string>();
+        for (const chat of lineageIndex.byId.values()) {
+          if (archivedRootIds.has(lineageIndex.existingRootIdOf(chat.id))) archivedChatIds.add(chat.id);
+        }
+        cardScopeAdmits = (chatId) => !archivedChatIds.has(chatId);
+      } else {
+        const scopedChatIds = new Set<string>();
+        for (const chat of lineageIndex.byId.values()) {
+          const onActiveCard = openRootIds.has(lineageIndex.existingRootIdOf(chat.id));
+          if (onActiveCard === (cardLifecycleFilter === "active")) scopedChatIds.add(chat.id);
+        }
+        cardScopeAdmits = (chatId) => scopedChatIds.has(chatId);
       }
     }
 
@@ -547,10 +583,10 @@ chatsRouter.get("/", (req, res) => {
     // Root card eligibility comes from stored records; native descendants
     // inherit membership through the enriched lineage index. Filter before
     // replay/preview enrichment, including sessions with no persisted chat.
-    const paginatedSessions = cardScopedChatIds
+    const paginatedSessions = cardScopeAdmits
       ? discoveredSessions.filter((s) => {
           const fileChat = fileChatsBySessionId.get(s.sessionId);
-          return cardScopedChatIds!.has(fileChat?.id ?? s.sessionId);
+          return cardScopeAdmits!(fileChat?.id ?? s.sessionId);
         })
       : discoveredSessions;
 
@@ -922,7 +958,7 @@ chatsRouter.get("/", (req, res) => {
         if (pageIds.has(id)) continue;
         // A relative outside the requested lifecycle scope must not be
         // appended — that would smuggle back exactly what the filter drops.
-        if (cardScopedChatIds && !cardScopedChatIds.has(id)) continue;
+        if (cardScopeAdmits && !cardScopeAdmits(id)) continue;
         const fc = fileById.get(id);
         if (!fc) continue;
         // Same rule the cards-only guard above states, applied to the other

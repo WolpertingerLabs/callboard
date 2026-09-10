@@ -1,10 +1,16 @@
 /**
- * Route-level tests for the `cardsOnly` filter on GET /api/chats — the
- * sidebar's "cards only" toggle. The rule under test: a chat is visible iff
- * its lineage root is an OPEN, visible card — a non-triggered, non-job-step
- * top-level chat. Membership is derived from the tree (parent pointers and
- * job-step chats' stamped rootChatId), so descendants follow their root's
- * lifecycle and hidden flag.
+ * Route-level tests for the card-lifecycle scopes on GET /api/chats.
+ *
+ * Three suites, one per scope, and they are deliberately separate: `cardsOnly`
+ * and `cardLifecycle=active`/`inactive` are published values whose behaviour is
+ * frozen by older client bundles, while `cardLifecycle=unarchived` is what this
+ * repo's sidebar sends. The rule for the first two: a chat is admitted by
+ * `active` iff its lineage root is an OPEN, visible card — a non-triggered,
+ * non-job-step top-level chat — and by `inactive` iff it is not. `unarchived`
+ * asks the narrower question, "is the root a CLOSED or HIDDEN card", so a chat
+ * on no card is admitted rather than dropped. Membership is derived from the
+ * tree (parent pointers and job-step chats' stamped rootChatId), so descendants
+ * follow their root's lifecycle and hidden flag.
  *
  * Same no-supertest style as cards.metadata.test.ts — the handler is pulled off
  * the router stack and driven with a fake req/res. Chats live in memory (the
@@ -245,10 +251,12 @@ describe("GET /api/chats?cardsOnly=true", () => {
  * unconditional now) only fades the rows a request already returned, so it
  * could never widen one.
  *
- * The sidebar has since collapsed to a single "Show archived" toggle that asks
- * for `active` or `all` only, which leaves `inactive` with no caller in this
- * repo. It stays supported and stays tested: it is a wire value older bundles
- * still send.
+ * The sidebar has since collapsed to a single "Show archived" toggle, and then
+ * narrowed what that toggle means: it asks for `unarchived` or `all`, which
+ * leaves BOTH `active` and `inactive` with no caller in this repo. They stay
+ * supported and stay tested — they are wire values older bundles still send,
+ * `cardsOnly=true` is an alias for `active`, and the fix for the narrowing was
+ * to add a value rather than to redefine one.
  */
 describe("GET /api/chats?cardLifecycle", () => {
   it("active is exactly the old cardsOnly set", async () => {
@@ -317,5 +325,106 @@ describe("GET /api/chats?cardLifecycle", () => {
   it("does not append a lineage relative from outside the requested scope", async () => {
     const body = await listChats({ cardLifecycle: "inactive", includeLineage: "true", limit: "50" });
     expect(idsOf(body)).toEqual(["closed-child", "closed-root", "hidden-root", "job-root", "triggered-root"]);
+  });
+});
+
+/**
+ * `unarchived` — the scope the sidebar actually asks for, and the one whose
+ * definition of "archived" is the narrow one: the chat's lineage root is a
+ * CLOSED or HIDDEN card. Not "is not an open card".
+ *
+ * The difference is everything that is on no card at all. `isCardEligible`
+ * refuses to make a card of a triggered or job-step root, so under `active`
+ * those chats were withheld from the sidebar no matter what else the user
+ * asked for — switching on "Show triggered chats" admitted them to the list
+ * and this scope removed them again on the same request, which is what made
+ * that option look like a dead switch.
+ *
+ * ADDED alongside `active`/`inactive` rather than replacing them: those are
+ * query values an older browser bundle still sends (and `cardsOnly=true` is an
+ * alias for `active` that would become a lie if `active` widened). Their
+ * behaviour is pinned unchanged above.
+ */
+describe("GET /api/chats?cardLifecycle=unarchived", () => {
+  const UNARCHIVED = ["job-root", "member", "member-child", "member-grandchild", "member-triggered", "orphan-session", "plain-child", "plain-root", "triggered-root"];
+
+  it("withholds only the closed and hidden cards' trees", async () => {
+    const body = await listChats({ cardLifecycle: "unarchived", limit: "50" });
+    expect(idsOf(body)).toEqual(UNARCHIVED);
+    // Said the other way round, because this is the whole rule: exactly the
+    // archived trees are missing, and nothing else is.
+    expect(idsOf(body)).not.toContain("closed-root");
+    expect(idsOf(body)).not.toContain("closed-child");
+    expect(idsOf(body)).not.toContain("hidden-root");
+  });
+
+  it("admits the card-less roots that active drops, which is the point of it", async () => {
+    const active = idsOf(await listChats({ cardLifecycle: "active", limit: "50" }));
+    const unarchived = idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }));
+    expect(active).not.toEqual(expect.arrayContaining(["triggered-root", "job-root"]));
+    expect(unarchived).toEqual(expect.arrayContaining([...active, "triggered-root", "job-root"]));
+  });
+
+  /**
+   * The trap. `cardScopedChatIds` for `active`/`inactive` is built by walking
+   * `lineageIndex.byId`, which is STORED records — so "orphan-session", a
+   * session discovered on disk with no `~/.callboard/chats/<id>.json`, is in
+   * neither set and is dropped by the `paginatedSessions` filter whichever of
+   * the two was asked for (pinned by "inactive is the complement over chats
+   * that have a record"). Such a chat is on no card, so it is not archived and
+   * `unarchived` has to return it — which only works because that scope is
+   * built as a DENY set. A regression to an allow set passes every other test
+   * in this file and silently loses every unrecorded session from the sidebar.
+   */
+  it("returns a discovered session with no stored record", async () => {
+    expect(idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }))).toContain("orphan-session");
+    // The contrast, restated here so the two behaviours sit side by side.
+    expect(idsOf(await listChats({ cardLifecycle: "active", limit: "50" }))).not.toContain("orphan-session");
+    expect(idsOf(await listChats({ cardLifecycle: "inactive", limit: "50" }))).not.toContain("orphan-session");
+  });
+
+  it("follows a close and a reopen", async () => {
+    patchCardFields("member", { lifecycle: "closed" });
+    const closed = idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }));
+    expect(closed).not.toContain("member");
+    expect(closed).not.toContain("member-grandchild");
+    // The card-less rows are unaffected by any card's lifecycle.
+    expect(closed).toEqual(expect.arrayContaining(["triggered-root", "job-root", "orphan-session"]));
+
+    patchCardFields("member", { lifecycle: "open" });
+    expect(idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }))).toEqual(UNARCHIVED);
+  });
+
+  it("hides a card's tree the moment it is hidden from the board", async () => {
+    patchCardFields("plain-root", { hidden: true });
+    const body = idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }));
+    expect(body).not.toContain("plain-root");
+    expect(body).not.toContain("plain-child");
+  });
+
+  /**
+   * The composition the user's report was about: with triggered chats shown,
+   * the triggered rows survive the scope instead of being removed by it.
+   */
+  it("keeps triggered chats when excludeTriggered is off", async () => {
+    const shown = idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }));
+    expect(shown).toEqual(expect.arrayContaining(["triggered-root", "member-triggered"]));
+
+    const hidden = idsOf(await listChats({ cardLifecycle: "unarchived", excludeTriggered: "true", limit: "50" }));
+    expect(hidden).not.toContain("triggered-root");
+    expect(hidden).not.toContain("member-triggered");
+    // Still the triggered filter's doing and not the scope's — everything else
+    // is still there.
+    expect(hidden).toEqual(["job-root", "member", "member-child", "member-grandchild", "orphan-session", "plain-child", "plain-root"]);
+  });
+
+  it("paginates in tree rows and appends no relative from an archived tree", async () => {
+    const rows = await listChats({ cardLifecycle: "unarchived", includeLineage: "true", limit: "1", offset: "0" });
+    // member + child + grandchild + triggered fold into one row.
+    expect(idsOf(rows)).toEqual(["member", "member-child", "member-grandchild", "member-triggered"]);
+    expect(rows).toMatchObject({ windowRows: 1, hasMore: true });
+
+    const all = await listChats({ cardLifecycle: "unarchived", includeLineage: "true", limit: "50" });
+    expect(idsOf(all)).toEqual(UNARCHIVED);
   });
 });

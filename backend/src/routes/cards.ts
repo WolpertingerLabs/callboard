@@ -49,12 +49,13 @@ function summarizeAll(includeHidden = false, context = createCardContext(), root
   return context.summaries(listRuns({ withRoot: true }), includeHidden, rootId);
 }
 
-cardsRouter.get("/", (_req: Request, res: Response) => {
+cardsRouter.get("/", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'List all cards (lineage roots) with live rollups'
-  // #swagger.description = 'Every non-triggered top-level chat is a card; its fields live on that chat\'s metadata. Hidden cards are omitted.'
+  // #swagger.description = 'Every non-triggered top-level chat is a card; its fields live on that chat\'s metadata. Hidden cards are omitted unless includeHidden=true.'
+  /* #swagger.parameters['includeHidden'] = { in: 'query', type: 'string', description: 'Include cards opted out of the board (metadata.card.hidden). Default false — the board never wants them. The sidebar does: its archived dim has to agree with GET /api/chats?cardLifecycle=unarchived, which counts a hidden card as archived, and a card the client cannot see reads as no card at all, and therefore as not archived.' } */
   try {
-    const cards = summarizeAll();
+    const cards = summarizeAll(req.query.includeHidden === "true");
     // Pinned first, then most recent activity.
     cards.sort((a, b) => (a.pinned === b.pinned ? b.lastActivityAt.localeCompare(a.lastActivityAt) : a.pinned ? -1 : 1));
     res.json({ cards });

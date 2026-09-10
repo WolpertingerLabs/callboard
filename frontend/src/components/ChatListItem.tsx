@@ -66,9 +66,9 @@ interface Props {
   cardMenu?: ChatCardMenu;
   sessionStatus?: { active: boolean; type: string };
   /**
-   * The list's verdict on "this chat's card is archived or absent" (see
-   * `utils/chatDimming`). A *request* to fade, not the last word — the
-   * exemptions below can veto it.
+   * The list's verdict on "this chat's card is archived" — closed or hidden,
+   * and NOT merely missing (see `utils/chatDimming`). A *request* to fade, not
+   * the last word — the exemptions below can veto it.
    */
   dimmed?: boolean;
 }

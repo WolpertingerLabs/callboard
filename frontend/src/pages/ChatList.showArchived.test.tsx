@@ -104,9 +104,9 @@ afterEach(() => {
 });
 
 describe("Show archived → cardLifecycle", () => {
-  it("asks for open-card trees by default", async () => {
+  it("asks for the unarchived scope by default", async () => {
     await renderList();
-    expect(scopeOf(mockListChats.mock.calls)).toEqual(["active"]);
+    expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived"]);
   });
 
   it("asks for everything on one click of the toggle", async () => {
@@ -116,19 +116,19 @@ describe("Show archived → cardLifecycle", () => {
     // "all", not "inactive": the archived rows join the open ones in place
     // rather than replacing them. And it arrives without an Apply — the whole
     // point of promoting this out of the modal.
-    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived", "all"]));
   });
 
-  it("narrows back to open cards on a second click", async () => {
+  it("narrows back to unarchived on a second click", async () => {
     await renderList();
 
     toggleShowArchived();
-    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived", "all"]));
 
     // The button reads the committed state back off `viewOptions`, so it
     // flips rather than latching on.
     toggleShowArchived();
-    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all", "active"]));
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived", "all", "unarchived"]));
   });
 
   it("carries the scope into pagination, so page 2 is not a different list", async () => {
@@ -139,7 +139,7 @@ describe("Show archived → cardLifecycle", () => {
     await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
 
     fireEvent.click(screen.getByText("Load next page"));
-    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all", "all"]));
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived", "all", "all"]));
   });
 
   it("persists the choice and reloads with it", async () => {
@@ -162,7 +162,7 @@ describe("Show archived → cardLifecycle", () => {
     mockListChats.mockResolvedValueOnce({ ...listResponse([makeChat("chat-1", { preview: "open chat" })]), stale: true });
     await renderList();
     await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
-    expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "active"]);
+    expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived", "unarchived"]);
     // The refetch is the fresh-data one, not a repeat of the cached request.
     expect(mockListChats.mock.calls[1][4]).toBe(false);
   });
@@ -213,11 +213,11 @@ describe("two refreshes in flight", () => {
     await renderList();
 
     toggleShowArchived();
-    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived", "all"]));
     toggleShowArchived();
-    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all", "active"]));
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived", "all", "unarchived"]));
 
-    // Both clicks are committed and the scope is back to open cards.
+    // Both clicks are committed and the scope is back to unarchived.
     const button = () => screen.getByRole("button", { name: "Archived" });
     expect(button().getAttribute("aria-pressed")).toBe("false");
 
@@ -256,7 +256,7 @@ describe("two refreshes in flight", () => {
 
     await renderList();
     toggleShowArchived();
-    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived", "all"]));
 
     releaseAll();
     expect(await screen.findByText("archived chat")).toBeTruthy();
@@ -267,11 +267,13 @@ describe("two refreshes in flight", () => {
  * Content search against a narrowed browse scope.
  *
  * Search is a server-side query over full history whose hits are applied as an
- * INTERSECTION against the loaded list. With the list scoped to open cards
- * that intersection does not narrow the results, it DELETES them — silently,
- * since a partial loss shows no empty state and no count. On the data dir this
- * was measured against, 4 of 133 rows are on open cards, so the default scope
- * would have thrown away most of every search.
+ * INTERSECTION against the loaded list. With the list scoped at all, that
+ * intersection does not narrow the results, it DELETES them — silently, since
+ * a partial loss shows no empty state and no count. On the data dir this was
+ * measured against, 4 of 133 rows were on open cards (the scope the default was
+ * then), so it would have thrown away most of every search. `unarchived` is a
+ * much wider default and the argument is unchanged: it still withholds every
+ * archived tree, and archived work is exactly what an old search is for.
  */
 describe("content search widens the scope", () => {
   const OPEN = makeChat("chat-1", { preview: "open chat" });
@@ -284,7 +286,7 @@ describe("content search widens the scope", () => {
     // The server, as far as this test is concerned: `active` withholds the
     // archived chat, `all` returns both.
     mockListChats.mockImplementation((...args: Parameters<typeof listChats>) =>
-      Promise.resolve(listResponse(args[7] === "active" ? [OPEN] : [OPEN, ARCHIVED])),
+      Promise.resolve(listResponse(args[7] === "unarchived" ? [OPEN] : [OPEN, ARCHIVED])),
     );
     // Both chats match the query — the question is which ones survive the scope.
     mockSearch.mockResolvedValue({ chatIds: ["chat-1", "chat-2"] } as Awaited<ReturnType<typeof searchChatContents>>);
@@ -307,7 +309,7 @@ describe("content search widens the scope", () => {
 
   it("asks for everything while a search is active, with the toggle still off", async () => {
     await renderList();
-    expect(scopeOf(mockListChats.mock.calls)).toEqual(["active"]);
+    expect(scopeOf(mockListChats.mock.calls)).toEqual(["unarchived"]);
 
     submitSearch("deploy script");
     await waitFor(() => expect(lastScope()).toBe("all"));
@@ -328,13 +330,13 @@ describe("content search widens the scope", () => {
     expect(screen.getByText("open chat").closest(".chatlist-item-dimmed")).toBeNull();
   });
 
-  it("narrows back to open cards when the search is cleared", async () => {
+  it("narrows back to unarchived when the search is cleared", async () => {
     await renderList();
     submitSearch("deploy script");
     await waitFor(() => expect(lastScope()).toBe("all"));
 
     submitSearch("");
-    await waitFor(() => expect(lastScope()).toBe("active"));
+    await waitFor(() => expect(lastScope()).toBe("unarchived"));
     // Not merely the scope: the archived row is gone from the list again, so
     // the widening really was scoped to the search and not left latched on.
     await waitFor(() => expect(screen.queryByText("archived chat")).toBeNull());
@@ -348,7 +350,7 @@ describe("content search widens the scope", () => {
    * callback anyway and picks `searching` out of that render's closure one
    * request later. With an advanced filter already on, `anyFilterActive` goes
    * true → true, nothing else changes, and a missing dependency means the list
-   * is never refetched at all — the search runs against the open-card scope
+   * is never refetched at all — the search runs against the unarchived scope
    * and silently drops every archived hit, which is the entire bug this
    * widening exists to prevent.
    *
@@ -365,7 +367,7 @@ describe("content search widens the scope", () => {
     fireEvent.change(regex, { target: { value: "callboard" } });
     fireEvent.click(regex.parentElement!.querySelector("button")!);
     fireEvent.click(screen.getByText("Apply"));
-    await waitFor(() => expect(lastScope()).toBe("active"));
+    await waitFor(() => expect(lastScope()).toBe("unarchived"));
 
     submitSearch("deploy script");
     await waitFor(() => expect(lastScope()).toBe("all"));
@@ -397,7 +399,7 @@ describe("the empty sidebar", () => {
     // the loose match would no longer be ambiguous with it — but the sentence
     // is what the copy has to say, and the copy is the thing being pinned:
     // it has to point the user at the control that would fix this.
-    const message = await screen.findByText(/^No chats on an open card\./);
+    const message = await screen.findByText(/^No unarchived chats\./);
     expect(message.textContent).toContain("Turn on “Archived” above");
   });
 
@@ -411,7 +413,7 @@ describe("the empty sidebar", () => {
   it("claims nothing at all while a search is in flight", async () => {
     // Both halves of a submitted search are held open, because the window
     // under test is the one where NEITHER has landed: the widened list request
-    // is still out (so the rendered list is the old, empty, open-card one) and
+    // is still out (so the rendered list is the old, empty, unarchived one) and
     // the hits are still out (so `matchingChatIds` is null and `isFiltered` is
     // false). Without a guard the message falls through to the branch that
     // tells a user with thousands of chats that they have none.
@@ -420,8 +422,8 @@ describe("the empty sidebar", () => {
       releaseList = resolve;
     });
     mockListChats.mockImplementation(async (...args: Parameters<typeof listChats>) => {
-      if (args[7] !== "active") await listGate;
-      return listResponse(args[7] === "active" ? [] : [makeChat("chat-2", { preview: "archived chat" })]);
+      if (args[7] !== "unarchived") await listGate;
+      return listResponse(args[7] === "unarchived" ? [] : [makeChat("chat-2", { preview: "archived chat" })]);
     });
     let land: (value: { chatIds: string[] }) => void = () => {};
     mockSearch.mockReturnValue(
@@ -435,14 +437,14 @@ describe("the empty sidebar", () => {
         <ChatList onRefresh={() => {}} />
       </MemoryRouter>,
     );
-    await screen.findByText(/^No chats on an open card\./);
+    await screen.findByText(/^No unarchived chats\./);
 
     const input = screen.getByPlaceholderText(/Search chat contents/);
     fireEvent.change(input, { target: { value: "deploy script" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
     // The archived-hidden message correctly goes: the scope has widened past it.
-    await waitFor(() => expect(screen.queryByText(/^No chats on an open card/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/^No unarchived chats/)).toBeNull());
     // And nothing replaces it. Not this message, not any message.
     expect(screen.queryByText(/No chats yet/)).toBeNull();
     expect(screen.queryByText(/No chats match/)).toBeNull();
@@ -470,7 +472,7 @@ describe("the empty sidebar", () => {
         <ChatList onRefresh={() => {}} />
       </MemoryRouter>,
     );
-    await screen.findByText(/^No chats on an open card\./);
+    await screen.findByText(/^No unarchived chats\./);
 
     fireEvent.click(screen.getByTitle(/^Filters and view/));
     fireEvent.click(screen.getByText("Bookmarked only"));
