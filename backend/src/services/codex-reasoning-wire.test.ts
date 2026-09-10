@@ -61,7 +61,13 @@ it.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")(
     } finally {
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
-      await rm(home, { recursive: true, force: true });
+      // `home` is this run's CODEX_HOME, and the Codex binary keeps writing
+      // into it (`.tmp/plugins-clone-*/`) for a moment after the aborted run
+      // returns. A plain recursive rm races that and throws ENOTEMPTY from
+      // inside this `finally`, which fails the test — a pure flake, on the
+      // suite that gates `prepublishOnly`. `force` does not cover ENOTEMPTY;
+      // only the retries do.
+      await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
     expect(requests).toMatchObject([{ effort: "none" }, { effort: "max" }, { effort: "medium" }, { effort: "low" }]);
   },
