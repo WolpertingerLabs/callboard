@@ -78,10 +78,17 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/** Hands the caller ChatList's own refresh callback, so a test can force a refetch. */
+let refresh: () => void = () => {};
+
 async function renderList() {
   const view = render(
     <MemoryRouter>
-      <ChatList onRefresh={() => {}} />
+      <ChatList
+        onRefresh={(fn) => {
+          refresh = fn;
+        }}
+      />
     </MemoryRouter>,
   );
   await screen.findByText("Old Title");
@@ -239,6 +246,7 @@ describe("ChatList edit title", () => {
 
     await renderList();
     openEditor();
+    fireEvent.change(titleField(), { target: { value: "Typed while thinking" } });
     await act(async () => {
       fireEvent.click(screen.getByText("Regenerate"));
     });
@@ -248,13 +256,127 @@ describe("ChatList edit title", () => {
     // A second click cannot start a second model call — the point of the lock.
     fireEvent.click(button);
     expect(mockRegenerate).toHaveBeenCalledTimes(1);
-    // And nothing can be saved on top of a title that is still arriving.
+    // Nor can the arriving title be raced by a save. The typed edit is made
+    // BEFORE the regeneration starts on purpose: with an untouched field the
+    // button is disabled by `!dirty` anyway, and the assertion would hold with
+    // the busy lock deleted.
     expect(saveButton().hasAttribute("disabled")).toBe(true);
+    expect(mockSetTitle).not.toHaveBeenCalled();
 
     await act(async () => {
       pending.resolve({ title: "A Much Better Title" });
     });
     await screen.findByText("A Much Better Title");
+  });
+
+  it("survives a background refresh that remounts the row underneath it", async () => {
+    // The reason the dialog is mounted by the page rather than by the row: a
+    // refresh can change a row's SHAPE, not just its text. Here the refetch
+    // discovers a child chat, so the row stops being a lone entry and becomes
+    // the header of a lineage group — a different element tree, so React
+    // remounts it. A dialog owned by that row would lose the half-typed title
+    // and any request it was holding; this one is a sibling of the list.
+    const pending = deferred<{ title: string }>();
+    mockRegenerate.mockReturnValue(pending.promise);
+
+    await renderList();
+    openEditor();
+    fireEvent.change(titleField(), { target: { value: "Half-typed" } });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Regenerate"));
+    });
+
+    mockListChats.mockResolvedValue(
+      listResponse([makeChat("chat-1", { title: "Old Title", preview: "add a dark mode toggle" }), makeChat("chat-2", { parentChatId: "chat-1" })]),
+    );
+    await act(async () => {
+      refresh();
+    });
+    await screen.findByTitle("Expand chat tree");
+
+    // Still open, still locked, still holding what was typed.
+    expect(screen.getByText("Edit Title")).toBeTruthy();
+    expect(screen.getByText("Regenerating…")).toBeTruthy();
+    expect(titleField().value).toBe("Half-typed");
+
+    await act(async () => {
+      pending.resolve({ title: "A Much Better Title" });
+    });
+    expect(titleField().value).toBe("A Much Better Title");
+  });
+
+  it("can be dismissed while a regeneration is still running", async () => {
+    // `regenerateChatTitle` is an untimed fetch wrapping a server-side model
+    // call, behind a full-screen overlay. If Cancel were locked for its
+    // duration, a provider that hangs would leave the whole app unreachable
+    // with a page reload as the only way out.
+    const pending = deferred<{ title: string }>();
+    mockRegenerate.mockReturnValue(pending.promise);
+
+    await renderList();
+    openEditor();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Regenerate"));
+    });
+
+    expect(screen.getByText("Cancel").closest("button")!.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(screen.queryByText("Edit Title")).toBeNull();
+
+    // The request was already server-side, so it still lands on the row — the
+    // route persists and notifies whether or not anyone is watching.
+    await act(async () => {
+      pending.resolve({ title: "A Much Better Title" });
+    });
+    await screen.findByText("A Much Better Title");
+  });
+
+  it("closes on Escape even when the focused control has just been disabled", async () => {
+    // Escape is bound to `document`, not to the panel. Starting a regeneration
+    // disables the button that had focus; the browser blurs an element it
+    // disables, so a panel-scoped React handler would stop hearing keys at
+    // exactly the moment Escape matters most.
+    const pending = deferred<{ title: string }>();
+    mockRegenerate.mockReturnValue(pending.promise);
+
+    await renderList();
+    openEditor();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Regenerate"));
+    });
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByText("Edit Title")).toBeNull();
+
+    await act(async () => {
+      pending.resolve({ title: "A Much Better Title" });
+    });
+  });
+
+  it("saves on Enter from the field", async () => {
+    await renderList();
+    openEditor();
+
+    fireEvent.change(titleField(), { target: { value: "Typed and entered" } });
+    await act(async () => {
+      fireEvent.keyDown(titleField(), { key: "Enter" });
+    });
+
+    expect(mockSetTitle).toHaveBeenCalledWith("chat-1", "Typed and entered");
+    await screen.findByText("Typed and entered");
+  });
+
+  it("ignores Enter when there is nothing to save", async () => {
+    await renderList();
+    openEditor();
+
+    await act(async () => {
+      fireEvent.keyDown(titleField(), { key: "Enter" });
+    });
+
+    // Same guard as the disabled button, on the path that bypasses it.
+    expect(mockSetTitle).not.toHaveBeenCalled();
+    expect(screen.getByText("Edit Title")).toBeTruthy();
   });
 
   it("keeps the dialog open and says why when a save fails", async () => {

@@ -802,6 +802,17 @@ export default function ChatList({
         confirmStyle="danger"
       />
 
+      {/*
+       * Mounted HERE, at the page, and not inside the row whose title it edits
+       * — the dialog holds in-flight request state (a regeneration is a model
+       * call several seconds long), and a row is remounted by any refresh that
+       * changes its shape: the 15s poll folding it into a lineage group, an SSE
+       * metadata bump, a filter change moving it between sections. State held
+       * down there is dropped mid-request. This is the surviving half of the
+       * reasoning that used to justify hoisting `regeneratingTitleIds` to the
+       * page; the set itself is gone because nothing in a row fires a request
+       * any more, but the constraint that made it necessary has not moved.
+       */}
       {editTitleFor && (
         <EditTitleModal
           chatId={editTitleFor.chatId}

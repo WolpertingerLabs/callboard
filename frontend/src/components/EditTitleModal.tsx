@@ -62,6 +62,24 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
     inputRef.current?.select();
   }, []);
 
+  /**
+   * Escape closes, from `document` rather than from the panel — the same shape
+   * `ForkHandoffModal` uses, and here it is load-bearing rather than stylistic.
+   * A React `onKeyDown` on the panel only fires while focus is inside it, and
+   * starting a regeneration disables the button that had focus; the browser
+   * blurs a focused element it disables, so focus lands on `<body>` and a
+   * panel-scoped handler stops hearing anything. That is precisely the moment
+   * — a several-second model call behind a full-screen overlay — when Escape
+   * has to work.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const trimmed = value.trim();
   // A no-op save still costs a write, a notify and a list-cache clear, so the
   // button is only live when there is a change to make. Clearing a title the
@@ -106,12 +124,6 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
   return (
     <ModalOverlay onClose={onClose}>
       <div
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            onClose();
-          }
-        }}
         style={{
           background: "var(--bg)",
           borderRadius: 8,
@@ -133,7 +145,10 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
           value={value}
           maxLength={MAX_TITLE_LENGTH}
           placeholder={fallbackName}
-          disabled={busy === "regenerating"}
+          // Locked through both requests: a regeneration is about to replace
+          // the value outright, and a keystroke landing after Save has sent
+          // its body would be dropped on the close with nothing to say so.
+          disabled={busy !== null}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -201,10 +216,20 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
             {busy === "regenerating" ? "Regenerating…" : "Regenerate"}
           </button>
 
+          {/*
+           * Live through a regeneration, disabled only through a save. The
+           * asymmetry is the request behind each: a save is a metadata write
+           * that answers immediately, and closing over it would swallow the
+           * error message the dialog exists to show. A regeneration is an
+           * untimed model call — leaving it as the one thing that pins a
+           * full-screen overlay open makes a slow provider a reload-to-escape
+           * trap. Closing early loses nothing: the route persists and notifies
+           * on its own, and `onSaved` still patches the row from here.
+           */}
           <button
             type="button"
             onClick={onClose}
-            disabled={busy !== null}
+            disabled={busy === "saving"}
             style={{
               padding: "8px 16px",
               borderRadius: 6,
@@ -212,7 +237,7 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
               background: "var(--bg-secondary)",
               border: "1px solid var(--border)",
               color: "var(--text)",
-              cursor: busy !== null ? "default" : "pointer",
+              cursor: busy === "saving" ? "default" : "pointer",
             }}
           >
             Cancel
