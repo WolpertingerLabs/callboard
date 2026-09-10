@@ -7,7 +7,7 @@
  * Worth testing from the page rather than the pure function alone, because the
  * mapping has to survive four separate paths that each construct their own
  * request — the initial load, the stale-response refetch, the "Load next page"
- * pagination, and the refetch triggered by applying the filters modal. It is
+ * pagination, and the refetch triggered by the filter bar's toggle. It is
  * also the reason the list needs no sections: while the user is BROWSING with
  * the toggle off the server sends no chat the dim would fade, so there is
  * nothing to separate out. Searching is the deliberate exception, and the
@@ -15,7 +15,7 @@
  * back faded.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { CardSummary, Chat, ChatListResponse } from "../api";
 import { listChats, listCards, getDrafts, searchChatContents } from "../api";
@@ -78,10 +78,16 @@ async function renderList() {
   return view;
 }
 
-/** Open the filters modal and flip the switch, without applying. */
+/**
+ * Click the filter bar's archived toggle. One click, no modal and no Apply —
+ * the button commits straight from the click, which is why every test below
+ * goes from here to asserting on the request.
+ *
+ * By role and accessible name, not by text: the button is icon-only, so its
+ * name comes from `aria-label` and there is no text node to match.
+ */
 function toggleShowArchived() {
-  fireEvent.click(screen.getByTitle(/^Filters and view/));
-  fireEvent.click(screen.getByText("Show archived"));
+  fireEvent.click(screen.getByRole("button", { name: "Archived" }));
 }
 
 beforeEach(() => {
@@ -103,17 +109,26 @@ describe("Show archived → cardLifecycle", () => {
     expect(scopeOf(mockListChats.mock.calls)).toEqual(["active"]);
   });
 
-  it("asks for everything once the toggle is applied", async () => {
+  it("asks for everything on one click of the toggle", async () => {
     await renderList();
 
     toggleShowArchived();
-    // Staged only — the list has not refetched yet.
-    expect(scopeOf(mockListChats.mock.calls)).toEqual(["active"]);
-
-    fireEvent.click(screen.getByText("Apply"));
     // "all", not "inactive": the archived rows join the open ones in place
-    // rather than replacing them.
+    // rather than replacing them. And it arrives without an Apply — the whole
+    // point of promoting this out of the modal.
     await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+  });
+
+  it("narrows back to open cards on a second click", async () => {
+    await renderList();
+
+    toggleShowArchived();
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+
+    // The button reads the committed state back off `viewOptions`, so it
+    // flips rather than latching on.
+    toggleShowArchived();
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all", "active"]));
   });
 
   it("carries the scope into pagination, so page 2 is not a different list", async () => {
@@ -121,7 +136,6 @@ describe("Show archived → cardLifecycle", () => {
     await renderList();
 
     toggleShowArchived();
-    fireEvent.click(screen.getByText("Apply"));
     await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
 
     fireEvent.click(screen.getByText("Load next page"));
@@ -131,7 +145,6 @@ describe("Show archived → cardLifecycle", () => {
   it("persists the choice and reloads with it", async () => {
     await renderList();
     toggleShowArchived();
-    fireEvent.click(screen.getByText("Apply"));
     await waitFor(() => expect(JSON.parse(localStorage.getItem(KEY)!).chatsShowArchived).toBe(true));
 
     // A fresh mount, as a page reload would be.
@@ -160,6 +173,93 @@ describe("Show archived → cardLifecycle", () => {
     localStorage.setItem(KEY, JSON.stringify({ chatsCardLifecycle: "all" }));
     await renderList();
     expect(scopeOf(mockListChats.mock.calls)).toEqual(["all"]);
+  });
+});
+
+/**
+ * Two refreshes in flight at once.
+ *
+ * `load` wrote `setChats(response.chats)` unconditionally, so the last response
+ * to LAND won rather than the last one REQUESTED. `loadGenRef` guarded
+ * `loadMore` against `load`, and nothing guarded `load` against `load`.
+ *
+ * The old route to this control was open modal → switch → Apply → reopen →
+ * switch → Apply, which made a double-toggle essentially impossible. One click
+ * is now the whole gesture, so a double-click is the obvious way in — and it
+ * is the bad direction: the two requests differ in scope, and `all` resolves
+ * strictly more card trees server-side, so it is the likelier one to come back
+ * late. The list would be left holding archived rows while the toggle that
+ * fetched them read "off", until some unrelated refetch corrected it.
+ */
+describe("two refreshes in flight", () => {
+  const OPEN = makeChat("chat-1", { preview: "open chat" });
+  const ARCHIVED = makeChat("chat-2", { preview: "archived chat" });
+
+  it("lets the last request REQUESTED win, not the last one to land", async () => {
+    let releaseAll: () => void = () => {};
+    const allGate = new Promise<void>((resolve) => {
+      releaseAll = resolve;
+    });
+    // The widened request is the slow one. That is the ordering that inverts
+    // the result, and it is also the realistic one.
+    mockListChats.mockImplementation(async (...args: Parameters<typeof listChats>) => {
+      if (args[7] === "all") {
+        await allGate;
+        return listResponse([OPEN, ARCHIVED]);
+      }
+      return listResponse([OPEN]);
+    });
+
+    await renderList();
+
+    toggleShowArchived();
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+    toggleShowArchived();
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all", "active"]));
+
+    // Both clicks are committed and the scope is back to open cards.
+    const button = () => screen.getByRole("button", { name: "Archived" });
+    expect(button().getAttribute("aria-pressed")).toBe("false");
+
+    releaseAll();
+    // Flush the superseded responses: if they were going to be written, this
+    // is when it would happen.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The toggle is off, so the archived row those responses carried has no
+    // business in the list — and the button must not be left contradicting it.
+    expect(screen.queryByText("archived chat")).toBeNull();
+    expect(screen.getByText("open chat")).toBeTruthy();
+    expect(button().getAttribute("aria-pressed")).toBe("false");
+    expect(button().getAttribute("title")).toMatch(/hidden/);
+  });
+
+  /**
+   * The same guard from the other side: the in-flight response is the one that
+   * should win, and it still has to be allowed to.
+   */
+  it("still writes a slow response when nothing supersedes it", async () => {
+    let releaseAll: () => void = () => {};
+    const allGate = new Promise<void>((resolve) => {
+      releaseAll = resolve;
+    });
+    mockListChats.mockImplementation(async (...args: Parameters<typeof listChats>) => {
+      if (args[7] === "all") {
+        await allGate;
+        return listResponse([OPEN, ARCHIVED]);
+      }
+      return listResponse([OPEN]);
+    });
+
+    await renderList();
+    toggleShowArchived();
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+
+    releaseAll();
+    expect(await screen.findByText("archived chat")).toBeTruthy();
   });
 });
 
@@ -290,11 +390,15 @@ describe("the empty sidebar", () => {
       </MemoryRouter>,
     );
     // Not "No chats yet": a folder whose cards are all archived now shows
-    // nothing at all, where before it showed a list of faded rows. Matched on
-    // the sentence, not on "Show archived" alone — that string is also the
-    // filter modal's switch label, so the loose match would pass on a page
-    // that never rendered an empty state.
-    expect(await screen.findByText(/^No chats on an open card\./)).toBeTruthy();
+    // nothing at all, where before it showed a list of faded rows.
+    //
+    // Matched on the sentence rather than on "Archived" alone. The toggle is
+    // icon-only, so that string is no longer rendered as text in the bar and
+    // the loose match would no longer be ambiguous with it — but the sentence
+    // is what the copy has to say, and the copy is the thing being pinned:
+    // it has to point the user at the control that would fix this.
+    const message = await screen.findByText(/^No chats on an open card\./);
+    expect(message.textContent).toContain("Turn on “Archived” above");
   });
 
   /**
@@ -346,6 +450,36 @@ describe("the empty sidebar", () => {
     releaseList();
     land({ chatIds: ["chat-2"] });
     expect(await screen.findByText("archived chat")).toBeTruthy();
+  });
+
+  /**
+   * The criterion `isFiltered` actually applies, stated as a test because the
+   * code that implements it looks like it could be replaced by the filter
+   * badge's exemption set and cannot.
+   *
+   * The badge asks "is there an edit inside the modal?". This asks "could this
+   * option have emptied the list?" — and only `showArchived` answers no, by
+   * only ever ADDING rows. `bookmarked` answers yes and must be blamed;
+   * promote it to the filter bar and it would earn the badge exemption while
+   * still deserving the blame here.
+   */
+  it("blames a view option that can empty the list all by itself", async () => {
+    mockListChats.mockResolvedValue(listResponse([]));
+    render(
+      <MemoryRouter>
+        <ChatList onRefresh={() => {}} />
+      </MemoryRouter>,
+    );
+    await screen.findByText(/^No chats on an open card\./);
+
+    fireEvent.click(screen.getByTitle(/^Filters and view/));
+    fireEvent.click(screen.getByText("Bookmarked only"));
+    fireEvent.click(screen.getByText("Apply"));
+
+    expect(await screen.findByText(/^No chats match the current filters/)).toBeTruthy();
+    // Not "No chats yet. Create one to get started." — a flat lie to anyone
+    // who has chats but no bookmarks.
+    expect(screen.queryByText(/No chats yet/)).toBeNull();
   });
 
   it("falls back to the plain message once archived chats are shown", async () => {

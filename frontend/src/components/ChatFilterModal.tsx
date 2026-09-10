@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { Archive, Bookmark, Zap } from "lucide-react";
+import { Bookmark, Zap } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import { DEFAULT_CHAT_VIEW_OPTIONS, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
@@ -130,9 +130,24 @@ function SwitchRow({
  * Staged editor for the sidebar's filters AND view options — nothing takes
  * effect until Apply, so a half-typed regex never reshuffles the list.
  *
+ * All of them but one: `showArchived` is a toggle button in the filter bar,
+ * which commits on the click. This modal does not display it, and therefore
+ * must not write it — it reads the LIVE `viewOptions` prop on the way out
+ * rather than the `localView` snapshot, in both Apply and Reset All.
+ *
+ * That is not hypothetical tidiness. This modal is a sibling of the filter
+ * bar, not a child of it, and the overlay stops the mouse but not the
+ * keyboard: from the filters button, one Tab lands on the "Archived" toggle
+ * and Space commits it. `localView` was seeded at mount and never re-syncs, so
+ * an Apply after that would have handed back the stale `false` — reverting a
+ * change the user had just watched take effect, from a dialog with no archived
+ * control in it. A focus trap would hide that particular route; it would not
+ * stop the modal from writing a value it doesn't show.
+ *
  * The caller mounts this only while it is open, which is what makes the
- * `useState(prop)` seeding correct: every open starts from the live values, so
- * Cancel genuinely discards instead of leaving edits staged for next time.
+ * `useState(prop)` seeding correct FOR THE CONTROLS IT OWNS: every open starts
+ * from the live values, so Cancel genuinely discards instead of leaving edits
+ * staged for next time.
  */
 export default function ChatFilterModal({ onClose, filters, viewOptions, onApply }: ChatFilterModalProps) {
   const [local, setLocal] = useState<ChatFilters>(filters);
@@ -148,7 +163,10 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
   };
 
   const handleApply = () => {
-    onApply(local, localView);
+    // `showArchived` comes off the live prop, not `localView`: the bar can have
+    // committed it while this dialog was open, and applying the mount-time
+    // snapshot would revert it. See the note above.
+    onApply(local, { ...localView, showArchived: viewOptions.showArchived });
     onClose();
   };
 
@@ -160,7 +178,13 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
       dateMax: { value: "", active: false },
     };
     setLocal(reset);
-    setLocalView(DEFAULT_CHAT_VIEW_OPTIONS);
+    // `showArchived` survives Reset All, because this modal is not where it is
+    // set: resetting it from here would silently flip a toggle button the user
+    // can see in the bar behind this dialog, from a control they cannot. Off
+    // the live prop rather than `localView` for the same reason Apply is —
+    // preserving the mount-time snapshot only preserves it when nothing
+    // changed underneath, which is the case that needed no preserving.
+    setLocalView({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: viewOptions.showArchived });
   };
 
   const includeRegexValid = !local.directoryInclude.value || isValidRegex(local.directoryInclude.value);
@@ -190,24 +214,11 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
         <div style={{ marginBottom: 20 }}>
           <div style={sectionHeadingStyle}>View</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {/* The one control over the card lifecycle: with it off the list
-                asks the server for open cards only, so the rows the dim would
-                fade are never fetched. Hence "in place" in the on-hint —
-                turning it on adds them back where their recency puts them,
-                faded, rather than collecting them under a header.
-
-                The off-hint says "browsing" because that is the honest scope.
-                A content search widens past this switch (see
-                `cardLifecycleFor`), so a hint promising "only chats on open
-                cards" would be contradicted by the dimmed archived hits on
-                screen behind this modal. */}
-            <SwitchRow
-              icon={<Archive size={16} />}
-              label="Show archived"
-              hint={localView.showArchived ? "Include chats on archived cards, dimmed and in place" : "Browse open cards only — search still finds everything"}
-              checked={localView.showArchived}
-              onChange={() => toggleView("showArchived")}
-            />
+            {/* "Show archived" is NOT here: it is the "Archived" toggle button
+                in the filter bar, committed on the click without an Apply,
+                because it is flipped far more often than anything below. It
+                still travels through `localView` untouched so that applying
+                this modal does not clobber it. */}
             <SwitchRow
               icon={<Bookmark size={16} fill={localView.bookmarked ? "currentColor" : "none"} />}
               label="Bookmarked only"

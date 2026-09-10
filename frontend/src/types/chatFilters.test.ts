@@ -48,10 +48,24 @@ describe("activeViewOptionCount", () => {
   });
 
   it("counts each option that differs from its default", () => {
-    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true })).toBe(1);
+    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, bookmarked: true })).toBe(1);
     // Spelled out rather than spread, so a new option that forgets its default
     // shows up here as a type error instead of a silently uncounted badge.
-    expect(activeViewOptionCount({ bookmarked: true, showTriggered: true, showArchived: true })).toBe(3);
+    // Two, not three: `showArchived` is exempt — see below.
+    expect(activeViewOptionCount({ bookmarked: true, showTriggered: true, showArchived: true })).toBe(2);
+  });
+
+  /**
+   * The badge sits on the button that OPENS the filters modal, and
+   * `showArchived` is not in the modal any more — it is the "Archived" toggle
+   * button in the filter bar, lit up right next to the badge. Counting it
+   * would put "1 active" on a modal that has nothing to show for it, sending
+   * the user to look for an edit that isn't there.
+   */
+  it("does not count showArchived, which has its own control in the filter bar", () => {
+    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true })).toBe(0);
+    // And it does not mask a real one either.
+    expect(activeViewOptionCount({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true, bookmarked: true })).toBe(1);
   });
 
   it("counts showTriggered as active only when ON — hidden is the default", () => {

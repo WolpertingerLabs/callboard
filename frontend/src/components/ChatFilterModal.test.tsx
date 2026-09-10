@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 /**
- * The filters modal is the single home for the sidebar's scope options, so
- * what's under test is the staging contract: edits are held locally, committed
- * as one Apply, and discarded by Cancel.
+ * The filters modal is the home for the sidebar's scope options bar one
+ * ("Show archived" is a toggle button in the filter bar — see
+ * ChatFilterBar.test.tsx), so what's under test is the staging contract: edits
+ * are held locally, committed as one Apply, and discarded by Cancel.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -17,16 +18,44 @@ afterEach(() => {
 function renderModal(viewOptions: Partial<ChatViewOptions> = {}) {
   const onApply = vi.fn();
   const onClose = vi.fn();
-  render(<ChatFilterModal onClose={onClose} filters={DEFAULT_CHAT_FILTERS} viewOptions={{ ...DEFAULT_CHAT_VIEW_OPTIONS, ...viewOptions }} onApply={onApply} />);
-  return { onApply, onClose };
+  const { rerender } = render(
+    <ChatFilterModal onClose={onClose} filters={DEFAULT_CHAT_FILTERS} viewOptions={{ ...DEFAULT_CHAT_VIEW_OPTIONS, ...viewOptions }} onApply={onApply} />,
+  );
+  /**
+   * Change `viewOptions` underneath the open modal — what happens when the
+   * filter bar commits while this dialog is up. The two are siblings, so the
+   * modal stays mounted through it.
+   */
+  const commitFromTheBar = (next: Partial<ChatViewOptions>) =>
+    rerender(
+      <ChatFilterModal
+        onClose={onClose}
+        filters={DEFAULT_CHAT_FILTERS}
+        viewOptions={{ ...DEFAULT_CHAT_VIEW_OPTIONS, ...viewOptions, ...next }}
+        onApply={onApply}
+      />,
+    );
+  return { onApply, onClose, commitFromTheBar };
 }
 
 describe("ChatFilterModal view options", () => {
-  it("renders every scope option", () => {
+  it("renders every scope option it still owns", () => {
     renderModal();
-    for (const label of ["Show archived", "Bookmarked only", "Show triggered chats"]) {
+    for (const label of ["Bookmarked only", "Show triggered chats"]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
+  });
+
+  /**
+   * Moved, not duplicated. "Show archived" is the "Archived" toggle button in
+   * the filter bar now, committed on the click; a second copy in here — where
+   * edits wait for Apply — would be two controls for one boolean with
+   * different commit semantics, which is exactly how they drift.
+   */
+  it("no longer offers a Show archived switch", () => {
+    renderModal();
+    expect(screen.queryByText("Show archived")).toBeNull();
+    expect(screen.queryByText(/archived/i)).toBeNull();
   });
 
   /**
@@ -51,10 +80,11 @@ describe("ChatFilterModal view options", () => {
   });
 
   /**
-   * The three controls "Show archived" replaced. They are gone as controls, not
-   * merely as fields: the archived rows are told apart by the dim alone now, so
-   * a segmented All/Open/Archived scope or an "Open chats first" split coming
-   * back would be a second, contradicting answer to the same question.
+   * The three controls the "Archived" toggle replaced. They are gone as
+   * controls, not merely as fields: the archived rows are told apart by the dim
+   * alone now, so a segmented All/Open/Archived scope or an "Open chats first"
+   * split coming back would be a second, contradicting answer to the same
+   * question — and the answer no longer lives in this modal at all.
    */
   it("no longer offers the lifecycle scope or the open-first split", () => {
     renderModal();
@@ -76,44 +106,6 @@ describe("ChatFilterModal view options", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  /**
-   * The gap this toggle closes: the sidebar hides chats on an archived card by
-   * default, and with 804 of 805 cards closed on a real data dir that is most
-   * of them. So the assertion that matters is that they are reachable at all,
-   * from one switch, in one click.
-   */
-  it("stages Show archived and commits it on Apply", () => {
-    const { onApply } = renderModal();
-
-    fireEvent.click(screen.getByText("Show archived"));
-    expect(onApply).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true });
-  });
-
-  it("switches Show archived back off again", () => {
-    const { onApply } = renderModal({ showArchived: true });
-
-    fireEvent.click(screen.getByText("Show archived"));
-    fireEvent.click(screen.getByText("Apply"));
-    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: false });
-  });
-
-  it("says what each position of Show archived does", () => {
-    // The hint is the only place the dim is explained, now that it is not a
-    // switch of its own — on, it warns the extra rows arrive faded and in
-    // place rather than collected at the bottom; off, it has to say "browse",
-    // because a content search widens past this switch and the user would
-    // otherwise be promised something the sidebar behind the modal contradicts.
-    renderModal();
-    expect(screen.getByText(/Browse open cards only/)).toBeTruthy();
-    expect(screen.getByText(/search still finds everything/)).toBeTruthy();
-
-    fireEvent.click(screen.getByText("Show archived"));
-    expect(screen.getByText(/dimmed and in place/)).toBeTruthy();
-  });
-
   it("discards staged toggles on Cancel", () => {
     const { onApply, onClose } = renderModal();
 
@@ -127,18 +119,109 @@ describe("ChatFilterModal view options", () => {
   it("seeds the switches from the live values", () => {
     const { onApply } = renderModal({ showArchived: true, bookmarked: true });
 
-    // Applying without touching anything hands back exactly what came in.
+    // Applying without touching anything hands back exactly what came in —
+    // including `showArchived`, which this modal no longer edits but still has
+    // to carry through untouched rather than resetting to its default.
     fireEvent.click(screen.getByText("Apply"));
     expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true, bookmarked: true });
   });
 
   it("Reset All clears the view options too, not just the field filters", () => {
-    const { onApply } = renderModal({ showArchived: true, showTriggered: true, bookmarked: true });
+    const { onApply } = renderModal({ showTriggered: true, bookmarked: true });
 
     fireEvent.click(screen.getByText("Reset All"));
     fireEvent.click(screen.getByText("Apply"));
 
     expect(onApply.mock.calls[0][0]).toEqual(DEFAULT_CHAT_FILTERS);
+    expect(onApply.mock.calls[0][1]).toEqual(DEFAULT_CHAT_VIEW_OPTIONS);
+  });
+
+  /**
+   * Reset All resets what this modal shows. `showArchived` is not in it, so
+   * resetting from here would silently switch off a lit toggle button in the
+   * bar behind the dialog — an invisible control undoing a visible one.
+   */
+  it("Reset All leaves Show archived alone, since it is not a control in here", () => {
+    const { onApply } = renderModal({ showArchived: true, showTriggered: true });
+
+    fireEvent.click(screen.getByText("Reset All"));
+    fireEvent.click(screen.getByText("Apply"));
+
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true });
+  });
+});
+
+/**
+ * `showArchived` can change WHILE this modal is open, because the modal is a
+ * sibling of the filter bar rather than a child of it and the overlay stops
+ * the mouse but not the keyboard: from the filters button, one Tab reaches the
+ * "Archived" toggle and Space commits it.
+ *
+ * `localView` is seeded once at mount and never re-syncs, so anything read
+ * back out of it is a mount-time snapshot. For the controls this modal DISPLAYS
+ * that is the point — it is what makes Cancel discard. For `showArchived`,
+ * which it does not display, it is a bug: Apply would hand back the stale
+ * value and revert a change the user had already watched take effect.
+ *
+ * Asserted at this level on purpose. jsdom does not model real tab order, so
+ * no test can reproduce the keyboard route that reaches the toggle; what is
+ * actually worth pinning is narrower and stronger anyway — this modal must
+ * never write a value it does not show, however the value came to change.
+ */
+describe("a Show archived committed from the bar while the modal is open", () => {
+  it("survives Apply, rather than being reverted to the mount-time value", () => {
+    const { onApply, commitFromTheBar } = renderModal({ showArchived: false });
+
+    commitFromTheBar({ showArchived: true });
+    fireEvent.click(screen.getByText("Apply"));
+
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true });
+  });
+
+  it("survives Apply in the other direction too", () => {
+    const { onApply, commitFromTheBar } = renderModal({ showArchived: true });
+
+    commitFromTheBar({ showArchived: false });
+    fireEvent.click(screen.getByText("Apply"));
+
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: false });
+  });
+
+  it("survives an edit made in here being applied alongside it", () => {
+    const { onApply, commitFromTheBar } = renderModal({ showArchived: false });
+
+    // The modal's own staging still works: its edit commits, and the live
+    // value rides along untouched.
+    fireEvent.click(screen.getByText("Bookmarked only"));
+    commitFromTheBar({ showArchived: true });
+    fireEvent.click(screen.getByText("Apply"));
+
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true, bookmarked: true });
+  });
+
+  /**
+   * Reset All had the same hole: preserving `localView.showArchived` preserves
+   * the snapshot, which is only the right answer when nothing changed
+   * underneath — precisely the case that needed no preserving.
+   */
+  it("survives Reset All", () => {
+    const { onApply, commitFromTheBar } = renderModal({ showArchived: false, showTriggered: true });
+
+    commitFromTheBar({ showArchived: true });
+    fireEvent.click(screen.getByText("Reset All"));
+    fireEvent.click(screen.getByText("Apply"));
+
+    expect(onApply.mock.calls[0][0]).toEqual(DEFAULT_CHAT_FILTERS);
+    expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showArchived: true });
+  });
+
+  it("is not resurrected by Reset All when the bar turned it off", () => {
+    const { onApply, commitFromTheBar } = renderModal({ showArchived: true, showTriggered: true });
+
+    commitFromTheBar({ showArchived: false });
+    fireEvent.click(screen.getByText("Reset All"));
+    fireEvent.click(screen.getByText("Apply"));
+
     expect(onApply.mock.calls[0][1]).toEqual(DEFAULT_CHAT_VIEW_OPTIONS);
   });
 });

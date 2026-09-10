@@ -69,9 +69,18 @@ export default function ChatList({
   // page of visible entries. Refreshes refetch this many so an expanded list
   // isn't cut back to the first page.
   const loadedCountRef = useRef(20);
-  // Bumped every time a full refresh replaces the list (which re-baselines
-  // loadedCountRef). An in-flight "load more" page from before the bump has a
-  // stale offset — drop it.
+  // Which invocation currently owns `chats`. Bumped when a full refresh STARTS
+  // and again when one COMMITS, and read by both request paths:
+  //
+  //   - `loadMore` drops a page whose offset was computed before a refresh
+  //     re-baselined loadedCountRef;
+  //   - `load` drops its own response once a NEWER `load` has claimed the
+  //     list, which is what stops two refreshes in flight from resolving in
+  //     the wrong order and leaving the list disagreeing with the filter state
+  //     that asked for it.
+  //
+  // One counter serves both because both only ever test inequality: "something
+  // newer than me has happened, so I am not the writer any more".
   const loadGenRef = useRef(0);
   // Same signal as loadGenRef, but as state so the tree view can react to it:
   // fetched subtrees are snapshots and go stale when the list refreshes.
@@ -203,10 +212,30 @@ export default function ChatList({
     // When triggered chats are hidden, tell the API to exclude them so we
     // always get LIMIT real chats back (not LIMIT minus triggered ones)
     const excludeTriggered = !showTriggered;
+
+    /**
+     * Claim the list for this invocation before going to the wire, and stand
+     * down after each await if a newer `load` has claimed it since.
+     *
+     * Without this the last response to LAND wins rather than the last one
+     * REQUESTED, and the two are not the same: a double-click on the filter
+     * bar's "Archived" toggle puts a `cardLifecycle=all` request and an
+     * `active` one in flight together, and `all` resolves strictly more card
+     * trees server-side, so it is the likelier one to land late. The list
+     * would end up holding archived rows while the toggle that fetched them
+     * reads off, until an unrelated refetch happened to correct it.
+     */
+    let gen = (loadGenRef.current += 1);
+    const superseded = () => gen !== loadGenRef.current;
+
     // includeLineage is always on: the list needs every member of a parentage
     // tree the page touches, even those outside the pagination window
     const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, true, undefined, cardLifecycle);
-    loadGenRef.current += 1;
+    if (superseded()) return;
+    // Bump on commit as well as on claim — that is the edge an in-flight
+    // `loadMore` watches for. Re-taken into `gen` so `superseded()` keeps
+    // meaning "someone ELSE moved it" across the stale refetch below.
+    gen = loadGenRef.current += 1;
     setListVersion((v) => v + 1);
     setChats(response.chats);
     setHasMore(shouldFetchAll ? false : response.hasMore);
@@ -215,7 +244,8 @@ export default function ChatList({
     // If the response was stale (cached), immediately fetch fresh data
     if (response.stale) {
       const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, true, undefined, cardLifecycle);
-      loadGenRef.current += 1;
+      if (superseded()) return;
+      gen = loadGenRef.current += 1;
       setListVersion((v) => v + 1);
       setChats(freshResponse.chats);
       setHasMore(shouldFetchAll ? false : freshResponse.hasMore);
@@ -480,9 +510,13 @@ export default function ChatList({
   };
 
   /**
-   * Commit both halves of the filters modal. No explicit reload: `load` closes
-   * over `viewOptions`, so changing it recreates the callback and the effect
-   * that depends on it refetches.
+   * Commit both halves of the sidebar's filter state. Called by the filters
+   * modal on Apply, and by the filter bar's "Archived" toggle straight from
+   * the click — one commit path, so persistence and the refetch cannot differ
+   * between them.
+   *
+   * No explicit reload: `load` closes over `viewOptions`, so changing it
+   * recreates the callback and the effect that depends on it refetches.
    */
   const handleApplyFilters = (nextFilters: ChatFilters, nextView: ChatViewOptions) => {
     setFilters(nextFilters);
@@ -549,24 +583,36 @@ export default function ChatList({
   }, [chats, viewOptions.showTriggered]);
 
   // Determine the empty state message. `showArchived` is normalised away
-  // first, for the reason its predecessor was: switching it ON only ever ADDS
-  // rows, so an empty list is never its doing and "No chats match the current
-  // filters" would be a lie. It still counts toward the filter button's badge,
-  // where "you have changed the view" is exactly what the badge means.
+  // first, and explicitly, even though `activeViewOptionCount` happens to
+  // exclude it too — the two exclusions are NOT the same question and must not
+  // be allowed to share an answer:
+  //
+  //   - the badge excludes it because it has its own control outside the modal;
+  //   - this excludes it because switching it ON only ever ADDS rows, so an
+  //     empty list is never its doing and "No chats match the current filters"
+  //     would be a lie.
+  //
+  // They coincide for `showArchived` and for nothing else. Promote
+  // `bookmarked` to the filter bar and it earns the badge exemption while
+  // still being able to empty the list all by itself — at which point riding
+  // on the badge's set here would tell a user with thousands of chats, and no
+  // bookmarks, that they have none. So this states its own criterion.
   const isFiltered =
     activeViewOptionCount({ ...viewOptions, showArchived: DEFAULT_CHAT_VIEW_OPTIONS.showArchived }) > 0 ||
     hasActiveFilters(filters) ||
     matchingChatIds !== null;
 
   /**
-   * The other direction is not normalised away, and gets said out loud: OFF is
-   * the default, so it never reaches the badge, yet it is now the likeliest
-   * reason for an empty sidebar — a folder whose cards are all archived shows
-   * nothing at all, where before it showed a list of faded rows.
+   * The other direction gets said out loud: OFF is the default, and it is now
+   * the likeliest reason for an empty sidebar — a folder whose cards are all
+   * archived shows nothing at all, where before it showed a list of faded
+   * rows. The message names the "Archived" button in the filter bar directly,
+   * which is the whole benefit of it being there: the fix is one click away,
+   * in view, rather than two clicks deep in a modal.
    *
    * `searching` cancels that, because it cancels the scope: a search runs
    * against everything, so blaming an empty result on hidden archived chats
-   * would send the user to a switch that would not have changed the answer.
+   * would send the user to a button that would not have changed the answer.
    */
   const archivedHidden = !viewOptions.showArchived && !searching;
   const emptyMessage = isFiltered
@@ -574,7 +620,7 @@ export default function ChatList({
       ? "No chats match the current filters. Archived chats are hidden."
       : "No chats match the current filters"
     : archivedHidden
-      ? "No chats on an open card. Turn on “Show archived” in filters to include chats on archived cards."
+      ? "No chats on an open card. Turn on “Archived” above to include chats on archived cards."
       : "No chats yet. Create one to get started.";
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
