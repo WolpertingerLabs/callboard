@@ -163,21 +163,31 @@ describe("the toggles as one segmented group", () => {
   });
 
   /**
-   * The rail is one object with three cells, not three buttons in a row: outer
-   * corners rounded, inner corners square, and the border each pair shares
-   * suppressed so it is not drawn twice at 2px.
+   * The rail is ONE outlined box with three icons in it, not three buttons in a
+   * row: outer corners rounded, inner corners square, and both sides of every
+   * seam suppressed, so there are no internal dividers at all. Measured in
+   * Chromium across all seven meaningful on/off combinations — rail 84x28,
+   * every button box 28x28, inter-button gaps [0, 0].
    *
-   * The corners are what this can assert. The suppressed borders it cannot:
-   * jsdom's CSS parser drops `border-right: none` (and `border: none`) on the
-   * floor entirely — set either and the declaration simply is not in the
-   * element's `cssText` — so an assertion about them would be testing the
-   * parser, not the component. Those are checked in the browser instead, at
-   * both sidebar widths.
+   * Worth pinning because the failure mode is a tidy-up that gives all three
+   * buttons the same style object. That reads as an improvement in a diff and
+   * turns the group back into the loose row of icons that got these controls
+   * moved into the modal in the first place — three separately outlined buttons
+   * with doubled 2px seams, which is not a rail.
    *
-   * Worth pinning even half-covered, because the failure mode is a tidy-up that
-   * gives all three buttons the same style object. That reads as an improvement
-   * in a diff and turns the group back into the loose row of icons that got
-   * these controls moved into the modal in the first place.
+   * The corners are the easy half. The seams are assertable only because of the
+   * SPELLING, which is why the component says `borderRightWidth: 0` rather than
+   * the more obvious `border-right: none`. jsdom's CSS parser silently drops
+   * `border: none`, `border-right: none` AND `border-right-style: none` — set
+   * any of them and the declaration is simply not in the element's `cssText`,
+   * so an assertion about it would be testing the parser. `border-right-width:
+   * 0px` is the one spelling jsdom RETAINS, and in Chromium the two compute
+   * identically (1px/0px/1px/1px), so nothing about the rendering changes.
+   *
+   * A future reader tidying it back to `border-right: none` would lose the test
+   * below without turning anything red, which is exactly the state this replaced:
+   * before it, deleting the seam-suppression line outright left all four tests
+   * in this block passing.
    */
   it("rounds only the outer corners, so the three read as one unit", () => {
     const { button } = renderBar();
@@ -196,6 +206,36 @@ describe("the toggles as one segmented group", () => {
     expect([last.borderTopRightRadius, last.borderBottomRightRadius]).toEqual([ROUNDED, ROUNDED]);
   });
 
+  /**
+   * The other half of the same claim, and the one the corners cannot stand in
+   * for: with the radii correct but the seams left in, the rail is three
+   * outlined boxes sharing straight edges rather than one box.
+   *
+   * Read off `borderLeftWidth`/`borderRightWidth` because that is the spelling
+   * the component uses and the only one jsdom keeps — see the note above. The
+   * outer edges assert the empty string on purpose: the `border` shorthand
+   * carries a `var()`, so jsdom cannot expand it into longhands, and an unset
+   * longhand is therefore proof that side was never suppressed. That is what
+   * stops the test passing on a component that dropped every border.
+   */
+  it("suppresses both sides of every seam, so the rail is one box and not three", () => {
+    const { button } = renderBar();
+    const [first, middle, last] = TOGGLES.map((t) => button(t.name).style);
+    const SUPPRESSED = "0px";
+    const DRAWN = "";
+
+    // Left edge of the rail is drawn; its right seam is not.
+    expect([first.borderLeftWidth, first.borderRightWidth]).toEqual([DRAWN, SUPPRESSED]);
+    // The middle button contributes no edge of its own in either direction.
+    expect([middle.borderLeftWidth, middle.borderRightWidth]).toEqual([SUPPRESSED, SUPPRESSED]);
+    // Right edge of the rail is drawn; its left seam is not.
+    expect([last.borderLeftWidth, last.borderRightWidth]).toEqual([SUPPRESSED, DRAWN]);
+
+    // And the outline itself is still there — otherwise "one box" would be
+    // satisfied by a rail with no box at all.
+    for (const s of [first, middle, last]) expect(s.border).toContain("var(--chatlist-item-border)");
+  });
+
   /** They are adjacent in the DOM too — a gap between them is not a group. */
   it("puts the three in one container, with nothing between them", () => {
     const { button } = renderBar();
@@ -212,6 +252,13 @@ describe("the toggles as one segmented group", () => {
    * header's active nav button does. Both halves matter: the accent is the
    * "on" signal, and dropping the border is what stops the control moving by a
    * pixel as it lights up.
+   *
+   * Asserted on the `--chatlist-*` tokens rather than on `--text`/`--border`,
+   * because "exactly as the header does" is the claim and those are the tokens
+   * SidebarHeader uses. They alias to the generic ones in both built-in themes,
+   * so this is not a visual difference today — it is a difference that only
+   * shows up under a custom theme, which is the case where the two rails must
+   * still agree.
    */
   it("lights an active toggle the way the header lights an active nav button", () => {
     const { button } = renderBar({ viewOptions: { showTriggered: true } });
@@ -219,12 +266,12 @@ describe("the toggles as one segmented group", () => {
     const off = button("Archived").style;
 
     expect(on.background).toBe("var(--accent)");
-    expect(on.color).toBe("var(--text-on-accent)");
+    expect(on.color).toBe("var(--chatlist-icon-nav-active)");
     expect(off.background).toBe("var(--bg-secondary)");
-    expect(off.color).toBe("var(--text)");
+    expect(off.color).toBe("var(--chatlist-icon-nav)");
     // Stated as a difference rather than as `border: none`, which jsdom drops.
-    expect(off.border).toContain("var(--border)");
-    expect(on.border).not.toContain("var(--border)");
+    expect(off.border).toContain("var(--chatlist-item-border)");
+    expect(on.border).not.toContain("var(--chatlist-item-border)");
   });
 });
 

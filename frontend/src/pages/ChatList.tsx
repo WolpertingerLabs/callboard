@@ -754,9 +754,15 @@ export default function ChatList({
 
   /**
    * Commit both halves of the sidebar's filter state. Called by the filters
-   * modal on Apply, and by the filter bar's "Archived" toggle straight from
-   * the click — one commit path, so persistence and the refetch cannot differ
-   * between them.
+   * modal on Apply, and by all three of the filter bar's scope toggles straight
+   * from the click — one commit path, so persistence and the refetch cannot
+   * differ between them.
+   *
+   * Two of the three scopes are persisted here and `bookmarked` is not, which
+   * is deliberate rather than an omission: it is the one scope that can empty
+   * the sidebar on its own, so remembering it would greet the user with a blank
+   * list they have no memory of asking for. Pinned in
+   * ChatList.showArchived.test.tsx.
    *
    * No explicit reload: `load` closes over `viewOptions`, so changing it
    * recreates the callback and the effect that depends on it refetches.
@@ -1232,9 +1238,15 @@ export default function ChatList({
   //
   //   - `bookmarked` can, on its own, and routinely does — a user with
   //     thousands of chats and no bookmarks gets nothing back;
-  //   - `showTriggered` and `showArchived` only ever ADD rows, so an empty list
-  //     is never their doing and "No chats match the current filters" would be
-  //     a lie.
+  //   - `showTriggered` and `showArchived` cannot EMPTY a non-empty list.
+  //     Both only widen what the server is asked for, and the widened request
+  //     still comes back with up to `limit` rows, so a list that had rows keeps
+  //     rows. (Not the stronger "they only ever add rows": under fixed-limit
+  //     pagination — `limit = Math.max(20, loadedCountRef.current)` — widening
+  //     the scope can push rows that were visible out of the window. That
+  //     reshuffles the page; it cannot empty it.) An empty list is therefore
+  //     never their doing, and "No chats match the current filters" would be a
+  //     lie.
   //
   // All three now have their own toggle button in the filter bar, so all three
   // are exempt from the filter button's badge — which is why that exemption is

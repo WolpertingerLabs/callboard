@@ -182,10 +182,22 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
 
             One group rather than three buttons, bordered exactly as
             SidebarHeader borders its nav controls: outer corners rounded, inner
-            corners square, and the borders the neighbours share suppressed so
-            the rail is one object with three cells. Without that they are
-            three loose icons again, which is half of what put them in the
-            modal in the first place.
+            corners square, and BOTH sides of every seam suppressed — the first
+            drops its right, the last its left, the middle both. So there are no
+            internal dividers at all: in the default all-off state the rail is
+            one outlined box with three icons in it, measured in Chromium at
+            84x28 with three 28x28 buttons and zero gap between them. Not three
+            cells with a shared 1px rule between them, and not three separately
+            outlined buttons with doubled 2px seams, which is what dropping the
+            suppression gives you. Without it they are three loose icons again,
+            which is half of what put them in the modal in the first place.
+
+            Spelled `borderLeftWidth`/`borderRightWidth: 0` rather than
+            `border-left`/`border-right: none`. It renders identically — in
+            Chromium both compute to 1px/0px/1px/1px — and unlike `none` it
+            survives jsdom's CSS parser, which is the only reason the seam
+            suppression is assertable at all. See the note in
+            ChatFilterBar.test.tsx before tidying it back.
 
             Three separate jobs, deliberately not folded together now that
             there is no text: `aria-label` is the NAME ("what is this?"),
@@ -210,14 +222,27 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
                 title={title(on)}
                 style={{
                   ...HEADER_BUTTON_STYLE,
+                  // The chatlist-nav tokens, not the generic --text/--border,
+                  // because this group is claiming to be the same control as
+                  // SidebarHeader's nav group and that is what the header uses.
+                  // They alias to --text/--border/--text-on-accent in both
+                  // built-in themes, so this is pixel-neutral today. It starts
+                  // mattering the moment a custom theme in ~/.callboard/themes/
+                  // gives the --chatlist-* ones their own values: on the generic
+                  // tokens that leaves two rails that nearly match, which is the
+                  // outcome this whole row exists to avoid. (The standalone
+                  // filters button above keeps --text/--border/--text-on-accent:
+                  // it pairs with the header's New Chat button, not the nav
+                  // group.)
                   background: on ? "var(--accent)" : "var(--bg-secondary)",
-                  color: on ? "var(--text-on-accent)" : "var(--text)",
+                  color: on ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
                   borderTopLeftRadius: isFirst ? 6 : 0,
                   borderBottomLeftRadius: isFirst ? 6 : 0,
                   borderTopRightRadius: isLast ? 6 : 0,
                   borderBottomRightRadius: isLast ? 6 : 0,
-                  border: on ? "none" : "1px solid var(--border)",
-                  ...(isFirst ? { borderRight: "none" } : isLast ? { borderLeft: "none" } : { borderLeft: "none", borderRight: "none" }),
+                  border: on ? "none" : "1px solid var(--chatlist-item-border)",
+                  // Seam suppression. Width rather than `none` — see the group note.
+                  ...(isFirst ? { borderRightWidth: 0 } : isLast ? { borderLeftWidth: 0 } : { borderLeftWidth: 0, borderRightWidth: 0 }),
                   cursor: "pointer",
                   transition: "background 0.15s, color 0.15s",
                 }}

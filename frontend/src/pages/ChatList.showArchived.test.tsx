@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /**
  * "Show archived", end to end through the page: the toggle's only job is to
- * decide the `cardLifecycle` scope the sidebar asks the server for, so what is
- * pinned here is that mapping and nothing else.
+ * decide the `cardLifecycle` scope the sidebar asks the server for, and that
+ * mapping is most of what is pinned here.
  *
  * Worth testing from the page rather than the pure function alone, because the
  * mapping has to survive four separate paths that each construct their own
@@ -13,6 +13,12 @@
  * nothing to separate out. Searching is the deliberate exception, and the
  * suite below pins it: a query widens the scope and the archived hits come
  * back faded.
+ *
+ * It has since grown one neighbour it did not start with. All three of the bar's
+ * scope toggles commit through the same `handleApplyFilters`, so persistence is
+ * now a property of that one function rather than of this one toggle, and the
+ * other two are pinned here for want of a better home — including the fact that
+ * `bookmarked` persists nothing.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -188,6 +194,66 @@ describe("Show archived → cardLifecycle", () => {
     localStorage.setItem(KEY, JSON.stringify({ chatsCardLifecycle: "all" }));
     await renderList();
     expect(scopeOf(mockListChats.mock.calls)).toEqual(["all"]);
+  });
+});
+
+/**
+ * What each bar toggle persists, which is not the same answer for all three.
+ *
+ * All three now commit through `handleApplyFilters`, so persistence moved out of
+ * the modal along with the controls — and that function writes exactly two keys.
+ * Two of the toggles are remembered across reloads and one is deliberately not,
+ * and the asymmetry is easy to miss now that the three sit side by side looking
+ * identical.
+ */
+describe("what the toggles persist", () => {
+  const stored = () => JSON.parse(localStorage.getItem(KEY) || "{}");
+
+  it("remembers the Triggered toggle, and seeds the next mount from it", async () => {
+    await renderList();
+    expect(stored().showTriggeredChats).toBeUndefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Triggered" }));
+    await waitFor(() => expect(stored().showTriggeredChats).toBe(true));
+
+    // A fresh mount, as a page reload would be: the button comes back pressed
+    // rather than merely the key being on disk.
+    cleanup();
+    await renderList();
+    expect(screen.getByRole("button", { name: "Triggered" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("un-remembers it on the way back, rather than latching on", async () => {
+    localStorage.setItem(KEY, JSON.stringify({ showTriggeredChats: true }));
+    await renderList();
+
+    fireEvent.click(screen.getByRole("button", { name: "Triggered" }));
+    await waitFor(() => expect(stored().showTriggeredChats).toBe(false));
+  });
+
+  /**
+   * Bookmarked is SESSION-ONLY, on purpose, and this pins the absence.
+   *
+   * It is the one scope that can empty the sidebar on its own (see the
+   * `isFiltered` note in ChatList), so a persisted one greets a user with a
+   * blank list on the next load and no memory of having asked for it. "Let's
+   * persist all three for consistency" is the obvious tidy-up now that they are
+   * three identical-looking buttons in a row, and it should have to argue with
+   * a red test rather than sail through.
+   */
+  it("does not remember the Bookmarked toggle, in storage or across a mount", async () => {
+    await renderList();
+
+    fireEvent.click(screen.getByRole("button", { name: "Bookmarked" }));
+    // Waited on a key that IS written by the same commit path, so this is not
+    // just asserting before anything had a chance to be saved.
+    await waitFor(() => expect(stored().chatsShowArchived).toBe(false));
+    expect(Object.keys(stored())).not.toContain("bookmarked");
+    expect(JSON.stringify(stored())).not.toMatch(/bookmark/i);
+
+    cleanup();
+    await renderList();
+    expect(screen.getByRole("button", { name: "Bookmarked" }).getAttribute("aria-pressed")).toBe("false");
   });
 });
 
@@ -578,9 +644,10 @@ describe("the empty sidebar", () => {
   /**
    * The other side of the same criterion, and the one that would break if
    * `isFiltered` were re-pointed at the badge's exemption set: "Show triggered
-   * chats" only ever ADDS rows, so an empty list is never its doing and
-   * blaming it would send the user to switch off the one thing that could only
-   * have helped.
+   * chats" cannot empty a non-empty list — it only widens the request, which
+   * still comes back with up to `limit` rows — so an empty list is never its
+   * doing, and blaming it would send the user to switch off the one thing that
+   * could only have helped.
    */
   it("does not blame a view option that can only add rows", async () => {
     mockListChats.mockResolvedValue(listResponse([]));
@@ -620,8 +687,9 @@ describe("the empty sidebar", () => {
         <ChatList onRefresh={() => {}} />
       </MemoryRouter>,
     );
-    // Showing archived chats only ever ADDS rows, so an empty list here is not
-    // the view options' doing and must not be blamed on them.
+    // Showing archived chats only widens the request, so it cannot have emptied
+    // a non-empty list: an empty list here is not the view options' doing and
+    // must not be blamed on them.
     expect(await screen.findByText("No chats yet. Create one to get started.")).toBeTruthy();
   });
 });

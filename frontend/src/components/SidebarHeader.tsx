@@ -83,8 +83,12 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
                     borderTopRightRadius: isLast ? 6 : 0,
                     borderBottomRightRadius: isLast ? 6 : 0,
                     border: isActiveMode ? "none" : "1px solid var(--chatlist-item-border)",
-                    ...(isFirst && { borderRight: "none" }),
-                    ...(isLast && { borderLeft: "none" }),
+                    // Seam suppression, spelled as a width rather than
+                    // `border-right: none` — identical in Chromium, and the
+                    // only spelling jsdom keeps, so it can be asserted. See the
+                    // note in ChatFilterBar.test.tsx.
+                    ...(isFirst && { borderRightWidth: 0 }),
+                    ...(isLast && { borderLeftWidth: 0 }),
                   }}
                   title={isActiveMode ? `${label} view (active)` : `Switch to ${label.toLowerCase()} view`}
                 >
@@ -106,7 +110,7 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
               borderTopRightRadius: 0,
               borderBottomRightRadius: 0,
               border: isBoardActive ? "none" : "1px solid var(--chatlist-item-border)",
-              borderRight: "none",
+              borderRightWidth: 0,
             }}
             title="Board"
           >
@@ -120,8 +124,8 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
               color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
               borderRadius: 0,
               border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
-              borderRight: "none",
-              borderLeft: "none",
+              borderRightWidth: 0,
+              borderLeftWidth: 0,
             }}
             title="Agents"
           >
@@ -138,7 +142,7 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
               borderTopRightRadius: 6,
               borderBottomRightRadius: 6,
               border: isSettingsActive ? "none" : "1px solid var(--chatlist-item-border)",
-              borderLeft: "none",
+              borderLeftWidth: 0,
             }}
             title="Settings"
           >
