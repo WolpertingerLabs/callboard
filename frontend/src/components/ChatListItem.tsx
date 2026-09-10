@@ -15,6 +15,8 @@ import {
   ArchiveRestore,
   Pencil,
   Check,
+  Pin,
+  PinOff,
 } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
@@ -58,6 +60,13 @@ interface Props {
   onClick: () => void;
   onDelete: () => void;
   onToggleBookmark?: (bookmarked: boolean) => void;
+  /**
+   * Pin or unpin, which files the row into the sidebar's Pinned section.
+   * Omit to leave the entry out of the menu entirely — the sibling of
+   * `onToggleBookmark` and, like it, a different question: a bookmark is
+   * something you filter down to later, a pin is somewhere you put a chat now.
+   */
+  onTogglePin?: (pinned: boolean) => void;
   /**
    * Open the title editor for this chat. Omit to leave the entry out of the
    * menu entirely. Nothing is written from here — the dialog the handler opens
@@ -103,8 +112,13 @@ const stopGesture = {
   onContextMenu: (e: React.MouseEvent) => e.stopPropagation(),
 };
 
-/** Rough popup height used to decide whether the menu opens downward or upward. */
-const MENU_ESTIMATED_HEIGHT = 210;
+/**
+ * Rough popup height used to decide whether the menu opens downward or upward.
+ * Raised with the pin entry — an estimate that under-reports simply stops the
+ * menu flipping when it should, and the row it belongs to is at the bottom of
+ * the sidebar precisely when that matters.
+ */
+const MENU_ESTIMATED_HEIGHT = 250;
 
 /**
  * The lifecycle entry's tooltip: what is about to happen, and to how much.
@@ -127,6 +141,7 @@ export default function ChatListItem({
   onClick,
   onDelete,
   onToggleBookmark,
+  onTogglePin,
   onEditTitle,
   cardMenu,
   sessionStatus,
@@ -190,6 +205,7 @@ export default function ChatListItem({
   let title: string | undefined;
   let preview: string | undefined;
   let isBookmarked = false;
+  let isPinned = false;
   let agentAlias: string | undefined;
   let isTriggered = false;
   let lastReadAt: string | undefined;
@@ -206,6 +222,7 @@ export default function ChatListItem({
     title = meta.title;
     preview = meta.preview;
     isBookmarked = meta.bookmarked === true;
+    isPinned = meta.pinned === true;
     agentAlias = meta.agentAlias;
     isTriggered = meta.triggered === true;
     lastReadAt = meta.lastReadAt;
@@ -368,6 +385,11 @@ export default function ChatListItem({
           {displayPath && <FolderPathPill path={displayPath} />}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
+          {/* Before the bookmark, and kept even inside the Pinned section: the
+              section says where the row is filed, this says why, and the two
+              are not the same thing once a section is collapsed or the list is
+              rendered with nothing pinned at all. */}
+          {isPinned && <Pin size={14} style={{ color: "var(--chatlist-pin-icon)", flexShrink: 0 }} fill="var(--chatlist-pin-icon)" />}
           {isBookmarked && <Bookmark size={14} style={{ color: "var(--chatlist-bookmark-icon)", flexShrink: 0 }} fill="var(--chatlist-bookmark-icon)" />}
           {agentAlias && (
             <span
@@ -681,6 +703,23 @@ export default function ChatListItem({
                       onClick={() => {
                         setMenuPos(null);
                         onToggleBookmark(!isBookmarked);
+                      }}
+                    />
+                  )}
+                  {onTogglePin && (
+                    <MenuRow
+                      icon={
+                        isPinned ? (
+                          <PinOff size={16} />
+                        ) : (
+                          <Pin size={16} style={{ color: "var(--chatlist-pin-icon)" }} fill="var(--chatlist-pin-icon)" />
+                        )
+                      }
+                      label={isPinned ? "Unpin" : "Pin"}
+                      title={isPinned ? "Unpin — the chat returns to the list in date order" : "Pin this chat to the top of the sidebar"}
+                      onClick={() => {
+                        setMenuPos(null);
+                        onTogglePin(!isPinned);
                       }}
                     />
                   )}

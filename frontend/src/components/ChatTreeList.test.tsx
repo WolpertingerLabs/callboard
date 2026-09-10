@@ -71,6 +71,7 @@ function renderTree(props: { chats?: Chat[]; refreshToken: number }) {
         onChatClick={() => {}}
         onDelete={() => {}}
         onToggleBookmark={() => {}}
+        onTogglePin={() => {}}
         cardMenuFor={() => ({})}
         sessionStatusFor={() => undefined}
       />
@@ -104,6 +105,7 @@ describe("ChatTreeList refresh", () => {
           onChatClick={() => {}}
           onDelete={() => {}}
           onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
           cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
         />
@@ -124,6 +126,7 @@ describe("ChatTreeList refresh", () => {
           onChatClick={() => {}}
           onDelete={() => {}}
           onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
           cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
         />
@@ -150,6 +153,7 @@ describe("ChatTreeList refresh", () => {
           onChatClick={() => {}}
           onDelete={() => {}}
           onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
           cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
         />
@@ -202,6 +206,7 @@ describe("ChatTreeList dimming", () => {
           onChatClick={() => {}}
           onDelete={() => {}}
           onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
           cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
           isDimmed={(chat) => isChatDimmed(chat, cards, ctx)}
@@ -290,6 +295,7 @@ describe("ChatTreeList order", () => {
           onChatClick={() => {}}
           onDelete={() => {}}
           onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
           cardMenuFor={() => ({})}
           sessionStatusFor={() => undefined}
           isDimmed={(chat) => isChatDimmed(chat, cards, { cardsLoaded: true })}

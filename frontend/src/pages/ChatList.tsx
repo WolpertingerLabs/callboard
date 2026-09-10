@@ -7,6 +7,7 @@ import {
   bulkDeleteChats,
   bulkSetCardLifecycle,
   toggleBookmark,
+  togglePin,
   getDrafts,
   deleteDraft,
   listCards,
@@ -306,8 +307,12 @@ export default function ChatList({
     const superseded = () => gen !== loadGenRef.current;
 
     // includeLineage is always on: the list needs every member of a parentage
-    // tree the page touches, even those outside the pagination window
-    const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, true, undefined, cardLifecycle);
+    // tree the page touches, even those outside the pagination window.
+    // includePinned is on for the same reason and always for the same reason:
+    // a pinned chat nobody has touched in a week is outside that window too,
+    // and a Pinned section that empties itself as its chats age is not a
+    // feature. Both are appended beyond the page and neither moves `hasMore`.
+    const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, true, undefined, cardLifecycle, true);
     if (superseded()) return;
     // Bump on commit as well as on claim — that is the edge an in-flight
     // `loadMore` watches for. Re-taken into `gen` so `superseded()` keeps
@@ -320,7 +325,7 @@ export default function ChatList({
 
     // If the response was stale (cached), immediately fetch fresh data
     if (response.stale) {
-      const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, true, undefined, cardLifecycle);
+      const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, true, undefined, cardLifecycle, true);
       if (superseded()) return;
       gen = loadGenRef.current += 1;
       setListVersion((v) => v + 1);
@@ -364,6 +369,12 @@ export default function ChatList({
         // takes it from the same function `load` does — the two request paths
         // cannot come to disagree about scope.
         cardLifecycleFor({ showArchived: viewOptions.showArchived, searching }),
+        // Sent on every page, not just the first, so the request is the same
+        // shape each time and the server's response cache is keyed on one
+        // query string per scope. The pinned chats it re-appends are already
+        // in the list and the dedupe below drops them — cheaper than reasoning
+        // about which page is allowed to carry them.
+        true,
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
       // this page was in flight — its offset no longer lines up, so drop the
@@ -525,6 +536,37 @@ export default function ChatList({
       }
     } catch (err) {
       console.error("Failed to toggle bookmark:", err);
+    }
+  };
+
+  /**
+   * Pin or unpin, then patch the row in place.
+   *
+   * The optimistic update is what moves the row between sections — the
+   * partition reads `metadata.pinned` off the loaded chats, so writing it here
+   * re-files the row on the next render rather than after the next refetch.
+   * Unlike the bookmark's, this can never need to REMOVE a row: pinning is not
+   * a filter, so no view exists that a chat drops out of by being unpinned. It
+   * moves down into Recent, and if that was the last pin the headers go with
+   * it.
+   */
+  const handleTogglePin = async (chat: Chat, pinned: boolean) => {
+    try {
+      await togglePin(chat.id, pinned);
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id !== chat.id) return c;
+          try {
+            const meta = JSON.parse(c.metadata || "{}");
+            meta.pinned = pinned;
+            return { ...c, metadata: JSON.stringify(meta) };
+          } catch {
+            return c;
+          }
+        }),
+      );
+    } catch (err) {
+      console.error("Failed to toggle pin:", err);
     }
   };
 
@@ -1372,6 +1414,7 @@ export default function ChatList({
           onChatClick={handleChatClick}
           onDelete={handleDelete}
           onToggleBookmark={handleToggleBookmark}
+          onTogglePin={handleTogglePin}
           onEditTitle={handleEditTitle}
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}

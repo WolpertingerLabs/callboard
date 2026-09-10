@@ -16,6 +16,16 @@ interface RecentDirectory {
 
 export type ThemeMode = "light" | "dark" | "system";
 
+/**
+ * The sidebar's Pinned/Recent sections, as `sectionByPinned` keys them.
+ *
+ * The keys are persisted, so treat them the way the wire rules treat a field
+ * name: relabel the headers freely, never rename these. The record they live
+ * in is shared with a pre-#440 bundle's `active`/`inactive` keys for the
+ * Open/Archived split this replaced — see {@link LocalStorageData.chatSectionsExpanded}.
+ */
+export type ChatSectionKey = "pinned" | "recent";
+
 interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;
   recentDirectories?: RecentDirectory[];
@@ -73,6 +83,23 @@ interface LocalStorageData {
    * parsed object would break that, and this is the note saying why not to.
    */
   chatsDimCardless?: boolean;
+  /**
+   * Which sidebar sections are expanded. An absent key — and an absent record
+   * — means expanded: the sections only exist when something is pinned, so a
+   * first-run default of collapsed would hide chats the user never chose to
+   * hide, including the ones they just pinned.
+   *
+   * `Partial<Record<string, boolean>>` rather than being keyed on
+   * {@link ChatSectionKey}, because this record is shared across bundles and
+   * two generations of section have written into it. A bundle predating #440
+   * stores `active`/`inactive` here for the Open/Archived split that the
+   * "Show archived" toggle replaced; this one stores `pinned`/`recent`. The
+   * keys do not collide, {@link saveChatSectionExpanded} merges rather than
+   * replaces, and neither bundle can read the other's — so the older tab keeps
+   * its collapsed sections and this one keeps the entry that would otherwise
+   * be deleted out from under it.
+   */
+  chatSectionsExpanded?: Partial<Record<string, boolean>>;
   /**
    * The daemon build id whose reload prompt the user waved off. Keyed by the
    * id, not a boolean, so the *next* upgrade is announced again — see
@@ -437,6 +464,31 @@ export function getChatsShowArchived(): boolean {
 export function saveChatsShowArchived(value: boolean): void {
   const data = getStorageData();
   data.chatsShowArchived = value;
+  setStorageData(data);
+}
+
+/**
+ * Expanded unless explicitly collapsed — see the field's note.
+ *
+ * `!== false` rather than `?? true` so the return is always a real boolean:
+ * this value is parsed out of JSON, so a hand-edited or cross-version store
+ * can hold anything, and the callers render `isExpanded(key) && rows`. A
+ * stored `0` reaching that would put a literal "0" in the sidebar where the
+ * rows belong. Matches `getBoardClosedExpanded`'s `=== true` next door.
+ */
+export function getChatSectionExpanded(key: ChatSectionKey): boolean {
+  const data = getStorageData();
+  return data.chatSectionsExpanded?.[key] !== false;
+}
+
+/**
+ * Merge, never replace: the record also holds an older bundle's `active` and
+ * `inactive` keys, and a write that dropped them would reset that tab's
+ * sidebar on the first click in this one.
+ */
+export function saveChatSectionExpanded(key: ChatSectionKey, expanded: boolean): void {
+  const data = getStorageData();
+  data.chatSectionsExpanded = { ...data.chatSectionsExpanded, [key]: expanded };
   setStorageData(data);
 }
 

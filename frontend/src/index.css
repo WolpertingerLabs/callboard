@@ -158,17 +158,18 @@
   /* Chat list */
   --chatlist-header-bg: transparent;
   --chatlist-header-border: var(--border);
-  /* Retained with no consumer. It coloured the Open/Archived section headers
-     inside the chat list, which "Show archived" replaced — a dim in place
-     needs no band to separate anything from anything. Kept because the token
-     list is a contract, not a usage set: it is mirrored in
-     services/theme-contrast-palette.ts, pinned by theme-contrast.stylesheet
-     .test.ts, and every user theme in ~/.callboard/themes must define it.
-     Dropping it is a theme-format change, not a cleanup. If a raised band
-     inside the list ever comes back, this is the token for it: "raised" is a
-     different step per theme — dark lightens from --bg-sidebar to
-     --bg-secondary, while in light mode --bg-secondary sits a hair off
-     --bg-sidebar and --surface is what actually separates. */
+  /* The raised band behind ChatSectionHeader — the Pinned/Recent headers
+     inside the chat list. It spent one release with no consumer at all, after
+     "Show archived" replaced the Open/Archived split it originally coloured,
+     and was kept then because the token list is a contract rather than a usage
+     set: it is mirrored in services/theme-contrast-palette.ts, pinned by
+     theme-contrast.stylesheet.test.ts, and every user theme in
+     ~/.callboard/themes must define it. That was the right call and this is
+     what it bought — the token was here, correct in both themes, when a band
+     inside the list came back. "Raised" is a different step per theme: dark
+     lightens from --bg-sidebar to --bg-secondary, while in light mode
+     --bg-secondary sits a hair off --bg-sidebar and --surface is what actually
+     separates. */
   --chatlist-section-header-bg: var(--bg-secondary);
   --chatlist-title-text: var(--text);
   --chatlist-subtitle-text: var(--text-muted);
@@ -211,6 +212,10 @@
   --chatlist-summon-urgent-text: var(--danger);
   --chatlist-unread-dot: var(--accent);
   --chatlist-bookmark-icon: var(--accent-text);
+  /* The same family as the bookmark, and deliberately so: both are marks the
+     user put on the row, and the Pin glyph is what tells them apart. Its own
+     name so a theme can split the two without touching a component. */
+  --chatlist-pin-icon: var(--accent-text);
   --chatlist-empty-text: var(--text-muted);
   --chatlist-load-more-bg: var(--surface);
   --chatlist-load-more-text: var(--text);
@@ -440,6 +445,10 @@
   --chatlist-summon-urgent-text: var(--danger);
   --chatlist-unread-dot: var(--accent);
   --chatlist-bookmark-icon: var(--accent-text);
+  /* The same family as the bookmark, and deliberately so: both are marks the
+     user put on the row, and the Pin glyph is what tells them apart. Its own
+     name so a theme can split the two without touching a component. */
+  --chatlist-pin-icon: var(--accent-text);
   --chatlist-empty-text: var(--text-muted);
   --chatlist-load-more-bg: var(--surface);
   --chatlist-load-more-text: var(--text);

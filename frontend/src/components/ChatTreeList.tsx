@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, ListTree, Loader2 } from "lucide-react";
 import { getChatTree, type Chat, type ChatTreeNode, type ChatTreeResponse } from "../api";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
+import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
+import { isChatPinned, sectionByPinned } from "../utils/chatSections";
+import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 
 /**
  * The sidebar chat list.
@@ -33,6 +36,14 @@ interface Props {
   onChatClick: (chat: Chat) => void;
   onDelete: (chat: Chat) => void;
   onToggleBookmark: (chat: Chat, bookmarked: boolean) => void;
+  /**
+   * Pin or unpin, which moves the row between this list's two sections. The
+   * verdict itself is NOT a prop: unlike the dim, which needs the separately
+   * fetched card rollup, the pin is on the chat's own metadata, so there is no
+   * loading window in which reading it early would file the list wrongly and
+   * then move every row when a second request lands.
+   */
+  onTogglePin: (chat: Chat, pinned: boolean) => void;
   /** Ask the list to open its title editor for this chat. */
   onEditTitle?: (chat: Chat) => void;
   /** Card (ticket) actions for a row's kebab menu. */
@@ -72,6 +83,20 @@ export interface Row {
   chat: Chat;
   rootKey: string;
   isGroup: boolean;
+  /**
+   * Chats from the `chats` prop this row stands for — 1 for a lone chat, the
+   * group's size for a group. The section headers count chats, not rows, so a
+   * group has to carry its own weight to the tally.
+   *
+   * Deliberately *not* "chats visible under this row": expanding a group
+   * renders `trees[rootKey]`, the server's authoritative tree, which no client
+   * filter has been applied to — expand a group under "Show triggered chats:
+   * off" and more rows can appear than this counted. Following that would make
+   * the header's number jump on every expand, and jump to a figure the section
+   * above it does not share. The count answers "how many of the chats this
+   * list loaded are filed here", which is stable.
+   */
+  size: number;
 }
 
 /** Defense cap against corrupt parent-pointer chains (mirrors the server). */
@@ -149,7 +174,7 @@ export function buildRows(chats: Chat[]): Row[] {
     // Always set: this row's own chat counted itself into the bucket above.
     const size = groupSizes.get(rootKey)!;
     const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
-    result.push({ chat, rootKey, isGroup });
+    result.push({ chat, rootKey, isGroup, size });
   }
   return result;
 }
@@ -266,6 +291,7 @@ export default function ChatTreeList({
   onChatClick,
   onDelete,
   onToggleBookmark,
+  onTogglePin,
   onEditTitle,
   cardMenuFor,
   sessionStatusFor,
@@ -362,6 +388,19 @@ export default function ChatTreeList({
 
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
 
+  // Each group is filed by its header row's chat — the one actually rendered
+  // and labelled — so a group whose members straddle both buckets still
+  // appears exactly once. Cheap enough to redo per render; `rows` above is the
+  // memoized part.
+  const sections = sectionByPinned(
+    rows,
+    (row) => isChatPinned(row.chat),
+    (row) => row.size,
+  );
+
+  /** Collapse state for those headers, persisted via localStorage. */
+  const sectionExpansion = useChatSectionExpansion();
+
   const renderRow = ({ chat, rootKey, isGroup }: Row) => {
     if (!isGroup) {
       return (
@@ -372,6 +411,7 @@ export default function ChatTreeList({
           onClick={() => onChatClick(chat)}
           onDelete={() => onDelete(chat)}
           onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
+          onTogglePin={(pinned) => onTogglePin(chat, pinned)}
           onEditTitle={onEditTitle && (() => onEditTitle(chat))}
           cardMenu={cardMenuFor(chat)}
           sessionStatus={sessionStatusFor(chat.id)}
@@ -436,6 +476,27 @@ export default function ChatTreeList({
       </div>
     );
   };
+
+  // `null` is the ordinary case — nothing pinned — and renders the flat list
+  // with no headers at all, byte for byte what this component rendered before
+  // pinning existed.
+  if (sections) {
+    return (
+      <>
+        {sections.map((section) => (
+          <Fragment key={section.key}>
+            <ChatSectionHeader
+              label={section.label}
+              count={section.count}
+              expanded={sectionExpansion.isExpanded(section.key)}
+              onToggle={() => sectionExpansion.toggle(section.key)}
+            />
+            {sectionExpansion.isExpanded(section.key) && section.items.map(renderRow)}
+          </Fragment>
+        ))}
+      </>
+    );
+  }
 
   return <>{rows.map(renderRow)}</>;
 }
