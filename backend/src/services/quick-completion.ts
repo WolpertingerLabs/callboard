@@ -280,7 +280,7 @@ export async function generateChatTitle(firstMessage: string): Promise<string | 
     const result = await quickCompletion({
       prompt: truncated,
       systemPrompt:
-        "Generate a brief title (3-8 words) for a conversation that starts with the user message below. " +
+        "Name what the user below is after, in as few words as possible (3-8) — the point of the conversation, not a paraphrase of the message. " +
         "Return ONLY the title text — no quotes, no punctuation at the end, no prefix like 'Title:'.",
       model: "haiku",
       effort: "low",
@@ -316,8 +316,8 @@ export async function generateChatTitleFromTranscript(transcript: string): Promi
     const result = await quickCompletion({
       prompt: transcript,
       systemPrompt:
-        "Generate a brief title (3-8 words) for the conversation below, which may have been abridged in the middle. " +
-        "Title what the conversation is actually about by the end of it, not merely what it opened with — a long chat often moves on from its first request. " +
+        "Name what the conversation below is about, in as few words as possible (3-8) — its subject, so the user can pick it out of a list. The middle may have been abridged. " +
+        "Judge that by what the work became, not by what it opened with — a long chat often moves on from its first request. " +
         "Return ONLY the title text — no quotes, no punctuation at the end, no prefix like 'Title:'.",
       model: "haiku",
       effort: "low",

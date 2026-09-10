@@ -1380,6 +1380,74 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
 });
 
 /**
+ * The longest title a chat may carry, matching the `set_chat_title` tool's cap
+ * so a title a session can set is one the user can type back, and the other way
+ * round. Generated titles never come close — the titler is asked for a handful
+ * of words — so this only ever binds on a hand-written one.
+ */
+const MAX_TITLE_LENGTH = 240;
+
+// Set a chat's title by hand
+chatsRouter.patch("/:id/title", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Set a chat title'
+  // #swagger.description = 'Stores a user-supplied title in chat metadata and notifies open clients. An empty (or whitespace-only) title clears the stored one, so the chat falls back to its auto-derived preview — the same reset the set_chat_title tool offers. Creates a file storage record if the chat only exists on the filesystem.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["title"],
+          properties: {
+            title: { type: "string", description: "New title (max 240 chars). Empty resets to the auto-derived preview." }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "{ title }: the stored title, or null if it was cleared" } */
+  /* #swagger.responses[400] = { description: "Invalid request body" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const { title } = req.body ?? {};
+  if (typeof title !== "string") {
+    return res.status(400).json({ error: "title must be a string" });
+  }
+  const trimmed = title.trim();
+  if (trimmed.length > MAX_TITLE_LENGTH) {
+    return res.status(400).json({ error: `Title must be ${MAX_TITLE_LENGTH} characters or fewer` });
+  }
+
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    let meta: Record<string, any> = {};
+    try {
+      meta = parseChatMetadata(chat.metadata);
+    } catch {}
+
+    // null rather than "" for the cleared case, matching `set_chat_title`: every
+    // reader spells the fallback `meta.title || preview`, and a stored empty
+    // string would take the same branch while looking like a deliberate blank.
+    const stored = trimmed || null;
+
+    // Upsert for the same reason the regeneration below uses it: most chats
+    // have never had a record written, and `updateChatMetadata` answers false
+    // for those and drops the write.
+    chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: JSON.stringify({ ...meta, title: stored }) });
+
+    sessionRegistry.notifyMetadata(chat.id, { title: stored });
+    clearListCaches();
+    res.json({ title: stored });
+  } catch (err: any) {
+    log.error(`Error setting chat title: ${err}`);
+    res.status(500).json({ error: "Failed to set chat title", details: err.message });
+  }
+});
+
+/**
  * How much of a conversation the titler is shown.
  *
  * Generous for a 3-8 word title and nowhere near a working chat's real size,
