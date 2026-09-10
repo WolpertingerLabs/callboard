@@ -280,6 +280,18 @@ export async function listChats(
    * an older one still sends them — relabel these values, never rename them.
    */
   cardLifecycle?: "all" | "active" | "inactive" | "unarchived",
+  /**
+   * Append pinned chats that fall outside the pagination window, so the
+   * sidebar's Pinned section survives the chat ageing out of the page. Purely
+   * additive: every other argument here still applies to them, so a pinned
+   * chat the `cardLifecycle` scope excludes stays excluded, and a pinned chat
+   * already in the window is not returned twice.
+   *
+   * Trailing and optional, so a caller that does not want them — anything
+   * paginating for its own purposes rather than rendering the sidebar — reads
+   * exactly as it did.
+   */
+  includePinned?: boolean,
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -290,6 +302,7 @@ export async function listChats(
   if (includeLineage) params.append("includeLineage", "true");
   if (cardsOnly) params.append("cardsOnly", "true");
   if (cardLifecycle && cardLifecycle !== "all") params.append("cardLifecycle", cardLifecycle);
+  if (includePinned) params.append("includePinned", "true");
 
   const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
   await assertOk(res, "Failed to list chats");
@@ -339,6 +352,23 @@ export async function toggleBookmark(id: string, bookmarked: boolean): Promise<C
     body: JSON.stringify({ bookmarked }),
   });
   await assertOk(res, "Failed to toggle bookmark");
+  return res.json();
+}
+
+/**
+ * Pin or unpin a chat — the sidebar files pinned chats into their own section
+ * at the top of the list.
+ *
+ * A separate flag from the bookmark, not a second reading of it: a bookmark is
+ * a filter you go looking through, a pin is a position you put something in.
+ */
+export async function togglePin(id: string, pinned: boolean): Promise<Chat> {
+  const res = await fetch(`${BASE}/chats/${id}/pin`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pinned }),
+  });
+  await assertOk(res, "Failed to toggle pin");
   return res.json();
 }
 

@@ -392,6 +392,7 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
+  /* #swagger.parameters['includePinned'] = { in: 'query', type: 'string', description: "When true, chats whose metadata carries pinned:true are appended even when they fall outside the pagination window, flagged with _pinned_appended; like lineage relatives they do not count toward pagination or hasMore. Purely additive — every other filter on the request still applies, so a pinned chat the cardLifecycle scope, excludeTriggered or bookmarked drops stays dropped. A pinned chat already on the page is not appended a second time." } */
   /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), unarchived (everything EXCEPT the trees of closed or hidden cards — so chats on no card at all, such as triggered and job-step chats, are included; this is the scope the sidebar asks for when its Archived toggle is off), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement of active: chats on the tree of a CLOSED or hidden card, plus chats that are on no card at all). active/inactive are retained for client bundles older than the unarchived scope. Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record; a discovered session with no stored record is admitted by unarchived and by neither active nor inactive." } */
   /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'Back-compatible alias for cardLifecycle=active, kept for persisted prefs and older client bundles. Ignored when cardLifecycle is given.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
@@ -399,7 +400,9 @@ chatsRouter.get("/", (req, res) => {
   try {
     // Check cache (stale-while-revalidate)
     const bypassCache = req.query.cached === "false";
-    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}:${req.query.cardLifecycle || ""}`;
+    // Every query param that changes the body belongs in here: an entry keyed
+    // without one is served to requests that did send it, and vice versa.
+    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}:${req.query.cardLifecycle || ""}:${req.query.includePinned || ""}`;
     const now = Date.now();
 
     if (!bypassCache) {
@@ -424,6 +427,19 @@ chatsRouter.get("/", (req, res) => {
 
     // Create lookup map for file data by session ID
     const fileChatsBySessionId = new Map<string, any>();
+    /**
+     * The pinned records, collected here rather than re-scanned later.
+     *
+     * A second pass would be a second `JSON.parse` of every stored record's
+     * metadata, on the sidebar's polled hot path, to answer a question this
+     * loop has the parsed object in hand for. Unconditional because the test
+     * is one property read on an object that already exists — cheaper than
+     * threading the `includePinned` flag up here to gate it.
+     *
+     * A record whose metadata will not parse is not pinned, which is the same
+     * answer the discarded `isPinned` helper's catch gave.
+     */
+    const pinnedFileChats: any[] = [];
 
     for (const chat of fileChats) {
       // Index by session_id
@@ -439,6 +455,7 @@ chatsRouter.get("/", (req, res) => {
             fileChatsBySessionId.set(sid, chat);
           }
         }
+        if (meta.pinned === true && chat?.id) pinnedFileChats.push(chat);
       } catch {}
     }
 
@@ -448,6 +465,28 @@ chatsRouter.get("/", (req, res) => {
     const bookmarkedFilter = req.query.bookmarked === "true";
     const excludeTriggered = req.query.excludeTriggered === "true";
     const includeLineage = req.query.includeLineage === "true";
+    /**
+     * Append pinned chats that fall outside the pagination window.
+     *
+     * Additive and nothing else. Pinning is a *place* in the sidebar, not a
+     * scope: the rows a request would have returned anyway are unchanged, and
+     * an older bundle that never sends this sees the response it always did.
+     *
+     * It exists because sectioning alone cannot deliver the feature. The
+     * sidebar fetches a page of the most recently updated chats and partitions
+     * what it got; pin something and leave it a week and it falls out of that
+     * window, at which point the Pinned section it was pinned into is empty.
+     * `includeLineage` already had this problem and solved it the same way, so
+     * this follows that precedent rather than inventing a second one.
+     *
+     * What it is NOT is an exemption. Every other filter on the request still
+     * applies — see {@link appendableRow} — so a pinned chat on an archived
+     * card stays out of a `cardLifecycle=unarchived` list. That is deliberate:
+     * the scope is the complement of the sidebar's dim, and one pinned row
+     * smuggled past it would put a faded row in a view whose whole claim is
+     * that it has none.
+     */
+    const includePinned = req.query.includePinned === "true";
     /**
      * The lifecycle scope this request asks for.
      *
@@ -574,8 +613,10 @@ chatsRouter.get("/", (req, res) => {
     // more sessions than requested since we filter after augmentation (the triggered
     // flag lives in chat file metadata). For bookmarks, fetch all. For excludeTriggered,
     // over-fetch to ensure we get enough non-triggered results. includeLineage also
-    // needs the full session list so out-of-window tree relatives can be augmented.
-    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle;
+    // needs the full session list so out-of-window tree relatives can be augmented,
+    // and includePinned for the same reason: a pinned chat is appended precisely
+    // when it is NOT in the window, so its session is never in a paged fetch.
+    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned;
     const fetchLimit = needsPostFilter ? 9999 : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
@@ -905,10 +946,13 @@ chatsRouter.get("/", (req, res) => {
       // so the window is filled from what's left.
       const augmented = dropTriggered(paginatedSessions.map(augmentSession));
       ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
-    } else if (includeLineage || scopedByCardLifecycle) {
-      // Sessions were over-fetched (for lineage lookup, or so the lifecycle
-      // filter could run across the whole list) — paginate manually, by row
-      // for the tree view, augmenting only the windowed sessions.
+    } else if (includeLineage || scopedByCardLifecycle || includePinned) {
+      // Sessions were over-fetched (for lineage lookup, so the lifecycle filter
+      // could run across the whole list, or so the pinned append can find a
+      // session for a chat outside the window) — paginate manually, by row for
+      // the tree view, augmenting only the windowed sessions. Every reason
+      // `needsPostFilter` over-fetches has to be named here too, or the branch
+      // below hands back all 9999 sessions as a "page".
       const window = paginateWindow(paginatedSessions, (s) => fileChatsBySessionId.get(s.sessionId)?.id ?? s.sessionId);
       chatsFromLogs = window.page.map(augmentSession);
       ({ total, windowRows } = window);
@@ -918,7 +962,66 @@ chatsRouter.get("/", (req, res) => {
       total = rawTotal;
       windowRows = chatsFromLogs.length;
     }
+    // Computed before either append pass below, and deliberately so: appended
+    // rows are extras hanging off the page, not part of it. `total` counts the
+    // filtered, paginated set, so appending to `chatsFromLogs` cannot make this
+    // claim another page exists — or hide one.
     const hasMore = offset + limit < total;
+
+    // Most recent session per file chat id, for augmenting rows appended
+    // outside the pagination window. Shared by both append passes so a chat
+    // reached by either one is built from the same session.
+    const sessionByChatId = new Map<string, (typeof paginatedSessions)[0]>();
+    if (includeLineage || includePinned) {
+      for (const s of paginatedSessions) {
+        const fileChat = fileChatsBySessionId.get(s.sessionId);
+        if (fileChat && !sessionByChatId.has(fileChat.id)) sessionByChatId.set(fileChat.id, s);
+      }
+    }
+
+    /**
+     * Build a returnable row from a stored record for a chat that is NOT on the
+     * page — the shared body of the two append passes below. `null` means the
+     * request's own filters exclude it.
+     *
+     * That re-guarding is the whole point of routing both passes through here.
+     * An appended row exists to complete a tree the page touches, or to keep a
+     * pinned chat where the user put it; neither is licence to re-admit a chat
+     * the caller's filter just excluded, and a response that did so would be
+     * dishonest about its own scope. Appending an unstarred relative would
+     * smuggle back exactly what "Bookmarked only" drops, and appending an
+     * out-of-scope one exactly what the lifecycle filter drops. It costs
+     * nothing to tree expansion — opening a group fetches the authoritative
+     * tree from GET /chats/:id/tree, which no list filter has ever narrowed.
+     *
+     * These passes are the only paths in the list route that can emit a chat
+     * filesystem discovery did not return, so this is also where discovery's
+     * verdict has to be re-applied. A chat on a removed harness has a record
+     * but no readable session — appending it would put a row in the sidebar
+     * that renders as live and opens to an empty transcript.
+     *
+     * Chats without a session log yet (e.g. freshly spawned) fall back to the
+     * bare file record. For lineage that fallback is the rare case: every scope
+     * filter above re-guards, and paginateTreeRows never splits a group across
+     * a page boundary, so a discovery-backed relative is normally already ON
+     * the page rather than appended to it. It is NOT dead code and not merely
+     * defensive — rootKeyOf caps its ascent at MAX_LINEAGE_DEPTH while the
+     * relatedIds descent is uncapped, so an unstamped chain
+     * (parentChatId/forkedFrom with no rootChatId) longer than that cap keys
+     * its deep members on a different row from its shallow ones, and those
+     * members are genuinely off-page AND discovery-backed. For pinned chats the
+     * fallback is ordinary: pinning a chat that has never opened a session is
+     * a thing a user can simply do.
+     */
+    const appendableRow = (fc: any): any | null => {
+      if (cardScopeAdmits && !cardScopeAdmits(fc.id)) return null;
+      if (bookmarkedFilter && !isBookmarked(fc)) return null;
+      if (isRetiredProvider(readProvider(fc))) return null;
+      const session = sessionByChatId.get(fc.id);
+      const augmented = session ? augmentSession(session) : { ...fc, displayFolder: fc.folder };
+      if (excludeTriggered && !survivesTriggeredFilter(augmented)) return null;
+      return augmented;
+    };
 
     // When the page touches a parentage tree, append the tree's remaining
     // members (ancestors and descendants outside the pagination window) so
@@ -945,59 +1048,49 @@ chatsRouter.get("/", (req, res) => {
         }
       }
 
-      // Most recent session per file chat id, for augmenting appended relatives
-      const sessionByChatId = new Map<string, (typeof paginatedSessions)[0]>();
-      for (const s of paginatedSessions) {
-        const fileChat = fileChatsBySessionId.get(s.sessionId);
-        if (fileChat && !sessionByChatId.has(fileChat.id)) sessionByChatId.set(fileChat.id, s);
-      }
-
       const pageIds = new Set(chatsFromLogs.map((c: any) => c.id));
       const appended: any[] = [];
       for (const id of relatedIds) {
         if (pageIds.has(id)) continue;
-        // A relative outside the requested lifecycle scope must not be
-        // appended — that would smuggle back exactly what the filter drops.
-        if (cardScopeAdmits && !cardScopeAdmits(id)) continue;
         const fc = fileById.get(id);
         if (!fc) continue;
-        // Same rule the cards-only guard above states, applied to the other
-        // scope filter: appending an unstarred relative would smuggle back
-        // exactly what "Bookmarked only" drops. It costs nothing to expansion —
-        // opening a group fetches the authoritative tree from
-        // GET /chats/:id/tree, which no list filter has ever narrowed — and it
-        // keeps the response honest about its own scope: a lineage relative is
-        // appended to complete a tree the page touches, not to re-admit a chat
-        // the caller's filter just excluded.
-        if (bookmarkedFilter && !isBookmarked(fc)) continue;
-        const session = sessionByChatId.get(id);
-        // This is the one path in the list route that can emit a chat
-        // filesystem discovery did not return, so it is also the one that has
-        // to re-apply discovery's verdict. A chat on a removed harness has a
-        // record but no readable session — appending it would put a row in the
-        // sidebar that renders as live and opens to an empty transcript. Its
-        // surviving descendants are discovery-backed and stay; they simply fold
-        // under a dangling root, which is the deleted-parent case rootKeyOf and
-        // the client's lineageOf already agree on.
-        if (isRetiredProvider(readProvider(fc))) continue;
-        // Chats without a session log yet (e.g. freshly spawned) fall back
-        // to the bare file record — the `else` here, and now the ordinary case:
-        // every scope filter above re-guards, and paginateTreeRows never splits
-        // a group across a page boundary, so a discovery-backed relative is
-        // normally already ON the page rather than appended to it.
-        //
-        // The `if` is NOT dead, and is not merely defensive. rootKeyOf caps its
-        // ascent at MAX_LINEAGE_DEPTH while the relatedIds descent below is
-        // uncapped, so an unstamped chain (parentChatId/forkedFrom with no
-        // rootChatId) longer than that cap keys its deep members on a different
-        // row from its shallow ones. Those members are then genuinely off-page
-        // AND discovery-backed. It is the corrupt-chain case the cap exists to
-        // bound — do not delete this branch as unreachable.
-        const augmented = session ? augmentSession(session) : { ...fc, displayFolder: fc.folder };
-        if (excludeTriggered && !survivesTriggeredFilter(augmented)) continue;
+        // Every filter the request carries is re-applied in here. A relative a
+        // surviving descendant keeps reaching after its parent is deleted still
+        // folds under a dangling root, which is the deleted-parent case
+        // rootKeyOf and the client's lineageOf already agree on.
+        const augmented = appendableRow(fc);
+        if (!augmented) continue;
         appended.push({ ...augmented, _lineage_appended: true });
       }
       chatsFromLogs = [...chatsFromLogs, ...appended];
+    }
+
+    /**
+     * Pinned chats the page did not already contain.
+     *
+     * Runs AFTER the lineage pass, and reads `chatsFromLogs` as it stands, so a
+     * pinned chat that is on the page — or that the lineage pass has already
+     * appended as a relative of something on it — is not emitted twice. The
+     * sidebar would render a duplicate row as its own lineage group; the tree
+     * view's own de-duplication only covers sessions folding into one chat, not
+     * one chat arriving twice.
+     *
+     * Sorted by recency among themselves rather than left in record order,
+     * because they are about to be filed into a section whose order is recency
+     * everywhere else. `fileChats` order is a directory listing and means
+     * nothing to a reader.
+     */
+    if (includePinned) {
+      const alreadyReturned = new Set(chatsFromLogs.map((c: any) => c.id));
+      const pinned: any[] = [];
+      for (const fc of pinnedFileChats) {
+        if (alreadyReturned.has(fc.id)) continue;
+        const augmented = appendableRow(fc);
+        if (!augmented) continue;
+        pinned.push({ ...augmented, _pinned_appended: true });
+      }
+      pinned.sort((a, b) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime());
+      chatsFromLogs = [...chatsFromLogs, ...pinned];
     }
 
     // Last step, once the returned set is final: one preview read per row that
@@ -1413,6 +1506,71 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
   } catch (err: any) {
     log.error(`Error toggling bookmark: ${err}`);
     res.status(500).json({ error: "Failed to toggle bookmark", details: err.message });
+  }
+});
+
+/**
+ * Toggle the pin on a chat.
+ *
+ * Deliberately the bookmark route's twin rather than a flag on it. A bookmark
+ * is a filter — "let me find this again" — and a pin is a position — "keep this
+ * at the top of my sidebar". A chat commonly wants one and not the other, and
+ * `metadata.pinned` is a new key rather than a second meaning for
+ * `metadata.bookmarked` for exactly that reason.
+ *
+ * Additive on the wire: a record written by this daemon and read by an older
+ * bundle simply carries a key that bundle ignores.
+ */
+chatsRouter.patch("/:id/pin", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Toggle pin on a chat'
+  // #swagger.description = 'Set or unset the pinned flag in chat metadata. A pinned chat is filed into the sidebar Pinned section and is returned by GET /api/chats?includePinned=true even when it falls outside the pagination window. Creates a file storage record if the chat only exists on the filesystem.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["pinned"],
+          properties: {
+            pinned: { type: "boolean", description: "Whether the chat should be pinned" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[400] = { description: "Invalid request body" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const { pinned } = req.body;
+  if (typeof pinned !== "boolean") {
+    return res.status(400).json({ error: "pinned must be a boolean" });
+  }
+
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    let meta: Record<string, any> = {};
+    try {
+      meta = parseChatMetadata(chat.metadata);
+    } catch {}
+
+    meta.pinned = pinned;
+    const updatedMetadata = JSON.stringify(meta);
+
+    // Upsert: creates file storage record if it only existed on filesystem
+    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+
+    // The pin decides which rows a list response carries, not just how one
+    // renders, so a cached page built before this call is now wrong in the same
+    // way a bookmark toggle makes one wrong.
+    clearListCaches();
+    res.json(findChat(updatedChat.id, false) ?? updatedChat);
+  } catch (err: any) {
+    log.error(`Error toggling pin: ${err}`);
+    res.status(500).json({ error: "Failed to toggle pin", details: err.message });
   }
 });
 
