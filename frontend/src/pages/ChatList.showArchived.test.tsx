@@ -79,9 +79,12 @@ async function renderList() {
 }
 
 /**
- * Click the filter bar's "Archived" toggle. One click, no modal and no Apply —
+ * Click the filter bar's archived toggle. One click, no modal and no Apply —
  * the button commits straight from the click, which is why every test below
  * goes from here to asserting on the request.
+ *
+ * By role and accessible name, not by text: the button is icon-only, so its
+ * name comes from `aria-label` and there is no text node to match.
  */
 function toggleShowArchived() {
   fireEvent.click(screen.getByRole("button", { name: "Archived" }));
@@ -387,11 +390,15 @@ describe("the empty sidebar", () => {
       </MemoryRouter>,
     );
     // Not "No chats yet": a folder whose cards are all archived now shows
-    // nothing at all, where before it showed a list of faded rows. Matched on
-    // the sentence, not on "Archived" alone — that string is also the filter
-    // bar's toggle label, which this page always renders, so the loose match
-    // would pass on a page that never showed an empty state.
-    expect(await screen.findByText(/^No chats on an open card\./)).toBeTruthy();
+    // nothing at all, where before it showed a list of faded rows.
+    //
+    // Matched on the sentence rather than on "Archived" alone. The toggle is
+    // icon-only, so that string is no longer rendered as text in the bar and
+    // the loose match would no longer be ambiguous with it — but the sentence
+    // is what the copy has to say, and the copy is the thing being pinned:
+    // it has to point the user at the control that would fix this.
+    const message = await screen.findByText(/^No chats on an open card\./);
+    expect(message.textContent).toContain("Turn on “Archived” above");
   });
 
   /**

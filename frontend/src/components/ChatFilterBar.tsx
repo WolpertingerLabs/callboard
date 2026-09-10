@@ -19,20 +19,33 @@ interface ChatFilterBarProps {
 }
 
 /**
- * Sidebar filter bar: the button that opens the filters modal, the "Archived"
+ * Sidebar filter bar: the button that opens the filters modal, the archived
  * scope toggle, and the content search box.
  *
  * Scope toggles (bookmarks, triggered chats, cards-only) used to sit here as a
- * row of same-sized icon buttons, and were moved into the modal because that
- * rail gave no clue what any of them did and grew every time a new dimension
- * appeared. "Archived" is back out here, and neither half of that objection
- * applies to it: it is one control rather than a rail, it carries a text label
- * so it does not depend on an icon to explain itself, and it is flipped more
- * often than everything in the modal put together — most of the chats on a
- * real data dir are on archived cards, so this is the difference between a
- * sidebar showing a handful of rows and one showing all of them. The bar is
- * closed to a second one: anything that needs a companion control belongs in
- * the modal, where a label and a hint fit.
+ * row of same-sized icon buttons, and were moved into the modal on two counts:
+ * that rail gave no clue what any of them did, and it grew every time a new
+ * dimension appeared. The archived toggle is back out here as an icon, which
+ * means only ONE of those two objections has been answered — and it is worth
+ * being straight about which.
+ *
+ * Answered: the growth. This is one control, not a rail, and the bar is closed
+ * to a second — anything that needs a companion control belongs in the modal,
+ * where a label and a hint fit. It earns the slot because it is flipped more
+ * often than everything in the modal put together: most of the chats on a real
+ * data dir are on archived cards, so this is the difference between a sidebar
+ * showing a handful of rows and one showing all of them.
+ *
+ * NOT answered: legibility. This shipped briefly with an "Archived" text label
+ * for exactly that reason, and the label was dropped deliberately in favour of
+ * a compact bar — at the 350px minimum sidebar width it was taking about 90px
+ * from the search field. So the icon, `aria-pressed` and the tooltip now carry
+ * the whole meaning, and the honest cost is that a first-time user has to
+ * hover to find out what the icon does. That is a chosen tradeoff, not an
+ * oversight; anyone reopening it should know the label existed and why it went,
+ * rather than rediscovering the argument from scratch. The accessible name
+ * lives in `aria-label` so that stripping the text costs a screen reader
+ * nothing.
  *
  * The badge on the modal button keeps the one thing the rail was good at:
  * telling you at a glance that the list is narrowed. It deliberately does not
@@ -116,34 +129,38 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
             modal stages instead because a half-typed regex must not reshuffle
             the list on every keystroke; a boolean has no half-typed state.
 
-            Same accent treatment as the filters button, so "on" reads the same
-            way in both places, plus `aria-pressed` and a title naming the
-            current state — it replaced a switch, whose position said which way
-            it was set without being asked. */}
+            Same accent treatment, padding and icon size as the filters button,
+            so the two read as siblings and "on" means the same thing in both
+            places.
+
+            Three separate jobs, deliberately not folded together now that
+            there is no text: `aria-label` is the NAME ("what is this?"),
+            `aria-pressed` is the STATE ("which way is it set?"), and the
+            `title` spells the state out in words for a pointer user, since it
+            replaced a switch whose position answered that without being asked.
+            The name must stay state-free — a control that renames itself as it
+            toggles is announced as a different control each time. */}
         <button
           type="button"
           onClick={() => onApply(filters, { ...viewOptions, showArchived: !showArchived })}
+          aria-label="Archived"
           aria-pressed={showArchived}
           style={{
             background: showArchived ? "var(--accent)" : "var(--bg-secondary)",
             color: showArchived ? "var(--text-on-accent)" : "var(--text)",
-            padding: "8px 10px",
+            padding: "8px",
             borderRadius: 6,
             border: showArchived ? "none" : "1px solid var(--border)",
             display: "flex",
             alignItems: "center",
-            gap: 5,
+            justifyContent: "center",
             cursor: "pointer",
             flexShrink: 0,
-            fontSize: 12,
-            fontWeight: 600,
-            lineHeight: 1,
             transition: "background 0.15s, color 0.15s",
           }}
           title={showArchived ? "Showing chats on archived cards — click to hide them" : "Archived chats are hidden — click to show them"}
         >
-          <Archive size={14} />
-          Archived
+          <Archive size={16} />
         </button>
 
         {/* Search input with search button on the right */}

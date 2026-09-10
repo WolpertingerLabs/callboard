@@ -32,19 +32,54 @@ function renderBar(overrides: { viewOptions?: Partial<ChatViewOptions>; filters?
       isSearching={false}
     />,
   );
+  // Found the way a screen reader would find it, which after the label was
+  // dropped is the only way it can be found at all.
   return { onApply, button: screen.getByRole("button", { name: "Archived" }) };
 }
 
 describe("the Archived toggle", () => {
   /**
-   * A text label, not a bare icon. The scope toggles that used to live in this
-   * bar were moved into the modal because a rail of same-sized icons said
-   * nothing about what any of them did; putting one back as an icon alone
-   * would walk into the same objection.
+   * Icon-only, deliberately — see the docblock in ChatFilterBar for which half
+   * of the old rail objection that answers and which it accepts.
+   *
+   * What must not go with the text is the accessible NAME. A button whose whole
+   * content is an `<svg>` has none, and a nameless button is worse for a screen
+   * reader than the label was ever worth to a sighted user, so the name moves
+   * to `aria-label`. Asserted from both ends: there is no text to fall back on,
+   * and the button is still addressable by name.
    */
-  it("is labelled, not icon-only", () => {
+  it("has no text label, and an accessible name that does not depend on one", () => {
     const { button } = renderBar();
-    expect(button.textContent).toContain("Archived");
+    expect(button.textContent).toBe("");
+    expect(screen.getByRole("button", { name: "Archived" })).toBe(button);
+  });
+
+  /**
+   * The name says what the control IS; `aria-pressed` says which way it is
+   * SET. Folding the state into the name would announce a differently-named
+   * control on each toggle, so the name has to be identical in both states.
+   */
+  it("keeps the state out of the name", () => {
+    const off = renderBar().button.getAttribute("aria-label");
+    cleanup();
+    const on = renderBar({ viewOptions: { showArchived: true } }).button.getAttribute("aria-label");
+    expect(off).toBe("Archived");
+    expect(on).toBe(off);
+  });
+
+  /**
+   * Two icon buttons now sit side by side, which is a rail of two whether or
+   * not it is called one. The least it can do is look like one deliberate
+   * pair rather than two near-misses, so the toggle keeps the filters button's
+   * box and glyph size.
+   */
+  it("matches the filters button's footprint, so the two read as siblings", () => {
+    const { button } = renderBar();
+    const filtersButton = screen.getByTitle("Filters and view");
+
+    expect(button.style.padding).toBe(filtersButton.style.padding);
+    expect(button.style.borderRadius).toBe(filtersButton.style.borderRadius);
+    expect(button.querySelector("svg")?.getAttribute("width")).toBe(filtersButton.querySelector("svg")?.getAttribute("width"));
   });
 
   it("reports its state through aria-pressed", () => {
