@@ -14,6 +14,12 @@ import type { Chat, CardSummary } from "../api";
  * predate the stamp, and a chat with neither is its own root (top-level
  * chats ARE cards). Legacy `forkedFrom` is the final pointer fallback.
  * Unreadable metadata resolves to no card.
+ *
+ * Stamp first; the server's `existingRootIdOf` walks the PARENT CHAIN first.
+ * The two agree on every record `resolveParentage` writes, which keeps the two
+ * consistent, and would diverge only on a record whose stamp and whose chain
+ * name different roots — hand-edited or corrupt. Noted so a future reader knows
+ * the asymmetry is deliberate rather than a missing case.
  */
 export function chatCardId(chat: Pick<Chat, "id" | "metadata">): string | undefined {
   try {
@@ -100,10 +106,10 @@ export interface DimContext {
  * it is the component that holds them — the open chat (`activeChatId`), plus
  * the summon, unread and job-awaiting-approval flags it already parses out of
  * the chat's metadata. Note what is NOT in that list: a *running* session. A
- * chat on an archived or absent card fades while it is running, which is
- * intended — running is not the same question as "is this work still open" —
- * but it is now everyone's default rather than an opt-in, so do not describe
- * the exemptions as "rows that need the user" and leave it at that.
+ * chat on an archived card fades while it is running, which is intended —
+ * running is not the same question as "is this work still open" — but it is
+ * now everyone's default rather than an opt-in, so do not describe the
+ * exemptions as "rows that need the user" and leave it at that.
  *
  * Fades a chat whose card is archived — closed or hidden — and ONLY that. A
  * chat on no card is not archived and does not fade: it is a triggered chat, a

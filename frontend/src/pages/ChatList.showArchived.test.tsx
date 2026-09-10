@@ -90,6 +90,21 @@ function toggleShowArchived() {
   fireEvent.click(screen.getByRole("button", { name: "Archived" }));
 }
 
+/**
+ * Open the kebab menu on the row whose preview reads `text`.
+ *
+ * The row root is located by its inline `border-bottom` rather than by a class:
+ * `ChatListItem` sets a className only when the row is FADED, so keying on one
+ * would find the dimmed row and miss the undimmed control it is being compared
+ * against. The kebab button only exists while the row is hovered, which is why
+ * the mouseEnter has to land on the root and not on the text node.
+ */
+function openRowMenu(text: string) {
+  const row = screen.getByText(text).closest('div[style*="border-bottom"]')!;
+  fireEvent.mouseEnter(row);
+  fireEvent.click(row.querySelector('[title="Chat actions"]')!);
+}
+
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(listCards).mockResolvedValue({ cards: [] });
@@ -380,6 +395,84 @@ describe("content search widens the scope", () => {
     submitSearch("deploy script");
     await waitFor(() => expect(screen.getByText("archived chat")).toBeTruthy());
     expect(scopeOf(mockListChats.mock.calls).every((s) => s === "all")).toBe(true);
+  });
+});
+
+/**
+ * Hidden cards — the second half of "archived", and the reason the sidebar's
+ * card fetch differs from the board's.
+ *
+ * `metadata.card.hidden` opts a card out of the BOARD, and `GET /api/cards`
+ * omits hidden cards by default for exactly that reason. The list route counts
+ * one as archived all the same: `cardLifecycle=unarchived` withholds its tree
+ * just as it withholds a closed card's. So the sidebar has to ask for them, or
+ * its dim would call those rows "not archived" — no card, no verdict — while
+ * the scope was withholding them, which is the disagreement #440 exists to
+ * prevent.
+ *
+ * Asking for them creates the second obligation tested here. `cards` feeds the
+ * row menu as well as the dim, and the menu's one entry is a lifecycle toggle
+ * whose labels are written about the board ("moves to the board's Archived
+ * strip", "returns to the board"). A hidden card is on the board under neither
+ * lifecycle, and flipping it would not even clear the fade the user is looking
+ * at, because `hidden` stays set and no sidebar control can unset it. So the
+ * menu reads the BOARD cards and the dim reads all of them.
+ */
+describe("a hidden card", () => {
+  const OPEN = makeChat("chat-1", { preview: "open chat", rootChatId: "chat-1" });
+  const HIDDEN = makeChat("chat-2", { preview: "hidden chat", rootChatId: "chat-2" });
+
+  const card = (id: string, extra: Partial<CardSummary> = {}): CardSummary =>
+    ({ id, title: `card ${id}`, lifecycle: "open", chatCount: 1, memberChats: [{ chatId: id }], memberRuns: [], ...extra }) as unknown as CardSummary;
+
+  beforeEach(() => {
+    // "Archived" on, so the hidden card's tree is in scope and its row renders.
+    localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true }));
+    mockListChats.mockResolvedValue(listResponse([OPEN, HIDDEN]));
+    vi.mocked(listCards).mockResolvedValue({ cards: [card("chat-1"), card("chat-2", { hidden: true })] });
+  });
+
+  /**
+   * The single line that makes the route's hidden support and the dim's hidden
+   * support meet. Both ends are covered — cards.hidden-listing.test.ts and
+   * utils/chatDimming.test.ts — and nothing else pins the call between them, so
+   * reverting `listCards(true)` to `listCards()` is a plausible edit that
+   * regresses production with every other test still green.
+   */
+  it("asks the cards route for hidden cards, which the board never does", async () => {
+    await renderList();
+    expect(listCards).toHaveBeenCalledWith(true);
+  });
+
+  it("fades the hidden card's row, exactly as the scope withholds its tree", async () => {
+    await renderList();
+    const hidden = await screen.findByText("hidden chat");
+    expect(hidden.closest(".chatlist-item-dimmed")).toBeTruthy();
+    // Control: the open card's row is not faded, so this is the hidden flag and
+    // not a list that fades everything.
+    expect(screen.getByText("open chat").closest(".chatlist-item-dimmed")).toBeNull();
+  });
+
+  /**
+   * The trap that asking for hidden cards opens, closed. Before they were
+   * fetched, `cardOf` returned undefined for one and no entry rendered; the
+   * split in `ChatList` keeps that true rather than teaching the tooltip a
+   * fourth case for a card it could not act on anyway.
+   */
+  it("offers no lifecycle entry on its row, while an open card's row still does", async () => {
+    await renderList();
+    openRowMenu("hidden chat");
+    expect(screen.queryByText("Archive chat")).toBeNull();
+    expect(screen.queryByText("Unarchive chat")).toBeNull();
+    // Deleting a chat is unaffected — the row keeps every entry that is not
+    // about the card.
+    expect(screen.getByText("Delete")).toBeTruthy();
+  });
+
+  it("still offers it on a board card's row, so the absence above is the hidden flag", async () => {
+    await renderList();
+    openRowMenu("open chat");
+    expect(screen.getByText("Archive chat")).toBeTruthy();
   });
 });
 

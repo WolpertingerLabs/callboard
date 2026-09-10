@@ -52,6 +52,24 @@ interface ChatListProps {
   onViewModeChange?: (mode: SidebarViewMode) => void;
 }
 
+/**
+ * Authoritative chat→card lookup from the server rollup. Root stamps were
+ * added after forkedFrom, so deriving from one chat's metadata alone cannot
+ * resolve every multi-level legacy tree. Indexing memberChats handles both
+ * those records and descendants promoted after a deleted ancestor.
+ *
+ * Takes the card list rather than reading one, because the sidebar keeps two:
+ * board cards for the row menu and every card for the dim. See `boardCards`.
+ */
+function indexByChat(list: CardSummary[]): Map<string, CardSummary> {
+  const byChat = new Map<string, CardSummary>();
+  for (const card of list) {
+    byChat.set(card.id, card);
+    for (const member of card.memberChats) byChat.set(member.chatId, card);
+  }
+  return byChat;
+}
+
 export default function ChatList({
   activeChatId,
   onRefresh,
@@ -196,7 +214,7 @@ export default function ChatList({
    * Keyed on the submitted query rather than on `matchingChatIds`, so the
    * widening starts when the query is sent instead of when its hits land.
    * Otherwise the first render of a result set intersects it against a list
-   * still scoped to open cards, and the user watches most of their results
+   * still scoped to `unarchived`, and the user watches most of their results
    * appear a moment later. Trimmed to match `useChatSearch`, which decides a
    * search is running by the same rule.
    */
@@ -455,21 +473,32 @@ export default function ChatList({
     }
   };
 
-  const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
-  // Authoritative chat→card lookup from the server rollup. Root stamps were
-  // added after forkedFrom, so deriving from one chat's metadata alone cannot
-  // resolve every multi-level legacy tree. Indexing memberChats handles both
-  // those records and descendants promoted after a deleted ancestor.
-  const cardsByChatId = useMemo(() => {
-    const byChat = new Map<string, CardSummary>();
-    for (const card of cards) {
-      byChat.set(card.id, card);
-      for (const member of card.memberChats) byChat.set(member.chatId, card);
-    }
-    return byChat;
-  }, [cards]);
+  /**
+   * `cards` holds hidden cards too — `loadCards` asks for them, because the dim
+   * has to fade a hidden card's tree to stay the exact complement of
+   * `cardLifecycle=unarchived`. Only the dim wants that set.
+   *
+   * Everything else here means BOARD cards, and always did: before hidden cards
+   * were fetched at all, `cardOf` simply never saw one. Restore that by
+   * splitting the index rather than by giving each consumer a `hidden` check to
+   * remember. The consumer this protects is the row menu, whose only entry is a
+   * lifecycle toggle: it is written for cards that are on the board ("moves to
+   * the board's Archived strip", "returns to the board"), a hidden card is on
+   * the board under no lifecycle, and flipping one would not even clear the dim
+   * the user is looking at — `hidden` stays set, and nothing in the sidebar can
+   * unset it. An action that cannot reach the state it appears to control is
+   * not worth offering, so `cardOf` returns undefined and no entry renders.
+   */
+  const boardCards = useMemo(() => cards.filter((card) => !card.hidden), [cards]);
+  const cardsById = useMemo(() => new Map(boardCards.map((c) => [c.id, c])), [boardCards]);
+  const cardsByChatId = useMemo(() => indexByChat(boardCards), [boardCards]);
+  /** The same index over EVERY card, hidden included. Read by the dim alone. */
+  const dimCardsByChatId = useMemo(() => indexByChat(cards), [cards]);
 
-  /** The card a chat's lineage root is, when it is one and we've loaded it. */
+  /**
+   * The board card a chat's lineage root is, when it is one and we've loaded
+   * it. A hidden card answers undefined — see {@link boardCards}.
+   */
   const cardOf = (chat: Chat): CardSummary | undefined => {
     const direct = cardsByChatId.get(chat.id);
     if (direct) return direct;
@@ -489,8 +518,11 @@ export default function ChatList({
    * and the two rarer causes, one of which is local to this file: `cards` and
    * `chats` are separately timed requests here (the 15s poll refetches one,
    * the kebab menu patches the other).
+   *
+   * The one reader of `dimCardsByChatId` — hidden cards included, which is what
+   * makes this the complement of the server's scope rather than a near-miss.
    */
-  const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsByChatId, { cardsLoaded });
+  const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, dimCardsByChatId, { cardsLoaded });
 
   const handleToggleCardLifecycle = async (chat: Chat) => {
     const card = cardOf(chat);

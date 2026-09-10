@@ -40,7 +40,8 @@ interface LocalStorageData {
   worktreeByDefault?: boolean;
   showTriggeredChats?: boolean;
   /**
-   * Whether the sidebar includes chats on an archived (or absent) card.
+   * Whether the sidebar includes chats on an archived card — closed or hidden.
+   * A chat on NO card is not archived and is in the list either way.
    * Absent means "never chosen" — see {@link getChatsShowArchived}, which seeds
    * it from the two keys below rather than defaulting blindly.
    */
@@ -399,7 +400,9 @@ export function saveShowTriggeredChats(value: boolean): void {
 }
 
 /**
- * Whether the sidebar includes chats on an archived (or absent) card.
+ * Whether the sidebar includes chats on an archived card — closed or hidden.
+ * A chat on no card at all is not archived and is in the list either way, so
+ * this decides strictly fewer rows than its name once implied.
  *
  * Migrates the three-way scope this replaced, once, on first read: a stored
  * scope of "all" or "inactive" was showing the user archived rows, so it seeds
