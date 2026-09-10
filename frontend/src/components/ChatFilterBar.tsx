@@ -1,11 +1,16 @@
 import { useState } from "react";
-import { SlidersHorizontal, Search, Loader2 } from "lucide-react";
+import { SlidersHorizontal, Search, Loader2, Archive } from "lucide-react";
 import ChatFilterModal from "./ChatFilterModal";
 import { activeFilterCount, activeViewOptionCount, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
 interface ChatFilterBarProps {
   filters: ChatFilters;
   viewOptions: ChatViewOptions;
+  /**
+   * Commit filters and view options. The modal calls this behind its Apply
+   * button; the "Archived" toggle here calls it straight from the click — see
+   * the note on that button.
+   */
   onApply: (filters: ChatFilters, viewOptions: ChatViewOptions) => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
@@ -14,18 +19,30 @@ interface ChatFilterBarProps {
 }
 
 /**
- * Sidebar filter bar: one button that opens the filters modal, and the content
- * search box.
+ * Sidebar filter bar: the button that opens the filters modal, the "Archived"
+ * scope toggle, and the content search box.
  *
  * Scope toggles (bookmarks, triggered chats, cards-only) used to sit here as a
- * row of icon buttons. They live in the modal now — a rail of same-sized icons
- * gave no clue what any of them did, and the row grew every time a new
- * dimension appeared. The badge keeps the one thing the rail was actually good
- * at: telling you at a glance that the list you're looking at is narrowed.
+ * row of same-sized icon buttons, and were moved into the modal because that
+ * rail gave no clue what any of them did and grew every time a new dimension
+ * appeared. "Archived" is back out here, and neither half of that objection
+ * applies to it: it is one control rather than a rail, it carries a text label
+ * so it does not depend on an icon to explain itself, and it is flipped more
+ * often than everything in the modal put together — most of the chats on a
+ * real data dir are on archived cards, so this is the difference between a
+ * sidebar showing a handful of rows and one showing all of them. The bar is
+ * closed to a second one: anything that needs a companion control belongs in
+ * the modal, where a label and a hint fit.
+ *
+ * The badge on the modal button keeps the one thing the rail was good at:
+ * telling you at a glance that the list is narrowed. It deliberately does not
+ * count `showArchived` — that state is visible right here, and a badge on a
+ * modal that contains nothing to look at would send the user hunting.
  */
 export default function ChatFilterBar({ filters, viewOptions, onApply, searchQuery, onSearchChange, onSearchSubmit, isSearching }: ChatFilterBarProps) {
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const activeCount = activeFilterCount(filters) + activeViewOptionCount(viewOptions);
+  const { showArchived } = viewOptions;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
@@ -87,6 +104,46 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
               {activeCount}
             </span>
           )}
+        </button>
+
+        {/* Archived scope.
+
+            Committed on the click, with no Apply: that is not an oversight, it
+            is the reason this control was pulled out of the modal. `onApply` is
+            the same commit path the modal uses on Apply — `handleApplyFilters`
+            in ChatList persists the choice and `load` closes over
+            `viewOptions`, so the refetch follows from the state change. The
+            modal stages instead because a half-typed regex must not reshuffle
+            the list on every keystroke; a boolean has no half-typed state.
+
+            Same accent treatment as the filters button, so "on" reads the same
+            way in both places, plus `aria-pressed` and a title naming the
+            current state — it replaced a switch, whose position said which way
+            it was set without being asked. */}
+        <button
+          type="button"
+          onClick={() => onApply(filters, { ...viewOptions, showArchived: !showArchived })}
+          aria-pressed={showArchived}
+          style={{
+            background: showArchived ? "var(--accent)" : "var(--bg-secondary)",
+            color: showArchived ? "var(--text-on-accent)" : "var(--text)",
+            padding: "8px 10px",
+            borderRadius: 6,
+            border: showArchived ? "none" : "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            cursor: "pointer",
+            flexShrink: 0,
+            fontSize: 12,
+            fontWeight: 600,
+            lineHeight: 1,
+            transition: "background 0.15s, color 0.15s",
+          }}
+          title={showArchived ? "Showing chats on archived cards — click to hide them" : "Archived chats are hidden — click to show them"}
+        >
+          <Archive size={14} />
+          Archived
         </button>
 
         {/* Search input with search button on the right */}

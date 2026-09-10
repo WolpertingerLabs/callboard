@@ -18,7 +18,8 @@ export const DEFAULT_CHAT_FILTERS: ChatFilters = {
 };
 
 /**
- * Sidebar scope, edited alongside {@link ChatFilters} in the filters modal but
+ * Sidebar scope — mostly edited alongside {@link ChatFilters} in the filters
+ * modal (`showArchived` has its own toggle button in the filter bar), but
  * deliberately a separate type: these are resolved SERVER-side, while
  * ChatFilters is client-side post-filtering. Folding them together would drag
  * them into {@link hasActiveFilters}, which forces the list to fetch everything
@@ -31,6 +32,8 @@ export interface ChatViewOptions {
   showTriggered: boolean;
   /**
    * Whether chats on an archived card — or on no card at all — are in the list.
+   * The one view option with its own control in the filter bar rather than the
+   * modal, because it is flipped far more often than the rest put together.
    *
    * A browse scope, and near enough the complement of the unconditional dim in
    * `utils/chatDimming`: off, the rows that would have been faded are not
@@ -78,11 +81,30 @@ export function cardLifecycleFor({ showArchived, searching }: { showArchived: bo
 }
 
 /**
+ * Options the badge deliberately does not count, because the sidebar shows
+ * their state directly.
+ *
+ * The badge sits on the button that OPENS the filters modal, so what it
+ * promises is "there are edits in here". `showArchived` is a toggle button in
+ * the filter bar itself now: counting it would put a "1 active" badge on a
+ * modal that contains nothing to see, pointing the user at a control which is
+ * already lit up right next to it.
+ *
+ * A set rather than a hardcoded omission because the criterion generalises —
+ * anything promoted out of the modal to its own control belongs here on the
+ * way out.
+ */
+const BADGE_EXEMPT_VIEW_OPTIONS = new Set<keyof ChatViewOptions>(["showArchived"]);
+
+/**
  * How many view options are off their default — drives the filter button's
- * badge.
+ * badge. Options with their own control in the filter bar are exempt; see
+ * {@link BADGE_EXEMPT_VIEW_OPTIONS}.
  */
 export function activeViewOptionCount(options: ChatViewOptions): number {
-  return (Object.keys(DEFAULT_CHAT_VIEW_OPTIONS) as (keyof ChatViewOptions)[]).filter((key) => options[key] !== DEFAULT_CHAT_VIEW_OPTIONS[key]).length;
+  return (Object.keys(DEFAULT_CHAT_VIEW_OPTIONS) as (keyof ChatViewOptions)[]).filter(
+    (key) => !BADGE_EXEMPT_VIEW_OPTIONS.has(key) && options[key] !== DEFAULT_CHAT_VIEW_OPTIONS[key],
+  ).length;
 }
 
 /** Fields that are both switched on and actually carry a value. */

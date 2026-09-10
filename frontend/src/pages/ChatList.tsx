@@ -480,9 +480,13 @@ export default function ChatList({
   };
 
   /**
-   * Commit both halves of the filters modal. No explicit reload: `load` closes
-   * over `viewOptions`, so changing it recreates the callback and the effect
-   * that depends on it refetches.
+   * Commit both halves of the sidebar's filter state. Called by the filters
+   * modal on Apply, and by the filter bar's "Archived" toggle straight from
+   * the click — one commit path, so persistence and the refetch cannot differ
+   * between them.
+   *
+   * No explicit reload: `load` closes over `viewOptions`, so changing it
+   * recreates the callback and the effect that depends on it refetches.
    */
   const handleApplyFilters = (nextFilters: ChatFilters, nextView: ChatViewOptions) => {
     setFilters(nextFilters);
@@ -548,25 +552,25 @@ export default function ChatList({
     }).length;
   }, [chats, viewOptions.showTriggered]);
 
-  // Determine the empty state message. `showArchived` is normalised away
-  // first, for the reason its predecessor was: switching it ON only ever ADDS
-  // rows, so an empty list is never its doing and "No chats match the current
-  // filters" would be a lie. It still counts toward the filter button's badge,
-  // where "you have changed the view" is exactly what the badge means.
-  const isFiltered =
-    activeViewOptionCount({ ...viewOptions, showArchived: DEFAULT_CHAT_VIEW_OPTIONS.showArchived }) > 0 ||
-    hasActiveFilters(filters) ||
-    matchingChatIds !== null;
+  // Determine the empty state message. `showArchived` must not reach this:
+  // switching it ON only ever ADDS rows, so an empty list is never its doing
+  // and "No chats match the current filters" would be a lie. It is not
+  // normalised away here any more because `activeViewOptionCount` already
+  // excludes it — it has its own toggle in the filter bar and is exempt from
+  // the modal's badge, and the two exclusions want the same answer.
+  const isFiltered = activeViewOptionCount(viewOptions) > 0 || hasActiveFilters(filters) || matchingChatIds !== null;
 
   /**
-   * The other direction is not normalised away, and gets said out loud: OFF is
-   * the default, so it never reaches the badge, yet it is now the likeliest
-   * reason for an empty sidebar — a folder whose cards are all archived shows
-   * nothing at all, where before it showed a list of faded rows.
+   * The other direction gets said out loud: OFF is the default, and it is now
+   * the likeliest reason for an empty sidebar — a folder whose cards are all
+   * archived shows nothing at all, where before it showed a list of faded
+   * rows. The message names the "Archived" button in the filter bar directly,
+   * which is the whole benefit of it being there: the fix is one click away,
+   * in view, rather than two clicks deep in a modal.
    *
    * `searching` cancels that, because it cancels the scope: a search runs
    * against everything, so blaming an empty result on hidden archived chats
-   * would send the user to a switch that would not have changed the answer.
+   * would send the user to a button that would not have changed the answer.
    */
   const archivedHidden = !viewOptions.showArchived && !searching;
   const emptyMessage = isFiltered
@@ -574,7 +578,7 @@ export default function ChatList({
       ? "No chats match the current filters. Archived chats are hidden."
       : "No chats match the current filters"
     : archivedHidden
-      ? "No chats on an open card. Turn on “Show archived” in filters to include chats on archived cards."
+      ? "No chats on an open card. Turn on “Archived” above to include chats on archived cards."
       : "No chats yet. Create one to get started.";
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons

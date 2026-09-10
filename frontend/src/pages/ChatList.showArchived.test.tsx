@@ -7,7 +7,7 @@
  * Worth testing from the page rather than the pure function alone, because the
  * mapping has to survive four separate paths that each construct their own
  * request — the initial load, the stale-response refetch, the "Load next page"
- * pagination, and the refetch triggered by applying the filters modal. It is
+ * pagination, and the refetch triggered by the filter bar's toggle. It is
  * also the reason the list needs no sections: while the user is BROWSING with
  * the toggle off the server sends no chat the dim would fade, so there is
  * nothing to separate out. Searching is the deliberate exception, and the
@@ -78,10 +78,13 @@ async function renderList() {
   return view;
 }
 
-/** Open the filters modal and flip the switch, without applying. */
+/**
+ * Click the filter bar's "Archived" toggle. One click, no modal and no Apply —
+ * the button commits straight from the click, which is why every test below
+ * goes from here to asserting on the request.
+ */
 function toggleShowArchived() {
-  fireEvent.click(screen.getByTitle(/^Filters and view/));
-  fireEvent.click(screen.getByText("Show archived"));
+  fireEvent.click(screen.getByRole("button", { name: "Archived" }));
 }
 
 beforeEach(() => {
@@ -103,17 +106,26 @@ describe("Show archived → cardLifecycle", () => {
     expect(scopeOf(mockListChats.mock.calls)).toEqual(["active"]);
   });
 
-  it("asks for everything once the toggle is applied", async () => {
+  it("asks for everything on one click of the toggle", async () => {
     await renderList();
 
     toggleShowArchived();
-    // Staged only — the list has not refetched yet.
-    expect(scopeOf(mockListChats.mock.calls)).toEqual(["active"]);
-
-    fireEvent.click(screen.getByText("Apply"));
     // "all", not "inactive": the archived rows join the open ones in place
-    // rather than replacing them.
+    // rather than replacing them. And it arrives without an Apply — the whole
+    // point of promoting this out of the modal.
     await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+  });
+
+  it("narrows back to open cards on a second click", async () => {
+    await renderList();
+
+    toggleShowArchived();
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all"]));
+
+    // The button reads the committed state back off `viewOptions`, so it
+    // flips rather than latching on.
+    toggleShowArchived();
+    await waitFor(() => expect(scopeOf(mockListChats.mock.calls)).toEqual(["active", "all", "active"]));
   });
 
   it("carries the scope into pagination, so page 2 is not a different list", async () => {
@@ -121,7 +133,6 @@ describe("Show archived → cardLifecycle", () => {
     await renderList();
 
     toggleShowArchived();
-    fireEvent.click(screen.getByText("Apply"));
     await waitFor(() => expect(mockListChats).toHaveBeenCalledTimes(2));
 
     fireEvent.click(screen.getByText("Load next page"));
@@ -131,7 +142,6 @@ describe("Show archived → cardLifecycle", () => {
   it("persists the choice and reloads with it", async () => {
     await renderList();
     toggleShowArchived();
-    fireEvent.click(screen.getByText("Apply"));
     await waitFor(() => expect(JSON.parse(localStorage.getItem(KEY)!).chatsShowArchived).toBe(true));
 
     // A fresh mount, as a page reload would be.
@@ -291,9 +301,9 @@ describe("the empty sidebar", () => {
     );
     // Not "No chats yet": a folder whose cards are all archived now shows
     // nothing at all, where before it showed a list of faded rows. Matched on
-    // the sentence, not on "Show archived" alone — that string is also the
-    // filter modal's switch label, so the loose match would pass on a page
-    // that never rendered an empty state.
+    // the sentence, not on "Archived" alone — that string is also the filter
+    // bar's toggle label, which this page always renders, so the loose match
+    // would pass on a page that never showed an empty state.
     expect(await screen.findByText(/^No chats on an open card\./)).toBeTruthy();
   });
 
