@@ -74,11 +74,15 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // Held by the same lock as Cancel, and for the same reason: closing over
+      // a save in flight discards the only place its error can be read. Two
+      // exits from one state that disagreed about whether it may be left
+      // would just be the Cancel lock with a keyboard bypass.
+      if (e.key === "Escape" && busy !== "saving") onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, busy]);
 
   const trimmed = value.trim();
   // A no-op save still costs a write, a notify and a list-cache clear, so the
@@ -99,7 +103,11 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
     } catch (err) {
       // Inline rather than an alert: the dialog is still open and is where the
       // user will retry, and the route's failures are worth reading (a retired
-      // harness, a chat with nothing to title).
+      // harness, a chat with nothing to title). Logged as well as shown —
+      // `setError` reports into state, and state is discarded if the dialog
+      // has been dismissed, which would leave some failures with no trace at
+      // all. See `handleRegenerate` below, where that is the likely case.
+      console.error("Failed to save chat title:", err);
       setError(err instanceof Error ? err.message : "Failed to save chat title");
       setBusy(null);
     }
@@ -115,6 +123,14 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
       setSavedTitle(title);
       onSaved(title);
     } catch (err) {
+      // Dismissal is allowed mid-flight and actively encouraged (see Cancel
+      // below), so this catch routinely runs with nowhere to render: `setError`
+      // is discarded once the dialog is gone, and the row simply never
+      // changes — a 422 "no readable conversation" then looks exactly like a
+      // regeneration that picked the same words. The log is the floor that
+      // keeps that distinguishable. Not an alert: the user dismissed this
+      // dialog, and interrupting them seconds later is not the answer.
+      console.error("Failed to regenerate chat title:", err);
       setError(err instanceof Error ? err.message : "Failed to regenerate chat title");
     } finally {
       setBusy(null);

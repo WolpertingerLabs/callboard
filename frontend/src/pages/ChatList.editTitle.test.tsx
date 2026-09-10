@@ -353,6 +353,57 @@ describe("ChatList edit title", () => {
     });
   });
 
+  it("will not let Escape out of a save the way it lets Escape out of a regeneration", async () => {
+    // Cancel is locked during a save so the error has somewhere to land. An
+    // unguarded Escape would be that lock with a keyboard bypass — and Enter
+    // to submit then Escape by reflex is the natural way to hit it.
+    const pending = deferred<{ title: string | null }>();
+    mockSetTitle.mockReturnValue(pending.promise);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await renderList();
+    openEditor();
+    fireEvent.change(titleField(), { target: { value: "Doomed" } });
+    await act(async () => {
+      fireEvent.keyDown(titleField(), { key: "Enter" });
+    });
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.getByText("Edit Title")).toBeTruthy();
+
+    // So the failure has somewhere to be read, which was the point.
+    await act(async () => {
+      pending.reject(new Error("This chat's stored metadata could not be read"));
+    });
+    await waitFor(() => expect(screen.getByText("This chat's stored metadata could not be read")).toBeTruthy());
+    logged.mockRestore();
+  });
+
+  it("leaves a trace when a regeneration fails after the dialog is gone", async () => {
+    // The dismissal fix keeps the request alive across unmount, so this catch
+    // routinely runs with nowhere to render: `setError` is discarded and the
+    // row never changes, making a 422 indistinguishable from a regeneration
+    // that picked the same words.
+    const pending = deferred<{ title: string }>();
+    mockRegenerate.mockReturnValue(pending.promise);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await renderList();
+    openEditor();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Regenerate"));
+    });
+    fireEvent.click(screen.getByText("Cancel"));
+
+    const failure = new Error("This chat has no readable conversation to title");
+    await act(async () => {
+      pending.reject(failure);
+    });
+
+    expect(logged).toHaveBeenCalledWith("Failed to regenerate chat title:", failure);
+    logged.mockRestore();
+  });
+
   it("saves on Enter from the field", async () => {
     await renderList();
     openEditor();
@@ -381,6 +432,7 @@ describe("ChatList edit title", () => {
 
   it("keeps the dialog open and says why when a save fails", async () => {
     mockSetTitle.mockRejectedValue(new Error("Chat not found"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await renderList();
     openEditor();
@@ -394,6 +446,7 @@ describe("ChatList edit title", () => {
     await waitFor(() => expect(screen.getByText("Chat not found")).toBeTruthy());
     expect(titleField().value).toBe("Doomed");
     expect(saveButton().hasAttribute("disabled")).toBe(false);
+    logged.mockRestore();
   });
 
   it("reports why a regeneration failed rather than swallowing it", async () => {
@@ -403,6 +456,7 @@ describe("ChatList edit title", () => {
     // indistinguishable from a regeneration that picked the same title: the
     // user clicks, waits, and the field never changes.
     mockRegenerate.mockRejectedValue(new Error("This chat has no readable conversation to title"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await renderList();
     openEditor();
@@ -415,5 +469,6 @@ describe("ChatList edit title", () => {
     // disabled for the life of the dialog.
     expect(screen.getByText("Regenerate").closest("button")!.hasAttribute("disabled")).toBe(false);
     expect(titleField().value).toBe("Old Title");
+    logged.mockRestore();
   });
 });
