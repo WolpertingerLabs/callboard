@@ -17,7 +17,12 @@ interface RecentDirectory {
 
 export type ThemeMode = "light" | "dark" | "system";
 
-/** The sidebar's "Active cards first" sections, as `sectionByActive` keys them. */
+/**
+ * The sidebar's "Open chats first" sections, as `sectionByActive` keys them.
+ *
+ * The keys are persisted, so they stay `active`/`inactive` even though the
+ * headers above them now read "Open" and "Archived".
+ */
 export type ChatSectionKey = "active" | "inactive";
 
 interface LocalStorageData {
@@ -53,9 +58,19 @@ interface LocalStorageData {
   chatsCardsOnly?: boolean;
   /** Sidebar's card-lifecycle scope: "all" | "active" | "inactive". */
   chatsCardLifecycle?: CardLifecycleFilter;
-  /** Sidebar fades chats whose card is closed or absent, rather than hiding them. */
+  /**
+   * The old "Dim inactive chats" switch.
+   *
+   * @deprecated The dim is unconditional now, so nothing reads or writes this.
+   * Left declared to document that an older bundle still writes it and still
+   * reads it back, so it must not be stripped. The declaration is not what
+   * preserves it: `getStorageData` casts the whole parsed blob and
+   * `setStorageData` re-serialises it, so every key round-trips whether this
+   * interface names it or not. Anything that starts picking fields out of the
+   * parsed object would break that, and this is the note saying why not to.
+   */
   chatsDimCardless?: boolean;
-  /** Sidebar splits into Active/Inactive sections, chats on an open card first. */
+  /** Sidebar splits into Open/Archived sections, chats on an open card first. */
   chatsSortByCardActive?: boolean;
   /**
    * Which of those sections are expanded. Absent — and an absent key within it
@@ -411,17 +426,6 @@ export function saveChatsCardLifecycle(value: CardLifecycleFilter): void {
   const data = getStorageData();
   data.chatsCardLifecycle = value;
   data.chatsCardsOnly = value === "active";
-  setStorageData(data);
-}
-
-export function getChatsDimCardless(): boolean {
-  const data = getStorageData();
-  return data.chatsDimCardless ?? false;
-}
-
-export function saveChatsDimCardless(value: boolean): void {
-  const data = getStorageData();
-  data.chatsDimCardless = value;
   setStorageData(data);
 }
 

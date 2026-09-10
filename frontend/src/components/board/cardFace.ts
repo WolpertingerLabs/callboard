@@ -55,7 +55,8 @@ export function useCardCountdown(card: CardSummary): number {
 
 /** The one-line state a card face leads with. */
 export function statusLine(card: CardSummary, now: number): string {
-  if (card.lifecycle === "closed") return "Closed";
+  // `closed` is the wire value; "Archived" is what it reads as.
+  if (card.lifecycle === "closed") return "Archived";
   if (card.rollup === "needs_you") return needsYouLabel(card);
   if (card.rollup === "idle") return ROLLUP_LABELS.idle;
   return activeLabel(card, now);
@@ -74,7 +75,7 @@ export const FOLDER_LIVE_COLORS: Record<"waiting" | "ongoing", string> = {
 export interface CardFolderSummary {
   /**
    * Ordered root-first; empty when paths are off, or the card's member rows
-   * are gone. On a closed card every entry's `live` is already stripped, so
+   * are gone. On an archived card every entry's `live` is already stripped, so
    * no consumer has to remember to ask about the lifecycle a second time.
    */
   folders: CardFolder[];
@@ -106,7 +107,7 @@ export function cardFolderSummary(card: CardSummary, showPath: boolean): CardFol
   // Computing it is one pass over an array the face already holds, but there
   // is no reason to make that pass for a board with paths switched off.
   const all = showPath ? cardFolders(card) : [];
-  // A closed card has no live anything, whatever its member rows still say —
+  // An archived card has no live anything, whatever its member rows still say —
   // the rule `statusLine` applies to the rollup, applied to the folders.
   //
   // Stripped off the folders themselves rather than gated at each reader,

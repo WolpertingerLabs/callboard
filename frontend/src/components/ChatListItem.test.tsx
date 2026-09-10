@@ -74,28 +74,64 @@ describe("ChatListItem card menu", () => {
     onToggleLifecycle: vi.fn(),
   };
 
-  it("offers close for a chat on an open card", () => {
+  it("offers Archive chat for a chat on an open card", () => {
     const chat = makeChat({ metadata: JSON.stringify({ title: "My Chat", rootChatId: "card-1" }) });
     const { container } = render(
-      <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open" } }} />,
+      <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 } }} />,
     );
     openRowMenu(container);
 
-    expect(screen.getByText("Close card")).toBeTruthy();
+    expect(screen.getByText("Archive chat")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Close card"));
+    fireEvent.click(screen.getByText("Archive chat"));
     expect(CARD_MENU.onToggleLifecycle).toHaveBeenCalledTimes(1);
   });
 
-  it("flips the label to Reopen for a chat on a closed card", () => {
+  it("flips the label to Unarchive for a chat on an archived card", () => {
     const chat = makeChat({ metadata: JSON.stringify({ rootChatId: "card-1" }) });
     const { container } = render(
-      <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Shipped", lifecycle: "closed" } }} />,
+      <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Shipped", lifecycle: "closed", chatCount: 1 } }} />,
     );
     openRowMenu(container);
 
-    expect(screen.getByText("Reopen card")).toBeTruthy();
-    expect(screen.queryByText("Close card")).toBeNull();
+    expect(screen.getByText("Unarchive chat")).toBeTruthy();
+    expect(screen.queryByText("Archive chat")).toBeNull();
+  });
+
+  /**
+   * The entry is worded per chat but archives the card's whole lineage tree,
+   * and nothing else on the row says how big that tree is. The tooltip is the
+   * only place that number appears before the click, so it is worth pinning
+   * both branches: present when it is news, absent when it is not.
+   */
+  describe("the tooltip's blast radius", () => {
+    const titleOf = (container: HTMLElement, label: string) => {
+      openRowMenu(container);
+      return screen.getByText(label).closest("button")!.getAttribute("title")!;
+    };
+    const renderWithCard = (card: { title: string; lifecycle: "open" | "closed"; chatCount: number }) =>
+      render(
+        <ChatListItem chat={makeChat({ metadata: JSON.stringify({ rootChatId: "card-1" }) })} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card }} />,
+      ).container;
+
+    it("counts the chats a multi-chat card would take with it", () => {
+      const title = titleOf(renderWithCard({ title: "Ship it", lifecycle: "open", chatCount: 6 }), "Archive chat");
+      expect(title).toContain("all 6 chats");
+      expect(title).toContain("Ship it");
+    });
+
+    it("says nothing about a count on a one-chat card", () => {
+      // The overwhelming majority of cards. "all 1 chats" would be noise about
+      // a card whose blast radius is the row already under the pointer.
+      const title = titleOf(renderWithCard({ title: "Ship it", lifecycle: "open", chatCount: 1 }), "Archive chat");
+      expect(title).not.toMatch(/\d/);
+      expect(title).toContain("Archived strip");
+    });
+
+    it("does not count on the way back — unarchiving takes nothing with it that archiving did not", () => {
+      const title = titleOf(renderWithCard({ title: "Shipped", lifecycle: "closed", chatCount: 6 }), "Unarchive chat");
+      expect(title).not.toMatch(/\d/);
+    });
   });
 
   it("omits the lifecycle entry when the card record has not loaded", () => {
@@ -105,16 +141,16 @@ describe("ChatListItem card menu", () => {
     const { container } = render(<ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={CARD_MENU} />);
     openRowMenu(container);
 
-    expect(screen.queryByText("Close card")).toBeNull();
-    expect(screen.queryByText("Reopen card")).toBeNull();
+    expect(screen.queryByText("Archive chat")).toBeNull();
+    expect(screen.queryByText("Unarchive chat")).toBeNull();
   });
 
   it("renders no card entries at all without a cardMenu", () => {
     const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
     openRowMenu(container);
 
-    expect(screen.queryByText("Close card")).toBeNull();
-    expect(screen.queryByText("Reopen card")).toBeNull();
+    expect(screen.queryByText("Archive chat")).toBeNull();
+    expect(screen.queryByText("Unarchive chat")).toBeNull();
     expect(screen.getByText("Delete")).toBeTruthy();
   });
 
@@ -128,11 +164,11 @@ describe("ChatListItem card menu", () => {
   it("does not open the chat when a menu entry is clicked", () => {
     const onClick = vi.fn();
     const { container } = render(
-      <ChatListItem chat={makeChat()} onClick={onClick} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open" } }} />,
+      <ChatListItem chat={makeChat()} onClick={onClick} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 } }} />,
     );
     openRowMenu(container);
 
-    fireEvent.click(screen.getByText("Close card"));
+    fireEvent.click(screen.getByText("Archive chat"));
 
     expect(CARD_MENU.onToggleLifecycle).toHaveBeenCalledTimes(1);
     expect(onClick).not.toHaveBeenCalled();

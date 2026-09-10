@@ -506,7 +506,7 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "list_cards",
-        "List cards (tickets) with their lifecycle and narrative status. Includes closed cards by default — useful to check whether a topic was already handled. Filter with lifecycle: 'open' or 'closed'.",
+        "List cards (tickets) with their lifecycle and narrative status. Includes archived cards by default — useful to check whether a topic was already handled. Filter with lifecycle: 'open' or 'closed' ('closed' is the stored value for what the UI calls archived).",
         {
           lifecycle: z.enum(["open", "closed"]).optional().describe("Only cards in this lifecycle (default: all)"),
         },

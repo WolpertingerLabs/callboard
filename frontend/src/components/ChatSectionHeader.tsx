@@ -1,5 +1,5 @@
 /**
- * The header above an "Active cards first" section.
+ * The header above an "Open chats first" section.
  *
  * Typography and chevron are the sidebar's existing "Staging" header, down to
  * the count in parentheses — these are the same kind of control on the same

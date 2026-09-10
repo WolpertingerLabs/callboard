@@ -39,8 +39,6 @@ import {
   saveShowTriggeredChats,
   getChatsCardLifecycle,
   saveChatsCardLifecycle,
-  getChatsDimCardless,
-  saveChatsDimCardless,
   getChatsSortByCardActive,
   saveChatsSortByCardActive,
   type SidebarViewMode,
@@ -92,7 +90,6 @@ export default function ChatList({
     // reading the pair (a downgraded bundle, a stale persisted store) sees
     // them disagree.
     cardsOnly: getChatsCardLifecycle() === "active",
-    dimCardless: getChatsDimCardless(),
     sortByCardActive: getChatsSortByCardActive(),
   }));
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
@@ -113,7 +110,7 @@ export default function ChatList({
   const [editTitleFor, setEditTitleFor] = useState<{ chatId: string; currentTitle: string; fallbackName: string } | null>(null);
   // Card-picker modal state for the per-chat "Add to card…" action.
   // Every card, kept loaded rather than fetched when the picker opens: the row
-  // menu needs each filed chat's card lifecycle to label Close vs Reopen, and
+  // menu needs each filed chat's card lifecycle to label Archive vs Unarchive, and
   // the sidebar is the one place all card actions live now.
   const [cards, setCards] = useState<CardSummary[]>([]);
   // Whether the first listCards has come back. Only the dim reads it, and only
@@ -284,7 +281,7 @@ export default function ChatList({
 
   // Refetch when chat metadata changes (status, summon, title) via SSE. Card
   // events ride the same signal, so the row menu's lifecycle labels follow a
-  // close/reopen done on the board.
+  // archive/unarchive done on the board.
   useEffect(() => {
     if (metadataVersion === 0) return; // skip initial
     const timer = setTimeout(() => {
@@ -429,14 +426,14 @@ export default function ChatList({
   };
 
   /**
-   * "Dim inactive chats": fade rows whose card is closed or absent. Purely a
-   * render decision over cards already on the page — no request changes, which
-   * is why it is a view option and not a filter.
+   * Fade rows whose card is archived or absent. Unconditional — purely a
+   * render decision over cards already on the page, so there is no request to
+   * change and nothing for the user to switch off.
    */
-  const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsByChatId, { dimCardless: viewOptions.dimCardless, cardsLoaded });
+  const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, cardsByChatId, { cardsLoaded });
 
   /**
-   * "Active cards first": the per-chat verdict the Active/Inactive split reads,
+   * "Open chats first": the per-chat verdict the Open/Archived split reads,
    * or `undefined` for "render as if the option were off" — which `cardsLoaded`
    * makes load-bearing, for the reason spelled out at the predicate itself.
    */
@@ -459,7 +456,7 @@ export default function ChatList({
   const cardMenuFor = (chat: Chat): ChatCardMenu => {
     const card = cardOf(chat);
     return {
-      ...(card && { card: { title: card.title, lifecycle: card.lifecycle } }),
+      ...(card && { card: { title: card.title, lifecycle: card.lifecycle, chatCount: card.chatCount } }),
       onToggleLifecycle: () => handleToggleCardLifecycle(chat),
     };
   };
@@ -474,7 +471,6 @@ export default function ChatList({
     setViewOptions(nextView);
     saveShowTriggeredChats(nextView.showTriggered);
     saveChatsCardLifecycle(nextView.cardLifecycle);
-    saveChatsDimCardless(nextView.dimCardless);
     saveChatsSortByCardActive(nextView.sortByCardActive);
   };
 
@@ -535,16 +531,14 @@ export default function ChatList({
     }).length;
   }, [chats, viewOptions.showTriggered]);
 
-  // Determine the empty state message. `dimCardless` and `sortByCardActive`
-  // are normalised away first: one fades rows and the other reorders them, and
-  // neither ever removes one, so an empty list is never their doing and "No
-  // chats match the current filters" would be a lie. They still count toward
-  // the filter button's badge, where "you have changed the view" is exactly
-  // what the badge means.
+  // Determine the empty state message. `sortByCardActive` is normalised away
+  // first: it only reorders rows and never removes one, so an empty list is
+  // never its doing and "No chats match the current filters" would be a lie.
+  // It still counts toward the filter button's badge, where "you have changed
+  // the view" is exactly what the badge means.
   const isFiltered =
     activeViewOptionCount({
       ...viewOptions,
-      dimCardless: DEFAULT_CHAT_VIEW_OPTIONS.dimCardless,
       sortByCardActive: DEFAULT_CHAT_VIEW_OPTIONS.sortByCardActive,
     }) > 0 ||
     hasActiveFilters(filters) ||

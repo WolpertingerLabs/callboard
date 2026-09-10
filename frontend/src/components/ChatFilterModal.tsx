@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowUpNarrowWide, Bookmark, Zap, LayoutGrid, SunDim } from "lucide-react";
+import { ArrowUpNarrowWide, Bookmark, Zap, LayoutGrid } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import { DEFAULT_CHAT_VIEW_OPTIONS, type CardLifecycleFilter, type ChatFilters, type ChatViewOptions } from "../types/chatFilters";
 
@@ -137,7 +137,7 @@ function SwitchRow({
  * A segmented control rather than a third switch because the states are
  * mutually exclusive and one of them is the default: two toggles would need a
  * rule for what both-off means, and the whole point of this option is that
- * "neither active nor inactive" is a real, distinct answer (show everything).
+ * "neither open nor archived" is a real, distinct answer (show everything).
  */
 function ChoiceRow<T extends string>({
   icon,
@@ -200,16 +200,25 @@ function ChoiceRow<T extends string>({
   );
 }
 
-const CARD_LIFECYCLE_OPTIONS: { value: CardLifecycleFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "inactive", label: "Inactive" },
-];
+/**
+ * Labels only. The values are the `GET /api/chats?cardLifecycle=` query an
+ * older bundle may still send, so `active`/`inactive` stay on the wire while
+ * the UI reads "Open"/"Archived".
+ */
+const CARD_LIFECYCLE_LABELS: Record<CardLifecycleFilter, string> = {
+  all: "All",
+  active: "Open",
+  inactive: "Archived",
+};
+
+const CARD_LIFECYCLE_OPTIONS: { value: CardLifecycleFilter; label: string }[] = (
+  ["all", "active", "inactive"] as const
+).map((value) => ({ value, label: CARD_LIFECYCLE_LABELS[value] }));
 
 const CARD_LIFECYCLE_HINTS: Record<CardLifecycleFilter, string> = {
   all: "Every chat, whatever its card is doing",
   active: "Only chats on an open card, plus their descendants",
-  inactive: "Only chats on a closed card — or on no card at all",
+  inactive: "Only chats on an archived card — or on no card at all",
 };
 
 /**
@@ -224,7 +233,7 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
   const [local, setLocal] = useState<ChatFilters>(filters);
   const [localView, setLocalView] = useState<ChatViewOptions>(viewOptions);
 
-  const toggleView = (key: "bookmarked" | "showTriggered" | "dimCardless" | "sortByCardActive") =>
+  const toggleView = (key: "bookmarked" | "showTriggered" | "sortByCardActive") =>
     setLocalView((prev) => ({ ...prev, [key]: !prev[key] }));
 
   /**
@@ -298,26 +307,14 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
             {/* Directly under the scope rather than last in the block: it is
                 the option that makes this one inert, and a disabled switch whose
                 reason is three rows away reads as a bug. Either non-default
-                scope already answers the question these two ask — every row on
+                scope already answers the question this one asks — every row on
                 screen is then on the same side of the split. */}
             <SwitchRow
-              icon={<SunDim size={16} />}
-              label="Dim inactive chats"
-              hint={
-                localView.cardLifecycle !== "all"
-                  ? `Nothing to dim — the list is already scoped to ${localView.cardLifecycle} cards`
-                  : "Fade chats with no card, or a closed one"
-              }
-              checked={localView.dimCardless}
-              onChange={() => toggleView("dimCardless")}
-              disabled={localView.cardLifecycle !== "all"}
-            />
-            <SwitchRow
               icon={<ArrowUpNarrowWide size={16} />}
-              label="Active cards first"
+              label="Open chats first"
               hint={
                 localView.cardLifecycle !== "all"
-                  ? `Nothing to split — the list is already scoped to ${localView.cardLifecycle} cards`
+                  ? `Nothing to split — the list is already scoped to ${CARD_LIFECYCLE_LABELS[localView.cardLifecycle].toLowerCase()} cards`
                   : "Group chats on an open card above the rest, under headers"
               }
               checked={localView.sortByCardActive}

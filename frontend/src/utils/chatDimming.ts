@@ -1,10 +1,10 @@
 import type { Chat, CardSummary } from "../api";
 
 /**
- * The "Dim inactive chats" decision, as a function rather than an expression
- * inline in the list, for one reason: its whole difficulty is a state the list
- * passes through for a few hundred milliseconds on every mount and which no
- * render of the finished page reproduces.
+ * The archived-chat dim, as a function rather than an expression inline in the
+ * list, for one reason: its whole difficulty is a state the list passes
+ * through for a few hundred milliseconds on every mount and which no render of
+ * the finished page reproduces.
  */
 
 /**
@@ -31,7 +31,7 @@ export function chatCardId(chat: Pick<Chat, "id" | "metadata">): string | undefi
  * Whether the chat is filed under a card that is currently open.
  *
  * The shared question behind two features: the dim fades the rows this returns
- * false for, and "Active cards first" files them under the Inactive header.
+ * false for, and "Open chats first" files them under the Archived header.
  * A dangling id — the root chat was deleted — is a chat with no live card,
  * same as never having had one, so it answers false like an unfiled chat.
  *
@@ -54,8 +54,6 @@ export function isChatCardActive(
 }
 
 export interface DimContext {
-  /** The view option. */
-  dimCardless: boolean;
   /**
    * Whether the first `listCards` has returned.
    *
@@ -65,6 +63,11 @@ export interface DimContext {
    * paint `cards` is `[]`, so every one of them looks identical to "no card".
    * Without this flag the entire list flashes dimmed on every mount and then
    * un-dims when the fetch lands.
+   *
+   * Now the *only* gate: the dim used to sit behind a view option a user had
+   * to switch on, so the flash was rare and opt-in. It is unconditional, so
+   * this flag is what stands between every user and a full-list dim on every
+   * mount. Do not drop it.
    */
   cardsLoaded: boolean;
 }
@@ -72,17 +75,26 @@ export interface DimContext {
 /**
  * Whether a row is a candidate for dimming.
  *
- * Candidate, not verdict: `ChatListItem` still exempts rows that need the user
- * (active, summoning, unread), because it is the component that already parses
- * those out of the chat's metadata.
+ * Candidate, not verdict: `ChatListItem` still exempts four kinds of row, and
+ * it is the component that holds them — the open chat (`activeChatId`), plus
+ * the summon, unread and job-awaiting-approval flags it already parses out of
+ * the chat's metadata. Note what is NOT in that list: a *running* session. A
+ * chat on an archived or absent card fades while it is running, which is
+ * intended — running is not the same question as "is this work still open" —
+ * but it is now everyone's default rather than an opt-in, so do not describe
+ * the exemptions as "rows that need the user" and leave it at that.
+ *
+ * Fades a chat whose card is archived *or* absent — the same predicate the dim
+ * has always used, now with no toggle in front of it.
  */
 export function isChatDimmed(
   chat: Pick<Chat, "id" | "metadata">,
   // Lifecycle is the only field the dim reads; asking for less than a
-  // CardSummary is what lets a test state a card as `{ lifecycle: "closed" }`.
+  // CardSummary is what lets a test state a card as `{ lifecycle: "closed" }`
+  // (the wire value behind the UI's "Archived").
   cardsById: ReadonlyMap<string, Pick<CardSummary, "lifecycle">>,
-  { dimCardless, cardsLoaded }: DimContext,
+  { cardsLoaded }: DimContext,
 ): boolean {
-  if (!dimCardless || !cardsLoaded) return false;
+  if (!cardsLoaded) return false;
   return !isChatCardActive(chat, cardsById);
 }

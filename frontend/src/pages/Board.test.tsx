@@ -136,7 +136,7 @@ describe("entering selection mode from the desktop", () => {
 
     expect(count()).toBe("1 selected");
     expect(selectedTitles()).toEqual(["Alpha one"]);
-    expect(screen.getByRole("button", { name: "Close 1" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Archive 1" })).toBeDefined();
   });
 
   it("a plain click still opens the drawer", async () => {
@@ -208,7 +208,7 @@ describe("shift+click ranges", () => {
     expect(selectedTitles()).toEqual(["Beta one"]);
   });
 
-  it("inside the closed strip, follows the strip's own most-recently-closed-first order", async () => {
+  it("inside the archived strip, follows the strip's own most-recently-archived-first order", async () => {
     await mount();
     fireEvent.click(tile("Closed one"), { metaKey: true });
     fireEvent.click(tile("Closed two"), { shiftKey: true });
@@ -232,13 +232,13 @@ describe("shift+click ranges", () => {
 });
 
 describe("lifecycle scoping", () => {
-  it("offers Reopen, not Close, when the selection started on a closed card", async () => {
+  it("offers Unarchive, not Archive, when the selection started on an archived card", async () => {
     await mount();
     fireEvent.click(tile("Closed one"), { metaKey: true });
 
-    expect(screen.getByRole("button", { name: "Reopen 1" })).toBeDefined();
-    // Not /^Close/ — that also matches the "Closed 2" strip disclosure.
-    expect(screen.queryByRole("button", { name: /^Close \d+$/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Unarchive 1" })).toBeDefined();
+    // Anchored, so it cannot be satisfied by the "Archived 2" strip disclosure.
+    expect(screen.queryByRole("button", { name: /^Archive \d+$/ })).toBeNull();
   });
 
   it("makes out-of-scope tiles inert", async () => {
@@ -317,7 +317,7 @@ describe("mobile Select all", () => {
 });
 
 describe("the bulk action", () => {
-  it("closes the selected cards and leaves selection mode", async () => {
+  it("archives the selected cards and leaves selection mode", async () => {
     await mount();
     fireEvent.click(tile("Alpha one"), { metaKey: true });
     fireEvent.click(tile("Alpha two"));
@@ -327,23 +327,23 @@ describe("the bulk action", () => {
       failed: [],
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Close 2" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive 2" }));
     });
 
     expect(mockBulk).toHaveBeenCalledWith(["a1", "a2"], "closed");
     await waitFor(() => expect(count()).toBeNull());
     // The returned cards are merged into state, so the two move into the
-    // closed strip without waiting for the next poll: 3 closed becomes 5.
-    expect(screen.getByRole("button", { name: "Closed 5" })).toBeDefined();
+    // archived strip without waiting for the next poll: 3 archived becomes 5.
+    expect(screen.getByRole("button", { name: "Archived 5" })).toBeDefined();
   });
 
-  it("reopens from a closed selection", async () => {
+  it("unarchives from an archived selection", async () => {
     await mount();
     fireEvent.click(tile("Closed one"), { metaKey: true });
 
     mockBulk.mockResolvedValue({ updated: [fixture("c1", { lifecycle: "open" })], failed: [] });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Reopen 1" }));
+      fireEvent.click(screen.getByRole("button", { name: "Unarchive 1" }));
     });
 
     expect(mockBulk).toHaveBeenCalledWith(["c1"], "open");
@@ -363,13 +363,13 @@ describe("the bulk action", () => {
       ],
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Close 3" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive 3" }));
     });
 
     await screen.findByText("2 of 3 cards could not be updated");
     // Still selected, because retrying exactly these is the user's next move.
     expect(selectedTitles()).toEqual(["Alpha two", "Beta one"]);
-    expect(screen.getByRole("button", { name: "Close 2" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Archive 2" })).toBeDefined();
   });
 
   it("surfaces a total failure in the error banner", async () => {
@@ -378,7 +378,7 @@ describe("the bulk action", () => {
 
     mockBulk.mockRejectedValue(new Error("network down"));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Close 1" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive 1" }));
     });
 
     await screen.findByText("network down");

@@ -1,5 +1,5 @@
 /**
- * The "Active cards first" split.
+ * The "Open chats first" split.
  *
  * The sidebar sections **rows**, not chats — a parentage group collapses into
  * one row and can straddle both buckets (parent on an open card, child
@@ -13,6 +13,10 @@ import type { CardSummary, Chat } from "../api";
 import { isChatCardActive } from "./chatDimming";
 
 export interface ChatSection<T> {
+  /**
+   * Persisted — the expand/collapse preference is stored under it — so the
+   * keys stay `active`/`inactive` however the headers above them read.
+   */
   key: "active" | "inactive";
   label: string;
   items: T[];
@@ -33,11 +37,11 @@ export interface ChatSection<T> {
 }
 
 /**
- * Split into Active-then-Inactive.
+ * Split into Open-then-Archived.
  *
  * Returns `null` — meaning "render the list exactly as you would with the
  * option off" — when there is nothing to put headers over: the option is off,
- * or every item landed in one bucket. A lone "Active" header above an
+ * or every item landed in one bucket. A lone "Open" header above an
  * undivided list is noise, and this is also what keeps the `cardsOnly` overlap
  * (which narrows the list to open cards, so one bucket is usually empty) from
  * needing a special case.
@@ -62,7 +66,7 @@ export interface SectionContext {
  * {@link isChatDimmed} is one: the case it exists for is a state no render of
  * the finished page reproduces. Before the first `listCards` returns every
  * chat looks card-less, so sectioning then would file the whole list under
- * "Inactive" and **move the rows** when the fetch lands. The dim survives that
+ * "Archived" and **move the rows** when the fetch lands. The dim survives that
  * window as a flash of the wrong shade; sections would not, because rows
  * change position. So `!cardsLoaded` renders unsectioned, in original order.
  */
@@ -87,7 +91,7 @@ export function sectionByActive<T>(
   if (active.length === 0 || inactive.length === 0) return null;
   const total = (bucket: T[]) => bucket.reduce((sum, item) => sum + countOf(item), 0);
   return [
-    { key: "active", label: "Active", items: active, count: total(active) },
-    { key: "inactive", label: "Inactive", items: inactive, count: total(inactive) },
+    { key: "active", label: "Open", items: active, count: total(active) },
+    { key: "inactive", label: "Archived", items: inactive, count: total(inactive) },
   ];
 }

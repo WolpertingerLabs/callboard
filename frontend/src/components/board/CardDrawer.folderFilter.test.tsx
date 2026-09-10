@@ -175,6 +175,6 @@ describe("with a folder filter", () => {
     // The card's identity and actions are not the chat list's business.
     expect(screen.getByText("Description")).toBeDefined();
     expect(screen.getByText("New chat on card")).toBeDefined();
-    expect(screen.getByText("Close card")).toBeDefined();
+    expect(screen.getByText("Archive chat")).toBeDefined();
   });
 });

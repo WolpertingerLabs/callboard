@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * The sidebar's Active/Inactive collapse state.
+ * The sidebar's Open/Archived collapse state, keyed `active`/`inactive`.
  *
  * The bug this suite exists for: back when the sidebar had a flat layout beside
  * the tree, `ChatList` and `ChatTreeList` BOTH called this hook and both were
