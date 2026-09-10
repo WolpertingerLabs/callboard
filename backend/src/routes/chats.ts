@@ -1843,39 +1843,154 @@ chatsRouter.patch("/:id/summon", (req, res) => {
   }
 });
 
+/**
+ * A per-id refusal from {@link deleteOneChat}.
+ *
+ * Carries both shapes its two callers need: `body` is what the single-chat
+ * route answers with verbatim (so folding that route onto this helper changed
+ * none of its responses), and `reason` is the one-line string the bulk route
+ * reports per id.
+ */
+class ChatDeleteError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: Record<string, unknown>,
+    readonly reason: string,
+  ) {
+    super(reason);
+  }
+}
+
+/**
+ * Delete one chat: its session log in the provider's native storage, then its
+ * stored record. Returns the id a metadata notification should name.
+ *
+ * Extracted so `DELETE /:id` and `POST /bulk-delete` cannot come to disagree
+ * about what deleting a chat means — and the part most worth not re-deciding
+ * is what this does about a chat's CHILDREN, which is nothing. A chat forked
+ * from this one keeps its own record and its own session files; it is left
+ * with a parent pointer at a chat that no longer exists, which the lineage
+ * walk already tolerates (see `lineageOf` in ChatTreeList, and
+ * `walkToRootId`). Deleting five chats is therefore exactly five of these,
+ * never a cascade.
+ *
+ * Caches and notifications are the caller's: the single route clears and
+ * notifies once per chat, the bulk route once per batch.
+ */
+function deleteOneChat(id: string): string {
+  try {
+    assertNativeAgentControllable(id);
+  } catch (error) {
+    const message = (error as Error).message;
+    throw new ChatDeleteError(409, { error: "native_child_read_only", message }, message);
+  }
+  // Find the chat (checks file storage + filesystem)
+  const chat = findChat(id, false);
+
+  if (!chat) throw new ChatDeleteError(404, { error: "Chat not found" }, "Chat not found");
+  if (chat._provider_resolution_error) {
+    throw new ChatDeleteError(409, { error: chat._provider_resolution_error }, chat._provider_resolution_error);
+  }
+  const meta = parseChatMetadata(chat.metadata);
+  const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));
+  // Delete only the authoritative namespace, and only then remove metadata.
+  // A routing failure must not partially delete a stored chat.
+  if (provider) provider.deleteSessionFiles(chat.session_id, { acpProviderId: meta.acpProviderId });
+  const fileChat = chatFileService.getChat(id);
+  if (fileChat) chatFileService.deleteChat(fileChat.session_id);
+  return fileChat?.id ?? id;
+}
+
+/**
+ * Bulk delete for the sidebar's multi-select.
+ *
+ * POST, not `DELETE /bulk`, for the reason `POST /api/cards/bulk-lifecycle`
+ * spells out: Express matches in registration order, so a `delete("/bulk")`
+ * sitting below `delete("/:id")` would resolve to the single-chat handler with
+ * `id="bulk"` and answer 404 "Chat not found" — a routing bug wearing a data
+ * bug's clothes. There is no `post("/:id")` on this router, so this path
+ * cannot be shadowed however the file is later reordered.
+ *
+ * Partial success is a 200 with a populated `failed[]`, not an error status: a
+ * chat that no longer exists — or a native-agent child that refuses to be
+ * deleted — in the middle of a batch must not strand the rest, and the client
+ * still needs `deleted` to drop exactly those rows from its list.
+ *
+ * No id cap, matching that endpoint: #394 removed the 200-id cap there when
+ * "Select all" over 804 cards made batches that size routine, and a sidebar
+ * with thousands of rows has the same "Select all". A batch is a bounded
+ * amount of work per id, and the ids come from a list the client already holds.
+ */
+chatsRouter.post("/bulk-delete", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Delete many chats in one call; per-id failures are reported, not fatal'
+  // #swagger.description = 'Per id this is exactly DELETE /api/chats/:id — session files plus the stored record, and NO cascade to the chat\'s children. Per-id failures are reported in failed[], not fatal.'
+  /* #swagger.responses[200] = { description: "Deleted ids plus per-id failures" } */
+  /* #swagger.responses[400] = { description: "ids must be a non-empty array of strings" } */
+  const { ids } = req.body ?? {};
+  if (!Array.isArray(ids) || ids.length === 0 || ids.some((id: unknown) => typeof id !== "string")) {
+    return res.status(400).json({ error: "ids must be a non-empty array of strings" });
+  }
+  try {
+    const deleted: string[] = [];
+    const failed: { id: string; error: string }[] = [];
+    // Deduped, so an id repeated in one batch is one delete and one report
+    // rather than a success followed by a spurious "Chat not found".
+    const seen = new Set<string>();
+    for (const id of ids as string[]) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      try {
+        deleteOneChat(id);
+        // The REQUESTED id, not the resolved record id: the client selected
+        // rows keyed by what it asked for, and `deleted` is what it filters
+        // its list by.
+        deleted.push(id);
+      } catch (err: any) {
+        if (err instanceof ChatDeleteError) {
+          failed.push({ id, error: err.reason });
+          continue;
+        }
+        if (err instanceof SessionRoutingError) {
+          failed.push({ id, error: err.message });
+          continue;
+        }
+        log.error(`Error deleting chat ${id} in bulk delete: ${err}`);
+        failed.push({ id, error: err?.message ?? "Failed to delete chat" });
+      }
+    }
+    if (deleted.length > 0) {
+      // Once for the batch, not once per chat — the same reasoning as the
+      // bulk card flip: every client refetches its whole list on any metadata
+      // bump (300ms debounce), so N notifications would be N SSE frames
+      // driving one identical refetch.
+      clearListCaches();
+      sessionRegistry.notifyMetadata(deleted[0], { cardEvent: "updated" });
+    }
+    res.json({ deleted, failed });
+  } catch (err: any) {
+    log.error(`Error in bulk chat delete: ${err}`);
+    res.status(500).json({ error: "Failed to delete chats", details: err.message });
+  }
+});
+
 // Delete a chat (deletes both file storage metadata and native session files)
 chatsRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Chats']
-  try {
-    assertNativeAgentControllable(req.params.id);
-  } catch (error) {
-    return res.status(409).json({ error: "native_child_read_only", message: (error as Error).message });
-  }
   // #swagger.summary = 'Delete a chat'
   // #swagger.description = 'Delete a chat from file storage and its session log from the provider\'s native storage.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "Chat deleted" } */
   try {
-    // Find the chat (checks file storage + filesystem)
-    const chat = findChat(req.params.id, false);
-
-    if (!chat) return res.status(404).json({ error: "Chat not found" });
-    if (chat._provider_resolution_error) return res.status(409).json({ error: chat._provider_resolution_error });
-    const meta = parseChatMetadata(chat.metadata);
-    const provider = getSessionProviders().find((p) => p.kind === (meta.provider ?? "claude-code"));
-    // Delete only the authoritative namespace, and only then remove metadata.
-    // A routing failure must not partially delete a stored chat.
-    if (provider) provider.deleteSessionFiles(chat.session_id, { acpProviderId: meta.acpProviderId });
-    const fileChat = chatFileService.getChat(req.params.id);
-    if (fileChat) chatFileService.deleteChat(fileChat.session_id);
-
+    const notifyId = deleteOneChat(req.params.id);
     clearListCaches();
     // A chat is now also board state: deleting a root removes a card, and
     // deleting any member changes its rollup. Wake board/sidebar clients now
     // rather than leaving them stale until the 15-second safety poll.
-    sessionRegistry.notifyMetadata(fileChat?.id ?? req.params.id, { cardEvent: "updated" });
+    sessionRegistry.notifyMetadata(notifyId, { cardEvent: "updated" });
     res.json({ ok: true });
   } catch (err: any) {
+    if (err instanceof ChatDeleteError) return res.status(err.status).json(err.body);
     if (err instanceof SessionRoutingError) return res.status(409).json({ error: err.message });
     log.error(`Error deleting chat: ${err}`);
     res.status(500).json({ error: "Failed to delete chat", details: err.message });

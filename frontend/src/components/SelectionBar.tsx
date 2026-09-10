@@ -4,9 +4,11 @@ export interface SelectionAction {
   key: string;
   label: string;
   onRun: () => void;
+  /** Renders in the danger colour — for an action with no inverse gesture. */
+  danger?: boolean;
 }
 
-interface BoardSelectionBarProps {
+interface SelectionBarProps {
   count: number;
   /** Noun for the count, singularised at 1 by the caller's data, not here. */
   noun?: string;
@@ -16,19 +18,33 @@ interface BoardSelectionBarProps {
   actions: SelectionAction[];
   onCancel: () => void;
   busy?: boolean;
+  /**
+   * How the bar attaches to the bottom of its surface.
+   *
+   * `fixed` is the board's: it owns the whole viewport, so pinning to the
+   * viewport IS pinning to the board. `absolute` is for a surface that owns a
+   * column of it — the sidebar chat list — where a viewport-spanning bar would
+   * lie across the chat pane beside it. The caller supplies the positioned
+   * ancestor; on mobile that column is the whole screen, so the same
+   * `absolute` bar reads as a bottom action bar there without a second branch.
+   */
+  position?: "fixed" | "absolute";
 }
 
 /**
  * The bar that appears while a multi-select gesture is live.
  *
- * Generic in its actions so a later "recategorise" needs no change here,
- * though today the board wires exactly one: archive, or unarchive.
- * That singularity is the point — selection is scoped to one lifecycle, so
- * the bar always offers one unambiguous verb rather than asking the user to
- * work out what "Archive 3 / Unarchive 2" would do to their five selected
- * cards.
+ * Generic in its actions since it was written, and now generic in its surface
+ * too: the board wires archive-or-unarchive, the chat list wires that plus a
+ * delete. That the *board* offers exactly one verb is a property of the board's
+ * selection being scoped to one lifecycle — the bar never asks a user to work
+ * out what "Archive 3 / Unarchive 2" would do to their five selected rows.
+ *
+ * Nothing here knows what is selected. `count` and every action label are the
+ * caller's words, which is what lets the chat list say "Archive 2 cards" over a
+ * count of 5 chats — see the note on `bulkActions` in ChatList.
  */
-export default function BoardSelectionBar({
+export default function SelectionBar({
   count,
   noun = "selected",
   onSelectAll,
@@ -36,11 +52,12 @@ export default function BoardSelectionBar({
   actions,
   onCancel,
   busy = false,
-}: BoardSelectionBarProps) {
+  position = "fixed",
+}: SelectionBarProps) {
   return (
     <div
       style={{
-        position: "fixed",
+        position,
         left: 0,
         right: 0,
         bottom: 0,
@@ -104,8 +121,12 @@ export default function BoardSelectionBar({
             onClick={action.onRun}
             disabled={busy || count === 0}
             style={{
-              background: "var(--accent)",
-              color: "var(--text-on-accent)",
+              // The FILL tokens, not the ink ones: --danger is the colour of an
+              // error message and is kept light enough to read on --danger-bg,
+              // which is too light to carry white text as a button. See the
+              // note above --danger-solid in index.css.
+              background: action.danger ? "var(--danger-solid)" : "var(--accent)",
+              color: action.danger ? "var(--text-on-danger)" : "var(--text-on-accent)",
               border: "none",
               padding: "7px 14px",
               borderRadius: 6,

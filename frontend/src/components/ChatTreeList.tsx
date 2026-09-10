@@ -41,6 +41,25 @@ interface Props {
   /** Whether this row's card is archived — closed or hidden. A row on no card
    * is not archived; see `utils/chatDimming`. */
   isDimmed?: (chat: Chat) => boolean;
+  /**
+   * Multi-select props for one row, or undefined for a list that offers no
+   * selection at all — in which case every row renders exactly as it did
+   * before multi-select existed.
+   *
+   * A function of the chat rather than a set of ids: the list owns the
+   * selection, its scope and its anchor, and the row needs none of that. See
+   * `selectionProps` in ChatList.
+   */
+  selectionFor?: (chat: Chat) => RowSelection;
+}
+
+/** What one row is told about the selection it is part of. */
+export interface RowSelection {
+  selectionMode: boolean;
+  selected: boolean;
+  selectable: boolean;
+  onToggleSelect: (e: React.MouseEvent) => void;
+  onLongPress?: () => void;
 }
 
 interface LineageInfo {
@@ -49,7 +68,7 @@ interface LineageInfo {
 }
 
 /** One visible entry: a lone chat, or a lineage group fronted by `chat`. */
-interface Row {
+export interface Row {
   chat: Chat;
   rootKey: string;
   isGroup: boolean;
@@ -93,6 +112,46 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
     current = parent;
   }
   return { rootKey: current.id, hasLineage };
+}
+
+/**
+ * The visible rows of a chat list, in the order they render.
+ *
+ * Chats are grouped by lineage root, and each group appears at the position of
+ * its most recently updated member — so this is the server's recency order
+ * with the members of a tree folded into the row that fronts it.
+ *
+ * Exported because ChatList needs the same order for its shift+click ranges,
+ * and "the same order" has to mean the same *function* over the same array,
+ * not a second derivation that agrees today. A range read off a parallel
+ * ordering eventually selects rows the user never saw, and that drift stays
+ * invisible until someone changes how groups are folded. The one call in this
+ * module is memoised on `chats`, and so is the one in ChatList — both from the
+ * same `filteredChats` array.
+ */
+export function buildRows(chats: Chat[]): Row[] {
+  const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
+  const infoById = new Map<string, LineageInfo>();
+  const groupSizes = new Map<string, number>();
+  const groupLineage = new Map<string, boolean>();
+  for (const chat of chats) {
+    const info = lineageOf(chat, byId);
+    infoById.set(chat.id, info);
+    groupSizes.set(info.rootKey, (groupSizes.get(info.rootKey) || 0) + 1);
+    if (info.hasLineage) groupLineage.set(info.rootKey, true);
+  }
+  const seen = new Set<string>();
+  const result: Row[] = [];
+  for (const chat of chats) {
+    const { rootKey, hasLineage } = infoById.get(chat.id)!;
+    if (seen.has(rootKey)) continue;
+    seen.add(rootKey);
+    // Always set: this row's own chat counted itself into the bucket above.
+    const size = groupSizes.get(rootKey)!;
+    const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
+    result.push({ chat, rootKey, isGroup });
+  }
+  return result;
 }
 
 const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
@@ -211,6 +270,7 @@ export default function ChatTreeList({
   cardMenuFor,
   sessionStatusFor,
   isDimmed,
+  selectionFor,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -219,30 +279,7 @@ export default function ChatTreeList({
 
   // Group loaded chats by lineage root, preserving the server's recency order:
   // each group appears at the position of its most recently updated member.
-  const rows = useMemo(() => {
-    const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
-    const infoById = new Map<string, LineageInfo>();
-    const groupSizes = new Map<string, number>();
-    const groupLineage = new Map<string, boolean>();
-    for (const chat of chats) {
-      const info = lineageOf(chat, byId);
-      infoById.set(chat.id, info);
-      groupSizes.set(info.rootKey, (groupSizes.get(info.rootKey) || 0) + 1);
-      if (info.hasLineage) groupLineage.set(info.rootKey, true);
-    }
-    const seen = new Set<string>();
-    const result: Row[] = [];
-    for (const chat of chats) {
-      const { rootKey, hasLineage } = infoById.get(chat.id)!;
-      if (seen.has(rootKey)) continue;
-      seen.add(rootKey);
-      // Always set: this row's own chat counted itself into the bucket above.
-      const size = groupSizes.get(rootKey)!;
-      const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
-      result.push({ chat, rootKey, isGroup });
-    }
-    return result;
-  }, [chats]);
+  const rows = useMemo(() => buildRows(chats), [chats]);
 
   // Read current expansion/rows from the refresh effect without making it a
   // dependency — the effect must fire on refreshes, not on every expand click.
@@ -339,6 +376,7 @@ export default function ChatTreeList({
           cardMenu={cardMenuFor(chat)}
           sessionStatus={sessionStatusFor(chat.id)}
           dimmed={isDimmed?.(chat)}
+          {...selectionFor?.(chat)}
         />
       );
     }
@@ -386,6 +424,7 @@ export default function ChatTreeList({
               cardMenu={cardMenuFor(chat)}
               sessionStatus={sessionStatusFor(chat.id)}
               dimmed={isDimmed?.(chat)}
+              {...selectionFor?.(chat)}
             />
           </div>
         </div>

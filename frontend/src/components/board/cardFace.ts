@@ -12,7 +12,7 @@ import { useState, useEffect } from "react";
 import type { CardSummary, CardRollupState } from "../../api";
 import { needsYouLabel, activeLabel } from "./pendingLabels";
 import { cardFolders, type CardFolder } from "../../utils/cardFolders";
-import { useLongPress, type UseLongPressResult } from "../../hooks/useLongPress";
+import { useSelectionActivation, type UseSelectionActivationResult } from "../../hooks/useSelectionActivation";
 
 /** Module-private: `statusLine` below is the only reader, and the only one there has ever been. */
 const ROLLUP_LABELS: Record<CardRollupState, string> = {
@@ -138,79 +138,19 @@ export interface UseCardActivationOptions {
   onLongPress?: () => void;
 }
 
-export interface UseCardActivationResult {
-  handleClick: (e: React.MouseEvent) => void;
-  /**
-   * The same contract with a different destination.
-   *
-   * A row's folder entry opens the drawer *filtered*, which is a different
-   * `open` from the row's — but every step in front of that decision is
-   * identical, and it is the steps in front that are easy to get wrong: a
-   * click left over from a long press must not act, and in selection mode a
-   * click anywhere on the face toggles the card rather than navigating away
-   * from a selection in progress. `handleClick` is this with `onClick`.
-   */
-  handleActivate: (open: () => void) => (e: React.MouseEvent) => void;
-  /** Spread onto the face's outer element; empty when the board asked for no gesture. */
-  gestureProps: Partial<UseLongPressResult["handlers"]>;
-  /** True for a face outside the selection's lifecycle scope — render it dimmed and disabled. */
-  inert: boolean;
-  showCheckbox: boolean;
-  /** Accessible name for the checkbox — shared so the two faces name the same control identically. */
-  checkboxLabel: string;
-  /** Spread onto the face's outer element to drive `showCheckbox` from hover. */
-  hoverProps: { onMouseEnter: () => void; onMouseLeave: () => void };
-  /** Spread onto the checkbox so keyboard focus reveals it too, not only the mouse. */
-  checkboxFocusProps: { onFocus: () => void; onBlur: () => void };
-}
+export type UseCardActivationResult = UseSelectionActivationResult;
 
-/** The whole click/press/select contract of a card face, independent of its layout. */
-export function useCardActivation({
-  card,
-  selectionMode = false,
-  selectable = true,
-  onClick,
-  onToggleSelect,
-  onLongPress,
-}: UseCardActivationOptions): UseCardActivationResult {
-  const [hovered, setHovered] = useState(false);
-  const [checkboxFocused, setCheckboxFocused] = useState(false);
-
-  const gestures = useLongPress({ onLongPress: () => onLongPress?.() });
-  // Only mounted when the board asked for the gesture. Otherwise the
-  // contextmenu handler's preventDefault would silently take the browser's own
-  // menu away from a tile that has no selection behaviour to offer instead.
-  const gestureProps = onLongPress ? gestures.handlers : {};
-
-  const inert = selectionMode && !selectable;
-  // Discoverability is the checkbox — Ctrl+click is invisible, and nobody
-  // long-presses a surface that has never shown them it can be selected.
-  const showCheckbox = Boolean(onToggleSelect) && selectable && (selectionMode || hovered || checkboxFocused);
-
-  const handleActivate = (open: () => void) => (e: React.MouseEvent) => {
-    // Out of the selection's lifecycle scope: the face is dead, and a control
-    // that is a sibling of the disabled button rather than inside it does not
-    // get that for free.
-    if (inert) return;
-    // A long press or a context menu has already acted on this gesture; the
-    // click browsers emit afterwards must not act on it a second time.
-    if (onLongPress && gestures.consumeClickSuppression()) return;
-    const modified = e.metaKey || e.ctrlKey || e.shiftKey;
-    if (selectionMode || (modified && onToggleSelect)) {
-      onToggleSelect?.(e);
-      return;
-    }
-    open();
-  };
-
-  return {
-    handleClick: handleActivate(onClick),
-    handleActivate,
-    gestureProps,
-    inert,
-    showCheckbox,
-    checkboxLabel: `Select ${card.title}`,
-    hoverProps: { onMouseEnter: () => setHovered(true), onMouseLeave: () => setHovered(false) },
-    checkboxFocusProps: { onFocus: () => setCheckboxFocused(true), onBlur: () => setCheckboxFocused(false) },
-  };
+/**
+ * The whole click/press/select contract of a card face, independent of its
+ * layout — a card-shaped front door onto `useSelectionActivation`.
+ *
+ * The rules themselves live in that hook, and deliberately not here: the
+ * sidebar's chat list answers the same gestures over rows that are not cards,
+ * and the one thing this signature adds is where the checkbox's accessible
+ * name comes from. Keeping the wrapper means `CardTile` and `CardRow` — and
+ * the parity suite that holds them to one contract — see exactly the API they
+ * always did.
+ */
+export function useCardActivation({ card, ...rest }: UseCardActivationOptions): UseCardActivationResult {
+  return useSelectionActivation({ label: card.title, ...rest });
 }
