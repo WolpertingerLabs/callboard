@@ -85,6 +85,25 @@ export function assertNativeAgentControllable(chatId: string, expected?: NativeO
   if (native) throw new Error(`${NATIVE_CONTROL_NOTE} Parent thread: ${native.parentThreadId}`);
 }
 
+/**
+ * Deletion only. Refuses while there is a rollout on disk for the chat that
+ * is, or cannot be shown not to be, a parent-owned native child — that file is
+ * the parent's to close, and unlinking it under a live owner is the race the
+ * read-only rule exists to prevent.
+ *
+ * Deliberately weaker than {@link assertNativeAgentControllable} in exactly one
+ * case: persisted native lineage whose rollout is GONE. For resume that
+ * persisted ownership still wins (a vanished log must not turn a child into a
+ * root someone can drive), but for deletion there is nothing left on disk to
+ * protect, and refusing left the stored record as a ghost — a sidebar row that
+ * opens to an empty transcript and cannot be removed. The provider's own
+ * `deleteSessionFiles` keeps the fail-closed check for the file itself.
+ */
+export function assertNativeAgentDeletable(chatId: string): void {
+  const native = nativeAgentForChat(chatId);
+  if (native && native.logPath) throw new Error(`${NATIVE_CONTROL_NOTE} Parent thread: ${native.parentThreadId}`);
+}
+
 interface LifecycleEvidence {
   status: NativeLifecycle;
   timestamp: number;

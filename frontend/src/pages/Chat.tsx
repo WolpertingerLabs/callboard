@@ -3836,7 +3836,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         )}
         {nativeAgent && (
           <div role="status" style={{ padding: 12 }}>
-            Native Codex child · {nativeAgent.lifecycle} · read-only. {nativeAgent.controlNote}{" "}
+            Native Codex child · {nativeAgent.lifecycle} · read-only.{" "}
+            {messages.length === 0 && !chat?.session_log_path && "Its Codex rollout is no longer on disk, so there is no transcript to show; this chat can be deleted. "}
+            {nativeAgent.controlNote}{" "}
             <a
               href={`/chat/${nativeParentChatId}`}
               onClick={(e) => {

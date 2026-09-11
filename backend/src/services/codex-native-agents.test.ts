@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexSessionProvider } from "../agents/adapters/codex/CodexSessionProvider.js";
 import { parseCodexRollout, readCodexSessionMeta } from "../agents/adapters/codex/sessionParser.js";
-import { assertNativeAgentControllable, nativeMetadata, readNativeLifecycle, withNativeCodexChats } from "./codex-native-agents.js";
+import { assertNativeAgentControllable, assertNativeAgentDeletable, nativeMetadata, readNativeLifecycle, withNativeCodexChats } from "./codex-native-agents.js";
 
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -186,6 +186,34 @@ describe("native Codex replay", () => {
     expect(readCodexSessionMeta(path)?.id).toBe(CHILD);
     rollout(ROOT, null);
     expect(() => assertNativeAgentControllable(ROOT)).not.toThrow();
+  });
+  it("deletion is refused while the child's rollout is on disk, and allowed once only the stored record is left", async () => {
+    const stored = { id: CHILD, session_id: CHILD, folder: "/tmp/repo", session_log_path: null, created_at: "", updated_at: "" };
+    // Persisted native lineage, as a record that was written while the rollout
+    // still existed carries it.
+    const persisted = JSON.stringify({ provider: "codex", nativeAgent: { parentThreadId: ROOT } });
+    state.chats = [{ ...stored, metadata: persisted }];
+    const path = rollout(CHILD, ROOT, [event("task_complete")]);
+    expect(() => assertNativeAgentDeletable(CHILD)).toThrow("read-only");
+    // Resume stays refused on persisted lineage even without the log — that
+    // rule is unchanged — but deletion has nothing left to protect.
+    (await import("node:fs")).rmSync(path);
+    expect(() => assertNativeAgentControllable(CHILD)).toThrow("read-only");
+    expect(() => assertNativeAgentDeletable(CHILD)).not.toThrow();
+    expect(() => new CodexSessionProvider().deleteSessionFiles(CHILD)).not.toThrow();
+    // A header this process cannot read is not "gone": fail closed.
+    const reopened = rollout(CHILD, ROOT, [event("task_complete")]);
+    const fs = await import("node:fs");
+    const open = fs.openSync;
+    const denied = vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) => {
+      if (file === reopened) throw Object.assign(new Error("fixture read denied"), { code: "EACCES" });
+      return open(file, flags, mode);
+    });
+    try {
+      expect(() => assertNativeAgentDeletable(CHILD)).toThrow("read-only");
+    } finally {
+      denied.mockRestore();
+    }
   });
 });
 

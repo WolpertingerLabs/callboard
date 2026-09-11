@@ -2,7 +2,7 @@ import { assertReasoningEffort, assertStoredReasoningEffort } from "../services/
 import {
   nativeMetadata,
   refreshNativeMetadata,
-  assertNativeAgentControllable,
+  assertNativeAgentDeletable,
   withNativeCodexChats,
   createLifecycleBudget,
 } from "../services/codex-native-agents.js";
@@ -390,7 +390,7 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['limit'] = { in: 'query', type: 'integer', description: 'Number of chats per page (default: 20). With includeLineage, counts sidebar tree rows — a parentage group folds into one row and all its members are returned.' } */
   /* #swagger.parameters['offset'] = { in: 'query', type: 'integer', description: 'Offset for pagination (default: 0). Same unit as limit: chats normally, tree rows with includeLineage.' } */
   /* #swagger.parameters['bookmarked'] = { in: 'query', type: 'string', description: 'Filter to only bookmarked chats when set to true' } */
-  /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Returns LIMIT non-triggered chats so the list always has content.' } */
+  /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Native Codex children (subagents a parent Codex thread spawned; read-only in Callboard) are excluded too. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
   /* #swagger.parameters['includePinned'] = { in: 'query', type: 'string', description: "When true, chats whose metadata carries pinned:true are appended even when they fall outside the pagination window, flagged with _pinned_appended; like lineage relatives they do not count toward pagination or hasMore. Purely additive — every other filter on the request still applies, so a pinned chat the cardLifecycle scope, excludeTriggered or bookmarked drops stays dropped. A pinned chat already on the page is not appended a second time." } */
   /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), unarchived (everything EXCEPT the trees of closed or hidden cards — so chats on no card at all, such as triggered and job-step chats, are included; this is the scope the sidebar asks for when its Archived toggle is off), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement of active: chats on the tree of a CLOSED or hidden card, plus chats that are on no card at all). active/inactive are retained for client bundles older than the unarchived scope. Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record; a discovered session with no stored record is admitted by unarchived and by neither active nor inactive." } */
@@ -861,6 +861,12 @@ chatsRouter.get("/", (req, res) => {
       } catch {
         return true;
       }
+      // A native Codex child is a subagent its parent thread spawned, not a
+      // chat the user started, and Callboard can neither drive nor close it.
+      // It is automation for the purpose of this filter: hidden by default,
+      // still reachable from its parent's tree (GET /chats/:id/tree is never
+      // scoped by this), and shown in place when "Show triggered chats" is on.
+      if (meta.nativeAgent) return false;
       if (meta.triggered !== true) return true;
       if (!anyApprovalParked) return false;
       return isParkedApprovalRow(chat, meta);
@@ -2042,7 +2048,9 @@ class ChatDeleteError extends Error {
  */
 function deleteOneChat(id: string, storedRecord?: SharedChat | null): string {
   try {
-    assertNativeAgentControllable(id);
+    // The deletion rule, not the control one: a native child whose rollout is
+    // gone has nothing left to protect and must not be an undeletable ghost.
+    assertNativeAgentDeletable(id);
   } catch (error) {
     const message = (error as Error).message;
     throw new ChatDeleteError(409, { error: "native_child_read_only", message }, message);
