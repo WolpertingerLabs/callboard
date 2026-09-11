@@ -43,7 +43,10 @@ const SCOPE_TOGGLES: {
     key: "showTriggered",
     label: "Triggered",
     Icon: Zap,
-    title: (on) => (on ? "Showing chats started by automation — click to hide them" : "Chats started by automation are hidden — click to show them"),
+    title: (on) =>
+      on
+        ? "Showing chats started by automation, including native Codex subagents — click to hide them"
+        : "Chats started by automation, including native Codex subagents, are hidden — click to show them",
   },
   {
     key: "showArchived",

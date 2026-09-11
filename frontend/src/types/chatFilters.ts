@@ -28,7 +28,12 @@ export const DEFAULT_CHAT_FILTERS: ChatFilters = {
 export interface ChatViewOptions {
   /** Only bookmarked chats. Session-only — deliberately not persisted. */
   bookmarked: boolean;
-  /** Include chats started by automation (cron, triggers, jobs). */
+  /**
+   * Include chats started by automation (cron, triggers, jobs) — and native
+   * Codex children, the subagents a parent Codex thread spawned. Those are
+   * read-only in Callboard and resolved server-side under the same
+   * `excludeTriggered` flag, so this one toggle governs both.
+   */
   showTriggered: boolean;
   /**
    * Whether chats on an archived card are in the list. Archived means the

@@ -527,8 +527,19 @@ export default function ChatList({
   };
 
   const confirmDeleteChat = async () => {
-    await deleteChat(deleteConfirmModal.chatId);
+    const { chatId, chatName } = deleteConfirmModal;
     setDeleteConfirmModal({ isOpen: false, chatId: "", chatName: "" });
+    try {
+      await deleteChat(chatId);
+      // Deliberately does NOT clear the banner on success: a "2 of 5 could
+      // not be deleted" message is still true after an unrelated row goes,
+      // and the banner has its own dismiss control now.
+    } catch (err: any) {
+      // Said out loud, like a bulk failure: the confirm dialog has already
+      // closed, so a silent rejection here reads as "the row just stayed" —
+      // which is exactly how a refused native Codex child looked before.
+      setBulkError(`"${chatName}" could not be deleted: ${(err as Error).message}`);
+    }
     load();
   };
 
@@ -1220,12 +1231,15 @@ export default function ChatList({
     .filter(Boolean)
     .join(" ");
 
-  // Count triggered chats currently in the response (visible when "Show triggered chats" is ON)
+  // Count triggered chats currently in the response (visible when "Show triggered chats" is ON).
+  // Native Codex children count too: the server hides them under the same
+  // toggle, so they are what this banner is explaining the presence of.
   const triggeredCount = useMemo(() => {
     if (!viewOptions.showTriggered) return 0;
     return chats.filter((c) => {
       try {
-        return JSON.parse(c.metadata || "{}").triggered;
+        const meta = JSON.parse(c.metadata || "{}");
+        return meta.triggered || !!meta.nativeAgent;
       } catch {
         return false;
       }
@@ -1438,12 +1452,14 @@ export default function ChatList({
 
       {showNew && <NewChatPanel onClose={() => setShowNew(false)} />}
 
-      {/* Bulk-action failures only. Everything else in this file that can fail
-          is non-critical and stays silent (see `loadCards`, `loadDrafts`); a
-          bulk action is the user's explicit request over rows they chose, so
-          "2 of 5 could not be updated" has to be said out loud. */}
+      {/* Failures of an explicit request over rows the user chose — a bulk
+          action, or a single delete the server refused. Everything else in
+          this file that can fail is non-critical and stays silent (see
+          `loadCards`, `loadDrafts`); "2 of 5 could not be updated" has to be
+          said out loud. */}
       {bulkError && (
         <div
+          role="alert"
           style={{
             margin: "8px 20px 0",
             padding: "8px 12px",
@@ -1451,9 +1467,23 @@ export default function ChatList({
             background: "var(--danger-bg)",
             color: "var(--danger)",
             fontSize: 12,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
           }}
         >
-          {bulkError}
+          <span style={{ flex: 1 }}>{bulkError}</span>
+          {/* A single-delete failure has no selection to exit, so without this
+              the banner would outlive the page it was about. */}
+          <button
+            type="button"
+            onClick={() => setBulkError(null)}
+            aria-label="Dismiss"
+            title="Dismiss"
+            style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0, lineHeight: 1, fontSize: 14 }}
+          >
+            ×
+          </button>
         </div>
       )}
 

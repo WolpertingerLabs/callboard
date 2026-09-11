@@ -80,7 +80,7 @@ vi.mock("../agents/factory.js", () => ({
 }));
 vi.mock("../services/codex-native-agents.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/codex-native-agents.js")>()),
-  assertNativeAgentControllable: (id: string) => {
+  assertNativeAgentDeletable: (id: string) => {
     if (readOnly.has(id)) throw new Error(`Chat ${id} is a read-only native agent child`);
   },
 }));
