@@ -299,7 +299,37 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
   const [promptInputInsertAtCaret, setPromptInputInsertAtCaret] = useState<((text: string) => void) | null>(null);
+  // `autoScroll` state drives rendering (the jump-to-bottom button, mounting
+  // the pin loop). The two refs are the pin loop's and scroll listener's view
+  // of the same latch, updated synchronously: a wheel-up on a long chat can
+  // take React tens of ms to commit, and a pin loop reading state would drag
+  // the view back to the bottom in the meantime — and that pin's scroll event
+  // would then re-latch. Always change them through latchNow / latchFollow /
+  // unlatch below so state and refs cannot disagree.
   const [autoScroll, setAutoScroll] = useState(true);
+  const autoScrollRef = useRef(true);
+  // While latched: null = pin to the bottom every frame; a number = the
+  // distance above the bottom to keep, moving the view only when the content
+  // height changes. Set when the latch came from the user scrolling down into
+  // the bottom zone — they are reading, so the view must not move on its own,
+  // and when content does arrive it must scroll by exactly that much rather
+  // than snap to the bottom. Reaching the bottom converts to a pin.
+  const followOffsetRef = useRef<number | null>(null);
+  const latchNow = useCallback(() => {
+    autoScrollRef.current = true;
+    followOffsetRef.current = null;
+    setAutoScroll(true);
+  }, []);
+  const latchFollow = useCallback((distanceFromBottom: number) => {
+    autoScrollRef.current = true;
+    followOffsetRef.current = distanceFromBottom <= 1 ? null : distanceFromBottom;
+    setAutoScroll(true);
+  }, []);
+  const unlatch = useCallback(() => {
+    autoScrollRef.current = false;
+    followOffsetRef.current = null;
+    setAutoScroll(false);
+  }, []);
   const [compacting, setCompacting] = useState(false);
   // Cumulative USD spend in the most recently completed run, when the adapter
   // reports one. Reset every time we land on a new chat so cross-chat values
@@ -1532,7 +1562,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setNetworkError(null);
     setInfo(null); // Clear new-chat info when transitioning to existing mode
     setViewMode("chat"); // Reset to chat view when switching chats
-    setAutoScroll(true); // Opening a chat always starts latched to the latest messages
+    latchNow(); // Opening a chat always starts latched to the latest messages
 
     // Reset first response flag and plan approval tracking when chat ID changes
     hasReceivedFirstResponseRef.current = false;
@@ -1609,7 +1639,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         abortRef.current = null;
       }
     };
-  }, [id, loadSlashCommands]);
+  }, [id, loadSlashCommands, latchNow]);
 
   // ── Smart auto-scroll ──
   //
@@ -1619,17 +1649,40 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // and nothing re-fires on single-message growth (deps only see length).
   // Assigning an unchanged scrollTop is a no-op, so idle frames are cheap,
   // and rAF pauses entirely while the tab is hidden.
+  //
+  // Each frame consults the refs, not state: unlatch must stop the pin on
+  // the very next frame, before React has committed (see the latch helpers).
+  //
+  // followOffsetRef distinguishes *how* the latch was set. Explicit requests
+  // (opening a chat, sending, the jump-to-bottom button) want the view at the
+  // bottom now. A re-latch from the user scrolling down into the bottom zone
+  // does not: they are reading their way down, and pinning on that first
+  // frame yanks the last AUTO_SCROLL_LATCH_PX of transcript out from under
+  // them — and snapping to the bottom on the next streamed token is the same
+  // yank a moment later. That re-latch instead keeps the reader's distance
+  // above the bottom: idle content leaves the view alone, and growth scrolls
+  // it by exactly the amount that arrived. Same threshold, no jump.
   useEffect(() => {
     if (!autoScroll || viewMode !== "chat") return;
     const container = chatContainerRef.current;
     if (!container) return;
 
     let raf = 0;
+    let lastHeight = container.scrollHeight;
     const pin = () => {
-      // Assign past-max and let the browser clamp to the bottom — avoids an
-      // explicit scrollHeight read (a potential forced-layout) every frame
-      container.scrollTop = PIN_SCROLL_MAX;
       raf = requestAnimationFrame(pin);
+      if (!autoScrollRef.current) return;
+      const offset = followOffsetRef.current;
+      if (offset === null) {
+        // Assign past-max and let the browser clamp to the bottom — avoids an
+        // explicit scrollHeight read (a potential forced-layout) every frame
+        container.scrollTop = PIN_SCROLL_MAX;
+        return;
+      }
+      const height = container.scrollHeight;
+      if (height === lastHeight) return;
+      lastHeight = height;
+      container.scrollTop = height - container.clientHeight - offset;
     };
     pin();
     return () => cancelAnimationFrame(raf);
@@ -1649,8 +1702,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   useEffect(() => {
     const container = chatContainerRef.current;
     if (!container) return;
-
-    const unlatch = () => setAutoScroll(false);
 
     // Message bubbles contain their own scrollable regions (tool-result
     // JSON, code blocks). A scroll gesture that an inner region can consume
@@ -1767,8 +1818,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Re-latch only on downward movement into the bottom zone — upward
       // movement inside the zone is the user starting to scroll away, and
       // re-latching would trap them there.
+      // Latched in follow mode: the reader's scrolling inside the zone moves
+      // the distance we keep, and touching the bottom converts to a pin.
+      if (autoScrollRef.current && followOffsetRef.current !== null) {
+        followOffsetRef.current = distanceFromBottom <= 1 ? null : distanceFromBottom;
+        return;
+      }
+
       if (!scrolledUp && distanceFromBottom <= AUTO_SCROLL_LATCH_PX) {
-        setAutoScroll(true);
+        // The user read their way here — latch, but don't move them. Only a
+        // real transition chooses follow mode: while already latched the pin
+        // loop must keep whatever mode it is in.
+        if (!autoScrollRef.current) latchFollow(distanceFromBottom);
       }
     };
 
@@ -1789,7 +1850,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       container.removeEventListener("scroll", handleScroll);
       window.clearTimeout(suppressSettleTimer);
     };
-  }, [viewMode, id]);
+  }, [viewMode, id, latchFollow, unlatch]);
 
   // ── Auto-mark chat as read when user has scrolled to the bottom ──
   // Uses IntersectionObserver on bottomRef (the sentinel div at the end of
@@ -1932,7 +1993,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Sending a message re-latches auto-scroll so the user sees their
       // message and the response, even if they had scrolled up
       suppressRelatchRef.current = false;
-      setAutoScroll(true);
+      latchNow();
       // Show the user's message immediately, appended to any earlier ones the
       // transcript hasn't caught up with — sending again mid-run must not
       // erase the message that started the run.
@@ -2463,7 +2524,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const navigatePrevUserMessage = useCallback(() => {
     if (userMessageIndices.length === 0) return;
     suppressRelatchRef.current = true;
-    setAutoScroll(false);
+    unlatch();
     const newNavIndex = userMsgNavIndex === null ? userMessageIndices.length - 1 : Math.max(0, userMsgNavIndex - 1);
     setUserMsgNavIndex(newNavIndex);
     const msgIndex = userMessageIndices[newNavIndex];
@@ -2477,7 +2538,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         el.style.borderRadius = "";
       }, 2000);
     }
-  }, [userMessageIndices, userMsgNavIndex]);
+  }, [userMessageIndices, userMsgNavIndex, unlatch]);
 
   // Navigate to next (newer) user message
   const navigateNextUserMessage = useCallback(() => {
@@ -2487,7 +2548,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Past the last user message — go to bottom and re-latch
       setUserMsgNavIndex(null);
       suppressRelatchRef.current = false;
-      setAutoScroll(true);
+      latchNow();
       return;
     }
     suppressRelatchRef.current = true;
@@ -2503,20 +2564,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         el.style.borderRadius = "";
       }, 2000);
     }
-  }, [userMessageIndices, userMsgNavIndex]);
+  }, [userMessageIndices, userMsgNavIndex, latchNow]);
 
   // Scroll to top of chat
   const scrollToTop = useCallback(() => {
     suppressRelatchRef.current = true;
-    setAutoScroll(false);
+    unlatch();
     chatContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-  }, []);
+  }, [unlatch]);
 
   // Scroll to bottom of chat — re-latching hands off to the pin loop
   const scrollToBottom = useCallback(() => {
     suppressRelatchRef.current = false;
-    setAutoScroll(true);
-  }, []);
+    latchNow();
+  }, [latchNow]);
 
   // The newest task list in the conversation, from whichever engine ran it —
   // one scan answering both "is there a button?" and "where does it go?", so the
@@ -2531,7 +2592,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       const targetElement = document.querySelector(`[data-message-index="${latestTodoIndex}"]`) as HTMLElement | null;
       if (targetElement) {
         suppressRelatchRef.current = true;
-        setAutoScroll(false);
+        unlatch();
         targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
         targetElement.style.outline = "2px solid var(--accent)";
         targetElement.style.borderRadius = "8px";
@@ -2541,7 +2602,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         }, 2000);
       }
     }
-  }, [latestTodoIndex]);
+  }, [latestTodoIndex, unlatch]);
 
   const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
 
