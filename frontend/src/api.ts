@@ -554,7 +554,12 @@ export async function forkChat(id: string, timestamp: string, opts?: { provider?
 
 export async function deleteChat(id: string): Promise<void> {
   const res = await fetch(`${BASE}/chats/${id}`, { method: "DELETE" });
-  await assertOk(res, "Failed to delete chat");
+  if (!res.ok) {
+    // The 409 for a native Codex child carries a code in `error` and the
+    // explanation in `message`; the sidebar shows this, so prefer the words.
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message || body.error || "Failed to delete chat");
+  }
 }
 
 /**

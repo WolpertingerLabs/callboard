@@ -536,7 +536,7 @@ export default function ChatList({
       // Said out loud, like a bulk failure: the confirm dialog has already
       // closed, so a silent rejection here reads as "the row just stayed" —
       // which is exactly how a refused native Codex child looked before.
-      setBulkError(`"${chatName}" could not be deleted: ${err?.message || "Failed to delete chat"}`);
+      setBulkError(`"${chatName}" could not be deleted: ${(err as Error).message}`);
     }
     load();
   };
@@ -1457,6 +1457,7 @@ export default function ChatList({
           said out loud. */}
       {bulkError && (
         <div
+          role="alert"
           style={{
             margin: "8px 20px 0",
             padding: "8px 12px",
@@ -1464,9 +1465,23 @@ export default function ChatList({
             background: "var(--danger-bg)",
             color: "var(--danger)",
             fontSize: 12,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
           }}
         >
-          {bulkError}
+          <span style={{ flex: 1 }}>{bulkError}</span>
+          {/* A single-delete failure has no selection to exit, so without this
+              the banner would outlive the page it was about. */}
+          <button
+            type="button"
+            onClick={() => setBulkError(null)}
+            aria-label="Dismiss"
+            title="Dismiss"
+            style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0, lineHeight: 1, fontSize: 14 }}
+          >
+            ×
+          </button>
         </div>
       )}
 
