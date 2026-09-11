@@ -6,8 +6,9 @@
  * used to leave nothing behind but the row it was about — which is exactly how
  * a read-only native Codex child looked: "delete does nothing". The failure
  * now lands in the sidebar's failure banner, worded with the server's
- * explanation rather than its error code, and stays until dismissed or until a
- * later delete succeeds.
+ * explanation rather than its error code, and stays until dismissed — a later
+ * successful delete does not clear it, since a bulk message it might be
+ * sharing the banner with would still be true.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -109,7 +110,7 @@ describe("ChatList single delete failure", () => {
     expect(screen.queryByText("Delete Chat")).toBeNull();
     const banner = await screen.findByRole("alert");
     // Named the way the confirm dialog named it: by preview, the row's own
-    // fallback label (see handleDeleteChat), not the title.
+    // fallback label (see handleDelete), not the title.
     expect(banner.textContent).toContain('"native child" could not be deleted');
     expect(banner.textContent).toContain(NOTE);
     // The list is still refetched, so a row the server did remove after all

@@ -531,7 +531,9 @@ export default function ChatList({
     setDeleteConfirmModal({ isOpen: false, chatId: "", chatName: "" });
     try {
       await deleteChat(chatId);
-      setBulkError(null);
+      // Deliberately does NOT clear the banner on success: a "2 of 5 could
+      // not be deleted" message is still true after an unrelated row goes,
+      // and the banner has its own dismiss control now.
     } catch (err: any) {
       // Said out loud, like a bulk failure: the confirm dialog has already
       // closed, so a silent rejection here reads as "the row just stayed" —

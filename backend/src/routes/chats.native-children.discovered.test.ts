@@ -10,15 +10,21 @@
  * purely by discovery, and this is where "hidden under the default scope" has
  * to hold or the sidebar shows every subagent a Codex thread ever spawned.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
 
-process.env.CALLBOARD_DATA_DIR = mkdtempSync(join(tmpdir(), "callboard-native-discovered-"));
+const dataDir = mkdtempSync(join(tmpdir(), "callboard-native-discovered-"));
+process.env.CALLBOARD_DATA_DIR = dataDir;
 const codexHome = mkdtempSync(join(tmpdir(), "callboard-native-discovered-codex-"));
 process.env.CODEX_HOME = codexHome;
+
+afterAll(() => {
+  rmSync(dataDir, { recursive: true, force: true });
+  rmSync(codexHome, { recursive: true, force: true });
+});
 
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
