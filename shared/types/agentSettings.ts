@@ -554,6 +554,35 @@ export interface AgentSettings {
   // keeps a settings-level default. Adding one only for pi would ship a field
   // nothing reads.
 
+  // ── Chat list behaviour ───────────────────────────────────────────
+
+  /**
+   * Clear a chat's pin when the card it belongs to is archived. Absent or
+   * `true` ⇒ yes.
+   *
+   * Default-on rather than default-off because the two states it reconciles
+   * contradict each other in the one place both are visible. A pin lifts a chat
+   * out of the sidebar list into the Pinned section at the very top; archiving
+   * dims that chat, or removes it from the list entirely. Left alone, archiving
+   * the work a pinned chat belongs to leaves the pinned row exactly where it
+   * was — the most prominent seat in the sidebar, now greyed out, and the one
+   * row the archive gesture visibly failed to clear.
+   *
+   * Enforced server-side in `patchCardFields`, the single write that flips a
+   * card's lifecycle, so the web UI, the board, bulk archive and any future MCP
+   * lifecycle setter all obey it. It fires on the *transition* into archived
+   * (closed or hidden) and in that direction only: unarchiving does not restore
+   * the pins, because the pin is a cleared boolean and not a remembered one.
+   * The full argument, including why `hidden` counts as archiving, is in
+   * `backend/src/services/card-archive-unpin.ts`.
+   *
+   * Like {@link allowEngineInstalls}, this is written only on an explicit
+   * boolean — a non-boolean value leaves the stored setting untouched rather
+   * than clearing it, because clearing it means reverting to the default-on
+   * behaviour the user turned off. See `routes/agent-settings.ts`.
+   */
+  unpinChatsOnArchive?: boolean;
+
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the onComplete feature (start_chat_session, continue_chat), which
   // automatically re-invokes a parent chat when the session it is waiting on

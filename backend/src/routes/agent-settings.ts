@@ -110,6 +110,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     piModel,
     piApiKey,
     piBaseUrl,
+    unpinChatsOnArchive,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -473,6 +474,13 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(piModel !== undefined && { piModel: normalize(piModel) }),
       ...(piApiKey !== undefined && { piApiKey: normalize(piApiKey) }),
       ...(piBaseUrl !== undefined && { piBaseUrl: normalize(piBaseUrl) }),
+      // Guarded on `typeof === "boolean"`, not `normalizeBool`, for the reason
+      // `allowEngineInstalls` above is: this setting defaults to ON when
+      // absent, so an unparseable value passed through `normalizeBool` would
+      // clear a stored `false` and silently switch the behaviour back on.
+      // "Change nothing" is the only safe reading of a value that isn't a
+      // boolean.
+      ...(typeof unpinChatsOnArchive === "boolean" && { unpinChatsOnArchive }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });

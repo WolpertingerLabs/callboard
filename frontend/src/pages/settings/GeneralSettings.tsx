@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact, PhoneOutgoing } from "lucide-react";
+import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact, PhoneOutgoing, Pin } from "lucide-react";
 import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode, getCustomThemeName, saveCustomThemeName } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
 import {
@@ -65,6 +65,13 @@ export default function GeneralSettings() {
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [drawlatchDashboardUrl, setDrawlatchDashboardUrl] = useState<string | null>(null);
 
+  // Unpin-on-archive. Seeded to the default so the switch never renders in the
+  // wrong position while /agent-settings is in flight — absent means ON.
+  const [unpinOnArchive, setUnpinOnArchive] = useState(true);
+  const [unpinSaving, setUnpinSaving] = useState(false);
+  const [unpinSaved, setUnpinSaved] = useState(false);
+  const [unpinError, setUnpinError] = useState<string | null>(null);
+
   // Session completion callback ("phone home") loop-safety state
   const [maxChainDepth, setMaxChainDepth] = useState<number>(DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
   const [maxPending, setMaxPending] = useState<number>(DEFAULT_MAX_PENDING_CALLBACKS);
@@ -104,9 +111,44 @@ export default function GeneralSettings() {
       .then((s) => {
         setMaxChainDepth(s.maxCallbackChainDepth ?? DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
         setMaxPending(s.maxPendingCallbacks ?? DEFAULT_MAX_PENDING_CALLBACKS);
+        // `!== false`, never `=== true` — the stored field is absent until
+        // someone turns the behaviour off, and absent means on.
+        setUnpinOnArchive(s.unpinChatsOnArchive !== false);
       })
       .catch(() => {});
   }, []);
+
+  /**
+   * Saves on the flip, like the engine-installs switch in Remote Access — there
+   * is nothing else in this card to batch a Save button with, and a lone switch
+   * above a Save button reads as unsaved when it isn't.
+   *
+   * Only this field is sent. `PUT /agent-settings` leaves every field the body
+   * omits untouched, so a save from here cannot disturb the proxy endpoint,
+   * the API keys, or anything else another tab is holding.
+   */
+  const persistUnpinOnArchive = async (next: boolean) => {
+    if (unpinSaving) return;
+    setUnpinSaving(true);
+    setUnpinError(null);
+    const previous = unpinOnArchive;
+    setUnpinOnArchive(next);
+    try {
+      const updated = await updateAgentSettings({ unpinChatsOnArchive: next });
+      // Re-read what was actually stored rather than trusting the optimistic
+      // value: this is the field whose default is "on when absent", so a write
+      // that did not land would otherwise leave the switch claiming an "off"
+      // the daemon does not have.
+      setUnpinOnArchive(updated.unpinChatsOnArchive !== false);
+      setUnpinSaved(true);
+      setTimeout(() => setUnpinSaved(false), 2000);
+    } catch (err: any) {
+      setUnpinOnArchive(previous);
+      setUnpinError(err.message || "Failed to save");
+    } finally {
+      setUnpinSaving(false);
+    }
+  };
 
   const handleCallbackSave = async () => {
     setCallbackSaving(true);
@@ -991,6 +1033,76 @@ export default function GeneralSettings() {
           >
             {saved ? "Saved!" : "Save"}
           </button>
+        </div>
+      </div>
+
+      {/* Chat List Section */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 20,
+          background: "var(--bg)",
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <Pin size={16} style={{ color: "var(--accent-text)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Chat List</span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+          <div>
+            <label htmlFor="unpinOnArchive" style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+              Unpin a chat when it is archived
+            </label>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5 }}>
+              Archiving is a card action — it closes the whole conversation tree — so archiving anything on a card clears the pin on every pinned chat in that
+              tree, and they drop out of the Pinned section back into the list. Turn this off to leave pinned chats pinned, dimmed, at the top. Unarchiving
+              never puts a pin back either way: re-pin the chat when you return to it. On by default. Saved as soon as you flip it.
+            </div>
+          </div>
+          <button
+            id="unpinOnArchive"
+            type="button"
+            role="switch"
+            aria-checked={unpinOnArchive}
+            aria-label="Unpin a chat when it is archived"
+            onClick={() => void persistUnpinOnArchive(!unpinOnArchive)}
+            disabled={unpinSaving}
+            style={{
+              position: "relative",
+              width: 44,
+              height: 24,
+              borderRadius: 999,
+              border: "none",
+              cursor: unpinSaving ? "default" : "pointer",
+              flexShrink: 0,
+              background: unpinOnArchive ? "var(--accent)" : "var(--border)",
+              transition: "background 0.15s",
+              opacity: unpinSaving ? 0.6 : 1,
+            }}
+          >
+            <span
+              style={{
+                position: "absolute",
+                top: 2,
+                left: unpinOnArchive ? 22 : 2,
+                width: 20,
+                height: 20,
+                borderRadius: "50%",
+                background: "var(--toggle-knob)",
+                transition: "left 0.15s",
+              }}
+            />
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, minHeight: 16 }}>
+          {unpinError ? (
+            <span style={{ fontSize: 12, color: "var(--error)" }}>{unpinError}</span>
+          ) : unpinSaved ? (
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Saved!</span>
+          ) : null}
         </div>
       </div>
 
