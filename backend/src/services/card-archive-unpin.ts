@@ -106,16 +106,38 @@ function isPinned(chat: { metadata?: string | null }): boolean {
 /**
  * Pinned chats grouped by the lineage root — i.e. by the card they are on.
  *
- * The values are **session ids, not chat ids**, and that is a performance
- * decision rather than a stylistic one. Records are filed as
- * `<session_id>.json` (`chat-file-service.ts`'s `saveChat`), so a write keyed
- * by session id is a single stat + read, while one keyed by `chat.id` misses
- * `getChatBySessionId`'s direct read and falls through to a readdir + parse of
- * every record in the directory. The two are equal for most records, but
- * `createChat` assigns a fresh `randomUUID()` as `chat.id`, so exactly the
- * chats a user creates from the UI are the ones that pay. Measured on an 8k
- * corpus: 20 writes keyed by `chat.id` cost 147 ms, the same 20 keyed by
- * `session_id` cost 1.5 ms. Both spellings reach the same file.
+ * ## The map mixes two id spaces, on purpose
+ *
+ * Keys are **chat ids**, because that is what lineage pointers name. Values are
+ * **session ids**, because that is what the records are filed under, and the
+ * difference is worth an order of magnitude. `saveChat` writes
+ * `<session_id>.json`, so a write keyed by session id is a direct stat + read,
+ * while one keyed by `chat.id` misses `getChatBySessionId` and falls through to
+ * a readdir + parse of every record in the directory — per write. The two
+ * spellings are equal for most records, but `createChat` assigns a fresh
+ * `randomUUID()` as `chat.id`, so exactly the chats a user starts from the UI
+ * are the ones that pay. Measured on an 8k corpus: 200 writes keyed by
+ * `chat.id` cost 4,138 ms, the same 200 keyed by `session_id` cost 17 ms. Both
+ * reach the same file.
+ *
+ * The asymmetry has one consequence a caller can trip over. `patchCardFields`
+ * accepts either spelling for its own write (`getChat` resolves both), but the
+ * root it hands to the lookup is matched against these chat-id keys — so
+ * `patchCardFields(<sessionId>, { lifecycle: "closed" })` on a record whose two
+ * ids differ archives the card and silently keeps the pins. No caller does that
+ * today; all four pass a chat id, and the routes resolve theirs through
+ * `CardContext`. Anything new that reaches `patchCardFields` from a session id
+ * has to resolve it first.
+ *
+ * ## What the write key trusts
+ *
+ * That a record's `session_id` field names the file it lives in. That is
+ * `saveChat`'s own invariant rather than something re-derived here, and every
+ * way of breaking it by hand is no worse than the chat-id spelling was: a
+ * record whose filename disagrees with its `session_id`, or whose `session_id`
+ * is blank, fails the lookup and is logged and skipped, where the chat-id
+ * spelling would have found the record by scanning and then written it back out
+ * under a *different* name — a duplicate the board would see twice.
  */
 function indexPinnedByRoot(stored: Chat[]): Map<string, string[]> {
   const byRoot = new Map<string, string[]>();
@@ -195,12 +217,14 @@ export function createPinnedMemberLookup(stored?: Chat[]): PinnedMemberLookup {
  */
 export function unpinArchivedCardChats(rootChatId: string, lookup: PinnedMemberLookup = createPinnedMemberLookup()): string[] {
   const unpinned: string[] = [];
+  // Everything is inside the one try, tail included. Nothing below can
+  // realistically throw today, but the guarantee above is stated absolutely,
+  // and a third listing cache wired into clearListCaches later would quietly
+  // end that without anyone revisiting this comment.
   try {
     if (!unpinOnArchiveEnabled()) return unpinned;
-    const candidates = lookup(rootChatId);
-    if (candidates.length === 0) return unpinned;
 
-    for (const sessionId of candidates) {
+    for (const sessionId of lookup(rootChatId)) {
       try {
         // `pinned: false` rather than deleting the key, matching what the unpin
         // half of `PATCH /api/chats/:id/pin` writes — every reader tests
@@ -211,19 +235,19 @@ export function unpinArchivedCardChats(rootChatId: string, lookup: PinnedMemberL
         log.error(`Error clearing the pin on chat ${sessionId} while archiving card ${rootChatId}: ${err?.message ?? err}`);
       }
     }
+
+    if (unpinned.length > 0) {
+      // The pin decides which rows a list response carries, not just how one
+      // renders (`includePinned` appends pinned chats from outside the
+      // pagination window), so a page cached before this call is now wrong. The
+      // archive routes clear the caches for the lifecycle flip itself; doing it
+      // here too keeps the rule true for any caller that reaches
+      // patchCardFields without going through them.
+      clearListCaches();
+      log.info(`Archiving card ${rootChatId} unpinned ${unpinned.length} chat(s): ${unpinned.join(", ")}`);
+    }
   } catch (err: any) {
     log.error(`Could not unpin the chats on archived card ${rootChatId}: ${err?.message ?? err}`);
-  }
-
-  if (unpinned.length > 0) {
-    // The pin decides which rows a list response carries, not just how one
-    // renders (`includePinned` appends pinned chats from outside the pagination
-    // window), so a page cached before this call is now wrong. The archive
-    // routes clear the caches for the lifecycle flip itself; doing it here too
-    // keeps the rule true for any caller that reaches patchCardFields without
-    // going through them.
-    clearListCaches();
-    log.info(`Archiving card ${rootChatId} unpinned ${unpinned.length} chat(s): ${unpinned.join(", ")}`);
   }
   return unpinned;
 }

@@ -119,7 +119,12 @@ describe("Settings → General — unpin a chat when it is archived", () => {
     expect(described).toContain("unpinOnArchive-status");
     for (const id of described) expect(document.getElementById(id)).toBeTruthy();
     // The note has to say the thing the sidebar actually does, or someone turns
-    // this off to keep their pins and watches the chats vanish regardless.
-    expect(document.getElementById("unpinOnArchive-note")!.textContent).toMatch(/Show archived/);
+    // this off to keep their pins and watches the chats vanish regardless — and
+    // it has to name the control the way ChatFilterBar labels it ("Archived"),
+    // not by its internal `showArchived` key.
+    const note = document.getElementById("unpinOnArchive-note")!.textContent!;
+    expect(note).toMatch(/Archived\b/);
+    expect(note).not.toMatch(/Show archived/i);
+    expect(note).toMatch(/leave the sidebar/);
   });
 });

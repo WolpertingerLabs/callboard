@@ -122,6 +122,16 @@ describe("unpin-on-archive — closing a card", () => {
     expect(isPinned(quietMemberId)).toBe(false);
   });
 
+  // The three cases below look like one test of "deep trees" and are not: each
+  // pins a different branch of `existingRootIdOf`, and each was checked against
+  // the mutation that isolates it — every one fails its own case and only its
+  // own case.
+  //   depth      — capping MAX_LINEAGE_DEPTH at 1 fails the grandchild case.
+  //   stamp      — dropping the `stampedExists` fallback taken when the walk
+  //                terminates on a dangling parent fails the deleted-middle
+  //                case, which does not walk far enough for depth to matter.
+  //   promotion  — swapping in `rootKeyOf`, whose synthetic dangling keys name
+  //                no record, fails the orphan case and nothing else.
   it("reaches a pinned grandchild, not just the root's direct children", () => {
     const rootId = makeRoot(false);
     const childId = makeChild(rootId, rootId, false);
@@ -139,9 +149,9 @@ describe("unpin-on-archive — closing a card", () => {
     const childId = makeChild(rootId, rootId, false);
     const grandchildId = makeChild(childId, rootId, true);
     // The middle of the chain goes away; the grandchild's parent pointer now
-    // dangles and only its stamped root still names a record that exists. This
-    // is the case `existingRootIdOf` is chosen over `rootKeyOf` for — see the
-    // comment on indexPinnedByRoot.
+    // dangles and only its stamped `rootChatId` still names a record that
+    // exists. That stamp is the branch under test — the walk terminates here,
+    // so depth is not what answers.
     chatFileService.deleteChat(chatFileService.getChat(childId)!.session_id);
 
     patchCardFields(rootId, { lifecycle: "closed" });
@@ -151,7 +161,10 @@ describe("unpin-on-archive — closing a card", () => {
 
   it("treats a pinned orphan with no surviving ancestor as its own card", () => {
     // A dangling parent and no root stamp: nothing above it exists, so the
-    // chat is promoted to a card root and archiving *it* is what clears its pin.
+    // chat is promoted to a card root and archiving *it* is what clears its
+    // pin. This is the one case that distinguishes `existingRootIdOf` from
+    // `rootKeyOf` — the latter keys on the dangling parent id, a synthetic key
+    // that names no record and so can never be archived.
     const orphanId = makeChild("chat-long-deleted", null, true);
 
     patchCardFields(orphanId, { lifecycle: "closed" });

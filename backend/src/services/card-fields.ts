@@ -198,6 +198,13 @@ function isArchivedState(fields: { lifecycle?: unknown; hidden?: unknown }): boo
  * `deps.pinnedMembers` lets a caller archiving many cards in one request share
  * a single read of the chat corpus across the batch; omit it and one is built
  * for this call alone. See `createPinnedMemberLookup` in card-archive-unpin.ts.
+ *
+ * `chatId` must be a **chat id** when the patch archives the card. The card
+ * write itself takes either spelling — `getChat` resolves a session id too —
+ * but the pinned-member lookup is keyed by lineage, and lineage names chat ids,
+ * so passing a session id for a record whose two ids differ archives the card
+ * and silently keeps its pins. Every caller today resolves through
+ * `CardContext` or `walkToRootId`, both of which answer in chat ids.
  */
 export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinnedMembers?: PinnedMemberLookup }): Card | null {
   const chat = chatFileService.getChat(chatId);

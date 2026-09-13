@@ -1057,11 +1057,18 @@ export default function GeneralSettings() {
               Unpin a chat when it is archived
             </label>
             <div id="unpinOnArchive-note" style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5 }}>
-              Archiving is a card action — it closes the whole conversation tree — so archiving anything on a card clears the pin on every pinned chat in that
-              tree. Hiding a card from the board counts as archiving it. Note that the sidebar drops an archived card&rsquo;s chats from the list entirely
-              unless <strong>Show archived</strong> is on, so they leave the Pinned section either way; what this decides is where you find them when they come
-              back &mdash; with Show archived on, while searching, or once you unarchive. Unarchiving never restores a pin this cleared, so re-pin the chat when
-              you return to it. On by default. Saved as soon as you flip it.
+              <div>
+                Archiving is a card action &mdash; it closes the whole conversation tree &mdash; so archiving anything on a card clears the pin on every pinned
+                chat in that tree. Hiding a card from the board counts as archiving it.
+              </div>
+              <div style={{ marginTop: 6 }}>
+                Whichever way this is set, an archived card&rsquo;s chats leave the sidebar: it drops them from the list entirely unless the{" "}
+                <strong>Archived</strong> filter is on. What this setting decides is the state they are in when you next see them &mdash; with the Archived
+                filter on, while searching, or once you unarchive.
+              </div>
+              <div style={{ marginTop: 6 }}>
+                Unarchiving never restores a pin this cleared, so re-pin the chat when you return to it. On by default. Saved as soon as you flip it.
+              </div>
             </div>
           </div>
           <button
