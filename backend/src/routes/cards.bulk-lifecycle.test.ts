@@ -194,6 +194,27 @@ describe("POST /api/cards/bulk-lifecycle", () => {
     expect(notifyMetadata).not.toHaveBeenCalled();
   });
 
+  it("clears the pins on the chats of every card it closes, and does not restore them on reopen", async () => {
+    const rootId = makeRoot("bulk-pinned");
+    const childId = chatFileService.createChat("/tmp/proj", "bulk-pinned-child", JSON.stringify({ parentChatId: rootId, rootChatId: rootId, pinned: true })).id;
+    chatFileService.updateChatMetadata(rootId, { pinned: true }, { touch: false });
+    const pinnedElsewhere = makeRoot("bulk-pinned-other");
+    chatFileService.updateChatMetadata(pinnedElsewhere, { pinned: true }, { touch: false });
+
+    const isPinned = (id: string) => JSON.parse(chatFileService.getChat(id)!.metadata || "{}").pinned === true;
+
+    await bulkLifecycle({ ids: [rootId], lifecycle: "closed" });
+    expect(isPinned(rootId)).toBe(false);
+    expect(isPinned(childId)).toBe(false);
+    // Not in the batch, so not touched — the unpin is scoped to the cards that
+    // actually flipped, not to everything the shared lookup happened to read.
+    expect(isPinned(pinnedElsewhere)).toBe(true);
+
+    await bulkLifecycle({ ids: [rootId], lifecycle: "open" });
+    expect(isPinned(rootId)).toBe(false);
+    expect(isPinned(childId)).toBe(false);
+  });
+
   it("resolves POST /bulk-lifecycle to the bulk handler — never a 404 from the /:id route", async () => {
     const id = makeRoot("bulk-routed");
     const res = await dispatch("POST", "/bulk-lifecycle", { ids: [id], lifecycle: "closed" });

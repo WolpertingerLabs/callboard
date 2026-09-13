@@ -25,10 +25,19 @@
  * chatFileService, or its results could mix two points-in-time (see
  * card-rollup.ts and chats-snapshot.ts).  Only the *write* half
  * (`patchCardFields`) touches the file service.
+ *
+ * That split still holds for the functions, but no longer for the *module*:
+ * `patchCardFields` imports card-archive-unpin.ts, which reaches chat-lineage
+ * and from there claude.js, so importing this file at all now boots the agent
+ * stack (a bare `import` prints `[session-completion] Session completion
+ * handler initialized`) and closes an import cycle back to here. Both are
+ * argued, with the evidence, in card-archive-unpin.ts's header. A caller that
+ * only wants the pure readers pays for the whole graph.
  */
 
 import type { Card, CardLifecycle, CardPatch } from "shared";
 import { CARD_CATEGORY_MAX } from "shared";
+import { unpinArchivedCardChats, type PinnedMemberLookup } from "./card-archive-unpin.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
 
 export const CARD_TITLE_MAX = 200;
@@ -170,18 +179,41 @@ function mergeCardMetadata(
 }
 
 /**
+ * Whether a card in this state is archived, for the sidebar's purposes: closed
+ * or opted out of the board. The two are one state everywhere a pin can be
+ * seen — see the header of card-archive-unpin.ts.
+ */
+function isArchivedState(fields: { lifecycle?: unknown; hidden?: unknown }): boolean {
+  return fields.lifecycle === "closed" || fields.hidden === true;
+}
+
+/**
  * Merge `patch` into the card nested inside `chatId`'s metadata.
  * Returns the updated card, or `null` when the chat is missing.
  * Throws {@link CardFieldError} on validation failures (the chat is left
  * untouched).
  *
  * The write is view-only — `chat.updated_at` is not bumped.
+ *
+ * `deps.pinnedMembers` lets a caller archiving many cards in one request share
+ * a single read of the chat corpus across the batch; omit it and one is built
+ * for this call alone. See `createPinnedMemberLookup` in card-archive-unpin.ts.
+ *
+ * `chatId` must be a **chat id** when the patch archives the card. The card
+ * write itself takes either spelling — `getChat` resolves a session id too —
+ * but the pinned-member lookup is keyed by lineage, and lineage names chat ids,
+ * so passing a session id for a record whose two ids differ archives the card
+ * and silently keeps its pins. Every caller today resolves through
+ * `CardContext` or `walkToRootId`, both of which answer in chat ids.
  */
-export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
+export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinnedMembers?: PinnedMemberLookup }): Card | null {
   const chat = chatFileService.getChat(chatId);
   if (!chat) return null;
 
   const existing: Record<string, unknown> = { ...rawCardFields(chat) };
+  // Captured before any field is merged: the unpin below fires on the
+  // *transition* into archived, never on a card that was already there.
+  const wasArchived = isArchivedState(existing);
 
   if (patch.title !== undefined) {
     const trimmed = patch.title.trim();
@@ -268,10 +300,33 @@ export function patchCardFields(chatId: string, patch: CardPatch): Card | null {
 
   existing.updatedAt = new Date().toISOString();
 
+  // Read out of `existing` here, while "after the merge" is still true of it —
+  // not down beside the unpin. Every branch above happens to mutate in place,
+  // so the two reads agree today, but one of them switching to a copy (as
+  // mergeCardMetadata already does for its own sub-object) would silently turn
+  // the unpin off with nothing to fail.
+  const nowArchived = isArchivedState(existing);
+
   const written = chatFileService.updateChatMetadata(chatId, { card: existing }, { touch: false });
   if (!written) throw new CardFieldWriteError(`Failed to persist card fields for chat "${chatId}"`);
   const updated = readCardFields(chatId);
   if (!updated) throw new CardFieldWriteError(`Card root chat "${chatId}" disappeared while it was being updated`);
+
+  // Archiving drops the sidebar pins on this card's chats, when the user has
+  // not turned that off. Deliberately keyed on the transition and only in this
+  // direction — a re-archive of an already-closed card writes nothing, and
+  // unarchiving never restores a pin. Both decisions, and why `hidden` counts,
+  // are argued in card-archive-unpin.ts.
+  //
+  // After the card write, not before: an archive that failed to persist must
+  // not have taken anyone's pins with it. The member writes read-merge-write,
+  // so unpinning the root chat itself preserves the card object just written.
+  // `unpinArchivedCardChats` swallows its own failures by design — this call
+  // sits after the archive is durable, so a throw here would report a card that
+  // IS closed as a failed request.
+  if (!wasArchived && nowArchived) {
+    unpinArchivedCardChats(chatId, deps?.pinnedMembers);
+  }
   return updated;
 }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact, PhoneOutgoing } from "lucide-react";
+import { Sun, Moon, Monitor, RefreshCw, Trash2, Sparkles, Palette, FolderX, Plus, RotateCcw, Contact, PhoneOutgoing, Pin } from "lucide-react";
 import { getMaxTurns, saveMaxTurns, getThemeMode, saveThemeMode, getCustomThemeName, saveCustomThemeName } from "../../utils/localStorage";
 import type { ThemeMode } from "../../utils/localStorage";
 import {
@@ -65,6 +65,13 @@ export default function GeneralSettings() {
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [drawlatchDashboardUrl, setDrawlatchDashboardUrl] = useState<string | null>(null);
 
+  // Unpin-on-archive. Seeded to the default so the switch never renders in the
+  // wrong position while /agent-settings is in flight — absent means ON.
+  const [unpinOnArchive, setUnpinOnArchive] = useState(true);
+  const [unpinSaving, setUnpinSaving] = useState(false);
+  const [unpinSaved, setUnpinSaved] = useState(false);
+  const [unpinError, setUnpinError] = useState<string | null>(null);
+
   // Session completion callback ("phone home") loop-safety state
   const [maxChainDepth, setMaxChainDepth] = useState<number>(DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
   const [maxPending, setMaxPending] = useState<number>(DEFAULT_MAX_PENDING_CALLBACKS);
@@ -104,9 +111,44 @@ export default function GeneralSettings() {
       .then((s) => {
         setMaxChainDepth(s.maxCallbackChainDepth ?? DEFAULT_MAX_CALLBACK_CHAIN_DEPTH);
         setMaxPending(s.maxPendingCallbacks ?? DEFAULT_MAX_PENDING_CALLBACKS);
+        // `!== false`, never `=== true` — the stored field is absent until
+        // someone turns the behaviour off, and absent means on.
+        setUnpinOnArchive(s.unpinChatsOnArchive !== false);
       })
       .catch(() => {});
   }, []);
+
+  /**
+   * Saves on the flip, like the engine-installs switch in Remote Access — there
+   * is nothing else in this card to batch a Save button with, and a lone switch
+   * above a Save button reads as unsaved when it isn't.
+   *
+   * Only this field is sent. `PUT /agent-settings` leaves every field the body
+   * omits untouched, so a save from here cannot disturb the proxy endpoint,
+   * the API keys, or anything else another tab is holding.
+   */
+  const persistUnpinOnArchive = async (next: boolean) => {
+    if (unpinSaving) return;
+    setUnpinSaving(true);
+    setUnpinError(null);
+    const previous = unpinOnArchive;
+    setUnpinOnArchive(next);
+    try {
+      const updated = await updateAgentSettings({ unpinChatsOnArchive: next });
+      // Re-read what was actually stored rather than trusting the optimistic
+      // value: this is the field whose default is "on when absent", so a write
+      // that did not land would otherwise leave the switch claiming an "off"
+      // the daemon does not have.
+      setUnpinOnArchive(updated.unpinChatsOnArchive !== false);
+      setUnpinSaved(true);
+      setTimeout(() => setUnpinSaved(false), 2000);
+    } catch (err: any) {
+      setUnpinOnArchive(previous);
+      setUnpinError(err.message || "Failed to save");
+    } finally {
+      setUnpinSaving(false);
+    }
+  };
 
   const handleCallbackSave = async () => {
     setCallbackSaving(true);
@@ -991,6 +1033,93 @@ export default function GeneralSettings() {
           >
             {saved ? "Saved!" : "Save"}
           </button>
+        </div>
+      </div>
+
+      {/* Chat List Section */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 20,
+          background: "var(--bg)",
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <Pin size={16} style={{ color: "var(--accent-text)" }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Chat List</span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+          <div>
+            <label htmlFor="unpinOnArchive" style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+              Unpin a chat when it is archived
+            </label>
+            <div id="unpinOnArchive-note" style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5 }}>
+              <div>
+                Archiving is a card action &mdash; it closes the whole conversation tree &mdash; so archiving anything on a card clears the pin on every pinned
+                chat in that tree. Hiding a card from the board counts as archiving it.
+              </div>
+              <div style={{ marginTop: 6 }}>
+                Whichever way this is set, an archived card&rsquo;s chats leave the sidebar: it drops them from the list entirely unless the{" "}
+                <strong>Archived</strong> filter is on. What this setting decides is the state they are in when you next see them &mdash; with the Archived
+                filter on, while searching, or once you unarchive.
+              </div>
+              <div style={{ marginTop: 6 }}>
+                Unarchiving never restores a pin this cleared, so re-pin the chat when you return to it. On by default. Saved as soon as you flip it.
+              </div>
+            </div>
+          </div>
+          <button
+            id="unpinOnArchive"
+            type="button"
+            role="switch"
+            aria-checked={unpinOnArchive}
+            aria-label="Unpin a chat when it is archived"
+            aria-describedby="unpinOnArchive-note unpinOnArchive-status"
+            onClick={() => void persistUnpinOnArchive(!unpinOnArchive)}
+            disabled={unpinSaving}
+            style={{
+              position: "relative",
+              width: 44,
+              height: 24,
+              borderRadius: 999,
+              border: "none",
+              cursor: unpinSaving ? "default" : "pointer",
+              flexShrink: 0,
+              background: unpinOnArchive ? "var(--accent)" : "var(--border)",
+              transition: "background 0.15s",
+              opacity: unpinSaving ? 0.6 : 1,
+            }}
+          >
+            <span
+              style={{
+                position: "absolute",
+                top: 2,
+                left: unpinOnArchive ? 22 : 2,
+                width: 20,
+                height: 20,
+                borderRadius: "50%",
+                background: "var(--toggle-knob)",
+                transition: "left 0.15s",
+              }}
+            />
+          </button>
+        </div>
+        {/* A live region, not just coloured text. The switch saves on the flip
+            and reverts itself on failure, so without one a screen-reader user
+            flips it, the PUT fails, the switch silently goes back, and that is
+            indistinguishable from success. `role="alert"` on the error is what
+            makes the failure interrupt rather than queue. */}
+        <div id="unpinOnArchive-status" aria-live="polite" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, minHeight: 16 }}>
+          {unpinError ? (
+            <span role="alert" style={{ fontSize: 12, color: "var(--error)" }}>
+              {unpinError}
+            </span>
+          ) : unpinSaved ? (
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Saved!</span>
+          ) : null}
         </div>
       </div>
 

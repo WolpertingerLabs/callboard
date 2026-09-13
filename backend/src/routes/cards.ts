@@ -25,11 +25,13 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { CardPatch, CardSummary } from "shared";
+import { createPinnedMemberLookup } from "../services/card-archive-unpin.js";
 import { createCardContext } from "../services/card-context.js";
 import { patchCardFields, clearCardFieldsOn, CardFieldError } from "../services/card-fields.js";
 import { CARD_CATEGORY_MAX } from "shared";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
 import { chatFileService } from "../services/chat-file-service.js";
+import { listChatsSnapshot } from "../services/chats-snapshot.js";
 import { listRuns } from "../services/job-store.js";
 import { clearListCaches } from "../services/list-caches.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -109,7 +111,7 @@ function clearRedirectedMemberCard(requestedId: string, rootChatId: string): voi
 cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Close or reopen many cards in one call; per-id failures are reported, not fatal'
-  // #swagger.description = 'ids are root chat ids. Per-id failures are reported in failed[], not fatal.'
+  // #swagger.description = 'ids are root chat ids. Per-id failures are reported in failed[], not fatal. Closing a card clears metadata.pinned on the chats in its tree unless agent settings set unpinChatsOnArchive to false; reopening never restores a pin.'
   /* #swagger.responses[200] = { description: "Updated card summaries plus per-id failures" } */
   const { ids, lifecycle } = req.body ?? {};
   if (!Array.isArray(ids) || ids.length === 0 || ids.some((id: unknown) => typeof id !== "string")) {
@@ -135,7 +137,12 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     const rootByRequestedId = new Map<string, string>();
     const failed: { id: string; error: string }[] = [];
     const seenRoots = new Set<string>();
-    const context = createCardContext();
+    // Read once, handed to both consumers: the card context derives lineage and
+    // rollups from it, the pinned-member lookup derives card membership for the
+    // pins. Letting either read its own would double the corpus pass this route
+    // was built to hold to one.
+    const stored = listChatsSnapshot();
+    const context = createCardContext(stored);
     for (const id of ids as string[]) {
       const root = context.resolve(id);
       if (!root) {
@@ -153,9 +160,16 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
 
     const successfulRootIds = new Set<string>();
     const failedRootIds = new Map<string, string>();
+    // One lookup for the whole batch: archiving unpins the chats on each card,
+    // and answering "which chats are pinned, and on which card" needs the whole
+    // corpus. Shared here, that is one index for an 800-card "Select all"
+    // instead of 800 — over the snapshot the context already read, so the pass
+    // itself is free. A batch that archives nothing never builds the index at
+    // all; one that archives anything builds it once, pinned chats or not.
+    const pinnedMembers = createPinnedMemberLookup(stored);
     for (const { id, rootChatId } of writeOrder) {
       try {
-        patchCardFields(rootChatId, { lifecycle });
+        patchCardFields(rootChatId, { lifecycle }, { pinnedMembers });
         const rootChat = chatFileService.getChat(rootChatId);
         if (rootChat) context.replaceRoot(rootChat);
         successfulRootIds.add(rootChatId);
@@ -230,7 +244,7 @@ const PATCHABLE_FIELDS = ["title", "description", "emoji", "pinned", "status", "
 cardsRouter.patch("/:id", (req: Request, res: Response) => {
   // #swagger.tags = ['Cards']
   // #swagger.summary = 'Update a card (title, description, pin, narrative status, lifecycle, hidden, metadata)'
-  // #swagger.description = 'id is the card\'s root chat id (any member chat id resolves to the same card). The patch merges into the root chat\'s metadata.card as a view-only write (no updated_at bump).'
+  // #swagger.description = 'id is the card\'s root chat id (any member chat id resolves to the same card). The patch merges into the root chat\'s metadata.card as a view-only write (no updated_at bump). Archiving the card — lifecycle "closed" or hidden true — also clears metadata.pinned on the chats in its tree unless agent settings set unpinChatsOnArchive to false; unarchiving never restores a pin.'
   /* #swagger.responses[404] = { description: "Card not found" } */
   const body = req.body ?? {};
   const patch: Record<string, unknown> = {};
@@ -274,10 +288,13 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     if (metadataError) return res.status(400).json({ error: metadataError });
   }
   try {
-    const context = createCardContext();
+    // Same shared read as bulk-lifecycle: one card here rather than many, but a
+    // second corpus pass for the pins would cost as much as the first.
+    const stored = listChatsSnapshot();
+    const context = createCardContext(stored);
     const root = context.resolve(req.params.id);
     if (!root) return res.status(404).json({ error: "Card not found" });
-    const card = patchCardFields(root.rootChatId, patch as CardPatch);
+    const card = patchCardFields(root.rootChatId, patch as CardPatch, { pinnedMembers: createPinnedMemberLookup(stored) });
     if (!card) return res.status(404).json({ error: "Card not found" });
     if (!context.isNativeTarget(req.params.id)) clearRedirectedMemberCard(req.params.id, root.rootChatId);
     // A lifecycle flip changes which chats the sidebar's cards-only filter
