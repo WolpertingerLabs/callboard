@@ -1056,10 +1056,12 @@ export default function GeneralSettings() {
             <label htmlFor="unpinOnArchive" style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
               Unpin a chat when it is archived
             </label>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5 }}>
+            <div id="unpinOnArchive-note" style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.5 }}>
               Archiving is a card action — it closes the whole conversation tree — so archiving anything on a card clears the pin on every pinned chat in that
-              tree, and they drop out of the Pinned section back into the list. Turn this off to leave pinned chats pinned, dimmed, at the top. Unarchiving
-              never puts a pin back either way: re-pin the chat when you return to it. On by default. Saved as soon as you flip it.
+              tree. Hiding a card from the board counts as archiving it. Note that the sidebar drops an archived card&rsquo;s chats from the list entirely
+              unless <strong>Show archived</strong> is on, so they leave the Pinned section either way; what this decides is where you find them when they come
+              back &mdash; with Show archived on, while searching, or once you unarchive. Unarchiving never restores a pin this cleared, so re-pin the chat when
+              you return to it. On by default. Saved as soon as you flip it.
             </div>
           </div>
           <button
@@ -1068,6 +1070,7 @@ export default function GeneralSettings() {
             role="switch"
             aria-checked={unpinOnArchive}
             aria-label="Unpin a chat when it is archived"
+            aria-describedby="unpinOnArchive-note unpinOnArchive-status"
             onClick={() => void persistUnpinOnArchive(!unpinOnArchive)}
             disabled={unpinSaving}
             style={{
@@ -1097,9 +1100,16 @@ export default function GeneralSettings() {
             />
           </button>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, minHeight: 16 }}>
+        {/* A live region, not just coloured text. The switch saves on the flip
+            and reverts itself on failure, so without one a screen-reader user
+            flips it, the PUT fails, the switch silently goes back, and that is
+            indistinguishable from success. `role="alert"` on the error is what
+            makes the failure interrupt rather than queue. */}
+        <div id="unpinOnArchive-status" aria-live="polite" style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, minHeight: 16 }}>
           {unpinError ? (
-            <span style={{ fontSize: 12, color: "var(--error)" }}>{unpinError}</span>
+            <span role="alert" style={{ fontSize: 12, color: "var(--error)" }}>
+              {unpinError}
+            </span>
           ) : unpinSaved ? (
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Saved!</span>
           ) : null}

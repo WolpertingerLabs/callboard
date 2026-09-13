@@ -25,6 +25,14 @@
  * chatFileService, or its results could mix two points-in-time (see
  * card-rollup.ts and chats-snapshot.ts).  Only the *write* half
  * (`patchCardFields`) touches the file service.
+ *
+ * That split still holds for the functions, but no longer for the *module*:
+ * `patchCardFields` imports card-archive-unpin.ts, which reaches chat-lineage
+ * and from there claude.js, so importing this file at all now boots the agent
+ * stack (a bare `import` prints `[session-completion] Session completion
+ * handler initialized`) and closes an import cycle back to here. Both are
+ * argued, with the evidence, in card-archive-unpin.ts's header. A caller that
+ * only wants the pure readers pays for the whole graph.
  */
 
 import type { Card, CardLifecycle, CardPatch } from "shared";
@@ -285,6 +293,13 @@ export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinne
 
   existing.updatedAt = new Date().toISOString();
 
+  // Read out of `existing` here, while "after the merge" is still true of it —
+  // not down beside the unpin. Every branch above happens to mutate in place,
+  // so the two reads agree today, but one of them switching to a copy (as
+  // mergeCardMetadata already does for its own sub-object) would silently turn
+  // the unpin off with nothing to fail.
+  const nowArchived = isArchivedState(existing);
+
   const written = chatFileService.updateChatMetadata(chatId, { card: existing }, { touch: false });
   if (!written) throw new CardFieldWriteError(`Failed to persist card fields for chat "${chatId}"`);
   const updated = readCardFields(chatId);
@@ -299,7 +314,10 @@ export function patchCardFields(chatId: string, patch: CardPatch, deps?: { pinne
   // After the card write, not before: an archive that failed to persist must
   // not have taken anyone's pins with it. The member writes read-merge-write,
   // so unpinning the root chat itself preserves the card object just written.
-  if (!wasArchived && isArchivedState(existing)) {
+  // `unpinArchivedCardChats` swallows its own failures by design — this call
+  // sits after the archive is durable, so a throw here would report a card that
+  // IS closed as a failed request.
+  if (!wasArchived && nowArchived) {
     unpinArchivedCardChats(chatId, deps?.pinnedMembers);
   }
   return updated;

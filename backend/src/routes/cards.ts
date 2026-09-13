@@ -31,6 +31,7 @@ import { patchCardFields, clearCardFieldsOn, CardFieldError } from "../services/
 import { CARD_CATEGORY_MAX } from "shared";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
 import { chatFileService } from "../services/chat-file-service.js";
+import { listChatsSnapshot } from "../services/chats-snapshot.js";
 import { listRuns } from "../services/job-store.js";
 import { clearListCaches } from "../services/list-caches.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -136,7 +137,12 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     const rootByRequestedId = new Map<string, string>();
     const failed: { id: string; error: string }[] = [];
     const seenRoots = new Set<string>();
-    const context = createCardContext();
+    // Read once, handed to both consumers: the card context derives lineage and
+    // rollups from it, the pinned-member lookup derives card membership for the
+    // pins. Letting either read its own would double the corpus pass this route
+    // was built to hold to one.
+    const stored = listChatsSnapshot();
+    const context = createCardContext(stored);
     for (const id of ids as string[]) {
       const root = context.resolve(id);
       if (!root) {
@@ -155,10 +161,12 @@ cardsRouter.post("/bulk-lifecycle", (req: Request, res: Response) => {
     const successfulRootIds = new Set<string>();
     const failedRootIds = new Map<string, string>();
     // One lookup for the whole batch: archiving unpins the chats on each card,
-    // and answering "which chats are pinned, and on which card" costs a corpus
-    // pass. Shared here, that is one pass for a 800-card "Select all" instead of
-    // 800 — and it is lazy, so a batch that unpins nothing pays for none of it.
-    const pinnedMembers = createPinnedMemberLookup();
+    // and answering "which chats are pinned, and on which card" needs the whole
+    // corpus. Shared here, that is one index for an 800-card "Select all"
+    // instead of 800 — over the snapshot the context already read, so the pass
+    // itself is free. A batch that archives nothing never builds the index at
+    // all; one that archives anything builds it once, pinned chats or not.
+    const pinnedMembers = createPinnedMemberLookup(stored);
     for (const { id, rootChatId } of writeOrder) {
       try {
         patchCardFields(rootChatId, { lifecycle }, { pinnedMembers });
@@ -280,10 +288,13 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     if (metadataError) return res.status(400).json({ error: metadataError });
   }
   try {
-    const context = createCardContext();
+    // Same shared read as bulk-lifecycle: one card here rather than many, but a
+    // second corpus pass for the pins would cost as much as the first.
+    const stored = listChatsSnapshot();
+    const context = createCardContext(stored);
     const root = context.resolve(req.params.id);
     if (!root) return res.status(404).json({ error: "Card not found" });
-    const card = patchCardFields(root.rootChatId, patch as CardPatch);
+    const card = patchCardFields(root.rootChatId, patch as CardPatch, { pinnedMembers: createPinnedMemberLookup(stored) });
     if (!card) return res.status(404).json({ error: "Card not found" });
     if (!context.isNativeTarget(req.params.id)) clearRedirectedMemberCard(req.params.id, root.rootChatId);
     // A lifecycle flip changes which chats the sidebar's cards-only filter

@@ -568,6 +568,14 @@ export interface AgentSettings {
    * was — the most prominent seat in the sidebar, now greyed out, and the one
    * row the archive gesture visibly failed to clear.
    *
+   * Worth knowing when reading the above: with the sidebar's default filters
+   * this changes nothing *immediately*. `cardLifecycle=unarchived` drops every
+   * chat on an archived card, pinned ones included — the pinned append
+   * re-applies the scope (see `appendableRow` in routes/chats.ts) — so the rows
+   * leave the list either way. What the setting decides is the state they are
+   * found in later: with the sidebar's Archived toggle on, during a search, or
+   * after the card is reopened.
+   *
    * Enforced server-side in `patchCardFields`, the single write that flips a
    * card's lifecycle, so the web UI, the board, bulk archive and any future MCP
    * lifecycle setter all obey it. It fires on the *transition* into archived

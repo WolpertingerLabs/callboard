@@ -80,6 +80,22 @@ describe("Settings → General — unpin a chat when it is archived", () => {
     expect(screen.getByText("Saved!")).toBeTruthy();
   });
 
+  it("snaps back when the daemon 200s but refuses to store the value", async () => {
+    // The write guard is `typeof === "boolean"`, so a value the route declines
+    // comes back as a 200 whose settings simply do not carry the field — which
+    // reads as the default, ON. The control has to believe the response rather
+    // than the click it just made; an optimistic-only implementation would sit
+    // there showing OFF for a setting that is on.
+    h.updateAgentSettings.mockResolvedValue({});
+    renderPage();
+    await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("true"));
+
+    fireEvent.click(toggle());
+
+    await waitFor(() => expect(h.updateAgentSettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("true"));
+  });
+
   it("puts the switch back and says why when the save fails", async () => {
     h.updateAgentSettings.mockRejectedValue(new Error("daemon unreachable"));
     renderPage();
@@ -87,7 +103,23 @@ describe("Settings → General — unpin a chat when it is archived", () => {
 
     fireEvent.click(toggle());
 
-    await waitFor(() => expect(screen.getByText("daemon unreachable")).toBeTruthy());
+    // In a live region with role="alert", so it is announced rather than only
+    // rendered — the switch reverts itself, so colour alone says nothing.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("daemon unreachable");
     expect(toggle().getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("describes the switch with its explanation and its status line", async () => {
+    renderPage();
+    await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("true"));
+
+    const described = toggle().getAttribute("aria-describedby")!.split(" ");
+    expect(described).toContain("unpinOnArchive-note");
+    expect(described).toContain("unpinOnArchive-status");
+    for (const id of described) expect(document.getElementById(id)).toBeTruthy();
+    // The note has to say the thing the sidebar actually does, or someone turns
+    // this off to keep their pins and watches the chats vanish regardless.
+    expect(document.getElementById("unpinOnArchive-note")!.textContent).toMatch(/Show archived/);
   });
 });
