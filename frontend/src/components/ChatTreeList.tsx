@@ -15,11 +15,14 @@ import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
  * aliasing legacy `parentChatId`/`forkedFrom` pointers). A chat without any
  * lineage — the common case — renders as a plain `ChatListItem` row, with no
  * chevron and nothing to expand, so a list of unrelated chats looks exactly
- * like an ungrouped one. Groups render their lineage ROOT — the chat that
- * appears at depth 0 when the group is expanded — as the header row with a
- * chevron; expanding fetches the authoritative full tree from
- * GET /api/chats/:id/tree (which includes members outside the currently loaded
- * page) and renders it depth-indented.
+ * like an ungrouped one. Groups render their lineage ROOT **where that chat is
+ * loaded** — then it is also the chat that appears at depth 0 when the group is
+ * expanded — as the header row with a chevron, and fall back to the most
+ * recently updated member when it is not (see `buildRows`, which owns both the
+ * rule and the fallback; in the fallback the header is a child and the tree's
+ * depth-0 node is some chat this list does not hold). Expanding fetches the
+ * authoritative full tree from GET /api/chats/:id/tree (which includes members
+ * outside the currently loaded page) and renders it depth-indented.
  *
  * The header row is the root and not the group's most recently updated member
  * because the row is a link as much as a label: clicking it opens the chat it
@@ -92,11 +95,60 @@ interface LineageInfo {
   hasLineage: boolean;
 }
 
+/**
+ * The live-work signals a row reports, rolled up over the group it stands for.
+ *
+ * IDENTITY is one chat's — the row's title, preview, click target, kebab and
+ * pin all answer to `Row.chat`. ACTIVITY is the tree's, and that split is the
+ * whole point of this type: a group row fronted by its root reports the root's
+ * signals, and in Callboard's spawn model the root is the idle parent by
+ * construction. Every signal here is one that only ever fires on a member
+ * *other* than the root — a subagent calling `summon_user`, a job step waiting
+ * on an approval, a child that has written output you have not read — so a
+ * per-front-chat reading suppresses exactly the rows that need you, on exactly
+ * the rows where a tree is doing work.
+ *
+ * Rolled up over the LOADED members, the same qualifier `pinnedMembers`
+ * carries and for the same reason: this is a verdict over the chats the list
+ * holds, not over the group as the server knows it.
+ */
+export interface RowActivity {
+  /** The latest `updated_at` in the group — what the row's timestamp shows. */
+  updatedAt: string;
+  /** Any member with output past its OWN read mark; see `buildRows`. */
+  hasUnread: boolean;
+  summon?: { message: string; urgency: string; createdAt: string };
+  /**
+   * The member carrying `summon`. Dismissing writes to that chat, which on a
+   * group row is not the chat the row is labelled with.
+   */
+  summonChatId?: string;
+  jobAwaitingApproval: boolean;
+  /**
+   * Run and step of the member awaiting approval, so the "needs you" pill can
+   * name the step that is actually waiting. Set only alongside
+   * `jobAwaitingApproval`; a row's own job badge is otherwise its own.
+   */
+  jobRunId?: string;
+  jobStepId?: string;
+  chatStatus?: string;
+  chatStatusEmoji?: string;
+}
+
 /** One visible entry: a lone chat, or a lineage group fronted by `chat`. */
 export interface Row {
   chat: Chat;
   rootKey: string;
   isGroup: boolean;
+  /**
+   * Every chat from the `chats` prop filed under this row, in the order the
+   * prop had them — i.e. most recently updated first. `chat` is always one of
+   * them (see the fronting expression in `buildRows`), which is what lets the
+   * row read the group's activity and its own "you are here" from one array.
+   */
+  members: Chat[];
+  /** What the row reports about live work anywhere in `members`. */
+  activity: RowActivity;
   /**
    * Chats from the `chats` prop this row stands for — 1 for a lone chat, the
    * group's size for a group. The section headers count chats, not rows, so a
@@ -117,17 +169,25 @@ export interface Row {
    * fronting it.
    *
    * **A group is pinned if ANY member is.** The alternative — only the header
-   * row's own pin counts — silently breaks the feature, and fronting groups by
-   * their root rather than by their busiest member makes it break *more*, not
-   * less. Pin chat C and spawn a subagent off it: C is now a group, fronted by
-   * its root, and if C was not itself that root then under a header-only rule
-   * its pin stops having any effect — no row displays it and no menu entry can
-   * clear it. (The root does not move around the way "most recently updated
-   * member" did, so the failure is stable rather than intermittent; a pin set
-   * on a non-root member is simply never the header's own.) Pinning a child
-   * therefore floats its whole group, which is the honest reading of a list
-   * that renders one row per tree: that row IS the tree, and there is no other
-   * row to move.
+   * row's own pin counts — silently breaks the feature under either fronting
+   * rule. Pin a subagent's chat, the one you actually want to keep an eye on:
+   * its group is fronted by the parent thread it was spawned from, so under a
+   * header-only rule the pin has no effect at all — no row displays it and no
+   * menu entry can clear it.
+   *
+   * Fronting by the root changes the SHAPE of that failure rather than its
+   * size. The two rules break on different sets, and neither contains the
+   * other: the old one (busiest member fronts) breaks whenever the pinned
+   * member is not the most recently updated, so pinning a tree's quiet root
+   * broke it and pinning its busiest child happened to work; the new one
+   * breaks whenever the pinned member is not the root, which is the reverse
+   * pair. What the root does buy is that it does not move around the way "most
+   * recently updated member" did, so the failure would be stable rather than
+   * intermittent — and (when the root is loaded, which is when it fronts at
+   * all) a pin set on a non-root member is never the header's own. Pinning a
+   * child therefore floats its whole group, which is the honest reading of a
+   * list that renders one row per tree: that row IS the tree, and there is no
+   * other row to move.
    *
    * "Loaded" is the real qualifier: this is a verdict over the rows the list
    * currently HOLDS, not over the group as the server knows it. Mostly that is
@@ -203,9 +263,14 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
  *   user is working in stays near the top of the sidebar however deep in it
  *   the work is happening. Ordering by root recency instead would sink an
  *   actively worked thread to wherever its opening message left it.
- * - **Identity** — `row.chat`, which supplies the row's title, timestamp,
- *   kebab and click target — is the lineage ROOT, the same chat that renders
- *   at depth 0 when the group is expanded. A thread's row opens the thread.
+ * - **Identity** — `row.chat`, which supplies the row's title, preview, kebab
+ *   and click target — is the lineage ROOT, the same chat that renders at
+ *   depth 0 when the group is expanded. A thread's row opens the thread.
+ * - **Activity** — the timestamp and every live-work signal on the row — is
+ *   the whole group's, rolled up in `row.activity`. Identity had to move to
+ *   the root for the row to stop lying about where it goes; activity had to
+ *   stay with the tree, because the root is the one member that by
+ *   construction is never the one doing the work. See {@link RowActivity}.
  *
  * The fallback exists because `rootKey` is not always a chat this list holds:
  * `lineageOf` keys a group by a dangling parent id or a stamped `rootChatId`
@@ -226,7 +291,9 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
 export function buildRows(chats: Chat[]): Row[] {
   const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
   const infoById = new Map<string, LineageInfo>();
-  const groupSizes = new Map<string, number>();
+  // The group's membership, in the prop's order. Also the row's size: a
+  // separate counter alongside this list could only ever disagree with it.
+  const groupMembers = new Map<string, Chat[]>();
   const groupLineage = new Map<string, boolean>();
   // Collected per group, not per chat: a pin set on any member files the
   // whole group — see Row.pinnedMembers for why the header row's own flag
@@ -235,7 +302,9 @@ export function buildRows(chats: Chat[]): Row[] {
   for (const chat of chats) {
     const info = lineageOf(chat, byId);
     infoById.set(chat.id, info);
-    groupSizes.set(info.rootKey, (groupSizes.get(info.rootKey) || 0) + 1);
+    const members = groupMembers.get(info.rootKey);
+    if (members) members.push(chat);
+    else groupMembers.set(info.rootKey, [chat]);
     if (info.hasLineage) groupLineage.set(info.rootKey, true);
     if (isChatPinned(chat)) {
       const pinned = groupPinned.get(info.rootKey);
@@ -249,8 +318,9 @@ export function buildRows(chats: Chat[]): Row[] {
     const { rootKey, hasLineage } = infoById.get(chat.id)!;
     if (seen.has(rootKey)) continue;
     seen.add(rootKey);
-    // Always set: this row's own chat counted itself into the bucket above.
-    const size = groupSizes.get(rootKey)!;
+    // Always set: this row's own chat filed itself into the bucket above.
+    const members = groupMembers.get(rootKey)!;
+    const size = members.length;
     const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
     // `chat` — the first member seen, i.e. the most recently updated one — has
     // already fixed this row's position by being the iteration that created it.
@@ -264,9 +334,83 @@ export function buildRows(chats: Chat[]): Row[] {
     // against the row ChatList's selection expects to find it in.
     const root = byId.get(rootKey);
     const front = isGroup && root && infoById.get(root.id)!.rootKey === rootKey ? root : chat;
-    result.push({ chat: front, rootKey, isGroup, size, pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS });
+    result.push({
+      chat: front,
+      rootKey,
+      isGroup,
+      members,
+      activity: rollUpActivity(members),
+      size,
+      pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS,
+    });
   }
   return result;
+}
+
+/**
+ * The group's live work, as one row's worth of signals.
+ *
+ * Every rule here is "the loudest member wins", never "the front chat's", and
+ * for a one-member row each reduces to exactly the reading `ChatListItem` does
+ * from a chat's own metadata — which is what lets a lone row and a group row
+ * share one code path in the component. See {@link RowActivity}.
+ *
+ * Ties go to the earlier member, which is the more recently updated one:
+ * `members` is in the server's recency order, and equal `updated_at` values
+ * are ordinary rather than a corner case — a parent and the child it just
+ * spawned are routinely written in the same second.
+ */
+function rollUpActivity(members: Chat[]): RowActivity {
+  const at = (iso: string) => new Date(iso).getTime();
+  let updatedAt = members[0].updated_at;
+  let hasUnread = false;
+  let summon: RowActivity["summon"];
+  let summonChatId: string | undefined;
+  let summonUrgent = false;
+  let summonAt = -Infinity;
+  let jobAwaitingApproval = false;
+  let jobRunId: string | undefined;
+  let jobStepId: string | undefined;
+  let chatStatus: string | undefined;
+  let chatStatusEmoji: string | undefined;
+  let chatStatusAt = -Infinity;
+
+  for (const member of members) {
+    const meta = parseMeta(member);
+    const memberAt = at(member.updated_at);
+    if (memberAt > at(updatedAt)) updatedAt = member.updated_at;
+    // Each member against its OWN read mark: one member you have read does not
+    // clear the dot for a sibling you have not, and a member with no mark at
+    // all is not unread — the same rule the row applies to a lone chat.
+    if (meta.lastReadAt && memberAt > at(meta.lastReadAt)) hasUnread = true;
+    if (meta.summon) {
+      // Urgent outranks recent — the urgent one is the one that pulses — and
+      // urgency is binary here, exactly as the badge reads it.
+      const urgent = meta.summon.urgency === "urgent";
+      const createdAt = at(meta.summon.createdAt);
+      if (!summon || (urgent && !summonUrgent) || (urgent === summonUrgent && createdAt > summonAt)) {
+        summon = meta.summon;
+        summonChatId = member.id;
+        summonUrgent = urgent;
+        summonAt = createdAt;
+      }
+    }
+    // ANY member, and not noisy: `jobRunNeedsYou` is set on the run's
+    // representative row only (see ChatListItem), so at most one member of a
+    // group carries it per run.
+    if (!jobAwaitingApproval && meta.jobRunId && meta.jobRunNeedsYou === true) {
+      jobAwaitingApproval = true;
+      jobRunId = meta.jobRunId;
+      jobStepId = meta.jobStepId || undefined;
+    }
+    if (meta.chatStatus && memberAt > chatStatusAt) {
+      chatStatus = meta.chatStatus;
+      chatStatusEmoji = meta.chatStatusEmoji || undefined;
+      chatStatusAt = memberAt;
+    }
+  }
+
+  return { updatedAt, hasUnread, summon, summonChatId, jobAwaitingApproval, jobRunId, jobStepId, chatStatus, chatStatusEmoji };
 }
 
 const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
@@ -492,7 +636,7 @@ export default function ChatTreeList({
   /** Collapse state for those headers, persisted via localStorage. */
   const sectionExpansion = useChatSectionExpansion();
 
-  const renderRow = ({ chat, rootKey, isGroup, pinnedMembers }: Row) => {
+  const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers }: Row) => {
     /**
      * Pin the chat this row is labelled with; unpin every member holding a pin.
      *
@@ -507,6 +651,10 @@ export default function ChatTreeList({
     };
 
     if (!isGroup) {
+      // No `activity`: a lone row stands for one chat, so the roll-up would be
+      // that chat's own metadata read back to it. The component's own reading
+      // is the definition the roll-up matches, not a second one to keep in
+      // step — see `rollUpActivity`.
       return (
         <ChatListItem
           key={chat.id}
@@ -528,6 +676,15 @@ export default function ChatTreeList({
     const isExpanded = expanded.has(rootKey);
     const isLoading = loading.has(rootKey);
     const tree = trees[rootKey];
+    /**
+     * Active if a session is live ANYWHERE in the group, reported as the first
+     * such member's — the badge says web-or-cli, and one row cannot say two
+     * things. The root is the member least likely to be running, so reading
+     * only the front chat would leave a tree with three agents working in it
+     * looking idle. Falls back to the front chat's own, which is what carries
+     * the *inactive* status through for the ordinary one-member case.
+     */
+    const groupSessionStatus = members.map((member) => sessionStatusFor(member.id)).find((status) => status?.active) ?? sessionStatusFor(chat.id);
 
     return (
       <div key={rootKey} style={{ background: isExpanded ? "var(--chatlist-tree-group-bg)" : undefined }}>
@@ -560,14 +717,23 @@ export default function ChatTreeList({
           <div style={{ flex: 1, minWidth: 0 }}>
             <ChatListItem
               chat={chat}
-              isActive={chat.id === activeChatId}
+              // The chat being read is somewhere in this tree, and this row is
+              // the only row the tree has — highlighting only when the ROOT is
+              // open would leave the sidebar with nothing marked at all for
+              // every chat one level down. (`faded` keys off this too, so a
+              // group on an archived card stops fading the moment you open any
+              // member of it.)
+              isActive={members.some((member) => member.id === activeChatId)}
               onClick={() => onChatClick(chat)}
               onDelete={() => onDelete(chat)}
               onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
               {...pinProps}
               onEditTitle={onEditTitle && (() => onEditTitle(chat))}
               cardMenu={cardMenuFor(chat)}
-              sessionStatus={sessionStatusFor(chat.id)}
+              sessionStatus={groupSessionStatus}
+              // Identity above is the root's; the live-work signals are the
+              // whole group's. See `RowActivity`.
+              activity={activity}
               dimmed={isDimmed?.(chat)}
               {...selectionFor?.(chat)}
             />
