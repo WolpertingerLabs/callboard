@@ -250,7 +250,15 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
       {
         name: "role",
         type: "string",
-        description: 'Label for the spawned chat\'s node in the chat parentage tree (e.g. "subagent", "monitor", "router")',
+        description:
+          'Label for the spawned chat\'s node in the chat parentage tree (e.g. "subagent", "monitor", "router"). Cannot be combined with "independent"',
+        required: false,
+      },
+      {
+        name: "independent",
+        type: "boolean",
+        description:
+          "Spawn the chat top-level — its own card, not a child of this chat in the parentage tree. The prompt still names this chat as its spawner and onComplete still fires here; only the tree edge is dropped",
         required: false,
       },
       {

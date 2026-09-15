@@ -816,7 +816,8 @@ export function buildCallboardToolsSpec(
           "The session runs asynchronously. Prefer onComplete=true to be notified (a new turn in THIS chat) when it finishes — no polling at all. " +
           "If you must poll, use get_session_status and sleep between checks with the `wait` tool. " +
           "Do NOT sleep by running `sleep` as a background Bash command: `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes. " +
-          "The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node.",
+          "The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node, " +
+          "or `independent` to spawn it as its own top-level chat instead.",
         {
           prompt: z.string().describe("The task or message for the chat session"),
           folder: z.string().describe("Absolute path to the working directory for the session"),
@@ -847,13 +848,45 @@ export function buildCallboardToolsSpec(
             .max(40)
             .optional()
             .describe(
-              'Free-form label for the spawned chat\'s node in the chat parentage tree, e.g. "subagent", "monitor", "router", "engine-switch". Shown in the tree UI and get_chat_tree output.',
+              'Free-form label for the spawned chat\'s node in the chat parentage tree, e.g. "subagent", "monitor", "router", "engine-switch". Shown in the tree UI and get_chat_tree output. ' +
+                "Cannot be combined with `independent` — there is no tree node to label — and the call is refused rather than started with the label dropped.",
+            ),
+          independent: z
+            .boolean()
+            .optional()
+            .describe(
+              "If true, the spawned chat is NOT linked as a child of THIS chat: it becomes its own top-level chat with its own card in the sidebar, " +
+                "rather than a node under this one in the parentage tree (default: false). Use for work that outlives or stands apart from this chat. " +
+                "The prompt still names this chat as its spawner, so the new chat can read back here with get_chat_tree / read_session_messages, and " +
+                "onComplete still notifies THIS chat — only the tree edge is dropped. Cannot be combined with `role`.",
             ),
           ...providerModelSchema,
         },
         async (args) => {
           try {
             const sendMessage = getSendMessage();
+
+            // A role labels a node in the parentage tree, and an independent
+            // spawn has no node there to label. Refused rather than started
+            // with the label silently dropped — same call as `useWorktree`
+            // without a branch: the caller asked for two things that cannot
+            // both hold, and only it knows which one it meant.
+            if (args.independent === true && args.role) {
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: JSON.stringify({
+                      ok: false,
+                      error: "role_requires_parent",
+                      message:
+                        "`role` labels the spawned chat's node in the parentage tree, but `independent: true` means it has no node there. " +
+                        "Drop `role` to spawn it top-level, or drop `independent` to spawn it as a labelled child of this chat.",
+                    }),
+                  },
+                ],
+              };
+            }
 
             const providerModel = resolveProviderModelArgs(args, {
               provider: opts?.provider,
@@ -888,10 +921,21 @@ export function buildCallboardToolsSpec(
             const callerChatId = getChatId?.();
             const parentChat = callerChatId ? chatFileService.getChat(callerChatId) : null;
 
+            // The breadcrumb and the tree edge are separate things, and
+            // `independent` drops only the edge. The child still gets told who
+            // spawned it — that line is how it reaches back across engines —
+            // it just is not filed underneath them, so it anchors its own card.
+            const independent = args.independent === true;
+
             // Give the child context about its caller so it can pull details
             // on demand (works across engines — the tools are engine-agnostic).
+            // A detached child gets the same pointer plus a note that it is only
+            // a pointer: told nothing but "spawned by X", it would reasonably
+            // call get_chat_tree over itself, find a lone root, and read the
+            // line as stale.
+            const detachNote = independent ? ", but not linked to it — this chat is its own root, not a child of the spawner" : "";
             const childPrompt = parentChat
-              ? `${args.prompt}\n\n(Spawned by chat ${parentChat.id}. For caller context, use the callboard get_chat_tree tool or read_session_messages with chatId "${parentChat.id}".)`
+              ? `${args.prompt}\n\n(Spawned by chat ${parentChat.id}${detachNote}. For caller context, use the callboard get_chat_tree tool or read_session_messages with chatId "${parentChat.id}".)`
               : args.prompt;
 
             // Build async generator prompt (required when MCP servers are present)
@@ -912,7 +956,7 @@ export function buildCallboardToolsSpec(
               ...(providerModel.model && { model: providerModel.model }),
               ...(args.effort && { effort: args.effort as EffortLevel }),
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
-              ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),
+              ...(parentChat && !independent && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),
               ...(workspaceId && { workspaceId }),
             });
 
@@ -973,7 +1017,13 @@ export function buildCallboardToolsSpec(
                     ...(args.effort && { effort: args.effort as EffortLevel }),
                     modelSource: providerModel.modelSource,
                     ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
-                    ...(parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),
+                    // Where the child landed in the tree. `independent: true`
+                    // is reported rather than just omitting parentChatId, so a
+                    // caller can tell a deliberate detach from the other way
+                    // the link goes missing — a caller with no stored record.
+                    ...(independent
+                      ? { independent: true, ...(parentChat && { spawnedBy: parentChat.id }) }
+                      : parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),
                     ...(onComplete && { onComplete }),
                   }),
                 },
