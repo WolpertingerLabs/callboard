@@ -284,8 +284,14 @@ export default function ChatListItem({
    * one chat and reports one tree, which is the split {@link RowActivity}
    * exists for.
    *
-   * The roll-up can only ever ADD a signal, never hide one: the front chat is
-   * itself a member, so anything true of it is true of the group.
+   * The roll-up never SILENCES a signal: the front chat is itself a member, so
+   * a badge the front chat would have raised alone is still raised here. What
+   * it can do is pick a different one to show — the summon and the status are
+   * single-valued, so the loudest member's wins and the front chat's own is
+   * the one replaced. That is the point rather than a cost: the whole reason a
+   * group row reports its tree is that the tree's live work is somewhere other
+   * than its root. Only `hasUnread` and `jobAwaitingApproval`, being booleans,
+   * are purely additive.
    */
   const summon = activity ? activity.summon : ownSummon;
   // Dismissing writes to the chat that RAISED the summon, which on a group row
