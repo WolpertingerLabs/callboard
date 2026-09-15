@@ -519,9 +519,11 @@ describe("buildRows fronting is restricted to members", () => {
  * Fronting the row with the lineage root fixed the title and the click target
  * and broke everything else the row says, because `ChatListItem` reads the
  * live-work signals off the one chat it is handed: in Callboard's spawn model
- * the root is the idle parent by construction, so a subagent's summon, a job
+ * the root is *typically* the idle parent, so a subagent's summon, a job
  * step's approval, a running session and a child's fresh output all stopped
- * reaching the row that stands for them. Identity is the root's; activity is
+ * reaching the row that stands for them. A tendency, not a guarantee — the
+ * root is a member like any other and the roll-up reads it, which is what the
+ * root-carries-the-only-signal cases below assert. Identity is the root's; activity is
  * the tree's — see `RowActivity`.
  *
  * Distinct `updated_at` values throughout, because the default fixtures share

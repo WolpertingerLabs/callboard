@@ -98,8 +98,11 @@ interface LineageInfo {
 /**
  * The live-work signals a row reports, rolled up over the group it stands for.
  *
- * IDENTITY is one chat's — the row's title, preview, click target, kebab and
- * pin all answer to `Row.chat`. ACTIVITY is the tree's, and that split is the
+ * IDENTITY is one chat's — the row's title, preview, click target and the
+ * kebab's delete/bookmark/rename targets all answer to `Row.chat`. ACTIVITY is
+ * the tree's. (The PIN is neither: it is a group-wide verdict that predates
+ * this type — a group is pinned if ANY member is, and Unpin clears every
+ * member holding one. See `Row.pinnedMembers`.) That split is the
  * whole point of this type: a group row fronted by its root reports the root's
  * signals, and in Callboard's spawn model the root is *typically* the idle
  * parent. Every signal here is one that *usually* fires on a member other than
@@ -133,15 +136,26 @@ export interface RowActivity {
   jobAwaitingApproval: boolean;
   /**
    * Run and step of the member the row's job badge names — so the "needs you"
-   * pill can name the step that is actually waiting, and a tree whose child is
-   * merely RUNNING a step still shows the ordinary job pill.
+   * pill can name the step that is actually waiting, and a tree whose child
+   * merely CARRIES a run still shows the ordinary job pill.
+   *
+   * "Carries a run", not "is running one": `metadata.jobRunId` is written once
+   * at chat creation and never cleared (`backend/src/services/job-store.ts` —
+   * "belongs to this run" is a set that only ever grows), so this badge says a
+   * member belongs to a run, not that a step is in flight. A group row can
+   * therefore surface a pill for a run that finished long ago, carried by a
+   * member that is not the front chat. That is not new — a lone row badges its
+   * own finished run the same way, and before roots fronted anything this row
+   * showed `members[0]`'s — and it is mostly out of reach in the default view,
+   * since job-step chats are `triggered: true` and `includeLineage` re-applies
+   * `excludeTriggered`.
    *
    * Independent of `jobAwaitingApproval` on purpose. A member awaiting an
-   * approval outranks one that is only running (that is the badge worth the
-   * row's single slot), but a running member with no approval pending still
-   * sets these — rolling up only the approval case would make a group row go
-   * silent about a job a lone row would have badged. Among equals the earlier
-   * member wins, like every other field here.
+   * approval outranks one merely carrying a run (that is the badge worth the
+   * row's single slot), but a member with no approval pending still sets these
+   * — rolling up only the approval case would make a group row go silent about
+   * a job a lone row would have badged. Among equals the earlier member wins,
+   * like every other field here.
    *
    * Replaceable, like `summon` and `chatStatus`: with two members awaiting
    * approval the pill can name a run other than the front chat's own waiting
@@ -431,12 +445,16 @@ function rollUpActivity(members: Chat[]): RowActivity {
     // group carries it per run.
     //
     // The badge and the flag are rolled up together but kept separate. An
-    // awaiting member outranks a merely-running one for the row's single pill;
-    // a running one still claims the pill when nothing is waiting, because
-    // rolling up only the approval case leaves a group row silent about a job
-    // its child is visibly running. `jobAwaitingApproval` stays false through
-    // that second branch — it drives the pulsing "needs you" treatment and the
-    // `faded` exemption, neither of which a running step has earned.
+    // awaiting member outranks one that merely carries a run for the row's
+    // single pill; a carrier still claims the pill when nothing is waiting,
+    // because rolling up only the approval case leaves a group row silent
+    // about a job a lone row would have badged. `jobAwaitingApproval` stays
+    // false through that second branch — it drives the pulsing "needs you"
+    // treatment and the `faded` exemption, neither of which a run that is not
+    // waiting on you has earned.
+    //
+    // `meta.jobRunId` is membership, not liveness — written at creation and
+    // never cleared. See RowActivity.jobRunId.
     if (meta.jobRunId) {
       const needsYou = meta.jobRunNeedsYou === true;
       if (!jobAwaitingApproval && (needsYou || !jobRunId)) {

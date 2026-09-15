@@ -280,9 +280,11 @@ export default function ChatListItem({
   /*
    * The live-work signals: the list's roll-up over the group where it supplied
    * one, this chat's own metadata otherwise. Identity above (title, preview,
-   * provider, the kebab's targets) stays this chat's either way — the row names
-   * one chat and reports one tree, which is the split {@link RowActivity}
-   * exists for.
+   * provider, and the kebab's delete/bookmark/rename targets) stays this
+   * chat's either way — the row names one chat and reports one tree, which is
+   * the split {@link RowActivity} exists for. The pin is the exception on both
+   * counts: `pinned` arrives as a group-wide verdict and Unpin clears every
+   * member holding one, which predates the roll-up — see `Props.pinned`.
    *
    * The roll-up never SILENCES a signal: the front chat is itself a member, so
    * a badge the front chat would have raised alone is still raised here. What
@@ -305,10 +307,12 @@ export default function ChatListItem({
   const jobAwaitingApproval = activity ? activity.jobAwaitingApproval : !!ownJobRunId && jobNeedsYou;
   // The group's job badge, whether or not anything is waiting on you: the
   // awaiting member's run and step where one is waiting, so the "needs you"
-  // pill names the step that is actually waiting, and otherwise a merely
-  // RUNNING member's, so a tree with a step in flight still shows the pill a
-  // lone row would have shown. `jobAwaitingApproval` above stays its own
-  // question — it picks the treatment, not the run.
+  // pill names the step that is actually waiting, and otherwise that of a
+  // member merely CARRYING a run, so a tree belonging to a job still shows the
+  // pill a lone row would have shown. (Carrying, not running — `jobRunId` is
+  // written once and never cleared; see RowActivity.jobRunId.)
+  // `jobAwaitingApproval` above stays its own question — it picks the
+  // treatment, not the run.
   const jobRunId = activity ? activity.jobRunId : ownJobRunId;
   const jobStepId = activity ? activity.jobStepId : ownJobStepId;
 
