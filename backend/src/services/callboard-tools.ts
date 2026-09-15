@@ -933,7 +933,10 @@ export function buildCallboardToolsSpec(
             // a pointer: told nothing but "spawned by X", it would reasonably
             // call get_chat_tree over itself, find a lone root, and read the
             // line as stale.
-            const detachNote = independent ? ", but not linked to it — this chat is its own root, not a child of the spawner" : "";
+            // "you", not "this chat": everywhere else in these tool strings
+            // "THIS chat" means the *calling* chat, and the second person puts
+            // the subject beyond doubt two clauses after "chat X" is named.
+            const detachNote = independent ? ", but not linked to it — you are your own root, not a child of the spawner" : "";
             const childPrompt = parentChat
               ? `${args.prompt}\n\n(Spawned by chat ${parentChat.id}${detachNote}. For caller context, use the callboard get_chat_tree tool or read_session_messages with chatId "${parentChat.id}".)`
               : args.prompt;

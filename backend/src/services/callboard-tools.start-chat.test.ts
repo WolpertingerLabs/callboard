@@ -45,13 +45,18 @@ function writeCallerChat(metadata: Record<string, unknown>): void {
   writeFileSync(join(chatsDir, `${CALLER_CHAT_ID}.json`), JSON.stringify(chat, null, 2));
 }
 
-function startChat(): ToolDefinition<any> {
+/**
+ * `callerId` defaults to the chat `writeCallerChat` persists. Pass a temp
+ * tracking id (`new-<ts>`) to build the spec of a caller that has not been
+ * written to disk yet — `getChat` misses, and the tool takes its no-parent path.
+ */
+function startChat(callerId: string = CALLER_CHAT_ID): ToolDefinition<any> {
   // Mirrors the spec claude.ts builds: the engine this session runs on, plus
   // the live model-override getter over the chat record.
-  const spec = buildCallboardToolsSpec(() => CALLER_CHAT_ID, undefined, {
+  const spec = buildCallboardToolsSpec(() => callerId, undefined, {
     includeJobTools: false,
     provider: "codex",
-    getModel: () => chatFileService.getModelOverride(CALLER_CHAT_ID),
+    getModel: () => chatFileService.getModelOverride(callerId),
   });
   const found = spec.tools.find((t) => t.name === "start_chat_session");
   if (!found) throw new Error("start_chat_session not found");
@@ -265,6 +270,32 @@ describe("start_chat_session independent spawns", () => {
 
     expect("parentChatId" in sender.calls[0]).toBe(false);
     expect(result.onComplete).toMatchObject({ registered: true });
+  });
+
+  it("reports independent with no spawnedBy, and no breadcrumb, when the caller has no stored record", async () => {
+    // The arm the independent/spawnedBy split exists to disambiguate, and the
+    // only place in this file where `parentChat` is null: every other test
+    // persists a caller. `getChatId` hands back a temp `new-<ts>` tracking id
+    // while the caller is still registering, which `getChat` misses.
+    //
+    // Two things are pinned. The result still says `independent: true` — the
+    // detach was honoured — but omits `spawnedBy`, which is what tells a caller
+    // apart from one whose own record simply was not resolvable. An unguarded
+    // `spawnedBy: parentChat.id` would throw here, and nothing else would catch it.
+    const sender = stubSender();
+
+    const result = payload(await startChat("new-1756900000000").handler({ prompt: "go", folder: "/tmp/project", independent: true }));
+
+    expect(result).toMatchObject({ chatId: "child-chat", status: "started", independent: true });
+    expect(result.spawnedBy).toBeUndefined();
+    expect(result.parentChatId).toBeUndefined();
+    expect("parentChatId" in sender.calls[0]).toBe(false);
+
+    // And the consequence worth stating out loud: with no parent record there
+    // is no id to point at, so the child is started on the raw prompt with no
+    // breadcrumb at all. A detached child of a not-yet-persisted caller has no
+    // pointer home.
+    expect(await promptText(sender.calls[0])).toBe("go");
   });
 
   it("refuses a role on an independent spawn instead of dropping the label", async () => {
