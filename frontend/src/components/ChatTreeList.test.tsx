@@ -611,11 +611,44 @@ describe("buildRows activity roll-up", () => {
     expect(row.activity).toMatchObject({ jobAwaitingApproval: true, jobRunId: "run-7", jobStepId: "review" });
   });
 
-  it("does not raise the approval flag for a job step that is merely running", () => {
+  it("rolls up a job step that is merely running, without raising the approval flag", () => {
+    // The badge and the flag are separate questions. The run has to reach the
+    // row or the group goes silent about a job a lone row would have badged;
+    // the flag has to stay down or a running step gets the pulsing "needs you"
+    // treatment and the `faded` exemption it has not earned.
     const row = groupRow([child("child-1", { jobRunId: "run-7", jobStepId: "review" }), makeChat("root", {}, ROOT_AT)]);
-    expect(row.activity.jobAwaitingApproval).toBe(false);
-    // And the row's own job badge is untouched by the roll-up.
-    expect(row.activity.jobRunId).toBeUndefined();
+    expect(row.activity).toMatchObject({ jobAwaitingApproval: false, jobRunId: "run-7", jobStepId: "review" });
+  });
+
+  it("prefers the awaiting member's run over a merely running one, whichever comes first", () => {
+    const running = { jobRunId: "run-running", jobStepId: "build" };
+    const awaiting = { jobRunId: "run-waiting", jobStepId: "approve", jobRunNeedsYou: true };
+    const expected = { jobAwaitingApproval: true, jobRunId: "run-waiting", jobStepId: "approve" };
+    // Running member first: the awaiting one displaces it.
+    expect(groupRow([child("child-2", running), child("child-1", awaiting, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT)]).activity).toMatchObject(expected);
+    // Awaiting member first: a later running one does not take the pill back.
+    expect(groupRow([child("child-2", awaiting), child("child-1", running, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT)]).activity).toMatchObject(expected);
+  });
+
+  it("gives the pill to the earlier member when two are merely running", () => {
+    const row = groupRow([
+      child("child-2", { jobRunId: "run-a", jobStepId: "first" }),
+      child("child-1", { jobRunId: "run-b", jobStepId: "second" }, "2026-08-01T16:30:00Z"),
+      makeChat("root", {}, ROOT_AT),
+    ]);
+    expect(row.activity).toMatchObject({ jobAwaitingApproval: false, jobRunId: "run-a", jobStepId: "first" });
+  });
+
+  it("names one of two members awaiting approval — the front chat's own step is replaceable", () => {
+    // The third single-valued signal, alongside the summon and the status: one
+    // pill, so the earlier member's run wins and the root's own waiting step
+    // is the one displaced.
+    const row = groupRow([
+      child("child-1", { jobRunId: "run-child", jobStepId: "child-step", jobRunNeedsYou: true }),
+      makeChat("root", { jobRunId: "run-root", jobStepId: "root-step", jobRunNeedsYou: true }, ROOT_AT),
+    ]);
+    expect(row.chat.id).toBe("root");
+    expect(row.activity).toMatchObject({ jobAwaitingApproval: true, jobRunId: "run-child", jobStepId: "child-step" });
   });
 
   it("takes the chat status of the most recently updated member that has one", () => {
@@ -628,6 +661,22 @@ describe("buildRows activity roll-up", () => {
   it("falls back to the only member that has a status when the busiest one has none", () => {
     const row = groupRow([child("child-1"), makeChat("root", { chatStatus: "waiting on review" }, ROOT_AT)]);
     expect(row.activity.chatStatus).toBe("waiting on review");
+  });
+
+  it("still reports a status whose member has an unparseable updated_at", () => {
+    // A timestamp gate alone drops this: `memberAt` is NaN and every
+    // comparison against NaN is false, so the status is never taken — the one
+    // way the roll-up could SILENCE a signal a lone row shows, and reachable
+    // on a one-member row, where the roll-up must equal `ChatListItem`'s own
+    // reading exactly. `updated_at` is a required ISO string, but
+    // `chat-file-service` already guards it with `Date.parse(...) || 0`.
+    const lone = groupRow([makeChat("solo", { rootChatId: "solo", chatStatus: "stuck", chatStatusEmoji: "🧱" }, "not a date")]);
+    expect(lone.activity).toMatchObject({ chatStatus: "stuck", chatStatusEmoji: "🧱" });
+    // And in a group: an unparseable timestamp is incomparable rather than
+    // old, so it neither wins nor loses on the clock and falls through to the
+    // same earlier-member-wins tie-break every other field uses.
+    const group = groupRow([child("child-1", { chatStatus: "broken clock" }, "not a date"), makeChat("root", { chatStatus: "running tests" }, ROOT_AT)]);
+    expect(group.activity.chatStatus).toBe("broken clock");
   });
 
   it("files every loaded member on the row, in the order the list had them", () => {
@@ -692,6 +741,23 @@ describe("ChatTreeList group activity rendering", () => {
     expect(container.textContent).not.toContain(stamp(ROOT_AT));
   });
 
+  it("shows a child's RUNNING job step on the row, as the ordinary pill rather than 'needs you'", () => {
+    // Nothing is waiting on the user here — just a step in flight in a child.
+    // Rolling up only the approval case leaves this row with no pill at all,
+    // where before roots fronted anything the same child fronted the row and
+    // put its step on screen.
+    const running = [makeChat("child-1", { parentChatId: "root", rootChatId: "root", jobRunId: "run-7", jobStepId: "review" }, CHILD_AT), makeChat("root", {}, ROOT_AT)];
+    renderList(running);
+    expect(screen.getByText("chat root")).toBeTruthy();
+    expect(screen.getByText("review")).toBeTruthy();
+    expect(screen.getByTitle("Job step: review (run run-7)")).toBeTruthy();
+    expect(screen.queryByText("needs you")).toBeNull();
+    // The control: the identical chat as a lone row has always shown it.
+    cleanup();
+    renderList([makeChat("solo", { jobRunId: "run-7", jobStepId: "review" }, CHILD_AT)]);
+    expect(screen.getByTitle("Job step: review (run run-7)")).toBeTruthy();
+  });
+
   it("reports none of it when the child is idle", () => {
     // The control for every assertion above: same shape of fixture, nothing
     // live in it, so the badges are the signals and not the markup.
@@ -699,6 +765,9 @@ describe("ChatTreeList group activity rendering", () => {
     expect(screen.queryByTitle(/^Summon: /)).toBeNull();
     expect(screen.queryByTitle("Unread messages")).toBeNull();
     expect(screen.queryByText("needs you")).toBeNull();
+    // Neither pill: the roll-up cannot INVENT a run any more than it can a
+    // read mark.
+    expect(screen.queryByTitle(/^Job step/)).toBeNull();
     expect(container.querySelector("svg.lucide-globe")).toBeNull();
   });
 

@@ -101,12 +101,19 @@ interface LineageInfo {
  * IDENTITY is one chat's — the row's title, preview, click target, kebab and
  * pin all answer to `Row.chat`. ACTIVITY is the tree's, and that split is the
  * whole point of this type: a group row fronted by its root reports the root's
- * signals, and in Callboard's spawn model the root is the idle parent by
- * construction. Every signal here is one that only ever fires on a member
- * *other* than the root — a subagent calling `summon_user`, a job step waiting
- * on an approval, a child that has written output you have not read — so a
+ * signals, and in Callboard's spawn model the root is *typically* the idle
+ * parent. Every signal here is one that *usually* fires on a member other than
+ * the root — a subagent calling `summon_user`, a job step waiting on an
+ * approval, a child that has written output you have not read — so a
  * per-front-chat reading suppresses exactly the rows that need you, on exactly
  * the rows where a tree is doing work.
+ *
+ * That is a tendency, not a guarantee, and nothing below relies on it being
+ * one: the root is itself a member and the roll-up reads it like any other.
+ * A root accumulates unread output like any chat, `set_chat_status` and
+ * `summon_user` are available to any session including a root's, and a run's
+ * representative row can be the root. The roll-up is "the loudest member
+ * wins" — which resolves to the root whenever the root is the loudest.
  *
  * Rolled up over the LOADED members, the same qualifier `pinnedMembers`
  * carries and for the same reason: this is a verdict over the chats the list
@@ -125,9 +132,20 @@ export interface RowActivity {
   summonChatId?: string;
   jobAwaitingApproval: boolean;
   /**
-   * Run and step of the member awaiting approval, so the "needs you" pill can
-   * name the step that is actually waiting. Set only alongside
-   * `jobAwaitingApproval`; a row's own job badge is otherwise its own.
+   * Run and step of the member the row's job badge names — so the "needs you"
+   * pill can name the step that is actually waiting, and a tree whose child is
+   * merely RUNNING a step still shows the ordinary job pill.
+   *
+   * Independent of `jobAwaitingApproval` on purpose. A member awaiting an
+   * approval outranks one that is only running (that is the badge worth the
+   * row's single slot), but a running member with no approval pending still
+   * sets these — rolling up only the approval case would make a group row go
+   * silent about a job a lone row would have badged. Among equals the earlier
+   * member wins, like every other field here.
+   *
+   * Replaceable, like `summon` and `chatStatus`: with two members awaiting
+   * approval the pill can name a run other than the front chat's own waiting
+   * step. Only one pill fits, so that is a choice of which, not a loss.
    */
   jobRunId?: string;
   jobStepId?: string;
@@ -142,9 +160,18 @@ export interface Row {
   isGroup: boolean;
   /**
    * Every chat from the `chats` prop filed under this row, in the order the
-   * prop had them — i.e. most recently updated first. `chat` is always one of
-   * them (see the fronting expression in `buildRows`), which is what lets the
-   * row read the group's activity and its own "you are here" from one array.
+   * prop had them — mostly recency, most recently updated first, but not
+   * reliably so: `backend/src/routes/chats.ts` appends `_lineage_appended`
+   * relatives in DFS order and pinned stragglers after that, both AFTER the
+   * recency-ordered window, and an appended chat with no session log falls
+   * back to its bare file record. A freshly spawned child — precisely this
+   * feature's subject — can therefore arrive late in the array and still be
+   * the group's newest. Nothing here may treat position as a clock; see
+   * `rollUpActivity`, which compares timestamps.
+   *
+   * `chat` is always one of them (see the fronting expression in `buildRows`),
+   * which is what lets the row read the group's activity and its own "you are
+   * here" from one array.
    */
   members: Chat[];
   /** What the row reports about live work anywhere in `members`. */
@@ -269,8 +296,9 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
  * - **Activity** — the timestamp and every live-work signal on the row — is
  *   the whole group's, rolled up in `row.activity`. Identity had to move to
  *   the root for the row to stop lying about where it goes; activity had to
- *   stay with the tree, because the root is the one member that by
- *   construction is never the one doing the work. See {@link RowActivity}.
+ *   stay with the tree, because the root is usually the one member NOT doing
+ *   the work, so moving identity alone would have taken the row's live-work
+ *   signals with it. See {@link RowActivity}.
  *
  * The fallback exists because `rootKey` is not always a chat this list holds:
  * `lineageOf` keys a group by a dangling parent id or a stamped `rootChatId`
@@ -355,9 +383,12 @@ export function buildRows(chats: Chat[]): Row[] {
  * from a chat's own metadata — which is what lets a lone row and a group row
  * share one code path in the component. See {@link RowActivity}.
  *
- * Ties go to the earlier member, which is the more recently updated one:
- * `members` is in the server's recency order, and equal `updated_at` values
- * are ordinary rather than a corner case — a parent and the child it just
+ * Ties go to the earlier member. That is a stable arbitrary choice, not a
+ * semantic one: `members` is *mostly* the server's recency order, but appended
+ * lineage relatives break it (see {@link Row.members}), so "earlier" does not
+ * mean "more recently updated". What it does mean is that two renders of the
+ * same array pick the same member, which is all a tie-break owes — and ties
+ * are ordinary rather than a corner case, since a parent and the child it just
  * spawned are routinely written in the same second.
  */
 function rollUpActivity(members: Chat[]): RowActivity {
@@ -398,12 +429,31 @@ function rollUpActivity(members: Chat[]): RowActivity {
     // ANY member, and not noisy: `jobRunNeedsYou` is set on the run's
     // representative row only (see ChatListItem), so at most one member of a
     // group carries it per run.
-    if (!jobAwaitingApproval && meta.jobRunId && meta.jobRunNeedsYou === true) {
-      jobAwaitingApproval = true;
-      jobRunId = meta.jobRunId;
-      jobStepId = meta.jobStepId || undefined;
+    //
+    // The badge and the flag are rolled up together but kept separate. An
+    // awaiting member outranks a merely-running one for the row's single pill;
+    // a running one still claims the pill when nothing is waiting, because
+    // rolling up only the approval case leaves a group row silent about a job
+    // its child is visibly running. `jobAwaitingApproval` stays false through
+    // that second branch — it drives the pulsing "needs you" treatment and the
+    // `faded` exemption, neither of which a running step has earned.
+    if (meta.jobRunId) {
+      const needsYou = meta.jobRunNeedsYou === true;
+      if (!jobAwaitingApproval && (needsYou || !jobRunId)) {
+        jobAwaitingApproval = needsYou;
+        jobRunId = meta.jobRunId;
+        jobStepId = meta.jobStepId || undefined;
+      }
     }
-    if (meta.chatStatus && memberAt > chatStatusAt) {
+    // `chatStatus === undefined` and not `memberAt > -Infinity`: an
+    // unparseable `updated_at` makes `memberAt` NaN, and every comparison
+    // against NaN is false, so the timestamp gate alone would drop the status
+    // entirely — the one case where the roll-up SILENCES a signal a lone row
+    // shows. Reachable on a one-member row, which is where the equivalence
+    // with `ChatListItem`'s own reading has to hold exactly. The rest of the
+    // roll-up is already NaN-safe by falling out this way (`updatedAt` keeps
+    // `members[0]`, `hasUnread` stays false).
+    if (meta.chatStatus && (chatStatus === undefined || memberAt > chatStatusAt)) {
       chatStatus = meta.chatStatus;
       chatStatusEmoji = meta.chatStatusEmoji || undefined;
       chatStatusAt = memberAt;
@@ -681,10 +731,14 @@ export default function ChatTreeList({
      * such member's — the badge says web-or-cli, and one row cannot say two
      * things. The root is the member least likely to be running, so reading
      * only the front chat would leave a tree with three agents working in it
-     * looking idle. Falls back to the front chat's own, which is what carries
-     * the *inactive* status through for the ordinary one-member case.
+     * looking idle.
+     *
+     * No fallback for the no-active-member case, and none is possible to want:
+     * `ChatListItem` reads this prop only as `sessionStatus?.active && …` and
+     * `.type` inside that guard, so a status with `active` falsy and no status
+     * at all are indistinguishable at the point of use.
      */
-    const groupSessionStatus = members.map((member) => sessionStatusFor(member.id)).find((status) => status?.active) ?? sessionStatusFor(chat.id);
+    const groupSessionStatus = members.map((member) => sessionStatusFor(member.id)).find((status) => status?.active);
 
     return (
       <div key={rootKey} style={{ background: isExpanded ? "var(--chatlist-tree-group-bg)" : undefined }}>
@@ -723,6 +777,14 @@ export default function ChatTreeList({
               // every chat one level down. (`faded` keys off this too, so a
               // group on an archived card stops fading the moment you open any
               // member of it.)
+              //
+              // On an EXPANDED group this deliberately double-highlights: the
+              // header lights up and so does `TreeNodeRow`'s node for that same
+              // chat. Leave it. They answer different questions — the header
+              // says "you are somewhere in this tree", the node says "you are
+              // in this exact chat" — and the double is not new here, only more
+              // common: the front chat's own node highlighted alongside its
+              // header before roots fronted anything.
               isActive={members.some((member) => member.id === activeChatId)}
               onClick={() => onChatClick(chat)}
               onDelete={() => onDelete(chat)}

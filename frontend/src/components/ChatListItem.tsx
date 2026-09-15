@@ -103,8 +103,8 @@ interface Props {
    * **Omit it and nothing changes.** Every signal below falls back to this
    * chat's own metadata, which is the reading a row standing for one chat has
    * always done and still does. Only `ChatTreeList`'s group branch passes it,
-   * where the row is fronted by a lineage root that is, by construction, the
-   * member least likely to be the one doing the work.
+   * where the row is fronted by a lineage root — usually, though not by any
+   * rule the code leans on, the member least likely to be doing the work.
    */
   activity?: RowActivity;
   /**
@@ -286,12 +286,15 @@ export default function ChatListItem({
    *
    * The roll-up never SILENCES a signal: the front chat is itself a member, so
    * a badge the front chat would have raised alone is still raised here. What
-   * it can do is pick a different one to show — the summon and the status are
-   * single-valued, so the loudest member's wins and the front chat's own is
-   * the one replaced. That is the point rather than a cost: the whole reason a
-   * group row reports its tree is that the tree's live work is somewhere other
-   * than its root. Only `hasUnread` and `jobAwaitingApproval`, being booleans,
-   * are purely additive.
+   * it can do is pick a different one to show. Three of these are
+   * single-valued and therefore replaceable — the summon, the chat status, and
+   * the `jobRunId`/`jobStepId` pair, where two members awaiting approval means
+   * the pill names a run other than the front chat's own waiting step. In each
+   * the loudest member's wins and the front chat's own is the one replaced.
+   * That is the point rather than a cost: the whole reason a group row reports
+   * its tree is that the tree's live work is somewhere other than its root.
+   * Only `hasUnread` and `jobAwaitingApproval`, being booleans, are purely
+   * additive.
    */
   const summon = activity ? activity.summon : ownSummon;
   // Dismissing writes to the chat that RAISED the summon, which on a group row
@@ -300,10 +303,14 @@ export default function ChatListItem({
   const chatStatus = activity ? activity.chatStatus : ownChatStatus;
   const chatStatusEmoji = activity ? activity.chatStatusEmoji : ownChatStatusEmoji;
   const jobAwaitingApproval = activity ? activity.jobAwaitingApproval : !!ownJobRunId && jobNeedsYou;
-  // The awaiting member's run and step, so the "needs you" pill names the step
-  // that is actually waiting; the badge is otherwise this chat's own job.
-  const jobRunId = (jobAwaitingApproval && activity?.jobRunId) || ownJobRunId;
-  const jobStepId = (jobAwaitingApproval && activity?.jobStepId) || ownJobStepId;
+  // The group's job badge, whether or not anything is waiting on you: the
+  // awaiting member's run and step where one is waiting, so the "needs you"
+  // pill names the step that is actually waiting, and otherwise a merely
+  // RUNNING member's, so a tree with a step in flight still shows the pill a
+  // lone row would have shown. `jobAwaitingApproval` above stays its own
+  // question — it picks the treatment, not the run.
+  const jobRunId = activity ? activity.jobRunId : ownJobRunId;
+  const jobStepId = activity ? activity.jobStepId : ownJobStepId;
 
   const hasUnread = activity ? activity.hasUnread : lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
 
@@ -316,8 +323,11 @@ export default function ChatListItem({
    * or is the row a job run is waiting on for approval is the precise inverse
    * of what the dim is for — the point is to make live work stand out, and
    * those are the loudest live work there is. The exemption lives here rather
-   * than in the list because each is already parsed out of the chat's metadata
-   * a few lines up.
+   * than in the list because this is where all four values land — which used
+   * to be "because each is parsed out of the chat's metadata a few lines up",
+   * and no longer is: on a group row three of the four arrive on `activity`
+   * and only `isActive` is a prop either way. Convergence, not parsing, is the
+   * reason now.
    *
    * Those four are the whole list: `Props` carries no permission-prompt state
    * (`sessionStatus` distinguishes only web from cli), so a row holding one is
