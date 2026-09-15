@@ -1209,11 +1209,12 @@ export default function ChatList({
    * What the delete confirmation says, and why it says more than the count.
    *
    * A selected row can be a lineage GROUP — `buildRows` folds a tree into one
-   * row fronted by its most recently updated member, and only that front chat
-   * is selectable. Delete has no cascade (that is what `DELETE /api/chats/:id`
-   * has always done, and the bulk route deliberately did not invent a
-   * different rule), so the other members survive and the group comes straight
-   * back, fronted by the next member down. "Select all" then "Delete 40 chats"
+   * row fronted by its root, and only that front chat is selectable. Delete
+   * has no cascade (that is what `DELETE /api/chats/:id` has always done, and
+   * the bulk route deliberately did not invent a different rule), so the other
+   * members survive and the group comes straight back, now fronted by its most
+   * recently updated member since the root it named is gone. "Select all" then
+   * "Delete 40 chats"
    * reads as "clear the list"; what actually happens is that it half-empties
    * and refills with different titles.
    *

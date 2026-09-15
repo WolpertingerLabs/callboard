@@ -11,10 +11,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Chat, CardSummary, ChatTreeNode, ChatTreeResponse } from "../api";
-import { getChatTree } from "../api";
+import { dismissSummon, getChatTree } from "../api";
 import { isChatDimmed } from "../utils/chatDimming";
 import { resetChatSectionExpansion } from "../hooks/useChatSectionExpansion";
-import ChatTreeList from "./ChatTreeList";
+import ChatTreeList, { buildRows } from "./ChatTreeList";
 
 vi.mock("../api", () => ({
   getChatTree: vi.fn(),
@@ -32,14 +32,22 @@ afterEach(() => {
 
 const FOLDER = "/home/cybil/projects/callboard";
 
-function makeChat(id: string, meta: Record<string, unknown> = {}): Chat {
+/**
+ * `updatedAt` defaults to one shared instant, so most fixtures here encode
+ * recency purely as array order — which is what `buildRows` reads for POSITION
+ * and therefore faithful. Pass it wherever a test is about a timestamp or
+ * about which member is "most recent" by the clock rather than by the server's
+ * ordering: with one instant for everything, a row showing the wrong chat's
+ * date is indistinguishable from a row showing the right one's.
+ */
+function makeChat(id: string, meta: Record<string, unknown> = {}, updatedAt = "2026-07-28T10:00:00Z"): Chat {
   return {
     id,
     folder: FOLDER,
     displayFolder: FOLDER,
     session_id: `sess-${id}`,
     created_at: "2026-07-28T10:00:00Z",
-    updated_at: "2026-07-28T10:00:00Z",
+    updated_at: updatedAt,
     metadata: JSON.stringify({ preview: `chat ${id}`, ...meta }),
   } as Chat;
 }
@@ -314,6 +322,18 @@ describe("ChatTreeList order", () => {
     expect(outline(container)).toEqual(["chat solo-open", "chat root"]);
   });
 
+  it("places a root-fronted group at its most recently updated member's position", () => {
+    // The two halves of the rule pull in opposite directions here, which is
+    // the point: `child-1` fixes WHERE the group sits (second, where the
+    // server put it), `root` fixes WHAT the row says (last in the array, and
+    // never mind that). Ordering groups by root recency instead would sink
+    // this row below "chat solo-older" — an actively worked thread falling to
+    // wherever its opening message left it.
+    const chats = [makeChat("solo-newest"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" }), makeChat("solo-older"), makeChat("root")];
+    const { container } = renderRows(chats, new Map());
+    expect(outline(container)).toEqual(["chat solo-newest", "chat root", "chat solo-older"]);
+  });
+
   it("does not float the open-card row above the archived one", () => {
     const cards: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
       ["closed-card", { lifecycle: "closed" }],
@@ -324,6 +344,485 @@ describe("ChatTreeList order", () => {
     // fade is the only thing marking the difference.
     expect(outline(container)).toEqual(["chat solo-closed", "chat solo-open"]);
     expect([...container.querySelectorAll(".chatlist-item-dimmed")].length).toBe(1);
+  });
+});
+
+/**
+ * WHICH chat fronts a group row — the one it is labelled with and the one its
+ * click opens.
+ *
+ * The row used to be the group's most recently updated loaded member, so
+ * clicking a thread dropped you into whatever subagent had run last, several
+ * levels down a tree you had not asked to enter. It is now the lineage root:
+ * the same chat the expanded body renders at depth 0.
+ *
+ * Label and click are asserted together on purpose. Redirecting the click
+ * while leaving the most-recent member's title on the row would fix the
+ * navigation and leave the row lying about where it goes, so one fronting
+ * chat has to answer both.
+ */
+describe("ChatTreeList group identity", () => {
+  // Server recency order: the subagent ran last, its parent thread before
+  // that, the thread's root longest ago. Under the old rule the row was
+  // "chat child-2".
+  const ROOT_LAST = [
+    makeChat("child-2", { parentChatId: "child-1", rootChatId: "root" }),
+    makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
+    makeChat("root"),
+  ];
+
+  // The same tree with its root outside the loaded page — a stamped
+  // `rootChatId` naming a chat this list does not hold. `lineageOf` still
+  // groups both members under "root", but no row can be that chat.
+  const ROOT_ABSENT = [
+    makeChat("child-2", { parentChatId: "child-1", rootChatId: "root" }),
+    makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
+  ];
+
+  function renderGroup(chats: Chat[], onChatClick: (chat: Chat) => void = () => {}) {
+    return render(
+      <MemoryRouter>
+        <ChatTreeList
+          chats={chats}
+          refreshToken={0}
+          onChatClick={onChatClick}
+          onDelete={() => {}}
+          onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
+          cardMenuFor={() => ({})}
+          sessionStatusFor={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  /** Click the row displaying `text` — the same div `openRowMenu` reaches for. */
+  const clickRow = (text: string) => fireEvent.click(screen.getByText(text).closest('div[style*="border-bottom"]')!);
+
+  it("labels a group with its root, not with its most recently updated member", () => {
+    const { container } = renderGroup(ROOT_LAST);
+    expect(screen.getByText("chat root")).toBeTruthy();
+    expect(screen.queryByText("chat child-2")).toBeNull();
+    expect(screen.queryByText("chat child-1")).toBeNull();
+    // One row for the three chats — folding is unchanged, only its front is.
+    expect(container.textContent?.match(/chat [a-z0-9-]+/g)).toEqual(["chat root"]);
+  });
+
+  it("opens the root when the group row is clicked", () => {
+    const onChatClick = vi.fn();
+    renderGroup(ROOT_LAST, onChatClick);
+    clickRow("chat root");
+    expect(onChatClick).toHaveBeenCalledTimes(1);
+    expect(onChatClick.mock.calls[0][0]).toMatchObject({ id: "root" });
+  });
+
+  it("falls back to the most recently updated member when the root is not loaded", () => {
+    const { container } = renderGroup(ROOT_ABSENT);
+    // Exactly the old behaviour, and the only thing it can be: a row has to be
+    // a chat the list holds, and "root" is not one of them.
+    expect(screen.getByText("chat child-2")).toBeTruthy();
+    expect(container.textContent?.match(/chat [a-z0-9-]+/g)).toEqual(["chat child-2"]);
+  });
+
+  it("clicks through to that fallback member rather than to a chat that does not exist", () => {
+    const onChatClick = vi.fn();
+    renderGroup(ROOT_ABSENT, onChatClick);
+    clickRow("chat child-2");
+    expect(onChatClick.mock.calls[0][0]).toMatchObject({ id: "child-2" });
+  });
+
+  it("leaves a lone chat fronting itself", () => {
+    // The control: nothing about a row with no lineage changes. This chat has
+    // no metadata at all, so it is not a group and takes the other branch of
+    // `renderRow` entirely — the group-keyed-by-itself case is below.
+    const onChatClick = vi.fn();
+    renderGroup([makeChat("solo")], onChatClick);
+    clickRow("chat solo");
+    expect(onChatClick.mock.calls[0][0]).toMatchObject({ id: "solo" });
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
+  });
+
+  it("fronts a one-member group with itself when the chat IS its own group key", () => {
+    // The degenerate case the fronting expression has to survive: a chat
+    // stamped with its own id as `rootChatId` (what a card's root looks like
+    // before anything is spawned off it) is a GROUP of one, so it goes down
+    // the branch that looks the root up and checks membership — and finds
+    // itself on both counts.
+    const [row] = buildRows([makeChat("s", { rootChatId: "s" })]);
+    expect(row.isGroup).toBe(true);
+    expect(row.size).toBe(1);
+    expect(row.chat.id).toBe("s");
+    expect(row.members.map((c) => c.id)).toEqual(["s"]);
+
+    // And it renders as a group — chevron and all — fronted by that same chat.
+    const onChatClick = vi.fn();
+    renderGroup([makeChat("s", { rootChatId: "s" })], onChatClick);
+    expect(screen.getByTitle("Expand chat tree")).toBeTruthy();
+    clickRow("chat s");
+    expect(onChatClick.mock.calls[0][0]).toMatchObject({ id: "s" });
+  });
+});
+
+/**
+ * The membership half of the fronting rule: a row is fronted by the root only
+ * when the root is filed in THIS row's group.
+ *
+ * `lineageOf` keys a group by walking parent pointers, and a chat whose id
+ * happens to be a group's key need not be a member of that group — corrupt or
+ * half-written pointers make that routine, not theoretical. Dropping the
+ * membership check leaves each row labelled with a chat it does not stand for,
+ * and in the mis-stamped case a loaded chat stops having a row at all.
+ *
+ * Every assertion here is on `buildRows` rather than on the rendered list,
+ * because the failure is precisely "which chat is in which row" — the thing
+ * `ChatList`'s selection and the section counts both read off these rows.
+ */
+describe("buildRows fronting is restricted to members", () => {
+  /** Every row's front chat must be one of the chats filed under that row. */
+  const frontsAreMembers = (rows: ReturnType<typeof buildRows>) => rows.every((row) => row.members.some((m) => m.id === row.chat.id));
+
+  it("keeps each row fronted by its own member when parent pointers form a cycle", () => {
+    // A → B → A. `lineageOf` stops at the revisit, so A is filed under key "B"
+    // and B under key "A": each chat keys a group it is not a member of, and
+    // each group's key names a loaded chat. Fronting on the id lookup alone
+    // would swap the two rows' labels — every row displaying a chat that is
+    // counted, selected and clicked as part of the other row.
+    const rows = buildRows([makeChat("A", { parentChatId: "B" }), makeChat("B", { parentChatId: "A" })]);
+    expect(rows.map((row) => row.rootKey)).toEqual(["B", "A"]);
+    expect(rows.map((row) => row.chat.id)).toEqual(["A", "B"]);
+    expect(frontsAreMembers(rows)).toBe(true);
+  });
+
+  it("loses no chat when a stamped rootChatId names a chat filed in another group", () => {
+    // A is stamped with root B, but B's own parent pointer puts B under C. So
+    // key "B" holds only A, and B is a member of C's group.
+    //
+    // Without the membership check, key "B"'s row fronts with B — a chat that
+    // is also folded into C's row — and A, the row's only actual member,
+    // appears nowhere in the sidebar. A loaded chat with no row is not a
+    // cosmetic bug: there is nothing to click, nothing to select, and no
+    // indication anything is missing.
+    const chats = [makeChat("A", { rootChatId: "B" }), makeChat("B", { parentChatId: "C" }), makeChat("C")];
+    const rows = buildRows(chats);
+    expect(rows.map((row) => row.chat.id)).toEqual(["A", "C"]);
+    expect(frontsAreMembers(rows)).toBe(true);
+    // B fronts nothing, and is folded into C's group where it belongs.
+    expect(rows.find((row) => row.rootKey === "C")!.members.map((c) => c.id)).toEqual(["B", "C"]);
+    // No chat dropped out of the list: every loaded chat is in exactly one row.
+    expect(rows.flatMap((row) => row.members.map((c) => c.id)).sort()).toEqual(["A", "B", "C"]);
+  });
+});
+
+/**
+ * WHAT a group row reports, as against what it is labelled with.
+ *
+ * Fronting the row with the lineage root fixed the title and the click target
+ * and broke everything else the row says, because `ChatListItem` reads the
+ * live-work signals off the one chat it is handed: in Callboard's spawn model
+ * the root is *typically* the idle parent, so a subagent's summon, a job
+ * step's approval, a running session and a child's fresh output all stopped
+ * reaching the row that stands for them. A tendency, not a guarantee — the
+ * root is a member like any other and the roll-up reads it, which is what the
+ * root-carries-the-only-signal cases below assert. Identity is the root's; activity is
+ * the tree's — see `RowActivity`.
+ *
+ * Distinct `updated_at` values throughout, because the default fixtures share
+ * one instant and a row showing the wrong chat's date is invisible under it.
+ */
+describe("buildRows activity roll-up", () => {
+  const ROOT_AT = "2026-07-28T10:00:00Z";
+  const CHILD_AT = "2026-08-02T16:30:00Z";
+  const child = (id: string, meta: Record<string, unknown> = {}, updatedAt = CHILD_AT) =>
+    makeChat(id, { parentChatId: "root", rootChatId: "root", ...meta }, updatedAt);
+  /** The one row a root+children fixture folds into. */
+  const groupRow = (chats: Chat[]) => buildRows(chats)[0];
+
+  it("reports the group's latest update while staying labelled with the root", () => {
+    const row = groupRow([child("child-1"), makeChat("root", {}, ROOT_AT)]);
+    expect(row.chat.id).toBe("root");
+    expect(row.activity.updatedAt).toBe(CHILD_AT);
+  });
+
+  it("derives a lone row's activity exactly as the row derives it from the chat alone", () => {
+    // The equivalence that lets one component serve both branches: for a
+    // one-member row every rule below has to collapse to the reading
+    // `ChatListItem` does from `chat` when no roll-up is passed at all.
+    const summon = { message: "look at this", urgency: "normal", createdAt: "2026-08-02T16:00:00Z" };
+    const meta = { lastReadAt: "2026-07-01T00:00:00Z", summon, chatStatus: "writing tests", chatStatusEmoji: "🧪", jobRunId: "run-1", jobStepId: "verify", jobRunNeedsYou: true };
+    expect(groupRow([makeChat("solo", meta, CHILD_AT)]).activity).toEqual({
+      updatedAt: CHILD_AT,
+      hasUnread: true,
+      summon,
+      summonChatId: "solo",
+      jobAwaitingApproval: true,
+      jobRunId: "run-1",
+      jobStepId: "verify",
+      chatStatus: "writing tests",
+      chatStatusEmoji: "🧪",
+    });
+  });
+
+  it("leaves a bare lone row reporting nothing at all", () => {
+    // The other half of that equivalence, and the one that says the roll-up
+    // cannot INVENT a signal: no read mark is not unread, exactly as the row
+    // has always read it.
+    expect(groupRow([makeChat("solo", {}, ROOT_AT)]).activity).toEqual({
+      updatedAt: ROOT_AT,
+      hasUnread: false,
+      summon: undefined,
+      summonChatId: undefined,
+      jobAwaitingApproval: false,
+      jobRunId: undefined,
+      jobStepId: undefined,
+      chatStatus: undefined,
+      chatStatusEmoji: undefined,
+    });
+  });
+
+  it("marks the group unread when a child is past its OWN read mark and the root is not", () => {
+    const row = groupRow([child("child-1", { lastReadAt: "2026-08-01T00:00:00Z" }), makeChat("root", { lastReadAt: "2026-07-29T00:00:00Z" }, ROOT_AT)]);
+    expect(row.activity.hasUnread).toBe(true);
+  });
+
+  it("does not mark a member with no read mark of its own unread against a sibling's", () => {
+    // The rule is per member, not "any update later than any read mark": this
+    // child has never been opened, which is not the same as having unread
+    // output, and the root's mark says nothing about it.
+    const row = groupRow([child("child-1"), makeChat("root", { lastReadAt: "2026-07-29T00:00:00Z" }, ROOT_AT)]);
+    expect(row.activity.hasUnread).toBe(false);
+  });
+
+  it("prefers an urgent summon over a more recently raised ordinary one", () => {
+    const urgent = { message: "blocked", urgency: "urgent", createdAt: "2026-08-01T09:00:00Z" };
+    const ordinary = { message: "fyi", urgency: "normal", createdAt: "2026-08-02T09:00:00Z" };
+    const row = groupRow([child("child-2", { summon: ordinary }), child("child-1", { summon: urgent }, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT)]);
+    expect(row.activity.summon).toEqual(urgent);
+    expect(row.activity.summonChatId).toBe("child-1");
+  });
+
+  it("takes the most recent summon when none of them is urgent", () => {
+    const older = { message: "older", urgency: "normal", createdAt: "2026-08-01T09:00:00Z" };
+    const newer = { message: "newer", urgency: "normal", createdAt: "2026-08-02T09:00:00Z" };
+    const row = groupRow([child("child-2", { summon: older }), child("child-1", { summon: newer }, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT)]);
+    expect(row.activity.summon).toEqual(newer);
+    expect(row.activity.summonChatId).toBe("child-1");
+  });
+
+  it("raises the approval flag for any member, and names that member's run and step", () => {
+    const row = groupRow([child("child-1", { jobRunId: "run-7", jobStepId: "review", jobRunNeedsYou: true }), makeChat("root", {}, ROOT_AT)]);
+    expect(row.activity).toMatchObject({ jobAwaitingApproval: true, jobRunId: "run-7", jobStepId: "review" });
+  });
+
+  it("rolls up a job step that is merely running, without raising the approval flag", () => {
+    // The badge and the flag are separate questions. The run has to reach the
+    // row or the group goes silent about a job a lone row would have badged;
+    // the flag has to stay down or a running step gets the pulsing "needs you"
+    // treatment and the `faded` exemption it has not earned.
+    const row = groupRow([child("child-1", { jobRunId: "run-7", jobStepId: "review" }), makeChat("root", {}, ROOT_AT)]);
+    expect(row.activity).toMatchObject({ jobAwaitingApproval: false, jobRunId: "run-7", jobStepId: "review" });
+  });
+
+  it("prefers the awaiting member's run over a merely running one, whichever comes first", () => {
+    const running = { jobRunId: "run-running", jobStepId: "build" };
+    const awaiting = { jobRunId: "run-waiting", jobStepId: "approve", jobRunNeedsYou: true };
+    const expected = { jobAwaitingApproval: true, jobRunId: "run-waiting", jobStepId: "approve" };
+    // Running member first: the awaiting one displaces it.
+    expect(groupRow([child("child-2", running), child("child-1", awaiting, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT)]).activity).toMatchObject(expected);
+    // Awaiting member first: a later running one does not take the pill back.
+    expect(groupRow([child("child-2", awaiting), child("child-1", running, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT)]).activity).toMatchObject(expected);
+  });
+
+  it("gives the pill to the earlier member when two are merely running", () => {
+    const row = groupRow([
+      child("child-2", { jobRunId: "run-a", jobStepId: "first" }),
+      child("child-1", { jobRunId: "run-b", jobStepId: "second" }, "2026-08-01T16:30:00Z"),
+      makeChat("root", {}, ROOT_AT),
+    ]);
+    expect(row.activity).toMatchObject({ jobAwaitingApproval: false, jobRunId: "run-a", jobStepId: "first" });
+  });
+
+  it("names one of two members awaiting approval — the front chat's own step is replaceable", () => {
+    // The third single-valued signal, alongside the summon and the status: one
+    // pill, so the earlier member's run wins and the root's own waiting step
+    // is the one displaced.
+    const row = groupRow([
+      child("child-1", { jobRunId: "run-child", jobStepId: "child-step", jobRunNeedsYou: true }),
+      makeChat("root", { jobRunId: "run-root", jobStepId: "root-step", jobRunNeedsYou: true }, ROOT_AT),
+    ]);
+    expect(row.chat.id).toBe("root");
+    expect(row.activity).toMatchObject({ jobAwaitingApproval: true, jobRunId: "run-child", jobStepId: "child-step" });
+  });
+
+  it("takes the chat status of the most recently updated member that has one", () => {
+    // Array order and the clock disagree here on purpose: the root leads the
+    // array, and the status still comes from the child that moved last.
+    const row = groupRow([makeChat("root", { chatStatus: "idle", chatStatusEmoji: "💤" }, ROOT_AT), child("child-1", { chatStatus: "running tests", chatStatusEmoji: "🧪" })]);
+    expect(row.activity).toMatchObject({ chatStatus: "running tests", chatStatusEmoji: "🧪" });
+  });
+
+  it("falls back to the only member that has a status when the busiest one has none", () => {
+    const row = groupRow([child("child-1"), makeChat("root", { chatStatus: "waiting on review" }, ROOT_AT)]);
+    expect(row.activity.chatStatus).toBe("waiting on review");
+  });
+
+  it("still reports a status whose member has an unparseable updated_at", () => {
+    // A timestamp gate alone drops this: `memberAt` is NaN and every
+    // comparison against NaN is false, so the status is never taken — the one
+    // way the roll-up could SILENCE a signal a lone row shows, and reachable
+    // on a one-member row, where the roll-up must equal `ChatListItem`'s own
+    // reading exactly. `updated_at` is a required ISO string, but
+    // `chat-file-service` already guards it with `Date.parse(...) || 0`.
+    const lone = groupRow([makeChat("solo", { rootChatId: "solo", chatStatus: "stuck", chatStatusEmoji: "🧱" }, "not a date")]);
+    expect(lone.activity).toMatchObject({ chatStatus: "stuck", chatStatusEmoji: "🧱" });
+    // And in a group: an unparseable timestamp is incomparable rather than
+    // old, so it neither wins nor loses on the clock and falls through to the
+    // same earlier-member-wins tie-break every other field uses.
+    const group = groupRow([child("child-1", { chatStatus: "broken clock" }, "not a date"), makeChat("root", { chatStatus: "running tests" }, ROOT_AT)]);
+    expect(group.activity.chatStatus).toBe("broken clock");
+  });
+
+  it("files every loaded member on the row, in the order the list had them", () => {
+    const rows = buildRows([child("child-2"), child("child-1", {}, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT), makeChat("solo", {}, ROOT_AT)]);
+    expect(rows[0].members.map((c) => c.id)).toEqual(["child-2", "child-1", "root"]);
+    // `size` is that list's length now, not a counter kept beside it.
+    expect(rows[0].size).toBe(rows[0].members.length);
+    expect(rows[1].members.map((c) => c.id)).toEqual(["solo"]);
+  });
+});
+
+/**
+ * The same roll-up, through the rendered row — the signals a user can actually
+ * see, on the collapsed group row that is all the sidebar shows of a tree.
+ */
+describe("ChatTreeList group activity rendering", () => {
+  const ROOT_AT = "2026-07-28T10:00:00Z";
+  const CHILD_AT = "2026-08-02T16:30:00Z";
+
+  /** The row's timestamp, formatted the way the row formats it. */
+  const stamp = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  function renderList(chats: Chat[], props: Partial<React.ComponentProps<typeof ChatTreeList>> = {}) {
+    return render(
+      <MemoryRouter>
+        <ChatTreeList
+          chats={chats}
+          refreshToken={0}
+          onChatClick={() => {}}
+          onDelete={() => {}}
+          onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
+          cardMenuFor={() => ({})}
+          sessionStatusFor={() => undefined}
+          {...props}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  const SUMMON = { message: "needs a decision", urgency: "urgent", createdAt: "2026-08-02T16:00:00Z" };
+  // A root that has done nothing since July and a subagent that has: the summon,
+  // the unread output, the waiting approval and the fresh timestamp are all the
+  // child's, and the row is labelled "chat root".
+  const BUSY_CHILD = [
+    makeChat(
+      "child-1",
+      { parentChatId: "root", rootChatId: "root", summon: SUMMON, lastReadAt: "2026-08-01T00:00:00Z", jobRunId: "run-7", jobStepId: "review", jobRunNeedsYou: true },
+      CHILD_AT,
+    ),
+    makeChat("root", { lastReadAt: "2026-07-29T00:00:00Z" }, ROOT_AT),
+  ];
+
+  it("shows the child's summon, unread dot, approval pill and timestamp on the root-fronted row", () => {
+    const { container } = renderList(BUSY_CHILD);
+    expect(screen.getByText("chat root")).toBeTruthy();
+    expect(screen.getByTitle(`Summon: ${SUMMON.message}`)).toBeTruthy();
+    expect(screen.getByTitle("Unread messages")).toBeTruthy();
+    expect(screen.getByText("needs you")).toBeTruthy();
+    expect(screen.getByTitle(/Waiting for your approval — job step: review \(run run-7\)/)).toBeTruthy();
+    expect(container.textContent).toContain(stamp(CHILD_AT));
+    expect(container.textContent).not.toContain(stamp(ROOT_AT));
+  });
+
+  it("shows a child's RUNNING job step on the row, as the ordinary pill rather than 'needs you'", () => {
+    // Nothing is waiting on the user here — just a step in flight in a child.
+    // Rolling up only the approval case leaves this row with no pill at all,
+    // where before roots fronted anything the same child fronted the row and
+    // put its step on screen.
+    const running = [makeChat("child-1", { parentChatId: "root", rootChatId: "root", jobRunId: "run-7", jobStepId: "review" }, CHILD_AT), makeChat("root", {}, ROOT_AT)];
+    renderList(running);
+    expect(screen.getByText("chat root")).toBeTruthy();
+    expect(screen.getByText("review")).toBeTruthy();
+    expect(screen.getByTitle("Job step: review (run run-7)")).toBeTruthy();
+    expect(screen.queryByText("needs you")).toBeNull();
+    // The control: the identical chat as a lone row has always shown it.
+    cleanup();
+    renderList([makeChat("solo", { jobRunId: "run-7", jobStepId: "review" }, CHILD_AT)]);
+    expect(screen.getByTitle("Job step: review (run run-7)")).toBeTruthy();
+  });
+
+  it("reports none of it when the child is idle", () => {
+    // The control for every assertion above: same shape of fixture, nothing
+    // live in it, so the badges are the signals and not the markup.
+    const { container } = renderList([makeChat("child-1", { parentChatId: "root", rootChatId: "root" }, CHILD_AT), makeChat("root", {}, ROOT_AT)]);
+    expect(screen.queryByTitle(/^Summon: /)).toBeNull();
+    expect(screen.queryByTitle("Unread messages")).toBeNull();
+    expect(screen.queryByText("needs you")).toBeNull();
+    // Neither pill: the roll-up cannot INVENT a run any more than it can a
+    // read mark.
+    expect(screen.queryByTitle(/^Job step/)).toBeNull();
+    expect(container.querySelector("svg.lucide-globe")).toBeNull();
+  });
+
+  it("dismisses the summon on the member that raised it, not on the chat the row names", () => {
+    renderList(BUSY_CHILD);
+    fireEvent.click(screen.getByTitle(`Summon: ${SUMMON.message}`));
+    expect(vi.mocked(dismissSummon)).toHaveBeenCalledWith("child-1");
+  });
+
+  it("badges the row as running when any member has a live session", () => {
+    // The root has no session — it is the parent that spawned the work and
+    // stopped. Reading only the front chat leaves a tree with an agent working
+    // in it looking idle.
+    const { container } = renderList(BUSY_CHILD, { sessionStatusFor: (id: string) => (id === "child-1" ? { active: true, type: "web" } : undefined) });
+    expect(container.querySelector("svg.lucide-globe")).toBeTruthy();
+  });
+
+  it("keeps a lone row reading its own signals when a livelier chat sits beside it", () => {
+    // The lone branch passes no roll-up at all, and nothing about it changed:
+    // the neighbouring group's summon does not leak onto it.
+    renderList([...BUSY_CHILD, makeChat("solo", {}, ROOT_AT)]);
+    const solo = screen.getByText("chat solo").closest('div[style*="border-bottom"]')!;
+    expect(solo.querySelector('[title^="Summon: "]')).toBeNull();
+    expect(solo.textContent).toContain(stamp(ROOT_AT));
+  });
+
+  it("highlights the group row while a CHILD is the open chat", () => {
+    // The row is labelled with the root, so keying the highlight off the front
+    // chat alone leaves the sidebar with nothing marked at all for every chat
+    // one level down — the state you are in whenever you open a thread from a
+    // tree row.
+    const { container } = renderList(BUSY_CHILD, { activeChatId: "child-1" });
+    const row = screen.getByText("chat root").closest('div[style*="border-bottom"]')! as HTMLElement;
+    expect(row.getAttribute("style")).toContain("chatlist-item-active-bg");
+    // The control: a chat outside this group does not light the row up.
+    cleanup();
+    const other = renderList(BUSY_CHILD, { activeChatId: "elsewhere" }).container;
+    expect(other.querySelector('[style*="chatlist-item-active-bg"]')).toBeNull();
+    expect(container).toBeTruthy();
+  });
+
+  it("does not fade an archived-card group row whose child is open, or one holding a live summon", () => {
+    // Both `faded` exemptions the roll-up feeds: `isActive` (Fix 2's knock-on)
+    // and `summon`. An archived card's tree is exactly where a subagent's
+    // summon would otherwise be faded out of sight.
+    const faded = (container: HTMLElement) => container.querySelectorAll(".chatlist-item-dimmed").length;
+    expect(faded(renderList(BUSY_CHILD, { isDimmed: () => true, activeChatId: "child-1" }).container)).toBe(0);
+    cleanup();
+    expect(faded(renderList(BUSY_CHILD, { isDimmed: () => true }).container)).toBe(0);
+    cleanup();
+    // The control: the same archived row with nothing live in the tree fades.
+    const quiet = [makeChat("child-1", { parentChatId: "root", rootChatId: "root" }, CHILD_AT), makeChat("root", {}, ROOT_AT)];
+    expect(faded(renderList(quiet, { isDimmed: () => true }).container)).toBe(1);
   });
 });
 
@@ -417,12 +916,37 @@ describe("pinning a row", () => {
     expect(onTogglePin).toHaveBeenCalledWith([expect.objectContaining({ id: "solo" })], true);
   });
 
+  it("files a group into Pinned when a NON-header member carries the pin, whatever the recency order", () => {
+    // The stated decision: a group is pinned if ANY member is. Fronting the
+    // row with the root rather than the busiest member does not soften the
+    // need for it. With the root loaded — as it is here, and as it usually is
+    // — a pin set on a child is never the header row's own in ANY order, so a
+    // header-only rule would leave this pin permanently inert with nothing on
+    // screen showing it. (The old rule broke on a different set, not a subset:
+    // it dropped a pin whenever the pinned member was not the most recently
+    // updated one. See `Row.pinnedMembers`.)
+    //
+    // `child-1` leads the array (it is the most recent), so this is also the
+    // case where the header row changed: the row is "chat root" now and was
+    // "chat child-1" before.
+    const onTogglePin = spy();
+    renderWithPin([makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true }), makeChat("root")], onTogglePin);
+
+    expect(headers()).toEqual(["Pinned (2)"]);
+    expect(screen.getByText("chat root")).toBeTruthy();
+
+    // And the kebab on that root-fronted row still reaches the child's pin.
+    openRowMenu("chat root");
+    expect(screen.queryByText("Pin")).toBeNull();
+    fireEvent.click(screen.getByText("Unpin"));
+    expect(onTogglePin).toHaveBeenCalledWith([expect.objectContaining({ id: "child-1" })], false);
+  });
+
   it("files a group into Pinned when a NON-header member carries the pin", () => {
     // The stated decision: a group is pinned if ANY member is. The header row
-    // is "the group's most recently updated loaded chat" and therefore moves
-    // around — so a header-only rule would let a pin stop working the moment a
-    // sibling got busier, with nothing on screen showing it and no way to
-    // clear it.
+    // is the group's root, so a pin on any other member is never its own — a
+    // header-only rule would let a pin stop working the moment its chat got a
+    // parent, with nothing on screen showing it and no way to clear it.
     const onTogglePin = spy();
     renderWithPin([makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true })], onTogglePin);
 

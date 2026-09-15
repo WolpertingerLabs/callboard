@@ -20,6 +20,8 @@ import {
 } from "lucide-react";
 import type { Chat } from "../api";
 import { dismissSummon } from "../api";
+// Type-only, so this is not a runtime cycle with the list that renders us.
+import type { RowActivity } from "./ChatTreeList";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useSelectionActivation } from "../hooks/useSelectionActivation";
 import ProviderBadge from "./ProviderBadge";
@@ -93,6 +95,19 @@ interface Props {
   cardMenu?: ChatCardMenu;
   sessionStatus?: { active: boolean; type: string };
   /**
+   * The list's roll-up of live work across every chat this row stands for:
+   * timestamp, unread, summon, job approval and chat status. A third
+   * list-level override, alongside `pinned` and `dimmed`, for the same reason
+   * as both — the row cannot see the other chats it stands for.
+   *
+   * **Omit it and nothing changes.** Every signal below falls back to this
+   * chat's own metadata, which is the reading a row standing for one chat has
+   * always done and still does. Only `ChatTreeList`'s group branch passes it,
+   * where the row is fronted by a lineage root — usually, though not by any
+   * rule the code leans on, the member least likely to be doing the work.
+   */
+  activity?: RowActivity;
+  /**
    * The list's verdict on "this chat's card is archived" — closed or hidden,
    * and NOT merely missing (see `utils/chatDimming`). A *request* to fade, not
    * the last word — the exemptions below can veto it.
@@ -162,6 +177,7 @@ export default function ChatListItem({
   onEditTitle,
   cardMenu,
   sessionStatus,
+  activity,
   dimmed,
   selectionMode = false,
   selected = false,
@@ -212,7 +228,10 @@ export default function ChatListItem({
   }, [menuOpen]);
   const displayPath = chat.displayFolder || chat.folder;
   const folderName = displayPath?.split("/").pop() || displayPath || "Chat";
-  const time = new Date(chat.updated_at).toLocaleDateString(undefined, {
+  // The group's latest where the list rolled one up — a row sitting at the top
+  // of a recency-sorted list because a child just ran must not show the date
+  // its long-idle root last moved.
+  const time = new Date(activity?.updatedAt ?? chat.updated_at).toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
@@ -226,13 +245,13 @@ export default function ChatListItem({
   let agentAlias: string | undefined;
   let isTriggered = false;
   let lastReadAt: string | undefined;
-  let chatStatus: string | undefined;
-  let chatStatusEmoji: string | undefined;
-  let summon: { message: string; urgency: string; createdAt: string } | undefined;
+  let ownChatStatus: string | undefined;
+  let ownChatStatusEmoji: string | undefined;
+  let ownSummon: { message: string; urgency: string; createdAt: string } | undefined;
   let provider: string | undefined;
   let acpProviderId: string | undefined;
-  let jobRunId: string | undefined;
-  let jobStepId: string | undefined;
+  let ownJobRunId: string | undefined;
+  let ownJobStepId: string | undefined;
   let jobNeedsYou = false;
   try {
     const meta = JSON.parse(chat.metadata || "{}");
@@ -243,13 +262,13 @@ export default function ChatListItem({
     agentAlias = meta.agentAlias;
     isTriggered = meta.triggered === true;
     lastReadAt = meta.lastReadAt;
-    chatStatus = meta.chatStatus || undefined;
-    chatStatusEmoji = meta.chatStatusEmoji || undefined;
-    summon = meta.summon || undefined;
+    ownChatStatus = meta.chatStatus || undefined;
+    ownChatStatusEmoji = meta.chatStatusEmoji || undefined;
+    ownSummon = meta.summon || undefined;
     provider = meta.provider || undefined;
     acpProviderId = meta.acpProviderId || undefined;
-    jobRunId = meta.jobRunId || undefined;
-    jobStepId = meta.jobStepId || undefined;
+    ownJobRunId = meta.jobRunId || undefined;
+    ownJobStepId = meta.jobStepId || undefined;
     // Set by the list route on the run's representative row only — a run owns
     // every chat it ever opened, so the status alone would flag all of them.
     jobNeedsYou = meta.jobRunNeedsYou === true;
@@ -258,9 +277,46 @@ export default function ChatListItem({
   /** The list's verdict where it has one; this chat's own flag otherwise. */
   const isPinned = pinned ?? ownPinned;
 
-  const jobAwaitingApproval = !!jobRunId && jobNeedsYou;
+  /*
+   * The live-work signals: the list's roll-up over the group where it supplied
+   * one, this chat's own metadata otherwise. Identity above (title, preview,
+   * provider, and the kebab's delete/bookmark/rename targets) stays this
+   * chat's either way — the row names one chat and reports one tree, which is
+   * the split {@link RowActivity} exists for. The pin is the exception on both
+   * counts: `pinned` arrives as a group-wide verdict and Unpin clears every
+   * member holding one, which predates the roll-up — see `Props.pinned`.
+   *
+   * The roll-up never SILENCES a signal: the front chat is itself a member, so
+   * a badge the front chat would have raised alone is still raised here. What
+   * it can do is pick a different one to show. Three of these are
+   * single-valued and therefore replaceable — the summon, the chat status, and
+   * the `jobRunId`/`jobStepId` pair, where two members awaiting approval means
+   * the pill names a run other than the front chat's own waiting step. In each
+   * the loudest member's wins and the front chat's own is the one replaced.
+   * That is the point rather than a cost: the whole reason a group row reports
+   * its tree is that the tree's live work is somewhere other than its root.
+   * Only `hasUnread` and `jobAwaitingApproval`, being booleans, are purely
+   * additive.
+   */
+  const summon = activity ? activity.summon : ownSummon;
+  // Dismissing writes to the chat that RAISED the summon, which on a group row
+  // is not the chat the row is labelled with.
+  const summonChatId = activity?.summonChatId ?? chat.id;
+  const chatStatus = activity ? activity.chatStatus : ownChatStatus;
+  const chatStatusEmoji = activity ? activity.chatStatusEmoji : ownChatStatusEmoji;
+  const jobAwaitingApproval = activity ? activity.jobAwaitingApproval : !!ownJobRunId && jobNeedsYou;
+  // The group's job badge, whether or not anything is waiting on you: the
+  // awaiting member's run and step where one is waiting, so the "needs you"
+  // pill names the step that is actually waiting, and otherwise that of a
+  // member merely CARRYING a run, so a tree belonging to a job still shows the
+  // pill a lone row would have shown. (Carrying, not running — `jobRunId` is
+  // written once and never cleared; see RowActivity.jobRunId.)
+  // `jobAwaitingApproval` above stays its own question — it picks the
+  // treatment, not the run.
+  const jobRunId = activity ? activity.jobRunId : ownJobRunId;
+  const jobStepId = activity ? activity.jobStepId : ownJobStepId;
 
-  const hasUnread = lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
+  const hasUnread = activity ? activity.hasUnread : lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
 
   const displayName = title || (preview ? (preview.length > 60 ? preview.slice(0, 60) + "..." : preview) : folderName);
 
@@ -271,12 +327,21 @@ export default function ChatListItem({
    * or is the row a job run is waiting on for approval is the precise inverse
    * of what the dim is for — the point is to make live work stand out, and
    * those are the loudest live work there is. The exemption lives here rather
-   * than in the list because each is already parsed out of the chat's metadata
-   * a few lines up.
+   * than in the list because this is where all four values land — which used
+   * to be "because each is parsed out of the chat's metadata a few lines up",
+   * and no longer is: on a group row three of the four arrive on `activity`
+   * and only `isActive` is a prop either way. Convergence, not parsing, is the
+   * reason now.
    *
    * Those four are the whole list: `Props` carries no permission-prompt state
    * (`sessionStatus` distinguishes only web from cli), so a row holding one is
    * not something this component can currently see.
+   *
+   * All four read the ROLLED-UP values where the list supplied them, and must:
+   * the exemption is about the row, and a group row's row-worth of live work
+   * is its whole tree's. Reading the front chat's own here would fade away the
+   * summon a subagent raised inside an archived card's tree — the one row that
+   * fade exists to spare.
    *
    * What the fade costs, measured rather than assumed: `opacity` composites the
    * whole row against `--bg-sidebar`, so it drags every pairing in the row down
@@ -482,7 +547,7 @@ export default function ChatListItem({
               title={`Summon: ${summon.message}`}
               onClick={(e) => {
                 e.stopPropagation();
-                dismissSummon(chat.id).catch(() => {});
+                dismissSummon(summonChatId).catch(() => {});
               }}
               style={{
                 display: "inline-flex",
