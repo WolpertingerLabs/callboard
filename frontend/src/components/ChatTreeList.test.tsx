@@ -314,6 +314,18 @@ describe("ChatTreeList order", () => {
     expect(outline(container)).toEqual(["chat solo-open", "chat root"]);
   });
 
+  it("places a root-fronted group at its most recently updated member's position", () => {
+    // The two halves of the rule pull in opposite directions here, which is
+    // the point: `child-1` fixes WHERE the group sits (second, where the
+    // server put it), `root` fixes WHAT the row says (last in the array, and
+    // never mind that). Ordering groups by root recency instead would sink
+    // this row below "chat solo-older" — an actively worked thread falling to
+    // wherever its opening message left it.
+    const chats = [makeChat("solo-newest"), makeChat("child-1", { parentChatId: "root", rootChatId: "root" }), makeChat("solo-older"), makeChat("root")];
+    const { container } = renderRows(chats, new Map());
+    expect(outline(container)).toEqual(["chat solo-newest", "chat root", "chat solo-older"]);
+  });
+
   it("does not float the open-card row above the archived one", () => {
     const cards: ReadonlyMap<string, Pick<CardSummary, "lifecycle">> = new Map([
       ["closed-card", { lifecycle: "closed" }],
@@ -324,6 +336,101 @@ describe("ChatTreeList order", () => {
     // fade is the only thing marking the difference.
     expect(outline(container)).toEqual(["chat solo-closed", "chat solo-open"]);
     expect([...container.querySelectorAll(".chatlist-item-dimmed")].length).toBe(1);
+  });
+});
+
+/**
+ * WHICH chat fronts a group row — the one it is labelled with and the one its
+ * click opens.
+ *
+ * The row used to be the group's most recently updated loaded member, so
+ * clicking a thread dropped you into whatever subagent had run last, several
+ * levels down a tree you had not asked to enter. It is now the lineage root:
+ * the same chat the expanded body renders at depth 0.
+ *
+ * Label and click are asserted together on purpose. Redirecting the click
+ * while leaving the most-recent member's title on the row would fix the
+ * navigation and leave the row lying about where it goes, so one fronting
+ * chat has to answer both.
+ */
+describe("ChatTreeList group identity", () => {
+  // Server recency order: the subagent ran last, its parent thread before
+  // that, the thread's root longest ago. Under the old rule the row was
+  // "chat child-2".
+  const ROOT_LAST = [
+    makeChat("child-2", { parentChatId: "child-1", rootChatId: "root" }),
+    makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
+    makeChat("root"),
+  ];
+
+  // The same tree with its root outside the loaded page — a stamped
+  // `rootChatId` naming a chat this list does not hold. `lineageOf` still
+  // groups both members under "root", but no row can be that chat.
+  const ROOT_ABSENT = [
+    makeChat("child-2", { parentChatId: "child-1", rootChatId: "root" }),
+    makeChat("child-1", { parentChatId: "root", rootChatId: "root" }),
+  ];
+
+  function renderGroup(chats: Chat[], onChatClick: (chat: Chat) => void = () => {}) {
+    return render(
+      <MemoryRouter>
+        <ChatTreeList
+          chats={chats}
+          refreshToken={0}
+          onChatClick={onChatClick}
+          onDelete={() => {}}
+          onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
+          cardMenuFor={() => ({})}
+          sessionStatusFor={() => undefined}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  /** Click the row displaying `text` — the same div `openRowMenu` reaches for. */
+  const clickRow = (text: string) => fireEvent.click(screen.getByText(text).closest('div[style*="border-bottom"]')!);
+
+  it("labels a group with its root, not with its most recently updated member", () => {
+    const { container } = renderGroup(ROOT_LAST);
+    expect(screen.getByText("chat root")).toBeTruthy();
+    expect(screen.queryByText("chat child-2")).toBeNull();
+    expect(screen.queryByText("chat child-1")).toBeNull();
+    // One row for the three chats — folding is unchanged, only its front is.
+    expect(container.textContent?.match(/chat [a-z0-9-]+/g)).toEqual(["chat root"]);
+  });
+
+  it("opens the root when the group row is clicked", () => {
+    const onChatClick = vi.fn();
+    renderGroup(ROOT_LAST, onChatClick);
+    clickRow("chat root");
+    expect(onChatClick).toHaveBeenCalledTimes(1);
+    expect(onChatClick.mock.calls[0][0]).toMatchObject({ id: "root" });
+  });
+
+  it("falls back to the most recently updated member when the root is not loaded", () => {
+    const { container } = renderGroup(ROOT_ABSENT);
+    // Exactly the old behaviour, and the only thing it can be: a row has to be
+    // a chat the list holds, and "root" is not one of them.
+    expect(screen.getByText("chat child-2")).toBeTruthy();
+    expect(container.textContent?.match(/chat [a-z0-9-]+/g)).toEqual(["chat child-2"]);
+  });
+
+  it("clicks through to that fallback member rather than to a chat that does not exist", () => {
+    const onChatClick = vi.fn();
+    renderGroup(ROOT_ABSENT, onChatClick);
+    clickRow("chat child-2");
+    expect(onChatClick.mock.calls[0][0]).toMatchObject({ id: "child-2" });
+  });
+
+  it("leaves a lone chat fronting itself", () => {
+    // The control: nothing about a row with no lineage changes, including the
+    // degenerate case where the chat IS its own group key.
+    const onChatClick = vi.fn();
+    renderGroup([makeChat("solo")], onChatClick);
+    clickRow("chat solo");
+    expect(onChatClick.mock.calls[0][0]).toMatchObject({ id: "solo" });
+    expect(screen.queryByTitle("Expand chat tree")).toBeNull();
   });
 });
 
@@ -417,12 +524,34 @@ describe("pinning a row", () => {
     expect(onTogglePin).toHaveBeenCalledWith([expect.objectContaining({ id: "solo" })], true);
   });
 
+  it("files a group into Pinned when a NON-header member carries the pin, whatever the recency order", () => {
+    // The stated decision: a group is pinned if ANY member is. Fronting the
+    // row with the root rather than the busiest member does not soften the
+    // need for it — it hardens it. A pin set on a child is now NEVER the
+    // header row's own, in any order, so a header-only rule would leave this
+    // pin permanently inert with nothing on screen showing it.
+    //
+    // `child-1` leads the array (it is the most recent), so this is also the
+    // case where the header row changed: the row is "chat root" now and was
+    // "chat child-1" before.
+    const onTogglePin = spy();
+    renderWithPin([makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true }), makeChat("root")], onTogglePin);
+
+    expect(headers()).toEqual(["Pinned (2)"]);
+    expect(screen.getByText("chat root")).toBeTruthy();
+
+    // And the kebab on that root-fronted row still reaches the child's pin.
+    openRowMenu("chat root");
+    expect(screen.queryByText("Pin")).toBeNull();
+    fireEvent.click(screen.getByText("Unpin"));
+    expect(onTogglePin).toHaveBeenCalledWith([expect.objectContaining({ id: "child-1" })], false);
+  });
+
   it("files a group into Pinned when a NON-header member carries the pin", () => {
     // The stated decision: a group is pinned if ANY member is. The header row
-    // is "the group's most recently updated loaded chat" and therefore moves
-    // around — so a header-only rule would let a pin stop working the moment a
-    // sibling got busier, with nothing on screen showing it and no way to
-    // clear it.
+    // is the group's root, so a pin on any other member is never its own — a
+    // header-only rule would let a pin stop working the moment its chat got a
+    // parent, with nothing on screen showing it and no way to clear it.
     const onTogglePin = spy();
     renderWithPin([makeChat("root"), makeChat("child-1", { parentChatId: "root", rootChatId: "root", pinned: true })], onTogglePin);
 

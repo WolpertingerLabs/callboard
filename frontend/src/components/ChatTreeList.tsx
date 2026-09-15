@@ -15,11 +15,19 @@ import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
  * aliasing legacy `parentChatId`/`forkedFrom` pointers). A chat without any
  * lineage — the common case — renders as a plain `ChatListItem` row, with no
  * chevron and nothing to expand, so a list of unrelated chats looks exactly
- * like an ungrouped one. Groups render their most
- * recently updated loaded chat as the header row with a chevron; expanding
- * fetches the authoritative full tree from GET /api/chats/:id/tree (which
- * includes members outside the currently loaded page) and renders it
- * depth-indented.
+ * like an ungrouped one. Groups render their lineage ROOT — the chat that
+ * appears at depth 0 when the group is expanded — as the header row with a
+ * chevron; expanding fetches the authoritative full tree from
+ * GET /api/chats/:id/tree (which includes members outside the currently loaded
+ * page) and renders it depth-indented.
+ *
+ * The header row is the root and not the group's most recently updated member
+ * because the row is a link as much as a label: clicking it opens the chat it
+ * names. Fronting the busiest member meant a thread's row dropped you into
+ * whichever subagent happened to have run last, several levels down a tree the
+ * user had not asked to enter. One chat fronts the row, and it labels the row
+ * and answers its click alike — a row whose title says one chat and whose click
+ * opens another is lying about where it goes.
  *
  * A fetched tree is a snapshot: a chat spawned into an already-expanded group
  * (and every status change inside it) lands in the refreshed `chats` prop but
@@ -109,14 +117,17 @@ export interface Row {
    * fronting it.
    *
    * **A group is pinned if ANY member is.** The alternative — only the header
-   * row's own pin counts — is unstable in a way that silently breaks the
-   * feature: the header row is "the group's most recently updated loaded
-   * chat", so it changes as work moves around inside a tree. Pin chat C, spawn
-   * a subagent off it, and C stops fronting its group; under a header-only
-   * rule its pin would stop having any effect, with no row displaying it and
-   * no menu entry able to clear it. Pinning a child therefore floats its whole
-   * group, which is the honest reading of a list that renders one row per
-   * tree: that row IS the tree, and there is no other row to move.
+   * row's own pin counts — silently breaks the feature, and fronting groups by
+   * their root rather than by their busiest member makes it break *more*, not
+   * less. Pin chat C and spawn a subagent off it: C is now a group, fronted by
+   * its root, and if C was not itself that root then under a header-only rule
+   * its pin stops having any effect — no row displays it and no menu entry can
+   * clear it. (The root does not move around the way "most recently updated
+   * member" did, so the failure is stable rather than intermittent; a pin set
+   * on a non-root member is simply never the header's own.) Pinning a child
+   * therefore floats its whole group, which is the honest reading of a list
+   * that renders one row per tree: that row IS the tree, and there is no other
+   * row to move.
    *
    * "Loaded" is the real qualifier: this is a verdict over the rows the list
    * currently HOLDS, not over the group as the server knows it. Mostly that is
@@ -185,6 +196,25 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
  * its most recently updated member — so this is the server's recency order
  * with the members of a tree folded into the row that fronts it.
  *
+ * A group's POSITION and its IDENTITY answer to different members, and the
+ * split is deliberate:
+ *
+ * - **Position** is the most recently updated member's, unchanged. A tree the
+ *   user is working in stays near the top of the sidebar however deep in it
+ *   the work is happening. Ordering by root recency instead would sink an
+ *   actively worked thread to wherever its opening message left it.
+ * - **Identity** — `row.chat`, which supplies the row's title, timestamp,
+ *   kebab and click target — is the lineage ROOT, the same chat that renders
+ *   at depth 0 when the group is expanded. A thread's row opens the thread.
+ *
+ * The fallback exists because `rootKey` is not always a chat this list holds:
+ * `lineageOf` keys a group by a dangling parent id or a stamped `rootChatId`
+ * whenever the ancestor chain leaves the loaded page (see there). Those keys
+ * group members correctly but name no loaded chat, and a row has to be some
+ * chat the list actually has — so when the root is not loaded, the most
+ * recently updated member fronts the row, which is what every group did before
+ * roots fronted anything.
+ *
  * Exported because ChatList needs the same order for its shift+click ranges,
  * and "the same order" has to mean the same *function* over the same array,
  * not a second derivation that agrees today. A range read off a parallel
@@ -222,7 +252,19 @@ export function buildRows(chats: Chat[]): Row[] {
     // Always set: this row's own chat counted itself into the bucket above.
     const size = groupSizes.get(rootKey)!;
     const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
-    result.push({ chat, rootKey, isGroup, size, pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS });
+    // `chat` — the first member seen, i.e. the most recently updated one — has
+    // already fixed this row's position by being the iteration that created it.
+    // Which chat FRONTS it is a separate question, answered by the root when
+    // the root is loaded and by `chat` when it is not.
+    //
+    // The lineage check is not redundant with the id lookup: a chat whose id
+    // happens to equal a group key can be filed in a different group than the
+    // one it keys (a parent-pointer cycle resolves that way), and fronting a
+    // row with a chat that is not one of its members would double-count it
+    // against the row ChatList's selection expects to find it in.
+    const root = byId.get(rootKey);
+    const front = isGroup && root && infoById.get(root.id)!.rootKey === rootKey ? root : chat;
+    result.push({ chat: front, rootKey, isGroup, size, pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS });
   }
   return result;
 }
@@ -352,7 +394,8 @@ export default function ChatTreeList({
   const [loading, setLoading] = useState<Set<string>>(new Set());
 
   // Group loaded chats by lineage root, preserving the server's recency order:
-  // each group appears at the position of its most recently updated member.
+  // each group appears at the position of its most recently updated member,
+  // fronted by its root where that chat is loaded. See `buildRows`.
   const rows = useMemo(() => buildRows(chats), [chats]);
 
   // Read current expansion/rows from the refresh effect without making it a
