@@ -45,13 +45,18 @@ function writeCallerChat(metadata: Record<string, unknown>): void {
   writeFileSync(join(chatsDir, `${CALLER_CHAT_ID}.json`), JSON.stringify(chat, null, 2));
 }
 
-function startChat(): ToolDefinition<any> {
+/**
+ * `callerId` defaults to the chat `writeCallerChat` persists. Pass a temp
+ * tracking id (`new-<ts>`) to build the spec of a caller that has not been
+ * written to disk yet — `getChat` misses, and the tool takes its no-parent path.
+ */
+function startChat(callerId: string = CALLER_CHAT_ID): ToolDefinition<any> {
   // Mirrors the spec claude.ts builds: the engine this session runs on, plus
   // the live model-override getter over the chat record.
-  const spec = buildCallboardToolsSpec(() => CALLER_CHAT_ID, undefined, {
+  const spec = buildCallboardToolsSpec(() => callerId, undefined, {
     includeJobTools: false,
     provider: "codex",
-    getModel: () => chatFileService.getModelOverride(CALLER_CHAT_ID),
+    getModel: () => chatFileService.getModelOverride(callerId),
   });
   const found = spec.tools.find((t) => t.name === "start_chat_session");
   if (!found) throw new Error("start_chat_session not found");
@@ -60,6 +65,13 @@ function startChat(): ToolDefinition<any> {
 
 function payload(result: { content: Array<{ type: string; text?: string }> }): any {
   return JSON.parse(result.content[0].text!);
+}
+
+/** The text the child is actually started with — the prompt iterable, drained. */
+async function promptText(sent: { prompt: AsyncIterable<any> }): Promise<string> {
+  let text = "";
+  for await (const message of sent.prompt) text += message.message.content;
+  return text;
 }
 
 /** Records every send, and answers the chat_created handshake. */
@@ -184,5 +196,128 @@ describe("start_chat_session model inheritance", () => {
     writeCallerChat({ model: "gpt-5.2" });
     await startChat().handler({ prompt: "go again", folder: "/tmp/project" });
     expect(sender.calls[1]).toMatchObject({ model: "gpt-5.2" });
+  });
+});
+
+/**
+ * `independent` drops the tree edge, and only the tree edge.
+ *
+ * A spawned chat was unconditionally filed under its spawner, which makes it a
+ * node in someone else's card rather than a card of its own — there was no way
+ * for an agent to start top-level work. The other two paths to "detached" are
+ * both worse: the HTTP route can do it but no tool exposes it, and `deploy_agent`
+ * marks its chats `triggered`, which makes them card-ineligible outright.
+ *
+ * The distinction these tests hold is breadcrumb vs edge. The child is still
+ * *told* who spawned it — that line is how it reaches back across engines, and
+ * dropping it would strand a detached child with no way to find its caller — it
+ * is just not filed underneath them. Everything hanging off the caller's id
+ * rather than off the parentage link (onComplete, above all) keeps working.
+ */
+describe("start_chat_session independent spawns", () => {
+  it("files the child under the caller by default", async () => {
+    writeCallerChat({ title: "spawner" });
+    const sender = stubSender();
+
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", role: "subagent" }));
+
+    expect(sender.calls[0]).toMatchObject({ parentChatId: CALLER_CHAT_ID, chatRole: "subagent" });
+    expect(result).toMatchObject({ parentChatId: CALLER_CHAT_ID, role: "subagent" });
+    expect(result.independent).toBeUndefined();
+  });
+
+  it("omits the parent link when independent, and says so in the result", async () => {
+    writeCallerChat({ title: "spawner" });
+    const sender = stubSender();
+
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", independent: true }));
+
+    // No edge: the route only links when it is handed a parent id, so the key
+    // must be absent, not undefined.
+    expect("parentChatId" in sender.calls[0]).toBe(false);
+    expect("chatRole" in sender.calls[0]).toBe(false);
+    // And the result distinguishes a deliberate detach from the other way the
+    // link goes missing — a caller with no stored record, which reports neither.
+    expect(result).toMatchObject({ chatId: "child-chat", status: "started", independent: true, spawnedBy: CALLER_CHAT_ID });
+    expect(result.parentChatId).toBeUndefined();
+  });
+
+  it("keeps the spawner breadcrumb in the prompt when detached, marked as not a parent", async () => {
+    writeCallerChat({ title: "spawner" });
+    const sender = stubSender();
+
+    await startChat().handler({ prompt: "do the thing", folder: "/tmp/project", independent: true });
+
+    const text = await promptText(sender.calls[0]);
+    expect(text).toContain("do the thing");
+    // The pointer survives: a detached child can still read its spawner.
+    expect(text).toContain(`Spawned by chat ${CALLER_CHAT_ID}`);
+    expect(text).toContain(`read_session_messages with chatId "${CALLER_CHAT_ID}"`);
+    // But it is told the edge is not there, so a get_chat_tree over itself
+    // returning a lone root does not read as a stale or broken breadcrumb.
+    expect(text).toContain("not linked to it");
+  });
+
+  it("still registers the onComplete callback against the caller when detached", async () => {
+    // The one collapse a future refactor would plausibly make: onComplete hangs
+    // off getChatId(), not off the parentage link, and folding it into the
+    // `parentChat &&` branch would silently strand every detached spawn — the
+    // spawner would wait for a notification that was never registered.
+    writeCallerChat({ title: "spawner" });
+    const sender = stubSender();
+
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", independent: true, onComplete: true }));
+
+    expect("parentChatId" in sender.calls[0]).toBe(false);
+    expect(result.onComplete).toMatchObject({ registered: true });
+  });
+
+  it("reports independent with no spawnedBy, and no breadcrumb, when the caller has no stored record", async () => {
+    // The arm the independent/spawnedBy split exists to disambiguate, and the
+    // only place in this file where `parentChat` is null: every other test
+    // persists a caller. `getChatId` hands back a temp `new-<ts>` tracking id
+    // while the caller is still registering, which `getChat` misses.
+    //
+    // Two things are pinned. The result still says `independent: true` — the
+    // detach was honoured — but omits `spawnedBy`, which is what tells a caller
+    // apart from one whose own record simply was not resolvable. An unguarded
+    // `spawnedBy: parentChat.id` would throw here, and nothing else would catch it.
+    const sender = stubSender();
+
+    const result = payload(await startChat("new-1756900000000").handler({ prompt: "go", folder: "/tmp/project", independent: true }));
+
+    expect(result).toMatchObject({ chatId: "child-chat", status: "started", independent: true });
+    expect(result.spawnedBy).toBeUndefined();
+    expect(result.parentChatId).toBeUndefined();
+    expect("parentChatId" in sender.calls[0]).toBe(false);
+
+    // And the consequence worth stating out loud: with no parent record there
+    // is no id to point at, so the child is started on the raw prompt with no
+    // breadcrumb at all. A detached child of a not-yet-persisted caller has no
+    // pointer home.
+    expect(await promptText(sender.calls[0])).toBe("go");
+  });
+
+  it("refuses a role on an independent spawn instead of dropping the label", async () => {
+    writeCallerChat({ title: "spawner" });
+    const sender = stubSender();
+
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", independent: true, role: "subagent" }));
+
+    expect(result).toMatchObject({ ok: false, error: "role_requires_parent" });
+    // Refused before the spawn, not after: a started session the caller has to
+    // clean up is a worse answer than an error it can retry.
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  it("treats independent:false as the default rather than a detach", async () => {
+    writeCallerChat({ title: "spawner" });
+    const sender = stubSender();
+
+    const result = payload(await startChat().handler({ prompt: "go", folder: "/tmp/project", independent: false }));
+
+    expect(sender.calls[0]).toMatchObject({ parentChatId: CALLER_CHAT_ID });
+    expect(result).toMatchObject({ parentChatId: CALLER_CHAT_ID });
+    expect(result.independent).toBeUndefined();
   });
 });
