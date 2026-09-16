@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { newChatTrackingId } from "./ids";
+import { newChatTrackingId, newChatViewId } from "./ids";
 
 /** The server's clientTrackingId allowlist (routes/stream.ts). */
 const SERVER_ACCEPTS = /^new-[A-Za-z0-9_-]+$/;
@@ -47,4 +47,14 @@ describe("newChatTrackingId", () => {
     const ids = new Set(Array.from({ length: 1000 }, () => newChatTrackingId()));
     expect(ids.size).toBe(1000);
   });
+});
+
+it("creates distinct tab-view handles even on plain-HTTP origins", () => {
+  vi.stubGlobal("crypto", {});
+  const ids = new Set(Array.from({ length: 1000 }, () => newChatViewId()));
+  expect(ids.size).toBe(1000);
+  for (const id of ids) {
+    expect(id).toMatch(/^view-[A-Za-z0-9_-]+$/);
+    expect(id.length).toBeLessThanOrEqual(80);
+  }
 });

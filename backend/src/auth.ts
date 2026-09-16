@@ -259,7 +259,9 @@ export function requireAllowedIp(req: Request, res: Response, next: NextFunction
   // all, so a shell or a browser on the same network still gets in.
   const { settings, state, error } = readAgentSettings();
   if (state === "unreadable") {
-    log.error(`Refusing remote client ${clientIp}: agent-settings.json exists but could not be read (${error ?? "unknown error"}), so the IP allowlist is unknown`);
+    log.error(
+      `Refusing remote client ${clientIp}: agent-settings.json exists but could not be read (${error ?? "unknown error"}), so the IP allowlist is unknown`,
+    );
     return res.status(403).json({
       error: `Access denied: Callboard's settings file exists but could not be read (${error ?? "unknown error"}), so it cannot tell whether your address is on the allowlist — and it will not assume it is. Fix or remove agent-settings.json from a local or LAN client, which is never gated.`,
     });
@@ -312,6 +314,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   // Auto-extend the session on every authenticated request (rolling session)
   rollSession(token, res);
   res.locals.authMethod = "session";
+  res.locals.chatViewOwner = token;
 
   next();
 }

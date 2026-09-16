@@ -53,6 +53,10 @@ vi.mock("../agents/factory.js", () => ({
   ],
 }));
 
+// These fixtures intentionally live under /tmp; opt them in explicitly now
+// that shared discovery also enforces ignored-directory boundaries.
+const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");
+saveIgnoredProjectDirPrefixes([]);
 const { chatsRouter } = await import("./chats.js");
 
 const listHandler = (chatsRouter as any).stack.find((layer: any) => layer.route?.path === "/" && layer.route.methods.get).route.stack[0].handle as (
@@ -95,7 +99,10 @@ const ids = (body: any) => body.chats.map((c: any) => c.id);
 
 describe("GET /api/chats and native Codex children", () => {
   beforeEach(() => {
-    fileChats = [chat(ROOT, { title: "Parent" }), chat(CHILD, { parentChatId: ROOT, chatRole: "subagent", nativeAgent: { parentThreadId: ROOT, nickname: "Ramanujan" } })];
+    fileChats = [
+      chat(ROOT, { title: "Parent" }),
+      chat(CHILD, { parentChatId: ROOT, chatRole: "subagent", nativeAgent: { parentThreadId: ROOT, nickname: "Ramanujan" } }),
+    ];
     sessions = [CHILD, ROOT];
   });
 

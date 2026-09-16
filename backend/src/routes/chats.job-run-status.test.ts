@@ -88,6 +88,10 @@ vi.mock("../agents/factory.js", () => ({
   ],
 }));
 
+// These fixtures intentionally live under /tmp; opt them in explicitly now
+// that shared discovery also enforces ignored-directory boundaries.
+const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");
+saveIgnoredProjectDirPrefixes([]);
 const { chatsRouter } = await import("./chats.js");
 
 const listHandler = (chatsRouter as any).stack.find((layer: any) => layer.route?.path === "/" && layer.route.methods.get).route.stack[0].handle as (
@@ -393,11 +397,7 @@ describe("GET /api/chats job run reads", () => {
     // a corrupt record really can arrive here. Without the catch, JSON.parse
     // throws and the whole chat list 500s.
     sessions = ["kid", "parked"];
-    fileChats = [
-      { ...chat("parent"), metadata: "{not json" },
-      chat("kid", { parentChatId: "parent" }),
-      stepChat("parked", "run-1"),
-    ];
+    fileChats = [{ ...chat("parent"), metadata: "{not json" }, chat("kid", { parentChatId: "parent" }), stepChat("parked", "run-1")];
     runs = { "run-1": parkedRun("run-1", ["parked"]) };
 
     const body = await listChats({ limit: "10", offset: "0", includeLineage: "true" });

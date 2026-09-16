@@ -21,6 +21,7 @@ vi.mock("./services/agent-settings.js", () => ({
 
 const { requireAuth, requireSessionAuth } = await import("./auth.js");
 const { createApiKey } = await import("./services/api-keys.js");
+const { createSession } = await import("./services/sessions.js");
 
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
@@ -56,6 +57,16 @@ function makeRes() {
   return res as unknown as Response & { statusCode: number; body: unknown; locals: Record<string, unknown> };
 }
 
+it("binds browser view ownership only to the validated server session, never request fields", () => {
+  createSession("browser-token", Date.now() + 100_000);
+  const req = makeReq({ cookies: { callboard_session: "browser-token" }, body: { chatViewOwner: "forged" } });
+  const res = makeRes();
+  const next = vi.fn();
+  requireAuth(req, res, next);
+  expect(next).toHaveBeenCalledOnce();
+  expect(res.locals.chatViewOwner).toBe("browser-token");
+});
+
 describe("requireAuth with bearer tokens", () => {
   it("accepts a valid API key and marks the auth method", () => {
     const { token } = createApiKey("test", "", null);
@@ -67,6 +78,7 @@ describe("requireAuth with bearer tokens", () => {
 
     expect(next).toHaveBeenCalledOnce();
     expect(res.locals.authMethod).toBe("bearer");
+    expect(res.locals.chatViewOwner).toBeUndefined();
     expect(res.locals.apiKeyId).toBeTypeOf("string");
   });
 

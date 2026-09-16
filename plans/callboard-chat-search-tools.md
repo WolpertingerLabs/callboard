@@ -1,6 +1,6 @@
 # Callboard chat search tools
 
-Status: proposed implementation plan; no runtime changes made.
+Status: implemented on feat/callboard-chat-search-tools; see as-built notes below.
 
 ## Recommendation
 
@@ -233,3 +233,121 @@ to assert completeness of a partially examined corpus.
 Not required for this change: persistent user profiles, board-filter mirroring,
 pixel/expanded-tree scraping, search-result writes or adoption, a new full-text
 index, ranking/embeddings, or changes to legacy `find_chats` semantics.
+
+
+## As built (2026-09-16)
+
+### Runtime seams
+
+- `chat-query.ts` and `chat-query-tools.ts` implement the two new read-only
+  tools. `anyOf` accepts only `pinned`, `bookmarked`, `open_card`; there is
+  no execution-activity predicate or liveness projection. The existing
+  `find_chats` schema and implementation are unchanged.
+- Shared building blocks, rather than an Express-handler adapter:
+  `chat-discovery.ts` enumerates provider pages without a total-hit cap;
+  `card-membership.ts` is the extracted metadata-only part of card-context;
+  `chat-visibility.ts` shares archive/approval-exception predicates;
+  `shared/types/chat-filters.ts` supplies the browser and daemon matcher.
+  REST tree-row pagination, off-page pins and response caching remain in the
+  route. Tools never consume that response cache or project runtime status.
+- Membership now resolves historical session aliases and verified
+  filesystem-only native parent anchors. Stored roots alone anchor cards;
+  unresolved positive native evidence never becomes an ordinary root/card.
+  Individual pins/bookmarks do not inherit group or card pins.
+- Provider routing and alias deduplication precede tool filtering and stable
+  global pagination. Stored-only candidates remain restricted to sidebar
+  appendables (pins and related tree members); there is no adoption or
+  wholesale listing of stale stored records. Exact cwd and ignored-directory
+  boundaries also apply to appendables.
+- Tool rows contain metadata titles/previews when stored; they do not perform
+  fallback transcript-preview reads. Missing titles are explicit nulls.
+  This keeps the query metadata-only and avoids unbounded preview I/O.
+
+### Browser context
+
+- Normal authenticated `PUT /api/chats/view-context` publishes the applied
+  ChatList state. Optional `chatView` snapshots on both initial and follow-up
+  message requests close the initial-publication race and bind the execution.
+  No SSE enum/capability or global last-tab state was added.
+- Ownership is the validated browser-session identity, retained only inside
+  the server binding. API keys cannot publish a browser view. Tool output
+  contains the tab handle, never the session cookie/token.
+- Handles are per-JS-realm, not shared browser storage, and use the existing
+  insecure-origin-safe ID strategy (plain HTTP/LAN works). Modal drafts and
+  unsubmitted search text are excluded. Browser date inputs become absolute
+  ISO instants before transport.
+- Heartbeats run every 25 seconds; views expire after 90 seconds. Reads check
+  session validity; cleanup runs every 30 seconds. Expired views keep bounded
+  revision tombstones until session invalidation so delayed packets cannot
+  resurrect stale filters. There is a 4,096-handle registry bound, reported as
+  an error rather than evicting a different live tab.
+- ChatList unmount sends a versioned DELETE. A delayed unmount cannot close a
+  newer remount. No mounted ChatList (for example the folder-only sidebar,
+  mobile chat-only layout), old clients, automation and expired/disconnected
+  tabs have no live chat-list view; visible scope fails explicitly rather
+  than guessing saved/default filters. Board/folder-view mirroring remains
+  outside this feature.
+
+### Content-search and completeness tradeoffs
+
+- Submitted sidebar search and REST search share `chat-content-search.ts`.
+  It searches discovered session files using the providers' actual text
+  readers, **not** their folder-search result pages. This avoids both the
+  Claude helper's hard 50-hit cap and repeatedly grepping the same directory
+  to fill pages; `find_chats` keeps its published cap/semantics.
+- Semantics remain provider-specific: Claude uses case-insensitive basic
+  grep over session JSONL, Codex the first prompt (native children use their
+  nickname/path), Cline/ACP first-message previews, Pi derived message text.
+  The tool explicitly reports this; it does not claim full-text indexing.
+  The legacy REST folder search retains Claude-only worktree expansion;
+  the new tool's `folder` predicate is always exact cwd.
+- Content work runs in up to two isolated workers, with a 15-second
+  response deadline, 192 MiB worker heap and 32 MiB per-file read boundary.
+  Claude grep batches contain at most 128 paths, not 128 hits. Overload,
+  unavailable files, unsupported readers and exhausted budgets produce
+  concrete partial-coverage warnings, null exact total, and null hasMore
+  when further coverage is unknown. No limit masquerades as completeness.
+- Advanced browser regexes run via the identical shared matcher in an
+  isolated worker (at most two concurrent, 1.5-second deadline, 128 MiB heap). Invalid regexes retain
+  the sidebar's skip semantics and are reported as ignored predicates;
+  expensive regexes fail explicitly. Date bounds remain inclusive.
+- Provider/native traversal failures are also reported as partial. A query
+  captures one metadata/view snapshot; subsequent tool invocations read
+  current metadata and the originating tab's latest accepted revision.
+
+### Verification and reviewer focus
+
+Focused coverage includes real stored/native/filesystem-only lineage,
+archive/bookmark/triggered/search parity with REST, aliases and ambiguous
+owners, individual OR semantics and active rejection, no-write/ignored-cwd
+boundaries, 10,050-session discovery, filtering a 10,020-chat corpus before
+pagination, 130 Claude content hits, worker error coverage, authenticated
+ownership, initial/follow-up binding, live revisions and expiry/unmount races.
+Existing /tmp-based route fixtures explicitly opt their directories in now
+that the shared ignore boundary is enforced before discovery/appends.
+
+Review `chat-query.ts` identity/appendable selection, `card-membership.ts`
+native alias resolution, `chat-content-search.ts` worker limits, and the
+`chat-view.ts` / browser publisher / stream binding path first.
+
+#### Validation results
+
+- Feature/ownership/manifest/wire/ignored-boundary selection: 13 files,
+  101 tests passed. This includes the 10k-corpus tests and real native/REST
+  parity fixtures.
+- Broad route/native/sidebar regressions: 38 files, 600 tests passed
+  (`chats.*`, `stream.*`, `card-native*`, `codex-native*`, legacy
+  `chat-search` / Claude session provider, `ChatList.*`, `ChatTreeList`).
+- `build:shared`, `build:computer-use`, `build:backend`, and
+  `build:frontend` passed. Frontend retains its large-chunk warning.
+- Staged-file `npm run lint`: zero errors; 290 warnings, including existing
+  large-file React-hook/any/console warnings and test-fixture any warnings.
+- Direct compiled-JavaScript content-worker smoke passed, including Node
+  launched with `--input-type=module`. Worker bootstrap uses dynamic imports
+  so inherited ESM execution flags do not break it.
+- Existing lockfile dependencies were installed with
+  `npm ci --ignore-scripts`; dependencies/lockfile were not upgraded.
+- Initial failures from ignored /tmp fixtures, malformed-metadata preservation,
+  test typing, and ESM worker bootstrapping were fixed and re-tested. No known
+  failing test remains in these selections. A full repository test sweep and
+  manual live-browser/provider run were not performed.

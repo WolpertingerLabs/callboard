@@ -1,3 +1,5 @@
+import { buildChatQueryTools } from "./chat-query-tools.js";
+import type { ChatViewBinding } from "./chat-view.js";
 import { assertReasoningEffort } from "./reasoning-capabilities.js";
 import type { CardLifecycle, EffortLevel } from "shared";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
@@ -193,6 +195,7 @@ export function buildCallboardToolsSpec(
      * instead, so each session sees exactly one copy.
      */
     includeJobTools?: boolean;
+    chatView?: ChatViewBinding;
     /**
      * The engine this session is itself running on, and (for ACP) which vendor.
      * `start_chat_session` inherits it when the caller does not name a provider,
@@ -1788,6 +1791,7 @@ export function buildCallboardToolsSpec(
       // the name, is not a third way in: it writes local records only and
       // refuses a worktree directory outright.
       ...buildWorkspaceTools(),
+      ...buildChatQueryTools(opts?.chatView),
     ],
   };
 }

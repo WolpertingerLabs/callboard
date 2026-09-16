@@ -1,11 +1,12 @@
+import { collectContentMatches } from "../services/chat-content-search.js";
+import { listChatsSnapshot } from "../services/chats-snapshot.js";
+import { createCardMembership } from "../services/card-membership.js";
+import { chatViews } from "../services/chat-view.js";
+import { discoverChatCorpus } from "../services/chat-discovery.js";
+import { createTriggeredPredicate, cardIsArchived } from "../services/chat-visibility.js";
+import { isIgnoredProjectFolder } from "../utils/paths.js";
 import { assertReasoningEffort, assertStoredReasoningEffort } from "../services/reasoning-capabilities.js";
-import {
-  nativeMetadata,
-  refreshNativeMetadata,
-  assertNativeAgentDeletable,
-  withNativeCodexChats,
-  createLifecycleBudget,
-} from "../services/codex-native-agents.js";
+import { nativeMetadata, refreshNativeMetadata, assertNativeAgentDeletable, createLifecycleBudget } from "../services/codex-native-agents.js";
 import { Router } from "express";
 import type { Request } from "express";
 import { controlOriginError } from "../auth.js";
@@ -15,13 +16,12 @@ import { randomUUID } from "node:crypto";
 import { chatFileService } from "../services/chat-file-service.js";
 import { getCommandsAndPluginsForDirectory, getAllCommandsForDirectory, resolveSlashCommandContent } from "../services/slashCommands.js";
 import { getAllAppPluginsData } from "../services/app-plugins.js";
-import { getGitInfo, type GitInfo } from "../utils/git.js";
+import { getGitInfo, resolveWorktreeToMainRepoCached, type GitInfo } from "../utils/git.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
-import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
-import { isCardEligible, cardLifecycleOf, rawCardFields } from "../services/card-fields.js";
+import { buildChatTree, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -47,6 +47,22 @@ export { clearChatListCache, clearFolderListCache, clearListCaches };
 const log = createLogger("chats");
 
 export const chatsRouter = Router();
+chatsRouter.delete("/view-context", (req, res) => {
+  try {
+    chatViews.deactivate(res.locals.chatViewOwner, req.body);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: String(error) });
+  }
+});
+chatsRouter.put("/view-context", (req, res) => {
+  try {
+    chatViews.publish(res.locals.chatViewOwner, req.body);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: String(error) });
+  }
+});
 
 // Cache for git info to avoid repeated expensive operations
 const gitInfoCache = new Map<string, { isGitRepo: boolean; branch?: string; cachedAt: number }>();
@@ -105,11 +121,6 @@ function getCachedGitInfo(folder: string): { isGitRepo: boolean; branch?: string
 
   gitInfoCache.set(folder, { ...gitInfo, cachedAt: now });
   return gitInfo;
-}
-
-/** Whether a chat's nested card opted out of the board (metadata.card.hidden). */
-function isCardHidden(chat: { metadata?: string | null }): boolean {
-  return rawCardFields(chat).hidden === true;
 }
 
 /** The `provider` a chat record names, or undefined when absent/unparseable. */
@@ -180,30 +191,12 @@ type DiscoveredSession = {
  * Merges results, sorts globally by mtime DESC, and paginates.
  */
 function discoverSessionsPaginated(limit: number, offset: number): { sessions: DiscoveredSession[]; total: number } {
-  const providers = getSessionProviders();
-
-  if (providers.length === 1) {
-    // Single provider: delegate directly (preserves existing performance)
-    const { sessions, total } = providers[0].discoverSessions({ limit, offset });
-    return { sessions: sessions.map((s) => ({ ...s, providerKind: providers[0].kind })), total };
-  }
-
-  // Multi-provider: collect all, merge, sort, paginate
-  const allSessions: DiscoveredSession[] = [];
-  for (const provider of providers) {
-    const { sessions } = provider.discoverSessions({ limit: 9999, offset: 0 });
-    for (const s of sessions) allSessions.push({ ...s, providerKind: provider.kind });
-  }
-
-  allSessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-
-  const total = allSessions.length;
-  const paginated = allSessions.slice(offset, offset + limit);
-  return { sessions: paginated, total };
+  const { sessions } = discoverChatCorpus();
+  return { sessions: sessions.slice(offset, offset + limit), total: sessions.length };
 }
 
 // Search chat contents using grep for performance
-chatsRouter.get("/search", (req, res) => {
+chatsRouter.get("/search", async (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Search chat contents'
   // #swagger.description = 'Search through session files for matching content across all providers.'
@@ -217,39 +210,33 @@ chatsRouter.get("/search", (req, res) => {
       return res.json({ chatIds: [] });
     }
 
-    // If folder is provided, use the structured searchSessions API
-    if (folder) {
-      const chatIds = new Set<string>();
-      for (const provider of getSessionProviders()) {
-        const results = provider.searchSessions({ folder, grep: query });
-        for (const r of results.chats) chatIds.add(r.chatId);
-      }
-      return res.json({ chatIds: Array.from(chatIds) });
-    }
-
-    // Fallback: search all sessions across all providers by discovering
-    // all sessions and checking for matches (backwards-compatible with
-    // the old grep-based approach). For now, delegate to first provider's
-    // search with a broad filter. The old endpoint searched globally;
-    // the provider search is folder-scoped, so we replicate the old
-    // behavior by getting all sessions and checking each.
-    // TODO: Add a global grep method to SessionProvider if needed.
-    const chatIds = new Set<string>();
-    for (const provider of getSessionProviders()) {
-      const { sessions } = provider.discoverSessions({ limit: 9999, offset: 0 });
-      // Group by folder and search each folder
-      const folderSet = new Set(sessions.map((s) => s.folder));
-      for (const f of folderSet) {
-        try {
-          const results = provider.searchSessions({ folder: f, grep: query, limit: 50 });
-          for (const r of results.chats) chatIds.add(r.chatId);
-        } catch {
-          // Folder may no longer exist — skip
-        }
-      }
-    }
-
-    res.json({ chatIds: Array.from(chatIds) });
+    const discovery = discoverChatCorpus();
+    // Retain the legacy folder endpoint's Claude-only worktree expansion.
+    // Tool `folder` filtering remains an exact cwd intersection in chat-query.
+    const folderMatches = new Map<string, boolean>();
+    const selected = folder
+      ? discovery.sessions.filter((s) => {
+          if (isIgnoredProjectFolder(folder)) return false;
+          if (s.folder === folder) return true;
+          if (s.providerKind !== "claude-code") return false;
+          if (!folderMatches.has(s.folder)) {
+            try {
+              const resolved = resolveWorktreeToMainRepoCached(s.folder);
+              folderMatches.set(s.folder, resolved.isWorktree && resolved.mainRepoPath === folder);
+            } catch {
+              folderMatches.set(s.folder, false);
+            }
+          }
+          return folderMatches.get(s.folder);
+        })
+      : discovery.sessions;
+    const matches = await collectContentMatches(query, selected, listChatsSnapshot());
+    const chatIds = [...matches.keys].map((key) => JSON.parse(key)[1] as string);
+    return res.json({
+      chatIds: [...new Set(chatIds)],
+      partial: !!(discovery.warnings.length || matches.warnings.length),
+      warnings: [...discovery.warnings, ...matches.warnings],
+    });
   } catch (err: any) {
     log.error(`Error searching chats: ${err}`);
     res.status(500).json({ error: "Failed to search chats", details: err.message });
@@ -523,7 +510,8 @@ chatsRouter.get("/", (req, res) => {
     // pagination + the lineage-append pass below) and for the card-lifecycle
     // filter, which walks it to pull in the descendants of card members.
     // One metadata parse per chat, memoized root resolution.
-    const lineageIndex = includeLineage || scopedByCardLifecycle ? buildLineageIndex(withNativeCodexChats(fileChats)) : null;
+    const cardMembership = includeLineage || scopedByCardLifecycle ? createCardMembership(fileChats) : null;
+    const lineageIndex = cardMembership?.index ?? null;
 
     /**
      * Whether the card-lifecycle scope admits a chat id — null when the scope
@@ -566,8 +554,8 @@ chatsRouter.get("/", (req, res) => {
         // Only the highest existing eligible ancestor can be a card. Using
         // existingRootIdOf (rather than the sidebar's synthetic dangling row
         // key) promotes surviving descendants after a parent is deleted.
-        if (lineageIndex.existingRootIdOf(chat.id) !== chat.id || !isCardEligible(chat)) continue;
-        if (isCardHidden(chat) || cardLifecycleOf(chat) !== "open") archivedRootIds.add(chat.id);
+        if (!cardMembership?.roots.has(chat.id)) continue;
+        if (cardIsArchived(chat)) archivedRootIds.add(chat.id);
         else openRootIds.add(chat.id);
       }
       if (cardLifecycleFilter === "unarchived") {
@@ -617,7 +605,7 @@ chatsRouter.get("/", (req, res) => {
     // and includePinned for the same reason: a pinned chat is appended precisely
     // when it is NOT in the window, so its session is never in a paged fetch.
     const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned;
-    const fetchLimit = needsPostFilter ? 9999 : limit;
+    const fetchLimit = needsPostFilter ? Number.MAX_SAFE_INTEGER : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
 
@@ -854,23 +842,7 @@ chatsRouter.get("/", (req, res) => {
      * Order is untouched: re-admission is a predicate inside the existing
      * single filtering pass, not an append.
      */
-    const survivesTriggeredFilter = (chat: any): boolean => {
-      let meta: any;
-      try {
-        meta = parseChatMetadata(chat.metadata);
-      } catch {
-        return true;
-      }
-      // A native Codex child is a subagent its parent thread spawned, not a
-      // chat the user started, and Callboard can neither drive nor close it.
-      // It is automation for the purpose of this filter: hidden by default,
-      // still reachable from its parent's tree (GET /chats/:id/tree is never
-      // scoped by this), and shown in place when "Show triggered chats" is on.
-      if (meta.nativeAgent) return false;
-      if (meta.triggered !== true) return true;
-      if (!anyApprovalParked) return false;
-      return isParkedApprovalRow(chat, meta);
-    };
+    const survivesTriggeredFilter = createTriggeredPredicate(isParkedApprovalRow);
 
     const dropTriggered = (chats: any[]): any[] => chats.filter(survivesTriggeredFilter);
 
@@ -1020,6 +992,7 @@ chatsRouter.get("/", (req, res) => {
      * a thing a user can simply do.
      */
     const appendableRow = (fc: any): any | null => {
+      if (isIgnoredProjectFolder(fc.folder)) return null;
       if (cardScopeAdmits && !cardScopeAdmits(fc.id)) return null;
       if (bookmarkedFilter && !isBookmarked(fc)) return null;
       if (isRetiredProvider(readProvider(fc))) return null;

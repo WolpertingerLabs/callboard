@@ -1,3 +1,4 @@
+import { bindChatView, ChatViewError } from "../services/chat-view.js";
 import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
@@ -157,6 +158,7 @@ streamRouter.post("/new/message", async (req, res) => {
         try {
           generated = await generateBranchName(prompt);
         } catch (err: any) {
+          if (err instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: err.message });
           log.warn(`Auto-generate branch name failed: ${err.message}`);
         }
 
@@ -217,6 +219,7 @@ streamRouter.post("/new/message", async (req, res) => {
       // failure here leaves the chat exactly as it was before.
       workspaceId = captureWorktreeWorkspace(branchResult);
     } catch (err: any) {
+      if (err instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: err.message });
       log.error(`Branch resolution failed: ${err.message}`);
       // A 500 with a readable string in `error`, because that is what the
       // client can do something with: Chat.tsx intercepts 409 for the two
@@ -283,7 +286,9 @@ streamRouter.post("/new/message", async (req, res) => {
     const safeClientTrackingId: string | undefined =
       typeof clientTrackingId === "string" && clientTrackingId.length <= 80 && /^new-[A-Za-z0-9_-]+$/.test(clientTrackingId) ? clientTrackingId : undefined;
 
+    const chatView = bindChatView(res.locals?.chatViewOwner, req.body.chatView);
     const emitter = await sendMessage({
+      chatView,
       prompt,
       folder: effectiveFolder,
       defaultPermissions,
@@ -379,6 +384,7 @@ streamRouter.post("/new/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
+    if (err instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: err.message });
     log.error(`POST /new/message failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
@@ -516,7 +522,9 @@ streamRouter.post("/:id/message", async (req, res) => {
       await storeMessageImages(req.params.id, imageIds);
     }
 
+    const chatView = bindChatView(res.locals?.chatViewOwner, req.body.chatView);
     const emitter = await sendMessage({
+      chatView,
       chatId: req.params.id,
       prompt,
       imageMetadata: imageMetadata.length > 0 ? imageMetadata : undefined,
@@ -536,6 +544,7 @@ streamRouter.post("/:id/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
+    if (err instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: err.message });
     if (err instanceof ChatContextChangedError) return res.status(409).json({ error: err.message, code: "chat_context_changed" });
     // A chat pinned to a removed harness is a client-state condition, not a
     // server fault — see sendRetiredProviderError. Logged at warn for the same

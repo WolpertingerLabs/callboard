@@ -81,6 +81,10 @@ vi.mock("../agents/factory.js", () => ({
   getSessionProviders: () => PROVIDER_KINDS.map(makeProvider),
 }));
 
+// Fixture directories are deliberately under /tmp; shared discovery now
+// enforces the same ignore boundary as real providers, so opt these in.
+const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");
+saveIgnoredProjectDirPrefixes([]);
 const { chatsRouter } = await import("./chats.js");
 
 const listHandler = (chatsRouter as any).stack.find((layer: any) => layer.route?.path === "/" && layer.route.methods.get).route.stack[0].handle as (
