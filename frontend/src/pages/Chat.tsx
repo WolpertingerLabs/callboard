@@ -76,8 +76,9 @@ import ConfirmModal from "../components/ConfirmModal";
 import ActivityDock from "../components/ActivityDock";
 import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
-import NewChatLaunchpad from "../components/NewChatLaunchpad";
+import NewChatLaunchpad, { launchpadMode } from "../components/NewChatLaunchpad";
 import SessionInfoNav from "../components/SessionInfoNav";
+import { useResolvedFavorites } from "../hooks/useResolvedFavorites";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import ForkHandoffModal from "../components/ForkHandoffModal";
 import BranchSelector from "../components/BranchSelector";
@@ -299,6 +300,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [mcpTools, setMcpTools] = useState<McpToolsResponse | null>(null);
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
+  // Owned here rather than inside the launchpad because SessionInfoNav has to
+  // know which shape the launchpad took: with nothing starred the launchpad
+  // falls back to the commands grid, and the nav's Commands pill would then be
+  // a second surface for the same list on the same screen. Gated on `!id` —
+  // every other chat renders neither component, and should pay for neither
+  // fetch.
+  const resolvedFavorites = useResolvedFavorites(!id);
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
   const [promptInputInsertAtCaret, setPromptInputInsertAtCaret] = useState<((text: string) => void) | null>(null);
   // `autoScroll` state drives rendering (the jump-to-bottom button, mounting
@@ -3403,6 +3411,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     <NewChatLaunchpad
                       onInsertPrompt={(value) => promptInputSetValue?.(value)}
                       slashCommands={allSlashCommands}
+                      favorites={resolvedFavorites}
                       onOpenCommands={() => {
                         setSlashCommandsModalTab("commands");
                         setShowSlashCommandsModal(true);
@@ -3410,10 +3419,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     />
 
                     {/* Everything the session merely *has* — commands, tools —
-                        collapsed behind a count. See SessionInfoNav for why. */}
+                        collapsed behind a count. See SessionInfoNav for why.
+                        The Commands pill stands down when the launchpad above
+                        is already showing the grid. */}
                     <SessionInfoNav
                       slashCommands={allSlashCommands}
                       mcpTools={mcpTools}
+                      showCommands={launchpadMode(resolvedFavorites, allSlashCommands) !== "commands"}
                       onInsertPrompt={(value) => promptInputSetValue?.(value)}
                       onOpenModal={(tab) => {
                         setSlashCommandsModalTab(tab);

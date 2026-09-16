@@ -11,7 +11,21 @@ interface Props {
   onInsertPrompt: (value: string) => void;
   /** Open the full modal on the given tab. */
   onOpenModal: (tab: Section) => void;
+  /**
+   * False when the launchpad above is already showing the commands grid.
+   *
+   * With nothing starred, that fallback and this pill are two surfaces for one
+   * list on one screen — the exact duplication this component exists to
+   * remove. The parent decides which one wins, because only the parent can see
+   * both.
+   */
+  showCommands?: boolean;
 }
+
+const PANEL_ID: Record<Section, string> = {
+  commands: "session-info-commands-panel",
+  tools: "session-info-tools-panel",
+};
 
 const pillStyle = (active: boolean): React.CSSProperties => ({
   display: "flex",
@@ -70,11 +84,11 @@ const viewAllStyle: React.CSSProperties = {
  * answered in the moment, not a preference; restoring it on every new chat
  * would hand back the crowding to anyone who ever looked once.
  */
-export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt, onOpenModal }: Props) {
+export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt, onOpenModal, showCommands = true }: Props) {
   const [open, setOpen] = useState<Section | null>(null);
 
   const toolCount = mcpTools?.tools.length ?? 0;
-  const hasCommands = slashCommands.length > 0;
+  const hasCommands = showCommands && slashCommands.length > 0;
   const hasTools = toolCount > 0;
   if (!hasCommands && !hasTools) return null;
 
@@ -88,7 +102,12 @@ export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         {hasCommands && (
-          <button onClick={() => toggle("commands")} style={pillStyle(open === "commands")} aria-expanded={open === "commands"}>
+          <button
+            onClick={() => toggle("commands")}
+            style={pillStyle(open === "commands")}
+            aria-expanded={open === "commands"}
+            aria-controls={open === "commands" ? PANEL_ID.commands : undefined}
+          >
             {chevron("commands")}
             <Slash size={13} />
             Commands
@@ -96,7 +115,12 @@ export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt
           </button>
         )}
         {hasTools && (
-          <button onClick={() => toggle("tools")} style={pillStyle(open === "tools")} aria-expanded={open === "tools"}>
+          <button
+            onClick={() => toggle("tools")}
+            style={pillStyle(open === "tools")}
+            aria-expanded={open === "tools"}
+            aria-controls={open === "tools" ? PANEL_ID.tools : undefined}
+          >
             {chevron("tools")}
             <Wrench size={13} />
             Tools
@@ -105,8 +129,8 @@ export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt
         )}
       </div>
 
-      {open === "commands" && (
-        <div style={panelStyle}>
+      {hasCommands && open === "commands" && (
+        <div id={PANEL_ID.commands} style={panelStyle}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {slashCommands.map((cmd) => (
               <button
@@ -136,7 +160,7 @@ export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt
       )}
 
       {open === "tools" && mcpTools && (
-        <div style={panelStyle}>
+        <div id={PANEL_ID.tools} style={panelStyle}>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {mcpTools.tools.map((tool) => (
               <div key={tool.qualifiedName} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12 }}>

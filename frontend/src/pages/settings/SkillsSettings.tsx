@@ -271,7 +271,13 @@ export default function SkillsSettings() {
                   </div>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>{new Date(skill.updatedAt).toLocaleDateString()}</div>
-                <FavoriteStar active={favoriteSkills.isFavorite(skill.name)} onToggle={() => favoriteSkills.toggle(skill.name)} label={`skill "${skill.name}"`} />
+                <FavoriteStar
+                  active={favoriteSkills.isFavorite(skill.name)}
+                  onToggle={() => favoriteSkills.toggle(skill.name)}
+                  label={`skill "${skill.name}"`}
+                  disabled={!favoriteSkills.ready}
+                  disabledReason={favoriteSkills.error ?? undefined}
+                />
                 <button
                   onClick={() => openEdit(skill.name)}
                   title="Edit skill"

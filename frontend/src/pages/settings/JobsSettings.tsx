@@ -5,6 +5,7 @@ import type { JobDefinition, JobDefinitionPayload, JobRunListItem } from "../../
 import JobRunPanel, { JOB_RUN_STATUS_META } from "../../components/JobRunPanel";
 import ModalOverlay from "../../components/ModalOverlay";
 import FavoriteStar from "../../components/FavoriteStar";
+import JobSpawnForm from "../../components/JobSpawnForm";
 import { useFavorites } from "../../utils/favorites";
 
 const sectionStyle: React.CSSProperties = {
@@ -550,7 +551,13 @@ export default function JobsSettings() {
                       {job.description || "(no description)"}
                     </div>
                   </div>
-                  <FavoriteStar active={favoriteJobs.isFavorite(job.id)} onToggle={() => favoriteJobs.toggle(job.id)} label={`job "${job.name}"`} />
+                  <FavoriteStar
+                    active={favoriteJobs.isFavorite(job.id)}
+                    onToggle={() => favoriteJobs.toggle(job.id)}
+                    label={`job "${job.name}"`}
+                    disabled={!favoriteJobs.ready}
+                    disabledReason={favoriteJobs.error ?? undefined}
+                  />
                   <button
                     onClick={() => openSpawn(job)}
                     title="Spawn a run"
@@ -596,65 +603,22 @@ export default function JobsSettings() {
                   </button>
                 </div>
 
-                {/* Inline spawn form */}
+                {/* Inline spawn form. Errors surface in this section's own
+                    error box above, shared with save/delete, so the form is not
+                    given one of its own. */}
                 {spawnForm?.jobId === job.id && spawnJobDef && (
-                  <div style={{ margin: "8px 0 4px 16px", padding: 12, borderRadius: 6, border: "1px solid var(--accent)", background: "var(--surface)" }}>
-                    {(spawnJobDef.inputs ?? []).map((input) => (
-                      <div key={input.key} style={{ marginBottom: 10 }}>
-                        <label style={labelStyle}>
-                          {input.label || input.key}
-                          {input.required && <span style={{ color: "var(--danger)" }}> *</span>}
-                        </label>
-                        {input.type === "text" ? (
-                          <textarea
-                            style={{ ...inputStyle, minHeight: 80, resize: "vertical" }}
-                            value={spawnForm.values[input.key] ?? ""}
-                            onChange={(e) => setSpawnForm({ ...spawnForm, values: { ...spawnForm.values, [input.key]: e.target.value } })}
-                          />
-                        ) : (
-                          <input
-                            style={inputStyle}
-                            value={spawnForm.values[input.key] ?? ""}
-                            onChange={(e) => setSpawnForm({ ...spawnForm, values: { ...spawnForm.values, [input.key]: e.target.value } })}
-                          />
-                        )}
-                      </div>
-                    ))}
-                    {(spawnJobDef.inputs ?? []).length === 0 && <div style={{ ...helpStyle, marginBottom: 10 }}>This job takes no inputs.</div>}
-                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                      <button
-                        onClick={() => setSpawnForm(null)}
-                        disabled={saving}
-                        style={{
-                          padding: "6px 12px",
-                          borderRadius: 6,
-                          border: "1px solid var(--border)",
-                          background: "transparent",
-                          color: "var(--text)",
-                          fontSize: 13,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={handleSpawn}
-                        disabled={saving || (spawnJobDef.inputs ?? []).some((i) => i.required && !(spawnForm.values[i.key] ?? "").trim())}
-                        style={{
-                          padding: "6px 12px",
-                          borderRadius: 6,
-                          border: "none",
-                          background: "var(--accent)",
-                          color: "var(--text-on-accent)",
-                          fontSize: 13,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                        }}
-                      >
-                        {saving ? "Spawning…" : "Spawn run"}
-                      </button>
-                    </div>
-                  </div>
+                  <JobSpawnForm
+                    job={spawnJobDef}
+                    values={spawnForm.values}
+                    onChange={(values) => setSpawnForm({ ...spawnForm, values })}
+                    onSubmit={handleSpawn}
+                    onCancel={() => setSpawnForm(null)}
+                    submitting={saving}
+                    submitLabel="Spawn run"
+                    submittingLabel="Spawning…"
+                    noInputsNote={<div style={{ ...helpStyle, marginBottom: 10 }}>This job takes no inputs.</div>}
+                    style={{ margin: "8px 0 4px 16px" }}
+                  />
                 )}
               </div>
             ))}

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
-import { Sparkles, Workflow, Play, Star, ChevronLeft } from "lucide-react";
-import { listCustomSkills, listJobs, spawnJob, type CustomSkillListItem, type JobDefinition } from "../api";
-import { useFavorites, orderByFavorites } from "../utils/favorites";
+import { Sparkles, Workflow, Play, Star, ChevronLeft, AlertCircle } from "lucide-react";
+import { spawnJob, type JobDefinition } from "../api";
+import type { ResolvedFavorites } from "../hooks/useResolvedFavorites";
 import JobRunPanel from "./JobRunPanel";
+import JobSpawnForm from "./JobSpawnForm";
 
 interface Props {
   /** Drop text into the composer (already includes its trailing space). */
@@ -12,6 +13,13 @@ interface Props {
   slashCommands: string[];
   /** Open the full slash-commands modal. */
   onOpenCommands: () => void;
+  /**
+   * Owned by the parent, not fetched here — `SessionInfoNav` next door has to
+   * know which of these modes won so it can drop its duplicate Commands pill,
+   * and the only place that can know without a child-to-parent effect is the
+   * component that renders both.
+   */
+  favorites: ResolvedFavorites;
 }
 
 const cardStyle: React.CSSProperties = {
@@ -46,6 +54,40 @@ const groupLabelStyle: React.CSSProperties = {
   marginBottom: 8,
 };
 
+const retryStyle: React.CSSProperties = {
+  background: "none",
+  border: "none",
+  color: "var(--accent-text)",
+  fontSize: 12,
+  cursor: "pointer",
+  padding: 0,
+};
+
+/** One form is open at a time, so one id serves every chip's `aria-controls`. */
+const SPAWN_FORM_ID = "launchpad-job-spawn-form";
+
+/** Which of the launchpad's four shapes a given set of favorites produces. */
+export type LaunchpadMode = "hidden" | "error" | "commands" | "favorites";
+
+/**
+ * Decide the mode from the resolved favorites — exported so `Chat.tsx` can ask
+ * the same question `SessionInfoNav` needs the answer to (does the launchpad
+ * already have a Commands grid on screen?) without the launchpad reporting it
+ * upward through an effect.
+ */
+export function launchpadMode(favorites: ResolvedFavorites, slashCommands: string[]): LaunchpadMode {
+  // Nothing renders while unsettled. Not a skeleton: what is coming might be
+  // the commands grid, and a placeholder shaped like the favorites card would
+  // be a promise we cannot keep. See `useResolvedFavorites`.
+  if (!favorites.settled) return "hidden";
+  // Whatever resolved is worth showing even if the other half failed — one
+  // side's error is not a reason to hide the side that worked. The card
+  // carries the note inline in that case.
+  if (favorites.skills.length > 0 || favorites.jobs.length > 0) return "favorites";
+  if (favorites.error) return "error";
+  return slashCommands.length > 0 ? "commands" : "hidden";
+}
+
 /**
  * The favorites launchpad on the new-chat welcome screen: the starred skills
  * and jobs, one click from being used.
@@ -67,47 +109,20 @@ const groupLabelStyle: React.CSSProperties = {
  * new-chat screen has nowhere else to put a run (there is no `/jobs/:runId`
  * route, and the run has no chat of its own to navigate to), and the run is now
  * the only thing the user is waiting on.
+ *
+ * ## The card is decided on what RESOLVES, never on the ids
+ *
+ * A favorite naming a renamed skill is the normal case. Gating the card on "the
+ * user has favorites" and its body on "those favorites resolve" is how you get
+ * a Quick start header with nothing under it, permanently, and no commands
+ * fallback either. `launchpadMode` asks the resolved question once.
  */
-export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpenCommands }: Props) {
-  const favoriteSkills = useFavorites("skills");
-  const favoriteJobs = useFavorites("jobs");
-  const [skills, setSkills] = useState<CustomSkillListItem[]>([]);
-  const [jobs, setJobs] = useState<JobDefinition[]>([]);
+export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpenCommands, favorites }: Props) {
   // Which favorited job's spawn form is open, plus the values typed into it.
   const [spawnForm, setSpawnForm] = useState<{ jobId: string; values: Record<string, string> } | null>(null);
   const [spawning, setSpawning] = useState(false);
   const [spawnError, setSpawnError] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-
-  const hasSkillFavorites = favoriteSkills.favorites.length > 0;
-  const hasJobFavorites = favoriteJobs.favorites.length > 0;
-
-  // Only fetch the catalog a side actually needs. A user who stars skills but
-  // no jobs pays for one request, not two, on every new-chat open.
-  useEffect(() => {
-    if (!hasSkillFavorites) return;
-    let cancelled = false;
-    listCustomSkills()
-      .then((result) => !cancelled && setSkills(result))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [hasSkillFavorites]);
-
-  useEffect(() => {
-    if (!hasJobFavorites) return;
-    let cancelled = false;
-    listJobs()
-      .then((result) => !cancelled && setJobs(result))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [hasJobFavorites]);
-
-  const pinnedSkills = useMemo(() => orderByFavorites(skills, favoriteSkills.favorites, (s) => s.name), [skills, favoriteSkills.favorites]);
-  const pinnedJobs = useMemo(() => orderByFavorites(jobs, favoriteJobs.favorites, (j) => j.id), [jobs, favoriteJobs.favorites]);
 
   const openSpawn = useCallback((job: JobDefinition) => {
     setSpawnError(null);
@@ -118,7 +133,7 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
     setSpawnForm({ jobId: job.id, values });
   }, []);
 
-  const spawnJobDef = spawnForm ? pinnedJobs.find((j) => j.id === spawnForm.jobId) : null;
+  const spawnJobDef = spawnForm ? favorites.jobs.find((j) => j.id === spawnForm.jobId) : null;
 
   const handleSpawn = async () => {
     if (!spawnForm) return;
@@ -160,11 +175,31 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
     );
   }
 
+  const mode = launchpadMode(favorites, slashCommands);
+
+  if (mode === "hidden") return null;
+
+  const errorNote = favorites.error && (
+    <div style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, marginTop: mode === "error" ? 0 : 12 }}>
+      <AlertCircle size={13} />
+      <span>{favorites.error}</span>
+      <button onClick={favorites.retry} style={retryStyle}>
+        Retry
+      </button>
+    </div>
+  );
+
+  // A read failed and nothing resolved. Say so and offer the retry, rather than
+  // rendering the "nothing starred" fallback — which would claim, about the one
+  // thing the user cannot check from here, something we do not know to be true.
+  if (mode === "error") {
+    return <div style={cardStyle}>{errorNote}</div>;
+  }
+
   // Nothing starred yet — keep the old "Available Commands" grid so this card
   // is never empty, and say where the stars are. The grid is the discovery
   // surface it always was; the hint is what turns it into an onboarding step.
-  if (!hasSkillFavorites && !hasJobFavorites) {
-    if (slashCommands.length === 0) return null;
+  if (mode === "commands") {
     return (
       <div style={cardStyle}>
         <div style={groupLabelStyle}>Available Commands</div>
@@ -191,6 +226,8 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
       </div>
     );
   }
+
+  const { skills: pinnedSkills, jobs: pinnedJobs } = favorites;
 
   return (
     <div style={cardStyle}>
@@ -240,6 +277,12 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
                   key={job.id}
                   onClick={() => (open ? setSpawnForm(null) : openSpawn(job))}
                   title={job.description || undefined}
+                  // The chip is a disclosure, and the border colour it used to
+                  // carry that in is invisible to anything that is not a pair
+                  // of eyes.
+                  aria-expanded={open}
+                  // Only while open — the id it names does not exist otherwise.
+                  aria-controls={open ? SPAWN_FORM_ID : undefined}
                   style={{
                     ...chipStyle,
                     borderColor: open ? "var(--accent)" : "var(--border)",
@@ -256,109 +299,35 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
           </div>
 
           {spawnForm && spawnJobDef && (
-            <div style={{ marginTop: 12, padding: 14, borderRadius: 8, border: "1px solid var(--accent)", background: "var(--surface)" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Run {spawnJobDef.name}</div>
-              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: (spawnJobDef.inputs ?? []).length > 0 ? 12 : 10 }}>
-                {spawnJobDef.description || "This job runs independently of the chat you are about to start."}
-              </div>
-              {(spawnJobDef.inputs ?? []).map((input) => (
-                <div key={input.key} style={{ marginBottom: 10 }}>
-                  <label style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-                    {input.label || input.key}
-                    {input.required && <span style={{ color: "var(--danger)" }}> *</span>}
-                  </label>
-                  {input.type === "text" ? (
-                    <textarea
-                      value={spawnForm.values[input.key] ?? ""}
-                      onChange={(e) => setSpawnForm({ ...spawnForm, values: { ...spawnForm.values, [input.key]: e.target.value } })}
-                      style={{
-                        width: "100%",
-                        minHeight: 64,
-                        padding: "8px 10px",
-                        borderRadius: 6,
-                        border: "1px solid var(--border)",
-                        background: "var(--bg)",
-                        color: "var(--text)",
-                        fontSize: 13,
-                        boxSizing: "border-box",
-                        resize: "vertical",
-                      }}
-                    />
-                  ) : (
-                    <input
-                      value={spawnForm.values[input.key] ?? ""}
-                      onChange={(e) => setSpawnForm({ ...spawnForm, values: { ...spawnForm.values, [input.key]: e.target.value } })}
-                      style={{
-                        width: "100%",
-                        padding: "8px 10px",
-                        borderRadius: 6,
-                        border: "1px solid var(--border)",
-                        background: "var(--bg)",
-                        color: "var(--text)",
-                        fontSize: 13,
-                        boxSizing: "border-box",
-                      }}
-                    />
-                  )}
-                </div>
-              ))}
-              {spawnError && (
-                <div
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: 6,
-                    background: "var(--danger-bg)",
-                    border: "1px solid var(--danger-border)",
-                    color: "var(--danger)",
-                    fontSize: 12,
-                    marginBottom: 10,
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  {spawnError}
-                </div>
-              )}
-              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                <button
-                  onClick={() => setSpawnForm(null)}
-                  disabled={spawning}
-                  style={{
-                    padding: "7px 14px",
-                    borderRadius: 6,
-                    border: "1px solid var(--border)",
-                    background: "transparent",
-                    color: "var(--text)",
-                    fontSize: 13,
-                    cursor: "pointer",
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSpawn}
-                  disabled={spawning || (spawnJobDef.inputs ?? []).some((i) => i.required && !(spawnForm.values[i.key] ?? "").trim())}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "7px 14px",
-                    borderRadius: 6,
-                    border: "none",
-                    background: spawning ? "var(--surface)" : "var(--accent)",
-                    color: spawning ? "var(--text-muted)" : "var(--text-on-accent)",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: spawning ? "default" : "pointer",
-                  }}
-                >
-                  <Play size={13} />
-                  {spawning ? "Starting…" : "Run job"}
-                </button>
-              </div>
-            </div>
+            <JobSpawnForm
+              id={SPAWN_FORM_ID}
+              job={spawnJobDef}
+              values={spawnForm.values}
+              onChange={(values) => setSpawnForm({ ...spawnForm, values })}
+              onSubmit={handleSpawn}
+              onCancel={() => setSpawnForm(null)}
+              submitting={spawning}
+              submitLabel="Run job"
+              submittingLabel="Starting…"
+              submitIcon={<Play size={13} />}
+              error={spawnError}
+              style={{ marginTop: 12, padding: 14, borderRadius: 8 }}
+              header={
+                <>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Run {spawnJobDef.name}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: (spawnJobDef.inputs ?? []).length > 0 ? 12 : 10 }}>
+                    {spawnJobDef.description || "This job runs independently of the chat you are about to start."}
+                  </div>
+                </>
+              }
+            />
           )}
         </div>
       )}
+
+      {/* One half loaded and the other did not. The chips above are real; this
+          says the list is incomplete, which is the part they cannot show. */}
+      {errorNote}
     </div>
   );
 }

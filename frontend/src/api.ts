@@ -1317,6 +1317,39 @@ export async function updateAgentSettings(settings: Partial<AgentSettings>): Pro
   return res.json();
 }
 
+/**
+ * The favorites pair — the only part of agent settings the New Chat launchpad
+ * needs. Deliberately NOT fetched via `getAgentSettings`: that response carries
+ * every credential in the install unredacted, and the launchpad asks for this
+ * on every new-chat open from whatever device is on the tunnel. See the route's
+ * doc-comment in `backend/src/routes/agent-settings.ts`.
+ */
+export interface FavoriteLists {
+  favoriteSkills: string[];
+  favoriteJobs: string[];
+}
+
+export async function getFavorites(): Promise<FavoriteLists> {
+  const res = await fetch(`${BASE}/agent-settings/favorites`, { credentials: "include" });
+  await assertOk(res, "Failed to get favorites");
+  return res.json();
+}
+
+/**
+ * Write one or both lists. The response is the authoritative post-write pair —
+ * callers adopt it rather than keeping their optimistic copy.
+ */
+export async function updateFavorites(lists: Partial<FavoriteLists>): Promise<FavoriteLists> {
+  const res = await fetch(`${BASE}/agent-settings/favorites`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(lists),
+  });
+  await assertOk(res, "Failed to update favorites");
+  return res.json();
+}
+
 export interface RemoteAccessStatus {
   enabled: boolean;
   mode: "quick" | "named";
