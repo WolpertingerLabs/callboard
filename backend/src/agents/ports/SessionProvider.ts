@@ -107,6 +107,11 @@ export interface SessionSearchResponse {
  */
 export interface SessionProvider {
   readonly kind: AgentProviderKind;
+  /**
+   * Opt in only when page offsets AND total exclude unavailable/ignored cwd.
+   * Unknown adapters are filtered as a full corpus before route pagination.
+   */
+  readonly eligibleDiscoveryPages?: boolean;
   /** Optional filesystem traversal coverage reported by bounded adapters. */
   readonly discoveryIncomplete?: boolean;
 

@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   warnings: [] as string[],
   native: [] as any[],
   incomplete: false,
+  deferred: new Set<string>(),
 }));
 vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
 vi.mock("./chats-snapshot.js", () => ({ listChatsSnapshot: () => state.stored }));
@@ -21,6 +22,7 @@ vi.mock("./chat-view.js", () => ({ chatViews: { read: () => state.view ?? { avai
 vi.mock("../agents/adapters/codex/CodexSessionProvider.js", () => ({
   CodexSessionProvider: class {
     nativeDiscoveryIncomplete = state.incomplete;
+    nativeDiscoveryDeferredSessions = state.deferred;
     nativeDiscoveryEvidence() {
       return state.native;
     }
@@ -61,6 +63,7 @@ beforeEach(() => {
   state.warnings = [];
   state.native = [];
   state.incomplete = false;
+  state.deferred = new Set();
 });
 describe("individual chat query", () => {
   it("ORs individual pins/bookmarks and open-card membership without group pin promotion", async () => {
@@ -226,4 +229,12 @@ it("missing-provider ancestors with no log are not evidence of Codex either", as
   discover([state.stored[1]]);
   state.sessions[0].providerKind = "claude-code";
   expect(ids(await searchChats({}))).toEqual(["child", "legacy"]);
+});
+
+it("captured deferred current identities remain unsafe despite historical non-Codex backing", async () => {
+  state.incomplete = true;
+  state.deferred.add("current");
+  state.stored = [{ ...chat("owner", { provider: undefined, pinned: true, session_ids: ["old"] }), session_id: "current" }];
+  state.sessions = [{ sessionId: "old", folder: "/work/repo", filePath: "/old", providerKind: "claude-code", createdAt: new Date(), updatedAt: new Date() }];
+  expect((await searchChats({ topLevelOnly: true })).chats).toEqual([]);
 });

@@ -488,3 +488,26 @@ publisher capacity/renewal probes also passed. Full build passed; full lint
 had 0 errors (1,143 warnings). Computer-use: 56 passed, 1 skipped. Real find
 scan-count and endpoint tests cover >2,000 sessions; full-corpus enumeration
 covers 10,050. No manual browser run or wall-time benchmark was performed.
+
+PR455 review corrections:
+- Captured rejected/deferred **current session** inventory now independently
+  fences metadata-free pins and ancestors. Historical-only route inference
+  cannot override it; explicit non-Codex routing or independently discovered
+  current ownership can. Chat-ID collisions are not session evidence.
+- Single-provider page hints require an explicit eligible-pages capability
+  (currently Claude only). Other adapters use one complete filtered corpus,
+  avoiding page-local coordinate changes from missing cwd. Whole-corpus
+  requests always drain capped adapters; short ordinary windows also fall
+  back to the drain. No per-1000-row builtin rescans were introduced.
+- Real-file regressions cover rejected/unreadable legacy records, unchanged
+  file recovery and ownership collisions; route tests cover actual Pi missing
+  cwd, legacy eligibility and capped ordinary/postfilter windows. UI/context
+  and content-search behavior are unchanged.
+
+Review-fix validation (frozen final runtime): full Vitest with maxWorkers=2
+passed 381 files / 5,867 tests (3 files / 32 tests skipped); external review
+configs passed 54 assertions, including the new native and pagination cases.
+Build and lint-all passed (0 errors, 1,154 warnings); computer-use passed
+56 tests with 1 skipped. An interim full run overlapped the final collision
+regression/edit and failed that new assertion; the frozen rerun above passed.
+No manual browser run or latency benchmark; UI/context code was untouched.

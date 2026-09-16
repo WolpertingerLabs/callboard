@@ -94,10 +94,25 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   const unsafeNative = (chat: Chat) => {
     const canonical = membership.storedById.get(chat.id);
     const meta = parseChatMetadata(chat.metadata);
-    // Missing legacy metadata is not Codex evidence. Routing and stamped
-    // discovery rows also apply when the lineage corpus has no provider stamp.
-    const provider = routing.get(chat.id)?.provider ?? parseChatMetadata(canonical?.metadata).provider ?? meta.provider;
-    return (provider === "codex" || !!meta.nativeAgent) && unsafeNativeSession(canonical?.session_id ?? chat.session_id);
+    const canonicalProvider = parseChatMetadata(canonical?.metadata).provider;
+    const route = routing.get(chat.id);
+    const sid = canonical?.session_id ?? chat.session_id;
+    // Historical logs can project browse data, but cannot prove ownership of
+    // the CURRENT identity. Only explicit routing or current discovery can
+    // disambiguate a non-Codex owner from same-ID rejected Codex inventory.
+    const discoveredNonCodex =
+      !canonical &&
+      meta.provider &&
+      meta.provider !== "codex" &&
+      (discoveryBySession.get(sid) ?? []).some((session) => session.providerKind === meta.provider && session.acpProviderId === meta.acpProviderId);
+    const provenNonCodex =
+      (typeof canonicalProvider === "string" && canonicalProvider !== "codex") ||
+      discoveredNonCodex ||
+      (route && route.provider !== "codex" && primaryEvidence.has(chat.id));
+    if (provenNonCodex && !meta.nativeAgent) return false;
+    const scopedRisk = membership.rejectedNativeSessions.has(sid) || membership.deferredNativeSessions.has(sid);
+    const provider = canonicalProvider ?? route?.provider ?? meta.provider;
+    return scopedRisk || ((provider === "codex" || !!meta.nativeAgent) && unsafeNativeSession(sid));
   };
   const owners = new Map<string, Chat[]>();
   for (const chat of stored) {

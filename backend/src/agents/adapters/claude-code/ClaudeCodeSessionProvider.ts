@@ -42,6 +42,7 @@ const log = createLogger("claude-session-provider");
 
 export class ClaudeCodeSessionProvider implements SessionProvider {
   readonly kind = "claude-code" as const;
+  readonly eligibleDiscoveryPages = true;
 
   // ── Private direct-lookup helpers (no provider dispatch) ───────────
 
