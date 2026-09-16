@@ -4,6 +4,8 @@ import { listJobs, createJob, updateJob, deleteJob, spawnJob, listJobRuns, getJo
 import type { JobDefinition, JobDefinitionPayload, JobRunListItem } from "../../api";
 import JobRunPanel, { JOB_RUN_STATUS_META } from "../../components/JobRunPanel";
 import ModalOverlay from "../../components/ModalOverlay";
+import FavoriteStar from "../../components/FavoriteStar";
+import { useFavorites } from "../../utils/favorites";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -118,6 +120,7 @@ export default function JobsSettings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runsError, setRunsError] = useState<string | null>(null);
+  const favoriteJobs = useFavorites("jobs");
 
   // Import state
   const [importOpen, setImportOpen] = useState(false);
@@ -547,6 +550,7 @@ export default function JobsSettings() {
                       {job.description || "(no description)"}
                     </div>
                   </div>
+                  <FavoriteStar active={favoriteJobs.isFavorite(job.id)} onToggle={() => favoriteJobs.toggle(job.id)} label={`job "${job.name}"`} />
                   <button
                     onClick={() => openSpawn(job)}
                     title="Spawn a run"

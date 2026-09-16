@@ -76,6 +76,8 @@ import ConfirmModal from "../components/ConfirmModal";
 import ActivityDock from "../components/ActivityDock";
 import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
+import NewChatLaunchpad from "../components/NewChatLaunchpad";
+import SessionInfoNav from "../components/SessionInfoNav";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import ForkHandoffModal from "../components/ForkHandoffModal";
 import BranchSelector from "../components/BranchSelector";
@@ -3396,118 +3398,28 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       )}
                     </div>
 
-                    {/* Slash commands if available */}
-                    {allSlashCommands.length > 0 && (
-                      <div
-                        style={{
-                          background: "var(--bg-secondary)",
-                          borderRadius: 12,
-                          padding: "20px 24px",
-                          marginBottom: 16,
-                        }}
-                      >
-                        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>Available Commands</div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          {allSlashCommands.slice(0, 8).map((cmd, i) => (
-                            <button
-                              key={i}
-                              onClick={() => {
-                                if (promptInputSetValue) {
-                                  // With the leading slash, as the commands
-                                  // modal already sends it — the composer
-                                  // parses a command out of the value it is
-                                  // handed, and a bare name is just text.
-                                  promptInputSetValue(`/${cmd} `);
-                                }
-                              }}
-                              style={{
-                                background: "var(--bg)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 13,
-                                color: "var(--accent-text)",
-                                cursor: "pointer",
-                                fontFamily: "monospace",
-                              }}
-                            >
-                              {cmd}
-                            </button>
-                          ))}
-                          {allSlashCommands.length > 8 && (
-                            <button
-                              onClick={() => setShowSlashCommandsModal(true)}
-                              style={{
-                                background: "var(--bg)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 13,
-                                color: "var(--text-muted)",
-                                cursor: "pointer",
-                              }}
-                            >
-                              +{allSlashCommands.length - 8} more
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                    {/* Favorited skills and jobs — the one card here that
+                        starts work, so it sits directly under the directory. */}
+                    <NewChatLaunchpad
+                      onInsertPrompt={(value) => promptInputSetValue?.(value)}
+                      slashCommands={allSlashCommands}
+                      onOpenCommands={() => {
+                        setSlashCommandsModalTab("commands");
+                        setShowSlashCommandsModal(true);
+                      }}
+                    />
 
-                    {/* MCP Tools if available */}
-                    {mcpTools && mcpTools.tools.length > 0 && (
-                      <div
-                        style={{
-                          background: "var(--bg-secondary)",
-                          borderRadius: 12,
-                          padding: "20px 24px",
-                          marginBottom: 16,
-                        }}
-                      >
-                        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                          <Wrench size={14} />
-                          Available Tools
-                          <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto" }}>{mcpTools.tools.length} total</span>
-                        </div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          {mcpTools.tools.slice(0, 6).map((tool) => (
-                            <span
-                              key={tool.qualifiedName}
-                              style={{
-                                background: "var(--bg)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 12,
-                                color: "var(--text)",
-                                fontFamily: "var(--font-mono)",
-                              }}
-                            >
-                              {tool.name}
-                            </span>
-                          ))}
-                          {mcpTools.tools.length > 6 && (
-                            <button
-                              onClick={() => {
-                                setSlashCommandsModalTab("tools");
-                                setShowSlashCommandsModal(true);
-                              }}
-                              style={{
-                                background: "var(--bg)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 12,
-                                color: "var(--text-muted)",
-                                cursor: "pointer",
-                              }}
-                            >
-                              +{mcpTools.tools.length - 6} more
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                    {/* Everything the session merely *has* — commands, tools —
+                        collapsed behind a count. See SessionInfoNav for why. */}
+                    <SessionInfoNav
+                      slashCommands={allSlashCommands}
+                      mcpTools={mcpTools}
+                      onInsertPrompt={(value) => promptInputSetValue?.(value)}
+                      onOpenModal={(tab) => {
+                        setSlashCommandsModalTab(tab);
+                        setShowSlashCommandsModal(true);
+                      }}
+                    />
 
                     {/* Getting started hint */}
                     <p style={{ color: "var(--text-muted)", textAlign: "center", fontSize: 14 }}>Send a message to start coding with Claude.</p>

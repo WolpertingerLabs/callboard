@@ -111,6 +111,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     piApiKey,
     piBaseUrl,
     unpinChatsOnArchive,
+    favoriteSkills,
+    favoriteJobs,
     maxCallbackChainDepth,
     maxPendingCallbacks,
   } = req.body;
@@ -138,6 +140,35 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
   // Boolean toggle — coerces truthy/falsey; `false` is preserved (clears the
   // flag) so a deliberate "off" persists rather than leaving a stale `true`.
   const normalizeBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
+
+  /**
+   * Sanitize an ordered id list (the favorites). Trims, drops blanks and
+   * later duplicates, and collapses an emptied list to `undefined` so
+   * un-starring the last entry clears the setting rather than persisting `[]`.
+   *
+   * Non-array input yields `undefined` too, but the call site guards on
+   * `Array.isArray` rather than `!== undefined` — otherwise a malformed body
+   * would be indistinguishable from `[]` and would wipe the user's favorites.
+   * Same reasoning as `unpinChatsOnArchive`'s `typeof === "boolean"` guard
+   * below: when clearing is a real outcome, only a well-formed value may ask
+   * for it.
+   *
+   * Order is preserved because order is the data: these lists ARE the display
+   * order on the New Chat launchpad.
+   */
+  const normalizeIdList = (v: unknown): string[] | undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of v) {
+      if (typeof raw !== "string") continue;
+      const id = raw.trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out.length > 0 ? out : undefined;
+  };
 
   /**
    * Sanitize a string→string map from request JSON: rejects non-object /
@@ -481,6 +512,9 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       // "Change nothing" is the only safe reading of a value that isn't a
       // boolean.
       ...(typeof unpinChatsOnArchive === "boolean" && { unpinChatsOnArchive }),
+      // `Array.isArray`, not `!== undefined` — see `normalizeIdList`.
+      ...(Array.isArray(favoriteSkills) && { favoriteSkills: normalizeIdList(favoriteSkills) }),
+      ...(Array.isArray(favoriteJobs) && { favoriteJobs: normalizeIdList(favoriteJobs) }),
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });
