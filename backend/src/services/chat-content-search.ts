@@ -15,18 +15,23 @@ export async function collectContentMatches(query: string, sessions: OwnedSessio
     const result = await new Promise<{ keys: string[]; warnings: string[] }>((resolve) => {
       const source = import.meta.url.endsWith(".ts");
       const moduleURL = new URL(source ? "./chat-content-worker.ts" : "./chat-content-worker.js", import.meta.url).href;
+      // tsx is a devDependency and only a .ts run needs it, so its specifier travels
+      // in workerData rather than inline: a literal `import("tsx/esm/api")` in this
+      // worker source ships into backend/dist, where scripts/check-published-deps.mjs
+      // reads it — rightly — as shipped code importing an undeclared package.
+      const loader = source ? "tsx/esm/api" : null;
       const worker = new Worker(
         `
         (async () => {
           const { parentPort, workerData } = await import("node:worker_threads");
           try {
-          if (workerData.source) { const { register } = await import("tsx/esm/api"); register(); }
+          if (workerData.loader) { const { register } = await import(workerData.loader); register(); }
           const { searchDiscoveredContent } = await import(workerData.moduleURL);
           parentPort.postMessage(await searchDiscoveredContent(workerData.query, workerData.sessions));
           } catch (error) { parentPort.postMessage({ keys: [], warnings: ["Content search worker failed: " + String(error)] }); }
         })();
       `,
-        { eval: true, workerData: { source, moduleURL, query, sessions }, resourceLimits: { maxOldGenerationSizeMb: 192 } },
+        { eval: true, workerData: { loader, moduleURL, query, sessions }, resourceLimits: { maxOldGenerationSizeMb: 192 } },
       );
       const timer = setTimeout(() => {
         void worker.terminate();
