@@ -18,7 +18,7 @@ describe("tab publisher", () => {
     filters.dateMin.value = "draft";
     expect(originatingChatView()!.filters.dateMin.value).toBe(first.filters.dateMin.value);
     publishChatView(DEFAULT_CHAT_FILTERS, { ...DEFAULT_CHAT_VIEW_OPTIONS, bookmarked: true }, "next");
-    expect(originatingChatView()).toMatchObject({ viewId: first.viewId, revision: first.revision + 1, options: { bookmarked: true } });
+    expect(originatingChatView()).toMatchObject({ viewId: first.viewId, revision: first.revision + 3, options: { bookmarked: true } });
   });
   it("renews on heartbeat and clears unavailable state on unmount", () => {
     vi.useFakeTimers();
@@ -39,4 +39,52 @@ describe("tab publisher", () => {
     filters.directoryInclude.value = "[";
     expect(filterChatRows(rows, filters).warnings).toHaveLength(1);
   });
+});
+
+it("captures fresh foreground revisions after suspension without changing delayed packets", () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "needle");
+  const delayed = originatingChatView()!;
+  const fresh = originatingChatView()!;
+  expect(fresh.revision).toBeGreaterThan(delayed.revision);
+  expect(delayed.revision).toBe(fresh.revision - 1);
+  expect(fresh.submittedSearch).toBe("needle");
+});
+it.each([true, false])("does not attach oversized accepted sidebar state to normal messages (active=%s)", (active) => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "");
+  const filters = structuredClone(DEFAULT_CHAT_FILTERS);
+  filters.directoryInclude = { active, value: "x".repeat(1001) };
+  const report = vi.fn();
+  publishChatView(filters, DEFAULT_CHAT_VIEW_OPTIONS, "", report);
+  expect(report).toHaveBeenCalledWith(expect.stringContaining("1000"));
+  expect(JSON.stringify({ prompt: "hello", chatView: originatingChatView() })).toBe('{"prompt":"hello"}');
+});
+it("discloses rejected publication and drops only that unusable snapshot", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
+  const report = vi.fn();
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "", report);
+  await Promise.resolve();
+  expect(originatingChatView()).toBeUndefined();
+  expect(report).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
+});
+it("a late rejection cannot clear a newer view", async () => {
+  let reject!: (response: { ok: boolean }) => void;
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            reject = resolve;
+          }),
+      )
+      .mockResolvedValue({ ok: true }),
+  );
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "old");
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "new");
+  reject({ ok: false });
+  await Promise.resolve();
+  expect(originatingChatView()?.submittedSearch).toBe("new");
 });

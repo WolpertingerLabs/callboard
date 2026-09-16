@@ -160,3 +160,18 @@ export function filterChatRows<T extends { folder: string; displayFolder?: strin
   }
   return { rows: result, warnings };
 }
+
+// Shared UI/transport limits: reject visibly, never truncate a predicate.
+export const CHAT_FILTER_VALUE_LIMIT = 1000;
+export const CHAT_SEARCH_VALUE_LIMIT = 2000;
+export function chatFilterValidationError(filters: ChatFilters): string | undefined {
+  for (const [key, field] of Object.entries(filters)) {
+    if (field.value.length > CHAT_FILTER_VALUE_LIMIT)
+      return `${key} must be at most ${CHAT_FILTER_VALUE_LIMIT} characters (including inactive drafts). Shorten it before applying.`;
+    if ((key === "dateMin" || key === "dateMax") && field.active && field.value && !Number.isFinite(Date.parse(field.value)))
+      return `${key} must be a valid date.`;
+  }
+}
+export function chatSearchValidationError(value: string): string | undefined {
+  if (value.trim().length > CHAT_SEARCH_VALUE_LIMIT) return `Search must be at most ${CHAT_SEARCH_VALUE_LIMIT} characters. Shorten it before submitting.`;
+}

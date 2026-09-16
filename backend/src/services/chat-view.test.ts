@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChatViewRegistry, VIEW_TTL, chatViewSchema } from "./chat-view.js";
 import { DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS } from "shared/types/chat-filters.js";
 const a = "00000000-0000-4000-8000-000000000001",
@@ -80,4 +80,27 @@ describe("originating tab registry", () => {
     s.filters.dateMin.value += "-04:00";
     expect(chatViewSchema.safeParse(s).success).toBe(true);
   });
+});
+
+it("tombstones DELETE before the first PUT or inline message, isolated by owner", () => {
+  const registry = new ChatViewRegistry(() => true);
+  registry.deactivate("one", { viewId: a, revision: 2 });
+  const binding = registry.publish("one", snapshot(a, 1));
+  expect(registry.read(binding)).toMatchObject({ available: false });
+  expect(registry.read(registry.publish("two", snapshot(a, 1)))).toMatchObject({ available: true });
+  registry.publish("one", snapshot(a, 3));
+  registry.deactivate("one", { viewId: a, revision: 2 });
+  expect(registry.read(binding)).toMatchObject({ available: true, revision: 3 });
+});
+it("bounds unknown-view tombstones just like publications", () => {
+  const registry = new ChatViewRegistry(() => true);
+  // All fixture owners remain valid; avoid quadratic cleanup while seeding.
+  // Exercise real cleanup again on the actual capacity/renewal operations.
+  const cleanup = vi.spyOn(registry, "cleanup").mockImplementation(() => {});
+  for (let i = 0; i < 4096; i++) registry.deactivate("one", { viewId: "view-key-" + i, revision: 2 });
+  cleanup.mockRestore();
+  expect(() => registry.deactivate("one", { viewId: "overflow-view", revision: 2 })).toThrow("capacity");
+  expect(() => registry.publish("one", snapshot())).toThrow("capacity");
+  // Existing keys remain usable at capacity.
+  expect(registry.read(registry.publish("one", snapshot("view-key-0", 3)))).toMatchObject({ available: true });
 });

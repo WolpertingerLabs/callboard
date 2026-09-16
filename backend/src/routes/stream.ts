@@ -117,6 +117,16 @@ streamRouter.post("/new/message", async (req, res) => {
   );
   if (!folder) return res.status(400).json({ error: "folder is required" });
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
+  // Validate the optional browser context before branch/workspace/adoption,
+  // metadata or image writes. Old clients still omit it.
+  let chatView: ReturnType<typeof bindChatView>;
+  try {
+    chatView = bindChatView(res.locals?.chatViewOwner, req.body.chatView);
+  } catch (error) {
+    if (error instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: error.message });
+    throw error;
+  }
+
   // The other creation surface. `POST /:id/message` needs no such note: for an
   // existing chat `getDefaultPermissions` re-reads the stored record and
   // ignores this field entirely, so it cannot raise a level.
@@ -158,7 +168,6 @@ streamRouter.post("/new/message", async (req, res) => {
         try {
           generated = await generateBranchName(prompt);
         } catch (err: any) {
-          if (err instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: err.message });
           log.warn(`Auto-generate branch name failed: ${err.message}`);
         }
 
@@ -219,7 +228,6 @@ streamRouter.post("/new/message", async (req, res) => {
       // failure here leaves the chat exactly as it was before.
       workspaceId = captureWorktreeWorkspace(branchResult);
     } catch (err: any) {
-      if (err instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: err.message });
       log.error(`Branch resolution failed: ${err.message}`);
       // A 500 with a readable string in `error`, because that is what the
       // client can do something with: Chat.tsx intercepts 409 for the two
@@ -286,7 +294,6 @@ streamRouter.post("/new/message", async (req, res) => {
     const safeClientTrackingId: string | undefined =
       typeof clientTrackingId === "string" && clientTrackingId.length <= 80 && /^new-[A-Za-z0-9_-]+$/.test(clientTrackingId) ? clientTrackingId : undefined;
 
-    const chatView = bindChatView(res.locals?.chatViewOwner, req.body.chatView);
     const emitter = await sendMessage({
       chatView,
       prompt,
@@ -384,7 +391,6 @@ streamRouter.post("/new/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
-    if (err instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: err.message });
     log.error(`POST /new/message failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
@@ -422,6 +428,15 @@ streamRouter.post("/:id/message", async (req, res) => {
   const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort, requireExplicitCompletion } = req.body;
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
   if (!prompt) return res.status(400).json({ error: "prompt is required" });
+  // Validate the optional browser context before branch/workspace/adoption,
+  // metadata or image writes. Old clients still omit it.
+  let chatView: ReturnType<typeof bindChatView>;
+  try {
+    chatView = bindChatView(res.locals?.chatViewOwner, req.body.chatView);
+  } catch (error) {
+    if (error instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: error.message });
+    throw error;
+  }
 
   try {
     assertNativeAgentControllable(req.params.id);
@@ -522,7 +537,6 @@ streamRouter.post("/:id/message", async (req, res) => {
       await storeMessageImages(req.params.id, imageIds);
     }
 
-    const chatView = bindChatView(res.locals?.chatViewOwner, req.body.chatView);
     const emitter = await sendMessage({
       chatView,
       chatId: req.params.id,
@@ -544,7 +558,6 @@ streamRouter.post("/:id/message", async (req, res) => {
       emitter.removeListener("event", onEvent);
     });
   } catch (err: any) {
-    if (err instanceof ChatViewError) return res.status(400).json({ code: "CHAT_VIEW_INVALID", error: err.message });
     if (err instanceof ChatContextChangedError) return res.status(409).json({ error: err.message, code: "chat_context_changed" });
     // A chat pinned to a removed harness is a client-state condition, not a
     // server fault — see sendRetiredProviderError. Logged at warn for the same

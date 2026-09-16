@@ -209,3 +209,18 @@ describe("a scope committed from the bar while the modal is open", () => {
     expect(onApply.mock.calls[0][1]).toEqual({ ...DEFAULT_CHAT_VIEW_OPTIONS, showTriggered: true, showArchived: true });
   });
 });
+
+it.each([true, false])("rejects over-limit predicates visibly without applying or truncating (active=%s)", (active) => {
+  const onApply = vi.fn();
+  const filters = structuredClone(DEFAULT_CHAT_FILTERS);
+  filters.directoryInclude = { active, value: "x".repeat(1001) };
+  render(<ChatFilterModal onClose={() => {}} filters={filters} viewOptions={DEFAULT_CHAT_VIEW_OPTIONS} onApply={onApply} />);
+  expect(screen.getByRole("alert").textContent).toContain("1000");
+  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+  expect(onApply).not.toHaveBeenCalled();
+  const input = screen.getByPlaceholderText("e.g. my-project|other-repo");
+  expect((input as HTMLInputElement).value).toHaveLength(1001);
+  fireEvent.change(input, { target: { value: "x".repeat(1000) } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+  expect(onApply).toHaveBeenCalledWith(expect.objectContaining({ directoryInclude: { active, value: "x".repeat(1000) } }), DEFAULT_CHAT_VIEW_OPTIONS);
+});

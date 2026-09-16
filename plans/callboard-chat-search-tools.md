@@ -351,3 +351,50 @@ native alias resolution, `chat-content-search.ts` worker limits, and the
   test typing, and ESM worker bootstrapping were fixed and re-tested. No known
   failing test remains in these selections. A full repository test sweep and
   manual live-browser/provider run were not performed.
+
+### Review round 1 hardening
+
+- Native lineage is a captured, budgeted evidence boundary. When it is
+  incomplete, search omits unverified Codex candidates (including stored pins)
+  and candidates depending on an unverified root, with explicit partial
+  coverage. Later provider discovery warming the metadata cache cannot promote
+  an unknown child to an ordinary, writable root. This intentionally favors
+  conservative partial results over extra unbounded metadata replay.
+- Content session keys now include provider + ACP vendor + session ID;
+  logical chat aliases live in a separate set. Only legacy REST search flattens
+  the two namespaces to string IDs. Historical-only cross-engine discovery
+  backs the logical record without replacing its current execution identity.
+- Visible append reachability is computed after captured sidebar server
+  predicates, before tool-only restrictions; appended relatives are filtered
+  again. Excluded automation cannot introduce a stale stored-only root.
+- DELETE creates a bounded, owner-scoped revision tombstone even before the
+  first PUT/inline snapshot arrives. Explicit foreground message capture mints
+  a fresh revision to renew an expired view; delayed old packets retain old
+  revisions and remain fenced out.
+- View validation/binding is message preflight, before branch/workspace,
+  adoption, metadata and image side effects. No new wire enums were added.
+- Shared UI/transport limits reject oversized predicates visibly at Apply or
+  Search, without truncation (including inactive drafts). Invalid legacy UI
+  state or a rejected publication disables that originating context and shows
+  an actionable warning rather than attaching an invalid snapshot to every
+  chat message. Messages remain usable without a view; visible tools still
+  fail explicitly, never query unrestricted. Network failures may still be
+  recovered by the authenticated inline snapshot.
+
+#### Round 1 validation
+
+- Full `npx vitest run`: 380 files passed, 3 skipped; 5,803 tests passed,
+  32 skipped (includes manifest/wire, backend, frontend and regressions).
+- Final focused query/content/view/stream/UI selection: 10 files, 96 tests
+  passed. Original independent-review reproduction config: 2 files, all 5
+  tests passed. New regressions are committed in-repo, not only in `/tmp`.
+- `npm run build` passed (shared, computer-use, backend, frontend and import
+  rewrite). Existing frontend large-chunk warning remains.
+- `npm run test:computer-use`: 56 passed, 1 skipped. Staged lint on the two
+  cohesive commits: 0 errors, 84 + 25 warnings. `git diff --check` passed.
+- Development-only failures corrected: an implicit-any test callback, a
+  test clock whose default function had been captured before spying, and a
+  capacity-fixture timeout during concurrent full/focused suites. Capacity
+  setup now skips redundant cleanup while seeding, then exercises real
+  cleanup for its assertions. No outstanding test failures. No manual live
+  browser run beyond component tests and real-file/provider integrations.

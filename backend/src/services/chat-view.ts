@@ -1,19 +1,19 @@
 import { z } from "zod";
-import type { ChatViewSnapshot } from "shared/types/chat-filters.js";
+import { CHAT_FILTER_VALUE_LIMIT, CHAT_SEARCH_VALUE_LIMIT, type ChatViewSnapshot } from "shared/types/chat-filters.js";
 import { getSession } from "./sessions.js";
 const viewIdSchema = z
   .string()
   .min(8)
   .max(80)
   .regex(/^[A-Za-z0-9_-]+$/);
-const field = z.object({ active: z.boolean(), value: z.string().max(1000) }).strict();
+const field = z.object({ active: z.boolean(), value: z.string().max(CHAT_FILTER_VALUE_LIMIT) }).strict();
 export const chatViewSchema = z
   .object({
     viewId: viewIdSchema,
     revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     filters: z.object({ directoryInclude: field, directoryExclude: field, dateMin: field, dateMax: field }).strict(),
     options: z.object({ bookmarked: z.boolean(), showTriggered: z.boolean(), showArchived: z.boolean() }).strict(),
-    submittedSearch: z.string().max(2000),
+    submittedSearch: z.string().max(CHAT_SEARCH_VALUE_LIMIT),
   })
   .strict()
   .superRefine((view, ctx) => {
@@ -31,7 +31,7 @@ export class ChatViewRegistry {
   private expiredRevisions = new Map<string, number>();
   constructor(
     private validOwner: (owner: string) => boolean,
-    private now = Date.now,
+    private now = () => Date.now(),
   ) {}
   private key(binding: ChatViewBinding) {
     return JSON.stringify([binding.owner, binding.viewId]);
@@ -56,10 +56,12 @@ export class ChatViewRegistry {
       .object({ viewId: viewIdSchema, revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) })
       .strict()
       .parse(input);
+    this.cleanup();
     const key = this.key({ owner, viewId: ref.viewId });
     const current = this.entries.get(key)?.snapshot.revision ?? this.expiredRevisions.get(key);
     // An unmount racing a newer remount cannot close the new view.
-    if (current === undefined || ref.revision < current) return;
+    if (current !== undefined && ref.revision < current) return;
+    if (current === undefined && this.entries.size + this.expiredRevisions.size >= 4096) throw new ChatViewError("Chat view registry capacity reached");
     this.entries.delete(key);
     this.expiredRevisions.set(key, ref.revision);
   }

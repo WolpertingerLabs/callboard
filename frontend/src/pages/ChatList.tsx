@@ -178,8 +178,9 @@ export default function ChatList({
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
+  const [chatViewError, setChatViewError] = useState<string>();
   useEffect(() => {
-    publishChatView(filters, viewOptions, submittedQuery);
+    publishChatView(filters, viewOptions, submittedQuery, setChatViewError);
   }, [filters, viewOptions, submittedQuery]);
   useEffect(() => () => stopChatViewPublisher(), []);
   const [showNew, setShowNew] = useState(false);
@@ -1415,6 +1416,11 @@ export default function ChatList({
         onToggleSidebar={onToggleSidebar}
       />
 
+      {chatViewError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          {chatViewError}
+        </p>
+      )}
       <ChatFilterBar
         filters={filters}
         viewOptions={viewOptions}
