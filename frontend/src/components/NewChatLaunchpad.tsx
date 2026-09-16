@@ -5,9 +5,15 @@ import { spawnJob, type JobDefinition } from "../api";
 import type { ResolvedFavorites } from "../hooks/useResolvedFavorites";
 import JobRunPanel from "./JobRunPanel";
 import JobSpawnForm from "./JobSpawnForm";
+import { MIN_TAP_TARGET } from "./SessionInfoNav";
 
 interface Props {
-  /** Drop text into the composer (already includes its trailing space). */
+  /**
+   * Put a command in the composer (the string already includes its trailing
+   * space). The parent *prefixes* rather than overwrites — anything already
+   * typed becomes the command's argument. See `Chat.tsx`'s
+   * `insertCommandPrompt`.
+   */
   onInsertPrompt: (value: string) => void;
   /** Fallback content when nothing is favorited yet. */
   slashCommands: string[];
@@ -36,7 +42,11 @@ const chipStyle: React.CSSProperties = {
   background: "var(--bg)",
   border: "1px solid var(--border)",
   borderRadius: 8,
-  padding: "8px 12px",
+  // These are the screen's primary call to action and they are pressed with a
+  // thumb as often as a mouse — see MIN_TAP_TARGET.
+  padding: "10px 12px",
+  minHeight: MIN_TAP_TARGET,
+  boxSizing: "border-box",
   fontSize: 13,
   color: "var(--text)",
   cursor: "pointer",
@@ -66,8 +76,8 @@ const retryStyle: React.CSSProperties = {
 /** One form is open at a time, so one id serves every chip's `aria-controls`. */
 const SPAWN_FORM_ID = "launchpad-job-spawn-form";
 
-/** Which of the launchpad's four shapes a given set of favorites produces. */
-export type LaunchpadMode = "hidden" | "error" | "commands" | "favorites";
+/** Which of the launchpad's shapes a given set of favorites produces. */
+export type LaunchpadMode = "hidden" | "error" | "commands" | "hint" | "favorites";
 
 /**
  * Decide the mode from the resolved favorites — exported so `Chat.tsx` can ask
@@ -85,7 +95,13 @@ export function launchpadMode(favorites: ResolvedFavorites, slashCommands: strin
   // carries the note inline in that case.
   if (favorites.skills.length > 0 || favorites.jobs.length > 0) return "favorites";
   if (favorites.error) return "error";
-  return slashCommands.length > 0 ? "commands" : "hidden";
+  // Nothing starred and nothing to fall back on. This used to be "hidden",
+  // which put the feature's only in-app pointer — the "star something in
+  // Settings" line, which lived inside the commands grid — behind having slash
+  // commands. A fresh install has neither, so the one user who has to be told
+  // this feature exists was the one user guaranteed never to see it. The hint
+  // stands on its own.
+  return slashCommands.length > 0 ? "commands" : "hint";
 }
 
 /**
@@ -94,10 +110,16 @@ export function launchpadMode(favorites: ResolvedFavorites, slashCommands: strin
  *
  * ## Why the two halves behave differently
  *
- * A skill chip **fills the composer** with `/callboard:<name> ` and stops
- * there. Skills almost always take an argument ("release-notes for v2"), and
- * even when they don't, the user is about to type the rest of the message
- * anyway — sending on click would discard the message they came here to write.
+ * A skill chip **puts `/callboard:<name> ` in the composer** and stops there.
+ * Skills almost always take an argument ("release-notes for v2"), and even when
+ * they don't, the user is about to type the rest of the message anyway —
+ * sending on click would discard the message they came here to write.
+ *
+ * Which is also why it prefixes rather than sets. A chip clicked over a typed
+ * message used to overwrite it, discarding exactly what not-sending was meant
+ * to protect; now the message becomes the command's argument. The parent owns
+ * that — it has the command list the composer parses against. See `Chat.tsx`'s
+ * `insertCommandPrompt`.
  *
  * A job chip **opens an inline form and waits for a second click**, because
  * spawning a job is an irreversible side effect that starts real sessions and
@@ -134,6 +156,28 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
   }, []);
 
   const spawnJobDef = spawnForm ? favorites.jobs.find((j) => j.id === spawnForm.jobId) : null;
+
+  /**
+   * Close a form whose job stopped resolving — unstarred from Settings in
+   * another tab, or deleted outright.
+   *
+   * Explicitly, rather than leaving `spawnForm` set and letting the render
+   * collapse on the missing definition: that state still holds a half-filled
+   * form's worth of values and an `aria-expanded` chip, and it survives until
+   * something else happens to clear it — so re-starring the job re-opens a form
+   * the user had moved on from.
+   *
+   * Adjusted during render rather than in an effect, which is React's own
+   * prescription for state that is stale with respect to a prop: the re-render
+   * happens before anything commits, so nothing ever paints the closed-over
+   * form. Gated on `settled` because `retry` blanks both catalogs on its way to
+   * refetching them, and a job that is merely being re-read has not gone
+   * anywhere.
+   */
+  if (spawnForm && favorites.settled && !spawnJobDef) {
+    setSpawnForm(null);
+    setSpawnError(null);
+  }
 
   const handleSpawn = async () => {
     if (!spawnForm) return;
@@ -189,6 +233,33 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
     </div>
   );
 
+  /**
+   * Some favorite named something that no longer exists.
+   *
+   * Renaming a starred skill is the ordinary way to get here, and before this
+   * the chip simply stopped being drawn: no error, no gap, nothing to tell the
+   * user whether the star failed to save or the thing it named moved. Say so
+   * and leave the star alone — the write path's refusal to prune is deliberate
+   * (see `AgentSettings.favoriteSkills`), and auto-pruning here would turn a
+   * temporarily-unreadable catalog into permanent data loss.
+   */
+  const staleNote = favorites.missing > 0 && (
+    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12 }}>
+      {favorites.missing} pinned item{favorites.missing === 1 ? "" : "s"} no longer exist{favorites.missing === 1 ? "s" : ""}.
+    </div>
+  );
+
+  const settingsHint = (
+    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: mode === "hint" ? 0 : 12, display: "flex", alignItems: "center", gap: 4 }}>
+      <Star size={12} />
+      Star a skill or job in{" "}
+      <Link to="/settings/skills" style={{ color: "var(--accent-text)" }}>
+        Settings
+      </Link>{" "}
+      to pin it here.
+    </div>
+  );
+
   // A read failed and nothing resolved. Say so and offer the retry, rather than
   // rendering the "nothing starred" fallback — which would claim, about the one
   // thing the user cannot check from here, something we do not know to be true.
@@ -215,14 +286,19 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
             </button>
           )}
         </div>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12, display: "flex", alignItems: "center", gap: 4 }}>
-          <Star size={12} />
-          Star a skill or job in{" "}
-          <Link to="/settings/skills" style={{ color: "var(--accent-text)" }}>
-            Settings
-          </Link>{" "}
-          to pin it here.
-        </div>
+        {settingsHint}
+        {staleNote}
+      </div>
+    );
+  }
+
+  // No favorites and no commands either — a bare checkout on a fresh install.
+  // The hint is the whole card. See `launchpadMode`.
+  if (mode === "hint") {
+    return (
+      <div style={cardStyle}>
+        {settingsHint}
+        {staleNote}
       </div>
     );
   }
@@ -236,7 +312,10 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
           <Star size={14} />
           Quick start
         </div>
-        <Link to="/settings/skills" style={{ fontSize: 12, color: "var(--text-muted)" }}>
+        {/* Whichever tab holds what they actually pinned. Skills is the
+            default and the tie-break; a user who starred only jobs was being
+            sent to a skills tab with nothing of theirs on it. */}
+        <Link to={pinnedSkills.length === 0 && pinnedJobs.length > 0 ? "/settings/jobs" : "/settings/skills"} style={{ fontSize: 12, color: "var(--text-muted)" }}>
           Manage
         </Link>
       </div>
@@ -328,6 +407,7 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
       {/* One half loaded and the other did not. The chips above are real; this
           says the list is incomplete, which is the part they cannot show. */}
       {errorNote}
+      {staleNote}
     </div>
   );
 }

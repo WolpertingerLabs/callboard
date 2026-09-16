@@ -47,6 +47,20 @@ export function parseLeadingCommand(text: string, commands: string[]): { command
   return { command: match[1], rest: match[2] ?? "" };
 }
 
+/**
+ * What an external caller may hand {@link Props.onSetValue}'s setter: a whole
+ * prompt string, or a function from the composer's current prompt string to the
+ * new one.
+ *
+ * The updater form exists because "set" was the only verb on offer, and callers
+ * that meant "put a command in the composer" (a launchpad chip, the commands
+ * browser) had no way to express it that did not silently take the user's
+ * half-written message with it. They need to *read* before they write, and a
+ * getter handed to the parent would go stale on every keystroke — the updater
+ * is resolved here, against the live value, at the moment of the call.
+ */
+export type ComposerValueUpdate = string | ((current: string) => string);
+
 /** Drop the leading `/token` the autocomplete matched on, keeping the rest. */
 export function stripLeadingCommandToken(text: string): string {
   const match = /^\s*\/\S*[ \t]?/.exec(text);
@@ -74,7 +88,7 @@ interface Props {
   onSaveDraft?: (prompt: string, images?: File[], onSuccess?: () => void) => void;
   slashCommands?: string[];
   commandDescriptions?: Record<string, string>;
-  onSetValue?: (setValue: (value: string) => void) => void;
+  onSetValue?: (setValue: (value: ComposerValueUpdate) => void) => void;
   /** Chat the composer is attached to — the chip popover fetches against it. */
   chatId?: string;
   /**
@@ -192,9 +206,16 @@ export default function PromptInput({
    * had to open first, which is many commits later.
    */
   const valueRef = useRef(value);
+  /**
+   * Companion to `valueRef`, for the same reason and with the same lag: the
+   * chip is half of what the outside world sees as "the composer's value", and
+   * an updater handed to `applyExternalValue` has to be resolved against both.
+   */
+  const activeCommandRef = useRef(activeCommand);
   useEffect(() => {
     valueRef.current = value;
-  }, [value]);
+    activeCommandRef.current = activeCommand;
+  }, [value, activeCommand]);
 
   /**
    * Set the chip, and close any popover belonging to the chip being replaced.
@@ -213,9 +234,18 @@ export default function PromptInput({
    * The composer's value as the rest of the app sets it — a whole prompt
    * string, which may lead with a command. Splitting it here is what makes a
    * saved draft come back as the chip it was sent as, rather than as text.
+   *
+   * Also accepts an updater, so a caller can write a value derived from the one
+   * already here instead of over it. See {@link ComposerValueUpdate}.
    */
   const applyExternalValue = useCallback(
-    (next: string) => {
+    (update: ComposerValueUpdate) => {
+      // Resolved from the refs rather than from `value`/`activeCommand`, which
+      // would make this callback change identity every keystroke and push a
+      // re-render up the tree per character — see `valueRef`. The refs lag by a
+      // commit, and every caller of the updater form is a click, which is many
+      // commits after the last one.
+      const next = typeof update === "function" ? update(composePrompt(activeCommandRef.current, valueRef.current)) : update;
       const { command, rest } = parseLeadingCommand(next, slashCommands);
       changeActiveCommand(command);
       setValue(rest);

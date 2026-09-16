@@ -48,6 +48,7 @@ const JOB = (overrides: Partial<JobDefinition> = {}): JobDefinition =>
 const favorites = (overrides: Partial<ResolvedFavorites> = {}): ResolvedFavorites => ({
   skills: [],
   jobs: [],
+  missing: 0,
   settled: true,
   error: null,
   retry: vi.fn(),
@@ -115,9 +116,18 @@ describe("NewChatLaunchpad — what it renders", () => {
     expect(screen.getByText("compact")).toBeTruthy();
   });
 
-  it("renders nothing when nothing resolves and there are no commands either", () => {
-    const { container } = renderLaunchpad({ slashCommands: [] });
-    expect(container.textContent).toBe("");
+  it("still shows the star hint when there are no commands to fall back on", () => {
+    // The empty case is the onboarding case. The hint used to live inside the
+    // commands grid, so a fresh install — no favorites, no slash commands —
+    // rendered nothing at all, and the one user who needs to be told this
+    // feature exists was the one user who could not find out.
+    renderLaunchpad({ slashCommands: [] });
+
+    expect(screen.getByText(/Star a skill or job in/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings/skills");
+    // And still not a Quick start header with nothing under it.
+    expect(screen.queryByText("Quick start")).toBeNull();
+    expect(screen.queryByText("Available Commands")).toBeNull();
   });
 
   it("reports a failed read with a retry rather than claiming nothing is starred", () => {
@@ -148,6 +158,42 @@ describe("NewChatLaunchpad — what it renders", () => {
     fireEvent.click(screen.getByRole("button", { name: /release-notes/ }));
 
     expect(onInsertPrompt).toHaveBeenCalledWith("/callboard:release-notes ");
+  });
+
+  it("says when a favorite no longer resolves instead of just dropping it", () => {
+    // Renaming a starred skill is the ordinary way here. The chip used to
+    // vanish with no signal at all, which reads identically to "the star never
+    // saved".
+    renderLaunchpad({ favorites: favorites({ skills: [SKILL], missing: 1 }) });
+
+    expect(screen.getByText("1 pinned item no longer exists.")).toBeTruthy();
+  });
+
+  it("pluralises the stale note and shows it with nothing left to draw", () => {
+    renderLaunchpad({ favorites: favorites({ missing: 2 }) });
+
+    expect(screen.getByText("2 pinned items no longer exist.")).toBeTruthy();
+  });
+
+  it("points Manage at the tab holding what was actually starred", () => {
+    const manage = () => screen.getByRole("link", { name: "Manage" }).getAttribute("href");
+
+    const { unmount } = renderLaunchpad({ favorites: favorites({ jobs: [JOB()] }) });
+    expect(manage()).toBe("/settings/jobs");
+    unmount();
+
+    renderLaunchpad({ favorites: favorites({ skills: [SKILL], jobs: [JOB()] }) });
+    expect(manage()).toBe("/settings/skills");
+  });
+
+  it("gives its chips a thumb-sized tap target", () => {
+    // 33px measured on a 390px-wide phone, against the 44px both platform
+    // guidelines ask for. The new-chat screen is reached over the tunnel as
+    // often as from a desk.
+    renderLaunchpad({ favorites: favorites({ skills: [SKILL], jobs: [JOB()] }) });
+
+    expect((screen.getByRole("button", { name: /release-notes/ }) as HTMLButtonElement).style.minHeight).toBe("44px");
+    expect((screen.getByRole("button", { name: /Nightly bake/ }) as HTMLButtonElement).style.minHeight).toBe("44px");
   });
 });
 
@@ -200,6 +246,64 @@ describe("NewChatLaunchpad — spawning a job", () => {
     spawnJob.mockResolvedValue({ runId: "run-2" });
     fireEvent.click(screen.getByRole("button", { name: "Run job" }));
     await waitFor(() => expect(spawnJob).toHaveBeenCalledWith("nightly", { target: "main" }));
+  });
+
+  it("makes the blocked Run job button look blocked, and names the empty field", () => {
+    // It computed `disabled` correctly all along and styled on `spawning`
+    // only, so the primary CTA of an irreversible action rendered at full
+    // accent with a pointer cursor while refusing every click.
+    withJob(
+      JOB({
+        inputs: [
+          { key: "target", label: "Target", required: true },
+          { key: "tag", label: "Tag", required: true },
+          { key: "note", label: "Note" },
+        ],
+      }),
+    );
+
+    fireEvent.click(chip());
+    const run = () => screen.getByRole("button", { name: "Run job" }) as HTMLButtonElement;
+
+    expect(run().style.background).toBe("var(--border)");
+    expect(run().style.cursor).toBe("not-allowed");
+    expect(run().getAttribute("title")).toBe("Fill in Target and Tag to continue.");
+    expect(screen.getByText("Fill in Target and Tag to continue.")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: "main" } });
+    expect(run().getAttribute("title")).toBe("Fill in Tag to continue.");
+
+    fireEvent.change(screen.getByLabelText(/Tag/), { target: { value: "v2" } });
+    expect(run().style.background).toBe("var(--accent)");
+    expect(run().style.cursor).toBe("pointer");
+    expect(run().getAttribute("title")).toBeNull();
+    expect(screen.queryByText(/Fill in/)).toBeNull();
+  });
+
+  it("closes an open form whose job stopped resolving", () => {
+    const job = JOB();
+    const { rerender } = withJob(job);
+
+    fireEvent.click(chip());
+    expect(screen.getByRole("button", { name: "Run job" })).toBeTruthy();
+
+    // Unstarred in Settings in another tab, or deleted outright.
+    rerender(
+      <MemoryRouter>
+        <NewChatLaunchpad onInsertPrompt={vi.fn()} slashCommands={COMMANDS} onOpenCommands={vi.fn()} favorites={favorites({ skills: [SKILL] })} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole("button", { name: "Run job" })).toBeNull();
+
+    // And the form state went with it: re-starring and re-opening must not
+    // bring back a half-filled form for a job the user had moved on from.
+    rerender(
+      <MemoryRouter>
+        <NewChatLaunchpad onInsertPrompt={vi.fn()} slashCommands={COMMANDS} onOpenCommands={vi.fn()} favorites={favorites({ jobs: [job] })} />
+      </MemoryRouter>,
+    );
+    expect(chip().getAttribute("aria-expanded")).toBe("false");
   });
 
   it("shows a spawn failure in the form and stays put", async () => {

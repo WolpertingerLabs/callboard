@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { type JobDefinition } from "../api";
+import { MIN_TAP_TARGET } from "./SessionInfoNav";
 
 interface Props {
   /** The definition being spawned — supplies the input fields and their rules. */
@@ -51,6 +52,12 @@ const fieldStyle: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
+const blockedNoteStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: "var(--text-muted)",
+  marginBottom: 10,
+};
+
 const errorBoxStyle: React.CSSProperties = {
   padding: "8px 12px",
   borderRadius: 6,
@@ -61,6 +68,12 @@ const errorBoxStyle: React.CSSProperties = {
   marginBottom: 10,
   whiteSpace: "pre-wrap",
 };
+
+/** "Target", "Target and Branch", "Target, Branch and Tag". */
+function listNames(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
 
 /**
  * The inline "run this job" form — its declared inputs, and the second click
@@ -73,6 +86,12 @@ const errorBoxStyle: React.CSSProperties = {
  * predicate in particular is the thing worth having once — it is the only
  * client-side guard against spawning a run that the daemon will reject, and two
  * copies of it is two places for it to disagree with the job's schema.
+ *
+ * That predicate also has to *show*. A blocked submit that still renders at full
+ * accent is a primary CTA for an irreversible action that looks live and does
+ * nothing, so the button goes muted and names the empty field — in a note above
+ * it and in its `title` — rather than leaving the user to work back from a red
+ * asterisk.
  *
  * What is NOT shared is what happens after: Settings refreshes its run table
  * and expands the new row, the launchpad hands its space to the run panel. The
@@ -95,7 +114,16 @@ export default function JobSpawnForm({
   style,
 }: Props) {
   const inputs = job.inputs ?? [];
-  const missingRequired = inputs.some((i) => i.required && !(values[i.key] ?? "").trim());
+  /**
+   * Named, not counted. A red asterisk says *a* field is required; it does not
+   * say which one is empty, and on a form with three of them that is the
+   * difference between a fix and a hunt. The same string is the button's
+   * `title`, because a disabled button carries no tooltip of its own and the
+   * pointer is the first place a user asks "why is this dead?".
+   */
+  const missingRequired = inputs.filter((i) => i.required && !(values[i.key] ?? "").trim()).map((i) => i.label || i.key);
+  const blockedReason = missingRequired.length > 0 ? `Fill in ${listNames(missingRequired)} to continue.` : null;
+  const blocked = submitting || blockedReason !== null;
 
   return (
     <div id={id} style={{ ...boxStyle, ...style }}>
@@ -124,13 +152,19 @@ export default function JobSpawnForm({
         </div>
       ))}
       {inputs.length === 0 && noInputsNote}
+      {blockedReason && !submitting && <div style={blockedNoteStyle}>{blockedReason}</div>}
       {error && <div style={errorBoxStyle}>{error}</div>}
+      {/* Raised as a pair: this is the confirm step of an irreversible action
+          and it is reached from a phone, where a 29px button is a miss waiting
+          to happen. See MIN_TAP_TARGET. */}
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button
           onClick={onCancel}
           disabled={submitting}
           style={{
-            padding: "6px 12px",
+            padding: "6px 14px",
+            minHeight: MIN_TAP_TARGET,
+            boxSizing: "border-box",
             borderRadius: 6,
             border: "1px solid var(--border)",
             background: "transparent",
@@ -143,19 +177,25 @@ export default function JobSpawnForm({
         </button>
         <button
           onClick={onSubmit}
-          disabled={submitting || missingRequired}
+          disabled={blocked}
+          title={blockedReason ?? undefined}
           style={{
             display: "flex",
             alignItems: "center",
             gap: 6,
-            padding: "6px 12px",
+            padding: "6px 14px",
+            minHeight: MIN_TAP_TARGET,
+            boxSizing: "border-box",
             borderRadius: 6,
             border: "none",
-            background: submitting || missingRequired ? "var(--surface)" : "var(--accent)",
-            color: submitting || missingRequired ? "var(--text-muted)" : "var(--text-on-accent)",
+            // Muted fill rather than a dimmed accent, matching NewChatPanel's
+            // Create button. Spawning is irreversible, so the CTA must not read
+            // as live while it is refusing.
+            background: blocked ? "var(--border)" : "var(--accent)",
+            color: blocked ? "var(--text-muted)" : "var(--text-on-accent)",
             fontSize: 13,
             fontWeight: 600,
-            cursor: submitting || missingRequired ? "default" : "pointer",
+            cursor: blocked ? "not-allowed" : "pointer",
           }}
         >
           {submitIcon}

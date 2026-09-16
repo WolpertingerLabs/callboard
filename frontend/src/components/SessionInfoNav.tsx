@@ -7,7 +7,12 @@ type Section = "commands" | "tools";
 interface Props {
   slashCommands: string[];
   mcpTools: McpToolsResponse | null;
-  /** Drop text into the composer (already includes its trailing space). */
+  /**
+   * Put a command in the composer (the string already includes its trailing
+   * space). The parent *prefixes* rather than overwrites — anything already
+   * typed becomes the command's argument. See `Chat.tsx`'s
+   * `insertCommandPrompt`.
+   */
   onInsertPrompt: (value: string) => void;
   /** Open the full modal on the given tab. */
   onOpenModal: (tab: Section) => void;
@@ -27,11 +32,40 @@ const PANEL_ID: Record<Section, string> = {
   tools: "session-info-tools-panel",
 };
 
+/**
+ * How many rows a panel renders before it defers to the browser modal.
+ *
+ * The panel is a peek, not a viewer — the modal is the viewer, and the link to
+ * it is the panel's only escape hatch. With 82 MCP tools and no cap, that link
+ * sat 1442px below a 220px window on an overlay scrollbar barely visible as a
+ * hairline: in practice unreachable, and nothing on screen said the list even
+ * continued. So the list is cut to a number, the footer that names the full
+ * count and carries the link sits OUTSIDE the scrolling region, and both are
+ * always on screen.
+ *
+ * One constant for both sections. Commands happens to fit today (4 of them),
+ * which is a fact about one install and not a reason for the two panels to
+ * behave differently on the next one.
+ */
+const PANEL_LIMIT = 12;
+
+/**
+ * Minimum touch target, in px. The new-chat screen is a phone screen as often
+ * as not — remote access is the point of the tunnel — and these pills measured
+ * 28px tall before this floor, against the 44px both platform guidelines ask
+ * for. Applied as `minHeight` plus a padding bump rather than a font change:
+ * the pills are meant to read as secondary, and growing the type would undo
+ * the whole reason this component collapses its contents to a count.
+ */
+export const MIN_TAP_TARGET = 44;
+
 const pillStyle = (active: boolean): React.CSSProperties => ({
   display: "flex",
   alignItems: "center",
   gap: 6,
-  padding: "6px 12px",
+  padding: "8px 12px",
+  minHeight: MIN_TAP_TARGET,
+  boxSizing: "border-box",
   borderRadius: 8,
   border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
   background: active ? "var(--accent-bg)" : "var(--bg)",
@@ -53,8 +87,29 @@ const panelStyle: React.CSSProperties = {
   borderRadius: 8,
   border: "1px solid var(--border)",
   background: "var(--bg)",
+};
+
+/**
+ * The scrolling half of a panel. The footer below it is deliberately NOT in
+ * here — see {@link PANEL_LIMIT}.
+ */
+const scrollStyle: React.CSSProperties = {
   maxHeight: 220,
   overflowY: "auto",
+};
+
+const footerStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  flexWrap: "wrap",
+  marginTop: 10,
+};
+
+const truncationStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: "var(--text-muted)",
 };
 
 const viewAllStyle: React.CSSProperties = {
@@ -63,7 +118,9 @@ const viewAllStyle: React.CSSProperties = {
   color: "var(--accent-text)",
   fontSize: 12,
   cursor: "pointer",
-  padding: 0,
+  padding: "8px 0",
+  minHeight: MIN_TAP_TARGET,
+  boxSizing: "border-box",
 };
 
 /**
@@ -83,6 +140,9 @@ const viewAllStyle: React.CSSProperties = {
  * Deliberately NOT persisted. An expanded section is a "what's in here?" glance
  * answered in the moment, not a preference; restoring it on every new chat
  * would hand back the crowding to anyone who ever looked once.
+ *
+ * An expanded panel is capped and its footer sits outside the scroll — see
+ * {@link PANEL_LIMIT}.
  */
 export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt, onOpenModal, showCommands = true }: Props) {
   const [open, setOpen] = useState<Section | null>(null);
@@ -97,6 +157,20 @@ export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt
   // A plain render helper, not a component: declaring one inside the body
   // remounts it on every render (and the lint rule that forbids it is right).
   const chevron = (section: Section) => (open === section ? <ChevronDown size={12} /> : <ChevronRight size={12} />);
+
+  /**
+   * The always-visible bottom of a panel: what got cut, and the way out. Named
+   * counts ("Showing 12 of 82") rather than a "+70 more" chip, because the
+   * question the truncation raises is how much is missing, not that some is.
+   */
+  const panelFooter = (total: number, section: Section, label: string) => (
+    <div style={footerStyle}>
+      <span style={truncationStyle}>{total > PANEL_LIMIT ? `Showing ${PANEL_LIMIT} of ${total}` : `${total} total`}</span>
+      <button onClick={() => onOpenModal(section)} style={viewAllStyle}>
+        {label}
+      </button>
+    </div>
+  );
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -131,59 +205,57 @@ export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt
 
       {hasCommands && open === "commands" && (
         <div id={PANEL_ID.commands} style={panelStyle}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {slashCommands.map((cmd) => (
-              <button
-                key={cmd}
-                onClick={() => onInsertPrompt(`/${cmd} `)}
-                style={{
-                  background: "var(--bg-secondary)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 6,
-                  padding: "4px 10px",
-                  fontSize: 12,
-                  color: "var(--accent-text)",
-                  cursor: "pointer",
-                  fontFamily: "var(--font-mono)",
-                }}
-              >
-                {cmd}
-              </button>
-            ))}
+          <div style={scrollStyle}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {slashCommands.slice(0, PANEL_LIMIT).map((cmd) => (
+                <button
+                  key={cmd}
+                  onClick={() => onInsertPrompt(`/${cmd} `)}
+                  style={{
+                    background: "var(--bg-secondary)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 6,
+                    padding: "8px 10px",
+                    minHeight: MIN_TAP_TARGET,
+                    boxSizing: "border-box",
+                    fontSize: 12,
+                    color: "var(--accent-text)",
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                  }}
+                >
+                  {cmd}
+                </button>
+              ))}
+            </div>
           </div>
-          <div style={{ marginTop: 10 }}>
-            <button onClick={() => onOpenModal("commands")} style={viewAllStyle}>
-              Open commands browser
-            </button>
-          </div>
+          {panelFooter(slashCommands.length, "commands", "Open commands browser")}
         </div>
       )}
 
       {open === "tools" && mcpTools && (
         <div id={PANEL_ID.tools} style={panelStyle}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            {mcpTools.tools.map((tool) => (
-              <div key={tool.qualifiedName} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12 }}>
-                <code style={{ fontFamily: "var(--font-mono)", color: "var(--text)", flexShrink: 0 }}>{tool.name}</code>
-                <span
-                  style={{
-                    color: "var(--text-muted)",
-                    fontSize: 11,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {tool.serverLabel}
-                </span>
-              </div>
-            ))}
+          <div style={scrollStyle}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {mcpTools.tools.slice(0, PANEL_LIMIT).map((tool) => (
+                <div key={tool.qualifiedName} style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12 }}>
+                  <code style={{ fontFamily: "var(--font-mono)", color: "var(--text)", flexShrink: 0 }}>{tool.name}</code>
+                  <span
+                    style={{
+                      color: "var(--text-muted)",
+                      fontSize: 11,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {tool.serverLabel}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-          <div style={{ marginTop: 10 }}>
-            <button onClick={() => onOpenModal("tools")} style={viewAllStyle}>
-              Open tool browser
-            </button>
-          </div>
+          {panelFooter(toolCount, "tools", "Open tool browser")}
         </div>
       )}
     </div>

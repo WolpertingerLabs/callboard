@@ -39,6 +39,15 @@ export interface ResolvedFavorites {
   skills: CustomSkillListItem[];
   /** Favorited jobs that still resolve, in the user's order. */
   jobs: JobDefinition[];
+  /**
+   * How many favorites named something that is no longer there.
+   *
+   * Counted only against catalogs that actually answered — a failed read has
+   * every favorite "missing", and reporting that as stale data would blame the
+   * user's settings for the network. Callers show it as a quiet note; nothing
+   * prunes on it (see `orderByFavorites`).
+   */
+  missing: number;
   /** Everything needed has been read. False means "render nothing yet". */
   settled: boolean;
   /** A read failed — distinguishable from "nothing resolved". */
@@ -123,5 +132,9 @@ export function useResolvedFavorites(enabled = true): ResolvedFavorites {
     (skillCatalog.status === "error" ? skillCatalog.message : null) ??
     (jobCatalog.status === "error" ? jobCatalog.message : null);
 
-  return { skills, jobs, settled, error, retry };
+  const missing =
+    (skillCatalog.status === "ok" ? favoriteSkills.favorites.length - skills.length : 0) +
+    (jobCatalog.status === "ok" ? favoriteJobs.favorites.length - jobs.length : 0);
+
+  return { skills, jobs, missing, settled, error, retry };
 }

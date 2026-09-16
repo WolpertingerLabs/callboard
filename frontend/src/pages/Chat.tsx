@@ -70,7 +70,7 @@ import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
 import ChatTreeIndicator from "../components/ChatTreeIndicator";
 import ToolCallBubble from "../components/ToolCallBubble";
-import PromptInput from "../components/PromptInput";
+import PromptInput, { parseLeadingCommand, type ComposerValueUpdate } from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import ActivityDock from "../components/ActivityDock";
@@ -307,7 +307,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // every other chat renders neither component, and should pay for neither
   // fetch.
   const resolvedFavorites = useResolvedFavorites(!id);
-  const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
+  const [promptInputSetValue, setPromptInputSetValue] = useState<((value: ComposerValueUpdate) => void) | null>(null);
   const [promptInputInsertAtCaret, setPromptInputInsertAtCaret] = useState<((text: string) => void) | null>(null);
   // `autoScroll` state drives rendering (the jump-to-bottom button, mounting
   // the pin loop). The two refs are the pin loop's and scroll listener's view
@@ -2627,14 +2627,38 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // TODO: Handle images in draft
   }, []);
 
-  const handleCommandSelect = useCallback(
+  /**
+   * Put a slash command in the composer without taking the message with it.
+   *
+   * Every surface that offers a command — the launchpad's skill chips, the nav
+   * drawer's commands panel, the commands browser — used to call a bare *set*,
+   * which meant clicking one after typing anything wiped what was typed. No
+   * undo, no warning. The launchpad in particular declines to send on click
+   * precisely so the user keeps the message they came here to write, and then
+   * discarded it anyway.
+   *
+   * So the command is *prefixed*, and the typed text becomes its argument:
+   * `for v2` + the release-notes chip is `/callboard:release-notes for v2`,
+   * which is the shape the composer already sends. Any command already leading
+   * the value is replaced rather than stacked — the chip is a leading command,
+   * and `parseLeadingCommand` is the composer's own rule for what one is, so
+   * picking a second command swaps it and keeps the argument. An empty composer
+   * behaves exactly as it did.
+   *
+   * @param command the command with its trailing space, e.g. `/compact `.
+   */
+  const insertCommandPrompt = useCallback(
     (command: string) => {
-      if (promptInputSetValue) {
-        promptInputSetValue(command);
-      }
+      promptInputSetValue?.((current) => {
+        const { rest } = parseLeadingCommand(current, allSlashCommands);
+        const argument = rest.trim();
+        return argument ? `${command}${argument}` : command;
+      });
     },
-    [promptInputSetValue],
+    [promptInputSetValue, allSlashCommands],
   );
+
+  const handleCommandSelect = insertCommandPrompt;
 
   const handleKeywordSelect = useCallback(
     (keyword: Keyword) => {
@@ -3409,7 +3433,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     {/* Favorited skills and jobs — the one card here that
                         starts work, so it sits directly under the directory. */}
                     <NewChatLaunchpad
-                      onInsertPrompt={(value) => promptInputSetValue?.(value)}
+                      onInsertPrompt={insertCommandPrompt}
                       slashCommands={allSlashCommands}
                       favorites={resolvedFavorites}
                       onOpenCommands={() => {
@@ -3426,7 +3450,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       slashCommands={allSlashCommands}
                       mcpTools={mcpTools}
                       showCommands={launchpadMode(resolvedFavorites, allSlashCommands) !== "commands"}
-                      onInsertPrompt={(value) => promptInputSetValue?.(value)}
+                      onInsertPrompt={insertCommandPrompt}
                       onOpenModal={(tab) => {
                         setSlashCommandsModalTab(tab);
                         setShowSlashCommandsModal(true);
