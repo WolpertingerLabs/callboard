@@ -2,15 +2,22 @@
  * Tests for ClaudeCodeSessionProvider.forkSession against fixture JSONL
  * session logs laid down in a tmpdir.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { utimesSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "child_process";
+import { discoverChatCorpus } from "../../../services/chat-discovery.js";
 import { ClaudeCodeSessionProvider } from "./ClaudeCodeSessionProvider.js";
 
 // The provider resolves session logs via CLAUDE_PROJECTS_DIR and
 // listClaudeProjectDirs at call time. Point both at a tmpdir set in
 // beforeEach via a hoisted holder (mock factories run before beforeEach).
+vi.mock("../../../agents/factory.js", () => ({ getSessionProviders: () => [] }));
+vi.mock("child_process", async (original) => {
+  const real = await original<typeof import("child_process")>();
+  return { ...real, execFileSync: vi.fn(real.execFileSync) };
+});
 const h = vi.hoisted(() => ({ projectsDir: "", projectDirs: ["proj"] }));
 
 vi.mock("../../../utils/paths.js", async (importOriginal) => {
@@ -126,9 +133,7 @@ describe("forkSession", () => {
     expect(lines).toHaveLength(3);
     const synthetic = lines[2];
     expect(synthetic.parentUuid).toBe("a1");
-    expect(synthetic.message.content).toEqual([
-      { type: "tool_result", tool_use_id: "t1", content: "[Request interrupted by user]", is_error: true },
-    ]);
+    expect(synthetic.message.content).toEqual([{ type: "tool_result", tool_use_id: "t1", content: "[Request interrupted by user]", is_error: true }]);
     expect(synthetic.sessionId).toBe("new-id");
   });
 
@@ -231,8 +236,7 @@ describe("ClaudeCodeSessionProvider.seedSession", () => {
 });
 
 describe("ClaudeCodeSessionProvider.seedSession images", () => {
-  const PNG_B64 =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
   it("writes images as base64 source blocks alongside the text", () => {
     const seeded = provider.seedSession([{ role: "user", text: "look", images: [{ mimeType: "image/png", base64: PNG_B64 }] }], {
@@ -253,4 +257,23 @@ describe("ClaudeCodeSessionProvider.seedSession images", () => {
     const line = JSON.parse(readFileSync(seeded.logPath, "utf-8").trim().split("\n")[0]!);
     expect(line.message.content).toBe("no images");
   });
+});
+
+it("all-corpus discovery performs one real find sweep for more than 2000 Claude sessions", () => {
+  for (let i = 0; i < 2105; i++) writeSession(String(i), []);
+  vi.mocked(execFileSync).mockClear();
+  const result = discoverChatCorpus([provider]);
+  expect(result.sessions).toHaveLength(2105);
+  expect(vi.mocked(execFileSync).mock.calls.filter((args) => args[0] === "find")).toHaveLength(1);
+});
+
+it("paged Claude discovery agrees with globally stable ordering when mtimes tie", () => {
+  for (const id of ["z", "a", "m"]) {
+    writeSession(id, []);
+    utimesSync(join(PROJ_DIR, id + ".jsonl"), new Date(0), new Date(0));
+  }
+  const all = discoverChatCorpus([provider]).sessions.map((s) => s.sessionId);
+  const pages = [0, 1, 2].flatMap((offset) => provider.discoverSessions({ limit: 1, offset }).sessions.map((s) => s.sessionId));
+  expect(pages).toEqual(all);
+  expect(all).toEqual(["a", "m", "z"]);
 });

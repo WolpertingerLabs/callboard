@@ -89,9 +89,15 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   if (membership.nativeDiscoveryIncomplete) warnings.push("Native lineage discovery incomplete; unverified Codex chats and dependent lineage omitted");
   // A budget miss is unknown lineage, not proof of an ordinary root. Retain
   // the captured evidence boundary even if later discovery warms the cache.
+  const unsafeNativeSession = (sid: string) =>
+    membership.rejectedNativeSessions.has(sid) || (membership.nativeDiscoveryIncomplete && !membership.verifiedNativeSessions.has(sid));
   const unsafeNative = (chat: Chat) => {
+    const canonical = membership.storedById.get(chat.id);
     const meta = parseChatMetadata(chat.metadata);
-    return membership.nativeDiscoveryIncomplete && (!meta.provider || meta.provider === "codex") && !membership.verifiedNativeSessions.has(chat.session_id);
+    // Missing legacy metadata is not Codex evidence. Routing and stamped
+    // discovery rows also apply when the lineage corpus has no provider stamp.
+    const provider = routing.get(chat.id)?.provider ?? parseChatMetadata(canonical?.metadata).provider ?? meta.provider;
+    return (provider === "codex" || !!meta.nativeAgent) && unsafeNativeSession(canonical?.session_id ?? chat.session_id);
   };
   const owners = new Map<string, Chat[]>();
   for (const chat of stored) {
@@ -144,7 +150,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   const rows = new Map<string, Chat & { displayFolder?: string }>();
   const identities = new Map<string, Set<string>>();
   for (const session of discovery.sessions) {
-    if (session.providerKind === "codex" && membership.nativeDiscoveryIncomplete && !membership.verifiedNativeSessions.has(session.sessionId)) continue;
+    if (session.providerKind === "codex" && unsafeNativeSession(session.sessionId)) continue;
     const knownOwners = owners.get(session.sessionId) ?? [];
     const candidates = knownOwners.filter((chat) => {
       const owner = routing.get(chat.id);
@@ -256,7 +262,8 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   const survivesTriggered = createTriggeredPredicate();
   const baseAdmits = (chat: Chat) => {
     if (isIgnoredProjectFolder(chat.folder) || unsafeNative(chat)) return false;
-    const ancestor = membership.corpus.get(membership.index.existingRootIdOf(chat.id));
+    const rootKey = membership.index.existingRootIdOf(chat.id);
+    const ancestor = rows.get(rootKey) ?? membership.corpus.get(rootKey);
     if (ancestor && unsafeNative(ancestor)) return false;
     if (!view?.available) return true;
     const meta = parseChatMetadata(chat.metadata);
@@ -297,8 +304,14 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const advanced = await matchAdvanced(candidates, view.filters);
     candidates = advanced.rows;
     warnings.push(...advanced.warnings);
-    if (view.submittedSearch) {
-      const content = await collectContentMatches(view.submittedSearch, discovery.sessions, stored);
+    if (view.submittedSearch && candidates.length) {
+      // Keep every qualified current/historical identity of surviving logical
+      // candidates, not just the row selected for its browse projection.
+      const eligibleKeys = new Set(candidates.flatMap((chat) => [...(identities.get(chat.id) ?? [])]));
+      const selectedSessions = discovery.sessions.filter((session) =>
+        eligibleKeys.has(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId])),
+      );
+      const content = selectedSessions.length ? await collectContentMatches(view.submittedSearch, selectedSessions) : { keys: new Set<string>(), warnings: [] };
       warnings.push(...content.warnings);
       candidates = candidates.filter((chat) => [...(identities.get(chat.id) ?? [])].some((key) => content.keys.has(key)));
     }

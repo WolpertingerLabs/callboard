@@ -36,6 +36,8 @@ let fileChats: any[] = [];
 let sessionsByProvider: Record<string, string[]> = {};
 /** Per-provider count of getSessionPreview calls. */
 let previewCalls: Record<string, string[]> = {};
+let discoveryCalls: { kind: string; limit: number; offset: number }[] = [];
+let singleProvider = false;
 
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
@@ -58,6 +60,7 @@ function makeProvider(kind: string) {
   return {
     kind,
     discoverSessions: ({ limit, offset }: { limit: number; offset: number }) => {
+      discoveryCalls.push({ kind, limit, offset });
       const ids = sessionsByProvider[kind] ?? [];
       const sessions = ids.map((sessionId, i) => ({
         sessionId,
@@ -78,7 +81,7 @@ function makeProvider(kind: string) {
 }
 
 vi.mock("../agents/factory.js", () => ({
-  getSessionProviders: () => PROVIDER_KINDS.map(makeProvider),
+  getSessionProviders: () => (singleProvider ? ["claude-code"] : PROVIDER_KINDS).map(makeProvider),
 }));
 
 // Fixture directories are deliberately under /tmp; shared discovery now
@@ -361,4 +364,26 @@ describe("GET /api/chats?includeLineage=true preview reads", () => {
     expect(body.chats.every((c: any) => JSON.parse(c.metadata).preview)).toBe(true);
     expect(totalPreviewCalls()).toBe(2);
   });
+});
+
+it("single-provider plain pages delegate the requested window, not a whole-corpus sweep per page", async () => {
+  singleProvider = true;
+  discoveryCalls = [];
+  sessionsByProvider = { "claude-code": Array.from({ length: 2105 }, (_, i) => "claude-code-" + i) };
+  try {
+    const result = await listChats({ limit: "20", offset: "1000" });
+    expect(result.chats).toHaveLength(20);
+    expect(result.total).toBe(2105);
+    expect(discoveryCalls).toEqual([{ kind: "claude-code", limit: 20, offset: 1000 }]);
+  } finally {
+    singleProvider = false;
+  }
+});
+it("multi-provider list filtering requests each corpus once without thousand-row rescans", async () => {
+  discoveryCalls = [];
+  sessionsByProvider = Object.fromEntries(PROVIDER_KINDS.map((kind) => [kind, Array.from({ length: 2105 }, (_, i) => kind + "-" + i)]));
+  const result = await listChats({ limit: "20", offset: "0", includeLineage: "true" });
+  expect(result.chats).toHaveLength(20);
+  expect(discoveryCalls).toHaveLength(PROVIDER_KINDS.length);
+  expect(discoveryCalls.every((call) => call.limit === Number.MAX_SAFE_INTEGER && call.offset === 0)).toBe(true);
 });

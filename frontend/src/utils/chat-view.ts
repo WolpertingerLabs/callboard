@@ -40,6 +40,9 @@ async function send() {
     if (!snapshot || generation !== sendingGeneration) return;
     if (response.ok) {
       acceptedRevision = Math.max(acceptedRevision, sending.revision);
+    } else if (response.status === 429 || response.status >= 500) {
+      // Rate limiting and daemon/proxy outages are transient, like network
+      // failure. The next bounded heartbeat retries the live state; no loop.
     } else if (acceptedRevision < sending.revision) {
       stopChatViewPublisher();
       reportError?.(

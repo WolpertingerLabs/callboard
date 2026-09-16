@@ -452,3 +452,39 @@ Full build and final backend typecheck/import rewrite passed; staged lint:
 0 errors, 3 existing fixture warnings. An initially invalid synthetic-child
 filename in the new relative-append fixture was corrected to a valid rollout
 filename before the green rerun. No additional full sweep was run this round.
+
+### Post-merge follow-up corrections
+
+- Native exclusion now requires positive Codex/native evidence, consulting
+  canonical routing and provider-stamped rows for ancestors. Missing legacy
+  `provider` metadata is not evidence of Codex. Cold native discovery no
+  longer removes unrelated Claude/Cline/Pi/ACP roots or their descendants.
+- Budget-deferred identities are separate from per-pass rejected identities.
+  `nativeDiscoveryIncomplete` describes budget/traversal incompleteness;
+  duplicates, malformed and unavailable headers are localized exclusions with
+  aggregate warnings, not a permanent global exclusion mode. Query results
+  still report partial coverage. Transient header I/O failures, like budget
+  misses, are not cached as malformed metadata and are retried.
+- Single-provider REST pages again delegate their window to the adapter (with
+  a defensive full-corpus fallback for ineligible returned rows). All-corpus
+  discovery requests a full snapshot once from each built-in provider, rather
+  than rewalking it per thousand rows. Adapters imposing smaller pages still
+  get drained with the existing stall/coverage checks. Provider tie ordering
+  is deterministic before slicing; ignored-folder filtering remains before
+  adapter pagination. This is not a new persistent filesystem index: one
+  complete scan/snapshot is still required for corpus-wide queries.
+- Publisher HTTP 429/5xx responses retain live state and retry on the existing
+  25-second heartbeat, without a busy retry loop. Hard rejections still stop
+  attachment; generation, accepted-revision and unmount protections remain.
+- Visible content search now scans only surviving candidates' qualified
+  provider/vendor/session identities, retaining all accepted historical
+  aliases. Empty candidate/session sets do not create content workers.
+
+Follow-up validation: initial reproductions had 9 failing assertions across
+4 suites; after correction, 12 focused suites passed all 207 tests. Full
+`vitest --maxWorkers=2`: 380 files / 5,849 tests passed, 3 files / 32 tests
+skipped. All 9 external backend review assertions and root ACP passed; real
+publisher capacity/renewal probes also passed. Full build passed; full lint
+had 0 errors (1,143 warnings). Computer-use: 56 passed, 1 skipped. Real find
+scan-count and endpoint tests cover >2,000 sessions; full-corpus enumeration
+covers 10,050. No manual browser run or wall-time benchmark was performed.

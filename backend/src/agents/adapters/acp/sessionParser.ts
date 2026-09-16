@@ -81,7 +81,13 @@ export function listAcpTranscripts(): AcpTranscriptFile[] {
     }
   }
 
-  found.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime());
+  found.sort(
+    (a, b) =>
+      b.stat.mtime.getTime() - a.stat.mtime.getTime() ||
+      a.sessionId.localeCompare(b.sessionId) ||
+      a.providerId.localeCompare(b.providerId) ||
+      a.filePath.localeCompare(b.filePath),
+  );
   return found;
 }
 

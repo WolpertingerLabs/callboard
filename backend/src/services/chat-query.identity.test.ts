@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, it, expect, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, truncateSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Chat } from "shared";
@@ -279,4 +279,45 @@ it.each(["current", "pin", "relative"] as const)("canonical session also wins ov
   expect(result.partial).toBe(false);
   if (backing === "relative")
     expect(result.chats.find((c) => c.chatId === nativeChild)).toMatchObject({ sessionId: nativeChild, parentChatId: "logical", readOnly: true });
+});
+
+it("does not scan unreadable content belonging only to excluded candidates", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "selected-content-"));
+  scratchDirs.push(dir);
+  const filePath = join(dir, "selected.jsonl");
+  writeFileSync(filePath, "needle");
+  state.stored = [chat("selected", { provider: "claude-code", title: "keep" }), chat("excluded", { provider: "claude-code" })];
+  discover();
+  state.sessions = state.sessions.map((s, i) => ({ ...s, providerKind: "claude-code", filePath: i === 0 ? filePath : join(dir, "missing") }));
+  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
+  const result = await searchChats({ scope: "visible", query: "keep" });
+  expect(ids(result)).toEqual(["selected"]);
+  expect(result.warnings).toEqual([]);
+  expect(result.partial).toBe(false);
+});
+
+it("selected content includes current and historical aliases but not another ACP vendor's same raw ID", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qualified-subset-"));
+  scratchDirs.push(dir);
+  const files = ["current", "old", "excluded"].map((id) => join(dir, id + ".jsonl"));
+  files.forEach((file, i) => writeFileSync(file, JSON.stringify({ type: "user_message", content: i === 1 ? "needle" : "other" }) + "\n"));
+  truncateSync(files[2], 33 * 1024 * 1024);
+  state.stored = [
+    chat("selected", { provider: "acp", acpProviderId: "a", session_ids: ["old"], title: "keep" }),
+    chat("excluded", { provider: "acp", acpProviderId: "b" }),
+  ];
+  state.stored[1].session_id = "old";
+  discover();
+  const base = state.sessions[0];
+  state.sessions = [
+    { ...base, providerKind: "acp", acpProviderId: "a", filePath: files[0] },
+    { ...base, sessionId: "old", providerKind: "acp", acpProviderId: "a", filePath: files[1] },
+    { ...base, sessionId: "old", providerKind: "acp", acpProviderId: "b", filePath: files[2] },
+  ];
+  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
+  const result = await searchChats({ scope: "visible", query: "keep" });
+  expect(ids(result)).toEqual(["selected"]);
+  expect(result).toMatchObject({ partial: false, warnings: [] });
+  state.view.submittedSearch = "other";
+  expect(ids(await searchChats({ scope: "visible", query: "keep" }))).toEqual(["selected"]);
 });

@@ -12,7 +12,7 @@
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { execFileSync } from "child_process";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { randomUUID } from "node:crypto";
 import type {
   SessionProvider,
@@ -170,7 +170,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
       }
     }
 
-    allStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    allStats.sort((a, b) => b.mtimeMs - a.mtimeMs || basename(a.filePath).localeCompare(basename(b.filePath)) || a.filePath.localeCompare(b.filePath));
 
     const total = allStats.length;
     const pageStats = allStats.slice(offset, offset + limit);
@@ -237,7 +237,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
       }
     }
 
-    results.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    results.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || a.sessionId.localeCompare(b.sessionId) || a.filePath.localeCompare(b.filePath));
 
     const total = results.length;
     const sessions = results.slice(offset, offset + limit);

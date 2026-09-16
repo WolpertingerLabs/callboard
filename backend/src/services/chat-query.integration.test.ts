@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, filterChatRows } from "shared/types/chat-filters.js";
 const scratch = mkdtempSync(join(tmpdir(), "query-real-"));
 process.env.CALLBOARD_DATA_DIR = scratch;
-const state = vi.hoisted(() => ({ home: "" }));
+const state = vi.hoisted(() => ({ home: "", extraSessions: [] as any[] }));
 state.home = join(scratch, "codex");
 vi.mock("./agent-settings.js", async (original) => ({
   ...(await original<typeof import("./agent-settings.js")>()),
@@ -18,7 +18,22 @@ vi.mock("./sessions.js", async (original) => ({
 }));
 vi.mock("../agents/factory.js", async () => {
   const { CodexSessionProvider } = await import("../agents/adapters/codex/CodexSessionProvider.js");
-  return { getSessionProviders: () => [new CodexSessionProvider()] };
+  return {
+    getSessionProviders: () => [
+      new CodexSessionProvider(),
+      ...(state.extraSessions.length
+        ? [
+            {
+              kind: "claude-code",
+              discoverSessions: ({ limit, offset }: { limit: number; offset: number }) => ({
+                sessions: state.extraSessions.slice(offset, offset + limit),
+                total: state.extraSessions.length,
+              }),
+            },
+          ]
+        : []),
+    ],
+  };
 });
 const { searchChats } = await import("./chat-query.js");
 const { chatsRouter } = await import("../routes/chats.js");
@@ -84,6 +99,7 @@ function list(query: Record<string, string>) {
   return body;
 }
 beforeEach(() => {
+  state.extraSessions = [];
   rmSync(join(scratch, "chats"), { recursive: true, force: true });
   rmSync(state.home, { recursive: true, force: true });
   mkdirSync(join(scratch, "chats"), { recursive: true });
@@ -287,4 +303,30 @@ it.each(["duplicate", "mismatched", "malformed"] as const)("omits %s native evid
   resetChatsSnapshot();
   clearCodexRolloutListingCache();
   expect((await searchChats({ anyOf: ["pinned", "open_card"] })).chats).toEqual([]);
+});
+
+it.each(["corrupt", "duplicate"] as const)("localized %s native evidence cannot poison healthy legacy Claude/Codex roots on repeated reads", async (kind) => {
+  stored(ids[0], { provider: undefined, title: "Codex" });
+  rollout(ids[0]);
+  stored(ids[1], { provider: undefined, title: "Claude" });
+  stored(ids[2], { provider: undefined, parentChatId: ids[1] });
+  stored("stored-codex-pin", { pinned: true });
+  state.extraSessions = [ids[1], ids[2]].map((sessionId) => ({
+    sessionId,
+    folder: "/scratch/repo",
+    displayFolder: "/scratch/repo",
+    filePath: "/absent/" + sessionId,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  }));
+  rollout(ids[3], ids[0]);
+  const path = join(state.home, "sessions/2026/09/06", `rollout-2026-09-06T11-35-07-${ids[3]}.jsonl`);
+  if (kind === "corrupt") writeFileSync(path, "bad header\n");
+  else copyFileSync(path, path.replace("11-35-07", "12-35-07"));
+  for (let pass = 0; pass < 2; pass++) {
+    const result = await searchChats({});
+    expect(result.chats.map((c) => c.chatId).sort()).toEqual([ids[0], ids[1], ids[2], "stored-codex-pin"].sort());
+    expect(result.partial).toBe(true);
+    expect(result.warnings.join(" ")).toMatch(/native rollout identities omitted/);
+  }
 });

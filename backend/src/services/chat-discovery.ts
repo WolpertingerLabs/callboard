@@ -12,7 +12,10 @@ export function discoverChatCorpus(providers: readonly SessionProvider[] = getSe
     let offset = 0;
     try {
       for (;;) {
-        const page = provider.discoverSessions({ limit: 1000, offset });
+        // Built-in providers scan/sort before slicing. Request the complete
+        // snapshot once, rather than rewalking it for every thousand rows.
+        // Still drain adapters that impose their own page size, with stall checks.
+        const page = provider.discoverSessions({ limit: Number.MAX_SAFE_INTEGER, offset });
         if (page.partial || provider.discoveryIncomplete) warnings.push(`${provider.kind}: discovery coverage incomplete`);
         if (page.warnings) warnings.push(...page.warnings.map((w) => `${provider.kind}: ${w}`));
         let added = 0;
@@ -39,7 +42,12 @@ export function discoverChatCorpus(providers: readonly SessionProvider[] = getSe
     }
   }
   sessions.sort(
-    (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || a.sessionId.localeCompare(b.sessionId) || a.providerKind.localeCompare(b.providerKind),
+    (a, b) =>
+      b.updatedAt.getTime() - a.updatedAt.getTime() ||
+      a.sessionId.localeCompare(b.sessionId) ||
+      a.providerKind.localeCompare(b.providerKind) ||
+      (a.acpProviderId ?? "").localeCompare(b.acpProviderId ?? "") ||
+      a.filePath.localeCompare(b.filePath),
   );
   return { sessions, warnings };
 }

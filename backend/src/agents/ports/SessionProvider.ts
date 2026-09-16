@@ -113,6 +113,7 @@ export interface SessionProvider {
   /**
    * List sessions from native storage, sorted by mtime DESC.
    *
+   * Providers must exclude ignored project folders before counting/slicing.
    * The limit/offset are a performance hint for single-provider mode.
    * When multiple providers are registered, the merge layer may request
    * all sessions and handle pagination itself.

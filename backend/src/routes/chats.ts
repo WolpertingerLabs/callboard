@@ -191,7 +191,18 @@ type DiscoveredSession = {
  * Merges results, sorts globally by mtime DESC, and paginates.
  */
 function discoverSessionsPaginated(limit: number, offset: number): { sessions: DiscoveredSession[]; total: number } {
-  const { sessions } = discoverChatCorpus();
+  const providers = getSessionProviders();
+  if (providers.length === 1) {
+    // Adapters enforce ignored-folder boundaries before their pagination.
+    // Preserve their page hint: Claude resolves folder/worktree data only for
+    // the requested page, despite needing one find/stat sweep to sort it.
+    const page = providers[0].discoverSessions({ limit, offset });
+    if (page.sessions.every((s) => s.folder && !isIgnoredProjectFolder(s.folder)))
+      return { sessions: page.sessions.map((s) => ({ ...s, providerKind: providers[0].kind })), total: page.total };
+    // Defensive fallback for adapters returning ineligible entries: filter the
+    // full corpus before pagination rather than underfilling this page.
+  }
+  const { sessions } = discoverChatCorpus(providers);
   return { sessions: sessions.slice(offset, offset + limit), total: sessions.length };
 }
 

@@ -68,7 +68,7 @@ export function listClineTranscripts(): ClineTranscriptFile[] {
     found.push({ sessionId, filePath, stat });
   }
 
-  found.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime());
+  found.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime() || a.sessionId.localeCompare(b.sessionId) || a.filePath.localeCompare(b.filePath));
   return found;
 }
 
