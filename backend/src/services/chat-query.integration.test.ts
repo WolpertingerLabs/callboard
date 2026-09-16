@@ -186,3 +186,43 @@ describe("real query corpus and sidebar parity", () => {
     expect(result.partial).toBe(false);
   });
 });
+
+it.each(["all", "visible"] as const)("cold native metadata budget cannot promote children in %s scope", async (scope) => {
+  const dir = join(state.home, "sessions/2026/09/06");
+  mkdirSync(dir, { recursive: true });
+  for (let i = 0; i < 20; i++) {
+    const id = "01a0767a-f0e1-7750-9cac-" + String(i).padStart(12, "0");
+    writeFileSync(
+      join(dir, `rollout-2026-09-06T11-35-07-${id}.jsonl`),
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id, cwd: "/scratch/repo", source: { subagent: { thread_spawn: { parent_thread_id: ids[0], depth: 1 } } }, padding: "x".repeat(1024 * 1024) },
+      }) + "\n",
+    );
+  }
+  const binding = chatViews.publish("browser", {
+    viewId: "cold-native-" + scope,
+    revision: 1,
+    filters: DEFAULT_CHAT_FILTERS,
+    options: DEFAULT_CHAT_VIEW_OPTIONS,
+    submittedSearch: "",
+  });
+  const result = await searchChats({ scope, ...(scope === "all" && { topLevelOnly: true }), limit: 100 }, binding);
+  expect(result).toMatchObject({ partial: true, total: null });
+  expect(result.chats).toEqual([]);
+});
+it("visible appendables must be reached from surviving sidebar candidates", async () => {
+  stored(ids[0]);
+  stored(ids[1], { parentChatId: ids[0], triggered: true });
+  rollout(ids[1]);
+  const binding = chatViews.publish("browser", {
+    viewId: "00000000-0000-4000-8000-000000000099",
+    revision: 1,
+    filters: DEFAULT_CHAT_FILTERS,
+    options: DEFAULT_CHAT_VIEW_OPTIONS,
+    submittedSearch: "",
+  });
+  const tool = await searchChats({ scope: "visible" }, binding);
+  const sidebar = list({ excludeTriggered: "true", cardLifecycle: "unarchived" });
+  expect(tool.chats.map((c) => c.chatId)).toEqual(sidebar.chats.map((c: { id: string }) => c.id));
+});

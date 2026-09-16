@@ -1,0 +1,131 @@
+import { beforeEach, afterEach, it, expect, vi } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Chat } from "shared";
+import { DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS } from "shared/types/chat-filters.js";
+const state = vi.hoisted(() => ({ stored: [] as Chat[], sessions: [] as any[], view: undefined as any, warnings: [] as string[], native: [] as any[] }));
+vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
+vi.mock("./chats-snapshot.js", () => ({ listChatsSnapshot: () => state.stored }));
+vi.mock("./chat-discovery.js", () => ({
+  discoverChatCorpus: () => ({ sessions: state.sessions, warnings: state.warnings }),
+}));
+vi.mock("./chat-view.js", () => ({ chatViews: { read: () => state.view ?? { available: false, reason: "missing" } } }));
+vi.mock("../agents/adapters/codex/CodexSessionProvider.js", () => ({
+  CodexSessionProvider: class {
+    nativeDiscoveryIncomplete = false;
+    nativeDiscoveryEvidence() {
+      return state.native;
+    }
+  },
+}));
+vi.mock("../utils/paths.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/paths.js")>()),
+  isIgnoredProjectFolder: (folder: string) => folder.startsWith("/ignored"),
+}));
+const { searchChats } = await import("./chat-query.js");
+function chat(id: string, meta: Record<string, unknown> = {}, folder = "/work/repo"): Chat {
+  return {
+    id,
+    folder,
+    session_id: id,
+    session_log_path: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    metadata: JSON.stringify({ provider: "codex", ...meta }),
+  };
+}
+function discover(chats = state.stored) {
+  state.sessions = chats.map((c) => ({
+    sessionId: c.session_id,
+    folder: c.folder,
+    displayFolder: c.folder,
+    filePath: "/absent/" + c.id,
+    createdAt: new Date(c.created_at),
+    updatedAt: new Date(c.updated_at),
+    providerKind: "codex",
+  }));
+}
+const scratchDirs: string[] = [];
+afterEach(() => {
+  for (const dir of scratchDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+const ids = (result: Awaited<ReturnType<typeof searchChats>>) => result.chats.map((c) => c.chatId);
+beforeEach(() => {
+  state.stored = [];
+  state.sessions = [];
+  state.view = undefined;
+  state.warnings = [];
+  state.native = [];
+});
+it("isolates ACP content matches by vendor", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-content-"));
+  scratchDirs.push(dir);
+  state.stored = [chat("a", { provider: "acp", acpProviderId: "vendor-a" }), chat("b", { provider: "acp", acpProviderId: "vendor-b" })];
+  state.stored.forEach((c) => (c.session_id = "session-1"));
+  state.sessions = state.stored.map((c, i) => {
+    const filePath = join(dir, c.id + ".jsonl");
+    writeFileSync(filePath, JSON.stringify({ type: "user_message", content: i === 0 ? "needle" : "unrelated" }) + "\n");
+    return {
+      sessionId: c.session_id,
+      providerKind: "acp",
+      acpProviderId: i === 0 ? "vendor-a" : "vendor-b",
+      folder: c.folder,
+      displayFolder: c.folder,
+      filePath,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+  });
+  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
+  const result = await searchChats({ scope: "visible" });
+  expect(ids(result)).toEqual(["a"]);
+  expect(result).toMatchObject({ total: 1, partial: false });
+});
+it("keeps discovered historical cross-engine-only chats listable", async () => {
+  state.stored = [chat("root", { session_ids: ["old"] })];
+  discover();
+  state.sessions[0].sessionId = "old";
+  state.sessions[0].providerKind = "claude-code";
+  const result = await searchChats({});
+  expect(ids(result)).toEqual(["root"]);
+  expect(result.chats[0]).toMatchObject({ provider: "codex", sessionId: "root" });
+  expect(result.partial).toBe(false);
+});
+it("does not confuse logical chat IDs with content session IDs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "content-ids-"));
+  scratchDirs.push(dir);
+  state.stored = [chat("session-b", { provider: "claude-code" }), chat("chat-b", { provider: "claude-code" })];
+  state.stored[0].session_id = "session-a";
+  state.stored[1].session_id = "session-b";
+  state.sessions = state.stored.map((c, i) => {
+    const filePath = join(dir, c.id + ".jsonl");
+    writeFileSync(filePath, i === 0 ? "needle\n" : "unrelated\n");
+    return {
+      sessionId: c.session_id,
+      providerKind: "claude-code",
+      folder: c.folder,
+      displayFolder: c.folder,
+      filePath,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+  });
+  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
+  const result = await searchChats({ scope: "visible" });
+  expect(ids(result)).toEqual(["session-b"]);
+});
+
+it("searches historical-only backing without changing current execution identity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "historical-content-"));
+  scratchDirs.push(dir);
+  const filePath = join(dir, "old.jsonl");
+  writeFileSync(filePath, "needle");
+  state.stored = [chat("logical", { provider: "codex", session_ids: ["old"] })];
+  discover();
+  state.sessions[0] = { ...state.sessions[0], sessionId: "old", providerKind: "claude-code", filePath };
+  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
+  const result = await searchChats({ scope: "visible", topLevelOnly: true });
+  expect(result.chats).toEqual([expect.objectContaining({ chatId: "logical", sessionId: "logical", provider: "codex" })]);
+  expect(result).toMatchObject({ total: 1, partial: false });
+});

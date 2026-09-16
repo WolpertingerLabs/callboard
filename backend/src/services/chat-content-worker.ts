@@ -36,7 +36,7 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
           warnings.push(`Unsupported content-search provider: ${session.providerKind}`);
           continue;
       }
-      if (text?.toLowerCase().includes(needle)) keys.push(JSON.stringify([session.providerKind, session.sessionId]));
+      if (text?.toLowerCase().includes(needle)) keys.push(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
     } catch (error) {
       warnings.push(`${session.providerKind}: content read failed for ${session.sessionId}: ${String(error)}`);
     }
@@ -48,7 +48,8 @@ export async function searchDiscoveredContent(query: string, sessions: OwnedSess
     try {
       const output = execFileSync("grep", ["-il", "--", query, ...batch.map((s) => s.filePath)], { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 });
       const paths = new Set(output.trim().split("\n"));
-      for (const session of batch) if (paths.has(session.filePath)) keys.push(JSON.stringify([session.providerKind, session.sessionId]));
+      for (const session of batch)
+        if (paths.has(session.filePath)) keys.push(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
     } catch (error) {
       if ((error as { status?: number }).status !== 1) warnings.push(`claude-code: grep failed: ${String(error)}`);
     }

@@ -85,7 +85,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   const membership = createCardMembership(stored);
   const discovery = discoverChatCorpus();
   const warnings = [...discovery.warnings];
-  if (membership.nativeDiscoveryIncomplete) warnings.push("Native lineage discovery incomplete");
+  if (membership.nativeDiscoveryIncomplete) warnings.push("Native lineage discovery incomplete; unverified Codex chats and dependent lineage omitted");
+  // A budget miss is unknown lineage, not proof of an ordinary root. Retain
+  // the captured evidence boundary even if later discovery warms the cache.
+  const unsafeNative = (chat: Chat) => {
+    const meta = parseChatMetadata(chat.metadata);
+    return membership.nativeDiscoveryIncomplete && (!meta.provider || meta.provider === "codex") && !membership.verifiedNativeSessions.has(chat.session_id);
+  };
   const owners = new Map<string, Chat[]>();
   for (const chat of stored) {
     const meta = parseChatMetadata(chat.metadata);
@@ -127,6 +133,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   const rows = new Map<string, Chat & { displayFolder?: string }>();
   const identities = new Map<string, Set<string>>();
   for (const session of discovery.sessions) {
+    if (session.providerKind === "codex" && membership.nativeDiscoveryIncomplete && !membership.verifiedNativeSessions.has(session.sessionId)) continue;
     const knownOwners = owners.get(session.sessionId) ?? [];
     const candidates = knownOwners.filter((chat) => {
       const owner = routing.get(chat.id);
@@ -144,11 +151,28 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     if (!storedChat && knownOwners.length) {
       // Historical cross-engine aliases belong to the logical chat, never a new
       // standalone row. Preserve content matches without guessing current routing.
-      if (knownOwners.length === 1 && knownOwners[0].session_id !== session.sessionId) {
+      if (
+        knownOwners.length === 1 &&
+        knownOwners[0].session_id !== session.sessionId &&
+        routing.has(knownOwners[0].id) &&
+        (session.providerKind !== "acp" || routing.get(knownOwners[0].id)?.vendor === session.acpProviderId)
+      ) {
         const owner = knownOwners[0];
         const keys = identities.get(owner.id) ?? new Set<string>();
-        keys.add(JSON.stringify([session.providerKind, session.sessionId]));
+        keys.add(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
         identities.set(owner.id, keys);
+        if (!rows.has(owner.id) && !rejectedIds.has(owner.id) && !unsafeNative(owner)) {
+          const route = routing.get(owner.id)!;
+          const logical = membership.corpus.get(owner.id) ?? owner;
+          rows.set(owner.id, {
+            ...logical,
+            metadata: JSON.stringify({
+              ...parseChatMetadata(logical.metadata),
+              provider: route.provider,
+              ...(route.vendor && { acpProviderId: route.vendor }),
+            }),
+          });
+        }
       } else {
         for (const chat of knownOwners) {
           rejectedIds.add(chat.id);
@@ -181,14 +205,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       }
     }
     const keys = identities.get(id) ?? new Set<string>();
-    keys.add(JSON.stringify([session.providerKind, session.sessionId]));
-    keys.add(JSON.stringify([session.providerKind, id]));
+    keys.add(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
     identities.set(id, keys);
-    if (previous) continue; // discovery is globally newest first; resumed aliases emit one chat
+    if (previous && session.sessionId !== storedChat?.session_id) continue; // Prefer current routing over historical backing.
     rows.set(id, {
       ...storedChat,
       id,
-      session_id: session.sessionId,
+      session_id: storedChat?.session_id ?? session.sessionId,
       folder: session.folder,
       displayFolder: session.displayFolder,
       session_log_path: session.filePath,
@@ -198,7 +221,20 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     });
   }
   // Stored-only pins and tree relatives are the sidebar's appendables, not every stale record.
-  const touchedRoots = new Set([...rows.keys()].map((id) => membership.index.rootKeyOf(id)));
+  const survivesTriggered = createTriggeredPredicate();
+  const baseAdmits = (chat: Chat) => {
+    if (isIgnoredProjectFolder(chat.folder) || unsafeNative(chat)) return false;
+    const ancestor = membership.corpus.get(membership.index.existingRootIdOf(chat.id));
+    if (ancestor && unsafeNative(ancestor)) return false;
+    if (!view?.available) return true;
+    const meta = parseChatMetadata(chat.metadata);
+    if (view.options.bookmarked && meta.bookmarked !== true) return false;
+    if (!view.options.showTriggered && !survivesTriggered(chat)) return false;
+    const rootId = membership.index.existingRootIdOf(chat.id);
+    const root = membership.roots.has(rootId) ? membership.storedById.get(rootId) : undefined;
+    return !(cardLifecycleFor({ showArchived: view.options.showArchived, searching: !!view.submittedSearch }) !== "all" && root && cardIsArchived(root));
+  };
+  const touchedRoots = new Set([...rows.values()].filter(baseAdmits).map((chat) => membership.index.rootKeyOf(chat.id)));
   for (const chat of stored) {
     if (rejectedIds.has(chat.id) || rows.has(chat.id) || isIgnoredProjectFolder(chat.folder) || isRetiredProvider(parseChatMetadata(chat.metadata).provider))
       continue;
@@ -207,20 +243,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       (membership.index.parentIdOf(chat.id) || membership.index.childrenByParent.has(chat.id)) && touchedRoots.has(membership.index.rootKeyOf(chat.id));
     if (meta.pinned === true || related) rows.set(chat.id, membership.corpus.get(chat.id) ?? chat);
   }
-  const survivesTriggered = createTriggeredPredicate();
   let candidates = [...rows.values()].filter((chat) => {
-    if (isIgnoredProjectFolder(chat.folder)) return false;
+    if (!baseAdmits(chat)) return false;
     const rootId = membership.index.existingRootIdOf(chat.id);
     const root = membership.roots.has(rootId) ? membership.storedById.get(rootId) : undefined;
     const meta = parseChatMetadata(chat.metadata);
     if (args.topLevelOnly && (rootId !== chat.id || !!meta.nativeAgent)) return false;
     if (args.folder !== undefined && chat.folder !== args.folder) return false;
-    if (view?.available) {
-      if (view.options.bookmarked && meta.bookmarked !== true) return false;
-      if (!view.options.showTriggered && !survivesTriggered(chat)) return false;
-      if (cardLifecycleFor({ showArchived: view.options.showArchived, searching: !!view.submittedSearch }) !== "all" && root && cardIsArchived(root))
-        return false;
-    }
     const reasons = [
       ...(meta.pinned === true ? ["pinned"] : []),
       ...(meta.bookmarked === true ? ["bookmarked"] : []),

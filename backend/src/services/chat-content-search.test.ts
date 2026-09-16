@@ -30,8 +30,9 @@ describe("bounded complete content collection", () => {
         session_log_path: null,
       },
     ]);
-    expect(result.keys.size).toBe(131);
-    expect(result.keys.has(JSON.stringify(["claude-code", "logical"]))).toBe(true);
+    expect(result.keys.size).toBe(130);
+    expect(result.chatIds.has("logical")).toBe(true);
+    expect(result.keys.has(JSON.stringify(["claude-code", null, "logical"]))).toBe(false);
     expect(result.warnings).toEqual([]);
   });
   it("reports missing files and invalid grep instead of claiming no matches", async () => {

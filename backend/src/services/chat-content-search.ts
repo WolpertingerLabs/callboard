@@ -9,7 +9,7 @@ let running = 0;
  * Overload/time/byte-budget failures are explicit incomplete coverage.
  */
 export async function collectContentMatches(query: string, sessions: OwnedSession[], stored: Chat[] = []) {
-  if (running >= 2) return { keys: new Set<string>(), warnings: ["Content search workers busy; retry this query"] };
+  if (running >= 2) return { keys: new Set<string>(), chatIds: new Set<string>(), warnings: ["Content search workers busy; retry this query"] };
   running++;
   try {
     const result = await new Promise<{ keys: string[]; warnings: string[] }>((resolve) => {
@@ -46,7 +46,11 @@ export async function collectContentMatches(query: string, sessions: OwnedSessio
         if (code !== 0) resolve({ keys: [], warnings: ["Content search worker terminated before completion"] });
       });
     });
+    // Session identities include provider and ACP vendor. Logical chat IDs
+    // must never enter this set: a chat ID can spell another session's ID.
+    // Only the legacy REST response flattens these separate namespaces.
     const keys = new Set(result.keys);
+    const chatIds = new Set<string>();
     const owners = new Map<string, Chat[]>();
     for (const chat of stored) {
       const meta = parseChatMetadata(chat.metadata);
@@ -58,14 +62,14 @@ export async function collectContentMatches(query: string, sessions: OwnedSessio
       }
     }
     for (const key of result.keys) {
-      const [provider, sid] = JSON.parse(key) as [string, string];
+      const [provider, vendor, sid] = JSON.parse(key) as [string, string | null, string];
       const compatible = (owners.get(sid) ?? []).filter((chat) => {
         const meta = parseChatMetadata(chat.metadata);
-        return !meta.provider || meta.provider === provider || chat.session_id !== sid;
+        return (!meta.provider || meta.provider === provider || chat.session_id !== sid) && (provider !== "acp" || meta.acpProviderId === vendor);
       });
-      if (compatible.length === 1) keys.add(JSON.stringify([provider, compatible[0].id]));
+      if (compatible.length === 1) chatIds.add(compatible[0].id);
     }
-    return { keys, warnings: result.warnings };
+    return { keys, chatIds, warnings: result.warnings };
   } finally {
     running--;
   }

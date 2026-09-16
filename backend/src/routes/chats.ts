@@ -231,7 +231,7 @@ chatsRouter.get("/search", async (req, res) => {
         })
       : discovery.sessions;
     const matches = await collectContentMatches(query, selected, listChatsSnapshot());
-    const chatIds = [...matches.keys].map((key) => JSON.parse(key)[1] as string);
+    const chatIds = [...new Set([...matches.keys].map((key) => JSON.parse(key)[2] as string).concat([...matches.chatIds]))];
     return res.json({
       chatIds: [...new Set(chatIds)],
       partial: !!(discovery.warnings.length || matches.warnings.length),

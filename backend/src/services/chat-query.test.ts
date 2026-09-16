@@ -1,17 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat } from "shared";
 import { DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS } from "shared/types/chat-filters.js";
-const state = vi.hoisted(() => ({ stored: [] as Chat[], sessions: [] as any[], view: undefined as any, warnings: [] as string[], native: [] as any[] }));
+const state = vi.hoisted(() => ({
+  stored: [] as Chat[],
+  sessions: [] as any[],
+  view: undefined as any,
+  warnings: [] as string[],
+  native: [] as any[],
+  incomplete: false,
+}));
 vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
 vi.mock("./chats-snapshot.js", () => ({ listChatsSnapshot: () => state.stored }));
 vi.mock("./chat-discovery.js", () => ({
   discoverChatCorpus: () => ({ sessions: state.sessions, warnings: state.warnings }),
 }));
-vi.mock("./chat-content-search.js", () => ({ collectContentMatches: () => ({ keys: new Set([JSON.stringify(["codex", "closed"])]), warnings: [] }) }));
+vi.mock("./chat-content-search.js", () => ({ collectContentMatches: () => ({ keys: new Set([JSON.stringify(["codex", null, "closed"])]), warnings: [] }) }));
 vi.mock("./chat-view.js", () => ({ chatViews: { read: () => state.view ?? { available: false, reason: "missing" } } }));
 vi.mock("../agents/adapters/codex/CodexSessionProvider.js", () => ({
   CodexSessionProvider: class {
-    nativeDiscoveryIncomplete = false;
+    nativeDiscoveryIncomplete = state.incomplete;
     nativeDiscoveryEvidence() {
       return state.native;
     }
@@ -51,6 +58,7 @@ beforeEach(() => {
   state.view = undefined;
   state.warnings = [];
   state.native = [];
+  state.incomplete = false;
 });
 describe("individual chat query", () => {
   it("ORs individual pins/bookmarks and open-card membership without group pin promotion", async () => {
@@ -172,4 +180,22 @@ describe("individual chat query", () => {
     filters.directoryInclude.value = "[";
     expect((await matchAdvanced([chat("a")], filters)).warnings).toHaveLength(1);
   });
+});
+
+it("cannot resurrect unclassified Codex roots through stored pins, relatives or card membership", async () => {
+  state.incomplete = true;
+  state.stored = [chat("unknown", { pinned: true }), chat("child", { provider: "claude-code", parentChatId: "unknown" })];
+  discover();
+  state.sessions[1].providerKind = "claude-code";
+  for (const args of [{}, { topLevelOnly: true }, { anyOf: ["pinned", "open_card"] as ("pinned" | "open_card")[] }]) {
+    const result = await searchChats(args);
+    expect(result.chats).toEqual([]);
+    expect(result).toMatchObject({ partial: true, total: null });
+  }
+});
+it("tool-only restrictions do not change base sidebar append reachability", async () => {
+  state.stored = [chat("root", { title: "target" }), chat("child", { parentChatId: "root" })];
+  discover([state.stored[1]]);
+  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "" };
+  expect(ids(await searchChats({ scope: "visible", topLevelOnly: true, query: "target" }))).toEqual(["root"]);
 });
