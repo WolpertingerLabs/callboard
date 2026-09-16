@@ -433,3 +433,22 @@ original unmount/oversized-state scripts still have the expected behavior.
 Full `npm run build` passed, including import rewrite; staged lint has zero
 errors and 7 fixture warnings. No test failures this round. No manual browser
 run; existing large frontend bundle warning remains.
+
+### Review round 3 identity correction
+
+Lineage-enriched records may carry a historical native-parent anchor in their
+`session_id`. Historical-backed query rows and stored-only appendables now
+explicitly restore the canonical stored owner's session ID. The ordinary
+provider-discovery path already did so; output consumes these corrected row
+identities. New regressions cover historical backing with/without a current
+log, ordinary current discovery, pinned appendables and native-tree relatives.
+Newest browse fields and qualified content evidence are unchanged. No
+UI/context runtime code changed.
+
+Round 3 validation: 9 focused backend/native/query suites, 130 tests passed;
+all backend review reproductions passed (9 assertions plus root ACP). View
+capacity/renewal/unmount/oversized-state scripts still behave correctly.
+Full build and final backend typecheck/import rewrite passed; staged lint:
+0 errors, 3 existing fixture warnings. An initially invalid synthetic-child
+filename in the new relative-append fixture was corrected to a valid rollout
+filename before the green rerun. No additional full sweep was run this round.

@@ -213,3 +213,70 @@ it("an unowned ACP vendor with the same raw current ID cannot revoke proven prim
     expect((await searchChats({})).chats).toEqual([expect.objectContaining({ chatId: "root", provider: "acp", acpProviderId: "owned" })]);
   }
 });
+
+function historicalNativeAnchor() {
+  const oldCodex = "01a0767f-671a-75f0-ab44-238e2fa5785c";
+  const nativeChild = "01a07680-3128-7461-bc19-d727bd8dc379";
+  const owner = chat("logical", { session_ids: [oldCodex, "old-claude"] });
+  owner.session_id = "current-session";
+  state.stored = [owner];
+  state.native = [
+    {
+      threadId: oldCodex,
+      filePath: `/absent/rollout-2026-09-01T00-00-00-${oldCodex}.jsonl`,
+      meta: { id: oldCodex, cwd: "/work/repo" },
+      stat: { birthtime: new Date(0), mtime: new Date(0) },
+    },
+    {
+      threadId: nativeChild,
+      filePath: `/absent/rollout-2026-09-01T00-00-00-${nativeChild}.jsonl`,
+      meta: { id: nativeChild, cwd: "/work/repo", nativeAgent: { parentThreadId: oldCodex } },
+      stat: { birthtime: new Date(0), mtime: new Date(0) },
+    },
+  ];
+  discover();
+  return { oldCodex, nativeChild, owner, current: state.sessions[0] };
+}
+
+it.each([false, true])("historical native-parent enrichment cannot replace canonical identity (current discovered=%s)", async (withCurrent) => {
+  const { oldCodex, current } = historicalNativeAnchor();
+  state.sessions = [
+    {
+      ...current,
+      sessionId: "old-claude",
+      providerKind: "claude-code",
+      folder: "/history/latest",
+      displayFolder: "/history/display",
+      updatedAt: new Date("2026-09-10"),
+    },
+    { ...current, sessionId: oldCodex, updatedAt: new Date("2026-09-01") },
+    ...(withCurrent ? [current] : []),
+  ];
+  const result = await searchChats({});
+  expect(result.chats).toEqual([
+    expect.objectContaining({
+      chatId: "logical",
+      sessionId: "current-session",
+      provider: "codex",
+      folder: "/history/latest",
+      displayFolder: "/history/display",
+      updatedAt: "2026-09-10T00:00:00.000Z",
+    }),
+  ]);
+  expect(result).toMatchObject({ total: 1, partial: false });
+});
+
+it.each(["current", "pin", "relative"] as const)("canonical session also wins over lineage anchor in the %s projection", async (backing) => {
+  const { nativeChild, owner, current } = historicalNativeAnchor();
+  if (backing === "pin") {
+    owner.metadata = JSON.stringify({ ...JSON.parse(owner.metadata!), pinned: true });
+    state.sessions = [];
+  } else if (backing === "relative") {
+    state.sessions = [{ ...current, sessionId: nativeChild, filePath: state.native[1].filePath }];
+  }
+  const result = await searchChats({});
+  expect(result.chats.find((c) => c.chatId === "logical")).toMatchObject({ sessionId: "current-session", provider: "codex" });
+  expect(result.partial).toBe(false);
+  if (backing === "relative")
+    expect(result.chats.find((c) => c.chatId === nativeChild)).toMatchObject({ sessionId: nativeChild, parentChatId: "logical", readOnly: true });
+});

@@ -181,6 +181,9 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
           const logical = membership.corpus.get(owner.id) ?? owner;
           rows.set(owner.id, {
             ...logical,
+            // Lineage enrichment may use a historical native-parent anchor.
+            // Execution identity always belongs to the canonical stored owner.
+            session_id: owner.session_id,
             // Browse projection follows newest discovery, independently of
             // the logical chat's current provider/session execution identity.
             folder: session.folder,
@@ -270,7 +273,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const meta = parseChatMetadata(chat.metadata);
     const related =
       (membership.index.parentIdOf(chat.id) || membership.index.childrenByParent.has(chat.id)) && touchedRoots.has(membership.index.rootKeyOf(chat.id));
-    if (meta.pinned === true || related) rows.set(chat.id, membership.corpus.get(chat.id) ?? chat);
+    if (meta.pinned === true || related) rows.set(chat.id, { ...(membership.corpus.get(chat.id) ?? chat), session_id: chat.session_id });
   }
   let candidates = [...rows.values()].filter((chat) => {
     if (!baseAdmits(chat)) return false;
