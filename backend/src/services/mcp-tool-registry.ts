@@ -159,7 +159,8 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "get_card",
     qualifiedName: "mcp__callboard-tools__get_card",
-    description: "Get a card (ticket) with its full description and member chats. card_id is the card's root chat id; any member chat id resolves to the same card.",
+    description:
+      "Get a card (ticket) with its full description and member chats. card_id is the card's root chat id; any member chat id resolves to the same card.",
     parameters: [{ name: "card_id", type: "string", description: "The card id (default: the current chat's lineage root)", required: false }],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -355,6 +356,39 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     category: "platform",
   },
   {
+    name: "search_chats",
+    qualifiedName: "mcp__callboard-tools__search_chats",
+    description:
+      "Read-only individual chat search with global stable pagination. Visible scope uses the originating browser tab's live effective sidebar filters. Ignored directories are always excluded.",
+    parameters: [
+      { name: "scope", type: "enum", description: "all (default) or live visible sidebar scope", required: false, enumValues: ["all", "visible"] },
+      { name: "topLevelOnly", type: "boolean", description: "Only actual surviving lineage roots, excluding native children", required: false },
+      {
+        name: "anyOf",
+        type: "array",
+        description: "Nonempty OR of pinned, bookmarked, open_card; individual chat pins/bookmarks, not group pins",
+        required: false,
+      },
+      { name: "query", type: "string", description: "Metadata title, stored preview and folder text (not transcript search)", required: false },
+      { name: "folder", type: "string", description: "Exact working directory", required: false },
+      { name: "limit", type: "number", description: "Page size 1–100, default 20", required: false },
+      { name: "offset", type: "number", description: "Nonnegative integer offset, default 0", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "get_chat_view",
+    qualifiedName: "mcp__callboard-tools__get_chat_view",
+    description:
+      "Read the originating browser tab's effective sidebar filters, submitted search, revision and freshness; explicitly unavailable without a live browser context.",
+    parameters: [],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
     name: "find_chats",
     qualifiedName: "mcp__callboard-tools__find_chats",
     description:
@@ -477,7 +511,8 @@ function jobToolDefs(serverName: string, serverLabel: string, category: McpToolD
     },
     {
       name: "spawn_job",
-      description: "Spawn a run of a job — freezes the definition and starts the first step. Runs spawned from a chat are members of that chat's lineage root's card.",
+      description:
+        "Spawn a run of a job — freezes the definition and starts the first step. Runs spawned from a chat are members of that chat's lineage root's card.",
       parameters: [
         { name: "jobId", type: "string", description: "The job id to spawn", required: true },
         { name: "inputs", type: "object", description: "Values for the job's declared inputs", required: false },

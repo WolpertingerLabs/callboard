@@ -1,3 +1,4 @@
+import { chatSearchValidationError } from "shared/types/chat-filters.js";
 import { useState } from "react";
 import { SlidersHorizontal, Search, Loader2, Archive, Bookmark, Zap } from "lucide-react";
 import ChatFilterModal from "./ChatFilterModal";
@@ -101,17 +102,26 @@ const SCOPE_TOGGLES: {
  */
 export default function ChatFilterBar({ filters, viewOptions, onApply, searchQuery, onSearchChange, onSearchSubmit, isSearching }: ChatFilterBarProps) {
   const [filterModalOpen, setFilterModalOpen] = useState(false);
+  const searchError = chatSearchValidationError(searchQuery);
+  const submitSearch = () => {
+    if (!searchError) onSearchSubmit();
+  };
   const activeCount = activeFilterCount(filters);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      onSearchSubmit();
+      submitSearch();
     }
   };
 
   return (
     <>
+      {searchError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          {searchError}
+        </p>
+      )}
       <div
         style={{
           // Same horizontal padding as SidebarHeader, and measured rather than
@@ -291,8 +301,8 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
             }}
           />
           <button
-            onClick={onSearchSubmit}
-            disabled={isSearching}
+            onClick={submitSearch}
+            disabled={isSearching || !!searchError}
             style={{
               display: "flex",
               alignItems: "center",

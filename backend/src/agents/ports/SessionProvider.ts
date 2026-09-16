@@ -42,6 +42,8 @@ export interface DiscoveredSession {
 }
 
 export interface DiscoverResult {
+  partial?: boolean;
+  warnings?: string[];
   sessions: DiscoveredSession[];
   total: number;
 }
@@ -105,6 +107,8 @@ export interface SessionSearchResponse {
  */
 export interface SessionProvider {
   readonly kind: AgentProviderKind;
+  /** Optional filesystem traversal coverage reported by bounded adapters. */
+  readonly discoveryIncomplete?: boolean;
 
   /**
    * List sessions from native storage, sorted by mtime DESC.

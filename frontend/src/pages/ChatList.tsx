@@ -1,3 +1,5 @@
+import { filterChatRows } from "shared/types/chat-filters.js";
+import { publishChatView, stopChatViewPublisher } from "../utils/chat-view.js";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Plus, Settings, Bot, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle, FileText } from "lucide-react";
@@ -176,6 +178,11 @@ export default function ChatList({
   const [filters, setFilters] = useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [searchQuery, setSearchQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
+  const [chatViewError, setChatViewError] = useState<string>();
+  useEffect(() => {
+    publishChatView(filters, viewOptions, submittedQuery, setChatViewError);
+  }, [filters, viewOptions, submittedQuery]);
+  useEffect(() => () => stopChatViewPublisher(), []);
   const [showNew, setShowNew] = useState(false);
   const [deleteConfirmModal, setDeleteConfirmModal] = useState<{ isOpen: boolean; chatId: string; chatName: string }>({
     isOpen: false,
@@ -788,39 +795,7 @@ export default function ChatList({
   // Client-side filtering for advanced filters and content search
   // Note: triggered chat filtering is now handled server-side via excludeTriggered param
   const filteredChats = useMemo(() => {
-    let result = chats;
-
-    // Directory include regex
-    if (filters.directoryInclude.active && filters.directoryInclude.value) {
-      try {
-        const regex = new RegExp(filters.directoryInclude.value, "i");
-        result = result.filter((c) => regex.test(c.displayFolder || c.folder));
-      } catch {
-        /* invalid regex, skip */
-      }
-    }
-
-    // Directory exclude regex
-    if (filters.directoryExclude.active && filters.directoryExclude.value) {
-      try {
-        const regex = new RegExp(filters.directoryExclude.value, "i");
-        result = result.filter((c) => !regex.test(c.displayFolder || c.folder));
-      } catch {
-        /* invalid regex, skip */
-      }
-    }
-
-    // Date min
-    if (filters.dateMin.active && filters.dateMin.value) {
-      const minTime = new Date(filters.dateMin.value).getTime();
-      result = result.filter((c) => new Date(c.updated_at).getTime() >= minTime);
-    }
-
-    // Date max
-    if (filters.dateMax.active && filters.dateMax.value) {
-      const maxTime = new Date(filters.dateMax.value).getTime();
-      result = result.filter((c) => new Date(c.updated_at).getTime() <= maxTime);
-    }
+    let result = filterChatRows(chats, filters).rows;
 
     // Content search
     if (matchingChatIds !== null) {
@@ -868,7 +843,7 @@ export default function ChatList({
    * withholds selection entirely while `!cardsLoaded` (see the `selectionFor`
    * prop), so no selection can be scoped from an index that has not arrived.
    */
-  const scopeOf = useCallback((chat: Chat): ChatScope => (cardsLoaded ? cardOf(chat)?.lifecycle ?? "none" : "none"), [cardOf, cardsLoaded]);
+  const scopeOf = useCallback((chat: Chat): ChatScope => (cardsLoaded ? (cardOf(chat)?.lifecycle ?? "none") : "none"), [cardOf, cardsLoaded]);
 
   /**
    * The selection, reconciled against the rows that actually exist — derived
@@ -1441,6 +1416,11 @@ export default function ChatList({
         onToggleSidebar={onToggleSidebar}
       />
 
+      {chatViewError && (
+        <p role="alert" style={{ color: "var(--danger)" }}>
+          {chatViewError}
+        </p>
+      )}
       <ChatFilterBar
         filters={filters}
         viewOptions={viewOptions}

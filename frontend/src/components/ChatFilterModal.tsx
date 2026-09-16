@@ -1,3 +1,4 @@
+import { chatFilterValidationError } from "shared/types/chat-filters.js";
 import { useState, type CSSProperties } from "react";
 import ModalOverlay from "./ModalOverlay";
 import type { ChatFilters, ChatViewOptions } from "../types/chatFilters";
@@ -90,7 +91,9 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
     }));
   };
 
+  const validationError = chatFilterValidationError(local);
   const handleApply = () => {
+    if (validationError) return;
     // The view options come off the live prop: the bar can have committed one
     // while this dialog was open, and this dialog has no opinion about them.
     onApply(local, viewOptions);
@@ -245,8 +248,14 @@ export default function ChatFilterModal({ onClose, filters, viewOptions, onApply
               Cancel
             </button>
 
+            {validationError && (
+              <p role="alert" style={{ color: "var(--danger)" }}>
+                {validationError}
+              </p>
+            )}
             <button
               type="button"
+              disabled={!!validationError}
               onClick={handleApply}
               style={{
                 padding: "8px 16px",

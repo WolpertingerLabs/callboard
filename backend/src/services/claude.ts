@@ -1,3 +1,4 @@
+import type { ChatViewBinding } from "./chat-view.js";
 import { randomUUID } from "node:crypto";
 import { assertStoredReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
 import { resolveCodexExecutionRoute, type CodexExecutionRoute } from "./codex-execution-route.js";
@@ -837,6 +838,7 @@ export function buildCanUseTool(
 }
 
 interface SendMessageOptions {
+  chatView?: ChatViewBinding;
   prompt: string | any;
   imageMetadata?: PromptImageMetadata[];
   activePlugins?: string[];
@@ -1415,6 +1417,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // Agent sessions get the job management tools on the "callboard" agent
         // server (alongside deploy_agent etc.) — skip them here to avoid duplicates.
         includeJobTools: !opts.agentAlias,
+        chatView: opts.chatView,
         // The engine this session runs on, so start_chat_session spawns children
         // onto it by default instead of always handing them to Claude Code.
         provider: providerKind,

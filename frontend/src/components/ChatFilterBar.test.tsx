@@ -296,3 +296,25 @@ describe("the filters button badge", () => {
     expect(screen.getByTitle("Filters (1 active)")).toBeTruthy();
   });
 });
+
+it("blocks over-limit submitted search on Enter and click without truncating the draft", () => {
+  const submit = vi.fn();
+  const props = {
+    filters: DEFAULT_CHAT_FILTERS,
+    viewOptions: DEFAULT_CHAT_VIEW_OPTIONS,
+    onApply: vi.fn(),
+    onSearchChange: vi.fn(),
+    onSearchSubmit: submit,
+    isSearching: false,
+  };
+  const { rerender } = render(<ChatFilterBar {...props} searchQuery={"x".repeat(2001)} />);
+  const input = screen.getByPlaceholderText("Search chat contents...");
+  expect(screen.getByRole("alert").textContent).toContain("2000");
+  expect((input as HTMLInputElement).value).toHaveLength(2001);
+  fireEvent.keyDown(input, { key: "Enter" });
+  fireEvent.click(screen.getByTitle("Search"));
+  expect(submit).not.toHaveBeenCalled();
+  rerender(<ChatFilterBar {...props} searchQuery={"x".repeat(2000)} />);
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(submit).toHaveBeenCalledOnce();
+});

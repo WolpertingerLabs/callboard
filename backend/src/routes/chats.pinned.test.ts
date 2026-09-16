@@ -83,6 +83,10 @@ vi.mock("../agents/factory.js", () => ({
   ],
 }));
 
+// These fixtures intentionally live under /tmp; opt them in explicitly now
+// that shared discovery also enforces ignored-directory boundaries.
+const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");
+saveIgnoredProjectDirPrefixes([]);
 const { chatsRouter } = await import("./chats.js");
 
 afterAll(() => {
@@ -164,17 +168,7 @@ beforeEach(() => {
   ];
   // Newest first. Everything pinned except `in-window-pinned` sits past the
   // first page at limit=3.
-  sessionIds = [
-    "in-window-pinned",
-    "recent-1",
-    "recent-2",
-    "recent-3",
-    "recent-4",
-    "bookmarked-only",
-    "triggered-pinned",
-    "archived-pinned",
-    "stale-pinned",
-  ];
+  sessionIds = ["in-window-pinned", "recent-1", "recent-2", "recent-3", "recent-4", "bookmarked-only", "triggered-pinned", "archived-pinned", "stale-pinned"];
 });
 
 describe("PATCH /api/chats/:id/pin", () => {

@@ -1,3 +1,4 @@
+import { originatingChatView } from "../utils/chat-view.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
@@ -2136,7 +2137,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             method: "POST",
             headers: { "Content-Type": "application/json", ...handshakeHeaders() },
             credentials: "include",
-            body: JSON.stringify(requestBody),
+            body: JSON.stringify({ ...requestBody, chatView: originatingChatView() }),
             signal: controller.signal,
           });
         } else {
@@ -2189,7 +2190,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             method: "POST",
             headers: { "Content-Type": "application/json", ...handshakeHeaders() },
             credentials: "include",
-            body: JSON.stringify(body),
+            body: JSON.stringify({ ...body, chatView: originatingChatView() }),
             signal: controller.signal,
           });
         }
@@ -3800,7 +3801,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         {nativeAgent && (
           <div role="status" style={{ padding: 12 }}>
             Native Codex child · {nativeAgent.lifecycle} · read-only.{" "}
-            {messages.length === 0 && !chat?.session_log_path && "Its Codex rollout is no longer on disk, so there is no transcript to show; this chat can be deleted. "}
+            {messages.length === 0 &&
+              !chat?.session_log_path &&
+              "Its Codex rollout is no longer on disk, so there is no transcript to show; this chat can be deleted. "}
             {nativeAgent.controlNote}{" "}
             <a
               href={`/chat/${nativeParentChatId}`}

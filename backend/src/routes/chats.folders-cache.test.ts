@@ -119,6 +119,10 @@ const projectsDir = join(tmpRoot, ".claude", "projects");
 const encodedDir = projectFolder.replace(/[^a-zA-Z0-9]/g, "-");
 mkdirSync(join(projectsDir, encodedDir), { recursive: true });
 
+// Fixture directories are deliberately under /tmp; shared discovery now
+// enforces the same ignore boundary as real providers, so opt these in.
+const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");
+saveIgnoredProjectDirPrefixes([]);
 const { chatsRouter } = await import("./chats.js");
 const { folderListCache, clearFolderListCache, FOLDER_LIST_CACHE_TTL } = await import("../services/folder-list-cache.js");
 const { clearProjectDirFolderCache } = await import("../utils/paths.js");

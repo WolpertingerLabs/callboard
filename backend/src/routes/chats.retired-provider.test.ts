@@ -61,12 +61,17 @@ vi.mock("../agents/factory.js", () => ({
         }));
         return { sessions: sessions.slice(offset, offset + limit), total: sessions.length };
       },
-      resolveSession: (sessionId: string) => (sessionIds.includes(sessionId) ? { logPath: `/tmp/proj/${sessionId}.jsonl`, folder: "/tmp/proj", displayFolder: "/tmp/proj" } : null),
+      resolveSession: (sessionId: string) =>
+        sessionIds.includes(sessionId) ? { logPath: `/tmp/proj/${sessionId}.jsonl`, folder: "/tmp/proj", displayFolder: "/tmp/proj" } : null,
       getSessionPreview: () => null,
     },
   ],
 }));
 
+// Fixture directories are deliberately under /tmp; shared discovery now
+// enforces the same ignore boundary as real providers, so opt these in.
+const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");
+saveIgnoredProjectDirPrefixes([]);
 const { chatsRouter } = await import("./chats.js");
 const { buildCardSummaries } = await import("../services/card-rollup.js");
 const { buildChatTree, buildLineageIndex } = await import("../services/chat-lineage.js");

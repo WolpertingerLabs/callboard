@@ -71,6 +71,10 @@ vi.mock("../agents/factory.js", () => ({
   ],
 }));
 
+// These fixtures intentionally live under /tmp; opt them in explicitly now
+// that shared discovery also enforces ignored-directory boundaries.
+const { saveIgnoredProjectDirPrefixes } = await import("../utils/paths.js");
+saveIgnoredProjectDirPrefixes([]);
 const { chatsRouter } = await import("./chats.js");
 const { patchCardFields } = await import("../services/card-fields.js");
 
@@ -144,14 +148,7 @@ const idsOf = (body: any) => body.chats.map((c: any) => c.id).sort();
 describe("GET /api/chats?cardsOnly=true", () => {
   it("returns chats whose root is an open card, and nothing else", async () => {
     const body = await listChats({ cardsOnly: "true", limit: "50" });
-    expect(idsOf(body)).toEqual([
-      "member",
-      "member-child",
-      "member-grandchild",
-      "member-triggered",
-      "plain-child",
-      "plain-root",
-    ]);
+    expect(idsOf(body)).toEqual(["member", "member-child", "member-grandchild", "member-triggered", "plain-child", "plain-root"]);
     expect(body.total).toBe(6);
   });
 
@@ -346,7 +343,17 @@ describe("GET /api/chats?cardLifecycle", () => {
  * behaviour is pinned unchanged above.
  */
 describe("GET /api/chats?cardLifecycle=unarchived", () => {
-  const UNARCHIVED = ["job-root", "member", "member-child", "member-grandchild", "member-triggered", "orphan-session", "plain-child", "plain-root", "triggered-root"];
+  const UNARCHIVED = [
+    "job-root",
+    "member",
+    "member-child",
+    "member-grandchild",
+    "member-triggered",
+    "orphan-session",
+    "plain-child",
+    "plain-root",
+    "triggered-root",
+  ];
 
   it("withholds only the closed and hidden cards' trees", async () => {
     const body = await listChats({ cardLifecycle: "unarchived", limit: "50" });

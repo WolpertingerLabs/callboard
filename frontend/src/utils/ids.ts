@@ -34,3 +34,8 @@ export function newChatTrackingId(): string {
   const uuid = globalThis.crypto?.randomUUID?.();
   return `new-${uuid ?? fallbackUnique()}`;
 }
+
+/** Per-tab view handle, never shared through browser storage or treated as an auth credential. */
+export function newChatViewId(): string {
+  return `view-${globalThis.crypto?.randomUUID?.() ?? fallbackUnique()}`;
+}

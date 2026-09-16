@@ -24,7 +24,7 @@ export function categorizeClaudeTool(toolName: string): PermissionCategory | nul
   if (["WebFetch", "WebSearch"].includes(toolName)) return "webAccess";
 
   // Callboard platform tools
-  if (toolName === "mcp__callboard-tools__render_file") return "fileRead";
+  if (["mcp__callboard-tools__render_file", "mcp__callboard-tools__search_chats", "mcp__callboard-tools__get_chat_view"].includes(toolName)) return "fileRead";
 
   // Tools with no permission axis of their own.
   //
