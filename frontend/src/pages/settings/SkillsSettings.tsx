@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { Sparkles, Plus, Pencil, Trash2 } from "lucide-react";
 import { listCustomSkills, getCustomSkill, createCustomSkill, updateCustomSkill, deleteCustomSkill } from "../../api";
 import type { CustomSkillListItem } from "../../api";
+import FavoriteStar from "../../components/FavoriteStar";
+import { useFavorites } from "../../utils/favorites";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -36,6 +38,16 @@ const helpStyle: React.CSSProperties = {
   marginTop: 4,
 };
 
+const errorBoxStyle: React.CSSProperties = {
+  padding: "8px 12px",
+  borderRadius: 6,
+  background: "var(--danger-bg)",
+  border: "1px solid var(--danger-border)",
+  color: "var(--danger)",
+  fontSize: 13,
+  marginBottom: 12,
+};
+
 interface EditorState {
   /** Name of the skill being edited, or null when creating a new one. */
   originalName: string | null;
@@ -50,6 +62,7 @@ export default function SkillsSettings() {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const favoriteSkills = useFavorites("skills");
 
   const refresh = useCallback(() => {
     return listCustomSkills()
@@ -145,24 +158,17 @@ export default function SkillsSettings() {
         <div style={{ ...helpStyle, marginBottom: 16 }}>
           Reusable instructions your chat sessions can invoke. Each skill is available as{" "}
           <code>callboard:&lt;name&gt;</code> from the next message after saving. Agents can also list, read, and edit these skills mid-chat with the{" "}
-          <code>list_custom_skills</code>, <code>read_custom_skill</code>, and <code>write_custom_skill</code> tools.
+          <code>list_custom_skills</code>, <code>read_custom_skill</code>, and <code>write_custom_skill</code> tools. Star a skill to pin it to the New Chat
+          screen, where one click drops it into the composer.
         </div>
 
-        {error && (
-          <div
-            style={{
-              padding: "8px 12px",
-              borderRadius: 6,
-              background: "var(--danger-bg)",
-              border: "1px solid var(--danger-border)",
-              color: "var(--danger)",
-              fontSize: 13,
-              marginBottom: 12,
-            }}
-          >
-            {error}
-          </div>
-        )}
+        {error && <div style={errorBoxStyle}>{error}</div>}
+
+        {/* A star that quietly un-fills is indistinguishable from a misclick,
+            and the rollback is silent by design (see `utils/favorites.ts`:
+            there is no hand-rolled revert, the last confirmed list simply
+            stands). Something has to say the click did not take. */}
+        {favoriteSkills.writeError && <div style={errorBoxStyle}>{favoriteSkills.writeError}</div>}
 
         {editor ? (
           <div>
@@ -267,6 +273,13 @@ export default function SkillsSettings() {
                   </div>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>{new Date(skill.updatedAt).toLocaleDateString()}</div>
+                <FavoriteStar
+                  active={favoriteSkills.isFavorite(skill.name)}
+                  onToggle={() => favoriteSkills.toggle(skill.name)}
+                  label={`skill "${skill.name}"`}
+                  disabled={!favoriteSkills.ready}
+                  disabledReason={favoriteSkills.error ?? undefined}
+                />
                 <button
                   onClick={() => openEdit(skill.name)}
                   title="Edit skill"

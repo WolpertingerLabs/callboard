@@ -70,12 +70,15 @@ import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
 import ChatTreeIndicator from "../components/ChatTreeIndicator";
 import ToolCallBubble from "../components/ToolCallBubble";
-import PromptInput from "../components/PromptInput";
+import PromptInput, { parseLeadingCommand, type ComposerValueUpdate } from "../components/PromptInput";
 import FeedbackPanel, { type PendingAction } from "../components/FeedbackPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import ActivityDock from "../components/ActivityDock";
 import DraftModal from "../components/DraftModal";
 import SlashCommandsModal from "../components/SlashCommandsModal";
+import NewChatLaunchpad, { launchpadMode } from "../components/NewChatLaunchpad";
+import SessionInfoNav from "../components/SessionInfoNav";
+import { useResolvedFavorites } from "../hooks/useResolvedFavorites";
 import ChatPermissionsModal from "../components/ChatPermissionsModal";
 import ForkHandoffModal from "../components/ForkHandoffModal";
 import BranchSelector from "../components/BranchSelector";
@@ -297,7 +300,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [mcpTools, setMcpTools] = useState<McpToolsResponse | null>(null);
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
-  const [promptInputSetValue, setPromptInputSetValue] = useState<((value: string) => void) | null>(null);
+  // Owned here rather than inside the launchpad because SessionInfoNav has to
+  // know which shape the launchpad took: with nothing starred the launchpad
+  // falls back to the commands grid, and the nav's Commands pill would then be
+  // a second surface for the same list on the same screen. Gated on `!id` —
+  // every other chat renders neither component, and should pay for neither
+  // fetch.
+  const resolvedFavorites = useResolvedFavorites(!id);
+  const [promptInputSetValue, setPromptInputSetValue] = useState<((value: ComposerValueUpdate) => void) | null>(null);
   const [promptInputInsertAtCaret, setPromptInputInsertAtCaret] = useState<((text: string) => void) | null>(null);
   // `autoScroll` state drives rendering (the jump-to-bottom button, mounting
   // the pin loop). The two refs are the pin loop's and scroll listener's view
@@ -1940,6 +1950,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return { allSlashCommands: uniqueCmds, pluginCommandDescriptions: descriptions };
   }, [slashCommands, plugins, activePluginIds, appPluginsData]);
 
+  /**
+   * Which shape the new-chat launchpad is taking. Asked once, here, because
+   * two siblings need the same answer and neither can see the other — the
+   * launchpad draws it, and the nav below decides whether to draw a Commands
+   * pill against it. See `launchpadMode`.
+   */
+  const launchpadCardMode = launchpadMode(resolvedFavorites, allSlashCommands);
+
   // Pre-populate prompt input when navigating from a draft in staging
   useEffect(() => {
     if (routerDraftRef.current && promptInputSetValue) {
@@ -2617,14 +2635,38 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // TODO: Handle images in draft
   }, []);
 
-  const handleCommandSelect = useCallback(
+  /**
+   * Put a slash command in the composer without taking the message with it.
+   *
+   * Every surface that offers a command — the launchpad's skill chips, the nav
+   * drawer's commands panel, the commands browser — used to call a bare *set*,
+   * which meant clicking one after typing anything wiped what was typed. No
+   * undo, no warning. The launchpad in particular declines to send on click
+   * precisely so the user keeps the message they came here to write, and then
+   * discarded it anyway.
+   *
+   * So the command is *prefixed*, and the typed text becomes its argument:
+   * `for v2` + the release-notes chip is `/callboard:release-notes for v2`,
+   * which is the shape the composer already sends. Any command already leading
+   * the value is replaced rather than stacked — the chip is a leading command,
+   * and `parseLeadingCommand` is the composer's own rule for what one is, so
+   * picking a second command swaps it and keeps the argument. An empty composer
+   * behaves exactly as it did.
+   *
+   * @param command the command with its trailing space, e.g. `/compact `.
+   */
+  const insertCommandPrompt = useCallback(
     (command: string) => {
-      if (promptInputSetValue) {
-        promptInputSetValue(command);
-      }
+      promptInputSetValue?.((current) => {
+        const { rest } = parseLeadingCommand(current, allSlashCommands);
+        const argument = rest.trim();
+        return argument ? `${command}${argument}` : command;
+      });
     },
-    [promptInputSetValue],
+    [promptInputSetValue, allSlashCommands],
   );
+
+  const handleCommandSelect = insertCommandPrompt;
 
   const handleKeywordSelect = useCallback(
     (keyword: Keyword) => {
@@ -3396,118 +3438,39 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       )}
                     </div>
 
-                    {/* Slash commands if available */}
-                    {allSlashCommands.length > 0 && (
-                      <div
-                        style={{
-                          background: "var(--bg-secondary)",
-                          borderRadius: 12,
-                          padding: "20px 24px",
-                          marginBottom: 16,
-                        }}
-                      >
-                        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>Available Commands</div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          {allSlashCommands.slice(0, 8).map((cmd, i) => (
-                            <button
-                              key={i}
-                              onClick={() => {
-                                if (promptInputSetValue) {
-                                  // With the leading slash, as the commands
-                                  // modal already sends it — the composer
-                                  // parses a command out of the value it is
-                                  // handed, and a bare name is just text.
-                                  promptInputSetValue(`/${cmd} `);
-                                }
-                              }}
-                              style={{
-                                background: "var(--bg)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 13,
-                                color: "var(--accent-text)",
-                                cursor: "pointer",
-                                fontFamily: "monospace",
-                              }}
-                            >
-                              {cmd}
-                            </button>
-                          ))}
-                          {allSlashCommands.length > 8 && (
-                            <button
-                              onClick={() => setShowSlashCommandsModal(true)}
-                              style={{
-                                background: "var(--bg)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 13,
-                                color: "var(--text-muted)",
-                                cursor: "pointer",
-                              }}
-                            >
-                              +{allSlashCommands.length - 8} more
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                    {/* Favorited skills and jobs — the one card here that
+                        starts work, so it sits directly under the directory. */}
+                    <NewChatLaunchpad
+                      onInsertPrompt={insertCommandPrompt}
+                      slashCommands={allSlashCommands}
+                      favorites={resolvedFavorites}
+                      onOpenCommands={() => {
+                        setSlashCommandsModalTab("commands");
+                        setShowSlashCommandsModal(true);
+                      }}
+                    />
 
-                    {/* MCP Tools if available */}
-                    {mcpTools && mcpTools.tools.length > 0 && (
-                      <div
-                        style={{
-                          background: "var(--bg-secondary)",
-                          borderRadius: 12,
-                          padding: "20px 24px",
-                          marginBottom: 16,
-                        }}
-                      >
-                        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                          <Wrench size={14} />
-                          Available Tools
-                          <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto" }}>{mcpTools.tools.length} total</span>
-                        </div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                          {mcpTools.tools.slice(0, 6).map((tool) => (
-                            <span
-                              key={tool.qualifiedName}
-                              style={{
-                                background: "var(--bg)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 12,
-                                color: "var(--text)",
-                                fontFamily: "var(--font-mono)",
-                              }}
-                            >
-                              {tool.name}
-                            </span>
-                          ))}
-                          {mcpTools.tools.length > 6 && (
-                            <button
-                              onClick={() => {
-                                setSlashCommandsModalTab("tools");
-                                setShowSlashCommandsModal(true);
-                              }}
-                              style={{
-                                background: "var(--bg)",
-                                border: "1px solid var(--border)",
-                                borderRadius: 6,
-                                padding: "6px 12px",
-                                fontSize: 12,
-                                color: "var(--text-muted)",
-                                cursor: "pointer",
-                              }}
-                            >
-                              +{mcpTools.tools.length - 6} more
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                    {/* Everything the session merely *has* — commands, tools —
+                        collapsed behind a count. See SessionInfoNav for why.
+                        The Commands pill stands down when the launchpad above
+                        is already showing the grid — and while the launchpad
+                        has not decided yet, which is the same rule. "hidden"
+                        is not "commands", so the pill used to render on every
+                        cold load and then get pulled out from under the cursor
+                        when the fallback grid arrived: 79 frames of it
+                        measured in Chromium against a 1400ms favorites read
+                        over the tunnel, 0 on localhost. The no-flash rule the
+                        launchpad follows has to cover the nav beside it. */}
+                    <SessionInfoNav
+                      slashCommands={allSlashCommands}
+                      mcpTools={mcpTools}
+                      showCommands={launchpadCardMode !== "commands" && launchpadCardMode !== "hidden"}
+                      onInsertPrompt={insertCommandPrompt}
+                      onOpenModal={(tab) => {
+                        setSlashCommandsModalTab(tab);
+                        setShowSlashCommandsModal(true);
+                      }}
+                    />
 
                     {/* Getting started hint */}
                     <p style={{ color: "var(--text-muted)", textAlign: "center", fontSize: 14 }}>Send a message to start coding with Claude.</p>

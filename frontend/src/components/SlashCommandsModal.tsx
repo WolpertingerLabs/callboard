@@ -1,5 +1,5 @@
 import { X, Hash, Puzzle, Check, Server, AlertTriangle, Wrench, Braces } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plugin } from "../types/plugins";
 import { getCommandDescription, getCommandCategory } from "../utils/commands";
 import { getActivePlugins, setActivePlugins } from "../utils/plugins";
@@ -55,6 +55,23 @@ export default function SlashCommandsModal({
   const [activePluginIds, setActivePluginIds] = useState<Set<string>>(() => getActivePlugins());
   const activeTab = activeTabProp ?? "commands";
   const setActiveTab = (tab: ModalTab) => onTabChange?.(tab);
+
+  /**
+   * Escape closes it, as it does for every other dialog here.
+   *
+   * Pre-existing, and reached far more often now: the new-chat drawer added
+   * two more routes into this modal ("Open commands browser", "Open tool
+   * browser"), which makes the way out matter more than it did when the only
+   * opener was a header icon.
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [isOpen, onClose]);
 
   // Toggle per-directory plugin activation
   const togglePlugin = (pluginId: string) => {
@@ -207,8 +224,13 @@ export default function SlashCommandsModal({
             >
               {activeTab === "commands" ? "Commands & Plugins" : activeTab === "keywords" ? "Keywords" : "MCP Tools"}
             </h2>
+            {/* An svg-only button is nameless to a screen reader and to any
+                test that asks for it by role — this one announced as
+                "button". */}
             <button
               onClick={onClose}
+              aria-label="Close"
+              title="Close"
               style={{
                 background: "none",
                 border: "none",

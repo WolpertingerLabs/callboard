@@ -591,6 +591,32 @@ export interface AgentSettings {
    */
   unpinChatsOnArchive?: boolean;
 
+  // ── Favorites (New Chat launchpad) ────────────────────────────────
+  // Which custom skills and job definitions get a seat on the new-chat
+  // welcome screen. Both are ordered lists of ids, and the order is the
+  // display order — so this is also where a future drag-to-reorder lands
+  // without a schema change.
+  //
+  // Stored here, server-side, rather than in the browser alongside the New
+  // Chat panel's other preferences, for two reasons. The things being
+  // favorited are server-owned (`~/.callboard/custom-skills/`, job
+  // definitions), so a browser-local list would be a set of references into
+  // state it cannot see; and Callboard is routinely reached from more than one
+  // device through remote access, where a per-browser list would silently
+  // start empty on the phone.
+  //
+  // Entries are NOT validated against the live skill/job lists on write. A
+  // favorite naming something that no longer exists is normal — rename a skill
+  // and the stale entry outlives it — so readers filter against the live list
+  // and render what resolves. Pruning here instead would make a transient read
+  // failure (a job file briefly unreadable) permanently destroy the favorite.
+
+  /** Custom skill names, in display order. Invoked as `callboard:<name>`. */
+  favoriteSkills?: string[];
+
+  /** Job definition ids, in display order. */
+  favoriteJobs?: string[];
+
   // ── Session completion callbacks ("phone home") loop-safety ───────
   // Bounds on the onComplete feature (start_chat_session, continue_chat), which
   // automatically re-invokes a parent chat when the session it is waiting on
