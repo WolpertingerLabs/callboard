@@ -23,7 +23,7 @@
  * off the router stack and driven with a fake req/res.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, writeFileSync, utimesSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
@@ -36,6 +36,9 @@ let fileChats: any[] = [];
 let sessionsByProvider: Record<string, string[]> = {};
 /** Per-provider count of getSessionPreview calls. */
 let previewCalls: Record<string, string[]> = {};
+let discoveryCalls: { kind: string; limit: number; offset: number }[] = [];
+let singleProvider = false;
+let overrideProviders: any[] | undefined;
 
 vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
@@ -57,7 +60,9 @@ const PROVIDER_KINDS = ["claude-code", "codex", "cline"] as const;
 function makeProvider(kind: string) {
   return {
     kind,
+    eligibleDiscoveryPages: true,
     discoverSessions: ({ limit, offset }: { limit: number; offset: number }) => {
+      discoveryCalls.push({ kind, limit, offset });
       const ids = sessionsByProvider[kind] ?? [];
       const sessions = ids.map((sessionId, i) => ({
         sessionId,
@@ -78,7 +83,7 @@ function makeProvider(kind: string) {
 }
 
 vi.mock("../agents/factory.js", () => ({
-  getSessionProviders: () => PROVIDER_KINDS.map(makeProvider),
+  getSessionProviders: () => overrideProviders ?? (singleProvider ? ["claude-code"] : PROVIDER_KINDS).map(makeProvider),
 }));
 
 // Fixture directories are deliberately under /tmp; shared discovery now
@@ -129,6 +134,7 @@ const previewOf = (body: any, id: string) => JSON.parse(body.chats.find((c: any)
 const BULK_IDS = Array.from({ length: 60 }, (_, i) => `claude-code-${String(i).padStart(3, "0")}`);
 
 beforeEach(() => {
+  overrideProviders = undefined;
   previewCalls = {};
   sessionsByProvider = { "claude-code": [...BULK_IDS], codex: [], cline: [] };
   fileChats = BULK_IDS.map((id, i) => chat(id, i % 2 === 1 ? { triggered: true } : {}));
@@ -233,6 +239,7 @@ describe("GET /api/chats preview reads", () => {
 
 describe("GET /api/chats?cardsOnly=true preview reads", () => {
   beforeEach(() => {
+    overrideProviders = undefined;
     sessionsByProvider = {
       "claude-code": ["claude-code-member", "claude-code-child", "claude-code-closed", ...BULK_IDS],
       codex: ["codex-member"],
@@ -278,6 +285,7 @@ describe("GET /api/chats?cardsOnly=true preview reads", () => {
 
 describe("GET /api/chats?includeLineage=true preview reads", () => {
   beforeEach(() => {
+    overrideProviders = undefined;
     // A three-chat family: root and kid have session logs, ghost has only a
     // record. Ghost is the lineage-append pass's remaining job — a tree member
     // discovery never returned, which is the branch that falls back to
@@ -361,4 +369,91 @@ describe("GET /api/chats?includeLineage=true preview reads", () => {
     expect(body.chats.every((c: any) => JSON.parse(c.metadata).preview)).toBe(true);
     expect(totalPreviewCalls()).toBe(2);
   });
+});
+
+it("single-provider plain pages delegate the requested window, not a whole-corpus sweep per page", async () => {
+  singleProvider = true;
+  discoveryCalls = [];
+  sessionsByProvider = { "claude-code": Array.from({ length: 2105 }, (_, i) => "claude-code-" + i) };
+  try {
+    const result = await listChats({ limit: "20", offset: "1000" });
+    expect(result.chats).toHaveLength(20);
+    expect(result.total).toBe(2105);
+    expect(discoveryCalls).toEqual([{ kind: "claude-code", limit: 20, offset: 1000 }]);
+  } finally {
+    singleProvider = false;
+  }
+});
+it("multi-provider list filtering requests each corpus once without thousand-row rescans", async () => {
+  discoveryCalls = [];
+  sessionsByProvider = Object.fromEntries(PROVIDER_KINDS.map((kind) => [kind, Array.from({ length: 2105 }, (_, i) => kind + "-" + i)]));
+  const result = await listChats({ limit: "20", offset: "0", includeLineage: "true" });
+  expect(result.chats).toHaveLength(20);
+  expect(discoveryCalls).toHaveLength(PROVIDER_KINDS.length);
+  expect(discoveryCalls.every((call) => call.limit === Number.MAX_SAFE_INTEGER && call.offset === 0)).toBe(true);
+});
+
+it("actual Pi missing cwd outside page must not inflate total or duplicate next page", async () => {
+  const { PiSessionProvider } = await import("../agents/adapters/pi/PiSessionProvider.js");
+  const { resolvePiSessionsRoot } = await import("../agents/adapters/pi/paths.js");
+  mkdirSync(resolvePiSessionsRoot(), { recursive: true });
+  for (const [i, id] of ["a", "bad", "b", "c"].entries()) {
+    const path = join(resolvePiSessionsRoot(), id + ".jsonl");
+    writeFileSync(
+      path,
+      id === "bad" ? "{}\n" : JSON.stringify({ type: "session", version: 3, id, cwd: "/work/repo", timestamp: "2026-01-01T00:00:00Z" }) + "\n",
+    );
+    utimesSync(path, new Date(10000 - i * 1000), new Date(10000 - i * 1000));
+  }
+  overrideProviders = [new PiSessionProvider()];
+  fileChats = [];
+  const pages = [];
+  for (let offset = 0; offset < 4; offset++) pages.push(await listChats({ limit: "1", offset: String(offset) }));
+
+  rmSync(resolvePiSessionsRoot(), { recursive: true, force: true });
+  expect(pages.map((p) => p.total)).toEqual([3, 3, 3, 3]);
+  expect(pages.flatMap((p) => p.chats.map((c: any) => c.id))).toEqual(["a", "b", "c"]);
+});
+it.each([false, true])("single capped adapter drains postfilter corpus (eligible pages=%s)", async (eligibleDiscoveryPages) => {
+  const p = makeProvider("claude-code");
+  p.eligibleDiscoveryPages = eligibleDiscoveryPages;
+  const original = p.discoverSessions;
+  p.discoverSessions = (opts) => original({ ...opts, limit: Math.min(opts.limit, 2) });
+  overrideProviders = [p];
+  fileChats = [];
+  sessionsByProvider = { "claude-code": ["claude-code-a", "claude-code-b", "claude-code-c", "claude-code-d"] };
+  const body = await listChats({ limit: "10", offset: "0", excludeTriggered: "true" });
+
+  expect(body.chats).toHaveLength(4);
+  expect(body.total).toBe(4);
+});
+
+it.each([false, true])("drains capped ordinary windows (eligible pages=%s)", async (eligibleDiscoveryPages) => {
+  const p = makeProvider("claude-code");
+  p.eligibleDiscoveryPages = eligibleDiscoveryPages;
+  const original = p.discoverSessions;
+  p.discoverSessions = (opts) => original({ ...opts, limit: Math.min(opts.limit, 2) });
+  overrideProviders = [p];
+  fileChats = [];
+  sessionsByProvider = { "claude-code": ["claude-code-a", "claude-code-b", "claude-code-c", "claude-code-d"] };
+  const body = await listChats({ limit: "3", offset: "1" });
+  expect(body.chats.map((c: any) => c.id)).toEqual(["claude-code-b", "claude-code-c", "claude-code-d"]);
+  expect(body.total).toBe(4);
+  expect(body.hasMore).toBe(false);
+});
+it("legacy adapters filter the entire corpus, not just a clean requested page", async () => {
+  const p = makeProvider("claude-code");
+  p.eligibleDiscoveryPages = false;
+  const original = p.discoverSessions;
+  p.discoverSessions = (opts) => {
+    const result = original(opts);
+    return { ...result, sessions: result.sessions.map((s) => ({ ...s, folder: s.sessionId === "bad" ? "" : s.folder })) };
+  };
+  overrideProviders = [p];
+  fileChats = [];
+  sessionsByProvider = { "claude-code": ["a", "bad", "b", "c"] };
+  const pages = [];
+  for (let offset = 0; offset < 4; offset++) pages.push(await listChats({ limit: "1", offset: String(offset) }));
+  expect(pages.map((p) => p.total)).toEqual([3, 3, 3, 3]);
+  expect(pages.flatMap((p) => p.chats.map((c: any) => c.id))).toEqual(["a", "b", "c"]);
 });

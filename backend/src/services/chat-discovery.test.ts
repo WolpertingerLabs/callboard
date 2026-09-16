@@ -30,3 +30,9 @@ describe("complete provider traversal", () => {
     expect(discoverChatCorpus([p]).warnings[0]).toContain("offline");
   });
 });
+
+it("requests a complete provider corpus in one scan, not one sweep per thousand rows", () => {
+  const discoverSessions = vi.fn(({ limit, offset }) => ({ sessions: entries.slice(offset, offset + limit), total: entries.length }));
+  expect(discoverChatCorpus([{ kind: "claude-code", discoverSessions } as unknown as SessionProvider]).sessions).toHaveLength(10050);
+  expect(discoverSessions).toHaveBeenCalledTimes(1);
+});

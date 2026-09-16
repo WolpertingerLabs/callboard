@@ -101,7 +101,11 @@ it("fallback metadata budget is enforced, hits are free, refusal does not poison
 it("charges the budget for bytes read, never for the requested window, and reads no further than the header", () => {
   // 200 KB header (the median on a real device) followed by 3 MB of transcript:
   // a fixed 1 MB head read would charge 1 MB and read past the header.
-  const p = write(1, { padding: "x".repeat(200 * 1024) }, Array.from({ length: 3000 }, () => "x".repeat(1024)));
+  const p = write(
+    1,
+    { padding: "x".repeat(200 * 1024) },
+    Array.from({ length: 3000 }, () => "x".repeat(1024)),
+  );
   const header = fs.readFileSync(p, "utf8").indexOf("\n") + 1;
   const budget = { remainingBytes: 16 * 1024 * 1024 };
   expect(readCodexSessionMeta(p, budget)?.id).toBe(id(1));
@@ -202,4 +206,30 @@ it("filesystem enumeration stops at its 20000-entry cap", async () => {
   expect(provider.discoveryIncomplete).toBe(true);
   expect(yielded).toBe(20000);
   vi.mocked(fs.opendirSync).mockImplementation(actual.opendirSync);
+});
+
+it("distinguishes cold budget deferrals from localized invalid and duplicate identities", () => {
+  for (let n = 0; n < 12; n++) write(n, { padding: "x".repeat(2 * 1024 * 1024) });
+  fs.writeFileSync(write(99), "malformed header\n");
+  writeAt(98);
+  writeAt(98, {}, [], "01-00-00");
+  const provider = new CodexSessionProvider();
+  provider.nativeDiscoveryEvidence();
+  expect(provider.nativeDiscoveryIncomplete).toBe(true);
+  expect(provider.nativeDiscoveryDeferredSessions.size).toBeGreaterThan(0);
+  expect([...provider.nativeDiscoveryRejectedSessions].sort()).toEqual([id(98), id(99)].sort());
+  for (let pass = 0; pass < 4; pass++) provider.nativeDiscoveryEvidence();
+  expect(provider.nativeDiscoveryIncomplete).toBe(false);
+  expect(provider.nativeDiscoveryDeferredSessions.size).toBe(0);
+  expect(provider.nativeDiscoveryEvidence()).toHaveLength(12);
+  expect([...provider.nativeDiscoveryRejectedSessions].sort()).toEqual([id(98), id(99)].sort());
+  expect(provider.nativeDiscoveryWarnings).toHaveLength(2);
+});
+it("retries transient metadata read failures without requiring a file-version change", () => {
+  const path = write(1);
+  vi.mocked(fs.readSync).mockImplementationOnce(() => {
+    throw Error("temporary I/O failure");
+  });
+  expect(readCodexSessionMeta(path)).toBeNull();
+  expect(readCodexSessionMeta(path)?.id).toBe(id(1));
 });

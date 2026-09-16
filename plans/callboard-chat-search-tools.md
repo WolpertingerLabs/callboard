@@ -452,3 +452,62 @@ Full build and final backend typecheck/import rewrite passed; staged lint:
 0 errors, 3 existing fixture warnings. An initially invalid synthetic-child
 filename in the new relative-append fixture was corrected to a valid rollout
 filename before the green rerun. No additional full sweep was run this round.
+
+### Post-merge follow-up corrections
+
+- Native exclusion now requires positive Codex/native evidence, consulting
+  canonical routing and provider-stamped rows for ancestors. Missing legacy
+  `provider` metadata is not evidence of Codex. Cold native discovery no
+  longer removes unrelated Claude/Cline/Pi/ACP roots or their descendants.
+- Budget-deferred identities are separate from per-pass rejected identities.
+  `nativeDiscoveryIncomplete` describes budget/traversal incompleteness;
+  duplicates, malformed and unavailable headers are localized exclusions with
+  aggregate warnings, not a permanent global exclusion mode. Query results
+  still report partial coverage. Transient header I/O failures, like budget
+  misses, are not cached as malformed metadata and are retried.
+- Single-provider REST pages again delegate their window to the adapter (with
+  a defensive full-corpus fallback for ineligible returned rows). All-corpus
+  discovery requests a full snapshot once from each built-in provider, rather
+  than rewalking it per thousand rows. Adapters imposing smaller pages still
+  get drained with the existing stall/coverage checks. Provider tie ordering
+  is deterministic before slicing; ignored-folder filtering remains before
+  adapter pagination. This is not a new persistent filesystem index: one
+  complete scan/snapshot is still required for corpus-wide queries.
+- Publisher HTTP 429/5xx responses retain live state and retry on the existing
+  25-second heartbeat, without a busy retry loop. Hard rejections still stop
+  attachment; generation, accepted-revision and unmount protections remain.
+- Visible content search now scans only surviving candidates' qualified
+  provider/vendor/session identities, retaining all accepted historical
+  aliases. Empty candidate/session sets do not create content workers.
+
+Follow-up validation: initial reproductions had 9 failing assertions across
+4 suites; after correction, 12 focused suites passed all 207 tests. Full
+`vitest --maxWorkers=2`: 380 files / 5,849 tests passed, 3 files / 32 tests
+skipped. All 9 external backend review assertions and root ACP passed; real
+publisher capacity/renewal probes also passed. Full build passed; full lint
+had 0 errors (1,143 warnings). Computer-use: 56 passed, 1 skipped. Real find
+scan-count and endpoint tests cover >2,000 sessions; full-corpus enumeration
+covers 10,050. No manual browser run or wall-time benchmark was performed.
+
+PR455 review corrections:
+- Captured rejected/deferred **current session** inventory now independently
+  fences metadata-free pins and ancestors. Historical-only route inference
+  cannot override it; explicit non-Codex routing or independently discovered
+  current ownership can. Chat-ID collisions are not session evidence.
+- Single-provider page hints require an explicit eligible-pages capability
+  (currently Claude only). Other adapters use one complete filtered corpus,
+  avoiding page-local coordinate changes from missing cwd. Whole-corpus
+  requests always drain capped adapters; short ordinary windows also fall
+  back to the drain. No per-1000-row builtin rescans were introduced.
+- Real-file regressions cover rejected/unreadable legacy records, unchanged
+  file recovery and ownership collisions; route tests cover actual Pi missing
+  cwd, legacy eligibility and capped ordinary/postfilter windows. UI/context
+  and content-search behavior are unchanged.
+
+Review-fix validation (frozen final runtime): full Vitest with maxWorkers=2
+passed 381 files / 5,867 tests (3 files / 32 tests skipped); external review
+configs passed 54 assertions, including the new native and pagination cases.
+Build and lint-all passed (0 errors, 1,154 warnings); computer-use passed
+56 tests with 1 skipped. An interim full run overlapped the final collision
+regression/edit and failed that new assertion; the frozen rerun above passed.
+No manual browser run or latency benchmark; UI/context code was untouched.

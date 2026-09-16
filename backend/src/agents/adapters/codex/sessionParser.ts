@@ -313,6 +313,7 @@ const warnedOversizedFirstLine = new Set<string>();
 
 /** `readFirstLine` ran out of budget before reaching the end of the line — transient, not evidence about the file. */
 const BUDGET_EXHAUSTED = Symbol("budget-exhausted");
+const READ_UNAVAILABLE = Symbol("read-unavailable");
 
 /**
  * Read the first physical line of a file, and only that line.
@@ -330,15 +331,15 @@ const BUDGET_EXHAUSTED = Symbol("budget-exhausted");
  * `budget` is charged for the bytes actually read (bounded by `size`, the
  * file's stat size, so a small rollout never costs a full chunk). Running out
  * mid-line returns {@link BUDGET_EXHAUSTED} so the caller can tell a spent
- * budget from a malformed file; `null` means the file could not be read, or
- * that its first line ran past {@link FIRST_LINE_MAX_BYTES}.
+ * budget from a malformed file. READ_UNAVAILABLE denotes retryable I/O;
+ * null means its first line ran past {@link FIRST_LINE_MAX_BYTES}.
  */
-function readFirstLine(filePath: string, size: number, budget?: MetadataReadBudget): string | null | typeof BUDGET_EXHAUSTED {
+function readFirstLine(filePath: string, size: number, budget?: MetadataReadBudget): string | null | typeof BUDGET_EXHAUSTED | typeof READ_UNAVAILABLE {
   let fd: number;
   try {
     fd = openSync(filePath, "r");
   } catch {
-    return null;
+    return READ_UNAVAILABLE;
   }
   try {
     const chunks: Buffer[] = [];
@@ -366,7 +367,7 @@ function readFirstLine(filePath: string, size: number, budget?: MetadataReadBudg
       chunkBytes = chunkBytes < FIRST_LINE_GROWTH_BYTES ? FIRST_LINE_GROWTH_BYTES : Math.min(chunkBytes * 2, FIRST_LINE_MAX_CHUNK_BYTES);
     }
   } catch {
-    return null;
+    return READ_UNAVAILABLE;
   } finally {
     closeSync(fd);
   }
@@ -474,9 +475,13 @@ export interface MetadataReadBudget {
  * line claiming to be one is inherited fork history, not this thread's own
  * header, so only line 1 is ever consulted.
  */
-function readBoundedSessionMeta(filePath: string, size: number, budget?: MetadataReadBudget): SessionMeta | null | typeof BUDGET_EXHAUSTED {
+function readBoundedSessionMeta(
+  filePath: string,
+  size: number,
+  budget?: MetadataReadBudget,
+): SessionMeta | null | typeof BUDGET_EXHAUSTED | typeof READ_UNAVAILABLE {
   const line = readFirstLine(filePath, size, budget);
-  if (line === BUDGET_EXHAUSTED) return line;
+  if (line === BUDGET_EXHAUSTED || line === READ_UNAVAILABLE) return line;
   const record = parseObject(line ?? "");
   if (record?.type !== "session_meta") return null;
   return buildSessionMeta((record.payload ?? {}) as Record<string, unknown>);
@@ -508,6 +513,8 @@ export function readCodexSessionMeta(filePath: string, budget?: MetadataReadBudg
   if (cached && cached.key === key) return cached.meta;
 
   const meta = readBoundedSessionMeta(filePath, size, budget);
+  // I/O failures must be retried even if the file's version did not change.
+  if (meta === READ_UNAVAILABLE) return null;
   // Budget exhaustion is transient, not evidence of malformed metadata.
   if (meta === BUDGET_EXHAUSTED) {
     if (budget) budget.exhausted = (budget.exhausted ?? 0) + 1;

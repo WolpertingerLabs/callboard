@@ -191,7 +191,19 @@ type DiscoveredSession = {
  * Merges results, sorts globally by mtime DESC, and paginates.
  */
 function discoverSessionsPaginated(limit: number, offset: number): { sessions: DiscoveredSession[]; total: number } {
-  const { sessions } = discoverChatCorpus();
+  const providers = getSessionProviders();
+  if (providers.length === 1 && providers[0].eligibleDiscoveryPages && limit !== Number.MAX_SAFE_INTEGER) {
+    // Only a provider contract can certify unreturned rows and total. Claude
+    // derives eligible cwd from directories before slicing, and resolves
+    // worktree data only for the requested page.
+    const page = providers[0].discoverSessions({ limit, offset });
+    const expected = Math.min(limit, Math.max(0, page.total - offset));
+    if (page.sessions.length === expected && page.sessions.every((s) => s.folder && !isIgnoredProjectFolder(s.folder)))
+      return { sessions: page.sessions.map((s) => ({ ...s, providerKind: providers[0].kind })), total: page.total };
+    // A capped/violating adapter must not underfill a window. Whole-corpus
+    // requests always use the drain below, even for opted-in adapters.
+  }
+  const { sessions } = discoverChatCorpus(providers);
   return { sessions: sessions.slice(offset, offset + limit), total: sessions.length };
 }
 

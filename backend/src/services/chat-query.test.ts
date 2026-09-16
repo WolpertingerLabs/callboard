@@ -8,17 +8,21 @@ const state = vi.hoisted(() => ({
   warnings: [] as string[],
   native: [] as any[],
   incomplete: false,
+  deferred: new Set<string>(),
 }));
 vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
 vi.mock("./chats-snapshot.js", () => ({ listChatsSnapshot: () => state.stored }));
 vi.mock("./chat-discovery.js", () => ({
   discoverChatCorpus: () => ({ sessions: state.sessions, warnings: state.warnings }),
 }));
-vi.mock("./chat-content-search.js", () => ({ collectContentMatches: () => ({ keys: new Set([JSON.stringify(["codex", null, "closed"])]), warnings: [] }) }));
+vi.mock("./chat-content-search.js", () => ({
+  collectContentMatches: vi.fn(() => ({ keys: new Set([JSON.stringify(["codex", null, "closed"])]), warnings: [] })),
+}));
 vi.mock("./chat-view.js", () => ({ chatViews: { read: () => state.view ?? { available: false, reason: "missing" } } }));
 vi.mock("../agents/adapters/codex/CodexSessionProvider.js", () => ({
   CodexSessionProvider: class {
     nativeDiscoveryIncomplete = state.incomplete;
+    nativeDiscoveryDeferredSessions = state.deferred;
     nativeDiscoveryEvidence() {
       return state.native;
     }
@@ -59,6 +63,7 @@ beforeEach(() => {
   state.warnings = [];
   state.native = [];
   state.incomplete = false;
+  state.deferred = new Set();
 });
 describe("individual chat query", () => {
   it("ORs individual pins/bookmarks and open-card membership without group pin promotion", async () => {
@@ -198,4 +203,38 @@ it("tool-only restrictions do not change base sidebar append reachability", asyn
   discover([state.stored[1]]);
   state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "" };
   expect(ids(await searchChats({ scope: "visible", topLevelOnly: true, query: "target" }))).toEqual(["root"]);
+});
+
+it.each(["claude-code", "cline", "pi", "acp"])("keeps legacy %s roots and children during cold Codex discovery", async (providerKind) => {
+  state.incomplete = true;
+  state.stored = [chat("legacy", { provider: undefined, title: "hello" }), chat("child", { provider: undefined, parentChatId: "legacy" })];
+  discover();
+  state.sessions = state.sessions.map((s) => ({ ...s, providerKind, ...(providerKind === "acp" && { acpProviderId: "vendor" }) }));
+  expect(ids(await searchChats({}))).toEqual(["child", "legacy"]);
+  expect(ids(await searchChats({ topLevelOnly: true }))).toEqual(["legacy"]);
+});
+
+it("does not create a content worker for an empty candidate set", async () => {
+  const { collectContentMatches } = await import("./chat-content-search.js");
+  vi.mocked(collectContentMatches).mockClear();
+  state.stored = [chat("root")];
+  discover();
+  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
+  expect((await searchChats({ scope: "visible", query: "no metadata matches" })).chats).toEqual([]);
+  expect(collectContentMatches).not.toHaveBeenCalled();
+});
+it("missing-provider ancestors with no log are not evidence of Codex either", async () => {
+  state.incomplete = true;
+  state.stored = [chat("legacy", { provider: undefined }), chat("child", { provider: undefined, parentChatId: "legacy" })];
+  discover([state.stored[1]]);
+  state.sessions[0].providerKind = "claude-code";
+  expect(ids(await searchChats({}))).toEqual(["child", "legacy"]);
+});
+
+it("captured deferred current identities remain unsafe despite historical non-Codex backing", async () => {
+  state.incomplete = true;
+  state.deferred.add("current");
+  state.stored = [{ ...chat("owner", { provider: undefined, pinned: true, session_ids: ["old"] }), session_id: "current" }];
+  state.sessions = [{ sessionId: "old", folder: "/work/repo", filePath: "/old", providerKind: "claude-code", createdAt: new Date(), updatedAt: new Date() }];
+  expect((await searchChats({ topLevelOnly: true })).chats).toEqual([]);
 });

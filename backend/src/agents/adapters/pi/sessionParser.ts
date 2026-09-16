@@ -123,7 +123,9 @@ export function listPiSessions(root: string = resolvePiSessionsRoot()): PiSessio
     files.push({ sessionId: sessionIdFromFileName(name), filePath, stat });
   }
 
-  return files.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime());
+  return files.sort(
+    (a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime() || a.sessionId.localeCompare(b.sessionId) || a.filePath.localeCompare(b.filePath),
+  );
 }
 
 /**

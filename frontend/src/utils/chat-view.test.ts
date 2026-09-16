@@ -138,3 +138,54 @@ it("isolates identical predicates in a new mount from old publication failures",
   expect(originatingChatView()?.submittedSearch).toBe("same");
   expect(report).not.toHaveBeenCalledWith(expect.stringContaining("unavailable"));
 });
+
+it.each([429, 502, 503])("retries transient HTTP %s on the heartbeat without changing filters", async (status) => {
+  vi.useFakeTimers();
+  const fetch = vi.fn().mockResolvedValueOnce({ ok: false, status }).mockResolvedValue({ ok: true, status: 200 });
+  vi.stubGlobal("fetch", fetch);
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "same");
+  await Promise.resolve();
+  expect(originatingChatView()?.submittedSearch).toBe("same");
+  expect(fetch).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(25_000);
+  await Promise.resolve();
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(originatingChatView()?.submittedSearch).toBe("same");
+});
+
+it.each([400, 401, 403])("a hard HTTP %s still disables attachment after a transient response", async (status) => {
+  vi.useFakeTimers();
+  const report = vi.fn();
+  const fetch = vi.fn().mockResolvedValueOnce({ ok: false, status: 503 }).mockResolvedValue({ ok: false, status });
+  vi.stubGlobal("fetch", fetch);
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "same", report);
+  await Promise.resolve();
+  expect(originatingChatView()).toBeDefined();
+  vi.advanceTimersByTime(25_000);
+  await Promise.resolve();
+  expect(originatingChatView()).toBeUndefined();
+  expect(report).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
+});
+
+it.each(["unmount", "hard-rejection"] as const)("late transient responses cannot resurrect a view after %s", async (stop) => {
+  vi.useFakeTimers();
+  const pending: ((response: { ok: boolean; status: number }) => void)[] = [];
+  const fetch = vi
+    .fn()
+    .mockImplementation((_url, init) => (init.method === "DELETE" ? Promise.resolve({ ok: true }) : new Promise((resolve) => pending.push(resolve))));
+  vi.stubGlobal("fetch", fetch);
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "same");
+  if (stop === "unmount") stopChatViewPublisher();
+  else {
+    vi.advanceTimersByTime(25_000);
+    pending[1]({ ok: false, status: 400 });
+    await Promise.resolve();
+  }
+  pending[0]({ ok: false, status: 503 });
+  await Promise.resolve();
+  await Promise.resolve();
+  const calls = fetch.mock.calls.length;
+  vi.advanceTimersByTime(100_000);
+  expect(originatingChatView()).toBeUndefined();
+  expect(fetch).toHaveBeenCalledTimes(calls);
+});

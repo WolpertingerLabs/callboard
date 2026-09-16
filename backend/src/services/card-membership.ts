@@ -125,6 +125,8 @@ export function createCardMembership(stored = listChatsSnapshot()) {
     nativeAliases,
     isNative,
     nativeDiscoveryWarnings: provider.nativeDiscoveryWarnings ?? [],
+    deferredNativeSessions: new Set(provider.nativeDiscoveryDeferredSessions ?? []),
+    rejectedNativeSessions: new Set(provider.nativeDiscoveryRejectedSessions ?? []),
     verifiedNativeSessions: new Set(evidence.map((entry) => entry.threadId)),
     nativeDiscoveryIncomplete: provider.nativeDiscoveryIncomplete || provider.discoveryIncomplete,
   };

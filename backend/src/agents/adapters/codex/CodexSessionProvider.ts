@@ -150,8 +150,7 @@ export class CodexSessionProvider implements SessionProvider {
   readonly kind = "codex" as const;
   discoveryIncomplete = false;
   /**
-   * Set by {@link nativeDiscoveryEvidence}: identities were rejected, or the
-   * last pass ran out of metadata
+   * Set by {@link nativeDiscoveryEvidence}: the last pass ran out of metadata
    * budget before reading every rollout, so its result is the newest subset
    * of the corpus, not the corpus. Header bytes on a real device (~75 MB)
    * exceed the 16 MB cold budget several times over; each pass memoizes what
@@ -160,6 +159,8 @@ export class CodexSessionProvider implements SessionProvider {
   nativeDiscoveryIncomplete = false;
   /** Rejected identity evidence is unknown classification, never an ordinary root. */
   nativeDiscoveryWarnings: string[] = [];
+  nativeDiscoveryRejectedSessions = new Set<string>();
+  nativeDiscoveryDeferredSessions = new Set<string>();
 
   ownershipEvidence() {
     // Release evidence gates a directory removal; it reads the tree as it is now.
@@ -176,12 +177,18 @@ export class CodexSessionProvider implements SessionProvider {
     for (const entry of entries) counts.set(entry.threadId, (counts.get(entry.threadId) ?? 0) + 1);
     const budget = { remainingBytes: 16 * 1024 * 1024, exhausted: 0 };
     const rejected = new Map<string, string>();
+    const deferred = new Set<string>();
     const evidence = entries.flatMap((entry) => {
       if (counts.get(entry.threadId) !== 1) {
         rejected.set(entry.threadId, `Ambiguous native rollout identity: ${entry.threadId}`);
         return [];
       }
+      const exhaustedBefore = budget.exhausted;
       const meta = readCodexSessionMeta(entry.filePath, budget);
+      if (budget.exhausted > exhaustedBefore) {
+        deferred.add(entry.threadId);
+        return []; // A retryable budget miss is not evidence of a bad identity.
+      }
       if (!meta || meta.id !== entry.threadId) {
         rejected.set(entry.threadId, `Unverified native rollout identity: ${entry.threadId}`);
         return [];
@@ -195,7 +202,9 @@ export class CodexSessionProvider implements SessionProvider {
       ...(ambiguous ? [`Ambiguous native rollout identities omitted: ${ambiguous}`] : []),
       ...(unverified ? [`Unverified native rollout identities omitted: ${unverified}`] : []),
     ];
-    this.nativeDiscoveryIncomplete = budget.exhausted > 0 || rejected.size > 0;
+    this.nativeDiscoveryRejectedSessions = new Set(rejected.keys());
+    this.nativeDiscoveryDeferredSessions = deferred;
+    this.nativeDiscoveryIncomplete = budget.exhausted > 0;
     if (budget.exhausted > 0)
       log.debug(`Native discovery read ${entries.length - budget.exhausted} of ${entries.length} rollouts before its metadata budget ran out.`);
     return evidence;
@@ -346,7 +355,7 @@ export class CodexSessionProvider implements SessionProvider {
       }
     }
 
-    entries.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime());
+    entries.sort((a, b) => b.stat.mtime.getTime() - a.stat.mtime.getTime() || a.threadId.localeCompare(b.threadId) || a.filePath.localeCompare(b.filePath));
     // Memoize only a complete walk of a settled tree (see the memo's note): an
     // incomplete listing must not be served again as if it were the corpus.
     const settled = [...directories.values()].every((mtimeNs) => now - Number(mtimeNs / 1_000_000n) > ROLLOUT_LISTING_SETTLE_MS);
