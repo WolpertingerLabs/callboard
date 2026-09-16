@@ -150,13 +150,16 @@ export class CodexSessionProvider implements SessionProvider {
   readonly kind = "codex" as const;
   discoveryIncomplete = false;
   /**
-   * Set by {@link nativeDiscoveryEvidence}: the last pass ran out of metadata
+   * Set by {@link nativeDiscoveryEvidence}: identities were rejected, or the
+   * last pass ran out of metadata
    * budget before reading every rollout, so its result is the newest subset
    * of the corpus, not the corpus. Header bytes on a real device (~75 MB)
    * exceed the 16 MB cold budget several times over; each pass memoizes what
    * it read, so a few passes — or the sidebar's unbudgeted walk — complete it.
    */
   nativeDiscoveryIncomplete = false;
+  /** Rejected identity evidence is unknown classification, never an ordinary root. */
+  nativeDiscoveryWarnings: string[] = [];
 
   ownershipEvidence() {
     // Release evidence gates a directory removal; it reads the tree as it is now.
@@ -172,14 +175,29 @@ export class CodexSessionProvider implements SessionProvider {
     const counts = new Map<string, number>();
     for (const entry of entries) counts.set(entry.threadId, (counts.get(entry.threadId) ?? 0) + 1);
     const budget = { remainingBytes: 16 * 1024 * 1024, exhausted: 0 };
+    const rejected = new Map<string, string>();
     const evidence = entries.flatMap((entry) => {
-      if (counts.get(entry.threadId) !== 1) return [];
+      if (counts.get(entry.threadId) !== 1) {
+        rejected.set(entry.threadId, `Ambiguous native rollout identity: ${entry.threadId}`);
+        return [];
+      }
       const meta = readCodexSessionMeta(entry.filePath, budget);
-      if (!meta || meta.id !== entry.threadId || isIgnoredProjectFolder(meta.cwd ?? "")) return [];
+      if (!meta || meta.id !== entry.threadId) {
+        rejected.set(entry.threadId, `Unverified native rollout identity: ${entry.threadId}`);
+        return [];
+      }
+      if (isIgnoredProjectFolder(meta.cwd ?? "")) return [];
       return [{ ...entry, meta }];
     });
-    this.nativeDiscoveryIncomplete = budget.exhausted > 0;
-    if (this.nativeDiscoveryIncomplete) log.debug(`Native discovery read ${entries.length - budget.exhausted} of ${entries.length} rollouts before its metadata budget ran out.`);
+    const ambiguous = [...rejected.values()].filter((reason) => reason.startsWith("Ambiguous")).length;
+    const unverified = rejected.size - ambiguous;
+    this.nativeDiscoveryWarnings = [
+      ...(ambiguous ? [`Ambiguous native rollout identities omitted: ${ambiguous}`] : []),
+      ...(unverified ? [`Unverified native rollout identities omitted: ${unverified}`] : []),
+    ];
+    this.nativeDiscoveryIncomplete = budget.exhausted > 0 || rejected.size > 0;
+    if (budget.exhausted > 0)
+      log.debug(`Native discovery read ${entries.length - budget.exhausted} of ${entries.length} rollouts before its metadata budget ran out.`);
     return evidence;
   }
 

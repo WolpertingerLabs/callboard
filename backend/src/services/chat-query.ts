@@ -85,6 +85,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   const membership = createCardMembership(stored);
   const discovery = discoverChatCorpus();
   const warnings = [...discovery.warnings];
+  warnings.push(...membership.nativeDiscoveryWarnings);
   if (membership.nativeDiscoveryIncomplete) warnings.push("Native lineage discovery incomplete; unverified Codex chats and dependent lineage omitted");
   // A budget miss is unknown lineage, not proof of an ordinary root. Retain
   // the captured evidence boundary even if later discovery warms the cache.
@@ -130,6 +131,16 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       warnings.push(`Ambiguous provider ownership for ${chat.id}`);
     }
   }
+  const primaryEvidence = new Set(
+    stored
+      .filter((chat) => {
+        const route = routing.get(chat.id);
+        return (discoveryBySession.get(chat.session_id) ?? []).some(
+          (session) => session.providerKind === route?.provider && session.acpProviderId === route?.vendor,
+        );
+      })
+      .map((chat) => chat.id),
+  );
   const rows = new Map<string, Chat & { displayFolder?: string }>();
   const identities = new Map<string, Set<string>>();
   for (const session of discovery.sessions) {
@@ -141,8 +152,12 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     });
     if (candidates.length > 1) {
       for (const chat of candidates) {
-        rejectedIds.add(chat.id);
-        rows.delete(chat.id);
+        // An ambiguous historical alias is not evidence against an
+        // independently owned current session.
+        if (chat.session_id === session.sessionId) {
+          rejectedIds.add(chat.id);
+          rows.delete(chat.id);
+        }
       }
       warnings.push(`Ambiguous stored owners for ${session.providerKind} session ${session.sessionId}`);
       continue;
@@ -166,6 +181,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
           const logical = membership.corpus.get(owner.id) ?? owner;
           rows.set(owner.id, {
             ...logical,
+            // Browse projection follows newest discovery, independently of
+            // the logical chat's current provider/session execution identity.
+            folder: session.folder,
+            displayFolder: session.displayFolder,
+            session_log_path: session.filePath,
+            created_at: session.createdAt.toISOString(),
+            updated_at: session.updatedAt.toISOString(),
             metadata: JSON.stringify({
               ...parseChatMetadata(logical.metadata),
               provider: route.provider,
@@ -174,9 +196,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
           });
         }
       } else {
+        // Unqualified history (or another namespace with the same raw ID)
+        // cannot revoke independently discovered primary routing.
         for (const chat of knownOwners) {
-          rejectedIds.add(chat.id);
-          rows.delete(chat.id);
+          if (chat.session_id === session.sessionId && !primaryEvidence.has(chat.id)) {
+            rejectedIds.add(chat.id);
+            rows.delete(chat.id);
+          }
         }
         warnings.push(`Session ownership does not match stored routing for ${session.sessionId}`);
       }
@@ -207,7 +233,10 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const keys = identities.get(id) ?? new Set<string>();
     keys.add(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId]));
     identities.set(id, keys);
-    if (previous && session.sessionId !== storedChat?.session_id) continue; // Prefer current routing over historical backing.
+    // Discovery is globally newest-first. Execution identity already comes
+    // from the stored record; an older current log must not replace the
+    // selected alias's browse timestamp/folder or affect date filters/pages.
+    if (previous) continue;
     rows.set(id, {
       ...storedChat,
       id,

@@ -88,3 +88,53 @@ it("a late rejection cannot clear a newer view", async () => {
   await Promise.resolve();
   expect(originatingChatView()?.submittedSearch).toBe("new");
 });
+
+it.each(["capture", "heartbeat", "same-state-publication"] as const)("handles late rejection after revision-only %s", async (advance) => {
+  vi.useFakeTimers();
+  const pending: ((response: { ok: boolean }) => void)[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation((_url, init) => (init.method === "DELETE" ? Promise.resolve({ ok: true }) : new Promise((resolve) => pending.push(resolve)))),
+  );
+  const report = vi.fn();
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "", report);
+  if (advance === "capture") originatingChatView();
+  else if (advance === "heartbeat") vi.advanceTimersByTime(25_000);
+  else publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "", report);
+  pending[0]({ ok: false });
+  await Promise.resolve();
+  expect(report).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
+  expect(originatingChatView()).toBeUndefined();
+});
+it("keeps a confirmed newer same-state publication when an older request fails", async () => {
+  vi.useFakeTimers();
+  const pending: ((response: { ok: boolean }) => void)[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(() => new Promise((resolve) => pending.push(resolve))),
+  );
+  const report = vi.fn();
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "same", report);
+  vi.advanceTimersByTime(25_000);
+  pending[1]({ ok: true });
+  await Promise.resolve();
+  pending[0]({ ok: false });
+  await Promise.resolve();
+  expect(originatingChatView()?.submittedSearch).toBe("same");
+  expect(report).not.toHaveBeenCalledWith(expect.stringContaining("unavailable"));
+});
+it("isolates identical predicates in a new mount from old publication failures", async () => {
+  const pending: ((response: { ok: boolean }) => void)[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation((_url, init) => (init.method === "DELETE" ? Promise.resolve({ ok: true }) : new Promise((resolve) => pending.push(resolve)))),
+  );
+  const report = vi.fn();
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "same", report);
+  stopChatViewPublisher();
+  publishChatView(DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, "same", report);
+  pending[0]({ ok: false });
+  await Promise.resolve();
+  expect(originatingChatView()?.submittedSearch).toBe("same");
+  expect(report).not.toHaveBeenCalledWith(expect.stringContaining("unavailable"));
+});

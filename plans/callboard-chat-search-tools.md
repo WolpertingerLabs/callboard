@@ -398,3 +398,38 @@ native alias resolution, `chat-content-search.ts` worker limits, and the
   setup now skips redundant cleanup while seeding, then exercises real
   cleanup for its assertions. No outstanding test failures. No manual live
   browser run beyond component tests and real-file/provider integrations.
+
+### Review round 2 hardening
+
+- Browse projection and execution identity are separate: globally newest
+  discovery backing supplies timestamps/folder/display-folder, including
+  historical cross-engine backing. Later current-session discovery does not
+  overwrite it. Returned provider/session remain the logical chat's current
+  routing. This restores sidebar date, ordering and pagination parity.
+- Rejected native headers (duplicate IDs, mismatches and unreadable metadata)
+  now make native discovery explicitly incomplete, alongside budget misses.
+  Aggregated reason/count warnings accompany the existing verified-session
+  boundary. Search conservatively omits unverified candidates, stored pins
+  and dependent roots without extra metadata replay.
+- Uncertain historical ACP aliases do not revoke an independently owned
+  current chat. Such aliases/matches are omitted with a warning; vendor
+  isolation is unchanged. Historical-only ACP backing requires qualified
+  ownership; a vendor transition cannot be inferred from raw session IDs.
+- Publisher failure isolation now uses normalized applied-state/remount
+  generations, not snapshot-object identity. Revision-only foreground
+  captures, heartbeats and identical-state publications cannot hide a
+  rejection. A confirmed newer successful publication of the same generation
+  protects it from older failures; different state/remount generations remain
+  isolated. Unconfirmed late failures disable attachment and disclose the
+  unavailable view rather than poisoning subsequent message sends.
+
+Round 2 validation: one full `npx vitest run` passed (380 files, 5,819 tests;
+3 files / 32 tests skipped). Focused query/native/provider/publisher tests:
+8 files, 134 passed. Both reviewer Vitest configs passed (7 backend assertions
+plus the root ACP assertion). Real publisher/registry capacity reproduction
+now reports one warning and no attached snapshot (the reproduction's
+bug-expecting assertions were inverted in a `/tmp` copy); renewal and the
+original unmount/oversized-state scripts still have the expected behavior.
+Full `npm run build` passed, including import rewrite; staged lint has zero
+errors and 7 fixture warnings. No test failures this round. No manual browser
+run; existing large frontend bundle warning remains.

@@ -129,3 +129,87 @@ it("searches historical-only backing without changing current execution identity
   expect(result.chats).toEqual([expect.objectContaining({ chatId: "logical", sessionId: "logical", provider: "codex" })]);
   expect(result).toMatchObject({ total: 1, partial: false });
 });
+
+it.each(["codex", "acp"] as const)("uncertain ACP history cannot erase verified current %s identity in either discovery order", async (provider) => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-history-"));
+  scratchDirs.push(dir);
+  const oldPath = join(dir, "old.jsonl");
+  const currentPath = join(dir, "current.jsonl");
+  writeFileSync(oldPath, JSON.stringify({ type: "user_message", content: "needle" }) + "\n");
+  writeFileSync(currentPath, JSON.stringify({ type: "user_message", content: "unrelated" }) + "\n");
+  state.stored = [chat("root", { provider, ...(provider === "acp" && { acpProviderId: "current-vendor" }), session_ids: ["old"] })];
+  discover();
+  const current = { ...state.sessions[0], providerKind: provider, ...(provider === "acp" && { acpProviderId: "current-vendor" }), filePath: currentPath };
+  const old = { ...current, sessionId: "old", providerKind: "acp", acpProviderId: "old-vendor", filePath: oldPath };
+  for (const sessions of [
+    [current, old],
+    [old, current],
+  ]) {
+    state.sessions = sessions;
+    state.view = undefined;
+    const result = await searchChats({});
+    expect(ids(result)).toEqual(["root"]);
+    expect(result.chats[0]).toMatchObject({ sessionId: "root", provider });
+    expect(result).toMatchObject({ partial: true, total: null });
+    state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
+    expect((await searchChats({ scope: "visible" })).chats).toEqual([]);
+  }
+});
+
+it.each(["codex", "different-vendor", "same-vendor"] as const)("ACP historical-only ownership: %s", async (kind) => {
+  const dir = mkdtempSync(join(tmpdir(), "acp-history-only-"));
+  scratchDirs.push(dir);
+  const filePath = join(dir, "old.jsonl");
+  writeFileSync(filePath, JSON.stringify({ type: "user_message", content: "needle" }) + "\n");
+  const provider = kind === "codex" ? "codex" : "acp";
+  state.stored = [chat("root", { provider, ...(provider === "acp" && { acpProviderId: "current-vendor" }), session_ids: ["old"] })];
+  discover();
+  state.sessions[0] = {
+    ...state.sessions[0],
+    sessionId: "old",
+    providerKind: "acp",
+    acpProviderId: kind === "same-vendor" ? "current-vendor" : "old-vendor",
+    filePath,
+  };
+  state.view = { available: true, filters: DEFAULT_CHAT_FILTERS, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "needle" };
+  const result = await searchChats({ scope: "visible" });
+  if (kind === "same-vendor") {
+    expect(result.chats).toEqual([expect.objectContaining({ chatId: "root", sessionId: "root", provider: "acp", acpProviderId: "current-vendor" })]);
+    expect(result.partial).toBe(false);
+  } else {
+    expect(result.chats).toEqual([]);
+    expect(result.partial).toBe(true);
+  }
+});
+
+it("separates newest cross-engine browse backing from canonical execution identity", async () => {
+  state.stored = [chat("root", { session_ids: ["old"] })];
+  discover();
+  const current = state.sessions[0];
+  state.sessions = [
+    { ...current, sessionId: "old", providerKind: "claude-code", folder: "/history", displayFolder: "/history-display", updatedAt: new Date("2026-09-10") },
+    current,
+  ];
+  const result = await searchChats({});
+  expect(result.chats[0]).toMatchObject({
+    chatId: "root",
+    sessionId: "root",
+    provider: "codex",
+    folder: "/history",
+    displayFolder: "/history-display",
+    updatedAt: "2026-09-10T00:00:00.000Z",
+  });
+});
+it("an unowned ACP vendor with the same raw current ID cannot revoke proven primary routing", async () => {
+  state.stored = [chat("root", { provider: "acp", acpProviderId: "owned" })];
+  discover();
+  const owned = { ...state.sessions[0], providerKind: "acp", acpProviderId: "owned" };
+  const unowned = { ...owned, acpProviderId: "unowned" };
+  for (const sessions of [
+    [owned, unowned],
+    [unowned, owned],
+  ]) {
+    state.sessions = sessions;
+    expect((await searchChats({})).chats).toEqual([expect.objectContaining({ chatId: "root", provider: "acp", acpProviderId: "owned" })]);
+  }
+});

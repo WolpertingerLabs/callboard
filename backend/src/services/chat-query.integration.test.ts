@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, utimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CHAT_FILTERS, DEFAULT_CHAT_VIEW_OPTIONS, filterChatRows } from "shared/types/chat-filters.js";
@@ -225,4 +225,66 @@ it("visible appendables must be reached from surviving sidebar candidates", asyn
   const tool = await searchChats({ scope: "visible" }, binding);
   const sidebar = list({ excludeTriggered: "true", cardLifecycle: "unarchived" });
   expect(tool.chats.map((c) => c.chatId)).toEqual(sidebar.chats.map((c: { id: string }) => c.id));
+});
+
+it("keeps newest alias browse projection and current identity through date filters and pagination", async () => {
+  stored(ids[0], { session_ids: [ids[1]] });
+  stored(ids[2]);
+  stored(ids[3]);
+  rollout(ids[0], undefined, "/scratch/current");
+  rollout(ids[1], undefined, "/scratch/latest");
+  rollout(ids[2]);
+  rollout(ids[3]);
+  const dir = join(state.home, "sessions/2026/09/06");
+  for (const [id, date] of [
+    [ids[0], "2026-01-01"],
+    [ids[1], "2026-09-10"],
+    [ids[2], "2026-09-12"],
+    [ids[3], "2026-09-07"],
+  ]) {
+    utimesSync(join(dir, `rollout-2026-09-06T11-35-07-${id}.jsonl`), new Date(date), new Date(date));
+  }
+  const filters = structuredClone(DEFAULT_CHAT_FILTERS);
+  filters.dateMin = { active: true, value: "2026-09-05T00:00:00Z" };
+  const binding = chatViews.publish("browser", { viewId: "alias-projection", revision: 1, filters, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "" });
+  const sidebar = filterChatRows(
+    list({ excludeTriggered: "true", cardLifecycle: "unarchived" }).chats as { id: string; folder: string; updated_at: string }[],
+    filters,
+  ).rows;
+  const tool = await searchChats({ scope: "visible" }, binding);
+  expect(tool.chats.map((c) => c.chatId)).toEqual(sidebar.map((c) => c.id));
+  const alias = tool.chats.find((c) => c.chatId === ids[0]);
+  expect(alias).toMatchObject({ sessionId: ids[0], provider: "codex", folder: "/scratch/latest", updatedAt: "2026-09-10T00:00:00.000Z" });
+  expect((await searchChats({ scope: "visible", limit: 1, offset: 1 }, binding)).chats).toEqual([alias]);
+  filters.directoryInclude = { active: true, value: "latest" };
+  chatViews.publish("browser", { viewId: "alias-projection", revision: 2, filters, options: DEFAULT_CHAT_VIEW_OPTIONS, submittedSearch: "" });
+  expect((await searchChats({ scope: "visible" }, binding)).chats).toEqual([alias]);
+});
+
+it.each(["duplicate", "mismatched", "malformed"] as const)("omits %s native evidence from roots, default-visible and stored-pin candidates", async (kind) => {
+  rollout(ids[1], ids[0]);
+  const dir = join(state.home, "sessions/2026/09/06");
+  const path = join(dir, `rollout-2026-09-06T11-35-07-${ids[1]}.jsonl`);
+  if (kind === "duplicate") copyFileSync(path, join(dir, `rollout-2026-09-06T12-35-07-${ids[1]}.jsonl`));
+  else if (kind === "mismatched") writeFileSync(path, JSON.stringify({ type: "session_meta", payload: { id: ids[0], cwd: "/scratch/repo" } }) + "\n");
+  else writeFileSync(path, "not a valid session header\n");
+  const binding = chatViews.publish("browser", {
+    viewId: "rejected-native-" + kind,
+    revision: 1,
+    filters: DEFAULT_CHAT_FILTERS,
+    options: DEFAULT_CHAT_VIEW_OPTIONS,
+    submittedSearch: "",
+  });
+  for (const query of [{ topLevelOnly: true }, { scope: "visible" as const }, {}]) {
+    const result = await searchChats(query, binding);
+    expect(result.chats).toEqual([]);
+    expect(result).toMatchObject({ partial: true, total: null });
+    expect(result.warnings.join(" ")).toMatch(/native rollout identities omitted/);
+  }
+  stored(ids[1], { pinned: true });
+  stored(ids[2], { parentChatId: ids[1], pinned: true });
+  rollout(ids[2]);
+  resetChatsSnapshot();
+  clearCodexRolloutListingCache();
+  expect((await searchChats({ anyOf: ["pinned", "open_card"] })).chats).toEqual([]);
 });
