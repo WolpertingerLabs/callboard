@@ -1336,8 +1336,12 @@ export async function getFavorites(): Promise<FavoriteLists> {
 }
 
 /**
- * Write one or both lists. The response is the authoritative post-write pair —
+ * Replace one or both lists. The response is the authoritative post-write pair —
  * callers adopt it rather than keeping their optimistic copy.
+ *
+ * NOT what a star click sends: the body has to be computed from a snapshot,
+ * and a stale snapshot deletes favorites the writer never saw. See
+ * {@link patchFavorites}.
  */
 export async function updateFavorites(lists: Partial<FavoriteLists>): Promise<FavoriteLists> {
   const res = await fetch(`${BASE}/agent-settings/favorites`, {
@@ -1345,6 +1349,38 @@ export async function updateFavorites(lists: Partial<FavoriteLists>): Promise<Fa
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify(lists),
+  });
+  await assertOk(res, "Failed to update favorites");
+  return res.json();
+}
+
+/** Ids to add to / remove from one favorites list. */
+export interface IdDelta {
+  add?: string[];
+  remove?: string[];
+}
+
+/** What changed, per side. An absent side is not touched. */
+export interface FavoritesDelta {
+  skills?: IdDelta;
+  jobs?: IdDelta;
+}
+
+/**
+ * Change the favorites by naming only what changed.
+ *
+ * This is what a star click sends. The daemon applies the delta to the list as
+ * *it* has it, so a tab holding a list from five minutes ago can no longer
+ * delete an entry another tab added in the meantime — the worst it can do is
+ * re-add something, which is visible and one click to undo. The response is
+ * the authoritative post-write pair.
+ */
+export async function patchFavorites(delta: FavoritesDelta): Promise<FavoriteLists> {
+  const res = await fetch(`${BASE}/agent-settings/favorites`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(delta),
   });
   await assertOk(res, "Failed to update favorites");
   return res.json();

@@ -59,13 +59,15 @@ afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-const handlerFor = (method: "get" | "put") =>
+const handlerFor = (method: Method) =>
   (agentSettingsRouter as any).stack.find((layer: any) => layer.route?.path === "/favorites" && layer.route.methods[method]).route.stack[0].handle as (
     req: Request,
     res: Response,
   ) => void;
 
-function call(method: "get" | "put", body?: unknown): Promise<{ code: number; body: any }> {
+type Method = "get" | "put" | "patch";
+
+function call(method: Method, body?: unknown): Promise<{ code: number; body: any }> {
   return new Promise((resolve) => {
     const res = {
       statusCode: 200,
@@ -176,5 +178,112 @@ describe("PUT /api/agent-settings/favorites", () => {
     const res = await call("put", {});
     expect(res.code).toBe(200);
     expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"] });
+  });
+});
+
+/**
+ * The delta write, which exists because the whole-list write is unsafe from a
+ * client that has two tabs open — and on a remote-access tool, two tabs open is
+ * the normal shape, not an edge case.
+ *
+ * The first test is the reproduction that stopped the merge, transcribed: the
+ * stale tab's request carries the id its user clicked and nothing else, so the
+ * favorite the *other* tab removed cannot come back and the favorite neither
+ * tab mentioned cannot go away. That is the whole property, and it belongs
+ * here rather than in the client, because it is the server applying the delta
+ * to its own current state that makes it true.
+ */
+describe("PATCH /api/agent-settings/favorites", () => {
+  it("applies the add to the STORED list, not to the client's snapshot", async () => {
+    // Tab A has already un-starred "bug-triage" (stored list is now one entry).
+    await call("put", { favoriteSkills: ["release-notes"] });
+
+    // Tab B still believes the list is ["release-notes", "bug-triage"] and the
+    // user stars a third skill. Under PUT it would send all three and resurrect
+    // the entry A deleted; the delta names only what was clicked.
+    const res = await call("patch", { skills: { add: ["dep-audit"] } });
+
+    expect(res.code).toBe(200);
+    expect(onDisk().favoriteSkills).toEqual(["release-notes", "dep-audit"]);
+    expect(res.body.favoriteSkills).toEqual(["release-notes", "dep-audit"]);
+  });
+
+  it("removes only the named id, leaving entries the client never knew about", async () => {
+    // The other half of the same failure: a stale tab un-starring one thing
+    // used to write its entire (short) snapshot over a longer list.
+    await call("put", { favoriteSkills: ["release-notes", "bug-triage", "dep-audit"] });
+
+    const res = await call("patch", { skills: { remove: ["bug-triage"] } });
+
+    expect(onDisk().favoriteSkills).toEqual(["release-notes", "dep-audit"]);
+    expect(res.body.favoriteSkills).toEqual(["release-notes", "dep-audit"]);
+  });
+
+  it("appends an add and does not duplicate one already present", async () => {
+    // Order is the display order, so a re-add must not reshuffle the list.
+    const res = await call("patch", { skills: { add: ["release-notes", "changelog"] } });
+
+    expect(res.body.favoriteSkills).toEqual(["release-notes", "bug-triage", "changelog"]);
+  });
+
+  it("ignores a remove for an id that is not there", async () => {
+    const res = await call("patch", { skills: { remove: ["never-starred"] } });
+
+    expect(res.body.favoriteSkills).toEqual(["release-notes", "bug-triage"]);
+  });
+
+  it("treats an id named in both as an add", async () => {
+    const res = await call("patch", { skills: { add: ["bug-triage"], remove: ["bug-triage"] } });
+
+    // Removed then re-added: present, at the end. The alternative reading makes
+    // "add" a no-op, which no caller could ever want.
+    expect(res.body.favoriteSkills).toEqual(["release-notes", "bug-triage"]);
+  });
+
+  it("touches only the side the request names", async () => {
+    const res = await call("patch", { jobs: { add: ["nightly"] } });
+
+    expect(onDisk().favoriteSkills).toEqual(["release-notes", "bug-triage"]);
+    expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr", "nightly"] });
+  });
+
+  it("handles both sides in one request", async () => {
+    // What "unpin everything that no longer exists" sends: one request, one
+    // authoritative answer.
+    const res = await call("patch", { skills: { remove: ["release-notes"] }, jobs: { remove: ["bake-devin-pr"] } });
+
+    expect(res.body).toEqual({ favoriteSkills: ["bug-triage"], favoriteJobs: [] });
+  });
+
+  it("clears the setting when the delta empties a list", async () => {
+    const res = await call("patch", { jobs: { remove: ["bake-devin-pr"] } });
+
+    expect("favoriteJobs" in onDisk()).toBe(false);
+    expect(res.body.favoriteJobs).toEqual([]);
+  });
+
+  it("normalizes ids the way the other writes do", async () => {
+    const res = await call("patch", { skills: { add: ["  changelog  ", "", "  ", 7, null, "changelog"] } });
+
+    expect(res.body.favoriteSkills).toEqual(["release-notes", "bug-triage", "changelog"]);
+  });
+
+  it("changes nothing on a malformed or empty delta", async () => {
+    // A truncated request must not be able to mean anything. Same reasoning as
+    // the PUT's non-array guard.
+    for (const body of [{}, { skills: null }, { skills: [] }, { skills: { add: "release-notes" } }, { skills: {} }, undefined]) {
+      const res = await call("patch", body);
+      expect(res.code).toBe(200);
+      expect(res.body).toEqual({ favoriteSkills: ["release-notes", "bug-triage"], favoriteJobs: ["bake-devin-pr"] });
+    }
+  });
+
+  it("is as narrow as the PUT in both directions", async () => {
+    const res = await call("patch", { skills: { add: ["changelog"] }, apiKey: "sk-ant-injected", proxyMode: "remote" });
+
+    expect(onDisk().apiKey).toBe("sk-ant-secret");
+    expect(onDisk().proxyMode).toBe("local");
+    expect(Object.keys(res.body).sort()).toEqual(["favoriteJobs", "favoriteSkills"]);
+    expect(JSON.stringify(res.body)).not.toContain("secret");
   });
 });

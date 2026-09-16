@@ -12,17 +12,17 @@
  * per new-chat open, not two.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, renderHook, waitFor } from "@testing-library/react";
-import type { CustomSkillListItem, FavoriteLists, JobDefinition } from "../api";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import type { CustomSkillListItem, FavoriteLists, FavoritesDelta, JobDefinition } from "../api";
 
 const getFavorites = vi.fn();
-const updateFavorites = vi.fn();
+const patchFavorites = vi.fn();
 const listCustomSkills = vi.fn();
 const listJobs = vi.fn();
 
 vi.mock("../api", () => ({
   getFavorites: () => getFavorites(),
-  updateFavorites: (lists: Partial<FavoriteLists>) => updateFavorites(lists),
+  patchFavorites: (delta: FavoritesDelta) => patchFavorites(delta),
   listCustomSkills: () => listCustomSkills(),
   listJobs: () => listJobs(),
 }));
@@ -46,7 +46,7 @@ const lists = (skills: string[] = [], jobs: string[] = []): FavoriteLists => ({ 
 
 beforeEach(() => {
   getFavorites.mockReset();
-  updateFavorites.mockReset().mockResolvedValue(lists());
+  patchFavorites.mockReset().mockResolvedValue(lists());
   listCustomSkills.mockReset().mockResolvedValue([]);
   listJobs.mockReset().mockResolvedValue([]);
 });
@@ -110,7 +110,10 @@ describe("useResolvedFavorites", () => {
     expect(listJobs).not.toHaveBeenCalled();
   });
 
-  it("reports a catalog failure instead of swallowing it into 'nothing resolved'", async () => {
+  it("reports a catalog failure in the user's terms, not the API's", async () => {
+    // "Failed to list jobs" is the daemon describing its own operation, and it
+    // renders beside a Skills list that is working — nothing in it says that
+    // what failed was the pinned jobs on this card.
     getFavorites.mockResolvedValue(lists([], ["nightly"]));
     listJobs.mockRejectedValue(new Error("Failed to list jobs"));
     const { useResolvedFavorites } = await loadHook();
@@ -118,8 +121,39 @@ describe("useResolvedFavorites", () => {
     const { result } = renderHook(() => useResolvedFavorites());
 
     await waitFor(() => expect(result.current.settled).toBe(true));
-    expect(result.current.error).toBe("Failed to list jobs");
+    expect(result.current.error).toBe("Could not load your pinned jobs.");
     expect(result.current.jobs).toEqual([]);
+  });
+
+  it("names the failing side when it is the skills", async () => {
+    getFavorites.mockResolvedValue(lists(["release-notes"], []));
+    listCustomSkills.mockRejectedValue(new Error("Failed to list skills"));
+    const { useResolvedFavorites } = await loadHook();
+
+    const { result } = renderHook(() => useResolvedFavorites());
+
+    await waitFor(() => expect(result.current.settled).toBe(true));
+    expect(result.current.error).toBe("Could not load your pinned skills.");
+  });
+
+  it("stops reporting a catalog failure once that side is no longer read", async () => {
+    // Un-starring the last job does not just stop the fetch — the previous
+    // answer has to go too, or `error` keeps complaining about a list nothing
+    // on screen is reading, and no retry clears it because no retry fetches it.
+    getFavorites.mockResolvedValue(lists([], ["nightly"]));
+    listJobs.mockRejectedValue(new Error("boom"));
+    const { useResolvedFavorites } = await loadHook();
+    const { useFavorites } = await import("../utils/favorites");
+
+    const { result } = renderHook(() => useResolvedFavorites());
+    const favorites = renderHook(() => useFavorites("jobs"));
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+
+    patchFavorites.mockResolvedValue(lists([], []));
+    act(() => favorites.result.current.toggle("nightly"));
+
+    await waitFor(() => expect(result.current.error).toBeNull());
+    expect(result.current.settled).toBe(true);
   });
 
   it("re-reads everything on retry", async () => {
@@ -158,5 +192,108 @@ describe("useResolvedFavorites", () => {
     expect(getFavorites).not.toHaveBeenCalled();
     expect(listCustomSkills).not.toHaveBeenCalled();
     expect(result.current.settled).toBe(false);
+  });
+});
+
+/**
+ * `settled` means "nothing more is coming", which is the right gate for
+ * drawing and the wrong one for throwing state away: it is true when a catalog
+ * has *failed*, and a job whose re-read failed has gone exactly as far as one
+ * still being re-read — nowhere. The launchpad's open spawn form is keyed to a
+ * job, so this distinction is the difference between keeping and discarding
+ * whatever the user had typed into it.
+ */
+describe("useResolvedFavorites — jobsResolved", () => {
+  it("stays false while the job catalog is failed, even though everything is settled", async () => {
+    getFavorites.mockResolvedValue(lists([], ["nightly"]));
+    listJobs.mockRejectedValue(new Error("boom"));
+    const { useResolvedFavorites } = await loadHook();
+
+    const { result } = renderHook(() => useResolvedFavorites());
+
+    await waitFor(() => expect(result.current.settled).toBe(true));
+    expect(result.current.jobsResolved).toBe(false);
+  });
+
+  it("stays false while the job catalog is still being read", async () => {
+    getFavorites.mockResolvedValue(lists([], ["nightly"]));
+    const catalog = deferred<JobDefinition[]>();
+    listJobs.mockReturnValue(catalog.promise);
+    const { useResolvedFavorites } = await loadHook();
+
+    const { result } = renderHook(() => useResolvedFavorites());
+
+    await waitFor(() => expect(listJobs).toHaveBeenCalled());
+    expect(result.current.jobsResolved).toBe(false);
+
+    catalog.resolve([JOB("nightly")]);
+    await waitFor(() => expect(result.current.jobsResolved).toBe(true));
+  });
+
+  it("is true when no job is starred — an empty list is still an answer", async () => {
+    getFavorites.mockResolvedValue(lists(["release-notes"], []));
+    listCustomSkills.mockResolvedValue([SKILL("release-notes")]);
+    const { useResolvedFavorites } = await loadHook();
+
+    const { result } = renderHook(() => useResolvedFavorites());
+
+    await waitFor(() => expect(result.current.settled).toBe(true));
+    expect(result.current.jobsResolved).toBe(true);
+  });
+
+  it("is false when the favorites themselves could not be read", async () => {
+    getFavorites.mockRejectedValue(new Error("offline"));
+    const { useResolvedFavorites } = await loadHook();
+
+    const { result } = renderHook(() => useResolvedFavorites());
+
+    await waitFor(() => expect(result.current.settled).toBe(true));
+    expect(result.current.jobsResolved).toBe(false);
+  });
+});
+
+describe("useResolvedFavorites — favorites that no longer resolve", () => {
+  it("names them, per kind, and only against a catalog that answered", async () => {
+    getFavorites.mockResolvedValue(lists(["release-notes", "renamed-away"], ["gone-job"]));
+    listCustomSkills.mockResolvedValue([SKILL("release-notes")]);
+    listJobs.mockResolvedValue([]);
+    const { useResolvedFavorites } = await loadHook();
+
+    const { result } = renderHook(() => useResolvedFavorites());
+
+    await waitFor(() => expect(result.current.settled).toBe(true));
+    expect(result.current.missingSkills).toEqual(["renamed-away"]);
+    expect(result.current.missingJobs).toEqual(["gone-job"]);
+  });
+
+  it("claims nothing is missing when the catalog failed", async () => {
+    // A failed read has every favorite "missing". Reporting that would blame
+    // the user's settings for the network.
+    getFavorites.mockResolvedValue(lists(["release-notes"], []));
+    listCustomSkills.mockRejectedValue(new Error("boom"));
+    const { useResolvedFavorites } = await loadHook();
+
+    const { result } = renderHook(() => useResolvedFavorites());
+
+    await waitFor(() => expect(result.current.settled).toBe(true));
+    expect(result.current.missingSkills).toEqual([]);
+  });
+
+  it("un-stars exactly those, in one write, when the user asks", async () => {
+    // The only way to reach these: the skill exists under a new name, so no
+    // row anywhere in Settings carries a star to un-set.
+    getFavorites.mockResolvedValue(lists(["release-notes", "renamed-away"], ["gone-job"]));
+    listCustomSkills.mockResolvedValue([SKILL("release-notes")]);
+    listJobs.mockResolvedValue([]);
+    const { useResolvedFavorites } = await loadHook();
+
+    const { result } = renderHook(() => useResolvedFavorites());
+    await waitFor(() => expect(result.current.settled).toBe(true));
+
+    patchFavorites.mockResolvedValue(lists(["release-notes"], []));
+    act(() => result.current.dropMissing());
+
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledWith({ skills: { remove: ["renamed-away"] }, jobs: { remove: ["gone-job"] } }));
+    await waitFor(() => expect(result.current.missingSkills).toEqual([]));
   });
 });

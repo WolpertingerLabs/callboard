@@ -102,6 +102,19 @@ describe("SessionInfoNav — the panel is a peek, not a viewer", () => {
     expect((screen.getByRole("button", { name: "cmd-0" }) as HTMLButtonElement).style.minHeight).toBe("44px");
   });
 
+  it("closes the tools panel when the tools go away under it", () => {
+    // An MCP server dropping out takes the pill with it — and the pill is the
+    // only control that closes the panel. What was left was an empty box with
+    // no way to dismiss it.
+    const { rerender, ...handlers } = renderNav({ mcpTools: tools(3) });
+    fireEvent.click(screen.getByRole("button", { name: /Tools/ }));
+    expect(document.getElementById("session-info-tools-panel")).toBeTruthy();
+
+    rerender(<SessionInfoNav slashCommands={commands(4)} mcpTools={tools(0)} onInsertPrompt={handlers.onInsertPrompt} onOpenModal={handlers.onOpenModal} />);
+
+    expect(document.getElementById("session-info-tools-panel")).toBeNull();
+  });
+
   it("stands its Commands pill down when the launchpad is already showing the grid", () => {
     // Two surfaces for one list, four rows apart, is the duplication this
     // component was added to remove.

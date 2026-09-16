@@ -38,6 +38,16 @@ const helpStyle: React.CSSProperties = {
   marginTop: 4,
 };
 
+const errorBoxStyle: React.CSSProperties = {
+  padding: "8px 12px",
+  borderRadius: 6,
+  background: "var(--danger-bg)",
+  border: "1px solid var(--danger-border)",
+  color: "var(--danger)",
+  fontSize: 13,
+  marginBottom: 12,
+};
+
 interface EditorState {
   /** Name of the skill being edited, or null when creating a new one. */
   originalName: string | null;
@@ -152,21 +162,13 @@ export default function SkillsSettings() {
           screen, where one click drops it into the composer.
         </div>
 
-        {error && (
-          <div
-            style={{
-              padding: "8px 12px",
-              borderRadius: 6,
-              background: "var(--danger-bg)",
-              border: "1px solid var(--danger-border)",
-              color: "var(--danger)",
-              fontSize: 13,
-              marginBottom: 12,
-            }}
-          >
-            {error}
-          </div>
-        )}
+        {error && <div style={errorBoxStyle}>{error}</div>}
+
+        {/* A star that quietly un-fills is indistinguishable from a misclick,
+            and the rollback is silent by design (see `utils/favorites.ts`:
+            there is no hand-rolled revert, the last confirmed list simply
+            stands). Something has to say the click did not take. */}
+        {favoriteSkills.writeError && <div style={errorBoxStyle}>{favoriteSkills.writeError}</div>}
 
         {editor ? (
           <div>

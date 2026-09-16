@@ -233,7 +233,11 @@ export default function SessionInfoNav({ slashCommands, mcpTools, onInsertPrompt
         </div>
       )}
 
-      {open === "tools" && mcpTools && (
+      {/* `hasTools`, not just `open` — the tool list can go to zero while the
+          panel is open (a server drops out), and the pill that closes it goes
+          with it. What was left was an empty panel with no control to dismiss
+          it. The Commands panel above has had this guard all along. */}
+      {hasTools && open === "tools" && mcpTools && (
         <div id={PANEL_ID.tools} style={panelStyle}>
           <div style={scrollStyle}>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>

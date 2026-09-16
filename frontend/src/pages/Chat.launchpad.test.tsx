@@ -66,10 +66,13 @@ function fakeServer(input: RequestInfo | URL): Promise<Response> {
 const resolved = (overrides: Partial<ResolvedFavorites> = {}): ResolvedFavorites => ({
   skills: [],
   jobs: [],
-  missing: 0,
+  missingSkills: [],
+  missingJobs: [],
   settled: true,
+  jobsResolved: true,
   error: null,
   retry: vi.fn(),
+  dropMissing: vi.fn(),
   ...overrides,
 });
 
@@ -158,6 +161,19 @@ describe("new-chat command surfaces — one list, one surface", () => {
 
     expect(screen.getByText("Available Commands")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Commands/ })).toBeNull();
+  });
+
+  it("shows no Commands pill at all until the launchpad has decided", async () => {
+    // "hidden" is not "commands", so the pill used to render on every cold
+    // load and then be pulled out from under the cursor the moment the
+    // fallback grid arrived — 79 consecutive frames of it measured in Chromium
+    // against a 1400ms favorites read over the tunnel, 0 on localhost. The
+    // launchpad's no-flash rule has to cover the nav beside it.
+    favorites = resolved({ settled: false });
+    await openNewChat();
+
+    expect(screen.queryByRole("button", { name: /^Commands/ })).toBeNull();
+    expect(screen.queryByText("Available Commands")).toBeNull();
   });
 
   it("brings the pill back once something is starred", async () => {

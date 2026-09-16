@@ -1,17 +1,25 @@
 /**
- * The favorites cache, and the data-loss hole it exists to close.
+ * The favorites cache, and the data-loss holes it exists to close.
  *
- * Starring a skill is a read-modify-write of a list the server owns: the client
- * PUTs the whole array. So "we have not read it yet" is not a cosmetic loading
- * state — a toggle against an assumed-empty list PUTs one element, the daemon
- * cannot tell that from a deliberate clear, and every other favorite is gone
- * with no error and no undo. The first two tests here are that regression, from
- * both directions: before the first read lands, and after one that failed.
+ * Starring a skill changes one entry in a list the server owns. It used to be
+ * sent as a whole-array PUT computed from this tab's last snapshot, which made
+ * every click an assertion about entries the user never touched — and on a tool
+ * reached from a phone and a desk at the same time, that snapshot is stale as a
+ * matter of routine. Reproduced in a browser with no induced latency: one tab
+ * un-stars something, the other resurrects it, and the next click in the first
+ * tab writes its short snapshot over the long list. Two favorites gone, no
+ * error. So a click now sends only what it changed, and the daemon applies it
+ * to the list as *it* has it — the "sends a delta" tests below are that fix,
+ * and its server half is in agent-settings.favorites-route.test.ts.
+ *
+ * The unread-list guard is the older hole and stays tested from both
+ * directions: before the first read lands, and after one that failed.
  *
  * The rest pin the ordering guarantees that make an optimistic list honest —
- * writes serialized so click order wins over response order, the PUT's own
+ * writes serialized so click order wins over response order, the write's own
  * response adopted as the truth, a failed write falling back to the last
- * confirmed value rather than to a reconstruction of it.
+ * confirmed value rather than to a reconstruction of it, and every category of
+ * read that a write has made worthless being discarded rather than adopted.
  *
  * Module-level state is reset by re-importing the module under
  * `vi.resetModules()` rather than by exporting a test-only reset, which would
@@ -19,14 +27,14 @@
  */
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FavoriteLists } from "../api";
+import type { FavoriteLists, FavoritesDelta } from "../api";
 
 const getFavorites = vi.fn();
-const updateFavorites = vi.fn();
+const patchFavorites = vi.fn();
 
 vi.mock("../api", () => ({
   getFavorites: () => getFavorites(),
-  updateFavorites: (lists: Partial<FavoriteLists>) => updateFavorites(lists),
+  patchFavorites: (delta: FavoritesDelta) => patchFavorites(delta),
 }));
 
 /** A fresh module instance, so the module-level cache starts empty. */
@@ -48,19 +56,19 @@ const lists = (skills: string[] = [], jobs: string[] = []): FavoriteLists => ({ 
 
 beforeEach(() => {
   getFavorites.mockReset();
-  updateFavorites.mockReset();
-  // A working default, so a test asserting the PUT never happens fails on that
-  // assertion rather than crashing inside the code under test.
-  updateFavorites.mockResolvedValue(lists());
+  patchFavorites.mockReset();
+  // A working default, so a test asserting the write never happens fails on
+  // that assertion rather than crashing inside the code under test.
+  patchFavorites.mockResolvedValue(lists());
 });
 
 afterEach(cleanup);
 
 describe("useFavorites — the unread-list guard", () => {
   it("refuses to write before the first read has landed", async () => {
-    // THE regression. The read has not resolved, so the client has no idea what
-    // is in the list. A PUT here would send ["new-one"] and destroy whatever
-    // else the user had starred.
+    // The read has not resolved, so "toggle" has no defined meaning: we do not
+    // know whether this id is currently starred, and the overlay we would draw
+    // would be a guess presented as the list.
     const read = deferred<FavoriteLists>();
     getFavorites.mockReturnValue(read.promise);
     const { useFavorites } = await loadFavorites();
@@ -70,7 +78,7 @@ describe("useFavorites — the unread-list guard", () => {
 
     act(() => result.current.toggle("new-one"));
 
-    expect(updateFavorites).not.toHaveBeenCalled();
+    expect(patchFavorites).not.toHaveBeenCalled();
     // And the optimistic list did not move either — a star that appears to
     // toggle and then silently snaps back is its own lie.
     expect(result.current.favorites).toEqual([]);
@@ -78,12 +86,10 @@ describe("useFavorites — the unread-list guard", () => {
     read.resolve(lists(["already-starred"]));
     await waitFor(() => expect(result.current.ready).toBe(true));
     expect(result.current.favorites).toEqual(["already-starred"]);
-    expect(updateFavorites).not.toHaveBeenCalled();
+    expect(patchFavorites).not.toHaveBeenCalled();
   });
 
   it("stays unready after a failed read, and still refuses to write", async () => {
-    // The permanent version of the same hole: a rejected read used to leave the
-    // cache null forever, so every later toggle wrote a one-element list.
     getFavorites.mockRejectedValue(new Error("offline"));
     const { useFavorites } = await loadFavorites();
 
@@ -94,7 +100,7 @@ describe("useFavorites — the unread-list guard", () => {
     expect(result.current.ready).toBe(false);
 
     act(() => result.current.toggle("new-one"));
-    expect(updateFavorites).not.toHaveBeenCalled();
+    expect(patchFavorites).not.toHaveBeenCalled();
   });
 
   it("recovers on retry after a failed read", async () => {
@@ -139,7 +145,7 @@ describe("useFavorites — the shared cache", () => {
 
   it("publishes a write to every subscriber, not just the one that made it", async () => {
     getFavorites.mockResolvedValue(lists(["a"]));
-    updateFavorites.mockResolvedValue(lists(["a", "b"]));
+    patchFavorites.mockResolvedValue(lists(["a", "b"]));
     const { useFavorites } = await loadFavorites();
 
     const settings = renderHook(() => useFavorites("skills"));
@@ -150,14 +156,125 @@ describe("useFavorites — the shared cache", () => {
 
     await waitFor(() => expect(launchpad.result.current.favorites).toEqual(["a", "b"]));
   });
+
+  it("revalidates when a backgrounded tab comes back", async () => {
+    // The cache has no TTL and nothing pushes favorites, so a tab left open
+    // while another edits sits on a wrong list indefinitely — measured
+    // unchanged after ten seconds and after a full in-app navigation, because
+    // the fetch only ran on mount.
+    getFavorites.mockResolvedValue(lists(["a"]));
+    const { useFavorites } = await loadFavorites();
+
+    const { result } = renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(getFavorites).toHaveBeenCalledTimes(1);
+
+    getFavorites.mockResolvedValue(lists(["a", "starred-elsewhere"]));
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    await waitFor(() => expect(result.current.favorites).toEqual(["a", "starred-elsewhere"]));
+  });
+
+  it("does not refetch when the tab is being hidden", async () => {
+    getFavorites.mockResolvedValue(lists(["a"]));
+    const { useFavorites } = await loadFavorites();
+
+    const { result } = renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    const visibility = Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState");
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    if (visibility) Object.defineProperty(document, "visibilityState", visibility);
+
+    expect(getFavorites).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("useFavorites — writes name only what changed", () => {
+  it("sends a single-id add, never the list", async () => {
+    // THE regression. A whole-list body computed from this snapshot is an
+    // assertion about "release-notes" too — and this tab's copy of that is
+    // however old the last read was.
+    getFavorites.mockResolvedValue(lists(["release-notes"]));
+    patchFavorites.mockResolvedValue(lists(["release-notes", "dep-audit"]));
+    const { useFavorites } = await loadFavorites();
+
+    const { result } = renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    act(() => result.current.toggle("dep-audit"));
+
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledWith({ skills: { add: ["dep-audit"] } }));
+    // Nothing the user did not click appears anywhere in the request.
+    expect(JSON.stringify(patchFavorites.mock.calls[0][0])).not.toContain("release-notes");
+  });
+
+  it("sends a single-id remove", async () => {
+    getFavorites.mockResolvedValue(lists(["release-notes", "pr-description"]));
+    patchFavorites.mockResolvedValue(lists(["release-notes"]));
+    const { useFavorites } = await loadFavorites();
+
+    const { result } = renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    act(() => result.current.toggle("pr-description"));
+
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledWith({ skills: { remove: ["pr-description"] } }));
+  });
+
+  it("keeps the two kinds apart", async () => {
+    getFavorites.mockResolvedValue(lists(["a"], ["j1"]));
+    const { useFavorites } = await loadFavorites();
+
+    const { result } = renderHook(() => useFavorites("jobs"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    act(() => result.current.toggle("j2"));
+
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledWith({ jobs: { add: ["j2"] } }));
+  });
+
+  it("drops several ids across both kinds in one write", async () => {
+    // What the launchpad's "these no longer exist — unpin them" offers. One
+    // request, one authoritative answer, and still nothing about the entries
+    // it is not dropping.
+    getFavorites.mockResolvedValue(lists(["a", "gone-skill"], ["j1", "gone-job"]));
+    patchFavorites.mockResolvedValue(lists(["a"], ["j1"]));
+    const { useFavorites, dropFavorites } = await loadFavorites();
+
+    const { result } = renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    act(() => dropFavorites({ skills: ["gone-skill"], jobs: ["gone-job"] }));
+
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledWith({ skills: { remove: ["gone-skill"] }, jobs: { remove: ["gone-job"] } }));
+    await waitFor(() => expect(result.current.favorites).toEqual(["a"]));
+  });
+
+  it("does not write at all when there is nothing to drop", async () => {
+    getFavorites.mockResolvedValue(lists(["a"]));
+    const { useFavorites, dropFavorites } = await loadFavorites();
+
+    const { result } = renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    act(() => dropFavorites({ skills: ["never-starred"], jobs: [] }));
+
+    expect(patchFavorites).not.toHaveBeenCalled();
+  });
 });
 
 describe("useFavorites — writes", () => {
-  it("adopts the PUT response as the authoritative list", async () => {
+  it("adopts the write response as the authoritative list", async () => {
     getFavorites.mockResolvedValue(lists(["a"]));
     // The daemon normalizes: trims, drops blanks and repeats. What comes back
     // is what is on disk, and it is not necessarily what we sent.
-    updateFavorites.mockResolvedValue(lists(["a", "normalized"]));
+    patchFavorites.mockResolvedValue(lists(["a", "normalized"]));
     const { useFavorites } = await loadFavorites();
 
     const { result } = renderHook(() => useFavorites("skills"));
@@ -165,7 +282,7 @@ describe("useFavorites — writes", () => {
 
     act(() => result.current.toggle("  normalized  "));
 
-    await waitFor(() => expect(updateFavorites).toHaveBeenCalledWith({ favoriteSkills: ["a", "  normalized  "] }));
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledWith({ skills: { add: ["  normalized  "] } }));
     await waitFor(() => expect(result.current.favorites).toEqual(["a", "normalized"]));
   });
 
@@ -173,7 +290,7 @@ describe("useFavorites — writes", () => {
     getFavorites.mockResolvedValue(lists([]));
     const first = deferred<FavoriteLists>();
     const second = deferred<FavoriteLists>();
-    updateFavorites.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    patchFavorites.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     const { useFavorites } = await loadFavorites();
 
     const { result } = renderHook(() => useFavorites("skills"));
@@ -186,14 +303,15 @@ describe("useFavorites — writes", () => {
 
     // The overlay already shows both, because the user clicked both.
     expect(result.current.favorites).toEqual(["a", "b"]);
-    // The second request is queued behind the first, so the two lists reach the
-    // daemon in the order they were clicked rather than the order they return.
-    await waitFor(() => expect(updateFavorites).toHaveBeenCalledTimes(1));
-    expect(updateFavorites).toHaveBeenNthCalledWith(1, { favoriteSkills: ["a"] });
+    // The second request is queued behind the first, so the two changes reach
+    // the daemon in the order they were clicked rather than the order they
+    // return.
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledTimes(1));
+    expect(patchFavorites).toHaveBeenNthCalledWith(1, { skills: { add: ["a"] } });
 
     first.resolve(lists(["a"]));
-    await waitFor(() => expect(updateFavorites).toHaveBeenCalledTimes(2));
-    expect(updateFavorites).toHaveBeenNthCalledWith(2, { favoriteSkills: ["a", "b"] });
+    await waitFor(() => expect(patchFavorites).toHaveBeenCalledTimes(2));
+    expect(patchFavorites).toHaveBeenNthCalledWith(2, { skills: { add: ["b"] } });
     // Still the overlay: the first response went stale the moment the second
     // click happened, so it must not be adopted.
     expect(result.current.favorites).toEqual(["a", "b"]);
@@ -206,7 +324,7 @@ describe("useFavorites — writes", () => {
     // Un-starring the FIRST of three and failing. A hand-rolled revert put it
     // back at the end; falling back to the confirmed list keeps its index.
     getFavorites.mockResolvedValue(lists(["a", "b", "c"]));
-    updateFavorites.mockRejectedValue(new Error("boom"));
+    patchFavorites.mockRejectedValue(new Error("boom"));
     const { useFavorites } = await loadFavorites();
 
     const { result } = renderHook(() => useFavorites("skills"));
@@ -218,9 +336,33 @@ describe("useFavorites — writes", () => {
     await waitFor(() => expect(result.current.favorites).toEqual(["a", "b", "c"]));
   });
 
+  it("says a write failed instead of just un-filling the star", async () => {
+    // The rollback is deliberately silent — the last confirmed list simply
+    // stands — so without this the user sees a star that fills and empties
+    // again, which is what a misclick looks like.
+    getFavorites.mockResolvedValue(lists(["a"]));
+    patchFavorites.mockRejectedValueOnce(new Error("boom")).mockResolvedValue(lists(["a", "b"]));
+    const { useFavorites, FAVORITES_WRITE_ERROR } = await loadFavorites();
+
+    const { result } = renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    act(() => result.current.toggle("b"));
+
+    await waitFor(() => expect(result.current.writeError).toBe(FAVORITES_WRITE_ERROR));
+    // The refetch that follows a failed write must not clear it — that read
+    // succeeding says nothing about the write that did not.
+    await waitFor(() => expect(getFavorites).toHaveBeenCalledTimes(2));
+    expect(result.current.writeError).toBe(FAVORITES_WRITE_ERROR);
+
+    act(() => result.current.toggle("b"));
+    await waitFor(() => expect(result.current.writeError).toBeNull());
+    expect(result.current.favorites).toEqual(["a", "b"]);
+  });
+
   it("refetches after a failed write so the UI cannot sit on a guess", async () => {
     getFavorites.mockResolvedValue(lists(["a"]));
-    updateFavorites.mockRejectedValue(new Error("boom"));
+    patchFavorites.mockRejectedValue(new Error("boom"));
     const { useFavorites } = await loadFavorites();
 
     const { result } = renderHook(() => useFavorites("skills"));
@@ -234,7 +376,7 @@ describe("useFavorites — writes", () => {
 
   it("discards a read that a write overtook", async () => {
     // A background revalidation that started before the toggle resolves after
-    // the PUT. Its answer predates the write, so adopting it would blink the
+    // the write. Its answer predates the write, so adopting it would blink the
     // just-starred entry back out.
     getFavorites.mockResolvedValueOnce(lists(["a"]));
     const { useFavorites } = await loadFavorites();
@@ -247,7 +389,7 @@ describe("useFavorites — writes", () => {
     const second = renderHook(() => useFavorites("skills"));
     await waitFor(() => expect(getFavorites).toHaveBeenCalledTimes(2));
 
-    updateFavorites.mockResolvedValue(lists(["a", "b"]));
+    patchFavorites.mockResolvedValue(lists(["a", "b"]));
     act(() => second.result.current.toggle("b"));
     await waitFor(() => expect(first.result.current.favorites).toEqual(["a", "b"]));
 
@@ -258,13 +400,59 @@ describe("useFavorites — writes", () => {
     // that replaced it agrees with the write.
     expect(first.result.current.favorites).toEqual(["a", "b"]);
   });
+
+  it("discards a read that STARTED during a write", async () => {
+    // The other half, and the one the epoch counter alone cannot see: the
+    // epoch is bumped when the write is queued, so a fetch that starts after
+    // that looks perfectly fresh, and used to be adopted. It is not fresh —
+    // the daemon had not applied the write when it answered — and adopting it
+    // leaves the cache missing exactly the entry just written, with the next
+    // toggle computing against the gap.
+    getFavorites.mockResolvedValueOnce(lists(["a"]));
+    const { useFavorites } = await loadFavorites();
+
+    const first = renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(first.result.current.ready).toBe(true));
+
+    const write = deferred<FavoriteLists>();
+    patchFavorites.mockReturnValueOnce(write.promise);
+    act(() => first.result.current.toggle("b"));
+
+    // A second component mounts while the write is in flight and reads.
+    const midWriteRead = deferred<FavoriteLists>();
+    getFavorites.mockReturnValueOnce(midWriteRead.promise).mockResolvedValue(lists(["a", "b"]));
+    renderHook(() => useFavorites("skills"));
+    await waitFor(() => expect(getFavorites).toHaveBeenCalledTimes(2));
+
+    write.resolve(lists(["a", "b"]));
+    await waitFor(() => expect(first.result.current.favorites).toEqual(["a", "b"]));
+
+    // …and answers last, from before the write landed.
+    midWriteRead.resolve(lists(["a"]));
+    await act(async () => {
+      await midWriteRead.promise;
+    });
+
+    expect(first.result.current.favorites).toEqual(["a", "b"]);
+    expect(first.result.current.ready).toBe(true);
+    // And it is retried rather than merely dropped, so the cache converges on
+    // the daemon instead of on whatever the write returned.
+    await waitFor(() => expect(getFavorites).toHaveBeenCalledTimes(3));
+  });
 });
 
-describe("orderByFavorites", () => {
+describe("orderByFavorites / missingFavorites", () => {
   it("returns favorites in the user's order and drops what no longer resolves", async () => {
     const { orderByFavorites } = await loadFavorites();
     const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
 
     expect(orderByFavorites(items, ["c", "gone", "a"], (i) => i.id)).toEqual([{ id: "c" }, { id: "a" }]);
+  });
+
+  it("names exactly what the other one dropped", async () => {
+    const { missingFavorites } = await loadFavorites();
+    const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+    expect(missingFavorites(items, ["c", "gone", "a", "also-gone"], (i) => i.id)).toEqual(["gone", "also-gone"]);
   });
 });

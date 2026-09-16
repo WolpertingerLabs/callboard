@@ -3,8 +3,9 @@
  *
  *   GET  /api/agent-settings                  — get current settings
  *   PUT  /api/agent-settings                  — update settings
- *   GET  /api/agent-settings/favorites        — the two favorites lists, and nothing else
- *   PUT  /api/agent-settings/favorites        — write the two favorites lists
+ *   GET   /api/agent-settings/favorites       — the two favorites lists, and nothing else
+ *   PUT   /api/agent-settings/favorites       — replace the two favorites lists
+ *   PATCH /api/agent-settings/favorites       — add/remove ids against the stored lists
  *   GET  /api/agent-settings/key-aliases      — discover key aliases from MCP config dir
  *   POST /api/agent-settings/test-connection  — test remote proxy connection
  *   GET  /api/agent-settings/daemon-status    — drawlatch daemon URL/health/enrollment
@@ -71,6 +72,58 @@ function normalizeIdList(v: unknown): string[] | undefined {
     out.push(id);
   }
   return out.length > 0 ? out : undefined;
+}
+
+/** One side of a favorites PATCH: ids to append, ids to drop. */
+interface IdDelta {
+  add: string[];
+  remove: string[];
+}
+
+/**
+ * Read one side's delta out of a PATCH body, or `undefined` when the request
+ * did not ask to change that side.
+ *
+ * Deliberately lenient about the *contents* and strict about the *shape*, on
+ * the same reasoning as `normalizeIdList`: a non-object (or an object with no
+ * usable ids) means "change nothing here", because the alternative is a
+ * malformed request being indistinguishable from a deliberate edit. Within a
+ * well-formed delta, non-strings and blanks are dropped rather than rejected —
+ * they cannot destroy anything, since a delta only ever names what it touches.
+ */
+function normalizeDelta(v: unknown): IdDelta | undefined {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+  const ids = (raw: unknown): string[] =>
+    Array.isArray(raw)
+      ? raw
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0)
+      : [];
+  const { add, remove } = v as { add?: unknown; remove?: unknown };
+  const delta = { add: ids(add), remove: ids(remove) };
+  return delta.add.length === 0 && delta.remove.length === 0 ? undefined : delta;
+}
+
+/**
+ * Apply a delta to the list **as it is stored right now**.
+ *
+ * Removes first, then adds — so an id named in both ends up present, which is
+ * the only reading of "add it" that is not a silent no-op. Adds append and
+ * skip ids already there, preserving the invariant that the list IS the
+ * display order on the launchpad: re-starring something does not reshuffle
+ * what the user has already learned the positions of.
+ */
+function applyDelta(current: string[], delta: IdDelta): string[] {
+  const dropped = new Set(delta.remove);
+  const next = current.filter((id) => !dropped.has(id));
+  const present = new Set(next);
+  for (const id of delta.add) {
+    if (present.has(id)) continue;
+    present.add(id);
+    next.push(id);
+  }
+  return next;
 }
 
 /** The favorites pair, always as arrays — an unset list reads back as `[]`. */
@@ -586,8 +639,9 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
 });
 
 /**
- * GET /api/agent-settings/favorites — the two favorites lists, and nothing else.
- * PUT /api/agent-settings/favorites — write one or both of them.
+ * GET   /api/agent-settings/favorites — the two favorites lists, and nothing else.
+ * PUT   /api/agent-settings/favorites — replace one or both of them.
+ * PATCH /api/agent-settings/favorites — add/remove ids against what is stored.
  *
  * ## Why this is not just `GET /api/agent-settings`
  *
@@ -609,6 +663,26 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
  *
  * The fields stay on the main PUT as well. Nothing is gained by breaking a
  * surface that already has tests and callers.
+ *
+ * ## Why PATCH exists, and why the star uses it
+ *
+ * PUT replaces the list, so the body has to be computed from a snapshot the
+ * client read at some earlier point. Callboard is a remote-access tool and two
+ * open tabs — a phone and a desk — is its normal shape, so that snapshot is
+ * routinely stale, and a whole-list write from a stale snapshot destroys
+ * entries the writer never knew existed. Measured in a browser with no induced
+ * latency: tab A un-stars one skill, tab B (holding the pre-A list) stars
+ * another and resurrects A's removal; A's *next* click then writes its own
+ * two-entry snapshot over the three-entry list and two favorites are gone, with
+ * no error anywhere.
+ *
+ * A delta cannot do that. `{ skills: { add: ["dep-audit"] } }` says only what
+ * the click meant, and it is applied here, against the list as stored. The
+ * worst a stale client can now do is re-add something — visible, and one click
+ * to undo — instead of deleting what it could not see.
+ *
+ * PUT stays: replacing the list wholesale is a legitimate operation with its
+ * own callers and tests. It is just no longer how a single star is toggled.
  */
 agentSettingsRouter.get("/favorites", (_req: Request, res: Response): void => {
   try {
@@ -630,6 +704,25 @@ agentSettingsRouter.put("/favorites", (req: Request, res: Response): void => {
     res.json(favoritesOf(updated));
   } catch (err: any) {
     log.error(`Error updating favorites: ${err.message}`);
+    res.status(500).json({ error: "Failed to update favorites" });
+  }
+});
+
+agentSettingsRouter.patch("/favorites", (req: Request, res: Response): void => {
+  const { skills, jobs } = req.body ?? {};
+  const skillsDelta = normalizeDelta(skills);
+  const jobsDelta = normalizeDelta(jobs);
+  try {
+    const current = favoritesOf(getAgentSettings());
+    const updated = updateAgentSettings({
+      // Only the sides this request actually named. An absent (or unusable)
+      // delta must not rewrite a list, not even to the same value.
+      ...(skillsDelta && { favoriteSkills: normalizeIdList(applyDelta(current.favoriteSkills, skillsDelta)) }),
+      ...(jobsDelta && { favoriteJobs: normalizeIdList(applyDelta(current.favoriteJobs, jobsDelta)) }),
+    });
+    res.json(favoritesOf(updated));
+  } catch (err: any) {
+    log.error(`Error patching favorites: ${err.message}`);
     res.status(500).json({ error: "Failed to update favorites" });
   }
 });

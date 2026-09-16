@@ -1,4 +1,5 @@
 import { Star } from "lucide-react";
+import { MIN_TAP_TARGET } from "./SessionInfoNav";
 
 interface Props {
   active: boolean;
@@ -63,8 +64,18 @@ export default function FavoriteStar({ active, onToggle, label, disabled = false
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.4 : 1,
         padding: 4,
+        // 23×23 measured at 390px. It is the control this feature is *about*,
+        // and every new control the launchpad shipped took the 44px floor —
+        // see MIN_TAP_TARGET. The icon does not grow, so the row still reads
+        // the same; only the area that accepts a thumb does. Its Edit/Delete
+        // neighbours are left as they were: they predate this, and raising a
+        // whole settings row's worth of icon buttons is a separate change with
+        // its own layout consequences.
+        minWidth: MIN_TAP_TARGET,
+        minHeight: MIN_TAP_TARGET,
         display: "flex",
         alignItems: "center",
+        justifyContent: "center",
       }}
     >
       <Star size={size} fill={active ? "currentColor" : "none"} />

@@ -1950,6 +1950,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return { allSlashCommands: uniqueCmds, pluginCommandDescriptions: descriptions };
   }, [slashCommands, plugins, activePluginIds, appPluginsData]);
 
+  /**
+   * Which shape the new-chat launchpad is taking. Asked once, here, because
+   * two siblings need the same answer and neither can see the other — the
+   * launchpad draws it, and the nav below decides whether to draw a Commands
+   * pill against it. See `launchpadMode`.
+   */
+  const launchpadCardMode = launchpadMode(resolvedFavorites, allSlashCommands);
+
   // Pre-populate prompt input when navigating from a draft in staging
   useEffect(() => {
     if (routerDraftRef.current && promptInputSetValue) {
@@ -3445,11 +3453,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     {/* Everything the session merely *has* — commands, tools —
                         collapsed behind a count. See SessionInfoNav for why.
                         The Commands pill stands down when the launchpad above
-                        is already showing the grid. */}
+                        is already showing the grid — and while the launchpad
+                        has not decided yet, which is the same rule. "hidden"
+                        is not "commands", so the pill used to render on every
+                        cold load and then get pulled out from under the cursor
+                        when the fallback grid arrived: 79 frames of it
+                        measured in Chromium against a 1400ms favorites read
+                        over the tunnel, 0 on localhost. The no-flash rule the
+                        launchpad follows has to cover the nav beside it. */}
                     <SessionInfoNav
                       slashCommands={allSlashCommands}
                       mcpTools={mcpTools}
-                      showCommands={launchpadMode(resolvedFavorites, allSlashCommands) !== "commands"}
+                      showCommands={launchpadCardMode !== "commands" && launchpadCardMode !== "hidden"}
                       onInsertPrompt={insertCommandPrompt}
                       onOpenModal={(tab) => {
                         setSlashCommandsModalTab(tab);

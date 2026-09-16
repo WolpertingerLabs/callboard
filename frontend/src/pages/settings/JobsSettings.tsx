@@ -371,10 +371,14 @@ export default function JobsSettings() {
         <div style={{ ...helpStyle, marginBottom: 16 }}>
           Deterministic multi-step workflows: each step spawns an agent session, waits for your signoff, polls until a condition holds, waits for an event,
           branches on a gate, runs parallel agent branches, or notifies you. You can also create and spawn jobs from any chat — ask the agent to use the{" "}
-          <code>create_job</code> and <code>spawn_job</code> tools.
+          <code>create_job</code> and <code>spawn_job</code> tools. Star a job to pin it to the New Chat screen, where one click opens its run form.
         </div>
 
         {error && <div style={errorBoxStyle}>{error}</div>}
+        {/* A star that quietly un-fills is indistinguishable from a misclick —
+            see SkillsSettings for the same note and `utils/favorites.ts` for
+            why the rollback itself is silent. */}
+        {favoriteJobs.writeError && <div style={errorBoxStyle}>{favoriteJobs.writeError}</div>}
         {importSuccess && !importOpen && <div style={successBoxStyle}>{importSuccess}</div>}
 
         {/* ── Import panel: pick a file or paste JSON ─────────────── */}

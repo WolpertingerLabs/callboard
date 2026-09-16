@@ -58,6 +58,16 @@ describe("FavoriteStar", () => {
     expect(star().getAttribute("title")).toBe("Loading your favorites…");
   });
 
+  it("takes the same tap-target floor as the controls this feature added", () => {
+    // 23×23 at 390px, on the control the whole feature is about. Its
+    // Edit/Delete neighbours are deliberately left alone — they predate this,
+    // and the icon does not grow, so the row reads the same.
+    render(<FavoriteStar active={false} onToggle={vi.fn()} label={'skill "release-notes"'} />);
+
+    expect((star() as HTMLButtonElement).style.minHeight).toBe("44px");
+    expect((star() as HTMLButtonElement).style.minWidth).toBe("44px");
+  });
+
   it("says what actually went wrong when the read failed rather than 'loading'", () => {
     render(<FavoriteStar active={false} onToggle={vi.fn()} label={'skill "release-notes"'} disabled disabledReason="Daemon unreachable." />);
 

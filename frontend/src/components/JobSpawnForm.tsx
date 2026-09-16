@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { type JobDefinition } from "../api";
 import { MIN_TAP_TARGET } from "./SessionInfoNav";
 
@@ -113,6 +113,23 @@ export default function JobSpawnForm({
   id,
   style,
 }: Props) {
+  /**
+   * Escape closes it, like every other dismissable surface in the app.
+   *
+   * The form is opened by a disclosure chip and its only documented exit was
+   * the Cancel button — so the key a user presses without thinking did
+   * nothing, on a panel that is in the way of the composer. Not while
+   * submitting: the run is already going and the form is reporting on it.
+   */
+  useEffect(() => {
+    if (submitting) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [submitting, onCancel]);
+
   const inputs = job.inputs ?? [];
   /**
    * Named, not counted. A red asterisk says *a* field is required; it does not

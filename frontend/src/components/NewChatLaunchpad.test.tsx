@@ -48,10 +48,13 @@ const JOB = (overrides: Partial<JobDefinition> = {}): JobDefinition =>
 const favorites = (overrides: Partial<ResolvedFavorites> = {}): ResolvedFavorites => ({
   skills: [],
   jobs: [],
-  missing: 0,
+  missingSkills: [],
+  missingJobs: [],
   settled: true,
+  jobsResolved: true,
   error: null,
   retry: vi.fn(),
+  dropMissing: vi.fn(),
   ...overrides,
 });
 
@@ -160,19 +163,54 @@ describe("NewChatLaunchpad — what it renders", () => {
     expect(onInsertPrompt).toHaveBeenCalledWith("/callboard:release-notes ");
   });
 
-  it("says when a favorite no longer resolves instead of just dropping it", () => {
+  it("names the favorite that no longer resolves instead of just counting it", () => {
     // Renaming a starred skill is the ordinary way here. The chip used to
     // vanish with no signal at all, which reads identically to "the star never
-    // saved".
-    renderLaunchpad({ favorites: favorites({ skills: [SKILL], missing: 1 }) });
+    // saved" — and a bare count is barely better, because the id it will not
+    // name is the only thing that would let the user work out what happened.
+    renderLaunchpad({ favorites: favorites({ skills: [SKILL], missingSkills: ["renamed-away"] }) });
 
-    expect(screen.getByText("1 pinned item no longer exists.")).toBeTruthy();
+    expect(screen.getByText(/1 pinned item no longer exists/)).toBeTruthy();
+    expect(screen.getByText("renamed-away")).toBeTruthy();
   });
 
-  it("pluralises the stale note and shows it with nothing left to draw", () => {
-    renderLaunchpad({ favorites: favorites({ missing: 2 }) });
+  it("pluralises the stale note, names both kinds, and shows it with nothing left to draw", () => {
+    renderLaunchpad({ favorites: favorites({ missingSkills: ["renamed-away"], missingJobs: ["deleted-job"] }) });
 
-    expect(screen.getByText("2 pinned items no longer exist.")).toBeTruthy();
+    expect(screen.getByText(/2 pinned items no longer exist/)).toBeTruthy();
+    expect(screen.getByText("renamed-away, deleted-job")).toBeTruthy();
+  });
+
+  it("gives its inline actions the tap-target floor too", () => {
+    // 41×14 measured at 390px on the Unpin the note had just grown — a new
+    // sub-floor target on the screen this PR raised everything else on.
+    renderLaunchpad({ favorites: favorites({ error: "Could not reach the daemon.", missingSkills: ["renamed-away"] }) });
+
+    expect((screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement).style.minHeight).toBe("44px");
+    expect((screen.getByRole("button", { name: "Unpin it" }) as HTMLButtonElement).style.minHeight).toBe("44px");
+  });
+
+  it("offers a way to un-pin them, because nothing else in the UI can", () => {
+    // The skill exists only under its new name, so there is no row left in
+    // Settings carrying a star to un-set: without this the note is permanent
+    // and unactionable. It is a user action — the write path still never
+    // prunes on its own.
+    const dropMissing = vi.fn();
+    renderLaunchpad({ favorites: favorites({ skills: [SKILL], missingSkills: ["renamed-away"], dropMissing }) });
+
+    fireEvent.click(screen.getByRole("button", { name: "Unpin it" }));
+
+    expect(dropMissing).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the stale note in the error card", () => {
+    // A catalog failing is exactly when the other side's favorites can be
+    // stale; this branch dropped the note in the one case where both are true.
+    renderLaunchpad({ favorites: favorites({ error: "Could not load your pinned skills.", missingJobs: ["deleted-job"] }) });
+
+    expect(screen.getByText("Could not load your pinned skills.")).toBeTruthy();
+    expect(screen.getByText(/1 pinned item no longer exists/)).toBeTruthy();
+    expect(screen.getByText("deleted-job")).toBeTruthy();
   });
 
   it("points Manage at the tab holding what was actually starred", () => {
@@ -194,6 +232,14 @@ describe("NewChatLaunchpad — what it renders", () => {
 
     expect((screen.getByRole("button", { name: /release-notes/ }) as HTMLButtonElement).style.minHeight).toBe("44px");
     expect((screen.getByRole("button", { name: /Nightly bake/ }) as HTMLButtonElement).style.minHeight).toBe("44px");
+  });
+
+  it("gives Manage one too — it is this card's only navigation", () => {
+    // 43×14 measured at 390px, on the one control here that leaves the screen,
+    // while every sibling took the floor.
+    renderLaunchpad({ favorites: favorites({ skills: [SKILL] }) });
+
+    expect((screen.getByRole("link", { name: "Manage" }) as HTMLAnchorElement).style.minHeight).toBe("44px");
   });
 });
 
@@ -303,6 +349,71 @@ describe("NewChatLaunchpad — spawning a job", () => {
         <NewChatLaunchpad onInsertPrompt={vi.fn()} slashCommands={COMMANDS} onOpenCommands={vi.fn()} favorites={favorites({ jobs: [job] })} />
       </MemoryRouter>,
     );
+    expect(chip().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  /**
+   * The other half of "closes a form whose job stopped resolving": it must not
+   * close one whose job is merely unreadable.
+   *
+   * Both of these drive the guard through a state where `jobs` is `[]` and the
+   * job has not gone anywhere, which is the exact shape that used to destroy a
+   * half-filled form. They are here because the guard's gate had no test at
+   * all — deleting it left all seventeen launchpad tests green.
+   */
+  const withInputs = () => JOB({ inputs: [{ key: "target", label: "Target", required: true }] });
+
+  const rerenderWith = (rerender: (ui: React.ReactElement) => void, next: Partial<ResolvedFavorites>) =>
+    rerender(
+      <MemoryRouter>
+        <NewChatLaunchpad onInsertPrompt={vi.fn()} slashCommands={COMMANDS} onOpenCommands={vi.fn()} favorites={favorites(next)} />
+      </MemoryRouter>,
+    );
+
+  it("keeps a half-filled form while the job list is being re-read", () => {
+    const job = withInputs();
+    const { rerender } = withJob(job);
+
+    fireEvent.click(chip());
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: "v2.4.0" } });
+
+    // `retry` blanks both catalogs on its way to refetching them.
+    rerenderWith(rerender, { jobs: [], jobsResolved: false, settled: false });
+    rerenderWith(rerender, { jobs: [job] });
+
+    expect((screen.getByLabelText(/Target/) as HTMLInputElement).value).toBe("v2.4.0");
+  });
+
+  it("keeps it when the re-read FAILS, too", () => {
+    // `settled` goes true with `jobs: []` on a failed catalog read, which fired
+    // the guard and took the typed value with it. A job whose re-read failed
+    // has gone exactly as far as one being re-read: nowhere.
+    const job = withInputs();
+    const { rerender } = withJob(job);
+
+    fireEvent.click(chip());
+    fireEvent.change(screen.getByLabelText(/Target/), { target: { value: "v2.4.0" } });
+
+    // The card is the error card while this is true, so the form is off screen
+    // either way — what is under test is whether its state survived to be
+    // drawn again.
+    rerenderWith(rerender, { jobs: [], jobsResolved: false, settled: true, error: "Could not load your pinned jobs." });
+    rerenderWith(rerender, { jobs: [job] });
+
+    expect((screen.getByLabelText(/Target/) as HTMLInputElement).value).toBe("v2.4.0");
+  });
+
+  it("closes on Escape", () => {
+    // Cancel was the only exit from a panel sitting between the user and the
+    // composer. Escape is the key they press without thinking.
+    withJob();
+
+    fireEvent.click(chip());
+    expect(screen.getByRole("button", { name: "Run job" })).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.queryByRole("button", { name: "Run job" })).toBeNull();
     expect(chip().getAttribute("aria-expanded")).toBe("false");
   });
 

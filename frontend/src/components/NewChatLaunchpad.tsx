@@ -64,13 +64,25 @@ const groupLabelStyle: React.CSSProperties = {
   marginBottom: 8,
 };
 
-const retryStyle: React.CSSProperties = {
+/**
+ * The card's inline actions — Retry, and Unpin on the stale note.
+ *
+ * Same floor as everything else here, for the same reason (MIN_TAP_TARGET):
+ * measured 41×14 at 390px otherwise. The negative vertical margin keeps the
+ * note the height a line of 12px text is, so the target grows into the 12px
+ * gap above the note rather than pushing the card open.
+ */
+const inlineActionStyle: React.CSSProperties = {
   background: "none",
   border: "none",
   color: "var(--accent-text)",
   fontSize: 12,
   cursor: "pointer",
-  padding: 0,
+  padding: "0 6px",
+  margin: "-12px -6px",
+  minHeight: MIN_TAP_TARGET,
+  display: "inline-flex",
+  alignItems: "center",
 };
 
 /** One form is open at a time, so one id serves every chip's `aria-controls`. */
@@ -170,11 +182,15 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
    * Adjusted during render rather than in an effect, which is React's own
    * prescription for state that is stale with respect to a prop: the re-render
    * happens before anything commits, so nothing ever paints the closed-over
-   * form. Gated on `settled` because `retry` blanks both catalogs on its way to
-   * refetching them, and a job that is merely being re-read has not gone
-   * anywhere.
+   * form.
+   *
+   * Gated on `jobsResolved`, not on `settled`. `settled` includes "the job
+   * catalog failed", and a job whose re-read failed has gone exactly as far as
+   * one still being re-read: nowhere. Clearing on it threw away a half-filled
+   * form — the typed values, no undo — because a request lost the network,
+   * which is the same class of bug as the commit this guard shipped in.
    */
-  if (spawnForm && favorites.settled && !spawnJobDef) {
+  if (spawnForm && favorites.jobsResolved && !spawnJobDef) {
     setSpawnForm(null);
     setSpawnError(null);
   }
@@ -227,7 +243,7 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
     <div style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, marginTop: mode === "error" ? 0 : 12 }}>
       <AlertCircle size={13} />
       <span>{favorites.error}</span>
-      <button onClick={favorites.retry} style={retryStyle}>
+      <button onClick={favorites.retry} style={inlineActionStyle}>
         Retry
       </button>
     </div>
@@ -238,14 +254,26 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
    *
    * Renaming a starred skill is the ordinary way to get here, and before this
    * the chip simply stopped being drawn: no error, no gap, nothing to tell the
-   * user whether the star failed to save or the thing it named moved. Say so
-   * and leave the star alone — the write path's refusal to prune is deliberate
-   * (see `AgentSettings.favoriteSkills`), and auto-pruning here would turn a
-   * temporarily-unreadable catalog into permanent data loss.
+   * user whether the star failed to save or the thing it named moved.
+   *
+   * It has to name them and it has to offer the undo. A bare count is a
+   * permanent complaint about something the user cannot find: the skill exists
+   * only under its new name, so there is no row left in Settings carrying a
+   * star to un-set, and the note would sit there for the life of the install.
+   * Un-pinning here is a deliberate user action on named ids — the *write* path
+   * still never prunes by itself (see `AgentSettings.favoriteSkills`), because
+   * a briefly unreadable catalog must not cost anyone their list.
    */
-  const staleNote = favorites.missing > 0 && (
-    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12 }}>
-      {favorites.missing} pinned item{favorites.missing === 1 ? "" : "s"} no longer exist{favorites.missing === 1 ? "s" : ""}.
+  const missingIds = [...favorites.missingSkills, ...favorites.missingJobs];
+  const staleNote = missingIds.length > 0 && (
+    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 12, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <span>
+        {missingIds.length} pinned item{missingIds.length === 1 ? "" : "s"} no longer exist{missingIds.length === 1 ? "s" : ""}:{" "}
+        <span style={{ fontFamily: "var(--font-mono)" }}>{missingIds.join(", ")}</span>.
+      </span>
+      <button onClick={favorites.dropMissing} style={inlineActionStyle}>
+        {missingIds.length === 1 ? "Unpin it" : "Unpin them"}
+      </button>
     </div>
   );
 
@@ -263,8 +291,16 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
   // A read failed and nothing resolved. Say so and offer the retry, rather than
   // rendering the "nothing starred" fallback — which would claim, about the one
   // thing the user cannot check from here, something we do not know to be true.
+  // The stale note still belongs here too: one catalog failing is exactly when
+  // the *other* one's favorites can be stale, and dropping it in this branch
+  // hid it in the only case where both facts are true at once.
   if (mode === "error") {
-    return <div style={cardStyle}>{errorNote}</div>;
+    return (
+      <div style={cardStyle}>
+        {errorNote}
+        {staleNote}
+      </div>
+    );
   }
 
   // Nothing starred yet — keep the old "Available Commands" grid so this card
@@ -314,8 +350,27 @@ export default function NewChatLaunchpad({ onInsertPrompt, slashCommands, onOpen
         </div>
         {/* Whichever tab holds what they actually pinned. Skills is the
             default and the tie-break; a user who starred only jobs was being
-            sent to a skills tab with nothing of theirs on it. */}
-        <Link to={pinnedSkills.length === 0 && pinnedJobs.length > 0 ? "/settings/jobs" : "/settings/skills"} style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            sent to a skills tab with nothing of theirs on it.
+
+            It is also this card's only navigation, and it measured 43×14 at
+            390px while every button beside it took the floor — see
+            MIN_TAP_TARGET. Padding rather than type size: it is deliberately
+            the quiet control on a card whose chips are the loud ones. The
+            negative margins keep the row the height it was — the target grows
+            into the card's own padding (20px above, the header's 14px gap
+            below), so nothing below it moves and nothing overlaps. */}
+        <Link
+          to={pinnedSkills.length === 0 && pinnedJobs.length > 0 ? "/settings/jobs" : "/settings/skills"}
+          style={{
+            fontSize: 12,
+            color: "var(--text-muted)",
+            display: "inline-flex",
+            alignItems: "center",
+            minHeight: MIN_TAP_TARGET,
+            padding: "0 8px",
+            margin: "-12px -8px",
+          }}
+        >
           Manage
         </Link>
       </div>
