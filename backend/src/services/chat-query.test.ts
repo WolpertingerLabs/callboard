@@ -109,6 +109,29 @@ describe("individual chat query", () => {
     });
     expect(ids(await searchChats({ topLevelOnly: true }))).toEqual(["root"]);
   });
+  it("matches folder against the stored record's true cwd as well as the browse projection", async () => {
+    // A chat that ran in a worktree that has since been removed. The record
+    // holds the real cwd; the project-dir name decodes to a path that never
+    // existed, because the decoder can no longer check the directory.
+    state.stored = [chat("ghost", {}, "/work/repo.feature-x")];
+    state.sessions = [
+      {
+        sessionId: "ghost",
+        folder: "/work/repo/feature-x",
+        displayFolder: "/work/repo/feature-x",
+        filePath: "/absent/ghost",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+        updatedAt: new Date("2026-01-01T00:00:00Z"),
+        providerKind: "codex",
+      },
+    ];
+    expect(ids(await searchChats({ folder: "/work/repo.feature-x" }))).toEqual(["ghost"]);
+    expect(ids(await searchChats({ folder: "/work/repo/feature-x" }))).toEqual(["ghost"]);
+    expect(ids(await searchChats({ folder: "/work/elsewhere" }))).toEqual([]);
+    // What is *reported* stays the browse projection — the fix widens matching,
+    // not the projection, so two views of one directory still agree.
+    expect((await searchChats({ folder: "/work/repo.feature-x" })).chats[0].folder).toBe("/work/repo/feature-x");
+  });
   it("preserves archive/bookmark/triggered/search widening and ignores tool query as widening", async () => {
     state.stored = [
       chat("root", { title: "needle" }),

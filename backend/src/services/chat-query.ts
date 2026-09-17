@@ -303,7 +303,12 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     const root = membership.roots.has(rootId) ? membership.storedById.get(rootId) : undefined;
     const meta = parseChatMetadata(chat.metadata);
     if (args.topLevelOnly && (rootId !== chat.id || !!meta.nativeAgent)) return false;
-    if (args.folder !== undefined && chat.folder !== args.folder) return false;
+    // `chat.folder` is the browse projection, and for a chat whose directory no
+    // longer exists that projection is the *lossy decode* of the project-dir
+    // name — a path that never existed on disk (`/repo.branch` comes back as
+    // `/repo/branch`). Reporting it is deliberate and unchanged; matching only
+    // it meant the record's own cwd found nothing. Accept either.
+    if (args.folder !== undefined && chat.folder !== args.folder && membership.storedById.get(chat.id)?.folder !== args.folder) return false;
     const reasons = [
       ...(meta.pinned === true ? ["pinned"] : []),
       ...(meta.bookmarked === true ? ["bookmarked"] : []),
