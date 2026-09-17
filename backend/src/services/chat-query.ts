@@ -66,6 +66,7 @@ export const searchChatsSchema = {
     ),
   query: z
     .string()
+    .min(1)
     .max(2000)
     .optional()
     .describe("Case-insensitive substring over stored METADATA only — title, stored preview, folder text. Never reads a transcript; use grep for that."),
@@ -159,6 +160,29 @@ const GREP_NARROWING_FILTERS = [
   "updatedBefore",
   "topLevelOnly",
 ] as const;
+
+/** Present-and-narrowing, which for two of these is not the same as present. */
+const PRESENT_IS_ENOUGH = GREP_NARROWING_FILTERS.filter((key) => key !== "topLevelOnly" && key !== "query");
+
+/**
+ * Does this argument set actually narrow what `grep` will open?
+ *
+ * Testing `!== undefined` was the wrong question for two of the twelve, and
+ * both are values an agent writes on purpose: `topLevelOnly: false` is the
+ * documented default, and `query: ""` reads as "no text filter". Either
+ * satisfied the guard and opened all 2,096 transcripts — worse than having no
+ * guard, because the caller believes one held. `query` is `.min(1)` at the
+ * schema now; the trim here covers whitespace, which the schema cannot.
+ *
+ * `updatedAfter: "1970-01-01"` stays accepted: it narrows nothing, but a caller
+ * had to reach for it deliberately, and refusing an explicit date bound would
+ * be the guard second-guessing a stated intent rather than catching a default.
+ */
+function narrowsGrep(args: SearchChatsInput): boolean {
+  if (args.topLevelOnly === true) return true;
+  if (args.query !== undefined && args.query.trim() !== "") return true;
+  return PRESENT_IS_ENOUGH.some((key) => args[key] !== undefined);
+}
 export const searchChatsInput = z.object(searchChatsSchema).strict();
 export type SearchChatsInput = z.infer<typeof searchChatsInput>;
 
@@ -208,7 +232,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   // Refused rather than silently expensive. An unscoped grep opens every
   // transcript in the corpus, and the caller who typed `{ grep: "..." }` has no
   // way to know that from the result — it looks like any other page.
-  if (args.grep !== undefined && scope !== "visible" && !GREP_NARROWING_FILTERS.some((key) => args[key] !== undefined)) {
+  if (args.grep !== undefined && scope !== "visible" && !narrowsGrep(args)) {
     throw new ChatQueryError(
       "GREP_UNSCOPED",
       `grep opens every candidate transcript, so it needs a narrowing filter alongside it: ${GREP_NARROWING_FILTERS.join(", ")}, or scope:"visible". ` +
@@ -447,6 +471,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     return recorded && recorded !== chat.folder ? [recorded, chat.folder] : [chat.folder];
   };
   let branchUnevaluated = 0;
+  let repoUnevaluated = 0;
   let candidates = [...rows.values()].filter((chat) => {
     if (!baseAdmits(chat)) return false;
     const rootId = membership.index.existingRootIdOf(chat.id);
@@ -472,7 +497,17 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
         verdict = repoScope.classify(folder);
         if (verdict !== null) break;
       }
-      if (verdict === null || verdict === "refused") return false;
+      if (verdict === null) {
+        // Not the same as `refused`. A refusal means something answered — git
+        // about a directory that is there, or a record naming another checkout.
+        // `null` means the directory is gone, nothing recorded it, and its path
+        // says nothing: a removed worktree in ~/worktrees/foo is invisible to
+        // `repo` and the caller cannot tell that from a genuine absence. Same
+        // rule the branch filter follows two predicates down.
+        repoUnevaluated++;
+        return false;
+      }
+      if (verdict === "refused") return false;
       repoSource = verdict;
     }
     if (args.agentAlias !== undefined && (record.agentAlias ?? meta.agentAlias ?? null) !== args.agentAlias) return false;
@@ -522,6 +557,12 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       !query || [meta.title, meta.preview, chat.folder, chat.displayFolder].some((value) => typeof value === "string" && value.toLowerCase().includes(query))
     );
   });
+  if (repoUnevaluated) {
+    warnings.push(
+      `${repoUnevaluated} chats ran in a directory that is gone, is not recorded in any workspace and does not follow the worktree naming convention; ` +
+        `repo membership could not be evaluated for them`,
+    );
+  }
   if (branchUnevaluated) {
     warnings.push(`${branchUnevaluated} chats recorded no branch and their directory is gone; the branch filter could not evaluate them`);
   }

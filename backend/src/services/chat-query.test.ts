@@ -197,6 +197,14 @@ describe("individual chat query", () => {
     // `find_chats` never needed this guard — its `folder` was required, so a
     // corpus-wide grep was unreachable. Here it is one short argument list away.
     await expect(searchChats({ grep: "needle" })).rejects.toMatchObject({ code: "GREP_UNSCOPED" });
+    // Present is not the same as narrowing, and these two are what an agent
+    // actually writes: `topLevelOnly: false` is the documented default, and a
+    // blank query reads as "no text filter". Both used to satisfy the guard and
+    // open all 2,096 transcripts while the caller believed one held.
+    await expect(searchChats({ grep: "needle", topLevelOnly: false })).rejects.toMatchObject({ code: "GREP_UNSCOPED" });
+    await expect(searchChats({ grep: "needle", query: "   " })).rejects.toMatchObject({ code: "GREP_UNSCOPED" });
+    // An empty string never gets that far — the schema rejects it.
+    await expect(searchChats({ grep: "needle", query: "" })).rejects.toThrow();
     await expect(searchChats({ grep: "needle", topLevelOnly: true })).resolves.toBeTruthy();
     await expect(searchChats({ grep: "needle", folder: "/work/repo" })).resolves.toBeTruthy();
   });

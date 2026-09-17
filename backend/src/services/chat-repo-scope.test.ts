@@ -66,7 +66,25 @@ function workspace(cwd: string, repoPath: string, branch: string): Workspace {
 /** A removed directory shaped exactly like a worktree of `callboard`. */
 const deadButOwnedElsewhere = join(tmpRoot, "callboard.owned-elsewhere");
 
-const RECORDS = [workspace(recordedElsewhere, repo, "feat/recorded"), workspace(deadButOwnedElsewhere, stranger, "feat/theirs")];
+/** A worktree of `repo`, spawned from `liveWorktree` rather than from `repo`. */
+const nestedWorktree = join(tmpRoot, "callboard.feat-live.nested"); // never created
+/** Two records on one cwd, disagreeing — a supported state, per CLAUDE.md. */
+const contested = join(tmpRoot, "callboard.contested"); // never created
+/** A record whose `repoPath` names a directory that no longer exists. */
+const recordOnMovedRepo = join(tmpRoot, "callboard.after-move"); // never created
+
+const RECORDS = [
+  workspace(recordedElsewhere, repo, "feat/recorded"),
+  workspace(deadButOwnedElsewhere, stranger, "feat/theirs"),
+  // `repoPath` is written once at creation and never re-normalised, so a
+  // worktree spawned from a worktree records the *parent worktree* here.
+  workspace(nestedWorktree, liveWorktree, "feat/nested"),
+  // Newest first out of `listWorkspaces`, so a first-match scan would see the
+  // refusing one and stop before the admitting one.
+  { ...workspace(contested, stranger, "feat/theirs-too"), id: "ws-contested-b" },
+  { ...workspace(contested, repo, "feat/ours"), id: "ws-contested-a" },
+  workspace(recordOnMovedRepo, join(tmpRoot, "callboard-moved-away"), "feat/moved"),
+];
 
 describe("createRepoScope", () => {
   const scope = createRepoScope(repo, RECORDS);
@@ -111,6 +129,31 @@ describe("createRepoScope", () => {
     expect(scope.classify(join(tmpRoot, "callboard.no-record"))).toBe("sibling-path");
   });
 
+  it("follows a repoPath that is itself a worktree of this repo", () => {
+    // The regression this file exists to pin: comparing `repoPath` verbatim
+    // reads "belongs to a worktree of callboard" as "does not belong to
+    // callboard", and because the veto ran first and short-circuited, the row
+    // could not be recovered by any rule downstream. Measured over 174 live
+    // workspace cwds, that took `sibling-path` from 1 to 0 — and the one row
+    // lost was the 51% rule's only live customer.
+    expect(scope.classify(nestedWorktree)).toBe("workspace-record");
+  });
+
+  it("scans every record on a cwd before letting one refuse", () => {
+    // Several workspaces may share one `cwd`, and they need not agree. Stopping
+    // at the first non-matching record let a newer record naming another repo
+    // veto an older one naming this one.
+    expect(scope.classify(contested)).toBe("workspace-record");
+  });
+
+  it("never vetoes on a repoPath it cannot resolve", () => {
+    // A repo that was moved or renamed leaves every record naming a dead path,
+    // and `samePath` degrades to a string compare when `realpathSync` throws.
+    // Treating unresolvable as "some other repo" would empty every query: 146
+    // of 175 records on the profiled machine name one directory.
+    expect(scope.classify(recordOnMovedRepo)).toBe("sibling-path");
+  });
+
   it("has no answer for a folder nothing relates to this repo", () => {
     expect(scope.classify(join(tmpRoot, "somethingelse.feat-x"))).toBeNull();
     // Right parent, right prefix, but no separator — `callboardish` is a
@@ -136,6 +179,17 @@ describe("createRepoScope", () => {
     expect(fromWorktree.classify(repo)).toBe("exact");
     expect(fromWorktree.classify(deadWorktree)).toBe("sibling-path");
     expect(fromWorktree.classify(liveWorktree)).toBe("live-git");
+  });
+
+  it("normalises a NESTED worktree all the way to the main checkout", () => {
+    // One hop produced a *worktree* as the repoRoot, and that scope then
+    // refused the real repo — for exactly the usage normalisation exists for,
+    // an agent inside a nested worktree passing its own cwd.
+    const fromNested = createRepoScope(nestedWorktree, RECORDS);
+    expect(fromNested.repoRoot).toBe(repo);
+    expect(fromNested.normalisedFrom).toBe(nestedWorktree);
+    expect(fromNested.classify(repo)).toBe("exact");
+    expect(fromNested.classify(deadWorktree)).toBe("sibling-path");
   });
 
   it("normalises a REMOVED worktree path through its workspace record", () => {
