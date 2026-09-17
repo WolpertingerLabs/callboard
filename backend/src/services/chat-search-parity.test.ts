@@ -41,10 +41,27 @@
  * to. If a future change narrows `search_chats`, the superset assertions fail
  * with the exact query shape that regressed.
  */
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/**
+ * Explicit, and sized against CI rather than against a developer machine.
+ *
+ * This file is the only one that drives **both** implementations over a real
+ * on-disk fixture, so a handful of its tests genuinely cost ~1s: provider
+ * discovery shells out to `find`, the legacy path to `ls`/`grep`, and the two
+ * `grep` tests each spawn a worker that loads tsx. The repeated work is hoisted
+ * (see `shapeResults`) and the slowest test is ~1s here — but CI ran the old
+ * version ~2.3x slower and four tests landed on the 5s default at 5001-5026ms,
+ * green locally and red there.
+ *
+ * 30s is not a performance budget; it is a deadlock guard with room for a
+ * machine several times slower than this one. If a test here ever approaches
+ * it, something is hanging, not slow — do not raise this number, find the hang.
+ */
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-parity-"));
 // paths.js derives CLAUDE_PROJECTS_DIR from homedir() at load, and os.homedir()
@@ -420,6 +437,27 @@ function toMerged(legacy: LegacyFilters) {
 }
 const mergedIds = async (legacy: LegacyFilters) => (await mergedSearchChats(toMerged(legacy))).chats.map((c) => c.chatId);
 
+/**
+ * Both implementations' answers for every shape, computed **once**.
+ *
+ * Each `searchChats` call re-runs provider discovery — a `find` over the
+ * transcript tree — and each `findChats` call shells out to `ls` and `grep`.
+ * Three tests looped the 19 shapes and a fourth looped them again, which was
+ * ~90 subprocess-backed calls for 19 distinct answers. That is what put four
+ * tests within milliseconds of the 5s default: fast enough here, over the line
+ * on slower CI. The answers do not vary between tests, so they are not
+ * recomputed per test.
+ */
+const SHAPE_RESULTS = new Map<string, { baseline: string[]; merged: string[] }>();
+async function shapeResults() {
+  if (SHAPE_RESULTS.size) return SHAPE_RESULTS;
+  for (const { name, legacy } of PARITY_QUERIES) {
+    SHAPE_RESULTS.set(name, { baseline: findChats(legacy), merged: await mergedIds(legacy) });
+  }
+  return SHAPE_RESULTS;
+}
+const shapeOf = (name: string) => SHAPE_RESULTS.get(name)!;
+
 describe("find_chats baseline (the behaviour search_chats must keep)", () => {
   it("has a fixture that is actually searchable", () => {
     // Non-vacuous: if /tmp were still ignored, every assertion below would pass
@@ -441,8 +479,9 @@ describe("find_chats baseline (the behaviour search_chats must keep)", () => {
     // they both carry, not a date window that spans them.
     for (const { name, legacy } of PARITY_QUERIES) {
       if (legacy.folder === dead) continue;
-      expect(findChats(legacy), name).not.toContain(R.r4);
-      expect(findChats(legacy), name).not.toContain(R.r5);
+      const found = findChats(legacy);
+      expect(found, name).not.toContain(R.r4);
+      expect(found, name).not.toContain(R.r5);
     }
     // Not because the transcripts are unreadable: naming the removed worktree's
     // exact path still finds them, via the exact-encoding branch that skips the
@@ -486,6 +525,10 @@ describe("find_chats baseline (the behaviour search_chats must keep)", () => {
 });
 
 describe("search_chats is a superset of find_chats", () => {
+  beforeAll(async () => {
+    await shapeResults();
+  });
+
   it("returns every row the baseline returned, for every query shape", async () => {
     // `arrayContaining([])` is vacuously true, and some shapes legitimately
     // have an empty baseline (`gitBranch: "feature/dead"` is the reach bug
@@ -498,10 +541,9 @@ describe("search_chats is a superset of find_chats", () => {
     // that reach removed worktrees. Those are asserted one rule at a time in
     // "each reach rule is individually load-bearing" below.
     let shapesWithNonEmptyBaseline = 0;
-    for (const { name, legacy } of PARITY_QUERIES) {
-      const baseline = findChats(legacy);
+    for (const { name } of PARITY_QUERIES) {
+      const { baseline, merged } = shapeOf(name);
       if (baseline.length) shapesWithNonEmptyBaseline++;
-      const merged = await mergedIds(legacy);
       expect(merged, `${name}: lost rows ${baseline.filter((id) => !merged.includes(id)).join(", ")}`).toEqual(expect.arrayContaining(baseline));
     }
     expect(shapesWithNonEmptyBaseline).toBeGreaterThanOrEqual(PARITY_QUERIES.length - 2);
@@ -531,7 +573,7 @@ describe("search_chats is a superset of find_chats", () => {
     expect((await mergedSearchChats({ folder: unrelated, limit: 100 })).chats[0].folder).toBe(decoyInsideRepo);
     for (const { name, legacy } of PARITY_QUERIES) {
       if (legacy.folder !== repo) continue;
-      expect(await mergedIds(legacy), name).not.toContain(R.r6);
+      expect(shapeOf(name).merged, name).not.toContain(R.r6);
     }
     expect(await mergedIds({ folder: unrelated })).toEqual(expect.arrayContaining([R.r6]));
   });
@@ -543,7 +585,7 @@ describe("search_chats is a superset of find_chats", () => {
     // anyone holds must not lose to the weakest inference.
     for (const { name, legacy } of PARITY_QUERIES) {
       if (legacy.folder !== repo) continue;
-      expect(await mergedIds(legacy), name).not.toContain(R.r7);
+      expect(shapeOf(name).merged, name).not.toContain(R.r7);
     }
     // And it is genuinely reachable — this is a refusal, not a row the fixture
     // forgot to make findable.
@@ -652,13 +694,14 @@ describe("search_chats is a superset of find_chats", () => {
   });
 
   it("labels a grep hit with what the engine actually matched", async () => {
-    const rows = (await mergedSearchChats({ repo, grep: "alpha", limit: 100 })).chats;
+    const result = await mergedSearchChats({ repo, grep: "alpha", limit: 100 });
+    const rows = result.chats;
     expect(rows.map((r) => r.chatId).sort()).toEqual([R.r1, R.r3, R.r4].sort());
     // claude-code greps the whole transcript; a codex row here would say
     // first-prompt. The row carries the distinction so the caller need not know
     // which engine wrote the log.
     for (const row of rows) expect(row.matchKind).toBe("transcript");
-    expect((await mergedSearchChats({ repo, grep: "alpha", limit: 100 })).appliedFilters.contentSearchSemantics).toMatch(/matchKind/);
+    expect(result.appliedFilters.contentSearchSemantics).toMatch(/matchKind/);
   });
 
   it("keeps date bounds and both sort orders", async () => {

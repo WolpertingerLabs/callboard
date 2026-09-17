@@ -857,3 +857,86 @@ named reach assertions — `sibling-path reaches a removed worktree that only it
 name identifies`, `gone-descendant reaches a removed directory inside the repo`,
 and `the second spelling reaches a chat whose record cwd answers nothing` — and
 killing the two-spelling loop now also fails the superset guarantee itself.
+
+### Gate round (2026-09-17)
+
+**`repoUnevaluated` — corrected figure and method.** The earlier note said "2
+rows out of 366". The row count was right on this machine and the total was
+stale; the measured figure is **2 rows out of 365**, and it is worth recording
+how it was obtained, because a reviewer measuring the same counter got 17.
+
+Instrumenting the counter itself (not `classify` in isolation) on the live
+corpus:
+
+```
+searchChats({ repo: "/home/cybil/callboard" })
+  → observedMatches 365, total null, partial true
+  → "2 chats ran in a directory that is gone, is not recorded in any workspace
+     and does not follow the worktree naming convention"
+  → both rows: /home/cybil/cb-p4-scratch, nearest existing git ancestor = none
+```
+
+Two populations are easy to conflate here and the difference is the whole
+discrepancy. Over **all 9,053 stored chat folders**, 317 rows across 187 folders
+classify `null` — close to the ~348/~210 a reviewer reported, and the right
+number for that question. But `rows` is built from *discovered sessions*, and
+stored-only records are appended only when pinned or lineage-related, so almost
+none of those 317 ever become query candidates. The counter measures candidates.
+
+Of those 187 `null` folders, **zero** have a non-this-repo git ancestor. The
+reason is worth stating: they are record cwds like
+`/home/cybil/perch.feat-x-api-provider`, whose nearest ancestor is `/home/cybil`
+and has no `.git`. The projection spelling — `perch/feat-x-api-provider` — does
+sit inside a live repo, but never reaches `null`, because `recordRefuses`
+answers on the record spelling first and the caller's loop short-circuits.
+
+**The ancestor discriminator is implemented anyway**, and it is a backstop
+rather than a correction. A gone directory whose nearest existing ancestor
+resolves to a repository that is not this one has an answer — its own repo's —
+so it is `refused`, not "nothing could be asked". Today that outcome depends
+entirely on a workspace record existing, and records are only written when a
+chat starts in a worktree and the entity is recent, so the no-record case is the
+common historical shape and the one this covers. Placed **last** in the gone
+branch, after `descendant` and `sibling-path`, or a checkouts directory that is
+itself under version control would refuse this repo's own removed worktrees.
+A/B on the live corpus: 365 rows with the rule and 365 without, nothing dropped
+and nothing added — it changes no answer here, and would on a machine whose
+removed worktrees lack records.
+
+**`recordAdmits` compares with `samePath`**, not `===`. The direct arm
+realpath-normalised and the transitive arm added in the previous round did not,
+so a caller who typed an aliased spelling of the repo lost a row that should be
+`workspace-record` — which then fed the `null` counter. Every other comparison
+in the module already used `samePath`.
+
+**Parity-file timing.** Four tests in `chat-search-parity.test.ts` timed out in
+CI at 5001–5026 ms on the 5 s default while passing locally. The cause was
+recomputation, not a tight limit: three tests looped the 19 query shapes and a
+fourth looped them again, each iteration re-running provider discovery (a `find`
+over the transcript tree) and the legacy path's `ls`/`grep` — roughly 90
+subprocess-backed calls for 19 distinct answers. `shapeResults()` computes both
+implementations' answers once in a `beforeAll`; the baseline loop calls
+`findChats` once per shape instead of twice; the grep test makes one call rather
+than two. File duration 10.88 s → 5.69 s, slowest single test 2205 ms → 998 ms.
+The file then sets an explicit `vi.setConfig({ testTimeout: 30_000 })` with a
+comment: 30 s is a deadlock guard with room for a machine several times slower
+than the development one, not a performance budget.
+
+**Side effect worth naming:** `query: z.string().min(1)` was added for the grep
+guard, but it applies to every call — `query: ""` is now rejected outright
+rather than treated as "no text filter". That is arguably the better contract
+(an empty substring matches everything, so it never meant anything) but it is
+wider than the guard that motivated it.
+
+**Not changed, with evidence.** A logged, caught
+`No "resolveWorktreeToMainRepoCached" export is defined on the "../utils/git.js"
+mock` from `chat-lookup` was attributed to this branch. It is pre-existing:
+`chat-lookup.ts` has imported that symbol since `26ba7075`, which is on
+`origin/main`, and this branch does not touch the file. It does not reproduce
+here — 0 occurrences across a full 5,916-test sweep, and 0 when the suspect
+suites run alone — so it is ordering- or environment-dependent. Completing the
+seven bare `git.js` mocks that omit the export was tried and reverted: it
+changes the outcome of **13 tests across `chats.preview` and
+`chats.job-run-status`**, which currently depend on `chat-lookup` taking its
+catch path. Making those suites assert the post-fix behaviour is a real change
+to the sidebar preview path and does not belong in this PR.
