@@ -1,6 +1,9 @@
 # Callboard chat search tools
 
-Status: implemented on feat/callboard-chat-search-tools; see as-built notes below.
+Status: implemented on feat/callboard-chat-search-tools; consolidated with
+`find_chats` on feat/consolidate-chat-search-tools. See both as-built sections
+below — the 2026-09-17 one supersedes the earlier "keep `find_chats`
+compatible" recommendation and records why.
 
 ## Recommendation
 
@@ -17,6 +20,12 @@ introduce a different corpus, pagination model, or browser-dependent defaults.
 Separate list tools can be thin convenience wrappers later if actual use
 shows a discoverability problem; do not build three independent query paths.
 
+> **Superseded (2026-09-17).** `find_chats` was deleted and its capabilities
+> absorbed into `search_chats`. The scope control was right at the time — this
+> was never a design preference for two tools — but leaving both in place left
+> an agent choosing between two similar names, where the weaker one was blind
+> to 51% of the corpus. See "As built: consolidation" below.
+
 Working assumption: “visible filters” means the live sidebar settings and
 submitted search from the browser tab that initiated the current chat turn,
 not saved defaults. This is the one product clarification requested.
@@ -25,7 +34,7 @@ not saved defaults. This is the one product clarification requested.
 
 | Concern | Current implementation / implication |
 | --- | --- |
-| MCP tools | `backend/src/services/callboard-tools.ts` defines `find_chats`, `get_chat_tree`, `list_cards`, and `get_session_status`. `find_chats` requires a folder and concatenates provider-limited results before applying lineage filters; it is not globally paginated. |
+| MCP tools | `backend/src/services/callboard-tools.ts` defines `find_chats`, `get_chat_tree`, `list_cards`, and `get_session_status`. `find_chats` requires a folder and concatenates provider-limited results before applying lineage filters; it is not globally paginated. *(Superseded 2026-09-17: `find_chats` is deleted; `search_chats` in `chat-query-tools.ts` is the only chat-search tool.)* |
 | Sidebar server filtering | `backend/src/routes/chats.ts` implements discovery, metadata augmentation, bookmarks, triggered/native-child exclusions, card lifecycle, lineage pagination, and off-page pins. Extract this logic rather than calling Express handlers from MCP. |
 | Sidebar browser filtering | `frontend/src/pages/ChatList.tsx` holds advanced filters, bookmarks, and submitted search in React state. Triggered/archived preferences also use browser localStorage. The server does not have the current view. |
 | Shared filter definitions | `frontend/src/types/chatFilters.ts` distinguishes advanced filters from server-resolved view options. `cardLifecycleFor` widens archive scope during a submitted content search. |
@@ -89,7 +98,9 @@ Contract details:
 - `query` is inexpensive metadata search, not a promise to inspect all
   transcript contents. Current-view submitted content search is an additional
   base predicate with the same provider semantics as the sidebar. Keep
-  `find_chats` available for explicit provider content searches.
+  `find_chats` available for explicit provider content searches. *(Superseded:
+  transcript search is now `search_chats({ grep })`, run after the record
+  predicates have narrowed the candidate set.)*
 - Dates use inclusive updated-time bounds; directory patterns use the
   sidebar's `displayFolder || folder` and case-insensitive matching. Convert
   browser-local date inputs to timezone-unambiguous instants before sending.
@@ -232,7 +243,8 @@ to assert completeness of a partially examined corpus.
 
 Not required for this change: persistent user profiles, board-filter mirroring,
 pixel/expanded-tree scraping, search-result writes or adoption, a new full-text
-index, ranking/embeddings, or changes to legacy `find_chats` semantics.
+index, ranking/embeddings, or changes to legacy `find_chats` semantics. *(That
+last exclusion is what the 2026-09-17 consolidation lifted.)*
 
 
 ## As built (2026-09-16)
@@ -242,7 +254,8 @@ index, ranking/embeddings, or changes to legacy `find_chats` semantics.
 - `chat-query.ts` and `chat-query-tools.ts` implement the two new read-only
   tools. `anyOf` accepts only `pinned`, `bookmarked`, `open_card`; there is
   no execution-activity predicate or liveness projection. The existing
-  `find_chats` schema and implementation are unchanged.
+  `find_chats` schema and implementation are unchanged. *(Superseded 2026-09-17:
+  `find_chats` is deleted and `searchChatsSchema` carries its filters.)*
 - Shared building blocks, rather than an Express-handler adapter:
   `chat-discovery.ts` enumerates provider pages without a total-hit cap;
   `card-membership.ts` is the extracted metadata-only part of card-context;
@@ -294,13 +307,18 @@ index, ranking/embeddings, or changes to legacy `find_chats` semantics.
   It searches discovered session files using the providers' actual text
   readers, **not** their folder-search result pages. This avoids both the
   Claude helper's hard 50-hit cap and repeatedly grepping the same directory
-  to fill pages; `find_chats` keeps its published cap/semantics.
+  to fill pages; `find_chats` keeps its published cap/semantics. *(Superseded
+  2026-09-17: `search_chats({ grep })` uses the same module, so there is one
+  content path rather than two.)*
 - Semantics remain provider-specific: Claude uses case-insensitive basic
   grep over session JSONL, Codex the first prompt (native children use their
   nickname/path), Cline/ACP first-message previews, Pi derived message text.
   The tool explicitly reports this; it does not claim full-text indexing.
   The legacy REST folder search retains Claude-only worktree expansion;
-  the new tool's `folder` predicate is always exact cwd.
+  the new tool's `folder` predicate is always exact cwd. *(Superseded
+  2026-09-17: `folder` is still exact cwd — matched against the record's cwd as
+  well as the browse projection — and worktree expansion is the separate `repo`
+  parameter, derived from records rather than from a live `.git`.)*
 - Content work runs in up to two isolated workers, with a 15-second
   response deadline, 192 MiB worker heap and 32 MiB per-file read boundary.
   Claude grep batches contain at most 128 paths, not 128 hits. Overload,
@@ -511,3 +529,414 @@ Build and lint-all passed (0 errors, 1,154 warnings); computer-use passed
 56 tests with 1 skipped. An interim full run overlapped the final collision
 regression/edit and failed that new assertion; the frozen rerun above passed.
 No manual browser run or latency benchmark; UI/context code was untouched.
+
+## As built: consolidation (2026-09-17)
+
+`find_chats` is deleted. `search_chats` is the single chat-search tool.
+
+### Why deletion and not an alias
+
+The split between the two tools was scope control from #454 ("changes to
+legacy `find_chats` semantics" were out of scope), not a design preference —
+and the same plan already said *do not build three independent query paths*.
+What the split cost was concrete: an agent picking between two similar names
+landed roughly half the time on the weaker index. Aliasing `find_chats` to the
+merged implementation would have preserved exactly that, so the name goes.
+
+Nothing outside the repo called it: 0 jobs, 0 skills, and the three in-repo
+references were one test fixture using the name as a plausible MCP tool string
+and two plan documents.
+
+### The bug that made it urgent
+
+`find_chats` was filesystem-first. `discoverProjectDirs` admitted a worktree
+only when `resolveWorktreeToMainRepo` found a live `.git`, so removing a
+worktree removed every chat that ran in it from the tool's reach — under every
+filter, `grep` included. Measured on the development corpus: **129 of 255
+claude-code sessions under `/home/cybil/callboard` (51%) sat in 52 removed
+worktrees**, every one with `metadata.lastBranch` recorded correctly and a chat
+record on disk. The data was never missing; the index refused to look at it.
+
+Two smaller findings fixed alongside it:
+
+- `chat-query.ts`'s `folder` predicate matched only `chat.folder`, the *browse
+  projection* assigned during discovery enrichment. For a chat whose directory
+  is gone that projection is the lossy decode of the project-dir name — a path
+  that never existed. `/home/cybil/callboard.refactor-auto-create-worktree`
+  returned 0 rows while the same chats came back under the fabricated
+  `/home/cybil/callboard/refactor-auto-create-worktree`. What is *reported* is
+  unchanged (two views of one git tree must agree); matching now accepts the
+  record's cwd as well.
+- The `meta.lastBranch` fallback at `chat-search.ts:325-329` was dead code —
+  step 2 dropped null-branch directories before it could ever run.
+
+### What `search_chats` gained
+
+`repo`, `branch`, `agentAlias`, `triggered`, `grep`, `rootChatId`,
+`parentChatId`, `updatedAfter`, `updatedBefore`, `sort`.
+
+`folder` and `repo` are deliberately separate parameters, not one name with two
+meanings: `folder` is an exact cwd, `repo` is a repo root that expands. Per
+CLAUDE.md's `cwd`/`workspaceId` rule both are directory questions and both key
+on `cwd`; workspace records are read for the `cwd`/`repoPath` pair they carry,
+never for identity, and no `workspaceId` is parsed.
+
+Repo membership (`chat-repo-scope.ts`) is derived from records first, and every
+row reports which rule admitted it as `repoSource`: `exact`, `descendant`,
+`workspace-record`, `live-git`, `sibling-path`. Only the last is an inference,
+and it applies **only when the directory is gone** — a sibling that still
+exists and does not resolve back to this repo is a different repo sharing a
+path prefix, which `find_chats` rejected and so does this. That is the whole
+fix: the reach is `find_chats`' reach minus the live-`.git` requirement.
+
+`branch` reads `metadata.lastBranch`, written by `routes/stream.ts`'s
+**generic** message route and therefore recorded by every engine, falling back
+to the directory's live branch when it still exists. `branchSource` is
+`record`, `live-git` or `unknown`. `agentAlias` and `triggered` likewise come
+from records, so they narrow for every engine instead of `find_chats`'
+claude-code-only behaviour of returning other engines' rows unfiltered.
+
+`grep` is transcript search, explicitly opt-in and deliberately **last**: the
+cheap record predicates narrow the candidate set, and only the survivors' files
+are opened. `find_chats` grepped every JSONL under the folder tree unscoped;
+scoped to an open card this is ~20 transcripts. It reuses
+`chat-content-search.ts` — the same per-engine readers each adapter's
+`searchSessions` greps with, under the existing worker time/heap/byte budgets —
+rather than adding a third content path. Each hit reports `matchKind`:
+`transcript` (claude-code, pi), `first-prompt` (codex, cline, acp), or
+`metadata` (a Codex native child, whose "first prompt" is its nickname).
+
+The governing rule for provenance is *never silently drop a row you could not
+evaluate; stamp it*. A `branch` filter that meets a chat with no recorded
+branch and no directory left counts those rows and reports them as a warning,
+which also makes `total` honestly `null` rather than a confident undercount.
+
+### What stayed
+
+- The `SessionProvider.searchSessions` port and every adapter's implementation
+  of it. Per-engine transcript matching belongs behind that seam.
+- **Interpretation note.** The brief for this change said to delete "the dead
+  aggregation in `chat-search.ts`" while keeping "the port and each provider's
+  `searchSessions`". Those are the same code: `chat-search.ts`'s `searchChats`
+  *is* `ClaudeCodeSessionProvider.searchSessions`. Keeping the port won, so
+  what was deleted is the cross-provider aggregation that sat on top of it —
+  the `for (const provider of getSessionProviders())` loop in the `find_chats`
+  tool definition — and `chat-search.ts` remains as the claude-code adapter's
+  implementation, with its own ignore-list test. Its `discoverProjectDirs`
+  blind spot survives inside that adapter, but it is no longer the index an
+  agent reaches for.
+- The native-agent identity apparatus in `chat-query.ts`: `rejectedNativeSessions`,
+  `unsafeNative`, ambiguous-identity warnings, retired-provider skip. `find_chats`
+  had none of it and the merged tool does not lose it.
+- Sidebar behaviour. Nothing outside `chat-query-tools.ts` imports
+  `chat-query.ts`; `routes/chats.ts` has its own path.
+
+### Parity guarantee
+
+`backend/src/services/chat-search-parity.test.ts` builds a fixture shaped like
+the motivating corpus — main checkout, live worktree, **removed** worktree, and
+an unrelated repo sharing the path prefix — and drives *both* implementations
+against it. The first `describe` pins `find_chats`' shipped behaviour across 19
+query shapes (folder; folder+grep; folder+gitBranch; folder+agentAlias;
+folder+triggered; date bounds; both sorts; parentChatId/rootChatId), including
+the blind spot. The second asserts `search_chats` returns a **superset** of
+each of those row sets under a mechanical translation of the filters, plus the
+rows the baseline could not reach, and that it still refuses the neighbouring
+repo.
+
+### Verification
+
+- `backend/src/services/chat-search-parity.test.ts` — 12 tests.
+- `backend/src/services/chat-repo-scope.test.ts` — 8 tests.
+- `chat-query.test.ts` (+4 cases), `chat-query.identity.test.ts`,
+  `chat-query.integration.test.ts`, `chat-query.native-risk.test.ts`,
+  `chat-query-tools.test.ts` — all green, unmodified apart from the additions.
+- Full repository sweep and `tsc --noEmit` on the backend project.
+
+### Deliberately not done
+
+- No schema migration or backfill. `repo` reads what is already recorded.
+- No change to `chat-search.ts`'s own worktree discovery. Fixing it there would
+  be fixing the claude-code adapter's `searchSessions`, which has no caller and
+  is not the path an agent takes.
+- No wire-type (`shared/types/stream.ts`) changes; the new fields are MCP tool
+  JSON, not SSE.
+
+### Review round (2026-09-17, three parallel reviews of #456)
+
+Independently cleared: identity safety, sidebar isolation, the no-per-row-scan
+property, cheap-call cost, and the removal of `find_chats`' `getChat`-per-row
+trap. What follows is what changed as a result of the 22 findings.
+
+**Membership could admit a different repo.** `classify` returned
+`RepoSource | null`, so "git was asked and said no" was indistinguishable from
+"nothing could be asked" — and the caller, holding two spellings of a chat's
+cwd, gave the fabricated one a second turn after the real one was refused. The
+lexical `descendant` rule then admitted a neighbour as fact:
+`callboard-contrast-shots` decodes to `callboard/contrast/shots`. Two changes:
+`evaluate` now returns {@link RepoVerdict} with an explicit `refused`, and only
+`null` earns a second spelling. Workspace records refuse as well as admit — one
+naming a *different* `repoPath` beats the `sibling-path` inference, which it
+previously lost to. Verified on the real corpus: 365 rows admitted across 131
+directories (312 `workspace-record`, 26 `exact`, 21 `sibling-path`, 6
+`live-git`), with `/home/cybil/callboard-contrast-shots` correctly refused.
+
+**`repo` given a worktree returned one worktree's chats.** Callboard's normal
+mode is an agent running inside a worktree, so `repo: process.cwd()` is both the
+natural value and the broken one — `live-git` compares `mainRepoPath` against
+the argument, so siblings and the main checkout both failed and `sibling-path`
+could not fire, all with a confident total. `createRepoScope` now normalises
+through `resolveWorktreeToMainRepoCached`, falling back to a workspace record
+when the named directory is itself gone, and reports `appliedFilters.repoRoot` /
+`repoNormalisedFrom`. Verified: `repo: <this worktree>` and
+`repo: /home/cybil/callboard` return the same 365 rows.
+
+**The schema documented nothing.** `defineTool` passes `inputSchema` straight
+through, so the generated JSON Schema is all an agent sees; the registry is only
+the browser's REST listing. Eleven absorbed parameters shipped as bare types
+after `find_chats`' inline documentation was deleted rather than moved. Every
+field now carries `.describe()`, the registry mirrors those strings, and the
+manifest test keeps the two honest. The sharpest case was `rootChatId` /
+`parentChatId` becoming **global** in this PR — undocumented, an agent keeps
+passing `folder` alongside them and drops every relative that ran in another
+worktree.
+
+**Honesty rules applied consistently.** `grep` dropped candidates with no
+discoverable transcript — stored-only pins, rows whose log is gone — with no
+counter and a confident `total`, which is what the `branch` path had already
+been changed to stop doing. Both content paths now share one helper that counts
+and reports them. `matchKind`'s fallback defaulted an unknown engine to the
+*strongest* claim; it is keyed by `AgentProviderKind` now, so a new engine is a
+compile error, and pi is `messages` rather than `transcript` — pi's
+`deriveSearchText` is conversational text with no tool traffic, where
+claude-code greps raw JSONL including tool results, and an agent hunting a file
+path must not read the absence of pi hits as evidence.
+
+**Unscoped grep is refused, not merely slow.** `find_chats` never needed this
+guard because its `folder` was required; `search_chats` made a corpus-wide grep
+reachable in one short argument list — measured at 2,096 files / 1.15 GB /
+~3.3 s, against 609 ms alongside `anyOf: ["open_card"]`. `grep` now requires a
+narrowing filter and throws `GREP_UNSCOPED` (1 ms) rather than returning a
+correct-looking page that cost the corpus.
+
+**Live branch reads no longer spawn.** `getGitInfo` on a directory with no
+`.git` of its own shells out to `git rev-parse --git-dir` with a 5 s timeout —
+2.73 ms against 0.03 ms for a directory that has one — and this path has no
+worker, deadline or cap. `nearestGitDir` walks up with `existsSync` and hands
+git a directory it serves from HEAD. Measured after: `branch=main` over the
+whole corpus is 480 ms end to end.
+
+**Pool saturation is now distinguishable.** `collectContentMatches` reports a
+busy pool as a warning plus an empty result set, which reads from outside
+exactly like "nothing matched"; the sibling pool (`matchAdvanced`) throws for
+the same condition. `chat-query.ts` now throws `CHAT_CONTENT_BUSY` instead of
+returning a successful-looking empty page.
+
+**Deferred, deliberately.** Two things in `chat-content-search.ts` /
+`chat-content-worker.ts` are pre-existing and shared with `routes/chats.ts`, and
+half-fixing either is worse than leaving a note:
+
+- *The worker's budgets do not nest.* Claude batches are 128 paths each with a
+  5-second `execFileSync` timeout, inside a 15-second worker deadline — so a
+  corpus-sized run could spend 17 batches x 5 s against a 15 s ceiling and the
+  per-batch timeout never binds. The outcome is already honest (the deadline
+  fires, the warning says so, `total` goes null), and `GREP_UNSCOPED` removed
+  the input size that made the mismatch reachable from this tool: a scoped grep
+  is 24 files and 609 ms. Threading a remaining-time budget into each batch
+  changes behaviour the sidebar's submitted search shares, so it belongs in its
+  own change.
+- *Three callers contend for two slots.* `grep`, the sidebar's submitted search
+  and `routes/chats.ts:245` share one pool. Throwing `CHAT_CONTENT_BUSY` makes
+  saturation visible to this tool's caller, which was the reviewable half;
+  sizing or queueing the pool is not.
+
+**`lastBranch` is last, not all.** A chat that moved between branches records
+only the most recent one, so `branch=` can miss a chat that genuinely worked on
+the branch asked for. Documented on the schema field and in the row's provenance
+comment rather than counted as unevaluable — counting stale-record misses would
+change `total` semantics for a case nothing distinguishes from a true miss.
+
+**`partial` / `total: null` — investigated, no fix.** The concern was that the
+identity warnings make `total` null almost always. Measured on the real 2,095-row
+corpus: those warnings fire **zero** times. What does fire is
+`nativeDiscoveryIncomplete`, and only on a cold process — it is a 16 MB
+metadata-read budget that memoises what it read. Pass 1: 1,801 rows,
+`partial: true` (and honestly so — 294 rows really were omitted). Passes 2-5:
+2,095 rows, `partial: false`, `total: 2095`. The daemon is long-lived and the
+sidebar polls every 15 s, so the warm state is the normal one and the signal is
+meaningful.
+
+**Also:** rows now report `agentAlias` and `triggered`, so the filters are
+self-checking the way `branch` is; `branchSource` is resolved for the page's
+rows rather than only when `branch=` was passed, so "unknown" no longer means
+"we never looked"; `folder`/`repo` must be absolute, because a relative path
+would resolve against the daemon's cwd rather than the caller's.
+
+### Review round two (2026-09-17, over-correction hunt on the fix delta)
+
+Round two reviewed only the previous round's delta and found that two of those
+fixes had over-corrected. Both were proven against the live workspace registry
+rather than a fixture, and **both reached green CI** — which is why the third
+item here is about the tests.
+
+**The refusal vetoed genuine members.** `repoPath` is written once at creation
+and never re-normalised, so a worktree spawned from a worktree records its
+*parent worktree* as its repo — a normal Callboard shape. String-comparing the
+field read that as "not this repo", the veto ran first and short-circuited, and
+nothing downstream could recover the row. Measured over 174 live workspace
+cwds: `sibling-path` went 1 → 0 and `refused` 0 → 28, and **the one row lost was
+the 51% rule's only live customer** (`callboard.feat-ori-agent-callboard-integration.feat-pi-adapter-phase-0`).
+Three variants held too: a moved or renamed repo would make all 146 records
+naming `/home/cybil/callboard` refuse, because `samePath` degrades to a string
+compare when `realpathSync` throws on a dead path; the bucket loop returned on
+the first non-matching record, so a newer record could veto an older one naming
+this repo; and an existing directory inside the repo could be refused on a
+stale field. Now: admissions are read first and across the whole bucket,
+`repoPath` is resolved through `resolveWorktreeToMainRepoCached`, an
+unresolvable one never vetoes, and the on-disk `descendant` fact outranks the
+record. Live tally after: `sibling-path` 1, `refused` 27 (all genuinely other
+repos — perch, drawlatch, countinghouse).
+
+**`nearestGitDir` answered for directories that do not exist.** The upward walk
+did not check that its starting point was there, so
+`/home/cybil/callboard/feat/gone/worktree` reported `main`. The stamp was the
+least of it: a non-null live branch makes `recorded === null && live === null`
+false, so a chat in a removed worktree with no recorded branch was dropped from
+a `branch=` query as a *proven mismatch* instead of counted as unevaluable —
+the honesty counter this PR built, defeated by the performance fix sitting next
+to it. One `existsSync` guard restores `null` and keeps the whole measured
+saving, which was for live subdirectories.
+
+**Normalisation was one hop and trusted `repoPath` verbatim**, so
+`createRepoScope("<nested worktree>")` produced a *worktree* as its `repoRoot`
+and that scope then refused the real repo — for precisely the usage
+normalisation exists to serve. It iterates now, bounded, preferring live git and
+falling back to a record only when the directory is gone, with a deterministic
+choice among several records on one cwd.
+
+**Two of the twelve grep-narrowing filters narrowed nothing.** The guard tested
+`!== undefined`, so `topLevelOnly: false` (the documented default) and
+`query: ""` both satisfied it and opened all 2,096 transcripts while the caller
+believed a guard held. `query` is `.min(1)` at the schema; the predicate checks
+`topLevelOnly === true` and a non-blank `query`. An explicit
+`updatedAfter: "1970-01-01"` is still accepted — it narrows nothing, but the
+caller reached for it on purpose.
+
+**A `null` repo verdict is counted.** `null` and `refused` were dropped
+identically, but `null` means the directory is gone, nothing recorded it and its
+name says nothing — a removed worktree in `~/worktrees/foo`, invisible to `repo`
+and indistinguishable from a genuine absence. It is now counted and warned about,
+the same rule the branch filter follows. On the live corpus that is 2 rows out
+of 366, named rather than absorbed.
+
+#### The net that let two regressions through
+
+Round two mutation-tested the suite and found the reach rules mutually
+redundant: killing the gone-`descendant` rule or the caller's two-spelling loop
+passed 109/109, and killing `sibling-path` failed only a *stamp* assertion.
+
+The redundancy is structural, and worth stating because it will recur. A
+claude-code session's folder is decoded from its project-dir name, and the
+decoder commits a segment as soon as the path so far exists — so while the repo
+directory is on disk, every sibling `repo<sep>suffix` projects to
+`repo/suffix`, which is *inside* the repo. `sibling-path` is therefore only ever
+the sole admitting rule for an engine that records its cwd **verbatim** (codex,
+pi, cline, acp read it out of the session file). The fixture now models one.
+
+`each reach rule is individually load-bearing` gives every rule a row no other
+rule can admit, asserted **present** rather than asserted-with-a-stamp, so
+deleting a rule loses a chat instead of relabelling one. The
+`shapesWithNonEmptyBaseline` count was renamed from `constraining` for the same
+reason: every row it counts is one `find_chats` could already see, so it is
+fixture-liveness, not reach coverage, and the old name invited the confusion.
+
+Mutation results after (11 mutants, `chat-search-parity` +
+`chat-repo-scope` + `chat-query` + `chat-query-tools`): **11 killed, 0
+survivors**. The three that previously survived or only mis-stamped now fail
+named reach assertions — `sibling-path reaches a removed worktree that only its
+name identifies`, `gone-descendant reaches a removed directory inside the repo`,
+and `the second spelling reaches a chat whose record cwd answers nothing` — and
+killing the two-spelling loop now also fails the superset guarantee itself.
+
+### Gate round (2026-09-17)
+
+**`repoUnevaluated` — corrected figure and method.** The earlier note said "2
+rows out of 366". The row count was right on this machine and the total was
+stale; the measured figure is **2 rows out of 365**, and it is worth recording
+how it was obtained, because a reviewer measuring the same counter got 17.
+
+Instrumenting the counter itself (not `classify` in isolation) on the live
+corpus:
+
+```
+searchChats({ repo: "/home/cybil/callboard" })
+  → observedMatches 365, total null, partial true
+  → "2 chats ran in a directory that is gone, is not recorded in any workspace
+     and does not follow the worktree naming convention"
+  → both rows: /home/cybil/cb-p4-scratch, nearest existing git ancestor = none
+```
+
+Two populations are easy to conflate here and the difference is the whole
+discrepancy. Over **all 9,053 stored chat folders**, 317 rows across 187 folders
+classify `null` — close to the ~348/~210 a reviewer reported, and the right
+number for that question. But `rows` is built from *discovered sessions*, and
+stored-only records are appended only when pinned or lineage-related, so almost
+none of those 317 ever become query candidates. The counter measures candidates.
+
+Of those 187 `null` folders, **zero** have a non-this-repo git ancestor. The
+reason is worth stating: they are record cwds like
+`/home/cybil/perch.feat-x-api-provider`, whose nearest ancestor is `/home/cybil`
+and has no `.git`. The projection spelling — `perch/feat-x-api-provider` — does
+sit inside a live repo, but never reaches `null`, because `recordRefuses`
+answers on the record spelling first and the caller's loop short-circuits.
+
+**The ancestor discriminator is implemented anyway**, and it is a backstop
+rather than a correction. A gone directory whose nearest existing ancestor
+resolves to a repository that is not this one has an answer — its own repo's —
+so it is `refused`, not "nothing could be asked". Today that outcome depends
+entirely on a workspace record existing, and records are only written when a
+chat starts in a worktree and the entity is recent, so the no-record case is the
+common historical shape and the one this covers. Placed **last** in the gone
+branch, after `descendant` and `sibling-path`, or a checkouts directory that is
+itself under version control would refuse this repo's own removed worktrees.
+A/B on the live corpus: 365 rows with the rule and 365 without, nothing dropped
+and nothing added — it changes no answer here, and would on a machine whose
+removed worktrees lack records.
+
+**`recordAdmits` compares with `samePath`**, not `===`. The direct arm
+realpath-normalised and the transitive arm added in the previous round did not,
+so a caller who typed an aliased spelling of the repo lost a row that should be
+`workspace-record` — which then fed the `null` counter. Every other comparison
+in the module already used `samePath`.
+
+**Parity-file timing.** Four tests in `chat-search-parity.test.ts` timed out in
+CI at 5001–5026 ms on the 5 s default while passing locally. The cause was
+recomputation, not a tight limit: three tests looped the 19 query shapes and a
+fourth looped them again, each iteration re-running provider discovery (a `find`
+over the transcript tree) and the legacy path's `ls`/`grep` — roughly 90
+subprocess-backed calls for 19 distinct answers. `shapeResults()` computes both
+implementations' answers once in a `beforeAll`; the baseline loop calls
+`findChats` once per shape instead of twice; the grep test makes one call rather
+than two. File duration 10.88 s → 5.69 s, slowest single test 2205 ms → 998 ms.
+The file then sets an explicit `vi.setConfig({ testTimeout: 30_000 })` with a
+comment: 30 s is a deadlock guard with room for a machine several times slower
+than the development one, not a performance budget.
+
+**Side effect worth naming:** `query: z.string().min(1)` was added for the grep
+guard, but it applies to every call — `query: ""` is now rejected outright
+rather than treated as "no text filter". That is arguably the better contract
+(an empty substring matches everything, so it never meant anything) but it is
+wider than the guard that motivated it.
+
+**Not changed, with evidence.** A logged, caught
+`No "resolveWorktreeToMainRepoCached" export is defined on the "../utils/git.js"
+mock` from `chat-lookup` was attributed to this branch. It is pre-existing:
+`chat-lookup.ts` has imported that symbol since `26ba7075`, which is on
+`origin/main`, and this branch does not touch the file. It does not reproduce
+here — 0 occurrences across a full 5,916-test sweep, and 0 when the suspect
+suites run alone — so it is ordering- or environment-dependent. Completing the
+seven bare `git.js` mocks that omit the export was tried and reverted: it
+changes the outcome of **13 tests across `chats.preview` and
+`chats.job-run-status`**, which currently depend on `chat-lookup` taking its
+catch path. Making those suites assert the post-fix behaviour is a real change
+to the sidebar preview path and does not belong in this PR.

@@ -33,6 +33,7 @@ vi.mock("../utils/paths.js", async (importOriginal) => ({
   isIgnoredProjectFolder: (folder: string) => folder.startsWith("/ignored"),
 }));
 const { searchChats, searchChatsInput, matchAdvanced } = await import("./chat-query.js");
+const { collectContentMatches } = await import("./chat-content-search.js");
 function chat(id: string, meta: Record<string, unknown> = {}, folder = "/work/repo"): Chat {
   return {
     id,
@@ -108,6 +109,128 @@ describe("individual chat query", () => {
       filePath: "/absent/rollout-2026-01-01T00-00-00-01a07680-3128-7461-bc19-d727bd8dc379.jsonl",
     });
     expect(ids(await searchChats({ topLevelOnly: true }))).toEqual(["root"]);
+  });
+  it("matches folder against the stored record's true cwd as well as the browse projection", async () => {
+    // A chat that ran in a worktree that has since been removed. The record
+    // holds the real cwd; the project-dir name decodes to a path that never
+    // existed, because the decoder can no longer check the directory.
+    state.stored = [chat("ghost", {}, "/work/repo.feature-x")];
+    state.sessions = [
+      {
+        sessionId: "ghost",
+        folder: "/work/repo/feature-x",
+        displayFolder: "/work/repo/feature-x",
+        filePath: "/absent/ghost",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+        updatedAt: new Date("2026-01-01T00:00:00Z"),
+        providerKind: "codex",
+      },
+    ];
+    expect(ids(await searchChats({ folder: "/work/repo.feature-x" }))).toEqual(["ghost"]);
+    expect(ids(await searchChats({ folder: "/work/repo/feature-x" }))).toEqual(["ghost"]);
+    expect(ids(await searchChats({ folder: "/work/elsewhere" }))).toEqual([]);
+    // What is *reported* stays the browse projection — the fix widens matching,
+    // not the projection, so two views of one directory still agree.
+    expect((await searchChats({ folder: "/work/repo.feature-x" })).chats[0].folder).toBe("/work/repo/feature-x");
+  });
+  it("filters on branch/alias/triggered from records, for every engine, and says where the branch came from", async () => {
+    // `metadata.lastBranch` is written by the generic message route, so these
+    // are not claude-code-only the way find_chats' equivalents were. The `pi`
+    // row proves it: find_chats would have returned it unfiltered, stamped
+    // gitBranch null.
+    state.stored = [
+      chat("cx", { lastBranch: "main", agentAlias: "forge", triggered: true }),
+      chat("pi", { provider: "pi", lastBranch: "feat/x", agentAlias: "scout" }),
+      chat("bare"),
+    ];
+    discover();
+    for (const session of state.sessions) if (session.sessionId === "pi") session.providerKind = "pi";
+    expect(ids(await searchChats({ branch: "main" }))).toEqual(["cx"]);
+    expect(ids(await searchChats({ branch: "feat/x" }))).toEqual(["pi"]);
+    expect(ids(await searchChats({ agentAlias: "scout" }))).toEqual(["pi"]);
+    expect(ids(await searchChats({ triggered: true }))).toEqual(["cx"]);
+    expect(ids(await searchChats({ triggered: false })).sort()).toEqual(["bare", "pi"]);
+    const rows = (await searchChats({})).chats;
+    expect(rows.find((r) => r.chatId === "cx")).toMatchObject({ branch: "main", branchSource: "record" });
+    // Nothing recorded a branch for `bare` and its directory is not on disk, so
+    // the row says so instead of implying "no branch".
+    expect(rows.find((r) => r.chatId === "bare")).toMatchObject({ branch: null, branchSource: "unknown" });
+  });
+  it("reports the rows a branch filter could not evaluate rather than dropping them silently", async () => {
+    state.stored = [chat("known", { lastBranch: "main" }), chat("mystery")];
+    discover();
+    const result = await searchChats({ branch: "main" });
+    expect(ids(result)).toEqual(["known"]);
+    expect(result.warnings.some((w) => w.includes("could not evaluate"))).toBe(true);
+    // A row we could not evaluate might have matched, so the count is not known
+    // to be exact — the same rule every other coverage gap here follows.
+    expect(result.total).toBeNull();
+  });
+  it("runs grep last, over only the candidates the record predicates left", async () => {
+    state.stored = [chat("hit", { lastBranch: "main" }), chat("missed", { lastBranch: "other" }), chat("closed", { lastBranch: "main" })];
+    discover();
+    vi.mocked(collectContentMatches).mockClear();
+    const result = await searchChats({ branch: "main", grep: "needle" });
+    // The provider grep never sees `missed`: the branch filter ran first, and
+    // the whole point of the ordering is that transcripts are only opened for
+    // rows that already qualify.
+    const [term, sessions] = vi.mocked(collectContentMatches).mock.calls[0];
+    expect(term).toBe("needle");
+    expect((sessions as { sessionId: string }[]).map((s) => s.sessionId).sort()).toEqual(["closed", "hit"]);
+    // The shared mock only ever reports a hit for `closed`.
+    expect(ids(result)).toEqual(["closed"]);
+    expect(result.chats[0].matchKind).toBe("first-prompt");
+    expect(result.appliedFilters.contentSearchSemantics).toContain("matchKind");
+  });
+  it("calls a Codex native child's grep hit metadata, because that is what it matched", async () => {
+    // Codex's reader returns the agent's nickname or path for a native child.
+    // Presenting that as a first-prompt match would read as conversation.
+    state.stored = [chat("closed", { nativeAgent: { parentThreadId: "root" } })];
+    state.stored.push(chat("root"));
+    discover();
+    const result = await searchChats({ grep: "needle", folder: "/work/repo" });
+    expect(result.chats.map((c) => c.matchKind)).toEqual(["metadata"]);
+  });
+  it("refuses an unscoped grep rather than opening the whole corpus", async () => {
+    state.stored = [chat("closed")];
+    discover();
+    // `find_chats` never needed this guard — its `folder` was required, so a
+    // corpus-wide grep was unreachable. Here it is one short argument list away.
+    await expect(searchChats({ grep: "needle" })).rejects.toMatchObject({ code: "GREP_UNSCOPED" });
+    // Present is not the same as narrowing, and these two are what an agent
+    // actually writes: `topLevelOnly: false` is the documented default, and a
+    // blank query reads as "no text filter". Both used to satisfy the guard and
+    // open all 2,096 transcripts while the caller believed one held.
+    await expect(searchChats({ grep: "needle", topLevelOnly: false })).rejects.toMatchObject({ code: "GREP_UNSCOPED" });
+    await expect(searchChats({ grep: "needle", query: "   " })).rejects.toMatchObject({ code: "GREP_UNSCOPED" });
+    // An empty string never gets that far — the schema rejects it.
+    await expect(searchChats({ grep: "needle", query: "" })).rejects.toThrow();
+    await expect(searchChats({ grep: "needle", topLevelOnly: true })).resolves.toBeTruthy();
+    await expect(searchChats({ grep: "needle", folder: "/work/repo" })).resolves.toBeTruthy();
+  });
+  it("counts the rows grep could not read instead of reporting them as misses", async () => {
+    // A stored-only pin has no discovered session, so no transcript to open.
+    // Silently filtering it out would be a confident "did not match" about a
+    // file nobody looked at — the exact thing the branch filter was changed to
+    // stop doing.
+    state.stored = [chat("closed"), chat("ghostpin", { pinned: true })];
+    discover([state.stored[0]]);
+    const result = await searchChats({ grep: "needle", topLevelOnly: true });
+    expect(ids(result)).toEqual(["closed"]);
+    expect(result.warnings.some((w) => w.includes("no readable transcript"))).toBe(true);
+    expect(result.total).toBeNull();
+  });
+  it("throws rather than returning an empty page when the content pool is saturated", async () => {
+    state.stored = [chat("closed")];
+    discover();
+    vi.mocked(collectContentMatches).mockResolvedValueOnce({
+      keys: new Set<string>(),
+      chatIds: new Set<string>(),
+      warnings: ["Content search workers busy; retry this query"],
+    });
+    // The sibling worker pool (`matchAdvanced`) throws CHAT_FILTER_BUSY for the
+    // same condition. Returning `chats: []` here reads as "no matches".
+    await expect(searchChats({ grep: "needle", topLevelOnly: true })).rejects.toMatchObject({ code: "CHAT_CONTENT_BUSY" });
   });
   it("preserves archive/bookmark/triggered/search widening and ignores tool query as widening", async () => {
     state.stored = [

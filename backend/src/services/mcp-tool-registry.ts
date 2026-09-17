@@ -359,20 +359,77 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     name: "search_chats",
     qualifiedName: "mcp__callboard-tools__search_chats",
     description:
-      "Read-only individual chat search with global stable pagination. Visible scope uses the originating browser tab's live effective sidebar filters. Ignored directories are always excluded.",
+      "Read-only chat search across every engine, with global stable pagination. Folder or repo scoped, with transcript grep, branch, agent and lineage filters. Rows carry provenance (repoSource, branchSource, matchKind); check partial/total/warnings before reading an empty page as 'no matches'.",
+    // Mirrors the `.describe()` strings on `searchChatsSchema` in chat-query.ts,
+    // which are what an agent actually sees. This copy is the browser's REST
+    // tool listing; mcp-tool-registry.manifest.test.ts guards the names and
+    // required-ness against drift.
     parameters: [
-      { name: "scope", type: "enum", description: "all (default) or live visible sidebar scope", required: false, enumValues: ["all", "visible"] },
-      { name: "topLevelOnly", type: "boolean", description: "Only actual surviving lineage roots, excluding native children", required: false },
+      {
+        name: "scope",
+        type: "enum",
+        description: "all (default) searches every chat; visible restricts to the originating browser tab's live sidebar filters",
+        required: false,
+        enumValues: ["all", "visible"],
+      },
+      { name: "topLevelOnly", type: "boolean", description: "Only surviving lineage roots, excluding native provider children", required: false },
       {
         name: "anyOf",
         type: "array",
-        description: "Nonempty OR of pinned, bookmarked, open_card; individual chat pins/bookmarks, not group pins",
+        description: "Nonempty OR over this chat's own pinned/bookmarked state and eligible open-card membership; individual pins, not group or card pins",
         required: false,
       },
-      { name: "query", type: "string", description: "Metadata title, stored preview and folder text (not transcript search)", required: false },
-      { name: "folder", type: "string", description: "Exact working directory", required: false },
-      { name: "limit", type: "number", description: "Page size 1–100, default 20", required: false },
-      { name: "offset", type: "number", description: "Nonnegative integer offset, default 0", required: false },
+      {
+        name: "query",
+        type: "string",
+        description: "Case-insensitive substring over stored metadata only — title, stored preview, folder text. Never reads a transcript; use grep for that.",
+        required: false,
+      },
+      {
+        name: "folder",
+        type: "string",
+        description: "Exact working directory, absolute. Does not expand to worktrees — use repo for that.",
+        required: false,
+      },
+      {
+        name: "repo",
+        type: "string",
+        description:
+          "Repo root, absolute; expands to worktrees, and a worktree path is normalised up to its main checkout. Reaches removed worktrees named by a workspace record or sitting directly beside the repo. Rows report repoSource.",
+        required: false,
+      },
+      {
+        name: "branch",
+        type: "string",
+        description:
+          "Matches metadata.lastBranch — the last branch the chat ran on, not every branch it touched — falling back to the directory's current branch. Rows report branchSource.",
+        required: false,
+      },
+      { name: "agentAlias", type: "string", description: "Exact alias of the agent that started the chat; rows report agentAlias", required: false },
+      { name: "triggered", type: "boolean", description: "true = automated (job/trigger) sessions, false = manual; rows report triggered", required: false },
+      {
+        name: "grep",
+        type: "string",
+        description: "Case-insensitive transcript content search. Requires at least one other filter alongside it. Each hit reports matchKind; engine semantics differ.",
+        required: false,
+      },
+      {
+        name: "rootChatId",
+        type: "string",
+        description: "Chats in the tree rooted at this chat. Global — relatives that ran in other folders are included unless you also pass folder/repo.",
+        required: false,
+      },
+      {
+        name: "parentChatId",
+        type: "string",
+        description: "Direct children of this chat. Global — children that ran in other folders are included unless you also pass folder/repo.",
+        required: false,
+      },
+      { name: "updatedAfter", type: "string", description: "ISO-8601 date or date-time; only chats updated at or after this instant", required: false },
+      { name: "updatedBefore", type: "string", description: "ISO-8601 date or date-time; only chats updated at or before this instant", required: false },
+      { name: "sort", type: "enum", description: "Newest-first by update time (default) or creation time", required: false, enumValues: ["updated", "created"] },
+      { name: "limit", type: "number", description: "Page size, 1-100, default 20", required: false },
+      { name: "offset", type: "number", description: "Stable global offset, default 0; page with nextOffset", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -384,51 +441,6 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     description:
       "Read the originating browser tab's effective sidebar filters, submitted search, revision and freshness; explicitly unavailable without a live browser context.",
     parameters: [],
-    serverName: "callboard-tools",
-    serverLabel: "Callboard Tools",
-    category: "platform",
-  },
-  {
-    name: "find_chats",
-    qualifiedName: "mcp__callboard-tools__find_chats",
-    description:
-      "Search chat sessions for a repo folder, across all engines. Project folders the user has ignored in Settings are skipped. Two claude-code-only behaviours that fail in opposite directions: worktree expansion (other engines match the folder exactly, so their worktree chats are absent) and the gitBranch/agentAlias/triggered filters (other engines ignore them and return their folder matches anyway, so those rows come back unfiltered). Use with continue_chat to resume a previous conversation.",
-    parameters: [
-      {
-        name: "folder",
-        type: "string",
-        description:
-          "Repo working directory path (also searches worktrees, for claude-code sessions only — other engines match it exactly, so their worktree chats are absent)",
-        required: true,
-      },
-      { name: "grep", type: "string", description: "Search term to grep across session conversation content", required: false },
-      {
-        name: "gitBranch",
-        type: "string",
-        description: "Filter by git branch. Applied to claude-code sessions only — other engines ignore it and return their folder matches unfiltered.",
-        required: false,
-      },
-      {
-        name: "agentAlias",
-        type: "string",
-        description:
-          "Filter to chats by a specific agent. Applied to claude-code sessions only — other engines ignore it and return their folder matches unfiltered.",
-        required: false,
-      },
-      {
-        name: "triggered",
-        type: "boolean",
-        description:
-          "Filter to automated (true) or manual (false) sessions. Applied to claude-code sessions only — other engines ignore it and always report triggered=false.",
-        required: false,
-      },
-      { name: "updatedAfter", type: "string", description: "ISO-8601 date — only chats updated after this time", required: false },
-      { name: "updatedBefore", type: "string", description: "ISO-8601 date — only chats updated before this time", required: false },
-      { name: "parentChatId", type: "string", description: "Filter to direct children of this chat in the parentage tree", required: false },
-      { name: "rootChatId", type: "string", description: "Filter to chats in the tree rooted at this chat", required: false },
-      { name: "sort", type: "enum", description: "Sort field", required: false, enumValues: ["updated", "created"] },
-      { name: "limit", type: "number", description: "Max results (default: 10, max: 50)", required: false },
-    ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
     category: "platform",
