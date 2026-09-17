@@ -771,3 +771,89 @@ self-checking the way `branch` is; `branchSource` is resolved for the page's
 rows rather than only when `branch=` was passed, so "unknown" no longer means
 "we never looked"; `folder`/`repo` must be absolute, because a relative path
 would resolve against the daemon's cwd rather than the caller's.
+
+### Review round two (2026-09-17, over-correction hunt on the fix delta)
+
+Round two reviewed only the previous round's delta and found that two of those
+fixes had over-corrected. Both were proven against the live workspace registry
+rather than a fixture, and **both reached green CI** — which is why the third
+item here is about the tests.
+
+**The refusal vetoed genuine members.** `repoPath` is written once at creation
+and never re-normalised, so a worktree spawned from a worktree records its
+*parent worktree* as its repo — a normal Callboard shape. String-comparing the
+field read that as "not this repo", the veto ran first and short-circuited, and
+nothing downstream could recover the row. Measured over 174 live workspace
+cwds: `sibling-path` went 1 → 0 and `refused` 0 → 28, and **the one row lost was
+the 51% rule's only live customer** (`callboard.feat-ori-agent-callboard-integration.feat-pi-adapter-phase-0`).
+Three variants held too: a moved or renamed repo would make all 146 records
+naming `/home/cybil/callboard` refuse, because `samePath` degrades to a string
+compare when `realpathSync` throws on a dead path; the bucket loop returned on
+the first non-matching record, so a newer record could veto an older one naming
+this repo; and an existing directory inside the repo could be refused on a
+stale field. Now: admissions are read first and across the whole bucket,
+`repoPath` is resolved through `resolveWorktreeToMainRepoCached`, an
+unresolvable one never vetoes, and the on-disk `descendant` fact outranks the
+record. Live tally after: `sibling-path` 1, `refused` 27 (all genuinely other
+repos — perch, drawlatch, countinghouse).
+
+**`nearestGitDir` answered for directories that do not exist.** The upward walk
+did not check that its starting point was there, so
+`/home/cybil/callboard/feat/gone/worktree` reported `main`. The stamp was the
+least of it: a non-null live branch makes `recorded === null && live === null`
+false, so a chat in a removed worktree with no recorded branch was dropped from
+a `branch=` query as a *proven mismatch* instead of counted as unevaluable —
+the honesty counter this PR built, defeated by the performance fix sitting next
+to it. One `existsSync` guard restores `null` and keeps the whole measured
+saving, which was for live subdirectories.
+
+**Normalisation was one hop and trusted `repoPath` verbatim**, so
+`createRepoScope("<nested worktree>")` produced a *worktree* as its `repoRoot`
+and that scope then refused the real repo — for precisely the usage
+normalisation exists to serve. It iterates now, bounded, preferring live git and
+falling back to a record only when the directory is gone, with a deterministic
+choice among several records on one cwd.
+
+**Two of the twelve grep-narrowing filters narrowed nothing.** The guard tested
+`!== undefined`, so `topLevelOnly: false` (the documented default) and
+`query: ""` both satisfied it and opened all 2,096 transcripts while the caller
+believed a guard held. `query` is `.min(1)` at the schema; the predicate checks
+`topLevelOnly === true` and a non-blank `query`. An explicit
+`updatedAfter: "1970-01-01"` is still accepted — it narrows nothing, but the
+caller reached for it on purpose.
+
+**A `null` repo verdict is counted.** `null` and `refused` were dropped
+identically, but `null` means the directory is gone, nothing recorded it and its
+name says nothing — a removed worktree in `~/worktrees/foo`, invisible to `repo`
+and indistinguishable from a genuine absence. It is now counted and warned about,
+the same rule the branch filter follows. On the live corpus that is 2 rows out
+of 366, named rather than absorbed.
+
+#### The net that let two regressions through
+
+Round two mutation-tested the suite and found the reach rules mutually
+redundant: killing the gone-`descendant` rule or the caller's two-spelling loop
+passed 109/109, and killing `sibling-path` failed only a *stamp* assertion.
+
+The redundancy is structural, and worth stating because it will recur. A
+claude-code session's folder is decoded from its project-dir name, and the
+decoder commits a segment as soon as the path so far exists — so while the repo
+directory is on disk, every sibling `repo<sep>suffix` projects to
+`repo/suffix`, which is *inside* the repo. `sibling-path` is therefore only ever
+the sole admitting rule for an engine that records its cwd **verbatim** (codex,
+pi, cline, acp read it out of the session file). The fixture now models one.
+
+`each reach rule is individually load-bearing` gives every rule a row no other
+rule can admit, asserted **present** rather than asserted-with-a-stamp, so
+deleting a rule loses a chat instead of relabelling one. The
+`shapesWithNonEmptyBaseline` count was renamed from `constraining` for the same
+reason: every row it counts is one `find_chats` could already see, so it is
+fixture-liveness, not reach coverage, and the old name invited the confusion.
+
+Mutation results after (11 mutants, `chat-search-parity` +
+`chat-repo-scope` + `chat-query` + `chat-query-tools`): **11 killed, 0
+survivors**. The three that previously survived or only mis-stamped now fail
+named reach assertions — `sibling-path reaches a removed worktree that only its
+name identifies`, `gone-descendant reaches a removed directory inside the repo`,
+and `the second spelling reaches a chat whose record cwd answers nothing` — and
+killing the two-spelling loop now also fails the superset guarantee itself.
