@@ -63,7 +63,12 @@ import { join } from "node:path";
  */
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
-const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-parity-"));
+// The project-dir decoder is lossy for most non-alphanumerics, so the fixture
+// root itself must stay within characters it round-trips. macOS's per-user
+// tmpdir (`/var/folders/t2/zwj_rw5x…/T`) has underscores; decoding it fails and
+// the decoy projection below silently never forms. Fall back to /tmp there.
+const fixtureBase = /^[A-Za-z0-9/.-]+$/.test(tmpdir()) ? tmpdir() : "/tmp";
+const tmpRoot = mkdtempSync(join(fixtureBase, "callboard-parity-"));
 // paths.js derives CLAUDE_PROJECTS_DIR from homedir() at load, and os.homedir()
 // honours $HOME on POSIX, so both the transcript tree and the data dir land
 // inside the fixture. Set before any dynamic import below.
