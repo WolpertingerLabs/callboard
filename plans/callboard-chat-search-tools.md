@@ -730,9 +730,31 @@ whole corpus is 480 ms end to end.
 busy pool as a warning plus an empty result set, which reads from outside
 exactly like "nothing matched"; the sibling pool (`matchAdvanced`) throws for
 the same condition. `chat-query.ts` now throws `CHAT_CONTENT_BUSY` instead of
-returning a successful-looking empty page. The underlying two-slot contention
-between grep, the sidebar's submitted search and `routes/chats.ts` is unchanged
-and pre-existing — fixing it properly is a separate change.
+returning a successful-looking empty page.
+
+**Deferred, deliberately.** Two things in `chat-content-search.ts` /
+`chat-content-worker.ts` are pre-existing and shared with `routes/chats.ts`, and
+half-fixing either is worse than leaving a note:
+
+- *The worker's budgets do not nest.* Claude batches are 128 paths each with a
+  5-second `execFileSync` timeout, inside a 15-second worker deadline — so a
+  corpus-sized run could spend 17 batches x 5 s against a 15 s ceiling and the
+  per-batch timeout never binds. The outcome is already honest (the deadline
+  fires, the warning says so, `total` goes null), and `GREP_UNSCOPED` removed
+  the input size that made the mismatch reachable from this tool: a scoped grep
+  is 24 files and 609 ms. Threading a remaining-time budget into each batch
+  changes behaviour the sidebar's submitted search shares, so it belongs in its
+  own change.
+- *Three callers contend for two slots.* `grep`, the sidebar's submitted search
+  and `routes/chats.ts:245` share one pool. Throwing `CHAT_CONTENT_BUSY` makes
+  saturation visible to this tool's caller, which was the reviewable half;
+  sizing or queueing the pool is not.
+
+**`lastBranch` is last, not all.** A chat that moved between branches records
+only the most recent one, so `branch=` can miss a chat that genuinely worked on
+the branch asked for. Documented on the schema field and in the row's provenance
+comment rather than counted as unevaluable — counting stale-record misses would
+change `total` semantics for a case nothing distinguishes from a true miss.
 
 **`partial` / `total: null` — investigated, no fix.** The concern was that the
 identity warnings make `total` null almost always. Measured on the real 2,095-row
