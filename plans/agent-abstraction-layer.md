@@ -53,7 +53,7 @@ The codebase uses a narrow, well-scoped subset of the SDK. Audited files:
 **MCP tool servers defined in-process** (via `createSdkMcpServer`):
 
 - `callboard` — agent orchestration, cron, triggers, activity, themes
-- `callboard-tools` — render_file, canvas, chat session management, find_chats, wait
+- `callboard-tools` — render_file, canvas, chat session management, search_chats, wait
 - `mcp-proxy` — secure_request, list_routes, poll_events, ingestor control
 - `qc` — quick-completion return_result
 

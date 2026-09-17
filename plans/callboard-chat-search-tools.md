@@ -1,6 +1,9 @@
 # Callboard chat search tools
 
-Status: implemented on feat/callboard-chat-search-tools; see as-built notes below.
+Status: implemented on feat/callboard-chat-search-tools; consolidated with
+`find_chats` on feat/consolidate-chat-search-tools. See both as-built sections
+below — the 2026-09-17 one supersedes the earlier "keep `find_chats`
+compatible" recommendation and records why.
 
 ## Recommendation
 
@@ -16,6 +19,12 @@ provider search with published behavior, not a suitable place to silently
 introduce a different corpus, pagination model, or browser-dependent defaults.
 Separate list tools can be thin convenience wrappers later if actual use
 shows a discoverability problem; do not build three independent query paths.
+
+> **Superseded (2026-09-17).** `find_chats` was deleted and its capabilities
+> absorbed into `search_chats`. The scope control was right at the time — this
+> was never a design preference for two tools — but leaving both in place left
+> an agent choosing between two similar names, where the weaker one was blind
+> to 51% of the corpus. See "As built: consolidation" below.
 
 Working assumption: “visible filters” means the live sidebar settings and
 submitted search from the browser tab that initiated the current chat turn,
@@ -89,7 +98,9 @@ Contract details:
 - `query` is inexpensive metadata search, not a promise to inspect all
   transcript contents. Current-view submitted content search is an additional
   base predicate with the same provider semantics as the sidebar. Keep
-  `find_chats` available for explicit provider content searches.
+  `find_chats` available for explicit provider content searches. *(Superseded:
+  transcript search is now `search_chats({ grep })`, run after the record
+  predicates have narrowed the candidate set.)*
 - Dates use inclusive updated-time bounds; directory patterns use the
   sidebar's `displayFolder || folder` and case-insensitive matching. Convert
   browser-local date inputs to timezone-unambiguous instants before sending.
@@ -232,7 +243,8 @@ to assert completeness of a partially examined corpus.
 
 Not required for this change: persistent user profiles, board-filter mirroring,
 pixel/expanded-tree scraping, search-result writes or adoption, a new full-text
-index, ranking/embeddings, or changes to legacy `find_chats` semantics.
+index, ranking/embeddings, or changes to legacy `find_chats` semantics. *(That
+last exclusion is what the 2026-09-17 consolidation lifted.)*
 
 
 ## As built (2026-09-16)
@@ -242,7 +254,8 @@ index, ranking/embeddings, or changes to legacy `find_chats` semantics.
 - `chat-query.ts` and `chat-query-tools.ts` implement the two new read-only
   tools. `anyOf` accepts only `pinned`, `bookmarked`, `open_card`; there is
   no execution-activity predicate or liveness projection. The existing
-  `find_chats` schema and implementation are unchanged.
+  `find_chats` schema and implementation are unchanged. *(Superseded 2026-09-17:
+  `find_chats` is deleted and `searchChatsSchema` carries its filters.)*
 - Shared building blocks, rather than an Express-handler adapter:
   `chat-discovery.ts` enumerates provider pages without a total-hit cap;
   `card-membership.ts` is the extracted metadata-only part of card-context;
@@ -294,13 +307,18 @@ index, ranking/embeddings, or changes to legacy `find_chats` semantics.
   It searches discovered session files using the providers' actual text
   readers, **not** their folder-search result pages. This avoids both the
   Claude helper's hard 50-hit cap and repeatedly grepping the same directory
-  to fill pages; `find_chats` keeps its published cap/semantics.
+  to fill pages; `find_chats` keeps its published cap/semantics. *(Superseded
+  2026-09-17: `search_chats({ grep })` uses the same module, so there is one
+  content path rather than two.)*
 - Semantics remain provider-specific: Claude uses case-insensitive basic
   grep over session JSONL, Codex the first prompt (native children use their
   nickname/path), Cline/ACP first-message previews, Pi derived message text.
   The tool explicitly reports this; it does not claim full-text indexing.
   The legacy REST folder search retains Claude-only worktree expansion;
-  the new tool's `folder` predicate is always exact cwd.
+  the new tool's `folder` predicate is always exact cwd. *(Superseded
+  2026-09-17: `folder` is still exact cwd — matched against the record's cwd as
+  well as the browse projection — and worktree expansion is the separate `repo`
+  parameter, derived from records rather than from a live `.git`.)*
 - Content work runs in up to two isolated workers, with a 15-second
   response deadline, 192 MiB worker heap and 32 MiB per-file read boundary.
   Claude grep batches contain at most 128 paths, not 128 hits. Overload,
@@ -511,3 +529,135 @@ Build and lint-all passed (0 errors, 1,154 warnings); computer-use passed
 56 tests with 1 skipped. An interim full run overlapped the final collision
 regression/edit and failed that new assertion; the frozen rerun above passed.
 No manual browser run or latency benchmark; UI/context code was untouched.
+
+## As built: consolidation (2026-09-17)
+
+`find_chats` is deleted. `search_chats` is the single chat-search tool.
+
+### Why deletion and not an alias
+
+The split between the two tools was scope control from #454 ("changes to
+legacy `find_chats` semantics" were out of scope), not a design preference —
+and the same plan already said *do not build three independent query paths*.
+What the split cost was concrete: an agent picking between two similar names
+landed roughly half the time on the weaker index. Aliasing `find_chats` to the
+merged implementation would have preserved exactly that, so the name goes.
+
+Nothing outside the repo called it: 0 jobs, 0 skills, and the three in-repo
+references were one test fixture using the name as a plausible MCP tool string
+and two plan documents.
+
+### The bug that made it urgent
+
+`find_chats` was filesystem-first. `discoverProjectDirs` admitted a worktree
+only when `resolveWorktreeToMainRepo` found a live `.git`, so removing a
+worktree removed every chat that ran in it from the tool's reach — under every
+filter, `grep` included. Measured on the development corpus: **129 of 255
+claude-code sessions under `/home/cybil/callboard` (51%) sat in 52 removed
+worktrees**, every one with `metadata.lastBranch` recorded correctly and a chat
+record on disk. The data was never missing; the index refused to look at it.
+
+Two smaller findings fixed alongside it:
+
+- `chat-query.ts`'s `folder` predicate matched only `chat.folder`, the *browse
+  projection* assigned during discovery enrichment. For a chat whose directory
+  is gone that projection is the lossy decode of the project-dir name — a path
+  that never existed. `/home/cybil/callboard.refactor-auto-create-worktree`
+  returned 0 rows while the same chats came back under the fabricated
+  `/home/cybil/callboard/refactor-auto-create-worktree`. What is *reported* is
+  unchanged (two views of one git tree must agree); matching now accepts the
+  record's cwd as well.
+- The `meta.lastBranch` fallback at `chat-search.ts:325-329` was dead code —
+  step 2 dropped null-branch directories before it could ever run.
+
+### What `search_chats` gained
+
+`repo`, `branch`, `agentAlias`, `triggered`, `grep`, `rootChatId`,
+`parentChatId`, `updatedAfter`, `updatedBefore`, `sort`.
+
+`folder` and `repo` are deliberately separate parameters, not one name with two
+meanings: `folder` is an exact cwd, `repo` is a repo root that expands. Per
+CLAUDE.md's `cwd`/`workspaceId` rule both are directory questions and both key
+on `cwd`; workspace records are read for the `cwd`/`repoPath` pair they carry,
+never for identity, and no `workspaceId` is parsed.
+
+Repo membership (`chat-repo-scope.ts`) is derived from records first, and every
+row reports which rule admitted it as `repoSource`: `exact`, `descendant`,
+`workspace-record`, `live-git`, `sibling-path`. Only the last is an inference,
+and it applies **only when the directory is gone** — a sibling that still
+exists and does not resolve back to this repo is a different repo sharing a
+path prefix, which `find_chats` rejected and so does this. That is the whole
+fix: the reach is `find_chats`' reach minus the live-`.git` requirement.
+
+`branch` reads `metadata.lastBranch`, written by `routes/stream.ts`'s
+**generic** message route and therefore recorded by every engine, falling back
+to the directory's live branch when it still exists. `branchSource` is
+`record`, `live-git` or `unknown`. `agentAlias` and `triggered` likewise come
+from records, so they narrow for every engine instead of `find_chats`'
+claude-code-only behaviour of returning other engines' rows unfiltered.
+
+`grep` is transcript search, explicitly opt-in and deliberately **last**: the
+cheap record predicates narrow the candidate set, and only the survivors' files
+are opened. `find_chats` grepped every JSONL under the folder tree unscoped;
+scoped to an open card this is ~20 transcripts. It reuses
+`chat-content-search.ts` — the same per-engine readers each adapter's
+`searchSessions` greps with, under the existing worker time/heap/byte budgets —
+rather than adding a third content path. Each hit reports `matchKind`:
+`transcript` (claude-code, pi), `first-prompt` (codex, cline, acp), or
+`metadata` (a Codex native child, whose "first prompt" is its nickname).
+
+The governing rule for provenance is *never silently drop a row you could not
+evaluate; stamp it*. A `branch` filter that meets a chat with no recorded
+branch and no directory left counts those rows and reports them as a warning,
+which also makes `total` honestly `null` rather than a confident undercount.
+
+### What stayed
+
+- The `SessionProvider.searchSessions` port and every adapter's implementation
+  of it. Per-engine transcript matching belongs behind that seam.
+- **Interpretation note.** The brief for this change said to delete "the dead
+  aggregation in `chat-search.ts`" while keeping "the port and each provider's
+  `searchSessions`". Those are the same code: `chat-search.ts`'s `searchChats`
+  *is* `ClaudeCodeSessionProvider.searchSessions`. Keeping the port won, so
+  what was deleted is the cross-provider aggregation that sat on top of it —
+  the `for (const provider of getSessionProviders())` loop in the `find_chats`
+  tool definition — and `chat-search.ts` remains as the claude-code adapter's
+  implementation, with its own ignore-list test. Its `discoverProjectDirs`
+  blind spot survives inside that adapter, but it is no longer the index an
+  agent reaches for.
+- The native-agent identity apparatus in `chat-query.ts`: `rejectedNativeSessions`,
+  `unsafeNative`, ambiguous-identity warnings, retired-provider skip. `find_chats`
+  had none of it and the merged tool does not lose it.
+- Sidebar behaviour. Nothing outside `chat-query-tools.ts` imports
+  `chat-query.ts`; `routes/chats.ts` has its own path.
+
+### Parity guarantee
+
+`backend/src/services/chat-search-parity.test.ts` builds a fixture shaped like
+the motivating corpus — main checkout, live worktree, **removed** worktree, and
+an unrelated repo sharing the path prefix — and drives *both* implementations
+against it. The first `describe` pins `find_chats`' shipped behaviour across 19
+query shapes (folder; folder+grep; folder+gitBranch; folder+agentAlias;
+folder+triggered; date bounds; both sorts; parentChatId/rootChatId), including
+the blind spot. The second asserts `search_chats` returns a **superset** of
+each of those row sets under a mechanical translation of the filters, plus the
+rows the baseline could not reach, and that it still refuses the neighbouring
+repo.
+
+### Verification
+
+- `backend/src/services/chat-search-parity.test.ts` — 12 tests.
+- `backend/src/services/chat-repo-scope.test.ts` — 8 tests.
+- `chat-query.test.ts` (+4 cases), `chat-query.identity.test.ts`,
+  `chat-query.integration.test.ts`, `chat-query.native-risk.test.ts`,
+  `chat-query-tools.test.ts` — all green, unmodified apart from the additions.
+- Full repository sweep and `tsc --noEmit` on the backend project.
+
+### Deliberately not done
+
+- No schema migration or backfill. `repo` reads what is already recorded.
+- No change to `chat-search.ts`'s own worktree discovery. Fixing it there would
+  be fixing the claude-code adapter's `searchSessions`, which has no caller and
+  is not the path an agent takes.
+- No wire-type (`shared/types/stream.ts`) changes; the new fields are MCP tool
+  JSON, not SSE.

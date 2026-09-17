@@ -203,11 +203,11 @@ describe("translateCodexEvent — tool items (started → tool_use, completed �
     expect(
       translateCodexEvent({
         type: "item.started",
-        item: { id: "m1", type: "mcp_tool_call", server: "callboard", tool: "find_chats", arguments: { q: "x" }, status: "in_progress" },
+        item: { id: "m1", type: "mcp_tool_call", server: "callboard", tool: "search_chats", arguments: { q: "x" }, status: "in_progress" },
       }),
     ).toEqual({
       type: "tool_use",
-      toolName: "callboard__find_chats",
+      toolName: "callboard__search_chats",
       input: { q: "x" },
       callId: "m1",
     });
@@ -219,7 +219,7 @@ describe("translateCodexEvent — tool items (started → tool_use, completed �
           id: "m1",
           type: "mcp_tool_call",
           server: "callboard",
-          tool: "find_chats",
+          tool: "search_chats",
           arguments: { q: "x" },
           result: {
             content: [

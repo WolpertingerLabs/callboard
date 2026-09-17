@@ -14,7 +14,6 @@ import { chatFileService } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getActiveSession } from "./claude.js";
 import { readChatSessionMessages, findChat } from "../utils/chat-lookup.js";
-import { getSessionProviders } from "../agents/factory.js";
 import { resolveBranch } from "../utils/git.js";
 import { getOpenRouterModelsAsync, searchOpenRouterModels, formatOpenRouterPrice } from "./openrouter-models.js";
 import { getVisibleCodexModelsAsync, searchCodexModels } from "./codex-models.js";
@@ -23,7 +22,7 @@ import { getUserContact } from "./user-contact.js";
 import { customSkillsService, slugifySkillName } from "./custom-skills-service.js";
 import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-args.js";
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
-import { buildChatTree, getParentChatId } from "./chat-lineage.js";
+import { buildChatTree } from "./chat-lineage.js";
 import { patchCardFields, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX, CARD_STATUS_MAX } from "./card-fields.js";
 import { createCardContext } from "./card-context.js";
 import { listRuns } from "./job-store.js";
@@ -1379,96 +1378,6 @@ export function buildCallboardToolsSpec(
           } catch (err: any) {
             log.error(`continue_chat failed: ${err.message}`);
             return { content: [{ type: "text" as const, text: `Error continuing chat: ${err.message}` }] };
-          }
-        },
-      ),
-
-      defineTool(
-        "find_chats",
-        "Search chat sessions for a repo folder. Scans the stored sessions of every engine (claude-code, codex, cline, pi, acp), minus any project folder the user has ignored in Settings — those are skipped even when this call names one. Ignoring a folder is the user's instruction to leave it alone, so treat an empty result for an ignored folder as the answer, not as a reason to go read the engines' transcript directories directly. " +
-          "Two caveats, and they fail in OPPOSITE directions. (1) Too few rows: `folder` expands to the repo's worktrees for claude-code sessions only — every other engine matches the working directory exactly, so a codex/cline/pi/acp chat run in a worktree is simply absent unless you name that worktree's path. " +
-          "(2) Too many rows: gitBranch, agentAlias and triggered are applied to claude-code sessions only. The other engines do not store those fields, ignore the filters entirely, and return their folder matches anyway, stamped gitBranch null / agentAlias null / triggered false. So gitBranch:'main' gives you claude-code chats on main PLUS every codex/cline/pi/acp chat in that folder whatever its branch — these filters narrow nothing outside claude-code. Read gitBranch/agentAlias/triggered off each returned row instead of trusting that the filter removed anything. " +
-          "Returns matching chats sorted by most recently updated. Use with continue_chat to resume a previous conversation.",
-        {
-          folder: z
-            .string()
-            .describe(
-              "Repo working directory path (also searches this repo's worktrees, for claude-code sessions only — other engines match this path exactly, so their worktree chats are absent unless you name the worktree)",
-            ),
-          grep: z.string().optional().describe("Search term to grep across session conversation content (messages, tool calls, code, etc.)"),
-          gitBranch: z
-            .string()
-            .optional()
-            .describe(
-              "Filter by git branch (matches live worktree branches and stored session metadata). Applied to claude-code sessions only — other engines ignore it and still return their folder matches, stamped gitBranch null. Check the field on each row.",
-            ),
-          agentAlias: z
-            .string()
-            .optional()
-            .describe(
-              "Filter to chats started by a specific agent. Applied to claude-code sessions only — other engines ignore it and still return their folder matches, stamped agentAlias null. Check the field on each row.",
-            ),
-          triggered: z
-            .boolean()
-            .optional()
-            .describe(
-              "Filter to automated (true) or manual (false) sessions. Applied to claude-code sessions only — other engines ignore it and still return their folder matches, always stamped triggered=false, so triggered:true returns rows saying triggered:false. Check the field on each row.",
-            ),
-          updatedAfter: z.string().optional().describe("ISO-8601 date — only chats updated after this time"),
-          updatedBefore: z.string().optional().describe("ISO-8601 date — only chats updated before this time"),
-          parentChatId: z
-            .string()
-            .optional()
-            .describe("Filter to direct children of this chat in the parentage tree (folder-scoped — use get_chat_tree for the full cross-folder tree)"),
-          rootChatId: z
-            .string()
-            .optional()
-            .describe("Filter to chats belonging to the tree rooted at this chat (folder-scoped — use get_chat_tree for the full cross-folder tree)"),
-          sort: z.enum(["updated", "created"]).optional().describe("Sort field (default: updated)"),
-          limit: z.number().optional().describe("Max results to return (default: 10, max: 50)"),
-        },
-        async (args) => {
-          try {
-            // Search across all registered session providers
-            const allChats: any[] = [];
-            for (const provider of getSessionProviders()) {
-              const providerResult = provider.searchSessions({
-                folder: args.folder,
-                grep: args.grep,
-                gitBranch: args.gitBranch,
-                agentAlias: args.agentAlias,
-                triggered: args.triggered,
-                updatedAfter: args.updatedAfter,
-                updatedBefore: args.updatedBefore,
-                sort: args.sort,
-                limit: args.limit,
-              });
-              allChats.push(...providerResult.chats);
-            }
-
-            // Lineage post-filters — parentage lives in callboard chat
-            // metadata, not in provider transcripts, so filter here instead
-            // of widening the provider search seam.
-            let filtered = allChats;
-            if (args.parentChatId || args.rootChatId) {
-              filtered = allChats.filter((c: any) => {
-                const stored = chatFileService.getChat(c.chatId ?? c.id);
-                if (!stored) return false;
-                let meta: Record<string, any> = {};
-                try {
-                  meta = JSON.parse(stored.metadata || "{}");
-                } catch {}
-                if (args.parentChatId && getParentChatId(meta) !== args.parentChatId) return false;
-                if (args.rootChatId && meta.rootChatId !== args.rootChatId && stored.id !== args.rootChatId) return false;
-                return true;
-              });
-            }
-            const result = { chats: filtered, total: filtered.length };
-
-            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
-          } catch (err: any) {
-            log.error(`find_chats failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error searching chats: ${err.message}` }] };
           }
         },
       ),
