@@ -10,30 +10,33 @@
  * was measured against that gate hid 129 of 255 claude-code sessions (51%), in
  * 52 removed worktrees.
  *
- * So membership is derived from records first and the filesystem second, and
- * every row says which rule admitted it. The rules, in the order they are
- * tried — the order is strongest-evidence-first, not cheapest-first:
+ * So membership is derived from records first and the filesystem second, every
+ * row says which rule admitted it, and — the part that took a review to get
+ * right — a rule that can *admit* must also be able to *refuse*. The order is
+ * strongest-evidence-first, not cheapest-first:
  *
- *  - `exact`            — the folder *is* the repo.
- *  - `descendant`       — the folder is inside the repo (nested worktrees are a
- *                         real Callboard layout, and a chat run in a
- *                         subdirectory is still a chat in this repo).
- *  - `workspace-record` — a workspace record names this folder as its `cwd` and
- *                         this repo as its `repoPath`. Records outlive the
- *                         directories they describe, which is exactly the
- *                         property the live-`.git` gate lacked.
- *  - `live-git`         — the directory is still there and git says it is a
- *                         worktree of this repo. What `find_chats` used, kept.
- *  - `sibling-path`     — the directory is **gone**, and its name is the repo's
- *                         name plus a separator, beside the repo. This is the
- *                         one inferred rule and the one that closes the 51%.
+ *  1. `exact`            — the folder *is* the repo.
+ *  2. workspace records at this `cwd`. One naming this repo as its `repoPath`
+ *     admits (`workspace-record`); one naming a **different** main checkout
+ *     refuses. Records outlive the directories they describe, which is exactly
+ *     the property the live-`.git` gate lacked — and it has to cut both ways or
+ *     the strongest evidence anyone holds loses to the weakest inference below.
+ *  3. the directory **exists**:
+ *       - inside the repo → `descendant`. Callboard spawns worktrees inside
+ *         checkouts, and a chat run in any subdirectory is a chat in this repo.
+ *       - git says worktree-of-this-repo → `live-git`. What `find_chats` used.
+ *       - otherwise → **refused**. It is there, git was asked, the answer is no.
+ *  4. the directory is **gone**, so nothing can be asked and everything left is
+ *     inference: inside the repo → `descendant`; `<repo-name><sep>…` beside the
+ *     repo → `sibling-path`, the rule that closes the 51%. Otherwise no answer.
  *
- * `sibling-path` deliberately does NOT apply to a directory that still exists:
- * if it is there, `live-git` already had its chance, and a sibling that exists
- * but does not resolve back to this repo is a *different repo sharing a path
- * prefix* — which `find_chats` rejected and so does this. The inference is only
- * ever used where there is nothing left to check, and it is reported as
- * `repoSource: "sibling-path"` rather than presented as fact.
+ * Note what step 3 does *not* do: fall through. A neighbour that exists and
+ * does not resolve back is a different repo sharing a path prefix —
+ * `find_chats` rejected those and so does this — and it must not get a second
+ * chance under the lexical rules of step 4. That is why `evaluate` returns
+ * {@link RepoVerdict} rather than an optional `RepoSource`: see that type for
+ * the concrete way conflating "refused" with "nothing to say" admitted a
+ * neighbouring repo and stamped it `descendant`.
  *
  * Nothing here parses a `workspaceId`, and nothing keys on one: a repo is a
  * directory question, so it keys on `cwd` (see the `cwd` vs `workspaceId`
@@ -41,7 +44,7 @@
  * pair they carry, not for identity.
  */
 import { existsSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { Workspace } from "shared/types/workspace.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached } from "../utils/git.js";
 import { listWorkspaces, samePath } from "./workspace-store.js";
@@ -49,11 +52,38 @@ import { listWorkspaces, samePath } from "./workspace-store.js";
 /** Which rule admitted a folder to a repo. Reported on every row. */
 export type RepoSource = "exact" | "descendant" | "workspace-record" | "live-git" | "sibling-path";
 
+/**
+ * The three answers, and why "refused" is not just `null`.
+ *
+ * A caller has more than one spelling of a chat's working directory — the
+ * record's, which is real, and the browse projection, which for a removed
+ * directory is a best-effort decode of a path that may never have existed. If
+ * the only two answers were "member" and "not member", a *refusal* on the real
+ * spelling would look identical to having nothing to say, and the caller would
+ * hand the fabricated spelling a second chance at the same question. It gets
+ * one: `callboard-contrast-shots` decodes to `callboard/contrast/shots`, which
+ * is lexically inside `callboard`, so a neighbouring repo is admitted and
+ * stamped `descendant` — as fact, by the lexical rule, with the evidence that
+ * says otherwise already discarded.
+ *
+ * So: `refused` means something that can actually answer *did* — git was asked
+ * about a directory that is there, or a workspace record names a different main
+ * checkout. `null` means nothing could be asked. Only `null` earns a second
+ * spelling.
+ */
+export type RepoVerdict = RepoSource | "refused" | null;
+
 /** Where a row's branch came from. `unknown` means nothing recorded one. */
 export type BranchSource = "record" | "live-git" | "unknown";
 
 /** `<repo-name><sep>…` beside the repo — both Callboard worktree conventions. */
 const SIBLING_SEPARATORS = new Set([".", "-", "_"]);
+
+/** Is `target` lexically inside `repo`? Says nothing about either existing. */
+function isInside(repo: string, target: string): boolean {
+  const rel = relative(repo, target);
+  return !!rel && !rel.startsWith("..") && !isAbsolute(rel);
+}
 
 /**
  * Classify folders against one repo root.
@@ -62,43 +92,68 @@ const SIBLING_SEPARATORS = new Set([".", "-", "_"]);
  * distinct directories, and the workspace registry is read once rather than per
  * row. Archived workspace records count — a record is evidence about the past,
  * and a removed worktree is entirely in the past.
+ *
+ * `repoPath` is **normalised to the main checkout** before anything is compared
+ * against it. Callboard's normal mode is an agent running inside a worktree, so
+ * `repo: process.cwd()` is both the natural value to pass and, taken verbatim,
+ * the wrong one: `live-git` compares candidates' `mainRepoPath` against it, so
+ * sibling worktrees would not match, the main checkout would not match (it is
+ * not a worktree of anything), and `sibling-path` could not fire. The result
+ * would be one worktree's chats reported with a confident total. The
+ * normalisation is reported back as `repoRoot` rather than applied silently.
  */
 export function createRepoScope(repoPath: string, records?: Workspace[]) {
-  const repo = resolve(repoPath);
-  const repoParent = dirname(repo);
-  const repoName = basename(repo);
+  const given = resolve(repoPath);
 
+  const workspaces = records ?? listWorkspaces();
   const byCwd = new Map<string, Workspace[]>();
-  for (const workspace of records ?? listWorkspaces()) {
+  for (const workspace of workspaces) {
     const key = resolve(workspace.cwd);
     const bucket = byCwd.get(key);
     if (bucket) bucket.push(workspace);
     else byCwd.set(key, [workspace]);
   }
 
-  const cache = new Map<string, RepoSource | null>();
+  // Live git first; a workspace record covers the case where the directory the
+  // caller named has itself been removed, which `resolveWorktreeToMainRepo`
+  // cannot answer.
+  const live = resolveWorktreeToMainRepoCached(given);
+  const recorded = (byCwd.get(given) ?? []).find((w) => w.repoPath && !samePath(w.repoPath, given));
+  const repo = live.isWorktree ? resolve(live.mainRepoPath) : recorded?.repoPath ? resolve(recorded.repoPath) : given;
 
-  function evaluate(folder: string): RepoSource | null {
+  const repoParent = dirname(repo);
+  const repoName = basename(repo);
+  const cache = new Map<string, RepoVerdict>();
+
+  function evaluate(folder: string): RepoVerdict {
     const target = resolve(folder);
     if (samePath(target, repo)) return "exact";
 
-    const rel = relative(repo, target);
-    if (rel && !rel.startsWith("..") && !isAbsolute(rel)) return "descendant";
-
+    // Records outlive the directories they describe — and that has to run in
+    // both directions or the premise is decorative. A record naming a
+    // *different* main checkout is the strongest thing anyone holds about this
+    // directory, and it must not lose to the path inference below.
     for (const workspace of byCwd.get(target) ?? []) {
-      if (workspace.repoPath && samePath(workspace.repoPath, repo)) return "workspace-record";
+      if (!workspace.repoPath) continue;
+      if (samePath(workspace.repoPath, repo)) return "workspace-record";
+      if (!samePath(workspace.repoPath, target)) return "refused";
     }
 
-    const onDisk = existsSync(target);
-    if (onDisk) {
+    if (existsSync(target)) {
+      // It is on disk, so the lexical relation is a fact about a real tree
+      // rather than a guess about a decoded name. Callboard spawns worktrees
+      // inside checkouts, and a chat run in any subdirectory is a chat in this
+      // repo.
+      if (isInside(repo, target)) return "descendant";
       const { isWorktree, mainRepoPath } = resolveWorktreeToMainRepoCached(target);
       if (isWorktree && samePath(mainRepoPath, repo)) return "live-git";
-      // It is there and it is not a worktree of this repo. That is an answer,
-      // not a gap — do not fall through to the path inference and re-admit a
-      // neighbouring repo that merely shares the prefix.
-      return null;
+      // Asked and answered: a neighbour that shares the prefix is its own repo.
+      return "refused";
     }
 
+    // Gone. Nothing can be asked, so what is left is inference, and every
+    // branch from here is reported as such rather than presented as fact.
+    if (isInside(repo, target)) return "descendant";
     const name = basename(target);
     if (dirname(target) === repoParent && name.length > repoName.length && name.startsWith(repoName) && SIBLING_SEPARATORS.has(name[repoName.length])) {
       return "sibling-path";
@@ -107,8 +162,12 @@ export function createRepoScope(repoPath: string, records?: Workspace[]) {
   }
 
   return {
-    /** The rule that admits `folder` to this repo, or null when none does. */
-    classify(folder: string): RepoSource | null {
+    /** The main checkout every classification is made against. */
+    repoRoot: repo,
+    /** Set when the caller named a worktree and this scope widened to its repo. */
+    normalisedFrom: samePath(given, repo) ? null : given,
+    /** How `folder` relates to this repo: admitted, refused, or unanswerable. */
+    classify(folder: string): RepoVerdict {
       if (!folder) return null;
       if (!cache.has(folder)) cache.set(folder, evaluate(folder));
       return cache.get(folder)!;
@@ -116,12 +175,43 @@ export function createRepoScope(repoPath: string, records?: Workspace[]) {
   };
 }
 
+/** Deep enough for a monorepo package path; short enough to stay a bounded walk. */
+const GIT_DIR_SEARCH_DEPTH = 40;
+
+/**
+ * The nearest ancestor of `folder` (itself included) holding a `.git`, or null.
+ *
+ * Pure `existsSync`, deliberately. `getGitInfo` answers "am I in a repository?"
+ * for a directory without its own `.git` by spawning `git rev-parse --git-dir`
+ * with a five-second timeout — measured at **2.73 ms** per call against 0.03 ms
+ * for a directory that has one. That is the shape a monorepo-style install is
+ * made of (chats started in subdirectories), and at a few hundred distinct
+ * folders per `branch=` query it is ~550 ms of blocked event loop, with a
+ * worst case of one 5 s timeout per folder if git stalls on an index lock.
+ * Unlike `grep` and `matchAdvanced` this path has no worker, no deadline and no
+ * cap, so the fix is to not spawn: walking up for a `.git` answers the same
+ * question with stat calls, and hands `getGitInfo` a directory it can serve
+ * from its fast path.
+ *
+ * A worktree's `.git` is a file rather than a directory, which `existsSync`
+ * covers either way.
+ */
+function nearestGitDir(folder: string): string | null {
+  let current = resolve(folder);
+  for (let depth = 0; depth < GIT_DIR_SEARCH_DEPTH; depth++) {
+    if (existsSync(join(current, ".git"))) return current;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+  return null;
+}
+
 /**
  * Read the branch a directory currently has checked out, once per directory.
  *
  * Only consulted when the record has no branch or records a different one, so
- * the common case costs nothing. `getGitInfo` returns early for a path that is
- * not there, which is the shape most of these calls have.
+ * the common case costs nothing.
  */
 export function createLiveBranchResolver() {
   const cache = new Map<string, string | null>();
@@ -130,8 +220,13 @@ export function createLiveBranchResolver() {
     if (!cache.has(folder)) {
       let branch: string | null = null;
       try {
-        const info = getGitInfo(folder);
-        if (info.isGitRepo) branch = info.branch ?? null;
+        const root = nearestGitDir(folder);
+        // No `.git` anywhere above it: there is no branch to read, and asking
+        // git would only spend a subprocess arriving at the same answer.
+        if (root) {
+          const info = getGitInfo(root);
+          if (info.isGitRepo) branch = info.branch ?? null;
+        }
       } catch {
         branch = null;
       }

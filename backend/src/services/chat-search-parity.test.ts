@@ -3,13 +3,22 @@
  *
  * `find_chats` is being deleted. Before it goes, this file pins **what it
  * actually returns** across a representative query set, on a fixture shaped
- * like the corpus the consolidation was motivated by:
+ * like the corpus the consolidation was motivated by.
  *
- *  - a main checkout,
- *  - a live worktree of it,
- *  - a worktree whose directory has been **removed** (the branch is still
- *    recorded on every chat that ran there), and
- *  - an unrelated repo that merely shares the main checkout's path prefix.
+ * The fixture fills all four cells of {worktree, unrelated} × {present, gone},
+ * because the two that decide correctness are the ones a smaller fixture omits:
+ *
+ *  - a main checkout, and a **live** worktree of it;
+ *  - a **removed** worktree with a workspace record naming this repo, and one
+ *    with no record at all — the actual shape of the 51%, admitted on the path
+ *    convention alone;
+ *  - an unrelated repo that still exists and merely shares the path prefix,
+ *    whose browse projection decodes to a path *inside* the repo;
+ *  - a **removed** directory shaped exactly like a worktree of this repo whose
+ *    workspace record names a different main checkout.
+ *
+ * The last two are what separate "refused" from "no evidence". Drop them and
+ * the precision half of this file cannot fail.
  *
  * The first `describe` is the baseline: `find_chats` semantics as shipped,
  * including the reach bug — `discoverProjectDirs` admits a worktree only when
@@ -51,10 +60,61 @@ const repo = join(tmpRoot, "repo");
 const live = join(tmpRoot, "repo.feature-live");
 /** A worktree of `repo` whose directory has been removed. Never created. */
 const dead = join(tmpRoot, "repo.feature-dead");
-/** A different repo that shares `repo`'s path prefix. Must never be admitted. */
+/**
+ * A different repo that shares `repo`'s path prefix. Must never be admitted.
+ *
+ * `<repo>/unrelated` is created alongside it so the project-dir decoder's
+ * greedy directory scan resolves `-…-repo-unrelated` to `<repo>/unrelated` —
+ * a browse projection that is lexically *inside* the repo. That is not a
+ * contrivance, it is how the decoder works: it commits a segment as soon as the
+ * path so far exists. Without this row the precision assertion below passes
+ * because the fabricated path happens to land nowhere, which is luck, not the
+ * property under test.
+ */
 const unrelated = join(tmpRoot, "repo-unrelated");
+const decoyInsideRepo = join(repo, "unrelated");
 
-for (const folder of [repo, live, unrelated]) mkdirSync(folder, { recursive: true });
+/**
+ * A removed directory that looks exactly like a worktree of `repo` — right
+ * parent, right prefix, right separator — but whose workspace record names a
+ * different main checkout. The record is the only thing that can answer, and it
+ * says no. Fills the {unrelated × removed} cell.
+ */
+const deadOther = join(tmpRoot, "repo.other-removed");
+
+/**
+ * A removed worktree of `repo` with NO workspace record at all — the actual
+ * shape of the 51%. Workspace records are only written when a chat starts in a
+ * worktree, and the entity is recent, so the overwhelming majority of removed
+ * worktrees have nothing but their path. This is the row `sibling-path` exists
+ * for, and the only one that reaches it now that `dead` has a record.
+ */
+const deadOrphan = join(tmpRoot, "repo.feature-orphan");
+
+for (const folder of [repo, live, unrelated, decoyInsideRepo]) mkdirSync(folder, { recursive: true });
+
+// Workspace registry: one record admitting `dead` to `repo`, one refusing
+// `deadOther`. Both directories are gone, so these records are all the
+// evidence there is — which is the point of writing them.
+mkdirSync(join(tmpRoot, "workspaces"), { recursive: true });
+for (const [id, cwd, repoPath, branch] of [
+  ["ws-dead", dead, repo, "feature/dead"],
+  ["ws-dead-other", deadOther, unrelated, "other/removed"],
+]) {
+  writeFileSync(
+    join(tmpRoot, "workspaces", `${id}.json`),
+    JSON.stringify({
+      id,
+      name: branch,
+      cwd,
+      repoPath,
+      isolation: "worktree",
+      worktree: { owned: true, mode: "branch-off", branch },
+      status: "active",
+      createdAt: "2026-08-01T00:00:00Z",
+    }),
+  );
+}
 
 const encode = (folder: string) => folder.replace(/[^a-zA-Z0-9]/g, "-");
 
@@ -99,6 +159,10 @@ const ROWS: Row[] = [
     at: 50,
   },
   { id: "00000000-0000-4000-8000-000000000006", folder: unrelated, marker: "alpha", lastBranch: "trunk", at: 60 },
+  // {unrelated × removed}: sibling-shaped, gone, and owned by another repo.
+  { id: "00000000-0000-4000-8000-000000000007", folder: deadOther, marker: "alpha", lastBranch: "other/removed", at: 70 },
+  // {worktree × removed, no record}: path inference is all there is.
+  { id: "00000000-0000-4000-8000-000000000008", folder: deadOrphan, marker: "gamma", lastBranch: "feature/orphan", at: 80 },
 ];
 
 const R = Object.fromEntries(ROWS.map((r, i) => [`r${i + 1}`, r.id])) as Record<string, string>;
@@ -308,17 +372,24 @@ describe("find_chats baseline (the behaviour search_chats must keep)", () => {
 
 describe("search_chats is a superset of find_chats", () => {
   it("returns every row the baseline returned, for every query shape", async () => {
+    // `arrayContaining([])` is vacuously true, and some shapes legitimately
+    // have an empty baseline (`gitBranch: "feature/dead"` is the reach bug
+    // itself). Count the ones that actually constrain something, so a fixture
+    // that stops producing rows fails here instead of passing silently.
+    let constraining = 0;
     for (const { name, legacy } of PARITY_QUERIES) {
       const baseline = findChats(legacy);
+      if (baseline.length) constraining++;
       const merged = await mergedIds(legacy);
       expect(merged, `${name}: lost rows ${baseline.filter((id) => !merged.includes(id)).join(", ")}`).toEqual(expect.arrayContaining(baseline));
     }
+    expect(constraining).toBeGreaterThanOrEqual(PARITY_QUERIES.length - 2);
   });
 
   it("reaches the removed worktree the baseline could not", async () => {
     // The 51%. Same queries, same fixture — these are the rows the live-`.git`
     // gate hid, now admitted on the record's own evidence.
-    expect((await mergedIds({ folder: repo })).sort()).toEqual([R.r1, R.r2, R.r3, R.r4, R.r5].sort());
+    expect((await mergedIds({ folder: repo })).sort()).toEqual([R.r1, R.r2, R.r3, R.r4, R.r5, R.r8].sort());
     expect((await mergedIds({ folder: repo, gitBranch: "feature/dead" })).sort()).toEqual([R.r4, R.r5].sort());
     expect(await mergedIds({ folder: repo, agentAlias: "forge" })).toEqual(expect.arrayContaining([R.r2, R.r4]));
     expect(await mergedIds({ folder: repo, triggered: true })).toEqual(expect.arrayContaining([R.r2, R.r4]));
@@ -331,11 +402,42 @@ describe("search_chats is a superset of find_chats", () => {
     // The precision `find_chats` had, kept. `repo-unrelated` is beside `repo`,
     // its name starts with `repo`, and it is its own checkout — the path
     // inference must not reach it, because the directory is there to be asked.
+    //
+    // Non-vacuous by construction: the fixture creates `<repo>/unrelated`, so
+    // r6's browse projection decodes to a path lexically INSIDE the repo. If a
+    // refusal on the record's true cwd did not end the question, the projection
+    // would get a second turn and be admitted as `descendant`.
+    expect((await mergedSearchChats({ folder: unrelated, limit: 100 })).chats[0].folder).toBe(decoyInsideRepo);
     for (const { name, legacy } of PARITY_QUERIES) {
       if (legacy.folder !== repo) continue;
       expect(await mergedIds(legacy), name).not.toContain(R.r6);
     }
-    expect(await mergedIds({ folder: unrelated })).toEqual([R.r6]);
+    expect(await mergedIds({ folder: unrelated })).toEqual(expect.arrayContaining([R.r6]));
+  });
+
+  it("refuses a removed sibling whose workspace record names a different repo", async () => {
+    // {unrelated × removed}: nothing on disk can be asked, the path looks
+    // exactly like a worktree of `repo`, and the only evidence — the workspace
+    // record — says it belongs to `repo-unrelated`. The strongest evidence
+    // anyone holds must not lose to the weakest inference.
+    for (const { name, legacy } of PARITY_QUERIES) {
+      if (legacy.folder !== repo) continue;
+      expect(await mergedIds(legacy), name).not.toContain(R.r7);
+    }
+    // And it is genuinely reachable — this is a refusal, not a row the fixture
+    // forgot to make findable.
+    expect(await mergedIds({ folder: unrelated })).toEqual(expect.arrayContaining([R.r7]));
+    expect((await mergedSearchChats({ repo: unrelated, limit: 100 })).chats.find((c) => c.chatId === R.r7)?.repoSource).toBe("workspace-record");
+  });
+
+  it("normalises a worktree path up to its main checkout", async () => {
+    // Callboard's normal mode is an agent running inside a worktree, so
+    // `repo: process.cwd()` is the natural value to pass. Taken verbatim it
+    // would return only that worktree's chats, with a confident total.
+    const result = await mergedSearchChats({ repo: live, limit: 100 });
+    expect(result.chats.map((c) => c.chatId).sort()).toEqual([R.r1, R.r2, R.r3, R.r4, R.r5, R.r8].sort());
+    expect(result.appliedFilters.repoRoot).toBe(repo);
+    expect(result.appliedFilters.repoNormalisedFrom).toBe(live);
   });
 
   it("stamps how each row was admitted and where its branch came from", async () => {
@@ -345,7 +447,10 @@ describe("search_chats is a superset of find_chats", () => {
     // removed one is the inference, and says so rather than passing as fact.
     expect(by.get(R.r1)).toMatchObject({ repoSource: "exact", branch: "main", branchSource: "record" });
     expect(by.get(R.r3)).toMatchObject({ repoSource: "live-git", branch: "feature/live", branchSource: "record" });
-    expect(by.get(R.r4)).toMatchObject({ repoSource: "sibling-path", branch: "feature/dead", branchSource: "record" });
+    expect(by.get(R.r4)).toMatchObject({ repoSource: "workspace-record", branch: "feature/dead", branchSource: "record" });
+    // The 51% shape: gone, no record, admitted on the path convention alone —
+    // and reported as that inference rather than as fact.
+    expect(by.get(R.r8)).toMatchObject({ repoSource: "sibling-path", branch: "feature/orphan", branchSource: "record" });
   });
 
   it("labels a grep hit with what the engine actually matched", async () => {
@@ -359,15 +464,15 @@ describe("search_chats is a superset of find_chats", () => {
   });
 
   it("keeps date bounds and both sort orders", async () => {
-    expect((await mergedIds({ folder: repo, updatedAfter: stamp(25) })).sort()).toEqual([R.r3, R.r4, R.r5].sort());
+    expect((await mergedIds({ folder: repo, updatedAfter: stamp(25) })).sort()).toEqual([R.r3, R.r4, R.r5, R.r8].sort());
     expect((await mergedIds({ folder: repo, updatedBefore: stamp(25) })).sort()).toEqual([R.r1, R.r2].sort());
-    expect(await mergedIds({ folder: repo, sort: "updated" })).toEqual([R.r5, R.r4, R.r3, R.r2, R.r1]);
+    expect(await mergedIds({ folder: repo, sort: "updated" })).toEqual([R.r8, R.r5, R.r4, R.r3, R.r2, R.r1]);
     // `sort: "created"` orders by the transcript's birth time, which on a
     // fixture written in one pass is millisecond-granular — so the contract to
     // assert is that it is non-increasing over the same row set, not a
     // hand-written permutation of it.
     const created = (await mergedSearchChats({ repo, sort: "created", limit: 100 })).chats;
-    expect(created.map((c) => c.chatId).sort()).toEqual([R.r1, R.r2, R.r3, R.r4, R.r5].sort());
+    expect(created.map((c) => c.chatId).sort()).toEqual([R.r1, R.r2, R.r3, R.r4, R.r5, R.r8].sort());
     const keys = created.map((c) => Date.parse(c.createdAt));
     expect(keys).toEqual([...keys].sort((a, b) => b - a));
   });

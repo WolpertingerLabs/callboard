@@ -188,8 +188,41 @@ describe("individual chat query", () => {
     state.stored = [chat("closed", { nativeAgent: { parentThreadId: "root" } })];
     state.stored.push(chat("root"));
     discover();
-    const result = await searchChats({ grep: "needle" });
+    const result = await searchChats({ grep: "needle", folder: "/work/repo" });
     expect(result.chats.map((c) => c.matchKind)).toEqual(["metadata"]);
+  });
+  it("refuses an unscoped grep rather than opening the whole corpus", async () => {
+    state.stored = [chat("closed")];
+    discover();
+    // `find_chats` never needed this guard — its `folder` was required, so a
+    // corpus-wide grep was unreachable. Here it is one short argument list away.
+    await expect(searchChats({ grep: "needle" })).rejects.toMatchObject({ code: "GREP_UNSCOPED" });
+    await expect(searchChats({ grep: "needle", topLevelOnly: true })).resolves.toBeTruthy();
+    await expect(searchChats({ grep: "needle", folder: "/work/repo" })).resolves.toBeTruthy();
+  });
+  it("counts the rows grep could not read instead of reporting them as misses", async () => {
+    // A stored-only pin has no discovered session, so no transcript to open.
+    // Silently filtering it out would be a confident "did not match" about a
+    // file nobody looked at — the exact thing the branch filter was changed to
+    // stop doing.
+    state.stored = [chat("closed"), chat("ghostpin", { pinned: true })];
+    discover([state.stored[0]]);
+    const result = await searchChats({ grep: "needle", topLevelOnly: true });
+    expect(ids(result)).toEqual(["closed"]);
+    expect(result.warnings.some((w) => w.includes("no readable transcript"))).toBe(true);
+    expect(result.total).toBeNull();
+  });
+  it("throws rather than returning an empty page when the content pool is saturated", async () => {
+    state.stored = [chat("closed")];
+    discover();
+    vi.mocked(collectContentMatches).mockResolvedValueOnce({
+      keys: new Set<string>(),
+      chatIds: new Set<string>(),
+      warnings: ["Content search workers busy; retry this query"],
+    });
+    // The sibling worker pool (`matchAdvanced`) throws CHAT_FILTER_BUSY for the
+    // same condition. Returning `chats: []` here reads as "no matches".
+    await expect(searchChats({ grep: "needle", topLevelOnly: true })).rejects.toMatchObject({ code: "CHAT_CONTENT_BUSY" });
   });
   it("preserves archive/bookmark/triggered/search widening and ignores tool query as widening", async () => {
     state.stored = [
