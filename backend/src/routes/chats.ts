@@ -224,7 +224,10 @@ chatsRouter.get("/search", async (req, res) => {
 
     const discovery = discoverChatCorpus();
     // Retain the legacy folder endpoint's Claude-only worktree expansion.
-    // Tool `folder` filtering remains an exact cwd intersection in chat-query.
+    // The tool's `folder` is still an exact cwd intersection in chat-query —
+    // matched against the stored record's cwd as well as the browse projection —
+    // and worktree expansion there is the separate `repo` parameter, derived
+    // from records rather than from a live `.git`. This route is unchanged.
     const folderMatches = new Map<string, boolean>();
     const selected = folder
       ? discovery.sessions.filter((s) => {

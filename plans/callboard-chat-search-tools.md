@@ -34,7 +34,7 @@ not saved defaults. This is the one product clarification requested.
 
 | Concern | Current implementation / implication |
 | --- | --- |
-| MCP tools | `backend/src/services/callboard-tools.ts` defines `find_chats`, `get_chat_tree`, `list_cards`, and `get_session_status`. `find_chats` requires a folder and concatenates provider-limited results before applying lineage filters; it is not globally paginated. |
+| MCP tools | `backend/src/services/callboard-tools.ts` defines `find_chats`, `get_chat_tree`, `list_cards`, and `get_session_status`. `find_chats` requires a folder and concatenates provider-limited results before applying lineage filters; it is not globally paginated. *(Superseded 2026-09-17: `find_chats` is deleted; `search_chats` in `chat-query-tools.ts` is the only chat-search tool.)* |
 | Sidebar server filtering | `backend/src/routes/chats.ts` implements discovery, metadata augmentation, bookmarks, triggered/native-child exclusions, card lifecycle, lineage pagination, and off-page pins. Extract this logic rather than calling Express handlers from MCP. |
 | Sidebar browser filtering | `frontend/src/pages/ChatList.tsx` holds advanced filters, bookmarks, and submitted search in React state. Triggered/archived preferences also use browser localStorage. The server does not have the current view. |
 | Shared filter definitions | `frontend/src/types/chatFilters.ts` distinguishes advanced filters from server-resolved view options. `cardLifecycleFor` widens archive scope during a submitted content search. |
@@ -661,3 +661,91 @@ repo.
   is not the path an agent takes.
 - No wire-type (`shared/types/stream.ts`) changes; the new fields are MCP tool
   JSON, not SSE.
+
+### Review round (2026-09-17, three parallel reviews of #456)
+
+Independently cleared: identity safety, sidebar isolation, the no-per-row-scan
+property, cheap-call cost, and the removal of `find_chats`' `getChat`-per-row
+trap. What follows is what changed as a result of the 22 findings.
+
+**Membership could admit a different repo.** `classify` returned
+`RepoSource | null`, so "git was asked and said no" was indistinguishable from
+"nothing could be asked" — and the caller, holding two spellings of a chat's
+cwd, gave the fabricated one a second turn after the real one was refused. The
+lexical `descendant` rule then admitted a neighbour as fact:
+`callboard-contrast-shots` decodes to `callboard/contrast/shots`. Two changes:
+`evaluate` now returns {@link RepoVerdict} with an explicit `refused`, and only
+`null` earns a second spelling. Workspace records refuse as well as admit — one
+naming a *different* `repoPath` beats the `sibling-path` inference, which it
+previously lost to. Verified on the real corpus: 365 rows admitted across 131
+directories (312 `workspace-record`, 26 `exact`, 21 `sibling-path`, 6
+`live-git`), with `/home/cybil/callboard-contrast-shots` correctly refused.
+
+**`repo` given a worktree returned one worktree's chats.** Callboard's normal
+mode is an agent running inside a worktree, so `repo: process.cwd()` is both the
+natural value and the broken one — `live-git` compares `mainRepoPath` against
+the argument, so siblings and the main checkout both failed and `sibling-path`
+could not fire, all with a confident total. `createRepoScope` now normalises
+through `resolveWorktreeToMainRepoCached`, falling back to a workspace record
+when the named directory is itself gone, and reports `appliedFilters.repoRoot` /
+`repoNormalisedFrom`. Verified: `repo: <this worktree>` and
+`repo: /home/cybil/callboard` return the same 365 rows.
+
+**The schema documented nothing.** `defineTool` passes `inputSchema` straight
+through, so the generated JSON Schema is all an agent sees; the registry is only
+the browser's REST listing. Eleven absorbed parameters shipped as bare types
+after `find_chats`' inline documentation was deleted rather than moved. Every
+field now carries `.describe()`, the registry mirrors those strings, and the
+manifest test keeps the two honest. The sharpest case was `rootChatId` /
+`parentChatId` becoming **global** in this PR — undocumented, an agent keeps
+passing `folder` alongside them and drops every relative that ran in another
+worktree.
+
+**Honesty rules applied consistently.** `grep` dropped candidates with no
+discoverable transcript — stored-only pins, rows whose log is gone — with no
+counter and a confident `total`, which is what the `branch` path had already
+been changed to stop doing. Both content paths now share one helper that counts
+and reports them. `matchKind`'s fallback defaulted an unknown engine to the
+*strongest* claim; it is keyed by `AgentProviderKind` now, so a new engine is a
+compile error, and pi is `messages` rather than `transcript` — pi's
+`deriveSearchText` is conversational text with no tool traffic, where
+claude-code greps raw JSONL including tool results, and an agent hunting a file
+path must not read the absence of pi hits as evidence.
+
+**Unscoped grep is refused, not merely slow.** `find_chats` never needed this
+guard because its `folder` was required; `search_chats` made a corpus-wide grep
+reachable in one short argument list — measured at 2,096 files / 1.15 GB /
+~3.3 s, against 609 ms alongside `anyOf: ["open_card"]`. `grep` now requires a
+narrowing filter and throws `GREP_UNSCOPED` (1 ms) rather than returning a
+correct-looking page that cost the corpus.
+
+**Live branch reads no longer spawn.** `getGitInfo` on a directory with no
+`.git` of its own shells out to `git rev-parse --git-dir` with a 5 s timeout —
+2.73 ms against 0.03 ms for a directory that has one — and this path has no
+worker, deadline or cap. `nearestGitDir` walks up with `existsSync` and hands
+git a directory it serves from HEAD. Measured after: `branch=main` over the
+whole corpus is 480 ms end to end.
+
+**Pool saturation is now distinguishable.** `collectContentMatches` reports a
+busy pool as a warning plus an empty result set, which reads from outside
+exactly like "nothing matched"; the sibling pool (`matchAdvanced`) throws for
+the same condition. `chat-query.ts` now throws `CHAT_CONTENT_BUSY` instead of
+returning a successful-looking empty page. The underlying two-slot contention
+between grep, the sidebar's submitted search and `routes/chats.ts` is unchanged
+and pre-existing — fixing it properly is a separate change.
+
+**`partial` / `total: null` — investigated, no fix.** The concern was that the
+identity warnings make `total` null almost always. Measured on the real 2,095-row
+corpus: those warnings fire **zero** times. What does fire is
+`nativeDiscoveryIncomplete`, and only on a cold process — it is a 16 MB
+metadata-read budget that memoises what it read. Pass 1: 1,801 rows,
+`partial: true` (and honestly so — 294 rows really were omitted). Passes 2-5:
+2,095 rows, `partial: false`, `total: 2095`. The daemon is long-lived and the
+sidebar polls every 15 s, so the warm state is the normal one and the signal is
+meaningful.
+
+**Also:** rows now report `agentAlias` and `triggered`, so the filters are
+self-checking the way `branch` is; `branchSource` is resolved for the page's
+rows rather than only when `branch=` was passed, so "unknown" no longer means
+"we never looked"; `folder`/`repo` must be absolute, because a relative path
+would resolve against the daemon's cwd rather than the caller's.
