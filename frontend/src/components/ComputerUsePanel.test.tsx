@@ -416,6 +416,34 @@ describe("ComputerUsePanel", () => {
     expect(button("Stop").disabled).toBe(true);
   });
 
+  // The presentation epoch is bumped whenever the session's identity changes, and
+  // `run` rejects a capture whose epoch has moved. Bump it in a passive effect and
+  // there is a window — after the commit that paints the session row, before the
+  // effect flushes — in which this button is on screen and a click through it
+  // carries the epoch the bump is about to retire. Its frame is then dropped at
+  // the fence: no image, no error, an empty stage and the controls re-enabled.
+  // Clicking from a mutation observer is that window; it is also exactly what
+  // @testing-library's own `findBy` does once the machine is loaded enough for
+  // its MutationObserver to beat the 50ms poll, which is how this was found.
+  it("keeps a screenshot refreshed in the same task as the status commit", async () => {
+    let observer!: MutationObserver;
+    const clicked = new Promise<void>((resolve) => {
+      observer = new MutationObserver(() => {
+        if (!screen.queryByRole("button", { name: "Stop" })) return;
+        fireEvent.click(button("Refresh screenshot"));
+        resolve();
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+    try {
+      render(<Viewer permission="allow" />);
+      await clicked;
+    } finally {
+      observer.disconnect();
+    }
+    await waitFor(() => expect(screen.getByRole("img")).toBeTruthy(), { timeout: 5000 });
+  });
+
   it("maps scaled screenshot coordinates and clamps edges", () => {
     expect(framePoint(260, 145, { left: 10, top: 20, width: 500, height: 250 }, 1000, 500)).toEqual({ x: 500, y: 250 });
     expect(framePoint(999, -10, { left: 10, top: 20, width: 500, height: 250 }, 1000, 500)).toEqual({ x: 999, y: 0 });

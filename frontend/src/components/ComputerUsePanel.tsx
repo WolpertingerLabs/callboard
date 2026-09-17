@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Monitor } from "lucide-react";
 import type { ComputerUseCapability, ComputerUseAction, ComputerUseKind, ComputerUseObservation, ComputerUseSession } from "shared/types/computerUse.js";
 import type { PermissionLevel } from "shared/types/permissions.js";
@@ -304,7 +304,13 @@ export default function ComputerUsePanel({
   const sessionController = session?.controller;
   const sessionKind = session?.kind;
   const sessionTarget = session?.targetLabel;
-  useEffect(() => {
+  // Layout, not passive: a passive effect is flushed in a later task than the
+  // commit that painted the new session, so a click in between starts an
+  // operation against the epoch this bump was going to retire — and the frame
+  // it captures is then rejected at the fence in `run`, silently. Bumping
+  // during the commit means every operation a render can be clicked from
+  // already holds that render's epoch.
+  useLayoutEffect(() => {
     ++presentationEpoch.current;
     setFresh(false);
     if (denied || !active) {
