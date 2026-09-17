@@ -7,7 +7,11 @@ export function buildChatQueryTools(binding?: ChatViewBinding): AnyToolDefinitio
   return [
     defineTool(
       "search_chats",
-      "Search individual chats with stable global pagination. scope defaults to all; visible requires the originating browser tab's live filters. anyOf ORs individual pinned/bookmarked state and eligible open-card membership. query searches metadata, not transcripts. Read-only; ignored directories excluded.",
+      "Search individual chats with stable global pagination, across every engine (claude-code, codex, cline, pi, acp). scope defaults to all; visible requires the originating browser tab's live filters. anyOf ORs individual pinned/bookmarked state and eligible open-card membership. " +
+        "query searches metadata only; grep searches transcript content and is the expensive one — every other filter narrows the candidate set before it opens a file. " +
+        "folder is an exact working directory; repo is a repo root that expands to its worktrees, including worktrees whose directory has since been removed (their chats are still recorded). Each row reports repoSource for how it was admitted. " +
+        "branch matches the chat's recorded branch and, failing that, the directory's live branch; branchSource on each row says which, or `unknown`. A grep hit reports matchKind, because grep means different things per engine — claude-code and pi search the whole transcript, codex/cline/acp match the first prompt only, and a codex native child matches on its nickname. " +
+        "Read-only; ignored directories are always excluded.",
       searchChatsSchema,
       async (args) => {
         try {

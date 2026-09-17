@@ -153,12 +153,19 @@ vi.mock("../utils/git.js", async (importOriginal) => ({
     folder === live ? { mainRepoPath: repo, isWorktree: true } : { mainRepoPath: folder, isWorktree: false },
 }));
 vi.mock("./claude.js", () => ({ getActiveSession: () => undefined, hasPendingRequest: () => false, getPendingRequest: () => undefined }));
+// Native-lineage discovery reads Codex's home directly. Point it inside the
+// fixture, or this test reads whatever rollouts the machine happens to have.
+vi.mock("./agent-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-settings.js")>()),
+  getAgentSettings: () => ({ codexHome: join(tmpRoot, "codex") }),
+}));
 vi.mock("../agents/factory.js", async () => {
   const { ClaudeCodeSessionProvider } = await import("../agents/adapters/claude-code/ClaudeCodeSessionProvider.js");
   return { getSessionProviders: () => [new ClaudeCodeSessionProvider()] };
 });
 
 const { searchChats: legacySearchChats } = await import("../utils/chat-search.js");
+const { searchChats: mergedSearchChats } = await import("./chat-query.js");
 const { chatFileService } = await import("./chat-file-service.js");
 const { getParentChatId } = await import("./chat-lineage.js");
 const { isIgnoredProjectDir } = await import("../utils/paths.js");
@@ -219,6 +226,20 @@ const PARITY_QUERIES: { name: string; legacy: LegacyFilters }[] = [
   { name: "folder = live worktree", legacy: { folder: live } },
   { name: "folder = removed worktree", legacy: { folder: dead } },
 ];
+
+/**
+ * The mechanical translation of a `find_chats` call into the merged tool.
+ *
+ * `find_chats`' `folder` always meant "this repo *and its worktrees*", which is
+ * the merged tool's `repo`; its exact-cwd sense is `folder`. `gitBranch` is
+ * `branch`. Everything else keeps its name. Mechanical on purpose — a
+ * hand-tuned translation could hide a narrowing by translating around it.
+ */
+function toMerged(legacy: LegacyFilters) {
+  const { folder, gitBranch, ...rest } = legacy;
+  return { repo: folder, ...(gitBranch !== undefined && { branch: gitBranch }), ...rest, limit: 100 };
+}
+const mergedIds = async (legacy: LegacyFilters) => (await mergedSearchChats(toMerged(legacy))).chats.map((c) => c.chatId);
 
 describe("find_chats baseline (the behaviour search_chats must keep)", () => {
   it("has a fixture that is actually searchable", () => {
@@ -282,5 +303,72 @@ describe("find_chats baseline (the behaviour search_chats must keep)", () => {
     // r5's parent is r4, and neither is reachable — a lineage filter cannot
     // widen a corpus the folder expansion already excluded.
     expect(findChats({ folder: repo, parentChatId: R.r4 })).toEqual([]);
+  });
+});
+
+describe("search_chats is a superset of find_chats", () => {
+  it("returns every row the baseline returned, for every query shape", async () => {
+    for (const { name, legacy } of PARITY_QUERIES) {
+      const baseline = findChats(legacy);
+      const merged = await mergedIds(legacy);
+      expect(merged, `${name}: lost rows ${baseline.filter((id) => !merged.includes(id)).join(", ")}`).toEqual(expect.arrayContaining(baseline));
+    }
+  });
+
+  it("reaches the removed worktree the baseline could not", async () => {
+    // The 51%. Same queries, same fixture — these are the rows the live-`.git`
+    // gate hid, now admitted on the record's own evidence.
+    expect((await mergedIds({ folder: repo })).sort()).toEqual([R.r1, R.r2, R.r3, R.r4, R.r5].sort());
+    expect((await mergedIds({ folder: repo, gitBranch: "feature/dead" })).sort()).toEqual([R.r4, R.r5].sort());
+    expect(await mergedIds({ folder: repo, agentAlias: "forge" })).toEqual(expect.arrayContaining([R.r2, R.r4]));
+    expect(await mergedIds({ folder: repo, triggered: true })).toEqual(expect.arrayContaining([R.r2, R.r4]));
+    expect(await mergedIds({ folder: repo, grep: "alpha" })).toEqual(expect.arrayContaining([R.r1, R.r3, R.r4]));
+    expect(await mergedIds({ folder: repo, parentChatId: R.r4 })).toEqual([R.r5]);
+    expect((await mergedIds({ folder: repo, rootChatId: R.r4 })).sort()).toEqual([R.r4, R.r5].sort());
+  });
+
+  it("still refuses a neighbouring repo that only shares the path prefix", async () => {
+    // The precision `find_chats` had, kept. `repo-unrelated` is beside `repo`,
+    // its name starts with `repo`, and it is its own checkout — the path
+    // inference must not reach it, because the directory is there to be asked.
+    for (const { name, legacy } of PARITY_QUERIES) {
+      if (legacy.folder !== repo) continue;
+      expect(await mergedIds(legacy), name).not.toContain(R.r6);
+    }
+    expect(await mergedIds({ folder: unrelated })).toEqual([R.r6]);
+  });
+
+  it("stamps how each row was admitted and where its branch came from", async () => {
+    const rows = (await mergedSearchChats({ repo, limit: 100 })).chats;
+    const by = new Map(rows.map((row) => [row.chatId, row]));
+    // The main checkout is exact; the live worktree is git-resolved; the
+    // removed one is the inference, and says so rather than passing as fact.
+    expect(by.get(R.r1)).toMatchObject({ repoSource: "exact", branch: "main", branchSource: "record" });
+    expect(by.get(R.r3)).toMatchObject({ repoSource: "live-git", branch: "feature/live", branchSource: "record" });
+    expect(by.get(R.r4)).toMatchObject({ repoSource: "sibling-path", branch: "feature/dead", branchSource: "record" });
+  });
+
+  it("labels a grep hit with what the engine actually matched", async () => {
+    const rows = (await mergedSearchChats({ repo, grep: "alpha", limit: 100 })).chats;
+    expect(rows.map((r) => r.chatId).sort()).toEqual([R.r1, R.r3, R.r4].sort());
+    // claude-code greps the whole transcript; a codex row here would say
+    // first-prompt. The row carries the distinction so the caller need not know
+    // which engine wrote the log.
+    for (const row of rows) expect(row.matchKind).toBe("transcript");
+    expect((await mergedSearchChats({ repo, grep: "alpha", limit: 100 })).appliedFilters.contentSearchSemantics).toMatch(/matchKind/);
+  });
+
+  it("keeps date bounds and both sort orders", async () => {
+    expect((await mergedIds({ folder: repo, updatedAfter: stamp(25) })).sort()).toEqual([R.r3, R.r4, R.r5].sort());
+    expect((await mergedIds({ folder: repo, updatedBefore: stamp(25) })).sort()).toEqual([R.r1, R.r2].sort());
+    expect(await mergedIds({ folder: repo, sort: "updated" })).toEqual([R.r5, R.r4, R.r3, R.r2, R.r1]);
+    // `sort: "created"` orders by the transcript's birth time, which on a
+    // fixture written in one pass is millisecond-granular — so the contract to
+    // assert is that it is non-increasing over the same row set, not a
+    // hand-written permutation of it.
+    const created = (await mergedSearchChats({ repo, sort: "created", limit: 100 })).chats;
+    expect(created.map((c) => c.chatId).sort()).toEqual([R.r1, R.r2, R.r3, R.r4, R.r5].sort());
+    const keys = created.map((c) => Date.parse(c.createdAt));
+    expect(keys).toEqual([...keys].sort((a, b) => b - a));
   });
 });

@@ -12,6 +12,8 @@ import { createTriggeredPredicate, cardIsArchived } from "./chat-visibility.js";
 import { isIgnoredProjectFolder } from "../utils/paths.js";
 import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { chatViews, type ChatViewBinding } from "./chat-view.js";
+import { createLiveBranchResolver, createRepoScope, type BranchSource } from "./chat-repo-scope.js";
+import { getParentChatId } from "./chat-lineage.js";
 
 export class ChatQueryError extends Error {
   constructor(
@@ -21,6 +23,13 @@ export class ChatQueryError extends Error {
     super(message);
   }
 }
+/** A date bound the caller can actually have meant. Parsed, not compared as text. */
+const instant = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((value) => !Number.isNaN(Date.parse(value)), { message: "must be an ISO-8601 date or date-time" });
+
 export const searchChatsSchema = {
   scope: z.enum(["all", "visible"]).optional(),
   topLevelOnly: z.boolean().optional(),
@@ -31,8 +40,36 @@ export const searchChatsSchema = {
     .optional(),
   query: z.string().max(2000).optional(),
   folder: z.string().min(1).max(4096).optional(),
+  repo: z.string().min(1).max(4096).optional(),
+  branch: z.string().min(1).max(512).optional(),
+  agentAlias: z.string().min(1).max(512).optional(),
+  triggered: z.boolean().optional(),
+  grep: z.string().min(1).max(2000).optional(),
+  rootChatId: z.string().min(1).max(256).optional(),
+  parentChatId: z.string().min(1).max(256).optional(),
+  updatedAfter: instant.optional(),
+  updatedBefore: instant.optional(),
+  sort: z.enum(["updated", "created"]).optional(),
   limit: z.number().int().min(1).max(100).optional(),
   offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+};
+
+/**
+ * What a `grep` hit against each engine actually proves.
+ *
+ * `grep` means different things per engine and the row has to say which, or a
+ * Codex hit on a first prompt reads as a transcript hit. The readers behind
+ * these are the same ones each adapter's `searchSessions` greps with, so this
+ * map describes the engines, not this query path. Codex native children are the
+ * exception handled at the call site: their "prompt" is the agent's nickname or
+ * path, which is metadata, not conversation.
+ */
+const MATCH_KIND: Record<string, "transcript" | "first-prompt"> = {
+  "claude-code": "transcript",
+  pi: "transcript",
+  codex: "first-prompt",
+  cline: "first-prompt",
+  acp: "first-prompt",
 };
 export const searchChatsInput = z.object(searchChatsSchema).strict();
 export type SearchChatsInput = z.infer<typeof searchChatsInput>;
@@ -297,18 +334,81 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       (membership.index.parentIdOf(chat.id) || membership.index.childrenByParent.has(chat.id)) && touchedRoots.has(membership.index.rootKeyOf(chat.id));
     if (meta.pinned === true || related) rows.set(chat.id, { ...(membership.corpus.get(chat.id) ?? chat), session_id: chat.session_id });
   }
+  // Every predicate below this line reads records and maps. The provenance a
+  // row is stamped with is computed here too, so `repo`/`branch` never have to
+  // be re-derived on the page. Filesystem work — a live branch read, a
+  // transcript grep — happens only after these have narrowed the candidates.
+  const repoScope = args.repo === undefined ? null : createRepoScope(args.repo);
+  const liveBranchOf = createLiveBranchResolver();
+  const provenance = new Map<string, { repoSource?: string; branch: string | null; branchSource: BranchSource }>();
+  /** Records outlive their browse projection; prefer them for recorded fields. */
+  const recordMetaOf = (id: string) => parseChatMetadata(membership.storedById.get(id)?.metadata);
+  /** Every spelling of this chat's cwd — the record's is the one that is real. */
+  const foldersOf = (chat: Chat & { displayFolder?: string }) => {
+    const recorded = membership.storedById.get(chat.id)?.folder;
+    return recorded && recorded !== chat.folder ? [recorded, chat.folder] : [chat.folder];
+  };
+  let branchUnevaluated = 0;
   let candidates = [...rows.values()].filter((chat) => {
     if (!baseAdmits(chat)) return false;
     const rootId = membership.index.existingRootIdOf(chat.id);
     const root = membership.roots.has(rootId) ? membership.storedById.get(rootId) : undefined;
     const meta = parseChatMetadata(chat.metadata);
+    const record = recordMetaOf(chat.id);
     if (args.topLevelOnly && (rootId !== chat.id || !!meta.nativeAgent)) return false;
     // `chat.folder` is the browse projection, and for a chat whose directory no
     // longer exists that projection is the *lossy decode* of the project-dir
     // name — a path that never existed on disk (`/repo.branch` comes back as
     // `/repo/branch`). Reporting it is deliberate and unchanged; matching only
     // it meant the record's own cwd found nothing. Accept either.
-    if (args.folder !== undefined && chat.folder !== args.folder && membership.storedById.get(chat.id)?.folder !== args.folder) return false;
+    if (args.folder !== undefined && !foldersOf(chat).includes(args.folder)) return false;
+    let repoSource: string | undefined;
+    if (repoScope) {
+      // The record's cwd first: it is the only spelling that survives the
+      // directory, and the fabricated one would be classified against a path
+      // that never existed.
+      for (const folder of foldersOf(chat)) {
+        repoSource = repoScope.classify(folder) ?? undefined;
+        if (repoSource) break;
+      }
+      if (!repoSource) return false;
+    }
+    if (args.agentAlias !== undefined && (record.agentAlias ?? meta.agentAlias ?? null) !== args.agentAlias) return false;
+    if (args.triggered !== undefined && (record.triggered === true || meta.triggered === true) !== args.triggered) return false;
+    if (args.parentChatId !== undefined && (membership.index.parentIdOf(chat.id) ?? getParentChatId(record)) !== args.parentChatId) return false;
+    if (
+      args.rootChatId !== undefined &&
+      chat.id !== args.rootChatId &&
+      rootId !== args.rootChatId &&
+      membership.index.rootKeyOf(chat.id) !== args.rootChatId &&
+      record.rootChatId !== args.rootChatId
+    )
+      return false;
+    if (args.updatedAfter !== undefined && Date.parse(chat.updated_at) < Date.parse(args.updatedAfter)) return false;
+    if (args.updatedBefore !== undefined && Date.parse(chat.updated_at) > Date.parse(args.updatedBefore)) return false;
+    // `metadata.lastBranch` is written by the generic message route, so every
+    // engine records it — this filter is not claude-code-only the way
+    // `find_chats`' was. The live worktree branch is the fallback, consulted
+    // only when the record disagrees, and only for directories still on disk.
+    const recorded = typeof record.lastBranch === "string" ? record.lastBranch : typeof meta.lastBranch === "string" ? meta.lastBranch : null;
+    let branch = recorded;
+    let branchSource: BranchSource = recorded === null ? "unknown" : "record";
+    if (args.branch !== undefined && recorded !== args.branch) {
+      const live = foldersOf(chat)
+        .map(liveBranchOf)
+        .find((value) => value !== null);
+      if (live === args.branch) {
+        branch = live;
+        branchSource = "live-git";
+      } else {
+        // Nothing recorded a branch and nothing on disk can be asked. Dropping
+        // it is not the same as proving it does not match, so it is counted and
+        // reported rather than silently discarded.
+        if (recorded === null && live == null) branchUnevaluated++;
+        return false;
+      }
+    }
+    provenance.set(chat.id, { ...(repoSource && { repoSource }), branch, branchSource });
     const reasons = [
       ...(meta.pinned === true ? ["pinned"] : []),
       ...(meta.bookmarked === true ? ["bookmarked"] : []),
@@ -320,6 +420,9 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       !query || [meta.title, meta.preview, chat.folder, chat.displayFolder].some((value) => typeof value === "string" && value.toLowerCase().includes(query))
     );
   });
+  if (branchUnevaluated) {
+    warnings.push(`${branchUnevaluated} chats recorded no branch and their directory is gone; the branch filter could not evaluate them`);
+  }
   if (view?.available) {
     const advanced = await matchAdvanced(candidates, view.filters);
     candidates = advanced.rows;
@@ -336,7 +439,34 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       candidates = candidates.filter((chat) => [...(identities.get(chat.id) ?? [])].some((key) => content.keys.has(key)));
     }
   }
-  candidates.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // Transcript search, explicitly opt-in and deliberately last. Every record
+  // predicate above has already run, so this opens files for the survivors
+  // only — scoped to an open card that is ~20 transcripts where `find_chats`
+  // grepped every JSONL under the folder tree unscoped. Same per-engine readers
+  // each adapter's `searchSessions` greps with, run under the shared worker's
+  // time, heap and per-file byte budgets.
+  const matchKinds = new Map<string, "transcript" | "first-prompt" | "metadata">();
+  if (args.grep !== undefined) {
+    const eligibleKeys = new Set(candidates.flatMap((chat) => [...(identities.get(chat.id) ?? [])]));
+    const selectedSessions = discovery.sessions.filter((session) =>
+      eligibleKeys.has(JSON.stringify([session.providerKind, session.acpProviderId ?? null, session.sessionId])),
+    );
+    const content = selectedSessions.length ? await collectContentMatches(args.grep, selectedSessions) : { keys: new Set<string>(), warnings: [] };
+    warnings.push(...content.warnings);
+    candidates = candidates.filter((chat) => {
+      const hit = [...(identities.get(chat.id) ?? [])].find((key) => content.keys.has(key));
+      if (hit === undefined) return false;
+      const providerKind = String(JSON.parse(hit)[0]);
+      // A Codex native child's "first prompt" is the agent's nickname or path.
+      // That is metadata, and saying so is the difference between a real hit
+      // and one the caller would read as conversation.
+      const native = !!parseChatMetadata(chat.metadata).nativeAgent;
+      matchKinds.set(chat.id, providerKind === "codex" && native ? "metadata" : (MATCH_KIND[providerKind] ?? "transcript"));
+      return true;
+    });
+  }
+  const sortKey = args.sort === "created" ? (chat: Chat) => Date.parse(chat.created_at) : (chat: Chat) => Date.parse(chat.updated_at);
+  candidates.sort((a, b) => sortKey(b) - sortKey(a) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const offset = args.offset ?? 0,
     limit = args.limit ?? 20;
   const page = candidates.slice(offset, offset + limit);
@@ -372,6 +502,16 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
         pinned: meta.pinned === true,
         bookmarked: meta.bookmarked === true,
         card,
+        // Provenance, not decoration: a row must never leave here implying it
+        // was evaluated against something it was not. `branchSource: "record"`
+        // is a chat's last recorded branch, which may be older than the
+        // directory's current one; `"live-git"` is the directory now;
+        // `"unknown"` is nothing to go on. `matchKind` says what a `grep` hit
+        // actually matched.
+        branch: provenance.get(chat.id)?.branch ?? null,
+        branchSource: provenance.get(chat.id)?.branchSource ?? "unknown",
+        ...(args.repo !== undefined && { repoSource: provenance.get(chat.id)?.repoSource ?? null }),
+        ...(matchKinds.has(chat.id) && { matchKind: matchKinds.get(chat.id) }),
         ...(meta.nativeAgent && { readOnly: true, management: "native_provider", nativeParentSessionId: meta.nativeAgent.parentThreadId }),
         ...(args.anyOf && { matchedReasons: reasons.filter((reason) => args.anyOf!.includes(reason as NonNullable<SearchChatsInput["anyOf"]>[number])) }),
       };
@@ -389,10 +529,10 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       topLevelOnly: args.topLevelOnly ?? false,
       limit,
       offset,
-      ...(view?.available && {
-        view,
+      ...(view?.available && { view }),
+      ...((view?.available || args.grep !== undefined) && {
         contentSearchSemantics:
-          "Provider-specific: Claude uses case-insensitive basic grep; Codex uses first prompt or native nickname; Cline/ACP use first-message previews; Pi uses derived message text. Not a full-text index.",
+          "Provider-specific: Claude uses case-insensitive basic grep; Codex uses first prompt or native nickname; Cline/ACP use first-message previews; Pi uses derived message text. Not a full-text index. Read matchKind on each row.",
       }),
     },
   };
