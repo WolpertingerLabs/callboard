@@ -30,7 +30,13 @@
  *         **refused**. It has to answer here, before the inferences, or a name
  *         would claim a directory a record has already spoken for.
  *       - inside the repo → `descendant`; `<repo-name><sep>…` beside the repo →
- *         `sibling-path`, the rule that closes the 51%. Otherwise no answer.
+ *         `sibling-path`, the rule that closes the 51%.
+ *       - failing all of those, the nearest **existing** ancestor holding a
+ *         `.git`. If that resolves to a repository which is not this one, the
+ *         directory is another project's removed worktree and the answer is
+ *         **refused** — something could be asked after all. Only when nothing
+ *         at all can speak for the path is the verdict `null`, and `null` is
+ *         counted and reported by the caller rather than dropped.
  *
  * Two orderings in there are load-bearing and were both got wrong once.
  *
@@ -91,7 +97,18 @@ export type BranchSource = "record" | "live-git" | "unknown";
 /** `<repo-name><sep>…` beside the repo — both Callboard worktree conventions. */
 const SIBLING_SEPARATORS = new Set([".", "-", "_"]);
 
-/** Worktrees nest a level or two in practice; the bound is what stops a cycle. */
+/**
+ * Worktrees nest a level or two in practice; the bound is what stops a cycle.
+ *
+ * Eight is deliberate and the degenerate case is unreachable. Git registers a
+ * nested worktree against the **main** repo, so the live-git path always
+ * arrives in one hop however deep the directory nesting goes; only a chain of
+ * workspace records can step more than once, and exhausting this would need
+ * nine-plus nested *removed* worktrees each recording the last. If it ever did
+ * run out, the scope would be built on an intermediate path rather than the
+ * main checkout — which fails visibly, because `repoRoot` is reported in
+ * `appliedFilters` on every response.
+ */
 const NORMALISE_MAX_HOPS = 8;
 
 /** Is `target` lexically inside `repo`? Says nothing about either existing. */
@@ -210,7 +227,15 @@ export function createRepoScope(repoPath: string, records?: Workspace[]) {
   const cache = new Map<string, RepoVerdict>();
 
   /** Does any record on this cwd place it in this repo, directly or transitively? */
-  const recordAdmits = (target: string) => recordedRepoPaths(target).some((p) => samePath(p, repo) || mainRepoOf(p) === repo);
+  const recordAdmits = (target: string) =>
+    recordedRepoPaths(target).some((p) => {
+      if (samePath(p, repo)) return true;
+      const main = mainRepoOf(p);
+      // `samePath`, not `===`: every other comparison in this module
+      // realpath-normalises, and a caller who typed an aliased spelling of the
+      // repo would otherwise lose a row the direct arm two lines up would keep.
+      return main !== null && samePath(main, repo);
+    });
 
   /**
    * Does a record on this cwd name a main checkout that verifiably is not this
@@ -257,6 +282,29 @@ export function createRepoScope(repoPath: string, records?: Workspace[]) {
     if (dirname(target) === repoParent && name.length > repoName.length && name.startsWith(repoName) && SIBLING_SEPARATORS.has(name[repoName.length])) {
       return "sibling-path";
     }
+    // Nothing above claims it, but that is not the same as nothing being able
+    // to answer. A gone directory sitting inside a *live* repository that is
+    // not this one — `~/perch/feat-x-api-provider`, a removed worktree of
+    // another project — has an answer: its own repo's. Without this, `null`
+    // absorbs every other project's removed worktrees and the "could not be
+    // evaluated" warning reads as "your result may be missing chats from THIS
+    // repo" when it never is.
+    //
+    // Deliberately last. A removed worktree of this repo whose parent happens
+    // to be under version control (a checkouts directory that is itself a repo)
+    // must still reach `sibling-path` and `descendant` first, or the ancestor
+    // would outrank the rules it is meant to backstop.
+    //
+    // Today this is a backstop rather than the main path: a removed worktree of
+    // another project usually has a workspace record, and `recordRefuses`
+    // catches it above. Records are only written when a chat starts in a
+    // worktree and the entity is recent, so the no-record case is the common
+    // historical shape and the one this covers.
+    const ancestor = nearestExistingGitDir(target);
+    if (ancestor) {
+      const main = mainRepoOf(ancestor);
+      if (main !== null && !samePath(main, repo)) return "refused";
+    }
     return null;
   }
 
@@ -295,6 +343,17 @@ const GIT_DIR_SEARCH_DEPTH = 40;
  * A worktree's `.git` is a file rather than a directory, which `existsSync`
  * covers either way.
  */
+export function nearestExistingGitDir(start: string): string | null {
+  let current = resolve(start);
+  for (let depth = 0; depth < GIT_DIR_SEARCH_DEPTH; depth++) {
+    if (existsSync(join(current, ".git"))) return current;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+  return null;
+}
+
 function nearestGitDir(folder: string): string | null {
   // A path that is not there has no branch, and walking up from it would find
   // an *ancestor's* — `/repo/feat/gone/worktree` reporting `main`. That is not
@@ -303,15 +362,13 @@ function nearestGitDir(folder: string): string | null {
   // `branch=` query as a proven mismatch instead of being counted as
   // unevaluable, and the total stays confidently wrong. The measured saving was
   // for *live* subdirectories, which this keeps.
+  //
+  // `evaluate` walks from a missing path on purpose, via
+  // {@link nearestExistingGitDir} — asking "is this gone folder inside someone
+  // else's repo" is a different question from "what branch is checked out
+  // here", and only the second one is nonsense for a path that is not there.
   if (!existsSync(folder)) return null;
-  let current = resolve(folder);
-  for (let depth = 0; depth < GIT_DIR_SEARCH_DEPTH; depth++) {
-    if (existsSync(join(current, ".git"))) return current;
-    const parent = dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-  return null;
+  return nearestExistingGitDir(folder);
 }
 
 /**

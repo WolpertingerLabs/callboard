@@ -11,7 +11,7 @@
  * These tests assert the refusals as hard as the admissions.
  */
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Workspace } from "shared/types/workspace.js";
@@ -27,7 +27,30 @@ const recordedElsewhere = join(tmpRoot, "scratch", "checkout-42"); // never crea
 const neighbour = join(tmpRoot, "callboard-other");
 const stranger = join(tmpRoot, "unrelated");
 
-for (const dir of [repo, nested, liveWorktree, neighbour, stranger]) mkdirSync(dir, { recursive: true });
+/**
+ * A repo whose PARENT is itself a git repository — a checkouts directory under
+ * version control. The ancestor rule must not outrank the rules it backstops
+ * here, or this layout refuses its own worktrees.
+ */
+const nestParent = join(tmpRoot, "nest");
+const nestedRepo = join(nestParent, "proj");
+const nestedRepoSibling = join(nestParent, "proj.wt"); // never created
+const nestedRepoInner = join(nestedRepo, "inner-wt"); // never created
+
+/**
+ * A symlinked spelling of the repo. `join()` cannot make one — it normalises
+ * `./x/../x` away at construction — and without a real alias the samePath arm
+ * and a `===` arm agree, which is how the first version of this test passed
+ * against both.
+ */
+const repoViaAlias = join(tmpRoot, "callboard-alias");
+
+
+for (const dir of [repo, nested, liveWorktree, neighbour, stranger, nestedRepo]) mkdirSync(dir, { recursive: true });
+symlinkSync(repo, repoViaAlias);
+// `nest` is a repo that contains a repo. Only these two get `.git`, so the
+// ancestor walk from `nest/proj.wt` finds `nest` — a different repository.
+for (const dir of [nestParent, nestedRepo]) writeFileSync(join(dir, ".git"), "gitdir: /elsewhere\n");
 // Only the checkouts get a `.git`; `nested` deliberately does not, because a
 // directory inside a repository is the case the branch resolver used to pay a
 // subprocess for.
@@ -72,7 +95,10 @@ const nestedWorktree = join(tmpRoot, "callboard.feat-live.nested"); // never cre
 const contested = join(tmpRoot, "callboard.contested"); // never created
 /** A record whose `repoPath` names a directory that no longer exists. */
 const recordOnMovedRepo = join(tmpRoot, "callboard.after-move"); // never created
-
+/** Another project's removed worktree: gone, but sitting inside a live repo. */
+const goneInsideStranger = join(stranger, "feat-theirs"); // never created
+/** This repo's own removed nested worktree — same shape, opposite answer. */
+const goneInsideRepo = join(repo, "feat-ours"); // never created
 const RECORDS = [
   workspace(recordedElsewhere, repo, "feat/recorded"),
   workspace(deadButOwnedElsewhere, stranger, "feat/theirs"),
@@ -154,7 +180,41 @@ describe("createRepoScope", () => {
     expect(scope.classify(recordOnMovedRepo)).toBe("sibling-path");
   });
 
+  it("REFUSES a gone folder whose nearest live ancestor is another repo", () => {
+    // Another project's removed worktree. Nothing above claims it, but that is
+    // not the same as nothing being able to answer — `unrelated/.git` can.
+    // Without this the `null` counter absorbs every other project's removed
+    // worktrees and its warning reads as "your result may be missing chats from
+    // THIS repo" when it never is.
+    expect(scope.classify(goneInsideStranger)).toBe("refused");
+  });
+
+  it("does not let the ancestor rule outrank the rules it backstops", () => {
+    expect(scope.classify(goneInsideRepo)).toBe("descendant");
+    expect(scope.classify(deadWorktree)).toBe("sibling-path");
+    // The case that actually discriminates: `nest` is itself a repository, so
+    // the ancestor walk from either of these finds a repo that is not `proj`.
+    // Run the ancestor rule any earlier and a checkouts directory under version
+    // control refuses its own repo's worktrees.
+    const inner = createRepoScope(nestedRepo, []);
+    expect(inner.classify(nestedRepoSibling)).toBe("sibling-path");
+    expect(inner.classify(nestedRepoInner)).toBe("descendant");
+    // Non-vacuous: something with no claim on `proj` under the same live parent
+    // IS refused, which is the rule doing its job.
+    expect(inner.classify(join(nestParent, "unrelated-gone"))).toBe("refused");
+  });
+
+  it("compares a transitive repoPath with samePath, not string equality", () => {
+    // The direct arm realpath-normalises; the transitive one used `===`, so a
+    // caller who named the repo through a symlink lost a row that should be
+    // `workspace-record` — which then fed straight into the `null` counter.
+    const aliased = createRepoScope(repoViaAlias, RECORDS);
+    expect(aliased.classify(nestedWorktree)).toBe("workspace-record");
+  });
+
   it("has no answer for a folder nothing relates to this repo", () => {
+    // `<tmp>` has no `.git`, so the ancestor walk finds nothing either — this
+    // is a genuine "nothing could be asked", which is what `null` means.
     expect(scope.classify(join(tmpRoot, "somethingelse.feat-x"))).toBeNull();
     // Right parent, right prefix, but no separator — `callboardish` is a
     // different name, not a worktree of `callboard`.
