@@ -9,7 +9,7 @@
  * was created only to fail on its first message with the server's 400.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import NewChatPanel from "./NewChatPanel";
 import { resetSystemInfoCache } from "../api";
@@ -55,6 +55,10 @@ describe("New Chat with a stored effort the model does not support", () => {
     vi.stubGlobal("fetch", serve(["low", "medium"]));
     render(app());
     await screen.findByRole("alert");
+    // findByRole can resolve before the parent's effortBlocked effect has
+    // actually run, so flush effects here or the click below fires before
+    // the picker is really blocked and the nav happens anyway.
+    await act(async () => {});
     const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
     const reportValidity = vi.spyOn(select, "reportValidity");
     fireEvent.click(screen.getByTitle("/tmp/recent-project"));
