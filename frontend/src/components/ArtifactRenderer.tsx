@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type CSSProperties, type RefObject } from "react";
+import { useState, useEffect, useRef, useCallback, type CSSProperties, type MutableRefObject } from "react";
 import { Maximize2 } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import MarkdownRenderer from "./MarkdownRenderer";
@@ -29,7 +29,7 @@ interface ArtifactFrameProps {
   title: string;
   storageKey: string | null;
   access: StorageAccess;
-  frameRef?: RefObject<HTMLIFrameElement>;
+  frameRef?: MutableRefObject<HTMLIFrameElement | null>;
   style: CSSProperties;
   onLoaded: () => void;
   bridgeApi?: BridgeStorageApi;
@@ -46,10 +46,20 @@ interface ArtifactFrameProps {
  * no /api), no top navigation, no popups, no forms.
  */
 function ArtifactFrame({ src, title, storageKey, access, frameRef, style, onLoaded, bridgeApi }: ArtifactFrameProps) {
-  const ownRef = useRef<HTMLIFrameElement>(null);
-  const ref = frameRef ?? ownRef;
-  const [bridge] = useState<ArtifactBridge>(() =>
-    createArtifactBridge({ getFrameWindow: () => ref.current?.contentWindow, storageKey, access, api: bridgeApi }),
+  // The element lives in a plain holder rather than a ref so the bridge can
+  // close over it without reading a ref during render; it is only dereferenced
+  // when a load or message arrives.
+  const [bridge, holder] = useState(() => {
+    const h: { el: HTMLIFrameElement | null } = { el: null };
+    const b: ArtifactBridge = createArtifactBridge({ getFrameWindow: () => h.el?.contentWindow, storageKey, access, api: bridgeApi });
+    return [b, h] as const;
+  })[0];
+  const setFrame = useCallback(
+    (el: HTMLIFrameElement | null) => {
+      holder.el = el;
+      if (frameRef) frameRef.current = el;
+    },
+    [holder, frameRef],
   );
 
   useEffect(() => {
@@ -60,7 +70,7 @@ function ArtifactFrame({ src, title, storageKey, access, frameRef, style, onLoad
 
   return (
     <iframe
-      ref={ref}
+      ref={setFrame}
       src={src}
       title={title}
       sandbox="allow-scripts"

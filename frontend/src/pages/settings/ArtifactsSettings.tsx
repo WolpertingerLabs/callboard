@@ -553,7 +553,7 @@ export default function ArtifactsSettings() {
                     if (file) setDraft({ ...draft, content: await readFileText(file) });
                   }}
                 />
-                <div style={helpStyle}>Id: lowercase letters, digits and "-", up to 64 characters. It is permanent.</div>
+                <div style={helpStyle}>Id: lowercase letters, digits and hyphens, up to 64 characters. It is permanent.</div>
                 <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                   <button style={secondaryButton} onClick={() => setDraft(null)} disabled={busy}>
                     Cancel

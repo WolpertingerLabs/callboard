@@ -309,7 +309,7 @@ export default function StorageSettings() {
         </div>
         <div style={{ ...helpStyle, marginBottom: 16 }}>
           Named buckets of files that agents and artifacts share. Agents use <code>list_storage_keys</code>, <code>read_storage_item</code> and{" "}
-          <code>save_storage_item</code>; an artifact rendered against a key can read (and, if granted, write) that key's items only.
+          <code>save_storage_item</code>; an artifact rendered against a key can read (and, if granted, write) that key&apos;s items only.
         </div>
 
         {error && <div style={errorBoxStyle}>{error}</div>}
@@ -330,7 +330,7 @@ export default function StorageSettings() {
               value={newKey.description}
               onChange={(e) => setNewKey({ ...newKey, description: e.target.value })}
             />
-            <div style={helpStyle}>Lowercase letters, digits, ".", "_" and "-"; up to 64 characters.</div>
+            <div style={helpStyle}>Lowercase letters, digits, dots, underscores and hyphens; up to 64 characters.</div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button style={secondaryButton} onClick={() => setNewKey(null)} disabled={busy}>
                 Cancel
