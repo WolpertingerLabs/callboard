@@ -358,9 +358,13 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     // every call), or its last call's wait left its share less time to refill.
     // Such a request is held, not refused, until its share can pay — the waits
     // the refusals would have named, at most maxHoldMs in all — provided the
-    // budget says the mount is under its share and no other request of it is
-    // held. A mount asking for its share or more (a spinner, however it
-    // retries) is refused as before.
+    // budget says the mount is under its share. That gate alone keeps a
+    // spinner out: holds spend nothing, and a mount at or over its share is
+    // refused (a sequential spinner ~90% of calls; the rest are held for a
+    // refill it was due anyway, never above its share). Every request of an
+    // under-share mount may be held — an app firing two reads on load, or
+    // Promise.all-ing two per poll, must not lose one — and maxInFlight
+    // already bounds how many that is.
     let mayHold: number | null = null;
     for (;;) {
       try {
@@ -370,15 +374,10 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
       } catch (err) {
         const wait = err instanceof BridgeRefusal ? (err.retryAfterMs ?? 0) : 0;
         if (!wait) throw err;
-        mayHold ??= holding === 0 && budget.underShare?.() ? maxHoldMs : 0;
+        mayHold ??= budget.underShare?.() ? maxHoldMs : 0;
         if (wait > mayHold || revoked) throw err;
         mayHold -= wait;
-        holding += 1;
-        try {
-          await held(wait);
-        } finally {
-          holding -= 1;
-        }
+        await held(wait);
         if (revoked) throw err;
       }
     }
@@ -387,8 +386,7 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     return run();
   }
 
-  /** Requests of this mount held for its share. */
-  let holding = 0;
+  /** Wake-ups of this mount's held requests, run by revoke. */
   const wakers = new Set<() => void>();
   /** Sleep `ms`, or until revoke. */
   function held(ms: number): Promise<void> {

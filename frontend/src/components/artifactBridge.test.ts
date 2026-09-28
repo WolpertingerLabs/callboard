@@ -855,6 +855,89 @@ describe("artifact bridge — a mount that asks for less than its share gets it,
     for (const r of refused) expect(r).toMatchObject({ error: expect.stringMatching(new RegExp(`^${RATE_LIMITED}`)), retryAfterMs: expect.any(Number) });
   });
 
+  /**
+   * A spinner as in run(), for `ms` of fake time, calling `tick(now)` every
+   * 10 ms. `mk(group)` mounts an artifact of its own on the same tab budget.
+   */
+  async function besideSpinner(ms: number, body: (mk: (group: string, seededAt?: number) => ReturnType<typeof setup>) => (now: number) => void) {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const tab = createTabBudget();
+      const spinner = tab.open("spin");
+      const tick = body((group, seededAt) => {
+        const lookup = createSharedLookup<ArtifactStorageAccess>(async () => "readwrite", () => Date.now());
+        // The renderer seeds the judgement it mounted with, so a load-time read needs no check.
+        if (seededAt !== undefined) lookup.seed(group, seededAt, "readwrite");
+        const t = setup("readwrite", BOUND, { recheck: (maxAgeMs, b) => lookup.get(group, maxAgeMs, b), budget: tab.open(group) });
+        t.ready();
+        return t;
+      });
+      let next = 0;
+      for (let now = 0; now < ms; now += 10) {
+        if (now >= next) {
+          while (spinner.spend(1));
+          next = now + Math.max(10, spinner.retryAfterMs(1));
+        }
+        tick(now);
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      await vi.advanceTimersByTimeAsync(ARTIFACT_BRIDGE_LIMITS.maxHoldMs);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  for (const k of [2, 3]) {
+    it(`a mount firing ${k} reads at once on load, beside a spinner: all ${k} held and answered, none refused`, async () => {
+      let t: ReturnType<typeof setup> | null = null;
+      await besideSpinner(40_000, (mk) => (now) => {
+        if (now !== 20_000) return;
+        t = mk("cram", now);
+        for (let i = 0; i < k; i++) t.port.onmessage?.({ data: t.req({ id: `r${i}`, op: "read", name: "a" }) } as MessageEvent);
+      });
+      expect(t!.replies().filter((r) => !r.ok)).toEqual([]);
+      expect(t!.replies()).toHaveLength(k);
+    });
+  }
+
+  it("a poller doing Promise.all of two reads every 10 s, beside a spinner for 120 s: all 22 answered, none refused", async () => {
+    let t: ReturnType<typeof setup> | null = null;
+    await besideSpinner(120_000, (mk) => {
+      t = mk("pair");
+      return (now) => {
+        if (now === 0 || now % 10_000 !== 0) return;
+        for (const name of ["a", "b"]) t!.port.onmessage?.({ data: t!.req({ id: `${name}${now}`, op: "read", name }) } as MessageEvent);
+      };
+    });
+    expect(t!.replies().filter((r) => !r.ok)).toEqual([]);
+    expect(t!.replies()).toHaveLength(22);
+  });
+
+  it("revoke wakes a held request at once: no timer left behind, no storage call, no reply", async () => {
+    let t: ReturnType<typeof setup> | null = null;
+    let timersHeld = 0;
+    let settled = false;
+    let after: { timers: number; settled: boolean } | null = null;
+    await besideSpinner(20_030, (mk) => (now) => {
+      if (now === 20_000) {
+        t = mk("late");
+        t.port.onmessage?.({ data: t.req({ id: "w", op: "write", name: "a", data: "x" }) } as MessageEvent);
+      }
+      if (now === 20_010) {
+        timersHeld = vi.getTimerCount();
+        t!.bridge.revoke();
+        void t!.bridge.settled().then(() => (settled = true));
+      }
+      // 10 ms on: far short of the hold, which only revoke's wake-up can have ended.
+      if (now === 20_020) after = { timers: vi.getTimerCount(), settled };
+    });
+    expect(timersHeld).toBeGreaterThan(0); // it was held, not refused…
+    expect(after).toEqual({ timers: 0, settled: true }); // …and revoke ended the hold, not its timer
+    expect(t!.storageCalls()).toBe(0);
+    expect(t!.replies()).toEqual([]);
+  });
+
   it("a mount asking for its share or more is still refused, not held: a loop awaiting each call, and one with four in flight", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

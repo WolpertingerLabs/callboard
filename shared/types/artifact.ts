@@ -172,8 +172,11 @@ export const ARTIFACT_RENDER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
  * host-side — answered late, not refused — until its share can pay, for up to
  * `maxHoldMs` (a check and a call beside up to seven busy renders). The host
  * holds a call only for a render whose recent spending is under an even
- * split and that has no other call held; a render asking for its share or
- * more is refused as below.
+ * split, and then every such call (up to the 4 in flight) — two reads fired
+ * at once are both held, not one held and one refused. A render asking for
+ * its share or more is refused as below: a sequential spinner on most calls
+ * (~90%), held on the few that come as its share refills, and never given
+ * more than its share either way.
  *
  * What costs a token: every storage call (list/read/write/delete), plus every
  * re-check of an artifact's grant that actually goes to the server. Re-checks
@@ -223,9 +226,8 @@ export const ARTIFACT_BRIDGE_LIMITS = {
   maxRetryAfterMs: 5000,
   /**
    * The longest the host holds a refused request of a mount that is not over
-   * its share (not already holding one, not refused within activeWindowMs)
-   * until its share can pay, instead of refusing it: a check and a call (2
-   * tokens) beside up to seven other busy mounts.
+   * its share until its share can pay, instead of refusing it: a check and a
+   * call (2 tokens) beside up to seven other busy mounts.
    */
   maxHoldMs: 10_000,
 } as const;
