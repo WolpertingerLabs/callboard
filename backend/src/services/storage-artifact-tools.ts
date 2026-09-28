@@ -266,11 +266,13 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
         "document, rendered in chat with render_artifact. HTML artifacts run in a sandbox that cannot fetch/XHR or load any remote resource; their only data " +
         "source is window.callboard.storage — list(), read(name, {as: 'text'|'json'|'dataUrl'}), write(name, data, {mimeType}), delete(name) — scoped to the ONE " +
         "storage key bound at render time (await window.callboard.ready first; it resolves to {storageKey, access}, or unbound with a reason if the host " +
-        "never answers within 10s, e.g. after navigating back into the frame). Storage calls are rate-limited host-side by ONE budget shared by every " +
-        "artifact open in the browser tab: 105 requests a minute with a burst of 20, and at most 4 in flight per render (the shim queues the rest). A call " +
-        "costs 1, and re-checking the artifact's access costs 1 more at most once per 2 s for writes/deletes and once per 5 s for reads (shared by every " +
-        "render of the artifact) — so one artifact alone can sustain ~75 writes or ~93 reads a minute (1 write/s is safe; a load-time burst of ~15 calls fits), and several open artifacts " +
-        "split that. Past it a call rejects with an error starting 'rate limited' — load data once and keep it in memory rather than polling. Images must come from storage " +
+        "never answers within 10s, e.g. after navigating back into the frame). Storage calls are rate-limited host-side by ONE budget for the whole " +
+        "browser tab — 105 requests a minute with a burst of 20 — divided evenly between the renders making requests (each has its own share, which no other " +
+        "render can spend), and at most 4 in flight per render (the shim queues the rest). A call costs 1, and re-checking the artifact's access costs 1 more " +
+        "at most once per 2 s for writes/deletes and once per 5 s for reads (split between the renders of the artifact). So a render that is the only busy " +
+        "one in the tab can sustain ~75 writes or ~93 reads a minute (1 write/s fits; a load-time burst of ~15 calls fits), but beside N other busy renders it " +
+        "gets 1/(N+1) of that: ~35 writes a minute beside one, ~13 beside three — design for the shared case. Past its share a call rejects with an error " +
+        "starting 'rate limited', and the render's next calls wait until its share refills — load data once and keep it in memory rather than polling. Images must come from storage " +
         "as data URLs (image/* items, SVG included, come back typed for <img>). The sandbox is not a data-loss barrier: a determined artifact can still " +
         "leak what it can read (by navigating its frame, or WebRTC), so granting read on a key means the artifact's author can read that key. The " +
         "artifact's JS runs in the page's process: an infinite loop freezes the whole Callboard tab (as with canvases), every time the chat is opened. Ids: ^[a-z0-9][a-z0-9-]{0,63}$. name and content_type are required on create; content_type cannot change later. " +

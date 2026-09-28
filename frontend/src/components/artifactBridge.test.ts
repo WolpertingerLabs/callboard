@@ -18,7 +18,7 @@ import {
   ARTIFACT_BRIDGE_TOKEN_PATTERN,
   type ArtifactStorageAccess,
 } from "../api";
-import { createRequestBudget, createSharedLookup, type RequestBudget } from "./artifactBudget";
+import { createRequestBudget, createSharedLookup, createTabBudget, type RequestBudget } from "./artifactBudget";
 
 /**
  * The host half of the artifact storage bridge, driven directly.
@@ -65,7 +65,7 @@ function fakeApi(): BridgeStorageApi & { [K in keyof BridgeStorageApi]: ReturnTy
 function setup(
   access: ArtifactStorageAccess = "readwrite",
   storageKey: string | null = BOUND,
-  extra: Pick<ArtifactBridgeOptions, "recheck" | "budget" | "onAccessChange"> = {},
+  extra: Pick<ArtifactBridgeOptions, "recheck" | "budget" | "budgetGroup" | "onAccessChange"> = {},
 ) {
   // The frame's window. The host must never post to it — every case checks.
   const frame = { postMessage: vi.fn() };
@@ -501,8 +501,8 @@ describe("artifact bridge — budget (host-side, before any request leaves)", ()
     expect(t.api.list).toHaveBeenCalledTimes(ARTIFACT_BRIDGE_LIMITS.burst + Math.floor(4 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond));
   });
 
-  it("the budget is the tab's, not the mount's: by default every bridge spends the same one", async () => {
-    // Far enough ahead that the module's bucket has refilled to full, then frozen.
+  it("by default each mount has its own account of the ONE tab budget: the tab's burst is first-come, its rate is split evenly, and a revoked mount stops counting", async () => {
+    // Far enough ahead that the module's budget has refilled to full, then frozen.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 3_600_000);
     try {
@@ -513,10 +513,34 @@ describe("artifact bridge — budget (host-side, before any request leaves)", ()
       b.ready();
       for (let i = 0; i < ARTIFACT_BRIDGE_LIMITS.burst; i++) await a.send(a.req({ id: `a${i}`, op: "list" }));
       expect(a.replies().every((r) => r.ok)).toBe(true);
-      // A second mount — five bubbles of one artifact, say — gets no budget of its own.
+      // Five bubbles of one artifact, say: the tab's burst is gone, and b is told when its share will have a token.
       await b.send(b.req({ id: "b0", op: "list" }));
-      expect(b.replies()).toEqual([expect.objectContaining({ id: "b0", ok: false, error: expect.stringMatching(new RegExp(`^${RATE_LIMITED}`)) })]);
+      const [refusal] = b.replies();
+      expect(refusal).toMatchObject({ id: "b0", ok: false, error: expect.stringMatching(new RegExp(`^${RATE_LIMITED}`)) });
+      expect(refusal.retryAfterMs).toBeGreaterThan(0);
+      expect(refusal.retryAfterMs).toBeLessThanOrEqual(Math.ceil(1000 / (ARTIFACT_BRIDGE_LIMITS.refillPerSecond / 2)));
       expect(b.api.list).not.toHaveBeenCalled();
+      // Both over-asking for 60 s: a, which had the burst, no longer gets more than b.
+      for (let s = 1; s <= 60; s++) {
+        vi.setSystemTime(Date.now() + 1000);
+        for (let i = 0; i < 3; i++) {
+          await a.send(a.req({ id: `a${s}-${i}`, op: "list" }));
+          await b.send(b.req({ id: `b${s}-${i}`, op: "list" }));
+        }
+      }
+      const aLate = a.api.list.mock.calls.length - ARTIFACT_BRIDGE_LIMITS.burst;
+      const bLate = b.api.list.mock.calls.length;
+      expect(Math.abs(aLate - bLate)).toBeLessThanOrEqual(1);
+      expect(aLate + bLate).toBeGreaterThanOrEqual(Math.floor(60 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond) - 1);
+      // a unmounts: b alone has the whole rate.
+      a.bridge.revoke();
+      const before = b.api.list.mock.calls.length;
+      for (let s = 1; s <= 20; s++) {
+        vi.setSystemTime(Date.now() + 1000);
+        for (let i = 0; i < 3; i++) await b.send(b.req({ id: `c${s}-${i}`, op: "list" }));
+      }
+      expect(b.api.list.mock.calls.length - before).toBeGreaterThanOrEqual(Math.floor(20 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond) - 1);
+      b.bridge.revoke();
     } finally {
       vi.useRealTimers();
     }
@@ -725,6 +749,28 @@ describe("artifact bridge — the live grant", () => {
     expect(t.api.write).toHaveBeenCalledTimes(130);
     // A check on at most every other write: ≤ 1.5 tokens a write (90/min), under the refill.
     expect(w.fetches.mock.calls.length).toBeLessThanOrEqual(62);
+  });
+
+  it("beside three spinners a writer still gets its quarter of the tab through: it never pays for a check it cannot follow with the write", async () => {
+    // Its share refills a token every ~2.3 s — slower than the 2 s write window. Paying
+    // for the check alone would spend each token on a check that is stale again before
+    // the write's token arrives: every write refused, for ever.
+    let now = 0;
+    const clock = () => now;
+    const tab = createTabBudget(clock);
+    const spinners = [tab.open("spam"), tab.open("spam"), tab.open("spam")];
+    const fetches = vi.fn(async () => "readwrite" as ArtifactStorageAccess);
+    const lookup = createSharedLookup<ArtifactStorageAccess>(fetches, clock);
+    const t = setup("readwrite", BOUND, { recheck: (maxAgeMs, b) => lookup.get("art", maxAgeMs, b), budget: tab.open("art") });
+    t.ready();
+    for (now = 0; now < 120_000; now += 50) {
+      for (const sp of spinners) while (sp.spend(1));
+      if (now % 1000 === 0 && now > 0) await t.send(write(`s${now}`));
+    }
+    const ok = t.replies().filter((r) => r.ok).length;
+    // A quarter of 1.75/s for 120 s is 52 tokens; writes this far apart each need a check: 2 tokens a write.
+    expect(ok).toBeGreaterThanOrEqual(24);
+    expect(fetches.mock.calls.length).toBeLessThanOrEqual(ok + 1);
   });
 });
 
