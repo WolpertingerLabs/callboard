@@ -174,6 +174,35 @@ describe("StorageSettings", () => {
     expect(h.putStorageItem).not.toHaveBeenCalled();
   });
 
+  it("a partial upload failure names the file, reports what was saved, and still refreshes the list", async () => {
+    await openBirds();
+    const input = screen.getByLabelText("Upload files") as HTMLInputElement;
+    const clear = vi.spyOn(input, "value", "set");
+    h.putStorageItem.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("Item too large"));
+    const refreshesBefore = h.getStorageKey.mock.calls.length;
+    fireEvent.change(input, { target: { files: [new File(["a"], "a.png"), new File(["b"], "b.txt"), new File(["c"], "c.txt")] } });
+    expect(await screen.findByText('Uploading "b.txt" failed: Item too large (already saved: a.png)')).toBeTruthy();
+    expect(h.putStorageItem).toHaveBeenCalledTimes(2); // c.txt is not attempted
+    expect(h.getStorageKey.mock.calls.length).toBeGreaterThan(refreshesBefore);
+    expect(clear).toHaveBeenCalledWith("");
+  });
+
+  it("only the latest key's detail lands: a slow response for a key no longer selected is dropped", async () => {
+    let releaseBirds!: (v: typeof birds) => void;
+    h.getStorageKey.mockImplementation((key: string) =>
+      key === "birds" ? new Promise((r) => (releaseBirds = r)) : Promise.resolve({ ...birds, key: "empty", description: undefined, items: [item("other.txt", "text/plain")] }),
+    );
+    renderPage();
+    fireEvent.click(await screen.findByText("birds"));
+    fireEvent.click(screen.getByText("empty"));
+    const list = await screen.findByTestId("storage-item-list");
+    expect(within(list).getByText("other.txt")).toBeTruthy();
+    releaseBirds(birds);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(within(screen.getByTestId("storage-item-list")).queryByText("deck.json")).toBeNull();
+    expect(within(screen.getByTestId("storage-item-list")).getByText("other.txt")).toBeTruthy();
+  });
+
   it("deletes an item only after confirmation", async () => {
     await openBirds();
     fireEvent.click(screen.getByTitle("Delete item deck.json"));

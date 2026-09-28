@@ -1,7 +1,8 @@
 import { Router } from "express";
 import type { NextFunction, Request, Response } from "express";
 import multer from "multer";
-import { createReadStream } from "fs";
+import { closeSync, createReadStream } from "fs";
+import { STORAGE_ITEM_MIME_HEADER } from "shared/types/index.js";
 import {
   STORAGE_MAX_ITEM_BYTES,
   StorageError,
@@ -9,10 +10,10 @@ import {
   decodeBase64Strict,
   deleteStorageItem,
   deleteStorageKey,
-  getStorageItem,
   getStorageKey,
   httpStatusFor,
   listStorageKeys,
+  openStorageItem,
   saveStorageItem,
   updateStorageKey,
 } from "../services/storage-service.js";
@@ -142,16 +143,26 @@ storageRouter.get(
   wrap("Read storage item", (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Download a storage item'
-    const item = getStorageItem(req.params.key, req.params.name);
-    const inlineType = Object.prototype.hasOwnProperty.call(INLINE_TYPES, item.mimeType) ? INLINE_TYPES[item.mimeType] : undefined;
-    res.setHeader("Content-Type", inlineType ?? "application/octet-stream");
-    res.setHeader("Content-Length", item.size);
-    // The name is validated to [A-Za-z0-9._-], so it is safe inside the quotes.
-    res.setHeader("Content-Disposition", `${inlineType ? "inline" : "attachment"}; filename="${item.name}"`);
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Content-Security-Policy", STORAGE_ITEM_CSP);
-    res.setHeader("Cache-Control", "no-store");
-    const stream = createReadStream(item.filePath);
+    const { item, fd, size } = openStorageItem(req.params.key, req.params.name);
+    let stream: ReturnType<typeof createReadStream>;
+    try {
+      const inlineType = Object.prototype.hasOwnProperty.call(INLINE_TYPES, item.mimeType) ? INLINE_TYPES[item.mimeType] : undefined;
+      res.setHeader("Content-Type", inlineType ?? "application/octet-stream");
+      // What the open fd holds, not what meta recorded — they agree unless something outside the service touched the file.
+      res.setHeader("Content-Length", size);
+      // The name is validated to [A-Za-z0-9._-], so it is safe inside the quotes.
+      res.setHeader("Content-Disposition", `${inlineType ? "inline" : "attachment"}; filename="${item.name}"`);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", STORAGE_ITEM_CSP);
+      res.setHeader("Cache-Control", "no-store");
+      // Informational: the recorded type, for clients that re-type bytes they already hold (the artifact bridge's dataUrl read).
+      // Validated to a bare type/subtype on save, so it is header-safe.
+      res.setHeader(STORAGE_ITEM_MIME_HEADER, item.mimeType);
+      stream = createReadStream("", { fd, autoClose: true });
+    } catch (err) {
+      closeSync(fd);
+      throw err;
+    }
     stream.on("error", (err) => {
       log.error(`Read storage item stream failed: ${err.message}`);
       if (!res.headersSent) res.status(500).json({ error: "Failed to read item" });

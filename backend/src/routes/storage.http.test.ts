@@ -147,7 +147,26 @@ describe("serving rules", () => {
     expect(res.headers["content-security-policy"]).toBe(STORAGE_ITEM_CSP);
     expect(res.headers["content-security-policy"]).toBe("default-src 'none'; sandbox");
     expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.headers["content-length"]).toBe(String(body.length));
+    // The recorded type rides along as information only — it never picks the Content-Type above.
+    expect(res.headers["x-callboard-mime-type"]).toBe(svc.getStorageItem("serve", name).mimeType);
     expect(res.body.equals(body)).toBe(true);
+  });
+
+  it("Content-Length is the size of the file actually served, not meta's recorded size (GET and HEAD)", async () => {
+    await svc.createStorageKey("len");
+    await svc.saveStorageItem("len", "a.txt", Buffer.from("twelve bytes"));
+    // Meta and disk disagree (the state the review produced with a failed overwrite).
+    const metaFile = join(DATA, "storage", "len", "meta.json");
+    const meta = JSON.parse(readFileSync(metaFile, "utf-8"));
+    meta.items["a.txt"].size = 5;
+    writeFileSync(metaFile, JSON.stringify(meta));
+    const get = await server.request("GET", "/api/storage/len/items/a.txt");
+    expect(get.headers["content-length"]).toBe("12");
+    expect(get.body.toString()).toBe("twelve bytes");
+    const head = await server.request("HEAD", "/api/storage/len/items/a.txt");
+    expect(head.status).toBe(200);
+    expect(head.headers["content-length"]).toBe("12");
   });
 });
 

@@ -2,8 +2,8 @@
  * Storage service — the key-catalogued blob store behind `/api/storage` and the
  * `*_storage_*` tools.
  *
- *   DATA_DIR/storage/<key>/meta.json      StorageKeyMetaFile
- *   DATA_DIR/storage/<key>/items/<name>   raw bytes
+ *   DATA_DIR/storage/<key>/meta.json            StorageKeyMetaFile
+ *   DATA_DIR/storage/<key>/items/<name>~<hex>   raw bytes (meta's `file`; legacy items: items/<name>)
  *
  * **This module is the traversal chokepoint.** Routes and tools may validate
  * too, but every path this service builds goes through {@link assertStorageKey}
@@ -12,14 +12,39 @@
  * refused, not followed). Items are flat — there is no way to name a
  * subdirectory, so there is nothing to walk out of.
  *
- * Writes are atomic (tmp + rename; tmp names start with a dot, which no valid
- * item name can, so a crashed write can never shadow an item) and every
- * mutation of one key runs on that key's promise chain, so two concurrent
- * saves cannot lose each other's meta entry. Limits are checked before any
- * bytes land on disk.
+ * **meta.json is the commit point.** A save writes the new bytes to a fresh,
+ * never-before-used file, then atomically replaces meta.json to point at it,
+ * and only then removes the previous file. A failure (or crash) at any step
+ * before the meta rename leaves the previous committed state exactly as it
+ * was; after it, at worst an unreferenced file is left behind. Unreferenced
+ * files are removed by {@link sweepUnreferenced} at the start of the key's next
+ * mutation, so they never outlive it — and they are never counted against the
+ * limits, which are computed from meta.
+ *
+ * Every mutation of one key runs on that key's promise chain, so two
+ * concurrent saves cannot lose each other's meta entry. Limits are checked
+ * before any bytes land on disk. Reads are not serialized: they resolve the
+ * file from meta and open it, retrying once if a concurrent save removed it
+ * between the two.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
 import path from "path";
 import {
   STORAGE_ITEM_NAME_PATTERN,
@@ -29,8 +54,11 @@ import {
   STORAGE_MAX_KEY_BYTES,
   STORAGE_MAX_STORE_BYTES,
 } from "shared/types/index.js";
-import type { StorageItem, StorageKeyDetail, StorageKeyMetaFile, StorageKeySummary } from "shared/types/index.js";
+import type { StorageItem, StorageItemRecord, StorageKeyDetail, StorageKeyMetaFile, StorageKeySummary } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("storage-service");
 
 export { STORAGE_MAX_ITEM_BYTES, STORAGE_MAX_KEY_BYTES, STORAGE_MAX_STORE_BYTES, STORAGE_MAX_ITEMS_PER_KEY };
 
@@ -183,16 +211,34 @@ function assertContainedKeyDir(key: string): void {
   }
 }
 
-/** Absolute path of an item, after validation and containment checks. Does not require the item to exist. */
-export function itemFilePath(key: string, name: string): string {
-  assertStorageKey(key);
-  assertItemName(name);
+const BLOB_SUFFIX = /^~[0-9a-f]{16}$/;
+
+/** A fresh blob file name for item `name`. `~` is outside the item-name alphabet, so it can never collide with a legacy `items/<name>`. */
+function newBlobName(name: string): string {
+  return `${name}~${randomBytes(8).toString("hex")}`;
+}
+
+/** The file under items/ that holds `name`'s bytes, per its record. A record naming any other file is corrupt, not followed. */
+function blobNameOf(name: string, record: StorageItemRecord): string {
+  if (record.file === undefined) return name;
+  if (typeof record.file !== "string" || !record.file.startsWith(name) || !BLOB_SUFFIX.test(record.file.slice(name.length))) {
+    throw new Error(`Corrupt storage meta: item "${name}" points at "${String(record.file)}"`);
+  }
+  return record.file;
+}
+
+/**
+ * Absolute path of a file directly under the key's items/ dir, after
+ * containment checks. Does not require the file to exist; if it does, it must
+ * be a regular file (not a symlink) whose realpath is in that dir.
+ */
+function containedItemsFile(key: string, fileName: string): string {
   assertContainedKeyDir(key);
-  const file = path.join(itemsDir(key), name);
+  const file = path.join(itemsDir(key), fileName);
   if (path.dirname(file) !== itemsDir(key)) throw new StorageError("invalid", "Item path escapes its key");
   if (existsSync(file)) {
     const st = lstatSync(file);
-    if (st.isSymbolicLink() || !st.isFile()) throw new StorageError("invalid", `Item "${name}" is not a regular file`);
+    if (st.isSymbolicLink() || !st.isFile()) throw new StorageError("invalid", `Item file "${fileName}" is not a regular file`);
     if (path.dirname(realpathSync(file)) !== path.join(realRoot(), key, "items")) {
       throw new StorageError("invalid", "Item path escapes its key");
     }
@@ -238,6 +284,13 @@ export function serialize<T>(chainId: string, fn: () => T | Promise<T>): Promise
  * Bytes promised to in-flight saves on other keys. The store-wide limit spans
  * keys, and per-key chains do not serialize across keys, so each save reserves
  * its size here for the duration of its write.
+ *
+ * Today this is always 0 when read: a save's limit check and its writes run in
+ * one synchronous stretch (no `await` between them), so no other save can
+ * interleave. It is correct only for as long as that stays true — if the
+ * check and the write are ever split by an `await` (async fs, streaming), the
+ * reservation has to be taken in the same synchronous step as the check, as
+ * it is below, and released only after meta is committed.
  */
 let reservedBytes = 0;
 
@@ -274,10 +327,50 @@ function summarize(meta: StorageKeyMetaFile): StorageKeySummary {
   };
 }
 
+/** The public view of one record — never the blob file name. */
+function publicItem(name: string, record: StorageItemRecord): StorageItem {
+  const { file: _file, ...item } = record;
+  return { name, ...item };
+}
+
 function itemsOf(meta: StorageKeyMetaFile): StorageItem[] {
   return Object.keys(meta.items)
     .sort()
-    .map((name) => ({ name, ...meta.items[name] }));
+    .map((name) => publicItem(name, meta.items[name]));
+}
+
+/** Best-effort removal of a file meta no longer references; a failure is left for the next sweep. */
+function removeUnreferenced(key: string, fileName: string): void {
+  try {
+    rmSync(path.join(itemsDir(key), fileName), { force: true });
+  } catch (err) {
+    log.warn(`Could not remove unreferenced ${key}/items/${fileName} (will retry on the key's next mutation): ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Remove every entry of the key's items/ dir that meta does not reference —
+ * a blob whose save failed or crashed before its meta commit, the previous
+ * blob of an overwrite that crashed before its cleanup, a tmp file. Runs at
+ * the start of each mutation of the key (on its chain, so nothing in flight
+ * for this key can be swept). Best effort: a file that will not go is retried
+ * next time. Returns the names removed.
+ */
+export function sweepUnreferenced(key: string, meta: StorageKeyMetaFile): string[] {
+  assertContainedKeyDir(key);
+  if (!existsSync(itemsDir(key))) return [];
+  const referenced = new Set(Object.entries(meta.items).map(([name, record]) => blobNameOf(name, record)));
+  const removed: string[] = [];
+  for (const entry of readdirSync(itemsDir(key), { withFileTypes: true })) {
+    if (referenced.has(entry.name) || !(entry.isFile() || entry.isSymbolicLink())) continue;
+    try {
+      unlinkSync(path.join(itemsDir(key), entry.name));
+      removed.push(entry.name);
+    } catch {
+      /* retried on the next mutation */
+    }
+  }
+  return removed;
 }
 
 function validateDescription(description: unknown): string | undefined {
@@ -374,18 +467,64 @@ export function listStorageItems(key: string): StorageItem[] {
   return itemsOf(readMeta(key));
 }
 
-/** An item's meta plus its absolute path on disk. */
+/** An item's meta plus the absolute path of the file holding its bytes. */
 export function getStorageItem(key: string, name: string): StorageItem & { filePath: string } {
-  const filePath = itemFilePath(key, name);
+  assertStorageKey(key);
+  assertItemName(name);
   const meta = readMeta(key);
-  const item = Object.prototype.hasOwnProperty.call(meta.items, name) ? meta.items[name] : undefined;
-  if (!item || !existsSync(filePath)) throw new StorageError("not_found", `Item not found: ${key}/${name}`);
-  return { name, ...item, filePath };
+  const record = Object.prototype.hasOwnProperty.call(meta.items, name) ? meta.items[name] : undefined;
+  if (!record) throw new StorageError("not_found", `Item not found: ${key}/${name}`);
+  const filePath = containedItemsFile(key, blobNameOf(name, record));
+  if (!existsSync(filePath)) throw new StorageError("not_found", `Item not found: ${key}/${name}`);
+  return { ...publicItem(name, record), filePath };
+}
+
+/** An open item: its meta, its file, an fd, and the size of what that fd actually holds. The caller closes `fd`. */
+export interface OpenStorageItem {
+  item: StorageItem;
+  filePath: string;
+  fd: number;
+  /** From fstat of `fd` — the bytes a reader will get, whatever meta says. */
+  size: number;
+}
+
+const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+
+/**
+ * Resolve and open an item for reading. Reads are not serialized with saves,
+ * so a concurrent overwrite can remove the file between resolving it from meta
+ * and opening it; that is retried once against the fresh meta. Once open, the
+ * fd keeps the bytes readable even if the file is then removed.
+ */
+export function openStorageItem(key: string, name: string): OpenStorageItem {
+  for (let attempt = 0; ; attempt++) {
+    const { filePath, ...item } = getStorageItem(key, name);
+    let fd: number;
+    try {
+      fd = openSync(filePath, fsConstants.O_RDONLY | O_NOFOLLOW);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        if (attempt === 0) continue;
+        throw new StorageError("not_found", `Item not found: ${key}/${name}`);
+      }
+      throw err;
+    }
+    try {
+      return { item, filePath, fd, size: fstatSync(fd).size };
+    } catch (err) {
+      closeSync(fd);
+      throw err;
+    }
+  }
 }
 
 export function readStorageItemBytes(key: string, name: string): { item: StorageItem; filePath: string; data: Buffer } {
-  const { filePath, ...item } = getStorageItem(key, name);
-  return { item, filePath, data: readFileSync(filePath) };
+  const { item, filePath, fd } = openStorageItem(key, name);
+  try {
+    return { item, filePath, data: readFileSync(fd) };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export interface SaveStorageItemOptions {
@@ -398,7 +537,11 @@ function formatMb(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 }
 
-/** Create or overwrite one item. Limits are checked before any bytes are written. */
+/**
+ * Create or overwrite one item. Limits are checked before any bytes are
+ * written; meta is committed before the previous bytes are touched (see the
+ * module doc), so a failure leaves the previous state intact.
+ */
 export async function saveStorageItem(key: string, name: string, data: Buffer, opts: SaveStorageItemOptions = {}): Promise<StorageItem> {
   assertStorageKey(key);
   assertItemName(name);
@@ -410,9 +553,18 @@ export async function saveStorageItem(key: string, name: string, data: Buffer, o
   return serialize(`storage:${key}`, () => {
     if (opts.createKey && !existsSync(metaPath(key))) createKeySync(key);
     const meta = readMeta(key);
-    const file = itemFilePath(key, name);
     const existing = Object.prototype.hasOwnProperty.call(meta.items, name) ? meta.items[name] : undefined;
 
+    if (!existing) {
+      const lower = name.toLowerCase();
+      const clash = Object.keys(meta.items).find((other) => other.toLowerCase() === lower);
+      if (clash) {
+        throw new StorageError(
+          "conflict",
+          `Key "${key}" already has an item named "${clash}"; item names in one key may not differ only by case (save to "${clash}" to overwrite it)`,
+        );
+      }
+    }
     if (!existing && Object.keys(meta.items).length >= STORAGE_MAX_ITEMS_PER_KEY) {
       throw new StorageError("limit", `Key "${key}" already holds ${STORAGE_MAX_ITEMS_PER_KEY} items (the per-key item limit)`);
     }
@@ -425,24 +577,41 @@ export async function saveStorageItem(key: string, name: string, data: Buffer, o
       throw new StorageError("limit", `The store would hold ${formatMb(storeAfter)}; the whole-store limit is ${formatMb(STORAGE_MAX_STORE_BYTES)}`);
     }
 
+    sweepUnreferenced(key, meta);
+    const previousBlob = existing ? blobNameOf(name, existing) : undefined;
+    const blob = newBlobName(name);
+    const blobPath = containedItemsFile(key, blob);
+
     reservedBytes += data.length;
     try {
       mkdirSync(itemsDir(key), { recursive: true });
-      atomicWriteFileSync(file, data);
-      const now = new Date().toISOString();
-      meta.items[name] = {
-        mimeType,
-        size: data.length,
-        sha256: createHash("sha256").update(data).digest("hex"),
-        created: existing?.created ?? now,
-        updated: now,
-      };
-      meta.updated = now;
-      writeMeta(key, meta);
-      return { name, ...meta.items[name] };
+      try {
+        // 1. The bytes, under a name nothing references yet.
+        writeFileSync(blobPath, data, { flag: "wx" });
+        // 2. The commit: meta now points at the new file.
+        const now = new Date().toISOString();
+        meta.items[name] = {
+          mimeType,
+          size: data.length,
+          sha256: createHash("sha256").update(data).digest("hex"),
+          created: existing?.created ?? now,
+          updated: now,
+          file: blob,
+        };
+        meta.updated = now;
+        writeMeta(key, meta);
+      } catch (err) {
+        // Not committed: the previous meta and bytes are untouched. The new file is ours to drop.
+        rmSync(blobPath, { force: true });
+        throw err;
+      }
     } finally {
       reservedBytes -= data.length;
     }
+    // 3. Committed; the previous bytes are unreferenced. If this fails, the next sweep takes them —
+    //    the save itself has succeeded and must not report otherwise.
+    if (previousBlob !== undefined) removeUnreferenced(key, previousBlob);
+    return publicItem(name, meta.items[name]);
   });
 }
 
@@ -462,12 +631,14 @@ export async function deleteStorageItem(key: string, name: string): Promise<void
   assertItemName(name);
   return serialize(`storage:${key}`, () => {
     const meta = readMeta(key);
-    const file = itemFilePath(key, name);
     if (!Object.prototype.hasOwnProperty.call(meta.items, name)) throw new StorageError("not_found", `Item not found: ${key}/${name}`);
+    sweepUnreferenced(key, meta);
+    const file = containedItemsFile(key, blobNameOf(name, meta.items[name]));
     delete meta.items[name];
     meta.updated = new Date().toISOString();
     writeMeta(key, meta);
-    rmSync(file, { force: true });
+    // Committed; the file is unreferenced now. Best effort — the next mutation sweeps it otherwise.
+    removeUnreferenced(key, path.basename(file));
   });
 }
 

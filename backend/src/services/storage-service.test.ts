@@ -94,8 +94,34 @@ describe("validation", () => {
     await svc.createStorageKey("k");
     const outside = join(mkdtempSync(join(tmpdir(), "callboard-outside-")), "secret.txt");
     writeFileSync(outside, "secret");
+    // A legacy record (no `file`) whose items/<name> is a symlink…
     symlinkSync(outside, join(STORAGE_ROOT, "k", "items", "link.txt"));
-    await expectCode(() => svc.itemFilePath("k", "link.txt"), "invalid");
+    const metaFile = join(STORAGE_ROOT, "k", "meta.json");
+    const meta = JSON.parse(readFileSync(metaFile, "utf-8")) as StorageKeyMetaFile;
+    meta.items["link.txt"] = { mimeType: "text/plain", size: 6, sha256: "x", created: "t", updated: "t" };
+    writeFileSync(metaFile, JSON.stringify(meta));
+    await expectCode(() => svc.getStorageItem("k", "link.txt"), "invalid");
+    await expectCode(() => svc.readStorageItemBytes("k", "link.txt"), "invalid");
+    // …and a current record whose blob file was swapped for one.
+    await svc.saveStorageItem("k", "real.txt", Buffer.from("mine"));
+    const blob = readdirSync(join(STORAGE_ROOT, "k", "items")).find((f) => f.startsWith("real.txt~"))!;
+    rmSync(join(STORAGE_ROOT, "k", "items", blob));
+    symlinkSync(outside, join(STORAGE_ROOT, "k", "items", blob));
+    await expectCode(() => svc.readStorageItemBytes("k", "real.txt"), "invalid");
+  });
+
+  it("refuses a record whose `file` points anywhere but its own blob name", async () => {
+    await svc.createStorageKey("k");
+    await svc.saveStorageItem("k", "a.txt", Buffer.from("a"));
+    await svc.saveStorageItem("k", "b.txt", Buffer.from("b"));
+    const metaFile = join(STORAGE_ROOT, "k", "meta.json");
+    const bBlob = (JSON.parse(readFileSync(metaFile, "utf-8")) as StorageKeyMetaFile).items["b.txt"].file!;
+    for (const file of ["../../other/meta.json", "b.txt", bBlob, "a.txt~zz", "a.txt~0123456789abcdef/x", "a.txt~0123456789ABCDEF"]) {
+      const meta = JSON.parse(readFileSync(metaFile, "utf-8")) as StorageKeyMetaFile;
+      meta.items["a.txt"].file = file;
+      writeFileSync(metaFile, JSON.stringify(meta));
+      expect(() => svc.readStorageItemBytes("k", "a.txt"), file).toThrow(/Corrupt storage meta/);
+    }
   });
 });
 
@@ -141,11 +167,74 @@ describe("keys and items", () => {
     await expectCode(svc.deleteStorageItem("k", "toString"), "not_found");
   });
 
-  it("writes atomically and leaves no tmp files behind", async () => {
+  it("writes each save to a fresh blob file that meta points at, and leaves nothing else behind", async () => {
     await svc.createStorageKey("k");
     await svc.saveStorageItem("k", "a.txt", Buffer.from("hello"));
-    expect(readdirSync(join(STORAGE_ROOT, "k", "items"))).toEqual(["a.txt"]);
+    const [first] = readdirSync(join(STORAGE_ROOT, "k", "items"));
+    expect(first).toMatch(/^a\.txt~[0-9a-f]{16}$/);
     expect(readdirSync(join(STORAGE_ROOT, "k")).sort()).toEqual(["items", "meta.json"]);
+    const meta = () => JSON.parse(readFileSync(join(STORAGE_ROOT, "k", "meta.json"), "utf-8")) as StorageKeyMetaFile;
+    expect(meta().items["a.txt"].file).toBe(first);
+    // The blob name is internal: never in the API.
+    expect(svc.getStorageKey("k").items[0]).not.toHaveProperty("file");
+
+    // An overwrite goes to a new file and removes the old one once meta is committed.
+    await svc.saveStorageItem("k", "a.txt", Buffer.from("hello again"));
+    const after = readdirSync(join(STORAGE_ROOT, "k", "items"));
+    expect(after).toHaveLength(1);
+    expect(after[0]).not.toBe(first);
+    expect(meta().items["a.txt"].file).toBe(after[0]);
+    expect(svc.readStorageItemBytes("k", "a.txt").data.toString()).toBe("hello again");
+  });
+
+  it("reads and overwrites items in the original items/<name> layout (no `file` in meta)", async () => {
+    await svc.createStorageKey("k");
+    writeFileSync(join(STORAGE_ROOT, "k", "items", "old.txt"), "legacy");
+    const metaFile = join(STORAGE_ROOT, "k", "meta.json");
+    const meta = JSON.parse(readFileSync(metaFile, "utf-8")) as StorageKeyMetaFile;
+    meta.items["old.txt"] = { mimeType: "text/plain", size: 6, sha256: "x", created: "t", updated: "t" };
+    writeFileSync(metaFile, JSON.stringify(meta));
+    expect(svc.readStorageItemBytes("k", "old.txt").data.toString()).toBe("legacy");
+    await svc.saveStorageItem("k", "old.txt", Buffer.from("migrated"));
+    expect(readdirSync(join(STORAGE_ROOT, "k", "items"))).toEqual([expect.stringMatching(/^old\.txt~[0-9a-f]{16}$/)]);
+    expect(svc.readStorageItemBytes("k", "old.txt").data.toString()).toBe("migrated");
+  });
+
+  it("the next mutation of a key sweeps files meta does not reference (crashed saves, stale blobs, tmp files)", async () => {
+    await svc.createStorageKey("k");
+    await svc.saveStorageItem("k", "keep.txt", Buffer.from("keep"));
+    const items = join(STORAGE_ROOT, "k", "items");
+    const kept = readdirSync(items)[0];
+    // What a crash can leave: a blob written but never committed, a previous blob never removed, a tmp file.
+    writeFileSync(join(items, "keep.txt~00000000000000aa"), "x".repeat(1000));
+    writeFileSync(join(items, "new.txt~00000000000000bb"), "never committed");
+    writeFileSync(join(items, ".meta.json.1.abcd.tmp"), "junk");
+    // Not counted against any limit meanwhile: limits are computed from meta.
+    expect(svc.getStorageKey("k").totalSize).toBe(4);
+    await svc.saveStorageItem("k", "other.txt", Buffer.from("o"));
+    expect(readdirSync(items)).toHaveLength(2);
+    expect(readdirSync(items)).toEqual(expect.arrayContaining([kept, expect.stringMatching(/^other\.txt~[0-9a-f]{16}$/)]));
+    // Deletes sweep too.
+    writeFileSync(join(items, "stray~00000000000000cc"), "x");
+    await svc.deleteStorageItem("k", "other.txt");
+    expect(readdirSync(items)).toEqual([kept]);
+  });
+
+  it("refuses a new item whose name differs from an existing one only by case", async () => {
+    await svc.createStorageKey("k");
+    await svc.saveStorageItem("k", "Deck.json", Buffer.from("{}"));
+    const err = await expectCode(svc.saveStorageItem("k", "deck.json", Buffer.from("[]")), "conflict");
+    expect(err.message).toMatch(/"Deck\.json".*differ only by case/);
+    await expectCode(svc.saveStorageItem("k", "DECK.JSON", Buffer.from("[]")), "conflict");
+    // Overwriting the exact name is fine; other keys are independent.
+    await svc.saveStorageItem("k", "Deck.json", Buffer.from("[1]"));
+    await svc.createStorageKey("k2");
+    await svc.saveStorageItem("k2", "deck.json", Buffer.from("[]"));
+    expect(svc.listStorageItems("k").map((i) => i.name)).toEqual(["Deck.json"]);
+    expect(svc.readStorageItemBytes("k", "Deck.json").data.toString()).toBe("[1]");
+    // Once the original is deleted the other spelling is free.
+    await svc.deleteStorageItem("k", "Deck.json");
+    await svc.saveStorageItem("k", "deck.json", Buffer.from("[]"));
   });
 
   it("serializes concurrent saves to one key so no meta entry is lost", async () => {

@@ -6,8 +6,8 @@
  *
  * On disk (see backend/src/services/storage-service.ts):
  *
- *   DATA_DIR/storage/<key>/meta.json      {@link StorageKeyMetaFile}
- *   DATA_DIR/storage/<key>/items/<name>   raw bytes
+ *   DATA_DIR/storage/<key>/meta.json            {@link StorageKeyMetaFile}
+ *   DATA_DIR/storage/<key>/items/<name>~<hex>   raw bytes of item <name> (see {@link StorageItemRecord.file})
  *
  * These types are REST/tool shapes, not stream wire types — they deliberately
  * live outside `stream.ts`.
@@ -15,7 +15,12 @@
 
 /** Key: lowercase slug. `.` and `..` are rejected separately (the regex alone admits them). */
 export const STORAGE_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-/** Item name: no `/`, `\`, NUL or leading dot. `.` and `..` are rejected separately. */
+/**
+ * Item name: no `/`, `\`, NUL or leading dot. `.` and `..` are rejected
+ * separately. Case is preserved, but two names in one key may not differ only
+ * by case (the service refuses the second) — on a case-insensitive filesystem
+ * they would be one file.
+ */
 export const STORAGE_ITEM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /** True iff `key` is a valid storage key. The backend service is the enforcing chokepoint; clients use this to fail early. */
@@ -27,6 +32,15 @@ export function isValidStorageKey(key: unknown): key is string {
 export function isValidStorageItemName(name: unknown): name is string {
   return typeof name === "string" && name !== "." && name !== ".." && STORAGE_ITEM_NAME_PATTERN.test(name);
 }
+
+/**
+ * Response header on `GET /api/storage/:key/items/:name` carrying the item's
+ * RECORDED MIME type. The body's Content-Type is deliberately not that (every
+ * non-raster, non-text item is served as application/octet-stream); this lets
+ * a client that knows what it is doing — the artifact bridge's dataUrl read —
+ * see the recorded type without trusting it for serving.
+ */
+export const STORAGE_ITEM_MIME_HEADER = "X-Callboard-Mime-Type";
 
 /** Hard limits, enforced by the service before any bytes are written. */
 export const STORAGE_MAX_ITEM_BYTES = 25 * 1024 * 1024;
@@ -44,6 +58,19 @@ export interface StorageItemMeta {
   updated: string;
 }
 
+/**
+ * One item's record in `meta.json`: its public metadata plus the file that
+ * holds its bytes. Never returned by the API or tools — {@link StorageItem} is.
+ */
+export interface StorageItemRecord extends StorageItemMeta {
+  /**
+   * The file under `items/` holding this item's bytes: `<name>~<16 hex>`, a
+   * fresh name on every save so meta can be committed before the previous
+   * bytes are touched. Absent ⇒ the original layout, `items/<name>`.
+   */
+  file?: string;
+}
+
 /** The exact shape of `DATA_DIR/storage/<key>/meta.json`. */
 export interface StorageKeyMetaFile {
   version: 1;
@@ -51,7 +78,7 @@ export interface StorageKeyMetaFile {
   description?: string;
   created: string;
   updated: string;
-  items: { [name: string]: StorageItemMeta };
+  items: { [name: string]: StorageItemRecord };
 }
 
 /** One item, as listed by the REST API and tools. */

@@ -203,11 +203,16 @@ export default function StorageSettings() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Only the latest detail request may land: clicking key A then B quickly
+  // must not leave A's items on screen (where uploads would go to B).
+  const detailSeq = useRef(0);
   const refreshDetail = useCallback(async (key: string) => {
+    const seq = ++detailSeq.current;
     try {
-      setDetail(await getStorageKey(key));
+      const d = await getStorageKey(key);
+      if (seq === detailSeq.current) setDetail(d);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (seq === detailSeq.current) setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
@@ -216,6 +221,7 @@ export default function StorageSettings() {
   }, [refreshKeys]);
 
   useEffect(() => {
+    detailSeq.current++; // whatever was in flight is for another selection now
     setDetail(null);
     setPreviewName(null);
     setNewItem(null);
@@ -253,14 +259,29 @@ export default function StorageSettings() {
       await Promise.all([refreshDetail(selected), refreshKeys()]);
     });
 
-  const handleUpload = (files: FileList | null) =>
+  const handleUpload = (fileList: FileList | null) =>
     run(async () => {
-      if (!selected || !files || files.length === 0) return;
-      const bad = Array.from(files).filter((f) => !isValidStorageItemName(f.name));
-      if (bad.length) throw new Error(`Invalid item name: ${bad.map((f) => f.name).join(", ")} — letters, digits, ".", "_" and "-" only, not starting with "."`);
-      for (const file of Array.from(files)) await putStorageItem(selected, file.name, { file });
+      const files = fileList ? Array.from(fileList) : [];
+      // Cleared whatever happens, so picking the same files again fires `change` again.
       if (fileInput.current) fileInput.current.value = "";
-      await Promise.all([refreshDetail(selected), refreshKeys()]);
+      if (!selected || files.length === 0) return;
+      const bad = files.filter((f) => !isValidStorageItemName(f.name));
+      if (bad.length) throw new Error(`Invalid item name: ${bad.map((f) => f.name).join(", ")} — letters, digits, ".", "_" and "-" only, not starting with "."`);
+      const saved: string[] = [];
+      try {
+        for (const file of files) {
+          try {
+            await putStorageItem(selected, file.name, { file });
+          } catch (err) {
+            const why = err instanceof Error ? err.message : String(err);
+            throw new Error(`Uploading "${file.name}" failed: ${why}${saved.length ? ` (already saved: ${saved.join(", ")})` : ""}`);
+          }
+          saved.push(file.name);
+        }
+      } finally {
+        // Files saved before a failure are real — show them.
+        if (saved.length) await Promise.all([refreshDetail(selected), refreshKeys()]);
+      }
     });
 
   const handleCreateItem = () =>
