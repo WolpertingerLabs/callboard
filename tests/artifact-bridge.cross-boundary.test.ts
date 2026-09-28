@@ -10,11 +10,16 @@
  * - server: the real storage + artifact routers on an ephemeral socket over a
  *   scratch `CALLBOARD_DATA_DIR`.
  *
+ * The handshake is the real one: the host mints the token, the served page is
+ * fetched with `?bridge=<token>`, the shim posts its hello to `window.parent`
+ * transferring one end of a REAL `MessageChannel` (Node's), and from then on
+ * the two sides talk only over that channel.
+ *
  * Two stand-ins, both transport rather than logic:
- * - jsdom's `postMessage` never sets `event.source`, and the bridge's security
- *   rests on it, so the two windows are joined by a tiny message bus that
- *   delivers `{ data: structuredClone(msg), source }` exactly as a browser
- *   would between a parent and its sandboxed child;
+ * - jsdom's `postMessage` never sets `event.source` or `ports`, and the
+ *   bridge's security rests on both, so the frame's `window.parent` is a stub
+ *   that hands the host `{ data: structuredClone(msg), source, ports }`
+ *   exactly as a browser would between a parent and its sandboxed child;
  * - `fetch` is the real Node fetch with `/api` rebased onto the socket; its
  *   `blob()` is re-wrapped as a jsdom `Blob` so jsdom's `FileReader` (what the
  *   host uses for `dataUrl`) accepts it.
@@ -28,6 +33,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import express from "express";
 import vm from "node:vm";
+import { MessageChannel, type MessagePort } from "node:worker_threads";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,10 +52,11 @@ const { createArtifactBridge } = await import("../frontend/src/components/artifa
 // 1×1 transparent PNG.
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 const DECK = { topic: "birds", cards: [{ id: "c1", front: "Robin?", seenCount: 0 }] };
+const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>';
 
 let server: RawServer;
-let shimSource: string;
 const realFetch = globalThis.fetch;
+const openPorts: MessagePort[] = [];
 
 beforeAll(async () => {
   const app = express();
@@ -63,17 +70,11 @@ beforeAll(async () => {
   await storage.saveStorageItem("deck", "img-c1.png", Buffer.from(PNG_B64, "base64"));
   await storage.createStorageKey("other");
   await storage.saveStorageItem("other", "secret.txt", Buffer.from("not yours"));
+  await storage.saveStorageItem("deck", "logo.svg", Buffer.from(SVG));
   await artifacts.saveArtifact(
     { id: "study", name: "Study", contentType: "html", storageAccess: "readwrite", content: "<!doctype html><html><head><title>t</title></head><body>hi</body></html>" },
     "create",
   );
-
-  // The shim exactly as the browser receives it: first inline script of the served page.
-  const res = await realFetch(`${server.origin}/api/artifacts/study/versions/1/render`);
-  const html = await res.text();
-  const m = /<head[^>]*><script>([\s\S]*?)<\/script>/.exec(html);
-  if (!m) throw new Error("served render has no shim right after <head>");
-  shimSource = m[1];
 
   vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
     const url = typeof input === "string" && input.startsWith("/api/") ? server.origin + input : input;
@@ -90,65 +91,88 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const p of openPorts) p.close();
   vi.unstubAllGlobals();
   await server.close();
   rmSync(DATA, { recursive: true, force: true });
 });
 
-type Listener = (e: { data: unknown; source: unknown }) => void;
+/** The shim exactly as the browser receives it: the first inline script of the page served for `?bridge=<token>`. */
+async function servedShim(token: string | null): Promise<string> {
+  const res = await realFetch(`${server.origin}/api/artifacts/study/versions/1/render${token ? `?bridge=${token}` : ""}`);
+  const m = /<head[^>]*><script>([\s\S]*?)<\/script>/.exec(await res.text());
+  if (!m) throw new Error("served render has no shim right after <head>");
+  return m[1];
+}
 
-/** Mount: a frame window running the served shim, and the real host bridge for it. */
-function mount(storageKey: string | null, access: ArtifactStorageAccess) {
-  const frameListeners: Listener[] = [];
-  const pending: Promise<void>[] = [];
-  const hostWindow = {
-    // frame → host: the host's window `message` listener, with source = the frame.
-    postMessage(msg: unknown, target: string) {
-      expect(target).toBe("*");
-      pending.push(bridge.handleMessage({ data: structuredClone(msg), source: frameWindow } as unknown as MessageEvent));
-    },
-  };
+/** A document in the frame: runs `code` with the frame's window as its global `window`. */
+function runDocument(frameWindow: Record<string, unknown>, code: string) {
+  vm.runInContext(code, vm.createContext({ window: frameWindow, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel }));
+}
+
+/**
+ * Mount: the real host bridge, and a frame window running the shim served for
+ * that bridge's token. The frame's `window.parent.postMessage` delivers to the
+ * host as a browser would: source = the frame's window, ports = the transfer.
+ */
+async function mount(storageKey: string | null, access: ArtifactStorageAccess) {
   const frameWindow: Record<string, unknown> = {
-    parent: hostWindow,
-    addEventListener: (type: string, fn: Listener) => type === "message" && frameListeners.push(fn),
-    // host → frame: the shim's listener, with source = its parent.
-    postMessage(msg: unknown) {
-      const data = structuredClone(msg);
-      queueMicrotask(() => frameListeners.forEach((l) => l({ data, source: hostWindow })));
+    addEventListener: () => undefined,
+    parent: {
+      postMessage(msg: unknown, target: string, transfer?: MessagePort[]) {
+        expect(target).toBe("*");
+        for (const p of transfer ?? []) openPorts.push(p);
+        bridge.handleMessage({ data: structuredClone(msg), source: frameWindow, ports: transfer ?? [] } as unknown as MessageEvent);
+      },
+    },
+    // The host must never post to the frame's window — it has the port.
+    postMessage: () => {
+      throw new Error("host posted to the frame's window");
     },
   };
   const bridge = createArtifactBridge({ getFrameWindow: () => frameWindow as unknown as Window, storageKey, access });
-  vm.runInContext(
-    shimSource,
-    vm.createContext({ window: frameWindow, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa }),
-  );
+  runDocument(frameWindow, await servedShim(bridge.token));
   bridge.handleLoad();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return { cb: frameWindow.callboard as any, settle: () => Promise.all(pending) };
+  return { cb: frameWindow.callboard as any, bridge, frameWindow };
+}
+
+/** A foreign document now in the frame: a fresh window object (a new document's global) whose parent is the same stub. */
+function replaceDocument(frameWindow: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { addEventListener: () => undefined, parent: frameWindow.parent };
+  return next;
 }
 
 describe("artifact bridge: served shim ⇄ frontend host ⇄ storage REST", () => {
   it("list returns the bound key's items (with names), and nothing from other keys", async () => {
-    const { cb } = mount("deck", "readwrite");
+    const { cb } = await mount("deck", "readwrite");
     await expect(cb.ready).resolves.toEqual({ storageKey: "deck", access: "readwrite" });
     const items = await cb.storage.list();
-    expect(items.map((i: { name: string }) => i.name)).toEqual(["deck.json", "img-c1.png"]);
+    expect(items.map((i: { name: string }) => i.name)).toEqual(["deck.json", "img-c1.png", "logo.svg"]);
     expect(items[0]).toMatchObject({ mimeType: "application/json", size: JSON.stringify(DECK).length, sha256: expect.any(String) });
   });
 
   it("read as json returns the parsed value; as text the raw string", async () => {
-    const { cb } = mount("deck", "read");
+    const { cb } = await mount("deck", "read");
     await expect(cb.storage.read("deck.json", { as: "json" })).resolves.toEqual(DECK);
     await expect(cb.storage.read("deck.json", { as: "text" })).resolves.toBe(JSON.stringify(DECK));
   });
 
   it("read as dataUrl returns a data: URL of the exact bytes, typed by the served Content-Type", async () => {
-    const { cb } = mount("deck", "read");
+    const { cb } = await mount("deck", "read");
     await expect(cb.storage.read("img-c1.png", { as: "dataUrl" })).resolves.toBe(`data:image/png;base64,${PNG_B64}`);
   });
 
+  it("an SVG — served as an octet-stream attachment — comes back as a data:image/svg+xml URL, from the recorded type", async () => {
+    const res = await realFetch(`${server.origin}/api/storage/deck/items/logo.svg`);
+    expect(res.headers.get("content-type")).toBe("application/octet-stream");
+    expect(res.headers.get("x-callboard-mime-type")).toBe("image/svg+xml");
+    const { cb } = await mount("deck", "read");
+    await expect(cb.storage.read("logo.svg", { as: "dataUrl" })).resolves.toBe(`data:image/svg+xml;base64,${Buffer.from(SVG).toString("base64")}`);
+  });
+
   it("write under readwrite lands on disk through PUT, for strings and JSON values", async () => {
-    const { cb } = mount("deck", "readwrite");
+    const { cb } = await mount("deck", "readwrite");
     const saved = await cb.storage.write("notes.txt", "hello", { mimeType: "text/plain" });
     expect(saved).toMatchObject({ name: "notes.txt", mimeType: "text/plain", size: 5 });
     expect(storage.readStorageItemBytes("deck", "notes.txt").data.toString()).toBe("hello");
@@ -165,37 +189,91 @@ describe("artifact bridge: served shim ⇄ frontend host ⇄ storage REST", () =
   });
 
   it("write under read is refused, and the host refuses it too when the shim is bypassed", async () => {
-    const { cb, settle } = mount("deck", "read");
+    const { cb, bridge } = await mount("deck", "read");
     await expect(cb.storage.write("pwned.txt", "x")).rejects.toThrow(/read-only/);
     await expect(cb.storage.delete("deck.json")).rejects.toThrow(/read-only/);
-    await settle();
+    await bridge.settled();
     expect(storage.listStorageItems("deck").some((i) => i.name === "pwned.txt")).toBe(false);
     expect(storage.listStorageItems("deck").some((i) => i.name === "deck.json")).toBe(true);
   });
 
-  it("a hostile shim cannot write under read or reach another key: the host is the boundary", async () => {
-    // Same mount, but the frame skips the shim and posts raw requests with the real nonce.
+  it("a hostile document with the real token cannot write under read or reach another key: the host is the boundary", async () => {
+    // Skips the shim: says hello itself, then posts raw requests with the real token.
     const replies: unknown[] = [];
-    const frameWindow = { postMessage: (m: unknown) => replies.push(m) };
+    const frameWindow = {};
     const bridge = createArtifactBridge({ getFrameWindow: () => frameWindow as unknown as Window, storageKey: "deck", access: "read" });
-    bridge.handleLoad();
-    const init = replies.shift() as { nonce: string };
-    const send = (data: Record<string, unknown>) =>
-      bridge.handleMessage({ data: { __callboard: "artifact-bridge-request", nonce: init.nonce, ...data }, source: frameWindow } as unknown as MessageEvent);
+    const { port1, port2 } = new MessageChannel();
+    openPorts.push(port1, port2);
+    port1.on("message", (m) => replies.push(m));
+    bridge.handleMessage({ data: { __callboard: "artifact-bridge-hello", token: bridge.token }, source: frameWindow, ports: [port2] } as unknown as MessageEvent);
+    const send = (data: Record<string, unknown>) => port1.postMessage({ __callboard: "artifact-bridge-request", token: bridge.token, ...data });
 
-    await send({ id: "w", op: "write", name: "pwned.txt", data: "x", encoding: "utf8" });
-    await send({ id: "k", op: "read", name: "secret.txt", key: "other", as: "text" });
-    await send({ id: "t", op: "read", name: "../other/items/secret.txt", as: "text" });
-    expect(replies).toEqual([
-      { __callboard: "artifact-bridge-reply", id: "w", ok: false, error: expect.stringMatching(/read-only/) },
-      { __callboard: "artifact-bridge-reply", id: "k", ok: false, error: expect.stringMatching(/not found/i) },
-      { __callboard: "artifact-bridge-reply", id: "t", ok: false, error: "Invalid item name" },
-    ]);
+    send({ id: "w", op: "write", name: "pwned.txt", data: "x", encoding: "utf8" });
+    send({ id: "k", op: "read", name: "secret.txt", key: "other", as: "text" });
+    send({ id: "t", op: "read", name: "../other/items/secret.txt", as: "text" });
+    await vi.waitFor(() => expect(replies).toHaveLength(4));
+    expect(replies[0]).toEqual({ __callboard: "artifact-bridge-init", storageKey: "deck", access: "read" });
+    // Answers arrive as each finishes, not in request order.
+    const byId = Object.fromEntries((replies.slice(1) as { id: string }[]).map((r) => [r.id, r]));
+    expect(byId).toEqual({
+      w: { __callboard: "artifact-bridge-reply", id: "w", ok: false, error: expect.stringMatching(/read-only/) },
+      k: { __callboard: "artifact-bridge-reply", id: "k", ok: false, error: expect.stringMatching(/not found/i) },
+      t: { __callboard: "artifact-bridge-reply", id: "t", ok: false, error: "Invalid item name" },
+    });
     expect(storage.listStorageItems("deck").some((i) => i.name === "pwned.txt")).toBe(false);
   });
 
+  it("a foreign document in the frame BEFORE the artifact binds — even running the real shim code, but without the token — binds nothing", async () => {
+    const frameWindow: Record<string, unknown> = {
+      addEventListener: () => undefined,
+      parent: {
+        postMessage: (msg: unknown, _t: string, transfer?: MessagePort[]) => {
+          for (const p of transfer ?? []) openPorts.push(p);
+          bridge.handleMessage({ data: structuredClone(msg), source: frameWindow, ports: transfer ?? [] } as unknown as MessageEvent);
+        },
+      },
+    };
+    const bridge = createArtifactBridge({ getFrameWindow: () => frameWindow as unknown as Window, storageKey: "deck", access: "readwrite" });
+    // The artifact navigated away before its shim ran; the foreign page's load is the frame's first.
+    bridge.handleLoad();
+    // It runs a shim served with ANOTHER token (the most it can get: its own render URL), and one with none.
+    runDocument(frameWindow, await servedShim("f".repeat(32)));
+    const cb = frameWindow.callboard as { ready: Promise<unknown>; storage: { list(): Promise<unknown> } };
+    const settled = vi.fn();
+    void cb.ready.then(settled);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(settled).not.toHaveBeenCalled(); // no init, ever
+    expect(bridge.bound).toBe(false);
+    await expect(Promise.race([cb.storage.list(), new Promise((r) => setTimeout(() => r("no answer"), 30))])).resolves.toBe("no answer");
+  });
+
+  it("a foreign document that replaces the artifact AFTER binding receives nothing: not init, not a reply, not an in-flight answer", async () => {
+    const { cb, bridge, frameWindow } = await mount("deck", "read");
+    await expect(cb.storage.read("deck.json", { as: "json" })).resolves.toEqual(DECK);
+    // A read is in flight when the frame navigates; its answer goes down the artifact's port, which the foreign page does not have.
+    const inflight = cb.storage.read("deck.json", { as: "text" }).then(
+      () => "delivered to the (dead) artifact document only",
+      () => "rejected",
+    );
+    const foreign = replaceDocument(frameWindow);
+    const foreignSaw: unknown[] = [];
+    foreign.addEventListener = (_t: string, fn: (e: { data: unknown }) => void) => foreignSaw.push(fn);
+    bridge.handleLoad(); // the foreign page loaded
+    expect(bridge.revoked).toBe(true);
+    // It says hello with the artifact's own token (the accepted exfiltration case) — still nothing: the bridge is dead.
+    runDocument(foreign, await servedShim(bridge.token));
+    const fcb = foreign.callboard as { ready: Promise<unknown> };
+    const settled = vi.fn();
+    void fcb.ready.then(settled);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(settled).not.toHaveBeenCalled();
+    expect(foreignSaw).toEqual([]); // the shim never even listens on its window
+    await bridge.settled();
+    void inflight;
+  });
+
   it("an unbound render resolves ready as unbound and every call rejects", async () => {
-    const { cb } = mount(null, "readwrite");
+    const { cb } = await mount(null, "readwrite");
     await expect(cb.ready).resolves.toEqual({ storageKey: null, access: "none" });
     await expect(cb.storage.list()).rejects.toThrow(/without a storage key/);
   });

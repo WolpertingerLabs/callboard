@@ -2743,6 +2743,7 @@ export type {
   ArtifactVersion,
   ArtifactContentType,
   RenderArtifactToolResult,
+  ArtifactBridgeHello,
   ArtifactBridgeInit,
   ArtifactBridgeOp,
   ArtifactBridgeRequest,
@@ -2750,7 +2751,9 @@ export type {
 } from "shared/types/index.js";
 
 export {
+  ARTIFACT_BRIDGE_TOKEN_PATTERN,
   ARTIFACT_ID_PATTERN,
+  STORAGE_ITEM_MIME_HEADER,
   STORAGE_MAX_ITEM_BYTES,
   isValidStorageItemName,
   isValidStorageKey,
@@ -2845,9 +2848,14 @@ export async function deleteStorageItem(key: string, name: string): Promise<void
 //
 // Named, versioned single-file apps rendered in a sandboxed iframe (plan §3).
 
-/** The served document for one version — the only thing an artifact iframe may load. */
-export function artifactRenderUrl(id: string, version: number): string {
-  return `${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/render`;
+/**
+ * The served document for one version — the only thing an artifact iframe may
+ * load. `bridgeToken` (HTML only) is the mount's bridge token; the server
+ * injects it into the shim of that one response.
+ */
+export function artifactRenderUrl(id: string, version: number, bridgeToken?: string): string {
+  const url = `${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/render`;
+  return bridgeToken ? `${url}?bridge=${encodeURIComponent(bridgeToken)}` : url;
 }
 
 /** Summaries only — no version list; `getArtifact` for that. */

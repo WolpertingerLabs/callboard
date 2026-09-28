@@ -170,14 +170,17 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
 
   const metaDirty = meta.name !== artifact.name || meta.description !== (artifact.description ?? "") || meta.storageAccess !== artifact.storageAccess;
   const shownVersion = viewVersion ?? artifact.currentVersion;
-  const access = previewAccess(artifact.storageAccess, previewKey, allowWrites);
+  const boundKey = artifact.storageAccess !== "none" ? previewKey : "";
+  const access = previewAccess(artifact.storageAccess, boundKey, allowWrites);
   const previewData: RenderArtifactToolResult = {
     type: "render_artifact",
     artifact_id: artifact.id,
     version: shownVersion,
+    // Pinned like a chat render, so the renderer's re-check treats the preview no differently.
+    sha256: artifact.versions.find((v) => v.version === shownVersion)?.sha256,
     name: artifact.name,
     content_type: artifact.contentType,
-    storage_key: previewKey || undefined,
+    storage_key: boundKey || undefined,
     storage_access: access,
   };
 
@@ -239,6 +242,12 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
             onClick={() =>
               run(async () => {
                 await updateArtifact(artifact.id, { name: meta.name.trim(), description: meta.description, storageAccess: meta.storageAccess });
+                // Lowered to none: nothing may be bound, so the picked key and the write opt-in go too
+                // (the preview already binds nothing — `boundKey` — this stops them resurfacing if access is raised again).
+                if (meta.storageAccess === "none") {
+                  setPreviewKey("");
+                  setAllowWrites(false);
+                }
                 await load();
               })
             }
@@ -499,8 +508,9 @@ export default function ArtifactsSettings() {
             </div>
             <div style={{ ...helpStyle, marginBottom: 16 }}>
               Reusable single-file apps and documents. Agents save them with <code>save_artifact</code> and show them in chat with <code>render_artifact</code>,
-              optionally bound to a storage key. HTML runs sandboxed with no network access; its only data path is the one storage key it is rendered
-              against.
+              optionally bound to a storage key. HTML runs sandboxed and cannot fetch or load anything from the network; its only data source is the one
+              storage key it is rendered against. That is not a data-loss barrier — an artifact can still leak what it can read (by navigating its frame, or
+              WebRTC) — so give read access to a key only to an artifact whose author you would let read it.
             </div>
 
             {error && <div style={errorBoxStyle}>{error}</div>}
@@ -571,40 +581,45 @@ export default function ArtifactsSettings() {
             ) : artifacts.length === 0 ? (
               <div style={{ color: "var(--text-muted)", fontSize: 13 }}>No artifacts yet.</div>
             ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }} data-testid="artifact-list">
-                <thead>
-                  <tr style={{ textAlign: "left", color: "var(--text-muted)", fontSize: 12 }}>
-                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>Name</th>
-                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>Id</th>
-                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>Type</th>
-                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>Access</th>
-                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>Version</th>
-                    <th style={{ padding: "6px 8px", fontWeight: 500 }}>Updated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {artifacts.map((a) => (
-                    <tr key={a.id} onClick={() => setSelected(a.id)} style={{ cursor: "pointer", borderTop: "1px solid var(--border)" }}>
-                      <td style={{ padding: "8px" }}>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelected(a.id);
-                          }}
-                          style={{ background: "none", border: "none", padding: 0, color: "var(--text)", fontWeight: 600, cursor: "pointer", fontSize: 13 }}
-                        >
-                          {a.name}
-                        </button>
-                      </td>
-                      <td style={{ padding: "8px", fontFamily: "var(--font-mono)", fontSize: 12 }}>{a.id}</td>
-                      <td style={{ padding: "8px" }}>{a.contentType}</td>
-                      <td style={{ padding: "8px" }}>{ACCESS_LABEL[a.storageAccess]}</td>
-                      <td style={{ padding: "8px" }}>v{a.currentVersion}</td>
-                      <td style={{ padding: "8px", color: "var(--text-muted)" }}>{a.updated ? new Date(a.updated).toLocaleDateString() : "—"}</td>
+              // Scrolls sideways on a narrow screen rather than pushing the Updated column past the card.
+              <div style={{ overflowX: "auto" }} data-testid="artifact-list-scroll">
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }} data-testid="artifact-list">
+                  <thead>
+                    <tr style={{ textAlign: "left", color: "var(--text-muted)", fontSize: 12 }}>
+                      <th style={{ padding: "6px 8px", fontWeight: 500 }}>Name</th>
+                      <th style={{ padding: "6px 8px", fontWeight: 500 }}>Id</th>
+                      <th style={{ padding: "6px 8px", fontWeight: 500 }}>Type</th>
+                      <th style={{ padding: "6px 8px", fontWeight: 500 }}>Access</th>
+                      <th style={{ padding: "6px 8px", fontWeight: 500 }}>Version</th>
+                      <th style={{ padding: "6px 8px", fontWeight: 500 }}>Updated</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {artifacts.map((a) => (
+                      <tr key={a.id} onClick={() => setSelected(a.id)} style={{ cursor: "pointer", borderTop: "1px solid var(--border)" }}>
+                        <td style={{ padding: "8px" }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelected(a.id);
+                            }}
+                            style={{ background: "none", border: "none", padding: 0, color: "var(--text)", fontWeight: 600, cursor: "pointer", fontSize: 13 }}
+                          >
+                            {a.name}
+                          </button>
+                        </td>
+                        <td style={{ padding: "8px", fontFamily: "var(--font-mono)", fontSize: 12 }}>{a.id}</td>
+                        <td style={{ padding: "8px" }}>{a.contentType}</td>
+                        <td style={{ padding: "8px" }}>{ACCESS_LABEL[a.storageAccess]}</td>
+                        <td style={{ padding: "8px" }}>v{a.currentVersion}</td>
+                        <td style={{ padding: "8px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+                          {a.updated ? new Date(a.updated).toLocaleDateString() : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </>
         )}

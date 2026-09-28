@@ -8,48 +8,61 @@
  *     storage: { list(), read(name, { as }), write(name, data, { mimeType, encoding }), delete(name) },
  *   }
  *
- * and speaks the protocol typed in shared/types/artifact.ts over postMessage
- * to the host renderer, which performs each op against the ONE bound key.
+ * and speaks the protocol typed in shared/types/artifact.ts to the host
+ * renderer, which performs each op against the ONE bound key.
+ *
+ * The handshake: the render route injects this mount's bridge token (from the
+ * frame's `?bridge=` src) as the IIFE's argument. The shim creates a
+ * `MessageChannel`, posts `{ artifact-bridge-hello, token }` to `window.parent`
+ * transferring one port, and from then on talks ONLY over the other port: the
+ * init and every reply arrive on it, every request (carrying the token) leaves
+ * on it. The host never sends anything to the frame's window, so a document
+ * that replaces this one in the frame has nothing to receive.
  *
  * What the shim enforces (the host enforces all of it again — the shim runs
  * inside the artifact, so it is convenience, never the boundary):
- *  - only messages whose `source` is `window.parent` are read;
- *  - only the FIRST init is honoured, and only if it carries a nonce — a later
- *    init cannot rebind the key or raise access;
- *  - every request carries that nonce; requests made before init are queued
- *    (they wait on `ready`);
+ *  - only the FIRST init is honoured — a later one cannot rebind or raise access;
+ *  - requests made before init are queued (they wait on `ready`);
  *  - unbound or `access: "none"` ⇒ every call rejects; `read` ⇒ writes and
  *    deletes reject.
  *
  * `ready` resolves (never rejects), with `{ storageKey: null, access: "none" }`
- * for an unbound render. ES2019, no dependencies.
+ * for an unbound render — including a render with no token (opened outside
+ * the renderer) and a top-level open (no parent to talk to). ES2019, no
+ * dependencies.
  */
-export const ARTIFACT_BRIDGE_SHIM_JS = `(function(){
+export const ARTIFACT_BRIDGE_SHIM_JS = `(function(token){
   "use strict";
   var host = window.parent;
-  var nonce = null, key = null, access = "none", seq = 0, pending = {};
+  var port = null, bound = false, key = null, access = "none", seq = 0, pending = {};
   var resolveReady;
   var ready = new Promise(function(resolve){ resolveReady = resolve; });
   var ACCESS = { none: 1, read: 1, readwrite: 1 };
 
-  window.addEventListener("message", function(e){
-    if (e.source !== host || host === window) return;
-    var d = e.data;
-    if (!d || typeof d !== "object") return;
-    if (d.__callboard === "artifact-bridge-init") {
-      if (nonce !== null || typeof d.nonce !== "string" || !d.nonce) return;
-      nonce = d.nonce;
-      key = typeof d.storageKey === "string" && d.storageKey ? d.storageKey : null;
-      access = key && ACCESS[d.access] === 1 ? d.access : "none";
-      resolveReady(Object.freeze({ storageKey: key, access: access }));
-    } else if (d.__callboard === "artifact-bridge-reply") {
-      if (nonce === null || typeof d.id !== "string" || !Object.prototype.hasOwnProperty.call(pending, d.id)) return;
-      var p = pending[d.id];
-      delete pending[d.id];
-      if (d.ok === true) p.resolve(d.result);
-      else p.reject(new Error(typeof d.error === "string" && d.error ? d.error : "callboard storage request failed"));
-    }
-  });
+  if (typeof token !== "string" || !token || host === window || typeof MessageChannel !== "function") {
+    resolveReady(Object.freeze({ storageKey: null, access: "none" }));
+  } else {
+    var channel = new MessageChannel();
+    port = channel.port1;
+    port.onmessage = function(e){
+      var d = e.data;
+      if (!d || typeof d !== "object") return;
+      if (d.__callboard === "artifact-bridge-init") {
+        if (bound) return;
+        bound = true;
+        key = typeof d.storageKey === "string" && d.storageKey ? d.storageKey : null;
+        access = key && ACCESS[d.access] === 1 ? d.access : "none";
+        resolveReady(Object.freeze({ storageKey: key, access: access }));
+      } else if (d.__callboard === "artifact-bridge-reply") {
+        if (!bound || typeof d.id !== "string" || !Object.prototype.hasOwnProperty.call(pending, d.id)) return;
+        var p = pending[d.id];
+        delete pending[d.id];
+        if (d.ok === true) p.resolve(d.result);
+        else p.reject(new Error(typeof d.error === "string" && d.error ? d.error : "callboard storage request failed"));
+      }
+    };
+    host.postMessage({ __callboard: "artifact-bridge-hello", token: token }, "*", [channel.port2]);
+  }
 
   function toBase64(bytes){
     var s = "";
@@ -64,9 +77,9 @@ export const ARTIFACT_BRIDGE_SHIM_JS = `(function(){
       return new Promise(function(resolve, reject){
         var id = "r" + (++seq) + "-" + Math.random().toString(36).slice(2);
         pending[id] = { resolve: resolve, reject: reject };
-        var msg = { __callboard: "artifact-bridge-request", nonce: nonce, id: id, op: op };
+        var msg = { __callboard: "artifact-bridge-request", token: token, id: id, op: op };
         for (var k in fields) if (fields[k] !== undefined) msg[k] = fields[k];
-        host.postMessage(msg, "*");
+        port.postMessage(msg);
       });
     });
   }
@@ -114,7 +127,15 @@ export const ARTIFACT_BRIDGE_SHIM_JS = `(function(){
   } catch (err) {
     /* already defined non-configurably — leave the page's own value */
   }
-})();`;
+})`;
 
-/** The shim wrapped in a script tag, ready for injection. */
-export const ARTIFACT_BRIDGE_SHIM_SCRIPT = `<script>${ARTIFACT_BRIDGE_SHIM_JS}</script>`;
+/**
+ * The shim wrapped in a script tag with this render's token bound, ready for
+ * injection. `token` must already be validated against
+ * ARTIFACT_BRIDGE_TOKEN_PATTERN (the route does); it is JSON-encoded, and `<`
+ * escaped, regardless — nothing the caller passes can close the script.
+ */
+export function artifactBridgeShimScript(token: string | null): string {
+  const arg = JSON.stringify(token).replace(/</g, "\\u003c");
+  return `<script>${ARTIFACT_BRIDGE_SHIM_JS}(${arg});</script>`;
+}

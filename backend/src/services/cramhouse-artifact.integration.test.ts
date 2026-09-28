@@ -11,12 +11,14 @@
  * writes it back; the write lands in storage.
  *
  * The host here is a reference for the contract, not the product: the real
- * host (nonce minting, load-event revocation) is the frontend's
- * ArtifactRenderer.
+ * host (token minting, source check, load-event revocation) is the
+ * frontend's ArtifactRenderer; tests/artifact-bridge.cross-boundary.test.ts
+ * wires that one to the served shim.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import express from "express";
 import vm from "node:vm";
+import { MessageChannel, type MessagePort } from "node:worker_threads";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +31,9 @@ process.env.CALLBOARD_DATA_DIR = DATA;
 const { buildStorageArtifactTools } = await import("./storage-artifact-tools.js");
 const { storageRouter } = await import("../routes/storage.js");
 const { artifactsRouter } = await import("../routes/artifacts.js");
-const { ARTIFACT_BRIDGE_SHIM_SCRIPT } = await import("./artifact-bridge-shim.js");
+const { artifactBridgeShimScript } = await import("./artifact-bridge-shim.js");
+
+const TOKEN = "c0ffeec0ffeec0ffeec0ffeec0ffee00";
 const storage = await import("./storage-service.js");
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -88,14 +92,12 @@ afterAll(() => server.close());
 
 /** Run the served page's inline scripts in a fake frame whose parent is a REST-backed host bound to one key. */
 async function runInHost(html: string, render: RenderArtifactToolResult) {
-  const nonce = "nonce-" + Math.random().toString(36).slice(2);
-  const listeners: ((e: { data: unknown; source: unknown }) => void)[] = [];
-  const toFrame = (data: unknown) => listeners.forEach((l) => l({ data, source: parent }));
+  let port: MessagePort | undefined;
   const bound = encodeURIComponent(render.storage_key ?? "");
   const hostOps: string[] = [];
 
   async function perform(req: ArtifactBridgeRequest): Promise<unknown> {
-    if (req.nonce !== nonce) throw new Error("bad nonce");
+    if (req.token !== TOKEN) throw new Error("bad token");
     if (!render.storage_key || render.storage_access === "none") throw new Error("unbound");
     if (req.op !== "list" && !storage.isValidItemName(req.name)) throw new Error("invalid name");
     const item = `${server.origin}/api/storage/${bound}/items/${encodeURIComponent(req.name ?? "")}`;
@@ -116,28 +118,30 @@ async function runInHost(html: string, render: RenderArtifactToolResult) {
     return true;
   }
 
+  // The hello: check the token, then speak only over the transferred port — init first.
   const parent = {
-    postMessage(msg: ArtifactBridgeRequest) {
-      if (msg?.__callboard !== "artifact-bridge-request") return;
-      void perform(msg).then(
-        (result) => toFrame({ __callboard: "artifact-bridge-reply", id: msg.id, ok: true, result } satisfies ArtifactBridgeReply),
-        (err: Error) => toFrame({ __callboard: "artifact-bridge-reply", id: msg.id, ok: false, error: err.message } satisfies ArtifactBridgeReply),
-      );
+    postMessage(msg: { __callboard?: string; token?: string }, _target: string, transfer?: MessagePort[]) {
+      if (msg?.__callboard !== "artifact-bridge-hello" || msg.token !== TOKEN || !transfer?.[0] || port) return;
+      const p = (port = transfer[0]);
+      p.on("message", (req: ArtifactBridgeRequest) => {
+        if (req?.__callboard !== "artifact-bridge-request") return;
+        void perform(req).then(
+          (result) => p.postMessage({ __callboard: "artifact-bridge-reply", id: req.id, ok: true, result } satisfies ArtifactBridgeReply),
+          (err: Error) => p.postMessage({ __callboard: "artifact-bridge-reply", id: req.id, ok: false, error: err.message } satisfies ArtifactBridgeReply),
+        );
+      });
+      p.postMessage({ __callboard: "artifact-bridge-init", storageKey: render.storage_key ?? null, access: render.storage_access });
     },
   };
-  const win: Record<string, unknown> = {
-    parent,
-    addEventListener: (type: string, fn: (e: { data: unknown; source: unknown }) => void) => type === "message" && listeners.push(fn),
-  };
-  const ctx = vm.createContext({ window: win, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa });
+  const win: Record<string, unknown> = { parent, addEventListener: () => undefined };
+  const ctx = vm.createContext({ window: win, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel });
   // Execute every inline script in document order, as the browser would.
   for (const [, code] of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
     if (code.includes("ResizeObserver")) continue; // the size reporter needs a DOM; not under test here
     vm.runInContext(code, ctx);
   }
-  // First load: the host delivers the nonce.
-  toFrame({ __callboard: "artifact-bridge-init", nonce, storageKey: render.storage_key ?? null, access: render.storage_access });
   for (let i = 0; i < 200 && !win.done && !win.failed; i++) await new Promise((r) => setTimeout(r, 5));
+  port?.close();
   return { win, hostOps };
 }
 
@@ -162,19 +166,20 @@ describe("cramhouse = one artifact + one storage key per deck", () => {
       type: "render_artifact",
       artifact_id: "cramhouse",
       version: 1,
+      sha256: saved.version.sha256,
       name: "cramhouse",
       content_type: "html",
       storage_key: "cramhouse-birds-of-western-europe",
       storage_access: "readwrite",
     });
 
-    const served = await server.request("GET", `/api/artifacts/${render.artifact_id}/versions/${render.version}/render`);
+    const served = await server.request("GET", `/api/artifacts/${render.artifact_id}/versions/${render.version}/render?bridge=${TOKEN}`);
     expect(served.status).toBe(200);
     expect(served.headers["content-security-policy"]).toContain("connect-src 'none'");
     expect(served.headers["content-security-policy"]).toMatch(/^default-src 'none'; script-src 'unsafe-inline';/);
     const html = served.body.toString();
-    expect(html).toContain(ARTIFACT_BRIDGE_SHIM_SCRIPT);
-    expect(html.indexOf(ARTIFACT_BRIDGE_SHIM_SCRIPT)).toBeLessThan(html.indexOf("window.callboard.ready"));
+    expect(html).toContain(artifactBridgeShimScript(TOKEN));
+    expect(html.indexOf(artifactBridgeShimScript(TOKEN))).toBeLessThan(html.indexOf("window.callboard.ready"));
 
     const { win, hostOps } = await runInHost(html, render);
     expect(win.failed).toBeUndefined();
@@ -191,7 +196,7 @@ describe("cramhouse = one artifact + one storage key per deck", () => {
     const render = (await tool("render_artifact", { id: "cramhouse" })) as RenderArtifactToolResult;
     expect(render.storage_access).toBe("none");
     expect(render.storage_key).toBeUndefined();
-    const html = (await server.request("GET", `/api/artifacts/cramhouse/versions/1/render`)).body.toString();
+    const html = (await server.request("GET", `/api/artifacts/cramhouse/versions/1/render?bridge=${TOKEN}`)).body.toString();
     const { win, hostOps } = await runInHost(html, render);
     expect(win.boundTo).toEqual({ storageKey: null, access: "none" });
     expect(win.failed).toMatch(/without a storage key/);

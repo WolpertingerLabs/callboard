@@ -34,6 +34,8 @@ const STORAGE_ARTIFACT_TOOL_NAMES = [
   "render_artifact",
 ] as const;
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 type Block = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
 async function raw(name: string, args: Record<string, unknown> = {}): Promise<Block[]> {
@@ -125,12 +127,12 @@ describe("storage tools", () => {
     await call("create_storage_key", { key: "k" });
     await call("save_storage_item", { key: "k", name: "deck.json", content: '{"cards":[]}' });
     const text = await call("read_storage_item", { key: "k", name: "deck.json" });
-    expect(text).toMatchObject({ name: "deck.json", encoding: "text", content: '{"cards":[]}', file_path: join(STORAGE_ROOT, "k", "items", "deck.json") });
+    expect(text).toMatchObject({ name: "deck.json", encoding: "text", content: '{"cards":[]}', file_path: expect.stringMatching(new RegExp(`^${escapeRe(join(STORAGE_ROOT, "k", "items", "deck.json~"))}[0-9a-f]{16}$`)) });
 
     await call("save_storage_item", { key: "k", name: "img.png", content_base64: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64") });
     const blocks = await raw("read_storage_item", { key: "k", name: "img.png" });
     expect(blocks).toHaveLength(2);
-    expect(JSON.parse((blocks[0] as { text: string }).text)).toMatchObject({ name: "img.png", file_path: join(STORAGE_ROOT, "k", "items", "img.png") });
+    expect(JSON.parse((blocks[0] as { text: string }).text)).toMatchObject({ name: "img.png", file_path: expect.stringMatching(new RegExp(`^${escapeRe(join(STORAGE_ROOT, "k", "items", "img.png~"))}[0-9a-f]{16}$`)) });
     expect(blocks[1]).toEqual({ type: "image", data: "iVBORw==", mimeType: "image/png" });
 
     await call("save_storage_item", { key: "k", name: "blob.bin", content_base64: "AAEC" });
@@ -144,6 +146,16 @@ describe("storage tools", () => {
     expect(big.error).toMatch(/inline limit/);
     expect(big.error).toContain(join(STORAGE_ROOT, "k", "items", "big.txt"));
     expect((await call("read_storage_item", { key: "k", name: "missing" })).error).toMatch(/not found/);
+  });
+
+  it("read_storage_item caps on the size of the file it opened, not meta's recorded size", async () => {
+    await call("save_storage_item", { key: "k2", name: "grew.txt", content: "tiny", create_key: true });
+    // The file on disk is now far over the inline cap while meta still says 4 bytes.
+    const { getStorageItem } = await import("./storage-service.js");
+    writeFileSync(getStorageItem("k2", "grew.txt").filePath, "x".repeat(READ_INLINE_MAX_BYTES + 1));
+    const res = await call("read_storage_item", { key: "k2", name: "grew.txt" });
+    expect(res.error).toMatch(/over the 1MB inline limit/);
+    expect(res.content).toBeUndefined();
   });
 });
 
@@ -166,10 +178,14 @@ describe("artifact tools", () => {
   it("render_artifact: result shape, unbound → none, bound → the declared access", async () => {
     await call("save_artifact", { id: "rw", name: "RW", content_type: "html", content: "x", storage_access: "readwrite" });
     await call("create_storage_key", { key: "deck" });
+    const { getArtifact } = await import("./artifact-service.js");
+    const sha256 = getArtifact("rw").versions[0].sha256;
+    expect(sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(await call("render_artifact", { id: "rw" })).toEqual({
       type: "render_artifact",
       artifact_id: "rw",
       version: 1,
+      sha256,
       name: "RW",
       content_type: "html",
       storage_access: "none",
@@ -178,6 +194,7 @@ describe("artifact tools", () => {
       type: "render_artifact",
       artifact_id: "rw",
       version: 1,
+      sha256,
       name: "RW",
       content_type: "html",
       storage_key: "deck",

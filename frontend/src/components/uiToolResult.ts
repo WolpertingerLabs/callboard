@@ -42,6 +42,7 @@ export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | n
         !ARTIFACT_ID_PATTERN.test(p.artifact_id) ||
         !Number.isSafeInteger(p.version) ||
         p.version < 1 ||
+        (p.sha256 !== undefined && (typeof p.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(p.sha256))) ||
         typeof p.name !== "string" ||
         !p.name ||
         !["html", "svg", "markdown"].includes(p.content_type) ||

@@ -96,13 +96,19 @@ export interface NewArtifactVersionInput {
 /**
  * The JSON text of a successful `render_artifact` tool result.
  *
- * `storage_access` is what the render was granted: the artifact's declared
- * `storageAccess` when `storage_key` is bound, `"none"` when unbound.
+ * `storage_access` is the most the render may be granted: the artifact's
+ * declared `storageAccess` when `storage_key` is bound, `"none"` when unbound.
+ * It is a ceiling, not a grant — the host re-reads the artifact on mount and
+ * grants the lesser of this and the artifact's *current* declared access, and
+ * binds nothing if `sha256` no longer matches the stored version (the
+ * artifact was deleted and recreated, or the version was pruned).
  */
 export interface RenderArtifactToolResult {
   type: "render_artifact";
   artifact_id: string;
   version: number;
+  /** sha256 of the rendered version's source. Absent only on results written before it existed. */
+  sha256?: string;
   name: string;
   content_type: ArtifactContentType;
   storage_key?: string;
@@ -111,37 +117,62 @@ export interface RenderArtifactToolResult {
   display_mode?: "inline" | "fullscreen";
 }
 
-// ─── Storage bridge protocol (iframe ⇄ host renderer, over postMessage) ──────
+// ─── Storage bridge protocol (iframe ⇄ host renderer) ──────────────────────
 //
 // The shim injected into rendered HTML (backend/src/services/artifact-bridge-shim.ts)
-// implements the iframe side; the host renderer implements the other. The
-// host sends ONE init on the iframe's first `load` and must revoke the bridge
-// on any later `load`. The shim honours only the first init and only messages
-// whose `source` is `window.parent`.
+// implements the iframe side; the host renderer implements the other.
+//
+// The handshake never hands a secret to a document the server did not render:
+//
+//  1. The host mints a per-mount token ({@link ARTIFACT_BRIDGE_TOKEN_PATTERN})
+//     and puts it in the frame's src (`…/render?bridge=<token>`). The server
+//     validates it and injects it into the shim of that one no-store response.
+//  2. The shim creates a `MessageChannel` and posts a {@link ArtifactBridgeHello}
+//     carrying the token to `window.parent`, transferring one port.
+//  3. The host accepts the FIRST hello whose `source` is its frame's window and
+//     whose token matches, and from then on speaks only over that port: the
+//     {@link ArtifactBridgeInit} and every {@link ArtifactBridgeReply} go down it,
+//     and every {@link ArtifactBridgeRequest} must come up it carrying the token.
+//
+// A port belongs to the document that created it, so nothing sent down it can
+// reach a document that later replaces the artifact in the frame — unlike
+// `frame.contentWindow.postMessage(…, "*")`, which delivers to whatever
+// document is current when the message lands. The host also revokes the
+// bridge (and closes the port) on the frame's second `load`.
+
+/** A bridge token: 128 bits, lowercase hex. The render route rejects anything else. */
+export const ARTIFACT_BRIDGE_TOKEN_PATTERN = /^[0-9a-f]{32}$/;
 
 export type ArtifactBridgeOp = "list" | "read" | "write" | "delete";
 
-/** host → iframe, once, on first load. `storageKey: null` ⇒ unbound; every call rejects. */
+/** iframe → host, once, via `window.parent.postMessage(hello, "*", [port])`. */
+export interface ArtifactBridgeHello {
+  __callboard: "artifact-bridge-hello";
+  token: string;
+}
+
+/** host → iframe over the port, once, in reply to a valid hello. `storageKey: null` ⇒ unbound; every call rejects. */
 export interface ArtifactBridgeInit {
   __callboard: "artifact-bridge-init";
-  nonce: string;
   storageKey: string | null;
   access: ArtifactStorageAccess;
 }
 
 /**
- * iframe → host. `nonce` echoes the init's.
+ * iframe → host over the port. `token` is the one from the render URL; the
+ * host ignores a request without it.
  *
  * Expected `result` in the reply, per op:
  *  - `list`   → the bound key's items (e.g. {@link StorageItem}[])
  *  - `read`   → `as: "text"` a string; `as: "json"` the parsed value (the shim
  *               also accepts a JSON string and parses it); `as: "dataUrl"` a
- *               `data:` URL string
+ *               `data:` URL string, typed with the item's recorded MIME type
+ *               when that is `image/*`, else as served
  *  - `write` / `delete` → anything (ignored beyond ok/error)
  */
 export interface ArtifactBridgeRequest {
   __callboard: "artifact-bridge-request";
-  nonce: string;
+  token: string;
   id: string;
   op: ArtifactBridgeOp;
   name?: string;
@@ -151,7 +182,7 @@ export interface ArtifactBridgeRequest {
   mimeType?: string;
 }
 
-/** host → iframe, one per request, matched by `id`. */
+/** host → iframe over the port, one per request, matched by `id`. */
 export interface ArtifactBridgeReply {
   __callboard: "artifact-bridge-reply";
   id: string;

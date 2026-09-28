@@ -1,8 +1,9 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { ARTIFACT_BRIDGE_TOKEN_PATTERN } from "shared/types/index.js";
 import type { ArtifactContentType } from "shared/types/index.js";
 import { deleteArtifact, getArtifact, listArtifacts, readArtifactVersion, saveArtifact, updateArtifact } from "../services/artifact-service.js";
-import { ARTIFACT_BRIDGE_SHIM_SCRIPT } from "../services/artifact-bridge-shim.js";
+import { artifactBridgeShimScript } from "../services/artifact-bridge-shim.js";
 import { SIZE_REPORTER_SCRIPT, injectBeforeBodyClose } from "../services/html-injection.js";
 import { StorageError } from "../services/storage-service.js";
 import { sendStorageError } from "./storage.js";
@@ -11,8 +12,15 @@ export const artifactsRouter = Router();
 
 /**
  * CSP for a rendered HTML artifact: inline script and style only, images and
- * media only from data:/blob:, and **no network at all** — every byte of data
- * reaches the artifact through the storage bridge.
+ * media only from data:/blob:, and no fetch/XHR/WebSocket or remote
+ * subresource of any kind — every byte of data reaches the artifact through
+ * the storage bridge.
+ *
+ * That is not "no egress": CSP does not govern WebRTC (ICE/STUN packets leave
+ * regardless) or the frame navigating itself to a URL carrying data. So an
+ * artifact can leak whatever it can *read* — granting it read on a key means
+ * its author can read that key. What it cannot do is reach the user's session:
+ * see below.
  *
  * The trailing `sandbox allow-scripts` repeats the iframe's own sandbox at the
  * response level, so the document keeps an opaque origin even when it is
@@ -51,17 +59,31 @@ function parseVersion(raw: string): number {
  * else after `<html …>`, else after the doctype, else at the very start — so
  * `window.callboard` exists before any of the artifact's own scripts run.
  */
-export function injectBridgeShim(html: string): string {
+export function injectBridgeShim(html: string, token: string | null): string {
+  const shim = artifactBridgeShimScript(token);
   for (const re of [/<head(?:\s[^>]*)?>/i, /<html(?:\s[^>]*)?>/i, /<!doctype[^>]*>/i]) {
     const m = re.exec(html);
-    if (m) return html.slice(0, m.index + m[0].length) + ARTIFACT_BRIDGE_SHIM_SCRIPT + html.slice(m.index + m[0].length);
+    if (m) return html.slice(0, m.index + m[0].length) + shim + html.slice(m.index + m[0].length);
   }
-  return ARTIFACT_BRIDGE_SHIM_SCRIPT + html;
+  return shim + html;
 }
 
-/** The served document for an HTML artifact: bridge shim early, size reporter before `</body>`. */
-export function renderArtifactHtml(source: string): string {
-  return injectBeforeBodyClose(injectBridgeShim(source), SIZE_REPORTER_SCRIPT);
+/**
+ * The served document for an HTML artifact: bridge shim (bound to `token`)
+ * early, size reporter before `</body>`. `token: null` serves an unbound shim.
+ */
+export function renderArtifactHtml(source: string, token: string | null): string {
+  return injectBeforeBodyClose(injectBridgeShim(source, token), SIZE_REPORTER_SCRIPT);
+}
+
+/**
+ * The `?bridge=` token of a render request: absent ⇒ null (an unbound shim);
+ * present ⇒ must be exactly one {@link ARTIFACT_BRIDGE_TOKEN_PATTERN} string.
+ */
+function parseBridgeToken(raw: unknown): string | null {
+  if (raw === undefined) return null;
+  if (typeof raw !== "string" || !ARTIFACT_BRIDGE_TOKEN_PATTERN.test(raw)) throw new StorageError("invalid", "Invalid bridge token");
+  return raw;
 }
 
 function sendText(res: Response, body: string, contentType: string, csp: string): void {
@@ -72,6 +94,8 @@ function sendText(res: Response, body: string, contentType: string, csp: string)
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Security-Policy", csp);
   res.setHeader("Cache-Control", "no-store");
+  // A render URL can carry a bridge token; never hand it on as a Referer.
+  res.setHeader("Referrer-Policy", "no-referrer");
   res.send(buf);
 }
 
@@ -182,8 +206,10 @@ artifactsRouter.get(
 /**
  * GET /api/artifacts/:id/versions/:n/render — the served document.
  *
- * html → the page with the bridge shim and size reporter injected, under a
- * no-network CSP; svg → image/svg+xml (the host uses <img>); markdown →
+ * html → the page with the bridge shim (bound to `?bridge=<token>`, see
+ * shared/types/artifact.ts) and size reporter injected, under
+ * {@link ARTIFACT_HTML_CSP}; the response is no-store, so a token is only
+ * ever in the one document the host asked for. svg → image/svg+xml (the host uses <img>); markdown →
  * text/plain (the host renders it; it never executes).
  */
 artifactsRouter.get(
@@ -191,9 +217,11 @@ artifactsRouter.get(
   wrap("Render artifact", (req, res) => {
     // #swagger.tags = ['Artifacts']
     // #swagger.summary = 'Render one artifact version for the sandboxed renderer'
-    const { artifact, content } = readArtifactVersion(req.params.id, parseVersion(req.params.n));
+    const version = parseVersion(req.params.n);
+    const token = parseBridgeToken(req.query.bridge);
+    const { artifact, content } = readArtifactVersion(req.params.id, version);
     if (artifact.contentType === "html") {
-      sendText(res, renderArtifactHtml(content), "text/html; charset=utf-8", ARTIFACT_HTML_CSP);
+      sendText(res, renderArtifactHtml(content, token), "text/html; charset=utf-8", ARTIFACT_HTML_CSP);
     } else if (artifact.contentType === "svg") {
       sendText(res, content, "image/svg+xml", ARTIFACT_SVG_CSP);
     } else {

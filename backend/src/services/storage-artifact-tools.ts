@@ -16,10 +16,11 @@
  * with render_file's checks (absolute, no NUL, realpath'd, regular file,
  * size-limited).
  */
+import { closeSync, readFileSync } from "fs";
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { AnyToolDefinition, ToolCallResult } from "../agents/ports/tools.js";
-import { ARTIFACT_CONTENT_TYPES, ARTIFACT_STORAGE_ACCESS, minArtifactStorageAccess } from "shared/types/index.js";
+import { ARTIFACT_CONTENT_TYPES, ARTIFACT_STORAGE_ACCESS } from "shared/types/index.js";
 import type { RenderArtifactToolResult } from "shared/types/index.js";
 import {
   STORAGE_MAX_ITEM_BYTES,
@@ -31,10 +32,9 @@ import {
   decodeBase64Strict,
   deleteStorageItem,
   deleteStorageKey,
-  getStorageItem,
   listStorageItems,
   listStorageKeys,
-  readStorageItemBytes,
+  openStorageItem,
   saveStorageItem,
   saveStorageItemFromFile,
   storageKeyExists,
@@ -135,34 +135,39 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       },
       async (args) =>
         guard("read_storage_item", () => {
-          const item = getStorageItem(args.key, args.name);
-          const { filePath, ...meta } = item;
-          const base = { key: args.key, ...meta, file_path: filePath };
+          // Caps are checked against the size of the file actually opened (fstat), not
+          // meta: a concurrent overwrite between the two cannot slip a large item through.
+          const { item, filePath, fd, size } = openStorageItem(args.key, args.name);
+          try {
+            const base = { key: args.key, ...item, size, file_path: filePath };
+            const read = () => readFileSync(fd);
 
-          if (!args.encoding && IMAGE_BLOCK_TYPES.has(item.mimeType)) {
-            if (item.size > READ_IMAGE_MAX_BYTES) {
-              return ok({ ...base, note: `Image is larger than ${MB(READ_IMAGE_MAX_BYTES)}; not returned inline. Use file_path (e.g. with render_file).` });
+            if (!args.encoding && IMAGE_BLOCK_TYPES.has(item.mimeType)) {
+              if (size > READ_IMAGE_MAX_BYTES) {
+                return ok({ ...base, note: `Image is larger than ${MB(READ_IMAGE_MAX_BYTES)}; not returned inline. Use file_path (e.g. with render_file).` });
+              }
+              return {
+                content: [
+                  { type: "text" as const, text: JSON.stringify(base) },
+                  { type: "image" as const, data: read().toString("base64"), mimeType: item.mimeType },
+                ],
+              };
             }
-            const { data } = readStorageItemBytes(args.key, args.name);
-            return {
-              content: [
-                { type: "text" as const, text: JSON.stringify(base) },
-                { type: "image" as const, data: data.toString("base64"), mimeType: item.mimeType },
-              ],
-            };
-          }
 
-          const encoding = args.encoding ?? (isTextual(item.mimeType) ? "text" : undefined);
-          if (!encoding) {
-            return ok({ ...base, note: 'Binary item — content not returned. Pass encoding "base64" (≤1MB) or use file_path.' });
+            const encoding = args.encoding ?? (isTextual(item.mimeType) ? "text" : undefined);
+            if (!encoding) {
+              return ok({ ...base, note: 'Binary item — content not returned. Pass encoding "base64" (≤1MB) or use file_path.' });
+            }
+            if (size > READ_INLINE_MAX_BYTES) {
+              return error(
+                `Item is ${(size / 1024 / 1024).toFixed(1)}MB, over the ${MB(READ_INLINE_MAX_BYTES)} inline limit — read it from file_path instead: ${filePath}`,
+              );
+            }
+            const data = read();
+            return ok({ ...base, encoding, content: encoding === "base64" ? data.toString("base64") : data.toString("utf-8") });
+          } finally {
+            closeSync(fd);
           }
-          if (item.size > READ_INLINE_MAX_BYTES) {
-            return error(
-              `Item is ${(item.size / 1024 / 1024).toFixed(1)}MB, over the ${MB(READ_INLINE_MAX_BYTES)} inline limit — read it from file_path instead: ${filePath}`,
-            );
-          }
-          const { data } = readStorageItemBytes(args.key, args.name);
-          return ok({ ...base, encoding, content: encoding === "base64" ? data.toString("base64") : data.toString("utf-8") });
         }),
     ),
 
@@ -258,10 +263,11 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
     defineTool(
       "save_artifact",
       "Create an artifact, or save a new immutable version of an existing one. An artifact is a single-file HTML app (inline CSS/JS), an SVG, or a markdown " +
-        "document, rendered in chat with render_artifact. HTML artifacts run in a sandbox with NO network access; their only data source is " +
-        "window.callboard.storage — list(), read(name, {as: 'text'|'json'|'dataUrl'}), write(name, data, {mimeType}), delete(name) — scoped to the ONE " +
+        "document, rendered in chat with render_artifact. HTML artifacts run in a sandbox that cannot fetch/XHR or load any remote resource; their only data " +
+        "source is window.callboard.storage — list(), read(name, {as: 'text'|'json'|'dataUrl'}), write(name, data, {mimeType}), delete(name) — scoped to the ONE " +
         "storage key bound at render time (await window.callboard.ready first; it resolves to {storageKey, access}). Images must come from storage " +
-        "as data URLs. Ids: ^[a-z0-9][a-z0-9-]{0,63}$. name and content_type are required on create; content_type cannot change later. " +
+        "as data URLs (image/* items, SVG included, come back typed for <img>). The sandbox is not a data-loss barrier: a determined artifact can still " +
+        "leak what it can read (by navigating its frame, or WebRTC), so granting read on a key means the artifact's author can read that key. Ids: ^[a-z0-9][a-z0-9-]{0,63}$. name and content_type are required on create; content_type cannot change later. " +
         "storage_access (none|read|readwrite, default none) is the MOST the artifact may ever be granted. Source ≤5MB; the last 50 versions are kept.",
       {
         id: z.string().describe('The artifact id, e.g. "cramhouse"'),
@@ -310,9 +316,12 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
 
     defineTool(
       "render_artifact",
-      "Render an artifact in the chat UI. HTML runs in a sandboxed, network-less frame; SVG shows as an image; markdown is rendered as a document. " +
-        "Pass storage_key to bind ONE existing storage key to this render: the artifact then reads (and, if its storage_access is readwrite, writes) that " +
-        "key's items through window.callboard.storage. Binding requires the artifact's storage_access to be read or readwrite.",
+      "Render an artifact in the chat UI. HTML runs in a sandboxed frame that cannot fetch or load remote resources; SVG shows as an image; markdown is " +
+        "rendered as a document. Pass storage_key to bind ONE existing storage key to this render: the artifact then reads (and, if its storage_access is " +
+        "readwrite, writes) that key's items through window.callboard.storage. Binding requires the artifact's storage_access to be read or readwrite; each " +
+        "time the render is shown it is granted at most the artifact's CURRENT storage_access, and nothing if that version has since been deleted or replaced. " +
+        "Every render bound to a key is an independent live instance: two chat bubbles bound readwrite to the same key do not see each other's writes " +
+        "until reloaded, and the last write wins — render once and reuse that bubble rather than stacking several live copies.",
       {
         id: z.string().describe("The artifact id"),
         version: z.number().int().positive().optional().describe("A specific version (default: current)"),
@@ -324,7 +333,8 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
         guard("render_artifact", () => {
           const artifact = getArtifact(args.id);
           const version = args.version ?? artifact.currentVersion;
-          if (!artifact.versions.some((v) => v.version === version)) {
+          const pinned = artifact.versions.find((v) => v.version === version);
+          if (!pinned) {
             return error(`Version ${version} of artifact "${args.id}" not found (kept versions: ${artifact.versions.map((v) => v.version).join(", ")})`);
           }
           if (args.storage_key !== undefined) {
@@ -339,12 +349,14 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
             type: "render_artifact",
             artifact_id: artifact.id,
             version,
+            // Pins the render to these exact bytes: the host refuses to bind storage if the version later differs (deleted + recreated) or is gone.
+            sha256: pinned.sha256,
             name: artifact.name,
             content_type: artifact.contentType,
             ...(args.storage_key !== undefined ? { storage_key: args.storage_key } : {}),
-            // Granted access never exceeds the artifact's declared maximum. Today
-            // binding a key grants that maximum; unbound grants nothing.
-            storage_access: args.storage_key !== undefined ? minArtifactStorageAccess(artifact.storageAccess, artifact.storageAccess) : "none",
+            // The ceiling for this render: the artifact's declared access when bound, nothing when not.
+            // The host re-reads the artifact on every mount and grants the lesser of this and the then-current declared access.
+            storage_access: args.storage_key !== undefined ? artifact.storageAccess : "none",
             ...(args.caption ? { caption: args.caption } : {}),
             ...(args.display_mode ? { display_mode: args.display_mode } : {}),
           };

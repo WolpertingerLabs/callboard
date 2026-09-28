@@ -3,160 +3,210 @@
  *
  * The shim is a string served inside artifact HTML, so it is run here in a
  * `vm` context against a fake `window` whose `parent` records every
- * postMessage. That exercises the exact bytes the browser gets, rather than a
- * re-implementation of them.
+ * postMessage — with Node's real `MessageChannel`, so the port it transfers in
+ * its hello is a real port the test then speaks the host side over. That
+ * exercises the exact bytes the browser gets, rather than a re-implementation
+ * of them.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import vm from "node:vm";
-import { ARTIFACT_BRIDGE_SHIM_JS } from "./artifact-bridge-shim.js";
+import { MessageChannel, type MessagePort } from "node:worker_threads";
+import { ARTIFACT_BRIDGE_SHIM_JS, artifactBridgeShimScript } from "./artifact-bridge-shim.js";
+
+const TOKEN = "0123456789abcdef0123456789abcdef";
 
 interface Harness {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   cb: any;
-  posted: Record<string, unknown>[];
-  parent: { postMessage: ReturnType<typeof vi.fn> };
-  dispatch(data: unknown, source?: unknown): void;
+  /** Everything the shim posted to window.parent, with what it transferred. */
+  toParent: { msg: Record<string, unknown>; target: string; transfer?: unknown[] }[];
+  /** Requests received on the host end of the port. */
+  requests: Record<string, unknown>[];
+  /** The host end of the port (undefined if no hello was sent). */
+  port?: MessagePort;
+  /** How many times the shim registered a listener on its own window — it must never. */
+  windowListeners: number;
+  send(data: unknown): void;
 }
 
-function boot(): Harness {
-  const listeners: ((e: { data: unknown; source: unknown }) => void)[] = [];
-  const posted: Record<string, unknown>[] = [];
-  const parent = { postMessage: vi.fn((msg: Record<string, unknown>) => posted.push(msg)) };
-  const win: Record<string, unknown> = {
-    parent,
-    addEventListener: (type: string, fn: (e: { data: unknown; source: unknown }) => void) => {
-      if (type === "message") listeners.push(fn);
+const ports: MessagePort[] = [];
+afterEach(() => {
+  while (ports.length) ports.pop()!.close();
+});
+
+function boot(token: string | null = TOKEN, opts: { topLevel?: boolean } = {}): Harness {
+  const h: Harness = {
+    cb: undefined,
+    toParent: [],
+    requests: [],
+    windowListeners: 0,
+    send(data) {
+      if (!h.port) throw new Error("no port");
+      h.port.postMessage(data);
     },
   };
-  // Host intrinsics, so promises and typed arrays interoperate with the test.
-  vm.runInContext(
-    ARTIFACT_BRIDGE_SHIM_JS,
-    vm.createContext({ window: win, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa }),
-  );
-  return {
-    cb: win.callboard,
-    posted,
-    parent,
-    dispatch: (data, source = parent) => listeners.forEach((l) => l({ data, source })),
+  const parent = {
+    postMessage: vi.fn((msg: Record<string, unknown>, target: string, transfer?: unknown[]) => {
+      h.toParent.push({ msg, target, transfer });
+      const p = transfer?.[0] as MessagePort | undefined;
+      if (p) {
+        h.port = p;
+        ports.push(p);
+        p.on("message", (m: Record<string, unknown>) => h.requests.push(m));
+      }
+    }),
   };
+  const win: Record<string, unknown> = {
+    addEventListener: () => {
+      h.windowListeners += 1;
+    },
+  };
+  win.parent = opts.topLevel ? win : parent;
+  const ctx = vm.createContext({ window: win, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel });
+  vm.runInContext(`${ARTIFACT_BRIDGE_SHIM_JS}(${JSON.stringify(token)});`, ctx);
+  h.cb = win.callboard;
+  return h;
 }
 
-const flush = () => new Promise((resolve) => setImmediate(resolve));
-const init = (over: Record<string, unknown> = {}) => ({ __callboard: "artifact-bridge-init", nonce: "n-1", storageKey: "deck", access: "readwrite", ...over });
+const flush = () => new Promise((resolve) => setTimeout(resolve, 5));
+const init = (over: Record<string, unknown> = {}) => ({ __callboard: "artifact-bridge-init", storageKey: "deck", access: "readwrite", ...over });
 const reply = (id: unknown, over: Record<string, unknown> = {}) => ({ __callboard: "artifact-bridge-reply", id, ok: true, result: "R", ...over });
 
 describe("artifact bridge shim", () => {
-  it("queues requests made before init, then sends them with the nonce", async () => {
+  it("says hello once to window.parent with its token, transferring exactly one port", () => {
+    const h = boot();
+    expect(h.toParent).toHaveLength(1);
+    expect(h.toParent[0].msg).toEqual({ __callboard: "artifact-bridge-hello", token: TOKEN });
+    expect(h.toParent[0].target).toBe("*");
+    expect(h.toParent[0].transfer).toHaveLength(1);
+  });
+
+  it("never listens on its window: init and replies arrive only on the port", () => {
+    const h = boot();
+    expect(h.windowListeners).toBe(0);
+  });
+
+  it("queues requests made before init, then sends them over the port with the token", async () => {
     const h = boot();
     const pending = h.cb.storage.read("deck.json", { as: "text" });
     await flush();
-    expect(h.posted).toEqual([]);
-    h.dispatch(init());
+    expect(h.requests).toEqual([]);
+    h.send(init());
     await expect(h.cb.ready).resolves.toEqual({ storageKey: "deck", access: "readwrite" });
     await flush();
-    expect(h.posted).toEqual([{ __callboard: "artifact-bridge-request", nonce: "n-1", id: expect.any(String), op: "read", name: "deck.json", as: "text" }]);
-    h.dispatch(reply(h.posted[0].id, { result: "hello" }));
+    expect(h.requests).toEqual([{ __callboard: "artifact-bridge-request", token: TOKEN, id: expect.any(String), op: "read", name: "deck.json", as: "text" }]);
+    h.send(reply(h.requests[0].id, { result: "hello" }));
     await expect(pending).resolves.toBe("hello");
-    expect(h.parent.postMessage).toHaveBeenCalledWith(expect.anything(), "*");
+    // Only the hello ever went to window.parent.
+    expect(h.toParent).toHaveLength(1);
   });
 
-  it("ignores an init without a nonce, and one not from window.parent", async () => {
-    const h = boot();
-    const settled = vi.fn();
-    h.cb.ready.then(settled);
-    h.dispatch(init({ nonce: undefined }));
-    h.dispatch(init({ nonce: "" }));
-    h.dispatch(init({ nonce: 42 }));
-    h.dispatch(init({ nonce: "evil" }), { postMessage() {} });
-    h.dispatch(init({ nonce: "evil" }), null);
-    await flush();
-    expect(settled).not.toHaveBeenCalled();
-    h.dispatch(init({ nonce: "real" }));
-    await flush();
-    expect(settled).toHaveBeenCalledOnce();
-    void h.cb.storage.list();
-    await flush();
-    expect(h.posted[0].nonce).toBe("real");
+  it("no token (opened outside the renderer): unbound at once, no hello, every call rejects", async () => {
+    for (const token of [null, ""]) {
+      const h = boot(token);
+      await expect(h.cb.ready).resolves.toEqual({ storageKey: null, access: "none" });
+      expect(h.toParent).toEqual([]);
+      await expect(h.cb.storage.list()).rejects.toThrow(/without a storage key/);
+    }
   });
 
-  it("honours only the first init — a later one cannot rebind the key, raise access or swap the nonce", async () => {
+  it("opened top-level (no parent): unbound, no hello", async () => {
+    const h = boot(TOKEN, { topLevel: true });
+    await expect(h.cb.ready).resolves.toEqual({ storageKey: null, access: "none" });
+    expect(h.toParent).toEqual([]);
+  });
+
+  it("honours only the first init — a later one cannot rebind the key or raise access", async () => {
     const h = boot();
-    h.dispatch(init({ access: "read" }));
-    h.dispatch(init({ nonce: "n-2", storageKey: "other", access: "readwrite" }));
+    h.send(init({ access: "read" }));
+    h.send(init({ storageKey: "other", access: "readwrite" }));
+    await flush();
     await expect(h.cb.ready).resolves.toEqual({ storageKey: "deck", access: "read" });
     await expect(h.cb.storage.write("x.txt", "y")).rejects.toThrow(/read-only/);
     void h.cb.storage.list();
     await flush();
-    expect(h.posted).toHaveLength(1);
-    expect(h.posted[0].nonce).toBe("n-1");
+    expect(h.requests).toHaveLength(1);
   });
 
-  it("only accepts replies from window.parent, for ids it issued", async () => {
+  it("only settles ids it issued, once each", async () => {
     const h = boot();
-    h.dispatch(init());
+    h.send(init());
     const p = h.cb.storage.list();
     await flush();
-    const id = h.posted[0].id;
+    const id = h.requests[0].id;
     const done = vi.fn();
     p.then(done, done);
-    h.dispatch(reply(id, { result: ["forged"] }), { postMessage() {} });
-    h.dispatch(reply("r999-unknown"));
-    h.dispatch(reply("hasOwnProperty"));
+    h.send(reply("r999-unknown"));
+    h.send(reply("hasOwnProperty"));
     await flush();
     expect(done).not.toHaveBeenCalled();
-    h.dispatch(reply(id, { result: [{ name: "deck.json" }] }));
+    h.send(reply(id, { result: [{ name: "deck.json" }] }));
     await expect(p).resolves.toEqual([{ name: "deck.json" }]);
-    // A reply is consumed once.
-    h.dispatch(reply(id, { result: "again" }));
+    h.send(reply(id, { result: "again" }));
+    await flush();
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it("a reply before init is ignored", async () => {
+    const h = boot();
+    h.send(reply("r1-x"));
+    await flush();
+    const settled = vi.fn();
+    h.cb.ready.then(settled);
+    await flush();
+    expect(settled).not.toHaveBeenCalled();
   });
 
   it("rejects with the host's error message", async () => {
     const h = boot();
-    h.dispatch(init());
+    h.send(init());
     const p = h.cb.storage.delete("gone.txt");
     await flush();
-    h.dispatch(reply(h.posted[0].id, { ok: false, error: "Item not found" }));
+    h.send(reply(h.requests[0].id, { ok: false, error: "Item not found" }));
     await expect(p).rejects.toThrow("Item not found");
   });
 
-  it("unbound: ready resolves {storageKey: null, access: 'none'} and every call rejects without messaging", async () => {
+  it("unbound init: ready resolves {storageKey: null, access: 'none'} and every call rejects without messaging", async () => {
     const h = boot();
-    h.dispatch(init({ storageKey: null, access: "readwrite" }));
+    h.send(init({ storageKey: null, access: "readwrite" }));
     await expect(h.cb.ready).resolves.toEqual({ storageKey: null, access: "none" });
     for (const call of [() => h.cb.storage.list(), () => h.cb.storage.read("a"), () => h.cb.storage.write("a", "b"), () => h.cb.storage.delete("a")]) {
       await expect(call()).rejects.toThrow(/without a storage key/);
     }
-    expect(h.posted).toEqual([]);
+    await flush();
+    expect(h.requests).toEqual([]);
   });
 
   it("access none (or anything unrecognised) behaves as unbound", async () => {
     for (const access of ["none", "admin", undefined]) {
       const h = boot();
-      h.dispatch(init({ access }));
+      h.send(init({ access }));
       await expect(h.cb.ready).resolves.toEqual({ storageKey: "deck", access: "none" });
       await expect(h.cb.storage.list()).rejects.toThrow(/not available/);
-      expect(h.posted).toEqual([]);
+      await flush();
+      expect(h.requests).toEqual([]);
     }
   });
 
   it("read access: reads go out, writes and deletes are refused locally", async () => {
     const h = boot();
-    h.dispatch(init({ access: "read" }));
+    h.send(init({ access: "read" }));
+    await h.cb.ready;
     await expect(h.cb.storage.write("a.txt", "b")).rejects.toThrow(/read-only/);
     await expect(h.cb.storage.delete("a.txt")).rejects.toThrow(/read-only/);
     void h.cb.storage.read("a.txt");
     await flush();
-    expect(h.posted.map((m) => m.op)).toEqual(["read"]);
+    expect(h.requests.map((m) => m.op)).toEqual(["read"]);
   });
 
   it("write: strings as utf8; objects as JSON with application/json; bytes as base64", async () => {
     const h = boot();
-    h.dispatch(init());
+    h.send(init());
     void h.cb.storage.write("a.txt", "héllo", { mimeType: "text/plain" });
     void h.cb.storage.write("deck.json", { seen: 3 });
     void h.cb.storage.write("img.png", new Uint8Array([1, 2, 3]), { mimeType: "image/png" });
     await flush();
-    expect(h.posted.map(({ op, name, data, encoding, mimeType }) => ({ op, name, data, encoding, mimeType }))).toEqual([
+    expect(h.requests.map(({ op, name, data, encoding, mimeType }) => ({ op, name, data, encoding, mimeType }))).toEqual([
       { op: "write", name: "a.txt", data: "héllo", encoding: "utf8", mimeType: "text/plain" },
       { op: "write", name: "deck.json", data: '{"seen":3}', encoding: "utf8", mimeType: "application/json" },
       { op: "write", name: "img.png", data: "AQID", encoding: "base64", mimeType: "image/png" },
@@ -165,21 +215,31 @@ describe("artifact bridge shim", () => {
 
   it("read as json parses a string result and passes a parsed one through", async () => {
     const h = boot();
-    h.dispatch(init());
+    h.send(init());
     const a = h.cb.storage.read("deck.json", { as: "json" });
     const b = h.cb.storage.read("deck.json", { as: "json" });
     await flush();
-    h.dispatch(reply(h.posted[0].id, { result: '{"cards":[1]}' }));
-    h.dispatch(reply(h.posted[1].id, { result: { cards: [2] } }));
+    h.send(reply(h.requests[0].id, { result: '{"cards":[1]}' }));
+    h.send(reply(h.requests[1].id, { result: { cards: [2] } }));
     await expect(a).resolves.toEqual({ cards: [1] });
     await expect(b).resolves.toEqual({ cards: [2] });
   });
 
   it("rejects a non-string name, and window.callboard cannot be replaced", async () => {
     const h = boot();
-    h.dispatch(init());
+    h.send(init());
     await expect(h.cb.storage.read(42)).rejects.toThrow(TypeError);
     expect(Object.isFrozen(h.cb)).toBe(true);
     expect(Object.isFrozen(h.cb.storage)).toBe(true);
+  });
+});
+
+describe("artifactBridgeShimScript", () => {
+  it("binds the token as a JSON string argument, and nothing passed can close the script", () => {
+    expect(artifactBridgeShimScript(TOKEN)).toBe(`<script>${ARTIFACT_BRIDGE_SHIM_JS}("${TOKEN}");</script>`);
+    expect(artifactBridgeShimScript(null)).toBe(`<script>${ARTIFACT_BRIDGE_SHIM_JS}(null);</script>`);
+    const hostile = artifactBridgeShimScript('</script><script>alert(1)</script>"');
+    expect(hostile.match(/<\/script>/g)).toHaveLength(1);
+    expect(hostile.endsWith("</script>")).toBe(true);
   });
 });

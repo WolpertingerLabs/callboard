@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef, useCallback, type CSSProperties, type MutableRefObject } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, type CSSProperties, type MutableRefObject } from "react";
 import { Maximize2 } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { useFrameSizing } from "./useFrameSizing";
 import { createArtifactBridge, type ArtifactBridge, type BridgeStorageApi } from "./artifactBridge";
-import { artifactRenderUrl, getArtifactVersionSource } from "../api";
-import type { RenderArtifactToolResult, ArtifactStorageAccess } from "../api";
+import { artifactRenderUrl, getArtifact, getArtifactVersionSource, minArtifactStorageAccess } from "../api";
+import type { Artifact, RenderArtifactToolResult, ArtifactStorageAccess } from "../api";
 
 interface ArtifactRendererProps {
   data: RenderArtifactToolResult;
@@ -13,6 +13,51 @@ interface ArtifactRendererProps {
   maxWidth?: CSSProperties["maxWidth"];
   /** Test seam for the bridge's storage calls; production uses the REST API. */
   bridgeApi?: BridgeStorageApi;
+}
+
+/**
+ * What mounting this render is allowed to do, decided from the artifact as it
+ * is NOW — not as it was when the tool result was written.
+ */
+type Verdict = { status: "checking" } | { status: "ok"; access: ArtifactStorageAccess } | { status: "refused"; reason: string };
+
+/**
+ * A render_artifact result is frozen in the chat transcript, but the artifact
+ * it names is not: it can lose access, be deleted, have the version pruned, or
+ * be deleted and recreated (versions restart at 1, so "v1" is now different
+ * code). So before anything is mounted the host re-reads the artifact and:
+ *
+ * - refuses (nothing mounted, a clear message) if the artifact or the version
+ *   is gone, or the version's sha256 no longer matches the one the result
+ *   pinned — that is not the code the grant was made for;
+ * - refuses a storage-bound result with no sha256 (written before pinning
+ *   existed): its grant cannot be tied to any particular code;
+ * - otherwise grants the lesser of the result's access and the artifact's
+ *   current declared access (unbound ⇒ none).
+ *
+ * Fail closed: an error fetching the artifact is a refusal too.
+ */
+export function judgeRender(data: RenderArtifactToolResult, artifact: Artifact): Verdict {
+  const v = artifact.versions.find((x) => x.version === data.version);
+  if (!v) {
+    return { status: "refused", reason: `version ${data.version} of "${artifact.name}" is no longer kept — render the artifact again.` };
+  }
+  if (data.sha256 !== undefined && v.sha256 !== data.sha256) {
+    return {
+      status: "refused",
+      reason: `version ${data.version} of "${artifact.id}" has been replaced since this was rendered (the artifact was deleted and recreated), so it is not run here — render the artifact again.`,
+    };
+  }
+  if (data.storage_key && data.sha256 === undefined) {
+    return {
+      status: "refused",
+      reason: "this render predates version pinning, so its storage grant cannot be verified — render the artifact again.",
+    };
+  }
+  if (artifact.contentType !== data.content_type) {
+    return { status: "refused", reason: `"${artifact.id}" is no longer a ${data.content_type} artifact — render it again.` };
+  }
+  return { status: "ok", access: data.storage_key ? minArtifactStorageAccess(data.storage_access, artifact.storageAccess) : "none" };
 }
 
 /**
@@ -25,7 +70,8 @@ interface ArtifactRendererProps {
 const DOCUMENT_BACKDROP: CSSProperties = { colorScheme: "light", background: "Canvas" };
 
 interface ArtifactFrameProps {
-  src: string;
+  artifactId: string;
+  version: number;
   title: string;
   storageKey: string | null;
   access: ArtifactStorageAccess;
@@ -38,14 +84,22 @@ interface ArtifactFrameProps {
 /**
  * One mount of a sandboxed artifact document plus its storage bridge.
  *
- * The bridge is created once per mount, so every mount gets a fresh nonce, and
- * the parent keys this component on (src, key, access) — changing any of them
- * is a new mount, never a re-grant to a document that is already running.
+ * The bridge is created once per mount, so every mount gets a fresh token —
+ * which goes into this frame's src and nowhere else — and the parent keys this
+ * component on (artifact, version, key, access): changing any of them is a new
+ * mount, never a re-grant to a document that is already running.
+ *
+ * The `message` listener is a layout effect so it is in place before the
+ * frame's document can run: the shim says hello while the page is still
+ * parsing, possibly before the frame's `load`. There is deliberately no revoke
+ * on unmount — under StrictMode the effect is torn down and re-run on a live
+ * mount — and none is needed: the bridge answers only down the port its hello
+ * carried, whose other end dies with the frame's document.
  *
  * `sandbox="allow-scripts"` and nothing else: no same-origin (so no cookies and
  * no /api), no top navigation, no popups, no forms.
  */
-function ArtifactFrame({ src, title, storageKey, access, frameRef, style, onLoaded, bridgeApi }: ArtifactFrameProps) {
+function ArtifactFrame({ artifactId, version, title, storageKey, access, frameRef, style, onLoaded, bridgeApi }: ArtifactFrameProps) {
   // The element lives in a plain holder rather than a ref so the bridge can
   // close over it without reading a ref during render; it is only dereferenced
   // when a load or message arrives.
@@ -62,8 +116,8 @@ function ArtifactFrame({ src, title, storageKey, access, frameRef, style, onLoad
     [holder, frameRef],
   );
 
-  useEffect(() => {
-    const onMessage = (e: MessageEvent) => void bridge.handleMessage(e);
+  useLayoutEffect(() => {
+    const onMessage = (e: MessageEvent) => bridge.handleMessage(e);
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [bridge]);
@@ -71,7 +125,7 @@ function ArtifactFrame({ src, title, storageKey, access, frameRef, style, onLoad
   return (
     <iframe
       ref={setFrame}
-      src={src}
+      src={artifactRenderUrl(artifactId, version, bridge.token)}
       title={title}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
@@ -84,27 +138,76 @@ function ArtifactFrame({ src, title, storageKey, access, frameRef, style, onLoad
   );
 }
 
+const FULLSCREEN_BACKDROP: CSSProperties = { position: "fixed", inset: 0, background: "var(--overlay-bg)", zIndex: 1000 };
+const FULLSCREEN_FRAME_BOX: CSSProperties = {
+  position: "fixed",
+  top: "5vh",
+  left: "5vw",
+  width: "90vw",
+  height: "90vh",
+  zIndex: 1001,
+  borderRadius: "var(--radius)",
+  overflow: "hidden",
+  boxShadow: "var(--shadow-md)",
+};
+
 /**
  * Renders a `render_artifact` result — in chat, and as the live preview in
  * Settings → Artifacts. HTML runs in the sandboxed frame with the storage
  * bridge; SVG goes through `<img>` (scripts inert); markdown is fetched as text
  * and rendered by MarkdownRenderer, never executed.
+ *
+ * Nothing is mounted until {@link judgeRender} has checked the result against
+ * the artifact as it is now; a refusal shows the error box instead.
+ *
+ * Fullscreen for HTML is the SAME frame restyled to cover the viewport, never
+ * a second mount: two live instances bound to one key would each hold their
+ * own copy of the data and overwrite each other's writes, and remounting would
+ * reload the document (and a reload revokes the bridge). SVG and markdown are
+ * stateless, so they use a plain modal.
  */
 export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: ArtifactRendererProps) {
   const [expanded, setExpanded] = useState(data.display_mode === "fullscreen");
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Keyed by the result they belong to, so switching result (another version,
+  // another grant) starts clean instead of inheriting the last one's state.
+  const [errorFor, setErrorFor] = useState<{ key: string; message: string } | null>(null);
   const [markdown, setMarkdown] = useState<string | null>(null);
+  const [judged, setJudged] = useState<{ key: string; verdict: Verdict } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const src = artifactRenderUrl(data.artifact_id, data.version);
-  const storageKey = data.storage_key ?? null;
-  const access: ArtifactStorageAccess = storageKey ? data.storage_access : "none";
-  const frameKey = `${src}|${storageKey ?? ""}|${access}`;
   const isHtml = data.content_type === "html";
+  const storageKey = data.storage_key ?? null;
+  const renderKey = `${data.artifact_id}|${data.version}|${data.sha256 ?? ""}|${data.content_type}|${storageKey ?? ""}|${data.storage_access}`;
+  const verdict: Verdict = judged?.key === renderKey ? judged.verdict : { status: "checking" };
+  const error = errorFor?.key === renderKey ? errorFor.message : null;
+  const setError = (message: string) => setErrorFor({ key: renderKey, message });
+  const access: ArtifactStorageAccess = verdict.status === "ok" && storageKey ? verdict.access : "none";
+  const frameKey = `${renderKey}|${access}`;
+  const mounted = verdict.status === "ok";
 
-  const { contentHeight, contentWidth, needsScale, scale, displayHeight } = useFrameSizing(iframeRef, containerRef, isHtml);
+  // Sizing follows the inline layout only: what the document reports while it
+  // fills the viewport must not become its inline size when fullscreen closes.
+  const { contentHeight, contentWidth, needsScale, scale, displayHeight } = useFrameSizing(iframeRef, containerRef, isHtml && mounted && !expanded);
+
+  // Re-judge whenever the result changes; a failure to look is a refusal.
+  useEffect(() => {
+    let cancelled = false;
+    const key = renderKey;
+    getArtifact(data.artifact_id)
+      .then((artifact) => !cancelled && setJudged({ key, verdict: judgeRender(data, artifact) }))
+      .catch((err: Error) => {
+        if (cancelled) return;
+        const reason = /not found/i.test(err.message) ? `"${data.artifact_id}" no longer exists.` : `could not check the artifact (${err.message}).`;
+        setJudged({ key, verdict: { status: "refused", reason } });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // renderKey captures every field of `data` the verdict depends on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderKey]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -116,27 +219,28 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
   }, [expanded]);
 
   useEffect(() => {
-    if (data.content_type !== "markdown") return;
+    if (data.content_type !== "markdown" || !mounted) return;
     let cancelled = false;
     setLoading(true);
-    setError(null);
     getArtifactVersionSource(data.artifact_id, data.version)
       .then((text) => !cancelled && setMarkdown(text))
-      .catch((err: Error) => !cancelled && setError(err.message))
+      .catch((err: Error) => !cancelled && setErrorFor({ key: renderKey, message: err.message }))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [data.content_type, data.artifact_id, data.version]);
+  }, [data.content_type, data.artifact_id, data.version, mounted, renderKey]);
 
   // A new document is loading whenever the frame identity changes.
   useEffect(() => {
     if (data.content_type !== "markdown") setLoading(true);
   }, [frameKey, data.content_type]);
 
-  if (error) {
+  const failure = verdict.status === "refused" ? verdict.reason : error;
+  if (failure) {
     return (
       <div
+        role="alert"
         style={{
           margin: "4px 0",
           maxWidth,
@@ -148,52 +252,60 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
           fontSize: 13,
         }}
       >
-        Failed to load artifact: {data.name} (v{data.version}) — {error}
+        Failed to load artifact: {data.name} (v{data.version}) — {failure}
       </div>
     );
   }
 
+  const htmlFullscreen = isHtml && expanded;
+
   const renderContent = (isModal: boolean) => {
     switch (data.content_type) {
       case "html":
-        if (isModal) {
-          return (
-            <ArtifactFrame
-              key={`modal|${frameKey}`}
-              src={src}
-              title={data.name}
-              storageKey={storageKey}
-              access={access}
-              bridgeApi={bridgeApi}
-              onLoaded={() => {}}
-              style={{ width: "100%", height: "85vh" }}
-            />
-          );
-        }
+        // One frame, always at this position in the tree; fullscreen only restyles its box.
         return (
           <div style={{ width: "100%", height: displayHeight, overflow: "hidden", transition: "height 0.15s ease" }}>
-            <ArtifactFrame
-              key={frameKey}
-              frameRef={iframeRef}
-              src={src}
-              title={data.name}
-              storageKey={storageKey}
-              access={access}
-              bridgeApi={bridgeApi}
-              onLoaded={() => setLoading(false)}
-              style={{
-                width: needsScale ? contentWidth : "100%",
-                height: contentHeight,
-                transformOrigin: "top left",
-                transform: needsScale ? `scale(${scale})` : undefined,
-              }}
-            />
+            <div
+              style={htmlFullscreen ? { ...FULLSCREEN_FRAME_BOX, ...DOCUMENT_BACKDROP } : { width: "100%", height: "100%" }}
+              data-testid="artifact-frame-box"
+            >
+              {mounted && (
+                <ArtifactFrame
+                  key={frameKey}
+                  frameRef={iframeRef}
+                  artifactId={data.artifact_id}
+                  version={data.version}
+                  title={data.name}
+                  storageKey={storageKey}
+                  access={access}
+                  bridgeApi={bridgeApi}
+                  onLoaded={() => setLoading(false)}
+                  style={
+                    htmlFullscreen
+                      ? { width: "100%", height: "100%" }
+                      : {
+                          width: needsScale ? contentWidth : "100%",
+                          height: contentHeight,
+                          transformOrigin: "top left",
+                          transform: needsScale ? `scale(${scale})` : undefined,
+                        }
+                  }
+                />
+              )}
+              {htmlFullscreen && (
+                <button onClick={() => setExpanded(false)} title="Close" style={closeButtonStyle}>
+                  &times;
+                </button>
+              )}
+            </div>
+            {htmlFullscreen && <div style={FULLSCREEN_BACKDROP} onClick={() => setExpanded(false)} data-testid="artifact-fullscreen-backdrop" />}
           </div>
         );
       case "svg":
+        if (!mounted) return null;
         return (
           <img
-            src={src}
+            src={artifactRenderUrl(data.artifact_id, data.version)}
             alt={data.caption || data.name}
             referrerPolicy="no-referrer"
             onLoad={() => setLoading(false)}
@@ -244,10 +356,11 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
             }}
           >
             <span style={{ fontWeight: 600, color: "var(--text)", flex: 1, minWidth: 0 }}>{data.name}</span>
-            {storageKey && (
+            {storageKey && access !== "none" && (
               <span
                 title={`Bound to storage key "${storageKey}" with ${access === "readwrite" ? "read/write" : access} access`}
                 style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", flexShrink: 0 }}
+                data-testid="artifact-key-badge"
               >
                 {storageKey} · {access === "readwrite" ? "rw" : access}
               </span>
@@ -286,7 +399,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
               </div>
             )}
             {renderContent(false)}
-            {!loading && (
+            {!loading && !htmlFullscreen && (
               <button
                 onClick={() => setExpanded(true)}
                 title="Fullscreen"
@@ -320,7 +433,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
         </div>
       </div>
 
-      {expanded && (
+      {expanded && !isHtml && (
         <ModalOverlay onClose={() => setExpanded(false)}>
           <div
             onClick={(e) => {
@@ -337,25 +450,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
                 width: data.content_type === "svg" ? undefined : "90vw",
               }}
             >
-              <button
-                onClick={() => setExpanded(false)}
-                title="Close"
-                style={{
-                  position: "absolute",
-                  top: 8,
-                  right: 8,
-                  zIndex: 1,
-                  background: "var(--overlay-bg)",
-                  border: "none",
-                  borderRadius: "50%",
-                  width: 32,
-                  height: 32,
-                  color: "var(--text-on-accent)",
-                  fontSize: 18,
-                  cursor: "pointer",
-                  lineHeight: 1,
-                }}
-              >
+              <button onClick={() => setExpanded(false)} title="Close" style={closeButtonStyle}>
                 &times;
               </button>
               {renderContent(true)}
@@ -366,3 +461,19 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
     </>
   );
 }
+
+const closeButtonStyle: CSSProperties = {
+  position: "absolute",
+  top: 8,
+  right: 8,
+  zIndex: 1,
+  background: "var(--overlay-bg)",
+  border: "none",
+  borderRadius: "50%",
+  width: 32,
+  height: 32,
+  color: "var(--text-on-accent)",
+  fontSize: 18,
+  cursor: "pointer",
+  lineHeight: 1,
+};

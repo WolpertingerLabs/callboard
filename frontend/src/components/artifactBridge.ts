@@ -2,41 +2,60 @@
  * Host side of the artifact storage bridge (plan §3, "The storage bridge").
  *
  * An artifact runs in `<iframe sandbox="allow-scripts">` — an opaque origin
- * with no cookies and, under the render route's CSP, no network. Its one
- * capability is this bridge: postMessage requests that the host performs
- * against the authenticated REST API, scoped to the single storage key the
- * render bound, at the access level the render granted.
+ * with no cookies and, under the render route's CSP, no fetch/XHR and no
+ * remote subresources. Its one capability is this bridge: requests that the
+ * host performs against the authenticated REST API, scoped to the single
+ * storage key the render bound, at the access level the render granted.
  *
  * Protocol (typed in shared/types/artifact.ts; the in-iframe shim lives in
  * backend/src/services/artifact-bridge-shim.ts and speaks exactly this):
  *
- *   host → frame, first `load` only:
- *     { __callboard: "artifact-bridge-init", nonce, storageKey, access }
- *   frame → host:
- *     { __callboard: "artifact-bridge-request", nonce, id, op, name?, as?, data?, encoding?, mimeType? }
- *   host → frame:
- *     { __callboard: "artifact-bridge-reply", id, ok, result?, error? }
+ *   host: mints `token`, frame src = …/render?bridge=<token>
+ *   frame → host window:  { __callboard: "artifact-bridge-hello", token }  + transferred MessagePort
+ *   host → port, once:    { __callboard: "artifact-bridge-init", storageKey, access }
+ *   frame → port:         { __callboard: "artifact-bridge-request", token, id, op, name?, as?, data?, encoding?, mimeType? }
+ *   host → port:          { __callboard: "artifact-bridge-reply", id, ok, result?, error? }
  *
  * The rules that make it safe, each of which has a test:
  *
- * - A request counts only when `e.source` is *this* mount's frame window AND it
- *   carries this mount's nonce. The init goes out with targetOrigin "*" because
- *   the frame's origin is opaque and cannot be named, so the nonce and the
- *   source check are what stand in for an origin check.
- * - Any `load` after the first revokes the bridge for good. CSP cannot stop a
- *   frame navigating itself, and whatever it navigates to must not inherit the
- *   data grant. The revocation is also re-checked before every reply, so a read
- *   that was in flight when the frame navigated is never delivered to the new
- *   document.
+ * - The host never pushes anything to the frame's window. It binds to the
+ *   FIRST hello whose `e.source` is this mount's frame window AND whose token
+ *   matches, and talks only over the port that hello carried. The token was
+ *   injected by the server into the one (no-store) document rendered for this
+ *   mount, so a document the artifact navigates to cannot produce a valid
+ *   hello; and a port belongs to the document that created it, so nothing the
+ *   host sends — init or reply — can reach a document that later replaces the
+ *   artifact in the frame. (`contentWindow.postMessage(…, "*")` would deliver
+ *   to whichever document is current when the message lands; with an opaque
+ *   origin there is no targetOrigin to pin it.)
+ * - Any `load` after the first revokes the bridge for good and closes the
+ *   port. The revocation is re-checked before every reply.
+ * - Every request must carry the token, as well as arrive on the bound port.
  * - The request has no key field. The bound key is fixed at construction and is
  *   the only key any operation addresses; a `key` in the payload is ignored.
  * - Names are re-validated here (the server validates again) and writes are
  *   size-checked here (the server enforces again).
+ *
+ * Accepted, by design: the artifact itself knows its token and can hand it to
+ * a page it navigates to (which would then bind nothing — the host is bound
+ * already — unless it wins the race to be first). That is no more than the
+ * artifact exfiltrating data it can already read, which it can do anyway
+ * (navigation URLs, WebRTC): granting read on a key means the artifact's
+ * author can read that key.
  */
 
-import { deleteStorageItem, fetchStorageItem, getStorageKey, isValidStorageItemName, putStorageItem, STORAGE_MAX_ITEM_BYTES } from "../api";
+import {
+  deleteStorageItem,
+  fetchStorageItem,
+  getStorageKey,
+  isValidStorageItemName,
+  putStorageItem,
+  STORAGE_ITEM_MIME_HEADER,
+  STORAGE_MAX_ITEM_BYTES,
+} from "../api";
 import type { ArtifactBridgeInit, ArtifactBridgeOp, ArtifactBridgeReply, ArtifactStorageAccess, StorageItem } from "../api";
 
+export const BRIDGE_HELLO = "artifact-bridge-hello";
 export const BRIDGE_INIT = "artifact-bridge-init";
 export const BRIDGE_REQUEST = "artifact-bridge-request";
 export const BRIDGE_REPLY = "artifact-bridge-reply";
@@ -50,7 +69,8 @@ export type BridgeReplyMessage = ArtifactBridgeReply;
 export interface BridgeStorageApi {
   list(key: string): Promise<StorageItem[]>;
   readText(key: string, name: string): Promise<string>;
-  readBlob(key: string, name: string): Promise<Blob>;
+  /** The bytes as served, plus the item's recorded MIME type when the server reports it. */
+  readBlob(key: string, name: string): Promise<{ blob: Blob; recordedMimeType?: string }>;
   write(key: string, name: string, body: { content: string; mimeType?: string } | { content_base64: string; mimeType?: string }): Promise<StorageItem>;
   remove(key: string, name: string): Promise<void>;
 }
@@ -58,13 +78,16 @@ export interface BridgeStorageApi {
 export const restBridgeApi: BridgeStorageApi = {
   list: async (key) => (await getStorageKey(key)).items,
   readText: async (key, name) => (await fetchStorageItem(key, name)).text(),
-  readBlob: async (key, name) => (await fetchStorageItem(key, name)).blob(),
+  readBlob: async (key, name) => {
+    const res = await fetchStorageItem(key, name);
+    return { blob: await res.blob(), recordedMimeType: res.headers.get(STORAGE_ITEM_MIME_HEADER) ?? undefined };
+  },
   write: (key, name, body) => putStorageItem(key, name, body),
   remove: (key, name) => deleteStorageItem(key, name),
 };
 
-/** 128 bits from the platform CSPRNG, hex-encoded. One per mount. */
-export function makeBridgeNonce(): string {
+/** 128 bits from the platform CSPRNG, lowercase hex (ARTIFACT_BRIDGE_TOKEN_PATTERN). One per mount. */
+export function makeBridgeToken(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -80,6 +103,29 @@ function payloadBytes(data: string, encoding: "utf8" | "base64"): number {
     return Math.floor((data.length * 3) / 4) - pad;
   }
   return new TextEncoder().encode(data).length;
+}
+
+/** `image/<subtype>` and nothing else — the only recorded types a dataUrl read is re-typed with. */
+const IMAGE_MIME_RE = /^image\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
+
+/**
+ * The server serves every non-raster item (SVG included) as
+ * application/octet-stream, so a data URL built from the response would be
+ * unusable in `<img>`. Re-type the bytes with the item's RECORDED type when —
+ * and only when — that is `image/*`.
+ *
+ * Safe because this data URL only ever exists inside the artifact's frame:
+ * an opaque-origin sandbox with no cookies and no /api, whose CSP forbids
+ * fetch and remote loads and sets `frame-src 'none'` (so it cannot frame the
+ * URL as a document); `<img>` never runs script in an SVG; and the artifact
+ * could already read the same bytes as text and build this URL itself. The
+ * same-origin REST response is untouched — still an octet-stream attachment
+ * under nosniff and a sandbox CSP.
+ */
+function retypeForDataUrl(blob: Blob, recordedMimeType: string | undefined): Blob {
+  const recorded = recordedMimeType?.trim().toLowerCase();
+  if (!recorded || !IMAGE_MIME_RE.test(recorded) || blob.type === recorded) return blob;
+  return new Blob([blob], { type: recorded });
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -99,27 +145,35 @@ export interface ArtifactBridgeOptions {
   storageKey: string | null;
   access: ArtifactStorageAccess;
   api?: BridgeStorageApi;
-  nonce?: string;
+  /** Test seam; production mints one per mount. */
+  token?: string;
 }
 
 export interface ArtifactBridge {
-  readonly nonce: string;
+  /** Goes in the frame's src (`artifactRenderUrl(…, token)`) and nowhere else. */
+  readonly token: string;
   readonly revoked: boolean;
-  /** Call on every `load` of the frame. The first delivers init; any later one revokes. */
+  /** True once a valid hello has bound the bridge to its port. */
+  readonly bound: boolean;
+  /** Call on every `load` of the frame. The first is a no-op; any later one revokes. */
   handleLoad(): void;
-  /** Window `message` listener. Resolves once any reply has been posted (or dropped). */
-  handleMessage(e: MessageEvent): Promise<void>;
+  /** Window `message` listener: accepts the one valid hello, ignores everything else. */
+  handleMessage(e: MessageEvent): void;
+  /** Resolves once every request received so far has been answered (or dropped). Test seam. */
+  settled(): Promise<void>;
   revoke(): void;
 }
 
 export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridge {
   const api = opts.api ?? restBridgeApi;
-  const nonce = opts.nonce ?? makeBridgeNonce();
+  const token = opts.token ?? makeBridgeToken();
   // Unbound renders get no authority at all, whatever access was passed.
   const storageKey = opts.storageKey ?? null;
   const access: ArtifactStorageAccess = storageKey ? opts.access : "none";
   let loads = 0;
   let revoked = false;
+  let port: MessagePort | null = null;
+  const inFlight = new Set<Promise<void>>();
 
   async function perform(req: Record<string, unknown>): Promise<unknown> {
     if (access === "none" || !storageKey) throw new BridgeRefusal("This artifact has no storage bound");
@@ -140,7 +194,10 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
           throw new BridgeRefusal(`Item "${name}" is not valid JSON`);
         }
       }
-      if (as === "dataUrl") return blobToDataUrl(await api.readBlob(storageKey, name));
+      if (as === "dataUrl") {
+        const { blob, recordedMimeType } = await api.readBlob(storageKey, name);
+        return blobToDataUrl(retypeForDataUrl(blob, recordedMimeType));
+      }
       throw new BridgeRefusal("Invalid read format");
     }
 
@@ -168,47 +225,64 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     throw new BridgeRefusal("Unknown operation");
   }
 
+  async function answer(p: MessagePort, msg: Record<string, unknown>): Promise<void> {
+    const id = msg.id as string;
+    let reply: BridgeReplyMessage;
+    try {
+      const result = await perform(msg);
+      reply = { __callboard: BRIDGE_REPLY, id, ok: true, result };
+    } catch (err) {
+      reply = { __callboard: BRIDGE_REPLY, id, ok: false, error: err instanceof Error ? err.message : "Storage request failed" };
+    }
+    // Re-check after the await: a frame that navigated (or unmounted) while
+    // the request was in flight must not receive the answer.
+    if (revoked || port !== p) return;
+    p.postMessage(reply);
+  }
+
+  function onPortMessage(p: MessagePort, e: MessageEvent): void {
+    if (revoked || port !== p) return;
+    const msg = e.data;
+    if (!msg || typeof msg !== "object" || msg.__callboard !== BRIDGE_REQUEST) return;
+    if (msg.token !== token || typeof msg.id !== "string") return;
+    const done = answer(p, msg);
+    inFlight.add(done);
+    void done.finally(() => inFlight.delete(done));
+  }
+
+  function revoke(): void {
+    revoked = true;
+    port?.close();
+  }
+
   return {
-    nonce,
+    token,
     get revoked() {
       return revoked;
     },
+    get bound() {
+      return port !== null;
+    },
     handleLoad() {
       loads += 1;
-      if (loads > 1) {
-        revoked = true;
-        return;
-      }
-      const frame = opts.getFrameWindow();
-      if (!frame || revoked) return;
-      const init: BridgeInitMessage = { __callboard: BRIDGE_INIT, nonce, storageKey, access };
-      // "*" is unavoidable: the sandboxed frame has an opaque origin that cannot
-      // be named. The nonce plus the source check are the origin check.
-      frame.postMessage(init, "*");
+      if (loads > 1) revoke();
     },
-    async handleMessage(e: MessageEvent) {
+    handleMessage(e: MessageEvent) {
+      if (revoked || port !== null) return;
       const frame = opts.getFrameWindow();
-      if (revoked || loads === 0 || !frame || e.source !== frame) return;
+      if (!frame || e.source !== frame) return;
       const msg = e.data;
-      if (!msg || typeof msg !== "object" || msg.__callboard !== BRIDGE_REQUEST) return;
-      if (typeof msg.nonce !== "string" || msg.nonce !== nonce) return;
-      const id = msg.id;
-      if (typeof id !== "string") return;
-
-      let reply: BridgeReplyMessage;
-      try {
-        const result = await perform(msg);
-        reply = { __callboard: BRIDGE_REPLY, id, ok: true, result };
-      } catch (err) {
-        reply = { __callboard: BRIDGE_REPLY, id, ok: false, error: err instanceof Error ? err.message : "Storage request failed" };
-      }
-      // Re-check after the await: a frame that navigated (or unmounted) while
-      // the request was in flight must not receive the answer.
-      if (revoked || opts.getFrameWindow() !== frame) return;
-      frame.postMessage(reply, "*");
+      if (!msg || typeof msg !== "object" || msg.__callboard !== BRIDGE_HELLO || msg.token !== token) return;
+      const p = e.ports?.[0];
+      if (!p) return;
+      port = p;
+      p.onmessage = (ev) => onPortMessage(p, ev);
+      const init: BridgeInitMessage = { __callboard: BRIDGE_INIT, storageKey, access };
+      p.postMessage(init);
     },
-    revoke() {
-      revoked = true;
+    async settled() {
+      while (inFlight.size) await Promise.all([...inFlight]);
     },
+    revoke,
   };
 }

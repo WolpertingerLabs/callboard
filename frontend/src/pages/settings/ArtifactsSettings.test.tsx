@@ -54,6 +54,29 @@ function renderPage() {
   );
 }
 
+/** The preview frame, once the renderer has checked the artifact and mounted it. */
+async function frameNow(ok: (f: HTMLIFrameElement) => boolean = () => true): Promise<HTMLIFrameElement> {
+  return waitFor(() => {
+    const f = document.querySelector("iframe");
+    if (!f || !ok(f)) throw new Error("no frame yet");
+    return f;
+  });
+}
+
+/** Say hello as the served shim would (token from the frame's src, a port to answer on) and return the init it gets. */
+async function initFor(frame: HTMLIFrameElement): Promise<unknown> {
+  const token = /\?bridge=([0-9a-f]{32})$/.exec(frame.getAttribute("src") ?? "")?.[1];
+  const port = { postMessage: vi.fn(), close: vi.fn(), onmessage: null };
+  const ev = new MessageEvent("message", { data: { __callboard: "artifact-bridge-hello", token }, source: frame.contentWindow });
+  Object.defineProperty(ev, "ports", { value: [port] });
+  window.dispatchEvent(ev);
+  return waitFor(() => {
+    const init = port.postMessage.mock.calls[0]?.[0];
+    if (!init) throw new Error("no init");
+    return init;
+  });
+}
+
 async function openCramhouse() {
   renderPage();
   fireEvent.click(await screen.findByRole("button", { name: "Cramhouse" }));
@@ -136,11 +159,11 @@ describe("ArtifactsSettings", () => {
 
   it("previews through ArtifactRenderer, sandboxed, from the render route of the selected version", async () => {
     await openCramhouse();
-    const frame = document.querySelector("iframe")!;
+    const frame = await frameNow();
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
-    expect(frame.getAttribute("src")).toBe("/api/artifacts/cramhouse/versions/2/render");
+    expect(frame.getAttribute("src")).toMatch(/^\/api\/artifacts\/cramhouse\/versions\/2\/render\?bridge=[0-9a-f]{32}$/);
     fireEvent.click(within(screen.getByTestId("artifact-versions")).getByText("first cut"));
-    await waitFor(() => expect(document.querySelector("iframe")!.getAttribute("src")).toBe("/api/artifacts/cramhouse/versions/1/render"));
+    await waitFor(() => expect(document.querySelector("iframe")?.getAttribute("src")).toMatch(/^\/api\/artifacts\/cramhouse\/versions\/1\/render\?bridge=/));
   });
 
   it("preview binds read by default and readwrite only after 'allow writes'", async () => {
@@ -150,17 +173,28 @@ describe("ArtifactsSettings", () => {
     fireEvent.change(picker, { target: { value: "birds" } });
     expect(screen.getByText(/Read-only preview of "birds"/)).toBeTruthy();
 
-    let frame = document.querySelector("iframe")!;
-    let post = vi.spyOn(frame.contentWindow!, "postMessage");
-    fireEvent.load(frame);
-    expect(post.mock.calls[0][0]).toMatchObject({ storageKey: "birds", access: "read" });
+    expect(await initFor(await frameNow((f) => f.contentWindow !== null))).toMatchObject({ storageKey: "birds", access: "read" });
 
+    const readFrame = document.querySelector("iframe");
     fireEvent.click(screen.getByLabelText("Allow writes"));
     expect(screen.getByText(/can change or delete items in "birds"/)).toBeTruthy();
-    frame = document.querySelector("iframe")!;
-    post = vi.spyOn(frame.contentWindow!, "postMessage");
-    fireEvent.load(frame);
-    expect(post.mock.calls[0][0]).toMatchObject({ storageKey: "birds", access: "readwrite" });
+    expect(await initFor(await frameNow((f) => f !== readFrame))).toMatchObject({ storageKey: "birds", access: "readwrite" });
+  });
+
+  it("lowering the artifact to storage access none drops the picked key: no badge, no binding", async () => {
+    await openCramhouse();
+    const picker = await screen.findByLabelText("Storage key");
+    await within(picker).findByText("birds");
+    fireEvent.change(picker, { target: { value: "birds" } });
+    await waitFor(() => expect(screen.getByTestId("artifact-key-badge").textContent).toBe("birds · read"));
+
+    h.updateArtifact.mockResolvedValue({ ...cramhouse, storageAccess: "none" });
+    h.getArtifact.mockResolvedValue({ ...cramhouse, storageAccess: "none" });
+    fireEvent.change(screen.getByLabelText("Storage access (maximum)"), { target: { value: "none" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save details" }));
+    await waitFor(() => expect(screen.queryByLabelText("Storage key")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("artifact-key-badge")).toBeNull());
+    expect(await initFor(await frameNow())).toMatchObject({ storageKey: null, access: "none" });
   });
 
   it("no storage picker for an artifact declared storageAccess none", async () => {

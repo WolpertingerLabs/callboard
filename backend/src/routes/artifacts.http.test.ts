@@ -13,7 +13,9 @@ const DATA = mkdtempSync(join(tmpdir(), "callboard-artifacts-http-"));
 process.env.CALLBOARD_DATA_DIR = DATA;
 
 const { artifactsRouter } = await import("./artifacts.js");
-const { ARTIFACT_BRIDGE_SHIM_SCRIPT } = await import("../services/artifact-bridge-shim.js");
+const { artifactBridgeShimScript } = await import("../services/artifact-bridge-shim.js");
+
+const TOKEN = "00112233445566778899aabbccddeeff";
 const { SIZE_REPORTER_SCRIPT } = await import("../services/html-injection.js");
 
 /** The CSP the plan specifies, verbatim, plus the response-level sandbox. */
@@ -34,7 +36,7 @@ beforeAll(async () => {
 afterAll(() => server.close());
 
 describe("render route", () => {
-  it("html: no-network CSP, nosniff, no-store; shim before the artifact's own scripts, size reporter before </body>", async () => {
+  it("html: the artifact CSP (no fetch, no remote loads), nosniff, no-store; shim before the artifact's own scripts, size reporter before </body>", async () => {
     const source = "<!doctype html><html><head><script>window.early = typeof window.callboard;</script></head><body><p>hi</p></body></html>";
     expect((await post("/api/artifacts", { id: "app", name: "App", contentType: "html", content: source, storageAccess: "read" })).status).toBe(201);
     const res = await server.request("GET", "/api/artifacts/app/versions/1/render");
@@ -43,8 +45,9 @@ describe("render route", () => {
     expect(res.headers["content-security-policy"]).toBe(`${PLAN_CSP}; sandbox allow-scripts`);
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
     expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
     const html = res.body.toString();
-    const shimAt = html.indexOf(ARTIFACT_BRIDGE_SHIM_SCRIPT);
+    const shimAt = html.indexOf(artifactBridgeShimScript(null));
     const reporterAt = html.indexOf(SIZE_REPORTER_SCRIPT);
     expect(shimAt).toBeGreaterThan(html.indexOf("<head>"));
     expect(shimAt).toBeLessThan(html.indexOf("window.early"));
@@ -57,7 +60,37 @@ describe("render route", () => {
   it("html without <head>/<body>: shim prepended, reporter appended", async () => {
     await post("/api/artifacts", { id: "bare", name: "Bare", contentType: "html", content: "<p>bare</p>" });
     const html = (await server.request("GET", "/api/artifacts/bare/versions/1/render")).body.toString();
-    expect(html).toBe(ARTIFACT_BRIDGE_SHIM_SCRIPT + "<p>bare</p>" + SIZE_REPORTER_SCRIPT);
+    expect(html).toBe(artifactBridgeShimScript(null) + "<p>bare</p>" + SIZE_REPORTER_SCRIPT);
+  });
+
+  it("?bridge=<token> binds that token into the shim of that one no-store response", async () => {
+    const res = await server.request("GET", `/api/artifacts/bare/versions/1/render?bridge=${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const html = res.body.toString();
+    expect(html).toBe(artifactBridgeShimScript(TOKEN) + "<p>bare</p>" + SIZE_REPORTER_SCRIPT);
+    expect(html).toContain(`("${TOKEN}");</script>`);
+    // Without the param the shim is unbound: no token anywhere in the page.
+    const plain = (await server.request("GET", "/api/artifacts/bare/versions/1/render")).body.toString();
+    expect(plain).toContain("(null);</script>");
+    expect(plain).not.toContain(TOKEN);
+  });
+
+  it("rejects any bridge token that is not exactly 32 lowercase hex characters", async () => {
+    for (const bad of [
+      "",
+      "abc",
+      TOKEN.toUpperCase(),
+      TOKEN + "0",
+      TOKEN.slice(1),
+      "%22%29%3Balert(1)%2F%2F" + "0".repeat(20),
+      `${TOKEN}&bridge=${TOKEN}`,
+      "%3C%2Fscript%3E" + "0".repeat(23),
+    ]) {
+      const res = await server.request("GET", `/api/artifacts/bare/versions/1/render?bridge=${bad}`);
+      expect(res.status, bad).toBe(400);
+      expect(res.body.toString()).not.toContain("<script>");
+    }
   });
 
   it("svg is served as image/svg+xml, script-less and sandboxed", async () => {
