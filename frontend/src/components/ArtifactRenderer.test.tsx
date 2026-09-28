@@ -278,6 +278,37 @@ describe("ArtifactRenderer — the grant is re-checked against the artifact as i
 });
 
 describe("ArtifactRenderer — fullscreen is the same frame", () => {
+  it("a load delivered right after the iframe commits still clears Loading", async () => {
+    // The frame's `load` can land between the commit that inserts the iframe and
+    // React's passive-effect flush — a fast or cached load in a browser, and CI's
+    // timing in this file. React only leaves that gap when its scheduler yields
+    // after the commit (its 5 ms slice ran out: a cold or loaded machine), so the
+    // clock is made to run fast here to make it yield every time. The
+    // MutationObserver then fires in exactly the gap: a microtask after the commit.
+    let t = performance.now();
+    const now = vi.spyOn(performance, "now").mockImplementation(() => (t += 10));
+    try {
+      const { container } = render(<ArtifactRenderer data={base} bridgeApi={api()} />);
+      await new Promise<void>((resolve) => {
+        const mo = new MutationObserver(() => {
+          const f = container.querySelector("iframe");
+          if (f) {
+            mo.disconnect();
+            f.dispatchEvent(new Event("load"));
+            resolve();
+          }
+        });
+        mo.observe(container, { childList: true, subtree: true });
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      await act(async () => {});
+    } finally {
+      now.mockRestore();
+    }
+    expect(screen.queryByText("Loading...")).toBeNull();
+    expect(screen.getByTitle("Fullscreen")).toBeTruthy();
+  });
+
   it("expanding restyles the one frame (no second frame, no reload) and the bridge keeps serving it", async () => {
     const storage = api();
     const { container } = render(<ArtifactRenderer data={base} bridgeApi={storage} />);

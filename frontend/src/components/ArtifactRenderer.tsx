@@ -248,8 +248,13 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
     };
   }, [data.content_type, data.artifact_id, data.version, pinnedSha, renderKey]);
 
-  // A new document is loading whenever the frame identity changes.
-  useEffect(() => {
+  // A new document is loading whenever the frame identity changes. A layout
+  // effect, not a passive one: the frame keyed on frameKey is inserted in this
+  // same commit, and its `load` can arrive before passive effects flush (a fast
+  // or cached load, or React yielding after the commit). A passive reset would
+  // then land after the frame's setLoading(false) and leave "Loading..." up for
+  // good. Layout effects run inside the commit, before any event can.
+  useLayoutEffect(() => {
     if (data.content_type !== "markdown") setLoading(true);
   }, [frameKey, data.content_type]);
 
