@@ -16,13 +16,17 @@ import type { StorageKeyMetaFile } from "shared/types/index.js";
 
 type Fault = (op: string, target: string) => void;
 const faults: { current: Fault | null } = vi.hoisted(() => ({ current: null }));
+/** Every fs write-side call, in order, as `op path` — fsyncs resolved from fd to the path opened. */
+const trace: { on: boolean; ops: string[] } = vi.hoisted(() => ({ on: false, ops: [] }));
 
 vi.mock("fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("fs")>();
+  const fdPaths = new Map<number, string>();
   const wrap =
     <A extends unknown[], R>(op: string, fn: (...a: A) => R) =>
     (...args: A): R => {
       faults.current?.(op, String(args[0]));
+      if (trace.on) trace.ops.push(`${op} ${String(args[0])}`);
       return fn(...args);
     };
   const wrapped = {
@@ -31,6 +35,15 @@ vi.mock("fs", async (importOriginal) => {
     renameSync: wrap("renameSync", real.renameSync),
     rmSync: wrap("rmSync", real.rmSync),
     unlinkSync: wrap("unlinkSync", real.unlinkSync),
+    openSync: (...args: Parameters<typeof real.openSync>) => {
+      const fd = real.openSync(...args);
+      fdPaths.set(fd, String(args[0]));
+      return fd;
+    },
+    fsyncSync: (fd: number) => {
+      if (trace.on) trace.ops.push(`fsyncSync ${fdPaths.get(fd) ?? fd}`);
+      return real.fsyncSync(fd);
+    },
   };
   return { ...wrapped, default: wrapped };
 });
@@ -112,6 +125,39 @@ describe("a failed new-item save leaves nothing behind", () => {
     expect(svc.listStorageItems("k").map((i) => i.name)).toEqual(["a.txt"]);
     expect(items()).toEqual(files);
     expect(svc.storeTotalBytes()).toBe(total);
+  });
+});
+
+describe("durability ordering (power loss, not just process crash)", () => {
+  it("new blob data and its name are fsynced before the meta commit; meta's rename is fsynced before the old blob goes", async () => {
+    const oldBlob = meta().items["a.txt"].file!;
+    trace.ops = [];
+    trace.on = true;
+    try {
+      await svc.saveStorageItem("k", "a.txt", Buffer.from("durable"));
+    } finally {
+      trace.on = false;
+    }
+    const newBlob = meta().items["a.txt"].file!;
+    const keyDir = join(STORAGE_ROOT, "k");
+    const at = (pred: (op: string) => boolean, what: string) => {
+      const i = trace.ops.findIndex(pred);
+      expect(i, `${what}\n${trace.ops.join("\n")}`).toBeGreaterThanOrEqual(0);
+      return i;
+    };
+    const blobWrite = at((o) => o === `writeFileSync ${join(keyDir, "items", newBlob)}`, "blob write");
+    const blobSync = at((o) => o === `fsyncSync ${join(keyDir, "items", newBlob)}`, "blob fsync");
+    const itemsDirSync = at((o) => o === `fsyncSync ${join(keyDir, "items")}`, "items/ fsync");
+    const metaTmpSync = at((o) => /^fsyncSync .*\/\.meta\.json\.\d+\.[0-9a-f]{8}\.tmp$/.test(o), "meta tmp fsync");
+    const metaRename = at((o) => /^renameSync .*\/\.meta\.json\./.test(o), "meta rename");
+    const keyDirSync = at((o) => o === `fsyncSync ${keyDir}`, "key dir fsync");
+    const oldRemove = at((o) => o === `rmSync ${join(keyDir, "items", oldBlob)}`, "old blob removal");
+    expect(blobWrite).toBeLessThan(blobSync);
+    expect(blobSync).toBeLessThan(metaRename);
+    expect(itemsDirSync).toBeLessThan(metaRename);
+    expect(metaTmpSync).toBeLessThan(metaRename);
+    expect(metaRename).toBeLessThan(keyDirSync);
+    expect(keyDirSync).toBeLessThan(oldRemove);
   });
 });
 

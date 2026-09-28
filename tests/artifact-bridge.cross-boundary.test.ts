@@ -37,7 +37,8 @@ import { MessageChannel, type MessagePort } from "node:worker_threads";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ArtifactStorageAccess } from "shared/types/index.js";
+import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READ_RECHECK_MS } from "shared/types/index.js";
+import type { ArtifactStorageAccess, RenderArtifactToolResult } from "shared/types/index.js";
 import { listenRaw, type RawServer } from "../backend/src/routes/__fixtures__/raw-http.js";
 
 const DATA = mkdtempSync(join(tmpdir(), "callboard-bridge-xb-"));
@@ -47,7 +48,8 @@ const { storageRouter } = await import("../backend/src/routes/storage.js");
 const { artifactsRouter } = await import("../backend/src/routes/artifacts.js");
 const storage = await import("../backend/src/services/storage-service.js");
 const artifacts = await import("../backend/src/services/artifact-service.js");
-const { createArtifactBridge } = await import("../frontend/src/components/artifactBridge.js");
+const { createArtifactBridge, RATE_LIMITED } = await import("../frontend/src/components/artifactBridge.js");
+const { recheckGrant } = await import("../frontend/src/components/artifactGrant.js");
 
 // 1×1 transparent PNG.
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -57,6 +59,8 @@ const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect 
 let server: RawServer;
 const realFetch = globalThis.fetch;
 const openPorts: MessagePort[] = [];
+/** Every /api request the host made (method + path), in order — what the server's rate limiter would count. */
+const apiCalls: string[] = [];
 
 beforeAll(async () => {
   const app = express();
@@ -78,6 +82,7 @@ beforeAll(async () => {
 
   vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
     const url = typeof input === "string" && input.startsWith("/api/") ? server.origin + input : input;
+    if (typeof input === "string" && input.startsWith("/api/")) apiCalls.push(`${init?.method ?? "GET"} ${input}`);
     const r = await realFetch(url, init);
     return {
       ok: r.ok,
@@ -97,9 +102,11 @@ afterAll(async () => {
   rmSync(DATA, { recursive: true, force: true });
 });
 
-/** The shim exactly as the browser receives it: the first inline script of the page served for `?bridge=<token>`. */
-async function servedShim(token: string | null): Promise<string> {
-  const res = await realFetch(`${server.origin}/api/artifacts/study/versions/1/render${token ? `?bridge=${token}` : ""}`);
+const pinOf = (id: string) => artifacts.readArtifactVersion(id, 1).version.sha256;
+
+/** The shim exactly as the browser receives it: the first inline script of the page served for `?bridge=<token>&sha256=<pin>`. */
+async function servedShim(token: string | null, id = "study"): Promise<string> {
+  const res = await realFetch(`${server.origin}/api/artifacts/${id}/versions/1/render${token ? `?bridge=${token}&sha256=${pinOf(id)}` : ""}`);
   const m = /<head[^>]*><script>([\s\S]*?)<\/script>/.exec(await res.text());
   if (!m) throw new Error("served render has no shim right after <head>");
   return m[1];
@@ -107,15 +114,31 @@ async function servedShim(token: string | null): Promise<string> {
 
 /** A document in the frame: runs `code` with the frame's window as its global `window`. */
 function runDocument(frameWindow: Record<string, unknown>, code: string) {
-  vm.runInContext(code, vm.createContext({ window: frameWindow, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel }));
+  vm.runInContext(
+    code,
+    vm.createContext({ window: frameWindow, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel, setTimeout, clearTimeout }),
+  );
 }
 
 /**
  * Mount: the real host bridge, and a frame window running the shim served for
  * that bridge's token. The frame's `window.parent.postMessage` delivers to the
  * host as a browser would: source = the frame's window, ports = the transfer.
+ * The live re-check is the renderer's real one (`recheckGrant`) against the
+ * real artifact route, pinned to the sha256 the page was served for.
  */
-async function mount(storageKey: string | null, access: ArtifactStorageAccess) {
+async function mount(storageKey: string | null, access: ArtifactStorageAccess, id = "study", now?: () => number) {
+  const pin = pinOf(id);
+  const result: RenderArtifactToolResult = {
+    type: "render_artifact",
+    artifact_id: id,
+    version: 1,
+    sha256: pin,
+    name: id,
+    content_type: "html",
+    ...(storageKey ? { storage_key: storageKey } : {}),
+    storage_access: access,
+  };
   const frameWindow: Record<string, unknown> = {
     addEventListener: () => undefined,
     parent: {
@@ -130,8 +153,14 @@ async function mount(storageKey: string | null, access: ArtifactStorageAccess) {
       throw new Error("host posted to the frame's window");
     },
   };
-  const bridge = createArtifactBridge({ getFrameWindow: () => frameWindow as unknown as Window, storageKey, access });
-  runDocument(frameWindow, await servedShim(bridge.token));
+  const bridge = createArtifactBridge({
+    getFrameWindow: () => frameWindow as unknown as Window,
+    storageKey,
+    access,
+    recheck: () => recheckGrant(result, pin),
+    now,
+  });
+  runDocument(frameWindow, await servedShim(bridge.token, id));
   bridge.handleLoad();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return { cb: frameWindow.callboard as any, bridge, frameWindow };
@@ -276,5 +305,104 @@ describe("artifact bridge: served shim ⇄ frontend host ⇄ storage REST", () =
     const { cb } = await mount(null, "readwrite");
     await expect(cb.ready).resolves.toEqual({ storageKey: null, access: "none" });
     await expect(cb.storage.list()).rejects.toThrow(/without a storage key/);
+  });
+});
+
+describe("the live grant: re-checked against the real artifact route, while mounted", () => {
+  const LIVE_HTML = "<!doctype html><html><head></head><body>live</body></html>";
+  const fresh = async (id: string, content = LIVE_HTML) => {
+    await artifacts.deleteArtifact(id).catch(() => undefined);
+    await artifacts.saveArtifact({ id, name: id, contentType: "html", storageAccess: "readwrite", content }, "create");
+  };
+
+  it("lowered to read while mounted (Settings PATCH): reads go on, the next write is refused and never reaches storage", async () => {
+    await fresh("live-a");
+    const { cb, bridge } = await mount("deck", "readwrite", "live-a");
+    await cb.storage.write("live-a.txt", "1");
+    const patched = await realFetch(`${server.origin}/api/artifacts/live-a`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ storageAccess: "read" }),
+    });
+    expect(patched.status).toBe(200);
+    await expect(cb.storage.read("live-a.txt")).resolves.toBe("1");
+    await expect(cb.storage.write("live-a.txt", "2")).rejects.toThrow(/read-only/);
+    expect(storage.readStorageItemBytes("deck", "live-a.txt").data.toString()).toBe("1");
+    expect(bridge.access).toBe("read");
+    // Never rises again, even if the artifact does.
+    await artifacts.updateArtifact("live-a", { storageAccess: "readwrite" });
+    await expect(cb.storage.write("live-a.txt", "3")).rejects.toThrow(/read-only/);
+    await storage.deleteStorageItem("deck", "live-a.txt");
+  });
+
+  it("deleted while mounted: the next write is refused and every call after it too", async () => {
+    await fresh("live-b");
+    const { cb, bridge } = await mount("deck", "readwrite", "live-b");
+    await cb.storage.write("live-b.txt", "1");
+    expect((await realFetch(`${server.origin}/api/artifacts/live-b`, { method: "DELETE" })).status).toBe(200);
+    await expect(cb.storage.write("live-b.txt", "2")).rejects.toThrow(/revoked/);
+    expect(bridge.access).toBe("none");
+    await expect(cb.storage.read("live-b.txt")).rejects.toThrow(/no storage access/);
+    expect(storage.readStorageItemBytes("deck", "live-b.txt").data.toString()).toBe("1");
+    await storage.deleteStorageItem("deck", "live-b.txt");
+  });
+
+  it("deleted and recreated (different code, same id and version) while mounted: the running code's grant is gone", async () => {
+    await fresh("live-c");
+    const { cb } = await mount("deck", "readwrite", "live-c");
+    await fresh("live-c", "<!doctype html><html><head></head><body>impostor</body></html>");
+    await expect(cb.storage.delete("deck.json")).rejects.toThrow(/revoked/);
+    expect(storage.listStorageItems("deck").some((i) => i.name === "deck.json")).toBe(true);
+  });
+
+  it("reads rely on a check for at most ARTIFACT_BRIDGE_READ_RECHECK_MS; writes always check first", async () => {
+    await fresh("live-d");
+    let t = 1_000_000;
+    const { cb } = await mount("deck", "readwrite", "live-d", () => t);
+    apiCalls.length = 0;
+    await cb.storage.read("deck.json");
+    await cb.storage.list();
+    expect(apiCalls).toEqual(["GET /api/storage/deck/items/deck.json", "GET /api/storage/deck"]);
+    t += ARTIFACT_BRIDGE_READ_RECHECK_MS;
+    apiCalls.length = 0;
+    await cb.storage.read("deck.json");
+    expect(apiCalls).toEqual(["GET /api/artifacts/live-d", "GET /api/storage/deck/items/deck.json"]);
+    apiCalls.length = 0;
+    await cb.storage.write("live-d.txt", "x");
+    expect(apiCalls).toEqual(["GET /api/artifacts/live-d", "PUT /api/storage/deck/items/live-d.txt"]);
+    await storage.deleteStorageItem("deck", "live-d.txt");
+  });
+
+  it(`a polling artifact is cut off host-side after its burst: ${RATE_LIMITED}, and nothing more reaches the server`, async () => {
+    let t = 2_000_000;
+    const { cb } = await mount("deck", "read", "study", () => t);
+    apiCalls.length = 0;
+    let ok = 0;
+    const errors = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      try {
+        await cb.storage.list();
+        ok++;
+      } catch (err) {
+        errors.add((err as Error).message.split(":")[0]);
+      }
+    }
+    expect(ok).toBe(ARTIFACT_BRIDGE_LIMITS.burst);
+    expect(errors).toEqual(new Set([RATE_LIMITED]));
+    expect(apiCalls).toHaveLength(ARTIFACT_BRIDGE_LIMITS.burst);
+    // It refills at the sustained rate (a re-check is due by now, and costs a token of its own).
+    t += 10_000;
+    apiCalls.length = 0;
+    ok = 0;
+    for (let i = 0; i < 50; i++) await cb.storage.list().then(() => ok++, () => undefined);
+    expect(ok).toBe(9);
+    expect(apiCalls).toHaveLength(10);
+    expect(apiCalls[0]).toBe("GET /api/artifacts/study");
+  });
+
+  it("Promise.all over more reads than the in-flight cap succeeds: the shim queues, the host never sees more than the cap", async () => {
+    const { cb } = await mount("deck", "read");
+    const texts = await Promise.all(Array.from({ length: 12 }, () => cb.storage.read("deck.json")));
+    expect(new Set(texts)).toEqual(new Set([JSON.stringify(DECK)]));
   });
 });

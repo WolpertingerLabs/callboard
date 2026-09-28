@@ -265,9 +265,13 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       "Create an artifact, or save a new immutable version of an existing one. An artifact is a single-file HTML app (inline CSS/JS), an SVG, or a markdown " +
         "document, rendered in chat with render_artifact. HTML artifacts run in a sandbox that cannot fetch/XHR or load any remote resource; their only data " +
         "source is window.callboard.storage — list(), read(name, {as: 'text'|'json'|'dataUrl'}), write(name, data, {mimeType}), delete(name) — scoped to the ONE " +
-        "storage key bound at render time (await window.callboard.ready first; it resolves to {storageKey, access}). Images must come from storage " +
+        "storage key bound at render time (await window.callboard.ready first; it resolves to {storageKey, access}, or unbound with a reason if the host " +
+        "never answers within 10s, e.g. after navigating back into the frame). Storage calls are rate-limited per render: at most 4 in flight (the shim " +
+        "queues the rest) and 60 a minute with a burst of 30; past that a call rejects with an error starting 'rate limited' — load data once and keep " +
+        "it in memory rather than polling. Images must come from storage " +
         "as data URLs (image/* items, SVG included, come back typed for <img>). The sandbox is not a data-loss barrier: a determined artifact can still " +
-        "leak what it can read (by navigating its frame, or WebRTC), so granting read on a key means the artifact's author can read that key. Ids: ^[a-z0-9][a-z0-9-]{0,63}$. name and content_type are required on create; content_type cannot change later. " +
+        "leak what it can read (by navigating its frame, or WebRTC), so granting read on a key means the artifact's author can read that key. The " +
+        "artifact's JS runs in the page's process: an infinite loop freezes the whole Callboard tab (as with canvases), every time the chat is opened. Ids: ^[a-z0-9][a-z0-9-]{0,63}$. name and content_type are required on create; content_type cannot change later. " +
         "storage_access (none|read|readwrite, default none) is the MOST the artifact may ever be granted. Source ≤5MB; the last 50 versions are kept.",
       {
         id: z.string().describe('The artifact id, e.g. "cramhouse"'),
@@ -319,7 +323,8 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       "Render an artifact in the chat UI. HTML runs in a sandboxed frame that cannot fetch or load remote resources; SVG shows as an image; markdown is " +
         "rendered as a document. Pass storage_key to bind ONE existing storage key to this render: the artifact then reads (and, if its storage_access is " +
         "readwrite, writes) that key's items through window.callboard.storage. Binding requires the artifact's storage_access to be read or readwrite; each " +
-        "time the render is shown it is granted at most the artifact's CURRENT storage_access, and nothing if that version has since been deleted or replaced. " +
+        "time the render is shown it is granted at most the artifact's CURRENT storage_access, and nothing if that version has since been deleted or replaced; " +
+        "while it is shown, lowering the artifact's storage_access or deleting it takes effect at the next write (and within seconds for reads). " +
         "Every render bound to a key is an independent live instance: two chat bubbles bound readwrite to the same key do not see each other's writes " +
         "until reloaded, and the last write wins — render once and reuse that bubble rather than stacking several live copies.",
       {

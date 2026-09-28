@@ -35,6 +35,19 @@
  *   the only key any operation addresses; a `key` in the payload is ignored.
  * - Names are re-validated here (the server validates again) and writes are
  *   size-checked here (the server enforces again).
+ * - Every request that would reach the server is metered first
+ *   ({@link ARTIFACT_BRIDGE_LIMITS}: ≤ 4 in flight, a 30-request burst
+ *   refilling at 1/s). Over the limit it fails at once with a `rate limited`
+ *   error and never leaves the browser — one polling artifact must not spend
+ *   the per-client API budget the whole UI shares.
+ * - The grant is live, not frozen at mount: before every write and delete —
+ *   and before a read or list whose last check is older than
+ *   {@link ARTIFACT_BRIDGE_READ_RECHECK_MS} — the host re-checks the artifact
+ *   (it still exists, its current declared access, the pinned sha256) via
+ *   `recheck`, and on the page becoming visible again. A downgrade lowers the
+ *   grant for the rest of the mount (read ⇒ writes refused; none, deleted or
+ *   replaced ⇒ every call refused); it never rises again. Those checks are
+ *   requests too, and are metered like any other.
  *
  * Accepted, by design: the artifact itself knows its token and can hand it to
  * a page it navigates to (which would then bind nothing — the host is bound
@@ -45,10 +58,13 @@
  */
 
 import {
+  ARTIFACT_BRIDGE_LIMITS,
+  ARTIFACT_BRIDGE_READ_RECHECK_MS,
   deleteStorageItem,
   fetchStorageItem,
   getStorageKey,
   isValidStorageItemName,
+  minArtifactStorageAccess,
   putStorageItem,
   STORAGE_ITEM_MIME_HEADER,
   STORAGE_MAX_ITEM_BYTES,
@@ -116,11 +132,13 @@ const IMAGE_MIME_RE = /^image\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/;
  *
  * Safe because this data URL only ever exists inside the artifact's frame:
  * an opaque-origin sandbox with no cookies and no /api, whose CSP forbids
- * fetch and remote loads and sets `frame-src 'none'` (so it cannot frame the
- * URL as a document); `<img>` never runs script in an SVG; and the artifact
- * could already read the same bytes as text and build this URL itself. The
- * same-origin REST response is untouched — still an octet-stream attachment
- * under nosniff and a sandbox CSP.
+ * fetch and remote loads; `frame-src 'none'` stops it framing a `data:` URL
+ * as a document (it does NOT stop `srcdoc` frames — measured — but a srcdoc
+ * child is only more of the artifact's own code in the same sandbox, and its
+ * messages never pass the bridge's source check); `<img>` never runs script
+ * in an SVG; and the artifact could already read the same bytes as text and
+ * build this URL itself. The same-origin REST response is untouched — still
+ * an octet-stream attachment under nosniff and a sandbox CSP.
  */
 function retypeForDataUrl(blob: Blob, recordedMimeType: string | undefined): Blob {
   const recorded = recordedMimeType?.trim().toLowerCase();
@@ -147,82 +165,188 @@ export interface ArtifactBridgeOptions {
   api?: BridgeStorageApi;
   /** Test seam; production mints one per mount. */
   token?: string;
+  /**
+   * The artifact's grant as it stands NOW: re-reads the artifact and returns
+   * the most this mount may still do — "none" if it is gone, replaced (sha256
+   * differs from the served one) or lowered to none. Throws only when it could
+   * not look (network); the request that needed the check is then refused, but
+   * the grant is kept. Omitted ⇒ the grant is never re-checked (tests only).
+   */
+  recheck?: () => Promise<ArtifactStorageAccess>;
+  /** Told whenever a re-check lowers the grant (the renderer's badge follows it). */
+  onAccessChange?: (access: ArtifactStorageAccess) => void;
+  /** Clock, ms. Test seam for the rate limiter and the read re-check cache. */
+  now?: () => number;
 }
 
 export interface ArtifactBridge {
   /** Goes in the frame's src (`artifactRenderUrl(…, token)`) and nowhere else. */
   readonly token: string;
   readonly revoked: boolean;
-  /** True once a valid hello has bound the bridge to its port. */
+  /** True once a valid hello has bound the bridge to its port (and it is not revoked). */
   readonly bound: boolean;
   /** Call on every `load` of the frame. The first is a no-op; any later one revokes. */
   handleLoad(): void;
   /** Window `message` listener: accepts the one valid hello, ignores everything else. */
   handleMessage(e: MessageEvent): void;
+  /** The grant now — the mount's, lowered by any re-check since. */
+  readonly access: ArtifactStorageAccess;
   /** Resolves once every request received so far has been answered (or dropped). Test seam. */
   settled(): Promise<void>;
+  /** Host-initiated re-check (the page became visible again). Metered; skipped, and the cache dropped, when over budget. */
+  refresh(): Promise<void>;
+  /** Kill the bridge: nothing more is answered, and the host's end of the port is closed. */
   revoke(): void;
 }
+
+/** The message of every metered refusal; artifacts can match on the prefix. */
+export const RATE_LIMITED = "rate limited";
 
 export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridge {
   const api = opts.api ?? restBridgeApi;
   const token = opts.token ?? makeBridgeToken();
   // Unbound renders get no authority at all, whatever access was passed.
   const storageKey = opts.storageKey ?? null;
-  const access: ArtifactStorageAccess = storageKey ? opts.access : "none";
+  let access: ArtifactStorageAccess = storageKey ? opts.access : "none";
+  const now = opts.now ?? (() => Date.now());
   let loads = 0;
   let revoked = false;
   let port: MessagePort | null = null;
   const inFlight = new Set<Promise<void>>();
+  let active = 0;
 
-  async function perform(req: Record<string, unknown>): Promise<unknown> {
-    if (access === "none" || !storageKey) throw new BridgeRefusal("This artifact has no storage bound");
+  // Token bucket (ARTIFACT_BRIDGE_LIMITS). Starts full.
+  let tokens: number = ARTIFACT_BRIDGE_LIMITS.burst;
+  let refilledAt = now();
+  function spend(cost: number): boolean {
+    const t = now();
+    tokens = Math.min(ARTIFACT_BRIDGE_LIMITS.burst, tokens + ((t - refilledAt) / 1000) * ARTIFACT_BRIDGE_LIMITS.refillPerSecond);
+    refilledAt = t;
+    if (tokens < cost) return false;
+    tokens -= cost;
+    return true;
+  }
+
+  // The renderer judged the artifact just before mounting, so the mount starts with a fresh check.
+  let checkedAt = now();
+  let checking: Promise<void> | null = null;
+
+  const granted = (): ArtifactStorageAccess => access;
+
+  function lower(to: ArtifactStorageAccess): void {
+    const next = minArtifactStorageAccess(access, to);
+    if (next === access) return;
+    access = next;
+    opts.onAccessChange?.(access);
+  }
+
+  /** One re-check at a time; concurrent callers share it. Rejects if the check could not be made. */
+  function runCheck(recheck: () => Promise<ArtifactStorageAccess>): Promise<void> {
+    checking ??= recheck()
+      .then((current) => {
+        lower(current);
+        checkedAt = now();
+      })
+      .finally(() => {
+        checking = null;
+      });
+    return checking;
+  }
+
+  /**
+   * Everything a request is checked for that needs no server — access, op,
+   * name, payload — so that a refusal costs nothing. Returns the call to make.
+   */
+  function prepare(req: Record<string, unknown>, key: string): { mutating: boolean; run: () => Promise<unknown> } {
     const op = req.op as BridgeOp;
-    if (op === "list") return api.list(storageKey);
+    if (op === "list") return { mutating: false, run: () => api.list(key) };
+    if (op !== "read" && op !== "write" && op !== "delete") throw new BridgeRefusal("Unknown operation");
 
     const name = req.name;
     if (!isValidStorageItemName(name)) throw new BridgeRefusal("Invalid item name");
 
     if (op === "read") {
       const as = req.as ?? "text";
-      if (as === "text") return api.readText(storageKey, name);
+      if (as === "text") return { mutating: false, run: () => api.readText(key, name) };
       if (as === "json") {
-        const text = await api.readText(storageKey, name);
-        try {
-          return JSON.parse(text);
-        } catch {
-          throw new BridgeRefusal(`Item "${name}" is not valid JSON`);
-        }
+        return {
+          mutating: false,
+          run: async () => {
+            const text = await api.readText(key, name);
+            try {
+              return JSON.parse(text);
+            } catch {
+              throw new BridgeRefusal(`Item "${name}" is not valid JSON`);
+            }
+          },
+        };
       }
       if (as === "dataUrl") {
-        const { blob, recordedMimeType } = await api.readBlob(storageKey, name);
-        return blobToDataUrl(retypeForDataUrl(blob, recordedMimeType));
+        return {
+          mutating: false,
+          run: async () => {
+            const { blob, recordedMimeType } = await api.readBlob(key, name);
+            return blobToDataUrl(retypeForDataUrl(blob, recordedMimeType));
+          },
+        };
       }
       throw new BridgeRefusal("Invalid read format");
     }
 
-    if (op === "write" || op === "delete") {
-      if (access !== "readwrite") throw new BridgeRefusal("This artifact has read-only storage access");
-      if (op === "delete") {
-        await api.remove(storageKey, name);
-        return null;
-      }
-      const data = req.data;
-      const encoding = req.encoding ?? "utf8";
-      if (typeof data !== "string") throw new BridgeRefusal("Write data must be a string");
-      if (encoding !== "utf8" && encoding !== "base64") throw new BridgeRefusal("Invalid encoding");
-      if (encoding === "base64" && (data.length % 4 !== 0 || !BASE64_RE.test(data))) throw new BridgeRefusal("Invalid base64 data");
-      if (payloadBytes(data, encoding) > STORAGE_MAX_ITEM_BYTES) throw new BridgeRefusal("Item exceeds the 25 MB item limit");
-      let mimeType: string | undefined;
-      if (req.mimeType !== undefined) {
-        if (typeof req.mimeType !== "string" || !MIME_RE.test(req.mimeType)) throw new BridgeRefusal("Invalid mimeType");
-        mimeType = req.mimeType;
-      }
-      const body = encoding === "utf8" ? { content: data, mimeType } : { content_base64: data, mimeType };
-      return api.write(storageKey, name, body);
+    if (access !== "readwrite") throw new BridgeRefusal("This artifact has read-only storage access");
+    if (op === "delete") {
+      return {
+        mutating: true,
+        run: async () => {
+          await api.remove(key, name);
+          return null;
+        },
+      };
     }
+    const data = req.data;
+    const encoding = req.encoding ?? "utf8";
+    if (typeof data !== "string") throw new BridgeRefusal("Write data must be a string");
+    if (encoding !== "utf8" && encoding !== "base64") throw new BridgeRefusal("Invalid encoding");
+    if (encoding === "base64" && (data.length % 4 !== 0 || !BASE64_RE.test(data))) throw new BridgeRefusal("Invalid base64 data");
+    if (payloadBytes(data, encoding) > STORAGE_MAX_ITEM_BYTES) throw new BridgeRefusal("Item exceeds the 25 MB item limit");
+    let mimeType: string | undefined;
+    if (req.mimeType !== undefined) {
+      if (typeof req.mimeType !== "string" || !MIME_RE.test(req.mimeType)) throw new BridgeRefusal("Invalid mimeType");
+      mimeType = req.mimeType;
+    }
+    const body = encoding === "utf8" ? { content: data, mimeType } : { content_base64: data, mimeType };
+    return { mutating: true, run: () => api.write(key, name, body) };
+  }
 
-    throw new BridgeRefusal("Unknown operation");
+  async function perform(req: Record<string, unknown>): Promise<unknown> {
+    if (access === "none" || !storageKey) throw new BridgeRefusal("This artifact has no storage access");
+    const { mutating, run } = prepare(req, storageKey);
+
+    // From here on the request reaches the server: meter it first — the call
+    // itself, plus the re-check it needs (always for a write or delete; for a
+    // read, when the last check is stale and none is already under way).
+    const recheck = opts.recheck;
+    const needsCheck = !!recheck && (mutating || now() - checkedAt >= ARTIFACT_BRIDGE_READ_RECHECK_MS);
+    const cost = 1 + (needsCheck && !(checking && !mutating) ? 1 : 0);
+    if (!spend(cost)) {
+      throw new BridgeRefusal(
+        `${RATE_LIMITED}: this artifact may make at most ${ARTIFACT_BRIDGE_LIMITS.refillPerSecond * 60} storage requests a minute (burst ${ARTIFACT_BRIDGE_LIMITS.burst}); slow down and retry`,
+      );
+    }
+    if (needsCheck && recheck) {
+      // A write needs a check that started after it arrived, not one already in flight.
+      if (mutating && checking) await checking.catch(() => undefined);
+      try {
+        await runCheck(recheck);
+      } catch {
+        throw new BridgeRefusal("Could not re-check the artifact's storage access; try again");
+      }
+      // Read through a call: TS narrowed `access` above and cannot see that the check may have lowered it.
+      const current = granted();
+      if (current === "none") throw new BridgeRefusal("This artifact's storage access has been revoked");
+      if (mutating && current !== "readwrite") throw new BridgeRefusal("This artifact has read-only storage access");
+    }
+    return run();
   }
 
   async function answer(p: MessagePort, msg: Record<string, unknown>): Promise<void> {
@@ -245,14 +369,31 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     const msg = e.data;
     if (!msg || typeof msg !== "object" || msg.__callboard !== BRIDGE_REQUEST) return;
     if (msg.token !== token || typeof msg.id !== "string") return;
-    const done = answer(p, msg);
+    if (active >= ARTIFACT_BRIDGE_LIMITS.maxInFlight) {
+      const reply: BridgeReplyMessage = {
+        __callboard: BRIDGE_REPLY,
+        id: msg.id,
+        ok: false,
+        error: `${RATE_LIMITED}: at most ${ARTIFACT_BRIDGE_LIMITS.maxInFlight} storage requests may be in flight at once; wait for one to finish`,
+      };
+      p.postMessage(reply);
+      return;
+    }
+    active += 1;
+    const done = answer(p, msg).finally(() => {
+      active -= 1;
+    });
     inFlight.add(done);
     void done.finally(() => inFlight.delete(done));
   }
 
   function revoke(): void {
     revoked = true;
-    port?.close();
+    if (port) {
+      port.onmessage = null;
+      port.close();
+    }
+    port = null; // nothing of the bridge keeps the dead port alive
   }
 
   return {
@@ -262,6 +403,9 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     },
     get bound() {
       return port !== null;
+    },
+    get access() {
+      return access;
     },
     handleLoad() {
       loads += 1;
@@ -282,6 +426,17 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     },
     async settled() {
       while (inFlight.size) await Promise.all([...inFlight]);
+    },
+    async refresh() {
+      const recheck = opts.recheck;
+      if (revoked || !port || !recheck || access === "none" || checking) return;
+      if (!spend(1)) {
+        checkedAt = -Infinity; // over budget: the next request re-checks instead
+        return;
+      }
+      await runCheck(recheck).catch(() => {
+        checkedAt = -Infinity; // could not look: same
+      });
     },
     revoke,
   };

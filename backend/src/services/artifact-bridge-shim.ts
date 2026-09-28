@@ -1,3 +1,5 @@
+import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READY_TIMEOUT_MS } from "shared/types/index.js";
+
 /**
  * The storage bridge shim — the iframe side of the artifact storage bridge.
  *
@@ -23,18 +25,34 @@
  * inside the artifact, so it is convenience, never the boundary):
  *  - only the FIRST init is honoured — a later one cannot rebind or raise access;
  *  - requests made before init are queued (they wait on `ready`);
+ *  - at most ARTIFACT_BRIDGE_LIMITS.maxInFlight requests are outstanding at
+ *    once; the rest wait their turn here, so `Promise.all` over many reads
+ *    works instead of tripping the host's in-flight refusal. The host's rate
+ *    budget is NOT smoothed here: past it, calls reject with "rate limited".
  *  - unbound or `access: "none"` ⇒ every call rejects; `read` ⇒ writes and
  *    deletes reject.
  *
  * `ready` resolves (never rejects), with `{ storageKey: null, access: "none" }`
  * for an unbound render — including a render with no token (opened outside
- * the renderer) and a top-level open (no parent to talk to). ES2019, no
- * dependencies.
+ * the renderer) and a top-level open (no parent to talk to).
+ *
+ * It also settles when the host never answers. The host binds only the FIRST
+ * valid hello of a mount and nothing after the frame's second load, so some
+ * documents are (correctly) never answered: the artifact after the user
+ * follows a link inside it and comes back (the frame refetches the same URL,
+ * token and all, into a bridge that is already revoked), or a shim whose hello
+ * lost the race to a hello the artifact's own code sent first. Rather than
+ * hang, `ready` resolves unbound after {@link ARTIFACT_BRIDGE_READY_TIMEOUT_MS}
+ * with a `reason`, and an init arriving later is ignored. Re-opening the chat
+ * (a fresh mount) renders it bound again.
+ *
+ * ES2019, no dependencies.
  */
 export const ARTIFACT_BRIDGE_SHIM_JS = `(function(token){
   "use strict";
   var host = window.parent;
   var port = null, bound = false, key = null, access = "none", seq = 0, pending = {};
+  var MAX_IN_FLIGHT = ${ARTIFACT_BRIDGE_LIMITS.maxInFlight}, active = 0, waiting = [];
   var resolveReady;
   var ready = new Promise(function(resolve){ resolveReady = resolve; });
   var ACCESS = { none: 1, read: 1, readwrite: 1 };
@@ -44,12 +62,18 @@ export const ARTIFACT_BRIDGE_SHIM_JS = `(function(token){
   } else {
     var channel = new MessageChannel();
     port = channel.port1;
+    var readyTimer = setTimeout(function(){
+      if (bound) return;
+      bound = true; /* a late init is ignored: ready has settled unbound */
+      resolveReady(Object.freeze({ storageKey: null, access: "none", reason: "the host did not answer the storage bridge (this document was reloaded or revisited, or another hello came first); storage is unavailable until the artifact is rendered again" }));
+    }, ${ARTIFACT_BRIDGE_READY_TIMEOUT_MS});
     port.onmessage = function(e){
       var d = e.data;
       if (!d || typeof d !== "object") return;
       if (d.__callboard === "artifact-bridge-init") {
         if (bound) return;
         bound = true;
+        clearTimeout(readyTimer);
         key = typeof d.storageKey === "string" && d.storageKey ? d.storageKey : null;
         access = key && ACCESS[d.access] === 1 ? d.access : "none";
         resolveReady(Object.freeze({ storageKey: key, access: access }));
@@ -57,6 +81,8 @@ export const ARTIFACT_BRIDGE_SHIM_JS = `(function(token){
         if (!bound || typeof d.id !== "string" || !Object.prototype.hasOwnProperty.call(pending, d.id)) return;
         var p = pending[d.id];
         delete pending[d.id];
+        active--;
+        if (waiting.length) waiting.shift()();
         if (d.ok === true) p.resolve(d.result);
         else p.reject(new Error(typeof d.error === "string" && d.error ? d.error : "callboard storage request failed"));
       }
@@ -75,11 +101,15 @@ export const ARTIFACT_BRIDGE_SHIM_JS = `(function(token){
       if (!key || access === "none") throw new Error("callboard storage is not available: this artifact was rendered without a storage key");
       if ((op === "write" || op === "delete") && access !== "readwrite") throw new Error("callboard storage is read-only for this render");
       return new Promise(function(resolve, reject){
-        var id = "r" + (++seq) + "-" + Math.random().toString(36).slice(2);
-        pending[id] = { resolve: resolve, reject: reject };
-        var msg = { __callboard: "artifact-bridge-request", token: token, id: id, op: op };
-        for (var k in fields) if (fields[k] !== undefined) msg[k] = fields[k];
-        port.postMessage(msg);
+        function send(){
+          active++;
+          var id = "r" + (++seq) + "-" + Math.random().toString(36).slice(2);
+          pending[id] = { resolve: resolve, reject: reject };
+          var msg = { __callboard: "artifact-bridge-request", token: token, id: id, op: op };
+          for (var k in fields) if (fields[k] !== undefined) msg[k] = fields[k];
+          port.postMessage(msg);
+        }
+        if (active < MAX_IN_FLIGHT) send(); else waiting.push(send);
       });
     });
   }

@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { StrictMode } from "react";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
-import ArtifactRenderer, { judgeRender } from "./ArtifactRenderer";
+import ArtifactRenderer from "./ArtifactRenderer";
+import { judgeRender } from "./artifactGrant";
 import { BRIDGE_HELLO, BRIDGE_INIT, BRIDGE_REPLY, BRIDGE_REQUEST, type BridgeStorageApi } from "./artifactBridge";
 import type { Artifact, RenderArtifactToolResult } from "../api";
 
@@ -72,7 +74,7 @@ async function frameOf(container: HTMLElement): Promise<HTMLIFrameElement> {
 }
 
 function tokenOf(frame: HTMLIFrameElement): string {
-  const m = /\?bridge=([0-9a-f]{32})$/.exec(frame.getAttribute("src") ?? "");
+  const m = /\?bridge=([0-9a-f]{32})&sha256=[0-9a-f]{64}$/.exec(frame.getAttribute("src") ?? "");
   if (!m) throw new Error(`no token in ${frame.getAttribute("src")}`);
   return m[1];
 }
@@ -122,7 +124,8 @@ describe("ArtifactRenderer — mounting", () => {
     const { container } = render(<ArtifactRenderer data={base} bridgeApi={api()} />);
     const frame = await frameOf(container);
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
-    expect(frame.getAttribute("src")).toMatch(/^\/api\/artifacts\/cramhouse\/versions\/3\/render\?bridge=[0-9a-f]{32}$/);
+    // The token, and the sha256 the mount was judged for — the server serves only bytes that hash to it.
+    expect(frame.getAttribute("src")).toMatch(new RegExp(`^/api/artifacts/cramhouse/versions/3/render\\?bridge=[0-9a-f]{32}&sha256=${SHA}$`));
   });
 
   it("encodes the id in the render URL", async () => {
@@ -264,9 +267,9 @@ describe("ArtifactRenderer — the grant is re-checked against the artifact as i
   });
 
   it("judgeRender: the rules on their own", () => {
-    expect(judgeRender(base, artifact())).toEqual({ status: "ok", access: "read" });
-    expect(judgeRender({ ...base, storage_access: "readwrite" }, artifact({ storageAccess: "read" }))).toEqual({ status: "ok", access: "read" });
-    expect(judgeRender({ ...base, storage_key: undefined, storage_access: "readwrite" }, artifact())).toEqual({ status: "ok", access: "none" });
+    expect(judgeRender(base, artifact())).toEqual({ status: "ok", access: "read", sha256: SHA });
+    expect(judgeRender({ ...base, storage_access: "readwrite" }, artifact({ storageAccess: "read" }))).toEqual({ status: "ok", access: "read", sha256: SHA });
+    expect(judgeRender({ ...base, storage_key: undefined, storage_access: "readwrite" }, artifact())).toEqual({ status: "ok", access: "none", sha256: SHA });
     expect(judgeRender(base, artifact({ contentType: "svg" })).status).toBe("refused");
   });
 });
@@ -302,7 +305,7 @@ describe("ArtifactRenderer — fullscreen is the same frame", () => {
     await frameOf(container);
     expect(document.querySelectorAll("iframe")).toHaveLength(1);
     expect(screen.getByTestId("artifact-frame-box").style.position).toBe("fixed");
-    fireEvent.click(screen.getByTitle("Close"));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(document.querySelectorAll("iframe")).toHaveLength(1);
   });
 });
@@ -354,3 +357,69 @@ describe("ArtifactRenderer — other types", () => {
     expect(screen.getByTestId("artifact-renderer").style.maxWidth).toBe("100%");
   });
 });
+
+describe("ArtifactRenderer — the live grant and the port's lifetime", () => {
+  it("unmounting closes the host's end of the port (after a tick)", async () => {
+    const { container, unmount } = render(<ArtifactRenderer data={base} bridgeApi={api()} />);
+    const port = hello(await frameOf(container));
+    unmount();
+    expect(port.close).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(port.close).toHaveBeenCalled();
+    expect(port.onmessage).toBeNull();
+  });
+
+  it("StrictMode's effect re-run does not revoke the live mount", async () => {
+    const storage = api();
+    const { container } = render(
+      <StrictMode>
+        <ArtifactRenderer data={base} bridgeApi={storage} />
+      </StrictMode>,
+    );
+    const frame = await frameOf(container);
+    const token = tokenOf(frame);
+    const port = hello(frame);
+    fireEvent.load(frame);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(port.close).not.toHaveBeenCalled();
+    request(port, token, { id: "r1", op: "read", name: "deck.json" });
+    await waitFor(() => expect(sent(port)).toHaveLength(2));
+    expect(sent(port)[1]).toMatchObject({ id: "r1", ok: true });
+  });
+
+  it("a write re-checks the artifact first: lowered to read since mount ⇒ refused, and the badge follows", async () => {
+    const storage = api();
+    h.getArtifact.mockResolvedValue(artifact({ storageAccess: "readwrite" }));
+    const { container } = render(<ArtifactRenderer data={{ ...base, storage_access: "readwrite" }} bridgeApi={storage} />);
+    const frame = await frameOf(container);
+    const token = tokenOf(frame);
+    const port = hello(frame);
+    fireEvent.load(frame);
+    expect(screen.getByTestId("artifact-key-badge").textContent).toBe("birds · rw");
+    h.getArtifact.mockClear();
+    h.getArtifact.mockResolvedValue(artifact({ storageAccess: "read" }));
+    request(port, token, { id: "w1", op: "write", name: "deck.json", data: "x" });
+    await waitFor(() => expect(sent(port)).toHaveLength(2));
+    expect(h.getArtifact).toHaveBeenCalledWith("cramhouse");
+    expect(sent(port)[1]).toMatchObject({ id: "w1", ok: false, error: expect.stringMatching(/read-only/) });
+    expect(storage.write).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId("artifact-key-badge").textContent).toBe("birds · read"));
+    // Same frame — a lowered grant is never a remount.
+    expect(container.querySelector("iframe")).toBe(frame);
+  });
+
+  it("the page becoming visible re-checks: deleted since ⇒ no access, no badge", async () => {
+    const { container } = render(<ArtifactRenderer data={base} bridgeApi={api()} />);
+    const frame = await frameOf(container);
+    hello(frame);
+    fireEvent.load(frame);
+    h.getArtifact.mockClear();
+    h.getArtifact.mockRejectedValue(new Error("Artifact not found: cramhouse"));
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(screen.queryByTestId("artifact-key-badge")).toBeNull());
+    expect(h.getArtifact).toHaveBeenCalledTimes(1);
+  });
+});
+

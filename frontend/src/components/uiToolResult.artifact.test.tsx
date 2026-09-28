@@ -76,7 +76,7 @@ describe("render_artifact via the real CALLBOARD_UI_TOOLS", () => {
         if (!f) throw new Error("not mounted yet");
         return f;
       });
-      expect(frame.getAttribute("src")).toMatch(/^\/api\/artifacts\/cramhouse\/versions\/2\/render\?bridge=[0-9a-f]{32}$/);
+      expect(frame.getAttribute("src")).toMatch(/^\/api\/artifacts\/cramhouse\/versions\/2\/render\?bridge=[0-9a-f]{32}&sha256=[0-9a-f]{64}$/);
       expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     },
   );

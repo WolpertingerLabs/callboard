@@ -38,8 +38,8 @@ const cramhouse = {
   storageAccess: "readwrite",
   currentVersion: 2,
   versions: [
-    { version: 1, created: "2026-09-01T00:00:00Z", size: 10, sha256: "a", note: "first cut" },
-    { version: 2, created: "2026-09-02T00:00:00Z", size: 12, sha256: "b", note: "flip animation" },
+    { version: 1, created: "2026-09-01T00:00:00Z", size: 10, sha256: "a".repeat(64), note: "first cut" },
+    { version: 2, created: "2026-09-02T00:00:00Z", size: 12, sha256: "b".repeat(64), note: "flip animation" },
   ],
   updated: "2026-09-02T00:00:00Z",
 };
@@ -65,7 +65,7 @@ async function frameNow(ok: (f: HTMLIFrameElement) => boolean = () => true): Pro
 
 /** Say hello as the served shim would (token from the frame's src, a port to answer on) and return the init it gets. */
 async function initFor(frame: HTMLIFrameElement): Promise<unknown> {
-  const token = /\?bridge=([0-9a-f]{32})$/.exec(frame.getAttribute("src") ?? "")?.[1];
+  const token = /\?bridge=([0-9a-f]{32})&sha256=/.exec(frame.getAttribute("src") ?? "")?.[1];
   const port = { postMessage: vi.fn(), close: vi.fn(), onmessage: null };
   const ev = new MessageEvent("message", { data: { __callboard: "artifact-bridge-hello", token }, source: frame.contentWindow });
   Object.defineProperty(ev, "ports", { value: [port] });
@@ -161,7 +161,7 @@ describe("ArtifactsSettings", () => {
     await openCramhouse();
     const frame = await frameNow();
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
-    expect(frame.getAttribute("src")).toMatch(/^\/api\/artifacts\/cramhouse\/versions\/2\/render\?bridge=[0-9a-f]{32}$/);
+    expect(frame.getAttribute("src")).toMatch(/^\/api\/artifacts\/cramhouse\/versions\/2\/render\?bridge=[0-9a-f]{32}&sha256=[0-9a-f]{64}$/);
     fireEvent.click(within(screen.getByTestId("artifact-versions")).getByText("first cut"));
     await waitFor(() => expect(document.querySelector("iframe")?.getAttribute("src")).toMatch(/^\/api\/artifacts\/cramhouse\/versions\/1\/render\?bridge=/));
   });

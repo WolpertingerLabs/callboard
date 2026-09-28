@@ -2748,10 +2748,14 @@ export type {
   ArtifactBridgeOp,
   ArtifactBridgeRequest,
   ArtifactBridgeReply,
+  ArtifactBridgeReady,
 } from "shared/types/index.js";
 
 export {
+  ARTIFACT_BRIDGE_LIMITS,
+  ARTIFACT_BRIDGE_READ_RECHECK_MS,
   ARTIFACT_BRIDGE_TOKEN_PATTERN,
+  ARTIFACT_RENDER_SHA256_PATTERN,
   ARTIFACT_ID_PATTERN,
   STORAGE_ITEM_MIME_HEADER,
   STORAGE_MAX_ITEM_BYTES,
@@ -2853,9 +2857,14 @@ export async function deleteStorageItem(key: string, name: string): Promise<void
  * load. `bridgeToken` (HTML only) is the mount's bridge token; the server
  * injects it into the shim of that one response.
  */
-export function artifactRenderUrl(id: string, version: number, bridgeToken?: string): string {
+/**
+ * The served document of one artifact version. A framed HTML render passes its
+ * bridge token AND the sha256 it checked: the route refuses to serve bytes that
+ * no longer hash to it (and requires it alongside a token).
+ */
+export function artifactRenderUrl(id: string, version: number, pin?: { bridgeToken: string; sha256: string }): string {
   const url = `${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/render`;
-  return bridgeToken ? `${url}?bridge=${encodeURIComponent(bridgeToken)}` : url;
+  return pin ? `${url}?bridge=${encodeURIComponent(pin.bridgeToken)}&sha256=${encodeURIComponent(pin.sha256)}` : url;
 }
 
 /** Summaries only — no version list; `getArtifact` for that. */

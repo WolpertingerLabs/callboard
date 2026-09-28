@@ -14,7 +14,8 @@
  *
  * **meta.json is the commit point.** A save writes the new bytes to a fresh,
  * never-before-used file, then atomically replaces meta.json to point at it,
- * and only then removes the previous file. A failure (or crash) at any step
+ * and only then removes the previous file (fsynced in that order, so it holds
+ * across a power loss too — see "Atomic, durable writes"). A failure (or crash) at any step
  * before the meta rename leaves the previous committed state exactly as it
  * was; after it, at worst an unreferenced file is left behind. Unreferenced
  * files are removed by {@link sweepUnreferenced} at the start of the key's next
@@ -33,6 +34,7 @@ import {
   constants as fsConstants,
   existsSync,
   fstatSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -218,13 +220,23 @@ function newBlobName(name: string): string {
   return `${name}~${randomBytes(8).toString("hex")}`;
 }
 
-/** The file under items/ that holds `name`'s bytes, per its record. A record naming any other file is corrupt, not followed. */
-function blobNameOf(name: string, record: StorageItemRecord): string {
+/** The file under items/ that holds `name`'s bytes, per its record — or null when the record names any other file (corrupt; never followed). */
+function blobNameOrNull(name: string, record: StorageItemRecord): string | null {
   if (record.file === undefined) return name;
-  if (typeof record.file !== "string" || !record.file.startsWith(name) || !BLOB_SUFFIX.test(record.file.slice(name.length))) {
-    throw new Error(`Corrupt storage meta: item "${name}" points at "${String(record.file)}"`);
-  }
+  if (typeof record.file !== "string" || !record.file.startsWith(name) || !BLOB_SUFFIX.test(record.file.slice(name.length))) return null;
   return record.file;
+}
+
+/** {@link blobNameOrNull}, throwing on a corrupt record — for reads, which have nothing safe to fall back to. */
+function blobNameOf(name: string, record: StorageItemRecord): string {
+  const blob = blobNameOrNull(name, record);
+  if (blob === null) throw new Error(`Corrupt storage meta: item "${name}" points at "${String(record.file)}"`);
+  return blob;
+}
+
+/** Could `fileName` under items/ hold the bytes of item `name` (its legacy file, or any of its `~<hex>` blobs)? */
+function mayBelongTo(fileName: string, name: string): boolean {
+  return fileName === name || (fileName.startsWith(`${name}~`) && BLOB_SUFFIX.test(fileName.slice(name.length)));
 }
 
 /**
@@ -246,14 +258,56 @@ function containedItemsFile(key: string, fileName: string): string {
   return file;
 }
 
-// ── Atomic writes ────────────────────────────────────────────────────
+// ── Atomic, durable writes ───────────────────────────────────────────
+//
+// "meta is the commit point" has to hold across a power loss, not just a
+// process crash: without fsync the kernel may persist the meta rename before
+// the new blob's bytes (committed meta → a blob of zeros or a missing file)
+// or the old blob's unlink before the rename (meta → a file already gone).
+// So: the new file's data is fsynced before it is renamed or referenced, the
+// directory holding a new name is fsynced before anything depends on that
+// name, and meta's directory is fsynced after the rename, before the previous
+// blob is removed. A handful of fsyncs per save; the store is not hot.
 
-/** Write `data` to `target` via a pid-suffixed dot-prefixed tmp file + rename. The tmp is unlinked on failure. */
+/** Write a new file (`wx`) and fsync its data before returning (fsync flushes the inode, whichever descriptor asks). */
+export function writeFileDurableSync(file: string, data: string | Buffer): void {
+  writeFileSync(file, data, { flag: "wx" });
+  const fd = openSync(file, "r+");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * fsync a directory so the names created or removed in it are durable. Best
+ * effort: some platforms (Windows) cannot open a directory for fsync, and
+ * there it is skipped — the ordering then holds for process crashes only.
+ */
+export function fsyncDirSync(dir: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(dir, "r");
+    fsyncSync(fd);
+  } catch {
+    /* not supported here */
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Write `data` to `target` via a pid-suffixed dot-prefixed tmp file + rename,
+ * durably (tmp fsynced before the rename, the directory after). The tmp is
+ * unlinked on failure; one orphaned by a crash matches {@link STALE_TMP_RE}.
+ */
 export function atomicWriteFileSync(target: string, data: string | Buffer): void {
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
   try {
-    writeFileSync(tmp, data, { flag: "wx" });
+    writeFileDurableSync(tmp, data);
     renameSync(tmp, target);
+    fsyncDirSync(path.dirname(target));
   } catch (err) {
     try {
       unlinkSync(tmp);
@@ -348,21 +402,53 @@ function removeUnreferenced(key: string, fileName: string): void {
   }
 }
 
+/** A meta.json tmp file {@link atomicWriteFileSync} left behind (crash between write and rename). */
+const STALE_TMP_RE = /^\.meta\.json\.\d+\.[0-9a-f]{8}\.tmp$/;
+/** Old enough that no live write (of any process sharing the data dir) can still own it. */
+export const STALE_TMP_AGE_MS = 10 * 60 * 1000;
+
 /**
  * Remove every entry of the key's items/ dir that meta does not reference —
  * a blob whose save failed or crashed before its meta commit, the previous
- * blob of an overwrite that crashed before its cleanup, a tmp file. Runs at
- * the start of each mutation of the key (on its chain, so nothing in flight
+ * blob of an overwrite that crashed before its cleanup, a tmp file — and any
+ * meta.json tmp file in the key dir older than {@link STALE_TMP_AGE_MS}. Runs
+ * at the start of each mutation of the key (on its chain, so nothing in flight
  * for this key can be swept). Best effort: a file that will not go is retried
  * next time. Returns the names removed.
+ *
+ * A record whose `file` is corrupt does not stop the sweep (or the key): it is
+ * skipped, and every file that could be its bytes is kept, so the item can
+ * still be deleted or overwritten — after which those files are unreferenced
+ * and the next sweep takes them.
  */
 export function sweepUnreferenced(key: string, meta: StorageKeyMetaFile): string[] {
   assertContainedKeyDir(key);
-  if (!existsSync(itemsDir(key))) return [];
-  const referenced = new Set(Object.entries(meta.items).map(([name, record]) => blobNameOf(name, record)));
   const removed: string[] = [];
+  if (existsSync(keyDir(key))) {
+    const cutoff = Date.now() - STALE_TMP_AGE_MS;
+    for (const entry of readdirSync(keyDir(key), { withFileTypes: true })) {
+      if (!entry.isFile() || !STALE_TMP_RE.test(entry.name)) continue;
+      try {
+        if (lstatSync(path.join(keyDir(key), entry.name)).mtimeMs > cutoff) continue;
+        unlinkSync(path.join(keyDir(key), entry.name));
+        removed.push(entry.name);
+      } catch {
+        /* retried next time */
+      }
+    }
+  }
+  if (!existsSync(itemsDir(key))) return removed;
+  const referenced = new Set<string>();
+  const corrupt: string[] = [];
+  for (const [name, record] of Object.entries(meta.items)) {
+    const blob = blobNameOrNull(name, record);
+    if (blob === null) corrupt.push(name);
+    else referenced.add(blob);
+  }
+  if (corrupt.length) log.warn(`Storage key "${key}" has corrupt item records (${corrupt.join(", ")}); keeping their files, sweeping the rest`);
   for (const entry of readdirSync(itemsDir(key), { withFileTypes: true })) {
     if (referenced.has(entry.name) || !(entry.isFile() || entry.isSymbolicLink())) continue;
+    if (corrupt.some((name) => mayBelongTo(entry.name, name))) continue;
     try {
       unlinkSync(path.join(itemsDir(key), entry.name));
       removed.push(entry.name);
@@ -578,7 +664,8 @@ export async function saveStorageItem(key: string, name: string, data: Buffer, o
     }
 
     sweepUnreferenced(key, meta);
-    const previousBlob = existing ? blobNameOf(name, existing) : undefined;
+    // A corrupt previous record has no file we trust to remove; its bytes are swept once this commit unreferences them.
+    const previousBlob = existing ? (blobNameOrNull(name, existing) ?? undefined) : undefined;
     const blob = newBlobName(name);
     const blobPath = containedItemsFile(key, blob);
 
@@ -586,8 +673,9 @@ export async function saveStorageItem(key: string, name: string, data: Buffer, o
     try {
       mkdirSync(itemsDir(key), { recursive: true });
       try {
-        // 1. The bytes, under a name nothing references yet.
-        writeFileSync(blobPath, data, { flag: "wx" });
+        // 1. The bytes, under a name nothing references yet — durable, name included, before meta can point at them.
+        writeFileDurableSync(blobPath, data);
+        fsyncDirSync(itemsDir(key));
         // 2. The commit: meta now points at the new file.
         const now = new Date().toISOString();
         meta.items[name] = {
@@ -633,12 +721,14 @@ export async function deleteStorageItem(key: string, name: string): Promise<void
     const meta = readMeta(key);
     if (!Object.prototype.hasOwnProperty.call(meta.items, name)) throw new StorageError("not_found", `Item not found: ${key}/${name}`);
     sweepUnreferenced(key, meta);
-    const file = containedItemsFile(key, blobNameOf(name, meta.items[name]));
+    // A corrupt record names no file we trust; drop the entry and let the next sweep take its bytes.
+    const blob = blobNameOrNull(name, meta.items[name]);
+    const file = blob === null ? null : containedItemsFile(key, blob);
     delete meta.items[name];
     meta.updated = new Date().toISOString();
     writeMeta(key, meta);
     // Committed; the file is unreferenced now. Best effort — the next mutation sweeps it otherwise.
-    removeUnreferenced(key, path.basename(file));
+    if (file !== null) removeUnreferenced(key, path.basename(file));
   });
 }
 

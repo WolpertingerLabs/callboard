@@ -4,18 +4,21 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import express from "express";
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listenRaw, type RawServer } from "./__fixtures__/raw-http.js";
+import { listenRaw, type RawResponse, type RawServer } from "./__fixtures__/raw-http.js";
 
 const DATA = mkdtempSync(join(tmpdir(), "callboard-artifacts-http-"));
 process.env.CALLBOARD_DATA_DIR = DATA;
 
-const { artifactsRouter } = await import("./artifacts.js");
+const { artifactsRouter, ARTIFACT_ERROR_CSP, renderErrorDocument } = await import("./artifacts.js");
 const { artifactBridgeShimScript } = await import("../services/artifact-bridge-shim.js");
 
 const TOKEN = "00112233445566778899aabbccddeeff";
+const sha = (s: string) => createHash("sha256").update(s, "utf-8").digest("hex");
+const BARE_PIN = sha("<p>bare</p>");
 const { SIZE_REPORTER_SCRIPT } = await import("../services/html-injection.js");
 
 /** The CSP the plan specifies, verbatim, plus the response-level sandbox. */
@@ -64,7 +67,7 @@ describe("render route", () => {
   });
 
   it("?bridge=<token> binds that token into the shim of that one no-store response", async () => {
-    const res = await server.request("GET", `/api/artifacts/bare/versions/1/render?bridge=${TOKEN}`);
+    const res = await server.request("GET", `/api/artifacts/bare/versions/1/render?bridge=${TOKEN}&sha256=${BARE_PIN}`);
     expect(res.status).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
     const html = res.body.toString();
@@ -87,10 +90,59 @@ describe("render route", () => {
       `${TOKEN}&bridge=${TOKEN}`,
       "%3C%2Fscript%3E" + "0".repeat(23),
     ]) {
-      const res = await server.request("GET", `/api/artifacts/bare/versions/1/render?bridge=${bad}`);
+      const res = await server.request("GET", `/api/artifacts/bare/versions/1/render?bridge=${bad}&sha256=${BARE_PIN}`);
       expect(res.status, bad).toBe(400);
       expect(res.body.toString()).not.toContain("<script>");
     }
+  });
+
+  describe("sha256 pin (S3-TOCTOU)", () => {
+    const expectErrorPage = (res: RawResponse, status: number, text: RegExp) => {
+      expect(res.status).toBe(status);
+      expect(res.headers["content-type"]).toBe("text/html; charset=utf-8");
+      expect(res.headers["content-security-policy"]).toBe(ARTIFACT_ERROR_CSP);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      const html = res.body.toString();
+      expect(html).toMatch(text);
+      // Nothing that could run, and nothing that could bind the bridge.
+      expect(html).not.toContain("<script");
+      expect(html).not.toContain(TOKEN);
+      expect(html).not.toContain("artifact-bridge");
+    };
+
+    it("rejects any pin that is not exactly 64 lowercase hex characters", async () => {
+      for (const bad of ["", "abc", BARE_PIN.toUpperCase(), BARE_PIN + "0", BARE_PIN.slice(1), `${BARE_PIN}&sha256=${BARE_PIN}`, "%3Cscript%3E" + "0".repeat(52)]) {
+        const res = await server.request("GET", `/api/artifacts/bare/versions/1/render?bridge=${TOKEN}&sha256=${bad}`);
+        expect(res.status, bad).toBe(400);
+        expect(res.body.toString()).not.toContain("<script");
+      }
+    });
+
+    it("a bridge token without a pin is refused with a readable page — every bound render is pinned", async () => {
+      expectErrorPage(await server.request("GET", `/api/artifacts/bare/versions/1/render?bridge=${TOKEN}`), 409, /not pinned/);
+    });
+
+    it("serves only bytes that hash to the pin: delete + recreate between the host's check and the GET is a 409 page, not the new code", async () => {
+      await post("/api/artifacts", { id: "swap", name: "Swap", contentType: "html", storageAccess: "readwrite", content: "<p>original</p>" });
+      const pinned = sha("<p>original</p>");
+      expect((await server.request("GET", `/api/artifacts/swap/versions/1/render?bridge=${TOKEN}&sha256=${pinned}`)).status).toBe(200);
+      // The window: the host has judged v1 = "original"; an agent swaps the code.
+      expect((await server.request("DELETE", "/api/artifacts/swap")).status).toBe(200);
+      await post("/api/artifacts", { id: "swap", name: "Swap", contentType: "html", storageAccess: "readwrite", content: "<p>impostor</p>" });
+      const res = await server.request("GET", `/api/artifacts/swap/versions/1/render?bridge=${TOKEN}&sha256=${pinned}`);
+      expectErrorPage(res, 409, /has changed since it was checked/);
+      expect(res.body.toString()).not.toContain("impostor");
+    });
+
+    it("a delete landing in the window is a readable 404 page, not raw JSON in the frame", async () => {
+      await post("/api/artifacts", { id: "gone", name: "Gone", contentType: "html", content: "<p>x</p>" });
+      expect((await server.request("DELETE", "/api/artifacts/gone")).status).toBe(200);
+      expectErrorPage(await server.request("GET", `/api/artifacts/gone/versions/1/render?bridge=${TOKEN}&sha256=${sha("<p>x</p>")}`), 404, /not found/i);
+    });
+
+    it("error pages escape the message", async () => {
+      expect(renderErrorDocument(`<img src=x onerror=alert(1)> & "q"`)).toContain("&lt;img src=x onerror=alert(1)&gt; &amp; &quot;q&quot;");
+    });
   });
 
   it("svg is served as image/svg+xml, script-less and sandboxed", async () => {

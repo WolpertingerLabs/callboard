@@ -4,8 +4,9 @@ import ModalOverlay from "./ModalOverlay";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { useFrameSizing } from "./useFrameSizing";
 import { createArtifactBridge, type ArtifactBridge, type BridgeStorageApi } from "./artifactBridge";
-import { artifactRenderUrl, getArtifact, getArtifactVersionSource, minArtifactStorageAccess } from "../api";
-import type { Artifact, RenderArtifactToolResult, ArtifactStorageAccess } from "../api";
+import { artifactRenderUrl, getArtifact, getArtifactVersionSource } from "../api";
+import type { RenderArtifactToolResult, ArtifactStorageAccess } from "../api";
+import { judgeRender, recheckGrant, type Verdict } from "./artifactGrant";
 
 interface ArtifactRendererProps {
   data: RenderArtifactToolResult;
@@ -13,51 +14,6 @@ interface ArtifactRendererProps {
   maxWidth?: CSSProperties["maxWidth"];
   /** Test seam for the bridge's storage calls; production uses the REST API. */
   bridgeApi?: BridgeStorageApi;
-}
-
-/**
- * What mounting this render is allowed to do, decided from the artifact as it
- * is NOW — not as it was when the tool result was written.
- */
-type Verdict = { status: "checking" } | { status: "ok"; access: ArtifactStorageAccess } | { status: "refused"; reason: string };
-
-/**
- * A render_artifact result is frozen in the chat transcript, but the artifact
- * it names is not: it can lose access, be deleted, have the version pruned, or
- * be deleted and recreated (versions restart at 1, so "v1" is now different
- * code). So before anything is mounted the host re-reads the artifact and:
- *
- * - refuses (nothing mounted, a clear message) if the artifact or the version
- *   is gone, or the version's sha256 no longer matches the one the result
- *   pinned — that is not the code the grant was made for;
- * - refuses a storage-bound result with no sha256 (written before pinning
- *   existed): its grant cannot be tied to any particular code;
- * - otherwise grants the lesser of the result's access and the artifact's
- *   current declared access (unbound ⇒ none).
- *
- * Fail closed: an error fetching the artifact is a refusal too.
- */
-export function judgeRender(data: RenderArtifactToolResult, artifact: Artifact): Verdict {
-  const v = artifact.versions.find((x) => x.version === data.version);
-  if (!v) {
-    return { status: "refused", reason: `version ${data.version} of "${artifact.name}" is no longer kept — render the artifact again.` };
-  }
-  if (data.sha256 !== undefined && v.sha256 !== data.sha256) {
-    return {
-      status: "refused",
-      reason: `version ${data.version} of "${artifact.id}" has been replaced since this was rendered (the artifact was deleted and recreated), so it is not run here — render the artifact again.`,
-    };
-  }
-  if (data.storage_key && data.sha256 === undefined) {
-    return {
-      status: "refused",
-      reason: "this render predates version pinning, so its storage grant cannot be verified — render the artifact again.",
-    };
-  }
-  if (artifact.contentType !== data.content_type) {
-    return { status: "refused", reason: `"${artifact.id}" is no longer a ${data.content_type} artifact — render it again.` };
-  }
-  return { status: "ok", access: data.storage_key ? minArtifactStorageAccess(data.storage_access, artifact.storageAccess) : "none" };
 }
 
 /**
@@ -72,9 +28,13 @@ const DOCUMENT_BACKDROP: CSSProperties = { colorScheme: "light", background: "Ca
 interface ArtifactFrameProps {
   artifactId: string;
   version: number;
+  /** The version sha256 the mount was judged for; the server serves only bytes that hash to it. */
+  sha256: string;
   title: string;
   storageKey: string | null;
   access: ArtifactStorageAccess;
+  recheck: () => Promise<ArtifactStorageAccess>;
+  onAccessChange: (access: ArtifactStorageAccess) => void;
   frameRef?: MutableRefObject<HTMLIFrameElement | null>;
   style: CSSProperties;
   onLoaded: () => void;
@@ -91,23 +51,49 @@ interface ArtifactFrameProps {
  *
  * The `message` listener is a layout effect so it is in place before the
  * frame's document can run: the shim says hello while the page is still
- * parsing, possibly before the frame's `load`. There is deliberately no revoke
- * on unmount — under StrictMode the effect is torn down and re-run on a live
- * mount — and none is needed: the bridge answers only down the port its hello
- * carried, whose other end dies with the frame's document.
+ * parsing, possibly before the frame's `load`. Unmounting revokes the bridge
+ * (closing the host's end of the port, which otherwise lingers with its
+ * handler) — deferred by a tick and cancelled if the effect re-runs, because
+ * StrictMode tears the effect down and re-runs it on a mount that is still
+ * live. Revocation is hygiene here, not the boundary: the bridge answers only
+ * down the port its hello carried, whose other end dies with the document.
+ *
+ * The page becoming visible again re-checks the grant (the artifact may have
+ * been lowered or deleted while this tab was in the background).
  *
  * `sandbox="allow-scripts"` and nothing else: no same-origin (so no cookies and
  * no /api), no top navigation, no popups, no forms.
  */
-function ArtifactFrame({ artifactId, version, title, storageKey, access, frameRef, style, onLoaded, bridgeApi }: ArtifactFrameProps) {
+function ArtifactFrame({
+  artifactId,
+  version,
+  sha256,
+  title,
+  storageKey,
+  access,
+  recheck,
+  onAccessChange,
+  frameRef,
+  style,
+  onLoaded,
+  bridgeApi,
+}: ArtifactFrameProps) {
   // The element lives in a plain holder rather than a ref so the bridge can
   // close over it without reading a ref during render; it is only dereferenced
   // when a load or message arrives.
   const [bridge, holder] = useState(() => {
     const h: { el: HTMLIFrameElement | null } = { el: null };
-    const b: ArtifactBridge = createArtifactBridge({ getFrameWindow: () => h.el?.contentWindow, storageKey, access, api: bridgeApi });
+    const b: ArtifactBridge = createArtifactBridge({
+      getFrameWindow: () => h.el?.contentWindow,
+      storageKey,
+      access,
+      api: bridgeApi,
+      recheck,
+      onAccessChange,
+    });
     return [b, h] as const;
   })[0];
+  const revokeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const setFrame = useCallback(
     (el: HTMLIFrameElement | null) => {
       holder.el = el;
@@ -117,15 +103,30 @@ function ArtifactFrame({ artifactId, version, title, storageKey, access, frameRe
   );
 
   useLayoutEffect(() => {
+    if (revokeTimer.current !== null) {
+      clearTimeout(revokeTimer.current); // StrictMode's re-run: still the same live mount
+      revokeTimer.current = null;
+    }
     const onMessage = (e: MessageEvent) => bridge.handleMessage(e);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void bridge.refresh();
+    };
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      document.removeEventListener("visibilitychange", onVisibility);
+      revokeTimer.current = setTimeout(() => {
+        revokeTimer.current = null;
+        bridge.revoke();
+      }, 0);
+    };
   }, [bridge]);
 
   return (
     <iframe
       ref={setFrame}
-      src={artifactRenderUrl(artifactId, version, bridge.token)}
+      src={artifactRenderUrl(artifactId, version, { bridgeToken: bridge.token, sha256 })}
       title={title}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
@@ -174,6 +175,8 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
   const [errorFor, setErrorFor] = useState<{ key: string; message: string } | null>(null);
   const [markdown, setMarkdown] = useState<string | null>(null);
   const [judged, setJudged] = useState<{ key: string; verdict: Verdict } | null>(null);
+  // A live re-check can lower a mounted frame's grant; the badge follows it (the frame does not remount).
+  const [lowered, setLowered] = useState<{ frameKey: string; access: ArtifactStorageAccess } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -186,6 +189,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
   const access: ArtifactStorageAccess = verdict.status === "ok" && storageKey ? verdict.access : "none";
   const frameKey = `${renderKey}|${access}`;
   const mounted = verdict.status === "ok";
+  const shownAccess: ArtifactStorageAccess = lowered?.frameKey === frameKey ? lowered.access : access;
 
   // Sizing follows the inline layout only: what the document reports while it
   // fills the viewport must not become its inline size when fullscreen closes.
@@ -275,9 +279,12 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
                   frameRef={iframeRef}
                   artifactId={data.artifact_id}
                   version={data.version}
+                  sha256={verdict.sha256}
                   title={data.name}
                   storageKey={storageKey}
                   access={access}
+                  recheck={() => recheckGrant(data, verdict.sha256)}
+                  onAccessChange={(next) => setLowered({ frameKey, access: next })}
                   bridgeApi={bridgeApi}
                   onLoaded={() => setLoading(false)}
                   style={
@@ -293,7 +300,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
                 />
               )}
               {htmlFullscreen && (
-                <button onClick={() => setExpanded(false)} title="Close" style={closeButtonStyle}>
+                <button onClick={() => setExpanded(false)} title="Close" aria-label="Close" style={closeButtonStyle}>
                   &times;
                 </button>
               )}
@@ -356,13 +363,13 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
             }}
           >
             <span style={{ fontWeight: 600, color: "var(--text)", flex: 1, minWidth: 0 }}>{data.name}</span>
-            {storageKey && access !== "none" && (
+            {storageKey && shownAccess !== "none" && (
               <span
-                title={`Bound to storage key "${storageKey}" with ${access === "readwrite" ? "read/write" : access} access`}
+                title={`Bound to storage key "${storageKey}" with ${shownAccess === "readwrite" ? "read/write" : shownAccess} access`}
                 style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", flexShrink: 0 }}
                 data-testid="artifact-key-badge"
               >
-                {storageKey} · {access === "readwrite" ? "rw" : access}
+                {storageKey} · {shownAccess === "readwrite" ? "rw" : shownAccess}
               </span>
             )}
             <span
@@ -450,7 +457,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
                 width: data.content_type === "svg" ? undefined : "90vw",
               }}
             >
-              <button onClick={() => setExpanded(false)} title="Close" style={closeButtonStyle}>
+              <button onClick={() => setExpanded(false)} title="Close" aria-label="Close" style={closeButtonStyle}>
                 &times;
               </button>
               {renderContent(true)}

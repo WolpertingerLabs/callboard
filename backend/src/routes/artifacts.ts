@@ -1,12 +1,16 @@
+import { createHash } from "node:crypto";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { ARTIFACT_BRIDGE_TOKEN_PATTERN } from "shared/types/index.js";
+import { ARTIFACT_BRIDGE_TOKEN_PATTERN, ARTIFACT_RENDER_SHA256_PATTERN } from "shared/types/index.js";
 import type { ArtifactContentType } from "shared/types/index.js";
 import { deleteArtifact, getArtifact, listArtifacts, readArtifactVersion, saveArtifact, updateArtifact } from "../services/artifact-service.js";
 import { artifactBridgeShimScript } from "../services/artifact-bridge-shim.js";
 import { SIZE_REPORTER_SCRIPT, injectBeforeBodyClose } from "../services/html-injection.js";
-import { StorageError } from "../services/storage-service.js";
+import { StorageError, httpStatusFor } from "../services/storage-service.js";
 import { sendStorageError } from "./storage.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("artifacts-route");
 
 export const artifactsRouter = Router();
 
@@ -34,6 +38,12 @@ export const ARTIFACT_HTML_CSP =
 
 /** SVG renders are for `<img>` (scripts inert); if opened directly, still no script and an opaque origin. */
 export const ARTIFACT_SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox";
+
+/**
+ * The render route's own error page (see {@link sendRenderError}): static
+ * markup and inline style, no script of any kind, opaque origin.
+ */
+export const ARTIFACT_ERROR_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-src 'none'; sandbox";
 
 /** Raw source and markdown are text; nothing in them may ever execute. */
 export const ARTIFACT_TEXT_CSP = "default-src 'none'; sandbox";
@@ -84,6 +94,46 @@ function parseBridgeToken(raw: unknown): string | null {
   if (raw === undefined) return null;
   if (typeof raw !== "string" || !ARTIFACT_BRIDGE_TOKEN_PATTERN.test(raw)) throw new StorageError("invalid", "Invalid bridge token");
   return raw;
+}
+
+/**
+ * The `?sha256=` pin (ARTIFACT_RENDER_SHA256_PATTERN): absent ⇒ null; present
+ * ⇒ exactly one 64-hex string.
+ */
+function parseRenderPin(raw: unknown): string | null {
+  if (raw === undefined) return null;
+  if (typeof raw !== "string" || !ARTIFACT_RENDER_SHA256_PATTERN.test(raw)) throw new StorageError("invalid", "Invalid render pin");
+  return raw;
+}
+
+const HTML_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+/**
+ * A render failure as a tiny self-contained HTML page rather than JSON: the
+ * render route is loaded into the artifact frame, so this is what the user
+ * sees in place of the artifact. No shim, no script, no token — nothing in it
+ * can bind the bridge — under {@link ARTIFACT_ERROR_CSP}.
+ */
+export function renderErrorDocument(message: string): string {
+  const text = message.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
+  return (
+    '<!doctype html><html><head><meta charset="utf-8"><title>Artifact unavailable</title>' +
+    "<style>body{margin:0;padding:16px;font:13px/1.5 system-ui,sans-serif}</style></head>" +
+    `<body><p><strong>This artifact could not be shown.</strong></p><p>${text}</p></body></html>`
+  );
+}
+
+function sendRenderError(res: Response, err: unknown): void {
+  let status = 500;
+  let message = "Rendering the artifact failed.";
+  if (err instanceof StorageError) {
+    status = httpStatusFor(err.code);
+    message = err.message;
+  } else {
+    log.error(`Render artifact failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  res.status(status);
+  sendText(res, renderErrorDocument(message), "text/html; charset=utf-8", ARTIFACT_ERROR_CSP);
 }
 
 function sendText(res: Response, body: string, contentType: string, csp: string): void {
@@ -211,15 +261,34 @@ artifactsRouter.get(
  * {@link ARTIFACT_HTML_CSP}; the response is no-store, so a token is only
  * ever in the one document the host asked for. svg → image/svg+xml (the host uses <img>); markdown →
  * text/plain (the host renders it; it never executes).
+ *
+ * `?sha256=` pins the bytes: the host checked the artifact before mounting,
+ * but between that check and this GET the artifact can be deleted and
+ * recreated (versions restart at 1), so the version number alone would serve
+ * different code under the grant that check produced. The sha256 of the bytes
+ * about to be served must equal the pin, or the response is a 409. A bridge
+ * token without a pin is refused the same way — every bound render is pinned.
+ *
+ * Every failure here is an HTML error page (never JSON): this response is what
+ * the artifact frame shows.
  */
-artifactsRouter.get(
-  "/:id/versions/:n/render",
-  wrap("Render artifact", (req, res) => {
-    // #swagger.tags = ['Artifacts']
-    // #swagger.summary = 'Render one artifact version for the sandboxed renderer'
+artifactsRouter.get("/:id/versions/:n/render", (req, res) => {
+  // #swagger.tags = ['Artifacts']
+  // #swagger.summary = 'Render one artifact version for the sandboxed renderer'
+  try {
     const version = parseVersion(req.params.n);
     const token = parseBridgeToken(req.query.bridge);
+    const pin = parseRenderPin(req.query.sha256);
+    if (token !== null && pin === null) {
+      throw new StorageError("conflict", "This render is not pinned to a version sha256, so it is not run. Render the artifact again.");
+    }
     const { artifact, content } = readArtifactVersion(req.params.id, version);
+    if (pin !== null && createHash("sha256").update(content, "utf-8").digest("hex") !== pin) {
+      throw new StorageError(
+        "conflict",
+        `Version ${version} of "${artifact.id}" has changed since it was checked (the artifact was deleted and recreated), so it is not run here. Render the artifact again.`,
+      );
+    }
     if (artifact.contentType === "html") {
       sendText(res, renderArtifactHtml(content, token), "text/html; charset=utf-8", ARTIFACT_HTML_CSP);
     } else if (artifact.contentType === "svg") {
@@ -227,5 +296,7 @@ artifactsRouter.get(
     } else {
       sendText(res, content, "text/plain; charset=utf-8", ARTIFACT_TEXT_CSP);
     }
-  }),
-);
+  } catch (err) {
+    sendRenderError(res, err);
+  }
+});

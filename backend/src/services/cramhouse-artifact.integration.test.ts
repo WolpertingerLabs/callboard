@@ -134,7 +134,7 @@ async function runInHost(html: string, render: RenderArtifactToolResult) {
     },
   };
   const win: Record<string, unknown> = { parent, addEventListener: () => undefined };
-  const ctx = vm.createContext({ window: win, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel });
+  const ctx = vm.createContext({ window: win, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel, setTimeout, clearTimeout });
   // Execute every inline script in document order, as the browser would.
   for (const [, code] of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
     if (code.includes("ResizeObserver")) continue; // the size reporter needs a DOM; not under test here
@@ -173,7 +173,7 @@ describe("cramhouse = one artifact + one storage key per deck", () => {
       storage_access: "readwrite",
     });
 
-    const served = await server.request("GET", `/api/artifacts/${render.artifact_id}/versions/${render.version}/render?bridge=${TOKEN}`);
+    const served = await server.request("GET", `/api/artifacts/${render.artifact_id}/versions/${render.version}/render?bridge=${TOKEN}&sha256=${render.sha256}`);
     expect(served.status).toBe(200);
     expect(served.headers["content-security-policy"]).toContain("connect-src 'none'");
     expect(served.headers["content-security-policy"]).toMatch(/^default-src 'none'; script-src 'unsafe-inline';/);
@@ -196,7 +196,7 @@ describe("cramhouse = one artifact + one storage key per deck", () => {
     const render = (await tool("render_artifact", { id: "cramhouse" })) as RenderArtifactToolResult;
     expect(render.storage_access).toBe("none");
     expect(render.storage_key).toBeUndefined();
-    const html = (await server.request("GET", `/api/artifacts/cramhouse/versions/1/render?bridge=${TOKEN}`)).body.toString();
+    const html = (await server.request("GET", `/api/artifacts/cramhouse/versions/1/render?bridge=${TOKEN}&sha256=${render.sha256}`)).body.toString();
     const { win, hostOps } = await runInHost(html, render);
     expect(win.boundTo).toEqual({ storageKey: null, access: "none" });
     expect(win.failed).toMatch(/without a storage key/);

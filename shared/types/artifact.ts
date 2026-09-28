@@ -143,6 +143,42 @@ export interface RenderArtifactToolResult {
 /** A bridge token: 128 bits, lowercase hex. The render route rejects anything else. */
 export const ARTIFACT_BRIDGE_TOKEN_PATTERN = /^[0-9a-f]{32}$/;
 
+/**
+ * The `?sha256=` pin of a render request: the version sha256 the host checked
+ * before mounting. The render route hashes the bytes it is about to serve and
+ * refuses (409, a readable error page) when they differ — so the code that runs
+ * is the code the grant was judged for, not whatever the version holds by the
+ * time the frame's GET lands. Required whenever `?bridge=` is present.
+ */
+export const ARTIFACT_RENDER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
+ * Per-bridge request budget, enforced host-side before any request reaches the
+ * server (every storage call — and every re-check of the artifact the bridge
+ * makes on the artifact's behalf — costs one token). The server's per-client
+ * API limit is 300 requests/min, shared by the whole UI in every tab, so one
+ * artifact must stay well clear of it: a bridge sustains at most 60/min with a
+ * burst of 30 (≤ 90 in any one minute — under a third of the global budget,
+ * leaving room for the UI and a couple of other open artifacts), and holds at
+ * most 4 requests in flight. Over the limit, a request fails at once with a
+ * `rate limited` error and never leaves the browser.
+ */
+export const ARTIFACT_BRIDGE_LIMITS = {
+  maxInFlight: 4,
+  burst: 30,
+  refillPerSecond: 1,
+} as const;
+
+/**
+ * How long a `read`/`list` may rely on the last check of the artifact (current
+ * declared access, existence, pinned sha256). Writes and deletes never use the
+ * cache: each is preceded by a fresh check.
+ */
+export const ARTIFACT_BRIDGE_READ_RECHECK_MS = 5000;
+
+/** The shim resolves `ready` as unbound if no init has arrived by then (see the shim's doc). */
+export const ARTIFACT_BRIDGE_READY_TIMEOUT_MS = 10_000;
+
 export type ArtifactBridgeOp = "list" | "read" | "write" | "delete";
 
 /** iframe → host, once, via `window.parent.postMessage(hello, "*", [port])`. */
@@ -180,6 +216,17 @@ export interface ArtifactBridgeRequest {
   data?: string;
   encoding?: "utf8" | "base64";
   mimeType?: string;
+}
+
+/**
+ * What `window.callboard.ready` resolves to inside the artifact. `reason` is
+ * set only when the shim gave up waiting for the host (no init within
+ * {@link ARTIFACT_BRIDGE_READY_TIMEOUT_MS}) and resolved as unbound.
+ */
+export interface ArtifactBridgeReady {
+  storageKey: string | null;
+  access: ArtifactStorageAccess;
+  reason?: string;
 }
 
 /** host → iframe over the port, one per request, matched by `id`. */

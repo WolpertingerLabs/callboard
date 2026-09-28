@@ -7,7 +7,7 @@
  * recorded sizes rather than by writing gigabytes.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StorageKeyMetaFile } from "shared/types/index.js";
@@ -218,6 +218,62 @@ describe("keys and items", () => {
     writeFileSync(join(items, "stray~00000000000000cc"), "x");
     await svc.deleteStorageItem("k", "other.txt");
     expect(readdirSync(items)).toEqual([kept]);
+  });
+
+  it("a corrupt `file` value does not brick the key: other saves work, its possible bytes are kept, and the item can be deleted", async () => {
+    await svc.createStorageKey("k");
+    await svc.saveStorageItem("k", "bad.txt", Buffer.from("bad"));
+    await svc.saveStorageItem("k", "ok.txt", Buffer.from("ok"));
+    const items = join(STORAGE_ROOT, "k", "items");
+    const metaFile = join(STORAGE_ROOT, "k", "meta.json");
+    const m = JSON.parse(readFileSync(metaFile, "utf-8")) as StorageKeyMetaFile;
+    const badBlob = m.items["bad.txt"].file!;
+    m.items["bad.txt"].file = "../../elsewhere";
+    writeFileSync(metaFile, JSON.stringify(m));
+    writeFileSync(join(items, "stray~00000000000000cc"), "x");
+    // Reads of the corrupt item still refuse…
+    expect(() => svc.readStorageItemBytes("k", "bad.txt")).toThrow(/Corrupt storage meta/);
+    // …but the key's mutations go on: the sweep skips the record, keeps what could be its bytes, takes the stray.
+    await svc.saveStorageItem("k", "ok.txt", Buffer.from("still writable"));
+    expect(readdirSync(items)).toContain(badBlob);
+    expect(readdirSync(items)).not.toContain("stray~00000000000000cc");
+    expect(existsSync(join(DATA, "elsewhere"))).toBe(false);
+    // The recovery path: delete the item (no file of its is trusted or touched)…
+    await svc.deleteStorageItem("k", "bad.txt");
+    expect(svc.listStorageItems("k").map((i) => i.name)).toEqual(["ok.txt"]);
+    expect(readdirSync(items)).toContain(badBlob);
+    // …and its bytes, now unreferenced, go with the next mutation.
+    await svc.saveStorageItem("k", "ok.txt", Buffer.from("again"));
+    const okBlob = (JSON.parse(readFileSync(metaFile, "utf-8")) as StorageKeyMetaFile).items["ok.txt"].file;
+    expect(readdirSync(items)).toEqual([okBlob]);
+  });
+
+  it("a corrupt record can also be overwritten in place", async () => {
+    await svc.createStorageKey("k");
+    await svc.saveStorageItem("k", "bad.txt", Buffer.from("bad"));
+    const metaFile = join(STORAGE_ROOT, "k", "meta.json");
+    const m = JSON.parse(readFileSync(metaFile, "utf-8")) as StorageKeyMetaFile;
+    m.items["bad.txt"].file = "bad.txt~ZZ";
+    writeFileSync(metaFile, JSON.stringify(m));
+    await svc.saveStorageItem("k", "bad.txt", Buffer.from("fixed"));
+    expect(svc.readStorageItemBytes("k", "bad.txt").data.toString()).toBe("fixed");
+  });
+
+  it("the sweep removes meta.json tmp files a crash left in the key dir once they are stale, and never a fresh one", async () => {
+    await svc.createStorageKey("k");
+    const dir = join(STORAGE_ROOT, "k");
+    const stale = join(dir, ".meta.json.4242.0badf00d.tmp");
+    const fresh = join(dir, ".meta.json.4243.0000beef.tmp");
+    const lookalike = join(dir, ".meta.json.notatmp");
+    for (const f of [stale, fresh, lookalike]) writeFileSync(f, "{}");
+    const old = (Date.now() - svc.STALE_TMP_AGE_MS - 60_000) / 1000;
+    utimesSync(stale, old, old);
+    utimesSync(lookalike, old, old);
+    await svc.saveStorageItem("k", "x.txt", Buffer.from("x"));
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(lookalike)).toBe(true);
+    expect(existsSync(join(dir, "meta.json"))).toBe(true);
   });
 
   it("refuses a new item whose name differs from an existing one only by case", async () => {

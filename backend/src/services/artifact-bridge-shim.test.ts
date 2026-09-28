@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import vm from "node:vm";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
+import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READY_TIMEOUT_MS } from "shared/types/index.js";
 import { ARTIFACT_BRIDGE_SHIM_JS, artifactBridgeShimScript } from "./artifact-bridge-shim.js";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
@@ -34,7 +35,32 @@ afterEach(() => {
   while (ports.length) ports.pop()!.close();
 });
 
-function boot(token: string | null = TOKEN, opts: { topLevel?: boolean } = {}): Harness {
+/** The shim's timers, captured so a test can fire the ready timeout on demand. */
+interface Timers {
+  pending: Map<number, { fn: () => void; ms: number }>;
+  fire(): void;
+}
+
+function fakeTimers(): Timers & { setTimeout: (fn: () => void, ms: number) => number; clearTimeout: (id: number) => void } {
+  let next = 1;
+  const pending = new Map<number, { fn: () => void; ms: number }>();
+  return {
+    pending,
+    setTimeout: (fn, ms) => {
+      pending.set(next, { fn, ms });
+      return next++;
+    },
+    clearTimeout: (id) => void pending.delete(id),
+    fire() {
+      for (const [id, t] of [...pending]) {
+        pending.delete(id);
+        t.fn();
+      }
+    },
+  };
+}
+
+function boot(token: string | null = TOKEN, opts: { topLevel?: boolean; timers?: ReturnType<typeof fakeTimers> } = {}): Harness {
   const h: Harness = {
     cb: undefined,
     toParent: [],
@@ -62,7 +88,23 @@ function boot(token: string | null = TOKEN, opts: { topLevel?: boolean } = {}): 
     },
   };
   win.parent = opts.topLevel ? win : parent;
-  const ctx = vm.createContext({ window: win, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel });
+  const timers = opts.timers ?? fakeTimers();
+  const ctx = vm.createContext({
+    window: win,
+    Promise,
+    Object,
+    JSON,
+    Math,
+    String,
+    Error,
+    TypeError,
+    ArrayBuffer,
+    Uint8Array,
+    btoa,
+    MessageChannel,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+  });
   vm.runInContext(`${ARTIFACT_BRIDGE_SHIM_JS}(${JSON.stringify(token)});`, ctx);
   h.cb = win.callboard;
   return h;
@@ -108,6 +150,50 @@ describe("artifact bridge shim", () => {
       expect(h.toParent).toEqual([]);
       await expect(h.cb.storage.list()).rejects.toThrow(/without a storage key/);
     }
+  });
+
+  it(`ready never hangs: no init within ${ARTIFACT_BRIDGE_READY_TIMEOUT_MS} ms (a revisited document, a hello that lost the race) resolves it unbound, with a reason; a late init is ignored`, async () => {
+    const timers = fakeTimers();
+    const h = boot(TOKEN, { timers });
+    expect([...timers.pending.values()].map((t) => t.ms)).toEqual([ARTIFACT_BRIDGE_READY_TIMEOUT_MS]);
+    const early = h.cb.storage.list();
+    timers.fire();
+    const ready = await h.cb.ready;
+    expect(ready).toMatchObject({ storageKey: null, access: "none" });
+    expect(ready.reason).toMatch(/did not answer/);
+    await expect(early).rejects.toThrow(/without a storage key/);
+    h.send(init());
+    await flush();
+    await expect(h.cb.storage.write("x", "y")).rejects.toThrow(/without a storage key/);
+    expect(h.requests).toEqual([]);
+  });
+
+  it(`keeps at most ${ARTIFACT_BRIDGE_LIMITS.maxInFlight} requests outstanding and queues the rest, so Promise.all over many reads works`, async () => {
+    const h = boot();
+    h.send(init());
+    await h.cb.ready;
+    const all = Promise.allSettled(Array.from({ length: 7 }, (_, i) => h.cb.storage.read(`n${i}`)));
+    await flush();
+    expect(h.requests.map((r) => r.name)).toEqual(["n0", "n1", "n2", "n3"]);
+    h.send(reply(h.requests[0].id, { ok: false, error: "rate limited: x" }));
+    h.send(reply(h.requests[1].id, { result: "one" }));
+    await flush();
+    expect(h.requests.map((r) => r.name)).toEqual(["n0", "n1", "n2", "n3", "n4", "n5"]);
+    for (const r of h.requests.slice(2)) h.send(reply(r.id));
+    await flush();
+    for (const r of h.requests.slice(6)) h.send(reply(r.id));
+    const settled = await all;
+    expect(settled.map((r) => r.status)).toEqual(["rejected", "fulfilled", "fulfilled", "fulfilled", "fulfilled", "fulfilled", "fulfilled"]);
+    expect((settled[0] as PromiseRejectedResult).reason.message).toMatch(/rate limited/);
+    expect(h.requests).toHaveLength(7);
+  });
+
+  it("an init before the timeout cancels it: ready resolves bound, with no reason", async () => {
+    const timers = fakeTimers();
+    const h = boot(TOKEN, { timers });
+    h.send(init({ access: "read" }));
+    await expect(h.cb.ready).resolves.toEqual({ storageKey: "deck", access: "read" });
+    expect(timers.pending.size).toBe(0);
   });
 
   it("opened top-level (no parent): unbound, no hello", async () => {
