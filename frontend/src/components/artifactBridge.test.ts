@@ -65,7 +65,7 @@ function fakeApi(): BridgeStorageApi & { [K in keyof BridgeStorageApi]: ReturnTy
 function setup(
   access: ArtifactStorageAccess = "readwrite",
   storageKey: string | null = BOUND,
-  extra: Pick<ArtifactBridgeOptions, "recheck" | "budget" | "budgetGroup" | "onAccessChange"> = {},
+  extra: Pick<ArtifactBridgeOptions, "recheck" | "budget" | "budgetGroup" | "onAccessChange" | "maxHoldMs"> = {},
 ) {
   // The frame's window. The host must never post to it — every case checks.
   const frame = { postMessage: vi.fn() };
@@ -506,7 +506,8 @@ describe("artifact bridge — budget (host-side, before any request leaves)", ()
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 3_600_000);
     try {
-      const mk = () => setup("read", BOUND, { budget: undefined });
+      // Refused at once, not held for its share (that has its own cases below): this is about the accounts.
+      const mk = () => setup("read", BOUND, { budget: undefined, maxHoldMs: 0 });
       const a = mk();
       const b = mk();
       a.ready();
@@ -761,7 +762,8 @@ describe("artifact bridge — the live grant", () => {
     const spinners = [tab.open("spam"), tab.open("spam"), tab.open("spam")];
     const fetches = vi.fn(async () => "readwrite" as ArtifactStorageAccess);
     const lookup = createSharedLookup<ArtifactStorageAccess>(fetches, clock);
-    const t = setup("readwrite", BOUND, { recheck: (maxAgeMs, b) => lookup.get("art", maxAgeMs, b), budget: tab.open("art") });
+    // Never held: a hold sleeps on real timers, which this hand-stepped clock does not see.
+    const t = setup("readwrite", BOUND, { recheck: (maxAgeMs, b) => lookup.get("art", maxAgeMs, b), budget: tab.open("art"), maxHoldMs: 0 });
     t.ready();
     for (now = 0; now < 120_000; now += 50) {
       for (const sp of spinners) while (sp.spend(1));
@@ -771,6 +773,120 @@ describe("artifact bridge — the live grant", () => {
     // A quarter of 1.75/s for 120 s is 52 tokens; writes this far apart each need a check: 2 tokens a write.
     expect(ok).toBeGreaterThanOrEqual(24);
     expect(fetches.mock.calls.length).toBeLessThanOrEqual(ok + 1);
+  });
+});
+
+describe("artifact bridge — a mount that asks for less than its share gets it, beside a spinner", () => {
+  /**
+   * Pollers (one artifact each, reads re-checked through the real shared
+   * lookup) beside one spinner that honours the hold-off (after a refusal it
+   * waits the retryAfterMs it was told, then spends all it can again), on one
+   * tab budget, for 120 s of fake time. A poller slower than activeWindowMs
+   * has given its share back by the time it asks again, and the spinner has
+   * spent it: that first call must be held until the poller's share can pay,
+   * not refused.
+   */
+  async function run(periodsMs: number[], op: "list" | "write" = "list") {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const tab = createTabBudget();
+      const spinner = tab.open("spin");
+      const pollers = periodsMs.map((period, i) => {
+        const lookup = createSharedLookup<ArtifactStorageAccess>(async () => "readwrite", () => Date.now());
+        const t = setup("readwrite", BOUND, { recheck: (maxAgeMs, b) => lookup.get(`art${i}`, maxAgeMs, b), budget: tab.open(`art${i}`) });
+        t.ready();
+        return { period, t };
+      });
+      let spun = 0;
+      let next = 0;
+      for (let now = 0; now < 120_000; now += 10) {
+        if (now >= next) {
+          while (spinner.spend(1)) spun++;
+          next = now + Math.max(10, spinner.retryAfterMs(1));
+        }
+        for (const p of pollers) {
+          if (now > 0 && now % p.period === 0) {
+            const msg = op === "list" ? p.t.req({ id: `p${now}`, op }) : write(`p${now}`);
+            p.t.port.onmessage?.({ data: msg } as MessageEvent);
+          }
+        }
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      await vi.advanceTimersByTimeAsync(ARTIFACT_BRIDGE_LIMITS.maxRetryAfterMs);
+      return {
+        spun,
+        pollers: pollers.map(({ period, t }) => ({ period, asked: Math.floor(119_999 / period), replies: t.replies() })),
+      };
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+  const write = (id: string) => ({ __callboard: BRIDGE_REQUEST, token: TOKEN, id, op: "write", name: "a", data: "x" });
+
+  for (const period of [4000, 6000, 10_000, 30_000]) {
+    it(`a read every ${period / 1000} s: every call answered, none refused`, async () => {
+      const { pollers, spun } = await run([period]);
+      const [p] = pollers;
+      expect(p.replies.filter((r) => !r.ok)).toEqual([]);
+      expect(p.replies).toHaveLength(p.asked);
+      // The spinner still has the rest of the tab.
+      expect(spun).toBeGreaterThan(ARTIFACT_BRIDGE_LIMITS.refillPerSecond * 120 - 2 * p.asked - 5);
+    });
+  }
+
+  it("all four at once (4, 6, 10 and 30 s), reading: every call answered, none refused", async () => {
+    const { pollers } = await run([4000, 6000, 10_000, 30_000]);
+    for (const p of pollers) {
+      expect(p.replies.filter((r) => !r.ok)).toEqual([]);
+      expect(p.replies).toHaveLength(p.asked);
+    }
+  });
+
+  it("all four at once, writing: the 6, 10 and 30 s writers are never refused; the 4 s one, over an even split while all five are busy, sometimes is", async () => {
+    // A write every 4 s is a check and a write: 0.5 tokens/s, against 1.75/5 = 0.35 when all five ask.
+    const { pollers } = await run([4000, 6000, 10_000, 30_000], "write");
+    for (const p of pollers) expect(p.replies).toHaveLength(p.asked);
+    const [four, ...rest] = pollers;
+    for (const p of rest) expect(p.replies.filter((r) => !r.ok)).toEqual([]);
+    const refused = four.replies.filter((r) => !r.ok);
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused.length).toBeLessThanOrEqual(four.asked / 4);
+    for (const r of refused) expect(r).toMatchObject({ error: expect.stringMatching(new RegExp(`^${RATE_LIMITED}`)), retryAfterMs: expect.any(Number) });
+  });
+
+  it("a mount asking for its share or more is still refused, not held: a loop awaiting each call, and one with four in flight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const tab = createTabBudget();
+      const spinner = tab.open("spin");
+      const loop = setup("read", BOUND, { budget: tab.open("loop") });
+      const flood = setup("read", BOUND, { budget: tab.open("flood") });
+      loop.ready();
+      flood.ready();
+      let n = 0;
+      let loopBusy = false;
+      for (let now = 0; now < 60_000; now += 10) {
+        while (spinner.spend(1));
+        // Sequential: the next call as soon as the last is answered, as `for (;;) await storage.list()` does.
+        if (!loopBusy) {
+          loopBusy = true;
+          loop.port.onmessage?.({ data: loop.req({ id: `l${n++}`, op: "list" }) } as MessageEvent);
+          void loop.bridge.settled().then(() => (loopBusy = false));
+        }
+        flood.port.onmessage?.({ data: flood.req({ id: `f${now}`, op: "list" }) } as MessageEvent);
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      for (const t of [loop, flood]) {
+        const refused = t.replies().filter((r) => !r.ok && r.error.startsWith(RATE_LIMITED));
+        expect(refused.length).toBeGreaterThan(t.replies().length / 2);
+        // …and no more than its third of the tab's rate (+ the burst it may have found) went through.
+        expect(t.api.list.mock.calls.length).toBeLessThanOrEqual((60 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond) / 3 + ARTIFACT_BRIDGE_LIMITS.burst);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

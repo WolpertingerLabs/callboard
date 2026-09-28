@@ -42,7 +42,10 @@
  *   one's share — plus ≤ 4 in flight per mount. Over the limit it fails at
  *   once with a `rate limited` error (carrying `retryAfterMs`, which the shim
  *   honours) and never leaves the browser — artifacts, however many are open,
- *   must not spend the per-client API budget the whole UI shares.
+ *   must not spend the per-client API budget the whole UI shares. The one
+ *   exception is a mount under an even split whose share happens to be empty
+ *   (it was quiet, and gave it back): its request is held until the share can
+ *   pay, up to ARTIFACT_BRIDGE_LIMITS.maxHoldMs, rather than refused.
  * - The grant is live, not frozen at mount: every request is judged against a
  *   check of the artifact (it still exists, its current declared access, the
  *   pinned sha256) that started at most {@link ARTIFACT_BRIDGE_WRITE_RECHECK_MS}
@@ -205,6 +208,8 @@ export interface ArtifactBridgeOptions {
   budget?: RequestBudget;
   /** The artifact this mount renders: the mounts of one artifact split the cost of its shared re-checks. */
   budgetGroup?: string;
+  /** How long a refused request of a mount within its share may be held for it (default ARTIFACT_BRIDGE_LIMITS.maxHoldMs; 0: never). Test seam. */
+  maxHoldMs?: number;
 }
 
 export interface ArtifactBridge {
@@ -236,11 +241,15 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
   // Opened on first use, not here: StrictMode builds a bridge it throws away, and an
   // account that is never closed would sit in the tab's books for good.
   let account: BudgetAccount | null = null;
-  const mine = () => (account ??= tabBudget.open(opts.budgetGroup));
+  const maxHoldMs = opts.maxHoldMs ?? ARTIFACT_BRIDGE_LIMITS.maxHoldMs;
+  let revoked = false;
+  // Never after revoke: an account opened then (by a request whose check was in flight) would never be closed.
+  const mine = () => (revoked ? null : (account ??= tabBudget.open(opts.budgetGroup)));
   const budget: RequestBudget = opts.budget ?? {
-    spend: (cost, shared) => mine().spend(cost, shared),
-    retryAfterMs: (cost) => mine().retryAfterMs(cost),
-    available: () => mine().available(),
+    spend: (cost, shared) => mine()?.spend(cost, shared) ?? false,
+    retryAfterMs: (cost) => mine()?.retryAfterMs(cost) ?? 0,
+    available: () => mine()?.available() ?? 0,
+    underShare: () => mine()?.underShare() ?? false,
   };
   const rateLimited = () => new BridgeRefusal(rateLimitMessage(), budget.retryAfterMs(1));
   /**
@@ -256,7 +265,6 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     available: () => Math.max(0, budget.available() - 1),
   };
   let loads = 0;
-  let revoked = false;
   let port: MessagePort | null = null;
   const inFlight = new Set<Promise<void>>();
   let active = 0;
@@ -344,6 +352,63 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     if (access === "none" || !storageKey) throw new BridgeRefusal("This artifact has no storage access");
     const { mutating, run } = prepare(req, storageKey);
 
+    // A mount that asks for less than an even split can still find nothing to
+    // spend: one quiet for activeWindowMs gave its share back to the tab and a
+    // busy neighbour spent it (a poller every 10 s beside a spinner was refused
+    // every call), or its last call's wait left its share less time to refill.
+    // Such a request is held, not refused, until its share can pay — the waits
+    // the refusals would have named, at most maxHoldMs in all — provided the
+    // budget says the mount is under its share and no other request of it is
+    // held. A mount asking for its share or more (a spinner, however it
+    // retries) is refused as before.
+    let mayHold: number | null = null;
+    for (;;) {
+      try {
+        const paying = pay(mutating);
+        if (paying) await paying;
+        break;
+      } catch (err) {
+        const wait = err instanceof BridgeRefusal ? (err.retryAfterMs ?? 0) : 0;
+        if (!wait) throw err;
+        mayHold ??= holding === 0 && budget.underShare?.() ? maxHoldMs : 0;
+        if (wait > mayHold || revoked) throw err;
+        mayHold -= wait;
+        holding += 1;
+        try {
+          await held(wait);
+        } finally {
+          holding -= 1;
+        }
+        if (revoked) throw err;
+      }
+    }
+    // Unmounted while the check was in flight or the request held: the answer would be dropped anyway.
+    if (revoked) throw new BridgeRefusal("This artifact's bridge has been revoked");
+    return run();
+  }
+
+  /** Requests of this mount held for its share. */
+  let holding = 0;
+  const wakers = new Set<() => void>();
+  /** Sleep `ms`, or until revoke. */
+  function held(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        wakers.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, ms);
+      wakers.add(wake);
+    });
+  }
+
+  /**
+   * The metered part of a request: its re-check, if one must be fetched, and
+   * the call. Throws a BridgeRefusal — synchronously when there is no re-check,
+   * so that an unchecked request reaches the server in the same task.
+   */
+  function pay(mutating: boolean): Promise<void> | void {
     // From here on the request reaches the server, so everything is metered.
     // The re-check comes first, metered by the shared lookup and only if it has
     // to fetch (no check of this artifact fresh enough for this op, from any
@@ -354,20 +419,23 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     // can be paid for too (checkBudget): a check bought alone could go stale
     // before the call's token arrived, the mirror-image starvation.
     const recheck = opts.recheck;
-    if (recheck) {
-      try {
-        await check(recheck, mutating ? ARTIFACT_BRIDGE_WRITE_RECHECK_MS : ARTIFACT_BRIDGE_READ_RECHECK_MS, checkBudget);
-      } catch (err) {
+    const spendCall = () => {
+      if (!budget.spend(1)) throw rateLimited();
+    };
+    if (!recheck) return spendCall();
+    return check(recheck, mutating ? ARTIFACT_BRIDGE_WRITE_RECHECK_MS : ARTIFACT_BRIDGE_READ_RECHECK_MS, checkBudget).then(
+      () => {
+        // Read through a call: TS narrowed `access` and cannot see that the check may have lowered it.
+        const current = granted();
+        if (current === "none") throw new BridgeRefusal("This artifact's storage access has been revoked");
+        if (mutating && current !== "readwrite") throw new BridgeRefusal("This artifact has read-only storage access");
+        spendCall();
+      },
+      (err: unknown) => {
         if (err instanceof RateLimitedError) throw new BridgeRefusal(rateLimitMessage(), err.retryAfterMs);
         throw new BridgeRefusal("Could not re-check the artifact's storage access; try again");
-      }
-      // Read through a call: TS narrowed `access` above and cannot see that the check may have lowered it.
-      const current = granted();
-      if (current === "none") throw new BridgeRefusal("This artifact's storage access has been revoked");
-      if (mutating && current !== "readwrite") throw new BridgeRefusal("This artifact has read-only storage access");
-    }
-    if (!budget.spend(1)) throw rateLimited();
-    return run();
+      },
+    );
   }
 
   async function answer(p: MessagePort, msg: Record<string, unknown>): Promise<void> {
@@ -412,6 +480,7 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
   function revoke(): void {
     revoked = true;
     account?.close();
+    for (const wake of [...wakers]) wake();
     if (port) {
       port.onmessage = null;
       port.close();

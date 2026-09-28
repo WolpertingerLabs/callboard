@@ -271,7 +271,8 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
         "render can spend), and at most 4 in flight per render (the shim queues the rest). A call costs 1, and re-checking the artifact's access costs 1 more " +
         "at most once per 2 s for writes/deletes and once per 5 s for reads (split between the renders of the artifact). So a render that is the only busy " +
         "one in the tab can sustain ~75 writes or ~93 reads a minute (1 write/s fits; a load-time burst of ~15 calls fits), but beside N other busy renders it " +
-        "gets 1/(N+1) of that: ~35 writes a minute beside one, ~13 beside three — design for the shared case. Past its share a call rejects with an error " +
+        "gets 1/(N+1) of that: ~35 writes a minute beside one, ~13 beside three — design for the shared case. A render calling less often than its share " +
+        "allows (a refresh every 10–30 s, say) is never refused for it: a call that finds the share empty is answered late, up to 10 s, instead. Past its share a call rejects with an error " +
         "starting 'rate limited', and the render's next calls wait until its share refills — load data once and keep it in memory rather than polling. Images must come from storage " +
         "as data URLs (image/* items, SVG included, come back typed for <img>). The sandbox is not a data-loss barrier: a determined artifact can still " +
         "leak what it can read (by navigating its frame, or WebRTC), so granting read on a key means the artifact's author can read that key. The " +

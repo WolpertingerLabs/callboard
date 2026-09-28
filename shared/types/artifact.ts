@@ -166,6 +166,15 @@ export const ARTIFACT_RENDER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
  * rest goes to the others). A render that retries the instant it is refused
  * therefore holds exactly its share and cannot take anyone else's.
  *
+ * "Gets what it asks for" includes a render that asks rarely: one quiet for
+ * `activeWindowMs` hands its share back to the tab, so a busy neighbour may
+ * have spent everything by the time it asks again. Its call is then held
+ * host-side — answered late, not refused — until its share can pay, for up to
+ * `maxHoldMs` (a check and a call beside up to seven busy renders). The host
+ * holds a call only for a render whose recent spending is under an even
+ * split and that has no other call held; a render asking for its share or
+ * more is refused as below.
+ *
  * What costs a token: every storage call (list/read/write/delete), plus every
  * re-check of an artifact's grant that actually goes to the server. Re-checks
  * are shared per artifact across the tab (see the two `*_RECHECK_MS` windows
@@ -193,11 +202,14 @@ export const ARTIFACT_RENDER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
  * even share is the tab's unclaimed pool, first come.
  *
  * Each render also holds at most 4 requests in flight (the shim queues the
- * rest). Over the limit, a call fails at once with a `rate limited` error and
- * never leaves the browser; the refusal carries `retryAfterMs` (when that
- * render's share will next hold a token), and the shim holds the render's
- * later calls back until then — they wait rather than fail — so a retry
- * loop costs a round trip per token instead of spinning.
+ * rest). Over the limit (and not held as above), a call fails at once with a
+ * `rate limited` error and never leaves the browser; the refusal carries
+ * `retryAfterMs` (when that render's share will next hold a token), and the
+ * shim holds back every call of the render not yet sent — those queued
+ * before the refusal and those made after it — until then: they wait rather
+ * than fail, so a retry loop costs a round trip per token instead of
+ * spinning. That hold-off is a courtesy of the shim, which runs inside the
+ * artifact; the cap is enforced by the host whatever the artifact does.
  */
 export const ARTIFACT_BRIDGE_LIMITS = {
   maxInFlight: 4,
@@ -209,6 +221,13 @@ export const ARTIFACT_BRIDGE_LIMITS = {
   activeWindowMs: 5000,
   /** The longest `retryAfterMs` the host sends, and the longest the shim holds a render's calls back. */
   maxRetryAfterMs: 5000,
+  /**
+   * The longest the host holds a refused request of a mount that is not over
+   * its share (not already holding one, not refused within activeWindowMs)
+   * until its share can pay, instead of refusing it: a check and a call (2
+   * tokens) beside up to seven other busy mounts.
+   */
+  maxHoldMs: 10_000,
 } as const;
 
 /**

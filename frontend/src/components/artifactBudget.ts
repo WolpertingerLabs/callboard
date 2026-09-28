@@ -51,10 +51,22 @@ export interface RequestBudget {
   retryAfterMs(cost?: number): number;
   /** Tokens that could be spent now (an account: its own, plus the tab's unclaimed ones). */
   available(): number;
+  /**
+   * Whether this account is asking for less than an even split of the tab: its
+   * spending, averaged over the last ~{@link RECENT_MS} ms, is under the tab's
+   * rate divided by the accounts in use (itself included). A spinner, however
+   * it retries, spends its whole share and so is not. A single bucket has no
+   * split and does not implement this.
+   */
+  underShare?(): boolean;
 }
+
+/** The time constant of an account's recent spending rate. */
+export const RECENT_MS = 2 * ARTIFACT_BRIDGE_LIMITS.activeWindowMs;
 
 /** One mount's claim on the {@link TabBudget}. */
 export interface BudgetAccount extends RequestBudget {
+  underShare(): boolean;
   /** The mount is gone: its tokens go back to the tab and it stops counting. */
   close(): void;
 }
@@ -100,6 +112,9 @@ interface Account {
   group?: string;
   /** Until when it counts as in use: its last request plus activeWindowMs, pushed out by a retry hint. */
   activeUntil: number;
+  /** Tokens it has paid for, decaying with time constant RECENT_MS, as of `recentAt`. */
+  recent: number;
+  recentAt: number;
 }
 
 /**
@@ -120,6 +135,13 @@ interface Account {
  * rate each get 1/N; one that wants less gets what it asks and the rest is
  * split among the others. None of that depends on who asks most often: a
  * spinner refused a million times a second holds exactly its share.
+ *
+ * One gap the books alone cannot close: a mount that asks less often than
+ * activeWindowMs has handed its share back each time, so it finds nothing
+ * when it asks again beside a busy neighbour. The bridge covers that by
+ * holding such a request until the share it rejoins can pay
+ * ({@link BudgetAccount.underShare} tells it which mounts qualify), which
+ * moves no token and so leaves the cap as it is.
  */
 export function createTabBudget(now: () => number = () => Date.now()): TabBudget {
   const { burst, refillPerSecond: rate, shareBurst, activeWindowMs } = ARTIFACT_BRIDGE_LIMITS;
@@ -128,6 +150,11 @@ export function createTabBudget(now: () => number = () => Date.now()): TabBudget
   let at = now();
 
   const inUse = (a: Account, t: number) => t < a.activeUntil;
+  /** Add `paid` (negative: repaid) to `a`'s recent spending, decayed to `t`. */
+  const record = (a: Account, t: number, paid: number) => {
+    a.recent = a.recent * Math.exp(-(t - a.recentAt) / RECENT_MS) + paid;
+    a.recentAt = t;
+  };
   const held = () => {
     let sum = pool;
     for (const a of accounts) sum += a.tokens;
@@ -169,7 +196,7 @@ export function createTabBudget(now: () => number = () => Date.now()): TabBudget
 
   return {
     open(group) {
-      const acct: Account = { tokens: 0, group, activeUntil: -Infinity };
+      const acct: Account = { tokens: 0, group, activeUntil: -Infinity, recent: 0, recentAt: at };
       accounts.add(acct);
       let closed = false;
       return {
@@ -182,6 +209,7 @@ export function createTabBudget(now: () => number = () => Date.now()): TabBudget
           const own = Math.min(acct.tokens, cost);
           acct.tokens -= own;
           pool -= cost - own;
+          record(acct, t, cost);
           if (shared && group !== undefined) {
             // Work done for every mount of this artifact: each in use pays its part, from what it owns.
             const sharers = [...accounts].filter((a) => a !== acct && a.group === group && inUse(a, t));
@@ -190,6 +218,8 @@ export function createTabBudget(now: () => number = () => Date.now()): TabBudget
               const paid = Math.min(part, a.tokens);
               a.tokens -= paid;
               acct.tokens += paid;
+              record(a, t, paid);
+              record(acct, t, -paid);
             }
             if (acct.tokens > shareBurst) {
               pool += acct.tokens - shareBurst;
@@ -212,6 +242,13 @@ export function createTabBudget(now: () => number = () => Date.now()): TabBudget
         available() {
           advance(now());
           return acct.tokens + pool;
+        },
+        underShare() {
+          const t = now();
+          advance(t);
+          record(acct, t, 0);
+          const users = Math.max(1, [...accounts].filter((a) => a === acct || inUse(a, t)).length);
+          return (acct.recent * 1000) / RECENT_MS < rate / users;
         },
         close() {
           if (closed) return;

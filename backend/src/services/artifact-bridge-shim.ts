@@ -29,10 +29,12 @@ import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READY_TIMEOUT_MS } from "shared
  *    once; the rest wait their turn here, so `Promise.all` over many reads
  *    works instead of tripping the host's in-flight refusal. Past the host's
  *    rate budget a call rejects with "rate limited"; when that refusal
- *    carries `retryAfterMs`, the render's calls made after it wait here
- *    until then (capped at ARTIFACT_BRIDGE_LIMITS.maxRetryAfterMs) before
- *    being sent — so a loop that retries at once costs a round trip per
- *    token, not millions of refusals a second;
+ *    carries `retryAfterMs`, every call of the render not yet sent — queued
+ *    here before the refusal arrived, or made after it — waits until then
+ *    (capped at ARTIFACT_BRIDGE_LIMITS.maxRetryAfterMs) before being sent, so
+ *    a loop that retries at once costs a round trip per token, not millions
+ *    of refusals a second. (Advisory: an artifact can bypass the shim. The
+ *    host's cap holds regardless.);
  *  - unbound or `access: "none"` ⇒ every call rejects; `read` ⇒ writes and
  *    deletes reject.
  *

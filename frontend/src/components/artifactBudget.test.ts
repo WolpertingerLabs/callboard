@@ -187,6 +187,22 @@ describe("tab budget — one tab-wide cap, divided fairly between the mounts usi
     for (const g of s.got) expect(Math.abs(g - mean) / mean).toBeLessThan(0.05);
   });
 
+  it("a mount that goes quiet hands its tokens back: four that filled their shares and stopped do not freeze the tab for a spinner", () => {
+    let now = 0;
+    const tab = createTabBudget(() => now);
+    const quiet = [tab.open(), tab.open(), tab.open(), tab.open()];
+    while (quiet[0].spend(1)); // nothing unclaimed
+    // All four asking (for nothing) until each holds its full share: the whole burst, between them.
+    for (; now <= 30_000; now += 500) for (const q of quiet) q.spend(0);
+    expect(quiet.reduce((sum, q) => sum + q.available(), 0) / 4).toBeCloseTo(ARTIFACT_BRIDGE_LIMITS.shareBurst, 6);
+    // Then silent. Kept, their shares would fill the tab's burst for good and every refill would be thrown away.
+    const spinner = tab.open();
+    let got = 0;
+    for (; now <= 90_000; now++) while (spinner.spend(1)) got++;
+    // Nothing until their window runs out (at 35 s); then the burst they held, and the full rate for 55 s.
+    expect(got).toBeGreaterThanOrEqual(ARTIFACT_BRIDGE_LIMITS.burst + Math.floor(R * 55) - 2);
+  });
+
   it("closing a mount hands its tokens back to the tab", () => {
     let now = 0;
     const tab = createTabBudget(() => now);
