@@ -27,8 +27,14 @@ import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READY_TIMEOUT_MS } from "shared
  *  - requests made before init are queued (they wait on `ready`);
  *  - at most ARTIFACT_BRIDGE_LIMITS.maxInFlight requests are outstanding at
  *    once; the rest wait their turn here, so `Promise.all` over many reads
- *    works instead of tripping the host's in-flight refusal. The host's rate
- *    budget is NOT smoothed here: past it, calls reject with "rate limited".
+ *    works instead of tripping the host's in-flight refusal. Past the host's
+ *    rate budget a call rejects with "rate limited"; when that refusal
+ *    carries `retryAfterMs`, every call of the render not yet sent — queued
+ *    here before the refusal arrived, or made after it — waits until then
+ *    (capped at ARTIFACT_BRIDGE_LIMITS.maxRetryAfterMs) before being sent, so
+ *    a loop that retries at once costs a round trip per token, not millions
+ *    of refusals a second. (Advisory: an artifact can bypass the shim. The
+ *    host's cap holds regardless.);
  *  - unbound or `access: "none"` ⇒ every call rejects; `read` ⇒ writes and
  *    deletes reject.
  *
@@ -53,6 +59,7 @@ export const ARTIFACT_BRIDGE_SHIM_JS = `(function(token){
   var host = window.parent;
   var port = null, bound = false, key = null, access = "none", seq = 0, pending = {};
   var MAX_IN_FLIGHT = ${ARTIFACT_BRIDGE_LIMITS.maxInFlight}, active = 0, waiting = [];
+  var MAX_HOLD = ${ARTIFACT_BRIDGE_LIMITS.maxRetryAfterMs}, holdUntil = 0, holdTimer = null;
   var resolveReady;
   var ready = new Promise(function(resolve){ resolveReady = resolve; });
   var ACCESS = { none: 1, read: 1, readwrite: 1 };
@@ -82,12 +89,25 @@ export const ARTIFACT_BRIDGE_SHIM_JS = `(function(token){
         var p = pending[d.id];
         delete pending[d.id];
         active--;
-        if (waiting.length) waiting.shift()();
+        if (d.ok !== true && typeof d.retryAfterMs === "number" && d.retryAfterMs > 0) {
+          holdUntil = Math.max(holdUntil, Date.now() + Math.min(d.retryAfterMs, MAX_HOLD));
+        }
+        pump();
         if (d.ok === true) p.resolve(d.result);
         else p.reject(new Error(typeof d.error === "string" && d.error ? d.error : "callboard storage request failed"));
       }
     };
     host.postMessage({ __callboard: "artifact-bridge-hello", token: token }, "*", [channel.port2]);
+  }
+
+  /* Send what may go: nothing while held back by a retry hint, and never more than MAX_IN_FLIGHT at once. */
+  function pump(){
+    var wait = holdUntil - Date.now();
+    if (wait > 0) {
+      if (!holdTimer && waiting.length) holdTimer = setTimeout(function(){ holdTimer = null; pump(); }, wait);
+      return;
+    }
+    while (waiting.length && active < MAX_IN_FLIGHT) waiting.shift()();
   }
 
   function toBase64(bytes){
@@ -109,7 +129,8 @@ export const ARTIFACT_BRIDGE_SHIM_JS = `(function(token){
           for (var k in fields) if (fields[k] !== undefined) msg[k] = fields[k];
           port.postMessage(msg);
         }
-        if (active < MAX_IN_FLIGHT) send(); else waiting.push(send);
+        waiting.push(send);
+        pump();
       });
     });
   }

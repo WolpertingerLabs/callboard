@@ -95,6 +95,7 @@ function ArtifactFrame({
       api: bridgeApi,
       recheck,
       onAccessChange,
+      budgetGroup: artifactId,
     });
     return [b, h] as const;
   })[0];

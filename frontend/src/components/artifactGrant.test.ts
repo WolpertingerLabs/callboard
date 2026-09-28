@@ -66,7 +66,7 @@ describe("recheckGrant — transient failures keep the grant (throw), definitive
   });
 
   it("the budget refusing the fetch → throws RateLimitedError, nothing fetched", async () => {
-    await expect(recheckGrant(data, SHA, 0, { spend: () => false }, createSharedLookup((id) => getArtifact(id)))).rejects.toBeInstanceOf(RateLimitedError);
+    await expect(recheckGrant(data, SHA, 0, { spend: () => false, retryAfterMs: () => 0, available: () => 0 }, createSharedLookup((id) => getArtifact(id)))).rejects.toBeInstanceOf(RateLimitedError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

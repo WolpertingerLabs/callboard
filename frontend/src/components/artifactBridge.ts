@@ -36,11 +36,16 @@
  * - Names are re-validated here (the server validates again) and writes are
  *   size-checked here (the server enforces again).
  * - Every request that would reach the server is metered first, against ONE
- *   budget shared by every bridge in the tab ({@link tabBudget},
- *   {@link ARTIFACT_BRIDGE_LIMITS}), plus ≤ 4 in flight per mount. Over the
- *   limit it fails at once with a `rate limited` error and never leaves the
- *   browser — artifacts, however many are open, must not spend the per-client
- *   API budget the whole UI shares.
+ *   budget for the whole tab ({@link tabBudget}, {@link ARTIFACT_BRIDGE_LIMITS}),
+ *   drawn on through this mount's own account — the tab's rate divided evenly
+ *   between the mounts using it, so a spinning neighbour cannot take this
+ *   one's share — plus ≤ 4 in flight per mount. Over the limit it fails at
+ *   once with a `rate limited` error (carrying `retryAfterMs`, which the shim
+ *   honours) and never leaves the browser — artifacts, however many are open,
+ *   must not spend the per-client API budget the whole UI shares. The one
+ *   exception is a mount under an even split whose share happens to be empty
+ *   (it was quiet, and gave it back): its request is held until the share can
+ *   pay, up to ARTIFACT_BRIDGE_LIMITS.maxHoldMs, rather than refused.
  * - The grant is live, not frozen at mount: every request is judged against a
  *   check of the artifact (it still exists, its current declared access, the
  *   pinned sha256) that started at most {@link ARTIFACT_BRIDGE_WRITE_RECHECK_MS}
@@ -74,7 +79,7 @@ import {
   STORAGE_MAX_ITEM_BYTES,
 } from "../api";
 import type { ArtifactBridgeInit, ArtifactBridgeOp, ArtifactBridgeReply, ArtifactStorageAccess, StorageItem } from "../api";
-import { RATE_LIMITED, RateLimitedError, tabBudget, type RequestBudget } from "./artifactBudget";
+import { RATE_LIMITED, RateLimitedError, tabBudget, type BudgetAccount, type RequestBudget } from "./artifactBudget";
 
 export { RATE_LIMITED };
 
@@ -162,13 +167,21 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-class BridgeRefusal extends Error {}
+class BridgeRefusal extends Error {
+  /** Set on a budget refusal: when this mount's share should hold a token again. */
+  constructor(
+    message: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+  }
+}
 
 /** Built on use, not at import: tests that mock ../api wholesale import this module too. */
 const rateLimitMessage = () =>
-  `${RATE_LIMITED}: the artifacts in this tab share at most ${Math.round(ARTIFACT_BRIDGE_LIMITS.refillPerSecond * 60)} storage requests a minute ` +
-  `(burst ${ARTIFACT_BRIDGE_LIMITS.burst}; a write also spends one on re-checking access at most every ${ARTIFACT_BRIDGE_WRITE_RECHECK_MS / 1000} s, ` +
-  `a read every ${ARTIFACT_BRIDGE_READ_RECHECK_MS / 1000} s); slow down and retry`;
+  `${RATE_LIMITED}: the artifacts in this tab share at most ${Math.round(ARTIFACT_BRIDGE_LIMITS.refillPerSecond * 60)} storage requests a minute, ` +
+  `divided evenly between the ones making requests (burst ${ARTIFACT_BRIDGE_LIMITS.burst}; a write also spends one on re-checking access at most every ` +
+  `${ARTIFACT_BRIDGE_WRITE_RECHECK_MS / 1000} s, a read every ${ARTIFACT_BRIDGE_READ_RECHECK_MS / 1000} s); slow down and retry`;
 
 export interface ArtifactBridgeOptions {
   /** The frame window this mount rendered — read fresh on every check. */
@@ -191,8 +204,12 @@ export interface ArtifactBridgeOptions {
   recheck?: (maxAgeMs: number, budget: RequestBudget) => Promise<ArtifactStorageAccess>;
   /** Told whenever a re-check lowers the grant (the renderer's badge follows it). */
   onAccessChange?: (access: ArtifactStorageAccess) => void;
-  /** The budget this bridge spends. Production: {@link tabBudget}, shared by every bridge in the tab. Test seam. */
+  /** The budget this bridge spends. Production: an account of {@link tabBudget}, opened on the first metered request and closed on revoke. Test seam. */
   budget?: RequestBudget;
+  /** The artifact this mount renders: the mounts of one artifact split the cost of its shared re-checks. */
+  budgetGroup?: string;
+  /** How long a refused request of a mount within its share may be held for it (default ARTIFACT_BRIDGE_LIMITS.maxHoldMs; 0: never). Test seam. */
+  maxHoldMs?: number;
 }
 
 export interface ArtifactBridge {
@@ -221,9 +238,33 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
   // Unbound renders get no authority at all, whatever access was passed.
   const storageKey = opts.storageKey ?? null;
   let access: ArtifactStorageAccess = storageKey ? opts.access : "none";
-  const budget = opts.budget ?? tabBudget;
-  let loads = 0;
+  // Opened on first use, not here: StrictMode builds a bridge it throws away, and an
+  // account that is never closed would sit in the tab's books for good.
+  let account: BudgetAccount | null = null;
+  const maxHoldMs = opts.maxHoldMs ?? ARTIFACT_BRIDGE_LIMITS.maxHoldMs;
   let revoked = false;
+  // Never after revoke: an account opened then (by a request whose check was in flight) would never be closed.
+  const mine = () => (revoked ? null : (account ??= tabBudget.open(opts.budgetGroup)));
+  const budget: RequestBudget = opts.budget ?? {
+    spend: (cost, shared) => mine()?.spend(cost, shared) ?? false,
+    retryAfterMs: (cost) => mine()?.retryAfterMs(cost) ?? 0,
+    available: () => mine()?.available() ?? 0,
+    underShare: () => mine()?.underShare() ?? false,
+  };
+  const rateLimited = () => new BridgeRefusal(rateLimitMessage(), budget.retryAfterMs(1));
+  /**
+   * What a request's re-check spends: the same budget, but a check is only
+   * paid for when the call it is for can be paid for too. Otherwise, with a
+   * share that refills slower than the write window (a quarter of the tab is
+   * a token every ~2.3 s), each token went on a check that was stale again
+   * before the call's token arrived — and every write was refused for ever.
+   */
+  const checkBudget: RequestBudget = {
+    spend: (cost, shared) => budget.available() >= cost + 1 && budget.spend(cost, shared),
+    retryAfterMs: (cost = 1) => budget.retryAfterMs(cost + 1),
+    available: () => Math.max(0, budget.available() - 1),
+  };
+  let loads = 0;
   let port: MessagePort | null = null;
   const inFlight = new Set<Promise<void>>();
   let active = 0;
@@ -238,8 +279,8 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
   }
 
   /** Lower the grant to a check at most `maxAgeMs` old. Rejects if the check could not be made. */
-  async function check(recheck: NonNullable<ArtifactBridgeOptions["recheck"]>, maxAgeMs: number): Promise<void> {
-    lower(await recheck(maxAgeMs, budget));
+  async function check(recheck: NonNullable<ArtifactBridgeOptions["recheck"]>, maxAgeMs: number, b: RequestBudget = budget): Promise<void> {
+    lower(await recheck(maxAgeMs, b));
   }
 
   /**
@@ -311,29 +352,88 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     if (access === "none" || !storageKey) throw new BridgeRefusal("This artifact has no storage access");
     const { mutating, run } = prepare(req, storageKey);
 
+    // A mount that asks for less than an even split can still find nothing to
+    // spend: one quiet for activeWindowMs gave its share back to the tab and a
+    // busy neighbour spent it (a poller every 10 s beside a spinner was refused
+    // every call), or its last call's wait left its share less time to refill.
+    // Such a request is held, not refused, until its share can pay — the waits
+    // the refusals would have named, at most maxHoldMs in all — provided the
+    // budget says the mount is under its share. That gate alone keeps a
+    // spinner out: holds spend nothing, and a mount at or over its share is
+    // refused (a sequential spinner ~90% of calls; the rest are held for a
+    // refill it was due anyway, never above its share). Every request of an
+    // under-share mount may be held — an app firing two reads on load, or
+    // Promise.all-ing two per poll, must not lose one — and maxInFlight
+    // already bounds how many that is.
+    let mayHold: number | null = null;
+    for (;;) {
+      try {
+        const paying = pay(mutating);
+        if (paying) await paying;
+        break;
+      } catch (err) {
+        const wait = err instanceof BridgeRefusal ? (err.retryAfterMs ?? 0) : 0;
+        if (!wait) throw err;
+        mayHold ??= budget.underShare?.() ? maxHoldMs : 0;
+        if (wait > mayHold || revoked) throw err;
+        mayHold -= wait;
+        await held(wait);
+        if (revoked) throw err;
+      }
+    }
+    // Unmounted while the check was in flight or the request held: the answer would be dropped anyway.
+    if (revoked) throw new BridgeRefusal("This artifact's bridge has been revoked");
+    return run();
+  }
+
+  /** Wake-ups of this mount's held requests, run by revoke. */
+  const wakers = new Set<() => void>();
+  /** Sleep `ms`, or until revoke. */
+  function held(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        wakers.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, ms);
+      wakers.add(wake);
+    });
+  }
+
+  /**
+   * The metered part of a request: its re-check, if one must be fetched, and
+   * the call. Throws a BridgeRefusal — synchronously when there is no re-check,
+   * so that an unchecked request reaches the server in the same task.
+   */
+  function pay(mutating: boolean): Promise<void> | void {
     // From here on the request reaches the server, so everything is metered.
     // The re-check comes first, metered by the shared lookup and only if it has
     // to fetch (no check of this artifact fresh enough for this op, from any
     // mount); then the call. That order matters under contention: paying for
     // the call first let a token trickling in go to a call whose stale check
     // could then not be paid for — every time, so a few spinning artifacts
-    // starved each other forever. A check paid for is shared and kept, so the
-    // next attempt needs only the call's token.
+    // starved each other forever. And the check is paid for only when the call
+    // can be paid for too (checkBudget): a check bought alone could go stale
+    // before the call's token arrived, the mirror-image starvation.
     const recheck = opts.recheck;
-    if (recheck) {
-      try {
-        await check(recheck, mutating ? ARTIFACT_BRIDGE_WRITE_RECHECK_MS : ARTIFACT_BRIDGE_READ_RECHECK_MS);
-      } catch (err) {
-        if (err instanceof RateLimitedError) throw new BridgeRefusal(rateLimitMessage());
+    const spendCall = () => {
+      if (!budget.spend(1)) throw rateLimited();
+    };
+    if (!recheck) return spendCall();
+    return check(recheck, mutating ? ARTIFACT_BRIDGE_WRITE_RECHECK_MS : ARTIFACT_BRIDGE_READ_RECHECK_MS, checkBudget).then(
+      () => {
+        // Read through a call: TS narrowed `access` and cannot see that the check may have lowered it.
+        const current = granted();
+        if (current === "none") throw new BridgeRefusal("This artifact's storage access has been revoked");
+        if (mutating && current !== "readwrite") throw new BridgeRefusal("This artifact has read-only storage access");
+        spendCall();
+      },
+      (err: unknown) => {
+        if (err instanceof RateLimitedError) throw new BridgeRefusal(rateLimitMessage(), err.retryAfterMs);
         throw new BridgeRefusal("Could not re-check the artifact's storage access; try again");
-      }
-      // Read through a call: TS narrowed `access` above and cannot see that the check may have lowered it.
-      const current = granted();
-      if (current === "none") throw new BridgeRefusal("This artifact's storage access has been revoked");
-      if (mutating && current !== "readwrite") throw new BridgeRefusal("This artifact has read-only storage access");
-    }
-    if (!budget.spend(1)) throw new BridgeRefusal(rateLimitMessage());
-    return run();
+      },
+    );
   }
 
   async function answer(p: MessagePort, msg: Record<string, unknown>): Promise<void> {
@@ -344,6 +444,7 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
       reply = { __callboard: BRIDGE_REPLY, id, ok: true, result };
     } catch (err) {
       reply = { __callboard: BRIDGE_REPLY, id, ok: false, error: err instanceof Error ? err.message : "Storage request failed" };
+      if (err instanceof BridgeRefusal && err.retryAfterMs) reply.retryAfterMs = err.retryAfterMs;
     }
     // Re-check after the await: a frame that navigated (or unmounted) while
     // the request was in flight must not receive the answer.
@@ -376,6 +477,8 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
 
   function revoke(): void {
     revoked = true;
+    account?.close();
+    for (const wake of [...wakers]) wake();
     if (port) {
       port.onmessage = null;
       port.close();
