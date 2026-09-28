@@ -25,6 +25,10 @@ async function main() {
     const { translateCodexOptions } = await import("../backend/src/agents/adapters/codex/optionsAdapter.js");
     const { resolveCodexExecutionRoute } = await import("../backend/src/services/codex-execution-route.js");
     const { CALLBOARD_UI_TOOLS } = await import("../shared/types/callboard-ui-tools.js");
+    // render_artifact renders an existing artifact, so seed one in the scratch
+    // data dir (CALLBOARD_DATA_DIR is set above, before any backend import).
+    const { saveArtifact } = await import("../backend/src/services/artifact-service.js");
+    await saveArtifact({ id: "smoke-artifact", name: "Smoke artifact", contentType: "html", content: "<h1>Smoke artifact</h1>" }, "create");
     const spec = buildCallboardToolsSpec();
     spec.tools = spec.tools.filter((tool) => (CALLBOARD_UI_TOOLS as readonly string[]).includes(tool.name));
     spec.tools.push({
@@ -52,7 +56,7 @@ async function main() {
       const translated = translateCodexOptions({
         cwd: process.cwd(),
         systemPrompt:
-          "You are executing a bounded development tool test. Follow the user's steps exactly. Do not use shell, network, desktop, collaboration, or other tools. No filesystem operations except the requested canvas tools.",
+          "You are executing a bounded development tool test. Follow the user's steps exactly. Do not use shell, network, desktop, collaboration, or other tools. No filesystem operations except the requested canvas and artifact tools.",
         mcpServers: { "callboard-tools": handle },
         codex: {
           model: "gpt-5.6-sol",
@@ -69,7 +73,7 @@ async function main() {
       const events: ThreadEvent[] = [];
       for await (const event of (
         await thread.runStreamed(
-          "Use the native direct render_file tool once for https://example.com/smoke.png with caption Smoke image. Use native direct create_canvas once with name Smoke canvas, content_type html and content <h1>Smoke canvas</h1>. Then invoke functions.exec with this exact code: text(await tools.mcp__callboard_tools__echo({value: 'normal-exec-ok'})); text('CALLBOARD_UI_IN_EXEC=' + ALL_TOOLS.some(({name}) => name.includes('render_file') || name.includes('create_canvas') || name.includes('update_canvas'))); Finish. Never call UI tools via exec.",
+          "Use the native direct render_file tool once for https://example.com/smoke.png with caption Smoke image. Use native direct create_canvas once with name Smoke canvas, content_type html and content <h1>Smoke canvas</h1>. Use native direct render_artifact once with id smoke-artifact. Then invoke functions.exec with this exact code: text(await tools.mcp__callboard_tools__echo({value: 'normal-exec-ok'})); text('CALLBOARD_UI_IN_EXEC=' + ALL_TOOLS.some(({name}) => name.includes('render_file') || name.includes('create_canvas') || name.includes('update_canvas') || name.includes('render_artifact'))); Finish. Never call UI tools via exec.",
           { signal: AbortSignal.timeout(90000) },
         )
       ).events)

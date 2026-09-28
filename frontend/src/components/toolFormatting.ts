@@ -298,6 +298,20 @@ export function getToolSummary(toolName: string, content: string): string {
       case "update_canvas":
       case "read_canvas":
         return input.canvas_id ? ` - ${input.canvas_id}` : "";
+      case "create_storage_key":
+      case "list_storage_items":
+      case "delete_storage_key":
+        return input.key ? ` - ${String(input.key)}` : "";
+      case "read_storage_item":
+      case "save_storage_item":
+      case "delete_storage_item":
+        return input.key && input.name ? ` - ${String(input.key)}/${String(input.name)}` : input.key ? ` - ${String(input.key)}` : "";
+      case "read_artifact":
+      case "save_artifact":
+      case "delete_artifact":
+        return input.id ? ` - ${String(input.id)}${input.version ? ` v${String(input.version)}` : ""}` : "";
+      case "render_artifact":
+        return input.id ? ` - ${String(input.id)}${input.storage_key ? ` (${String(input.storage_key)})` : ""}` : "";
 
       // ---- long-running / delegating callboard tools -----------------------
       // These are the calls that leave something running (or the agent

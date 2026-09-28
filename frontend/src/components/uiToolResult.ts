@@ -2,10 +2,11 @@ import type { ParsedMessage } from "shared";
 import { callboardUiTool } from "shared/types/callboard-ui-tools.js";
 import type { RenderFileData } from "./MediaRenderer";
 import type { RenderCanvasData } from "./CanvasRenderer";
+import { ARTIFACT_ID_PATTERN, isValidStorageKey, type RenderArtifactToolResult } from "../api";
 
 /** UI identity AND a complete renderer contract are required. Arbitrary JSON,
  * failed envelopes, partial payloads and foreign namespaces remain generic. */
-export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | null): RenderFileData | RenderCanvasData | null {
+export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | null): RenderFileData | RenderCanvasData | RenderArtifactToolResult | null {
   const tool = callboardUiTool(use.toolName ?? "", use.toolNamespace);
   if (use.type !== "tool_use" || !tool || !result || result.type !== "tool_result" || (use.toolUseId && result.toolUseId && use.toolUseId !== result.toolUseId))
     return null;
@@ -33,6 +34,26 @@ export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | n
       )
         return null;
       return p as RenderFileData;
+    }
+    if (tool === "render_artifact") {
+      if (
+        p.type !== "render_artifact" ||
+        typeof p.artifact_id !== "string" ||
+        !ARTIFACT_ID_PATTERN.test(p.artifact_id) ||
+        !Number.isSafeInteger(p.version) ||
+        p.version < 1 ||
+        (p.sha256 !== undefined && (typeof p.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(p.sha256))) ||
+        typeof p.name !== "string" ||
+        !p.name ||
+        !["html", "svg", "markdown"].includes(p.content_type) ||
+        !["none", "read", "readwrite"].includes(p.storage_access) ||
+        (p.storage_key !== undefined && !isValidStorageKey(p.storage_key)) ||
+        // A grant with nothing to grant it on is a malformed result, not "none".
+        (p.storage_key === undefined && p.storage_access !== "none") ||
+        (p.display_mode !== undefined && !["inline", "fullscreen"].includes(p.display_mode))
+      )
+        return null;
+      return p as RenderArtifactToolResult;
     }
     if (
       p.type !== "render_canvas" ||

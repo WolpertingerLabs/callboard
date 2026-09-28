@@ -212,3 +212,5 @@ export type {
   ComputerUseAction,
   ComputerUseActionRequest,
 } from "./computerUse.js";
+export * from "./storage.js";
+export * from "./artifact.js";

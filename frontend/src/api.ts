@@ -237,6 +237,17 @@ export type {
 
 export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
 
+import type {
+  StorageItem,
+  StorageKeySummary,
+  StorageKeyDetail,
+  PutStorageItemJsonBody,
+  Artifact,
+  ArtifactSummary,
+  CreateArtifactInput,
+  UpdateArtifactInput,
+} from "shared/types/index.js";
+
 /**
  * Capability handshake headers (`X-Callboard-Protocol` / `X-Callboard-Caps`).
  * Re-exported here so callers that hand-roll a `fetch` — the SSE streams in
@@ -2716,4 +2727,210 @@ export async function getReasoningCapability(provider: string, model: string, cw
     throw new Error("Invalid reasoning capability response");
   }
   return data;
+}
+
+// ── Storage ─────────────────────────────────────────────────────────
+//
+// Key-catalogued named buckets of flat items (plan §2).
+
+export type {
+  StorageItem,
+  StorageKeySummary,
+  StorageKeyDetail,
+  ArtifactStorageAccess,
+  Artifact,
+  ArtifactSummary,
+  ArtifactVersion,
+  ArtifactContentType,
+  RenderArtifactToolResult,
+  ArtifactBridgeHello,
+  ArtifactBridgeInit,
+  ArtifactBridgeOp,
+  ArtifactBridgeRequest,
+  ArtifactBridgeReply,
+  ArtifactBridgeReady,
+} from "shared/types/index.js";
+
+export {
+  ARTIFACT_BRIDGE_LIMITS,
+  ARTIFACT_BRIDGE_READ_RECHECK_MS,
+  ARTIFACT_BRIDGE_WRITE_RECHECK_MS,
+  ARTIFACT_BRIDGE_TOKEN_PATTERN,
+  ARTIFACT_RENDER_SHA256_PATTERN,
+  ARTIFACT_ID_PATTERN,
+  STORAGE_ITEM_MIME_HEADER,
+  STORAGE_MAX_ITEM_BYTES,
+  isValidStorageItemName,
+  isValidStorageKey,
+  minArtifactStorageAccess,
+} from "shared/types/index.js";
+
+/** Same-origin URL of one stored item's raw bytes (inline only for raster images and text/plain). */
+export function storageItemUrl(key: string, name: string): string {
+  return `${BASE}/storage/${encodeURIComponent(key)}/items/${encodeURIComponent(name)}`;
+}
+
+export async function listStorageKeys(): Promise<StorageKeySummary[]> {
+  const res = await fetch(`${BASE}/storage`, { credentials: "include" });
+  await assertOk(res, "Failed to list storage keys");
+  const data = await res.json();
+  return data.keys;
+}
+
+export async function createStorageKey(key: string, description?: string): Promise<StorageKeyDetail> {
+  const res = await fetch(`${BASE}/storage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ key, description }),
+  });
+  await assertOk(res, "Failed to create storage key");
+  const data = await res.json();
+  return data.key;
+}
+
+export async function getStorageKey(key: string): Promise<StorageKeyDetail> {
+  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get storage key");
+  const data = await res.json();
+  return data.key;
+}
+
+export async function updateStorageKey(key: string, description: string): Promise<StorageKeyDetail> {
+  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ description }),
+  });
+  await assertOk(res, "Failed to update storage key");
+  const data = await res.json();
+  return data.key;
+}
+
+export async function deleteStorageKey(key: string): Promise<void> {
+  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, { method: "DELETE", credentials: "include" });
+  await assertOk(res, "Failed to delete storage key");
+}
+
+/** The raw response for one item; callers pick `.text()` or `.blob()`. */
+export async function fetchStorageItem(key: string, name: string): Promise<Response> {
+  const res = await fetch(storageItemUrl(key, name), { credentials: "include" });
+  await assertOk(res, "Failed to read storage item");
+  return res;
+}
+
+/**
+ * Create or overwrite one item. Exactly one of `content` (utf-8) or
+ * `content_base64` travels as JSON; a `File`/`Blob` goes up as multipart `file`.
+ * Resolves to the saved item's meta (`{ item }`).
+ */
+export async function putStorageItem(
+  key: string,
+  name: string,
+  body: PutStorageItemJsonBody | { file: Blob },
+): Promise<StorageItem> {
+  let init: RequestInit;
+  if ("file" in body) {
+    const form = new FormData();
+    form.append("file", body.file, name);
+    init = { method: "PUT", credentials: "include", body: form };
+  } else {
+    init = { method: "PUT", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) };
+  }
+  const res = await fetch(storageItemUrl(key, name), init);
+  await assertOk(res, "Failed to save storage item");
+  const data = await res.json();
+  return data.item;
+}
+
+export async function deleteStorageItem(key: string, name: string): Promise<void> {
+  const res = await fetch(storageItemUrl(key, name), { method: "DELETE", credentials: "include" });
+  await assertOk(res, "Failed to delete storage item");
+}
+
+// ── Artifacts ───────────────────────────────────────────────────────
+//
+// Named, versioned single-file apps rendered in a sandboxed iframe (plan §3).
+
+/**
+ * The served document for one version — the only thing an artifact iframe may
+ * load. `bridgeToken` (HTML only) is the mount's bridge token; the server
+ * injects it into the shim of that one response.
+ */
+/**
+ * The served document of one artifact version. A framed HTML render passes its
+ * bridge token AND the sha256 it checked: the route refuses to serve bytes that
+ * no longer hash to it (and requires it alongside a token).
+ */
+export function artifactRenderUrl(id: string, version: number, pin?: { bridgeToken?: string; sha256: string }): string {
+  const url = `${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/render`;
+  if (!pin) return url;
+  const bridge = pin.bridgeToken === undefined ? "" : `bridge=${encodeURIComponent(pin.bridgeToken)}&`;
+  return `${url}?${bridge}sha256=${encodeURIComponent(pin.sha256)}`;
+}
+
+/** Summaries only — no version list; `getArtifact` for that. */
+export async function listArtifacts(): Promise<ArtifactSummary[]> {
+  const res = await fetch(`${BASE}/artifacts`, { credentials: "include" });
+  await assertOk(res, "Failed to list artifacts");
+  const data = await res.json();
+  return data.artifacts;
+}
+
+export async function getArtifact(id: string): Promise<Artifact> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get artifact");
+  const data = await res.json();
+  return data.artifact;
+}
+
+export async function createArtifact(input: CreateArtifactInput): Promise<Artifact> {
+  const res = await fetch(`${BASE}/artifacts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(input),
+  });
+  await assertOk(res, "Failed to create artifact");
+  const data = await res.json();
+  return data.artifact;
+}
+
+export async function updateArtifact(id: string, updates: UpdateArtifactInput): Promise<Artifact> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  await assertOk(res, "Failed to update artifact");
+  const data = await res.json();
+  return data.artifact;
+}
+
+export async function deleteArtifact(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
+  await assertOk(res, "Failed to delete artifact");
+}
+
+export async function saveArtifactVersion(id: string, content: string, note?: string): Promise<Artifact> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ content, note }),
+  });
+  await assertOk(res, "Failed to save artifact version");
+  const data = await res.json();
+  return data.artifact;
+}
+
+/** One version's source as text — never executed, only shown or fed to MarkdownRenderer. */
+/** `sha256` pins the bytes: the server answers 409 if the version no longer hashes to it. */
+export async function getArtifactVersionSource(id: string, version: number, sha256?: string): Promise<string> {
+  const pin = sha256 === undefined ? "" : `?sha256=${encodeURIComponent(sha256)}`;
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}${pin}`, { credentials: "include" });
+  await assertOk(res, "Failed to read artifact version");
+  return res.text();
 }

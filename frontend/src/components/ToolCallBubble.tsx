@@ -6,6 +6,7 @@ import { parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge, ImageThumbn
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
 import MediaRenderer from "./MediaRenderer";
 import CanvasRenderer from "./CanvasRenderer";
+import ArtifactRenderer from "./ArtifactRenderer";
 import JsonContentView from "./JsonContentView";
 
 interface ToolCallBubbleProps {
@@ -97,6 +98,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning, backgro
   const uiData = useMemo(() => parseUiToolResult(toolUse, toolResult), [toolUse, toolResult]);
   const renderFileData = uiData?.type === "render_file" ? uiData : null;
   const canvasData = uiData?.type === "render_canvas" ? uiData : null;
+  const artifactData = uiData?.type === "render_artifact" ? uiData : null;
 
   if (todoItems) {
     return <TodoList items={todoItems} />;
@@ -108,6 +110,10 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning, backgro
 
   if (canvasData) {
     return <CanvasRenderer data={canvasData} />;
+  }
+
+  if (artifactData) {
+    return <ArtifactRenderer data={artifactData} />;
   }
 
   const toolName = toolUse.toolName || "unknown";
