@@ -135,6 +135,16 @@ describe("getToolSummary — snake_case harness tools", () => {
     expect(getToolSummary("create_canvas", j({ name: "Dashboard" }))).toBe(" - Dashboard");
     expect(getToolSummary("render_file", j({ file_path: "/tmp/chart.png" }))).toBe(" - chart.png");
   });
+
+  it("summarizes storage and artifact tools", () => {
+    expect(getToolSummary("mcp__callboard-tools__render_artifact", j({ id: "cramhouse", storage_key: "birds" }))).toBe(" - cramhouse (birds)");
+    expect(getToolSummary("render_artifact", j({ id: "cramhouse" }))).toBe(" - cramhouse");
+    expect(getToolSummary("save_artifact", j({ id: "cramhouse", content: "<html>" }))).toBe(" - cramhouse");
+    expect(getToolSummary("read_artifact", j({ id: "cramhouse", version: 2 }))).toBe(" - cramhouse v2");
+    expect(getToolSummary("callboard-tools__save_storage_item", j({ key: "birds", name: "deck.json" }))).toBe(" - birds/deck.json");
+    expect(getToolSummary("create_storage_key", j({ key: "birds" }))).toBe(" - birds");
+    expect(getToolSummary("delete_storage_key", j({ key: "birds", confirm: true }))).toBe(" - birds");
+  });
 });
 
 describe("getToolSummary — Codex tools", () => {
