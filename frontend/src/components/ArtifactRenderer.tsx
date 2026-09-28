@@ -6,7 +6,8 @@ import { useFrameSizing } from "./useFrameSizing";
 import { createArtifactBridge, type ArtifactBridge, type BridgeStorageApi } from "./artifactBridge";
 import { artifactRenderUrl, getArtifact, getArtifactVersionSource } from "../api";
 import type { RenderArtifactToolResult, ArtifactStorageAccess } from "../api";
-import { judgeRender, recheckGrant, type Verdict } from "./artifactGrant";
+import { artifactLookup, judgeRender, recheckGrant, type Verdict } from "./artifactGrant";
+import type { RequestBudget } from "./artifactBudget";
 
 interface ArtifactRendererProps {
   data: RenderArtifactToolResult;
@@ -33,7 +34,7 @@ interface ArtifactFrameProps {
   title: string;
   storageKey: string | null;
   access: ArtifactStorageAccess;
-  recheck: () => Promise<ArtifactStorageAccess>;
+  recheck: (maxAgeMs: number, budget: RequestBudget) => Promise<ArtifactStorageAccess>;
   onAccessChange: (access: ArtifactStorageAccess) => void;
   frameRef?: MutableRefObject<HTMLIFrameElement | null>;
   style: CSSProperties;
@@ -59,7 +60,11 @@ interface ArtifactFrameProps {
  * down the port its hello carried, whose other end dies with the document.
  *
  * The page becoming visible again re-checks the grant (the artifact may have
- * been lowered or deleted while this tab was in the background).
+ * been lowered or deleted while this tab was in the background) — through the
+ * tab's shared per-artifact check, so it fetches only if no mount of this
+ * artifact has checked within ARTIFACT_BRIDGE_READ_RECHECK_MS: ten bubbles and
+ * a user flicking between tabs cost one request per five seconds, not ten per
+ * switch.
  *
  * `sandbox="allow-scripts"` and nothing else: no same-origin (so no cookies and
  * no /api), no top navigation, no popups, no forms.
@@ -195,12 +200,18 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
   // fills the viewport must not become its inline size when fullscreen closes.
   const { contentHeight, contentWidth, needsScale, scale, displayHeight } = useFrameSizing(iframeRef, containerRef, isHtml && mounted && !expanded);
 
-  // Re-judge whenever the result changes; a failure to look is a refusal.
+  // Re-judge whenever the result changes; a failure to look is a refusal. The
+  // fetch is always fresh (a preview just after a save must see the new
+  // version) and seeds the shared re-check, so the mount starts checked.
   useEffect(() => {
     let cancelled = false;
     const key = renderKey;
+    const startedAt = Date.now();
     getArtifact(data.artifact_id)
-      .then((artifact) => !cancelled && setJudged({ key, verdict: judgeRender(data, artifact) }))
+      .then((artifact) => {
+        artifactLookup.seed(data.artifact_id, startedAt, artifact);
+        if (!cancelled) setJudged({ key, verdict: judgeRender(data, artifact) });
+      })
       .catch((err: Error) => {
         if (cancelled) return;
         const reason = /not found/i.test(err.message) ? `"${data.artifact_id}" no longer exists.` : `could not check the artifact (${err.message}).`;
@@ -222,18 +233,20 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
     return () => document.removeEventListener("keydown", onKey);
   }, [expanded]);
 
+  const pinnedSha = verdict.status === "ok" ? verdict.sha256 : null;
   useEffect(() => {
-    if (data.content_type !== "markdown" || !mounted) return;
+    if (data.content_type !== "markdown" || !pinnedSha) return;
     let cancelled = false;
     setLoading(true);
-    getArtifactVersionSource(data.artifact_id, data.version)
+    // Pinned like the frame: the server refuses bytes that are not the version this result was judged for.
+    getArtifactVersionSource(data.artifact_id, data.version, pinnedSha)
       .then((text) => !cancelled && setMarkdown(text))
       .catch((err: Error) => !cancelled && setErrorFor({ key: renderKey, message: err.message }))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [data.content_type, data.artifact_id, data.version, mounted, renderKey]);
+  }, [data.content_type, data.artifact_id, data.version, pinnedSha, renderKey]);
 
   // A new document is loading whenever the frame identity changes.
   useEffect(() => {
@@ -283,7 +296,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
                   title={data.name}
                   storageKey={storageKey}
                   access={access}
-                  recheck={() => recheckGrant(data, verdict.sha256)}
+                  recheck={(maxAgeMs, budget) => recheckGrant(data, verdict.sha256, maxAgeMs, budget)}
                   onAccessChange={(next) => setLowered({ frameKey, access: next })}
                   bridgeApi={bridgeApi}
                   onLoaded={() => setLoading(false)}
@@ -309,10 +322,10 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
           </div>
         );
       case "svg":
-        if (!mounted) return null;
+        if (!pinnedSha) return null;
         return (
           <img
-            src={artifactRenderUrl(data.artifact_id, data.version)}
+            src={artifactRenderUrl(data.artifact_id, data.version, { sha256: pinnedSha })}
             alt={data.caption || data.name}
             referrerPolicy="no-referrer"
             onLoad={() => setLoading(false)}

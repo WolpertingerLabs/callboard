@@ -2754,6 +2754,7 @@ export type {
 export {
   ARTIFACT_BRIDGE_LIMITS,
   ARTIFACT_BRIDGE_READ_RECHECK_MS,
+  ARTIFACT_BRIDGE_WRITE_RECHECK_MS,
   ARTIFACT_BRIDGE_TOKEN_PATTERN,
   ARTIFACT_RENDER_SHA256_PATTERN,
   ARTIFACT_ID_PATTERN,
@@ -2862,9 +2863,11 @@ export async function deleteStorageItem(key: string, name: string): Promise<void
  * bridge token AND the sha256 it checked: the route refuses to serve bytes that
  * no longer hash to it (and requires it alongside a token).
  */
-export function artifactRenderUrl(id: string, version: number, pin?: { bridgeToken: string; sha256: string }): string {
+export function artifactRenderUrl(id: string, version: number, pin?: { bridgeToken?: string; sha256: string }): string {
   const url = `${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/render`;
-  return pin ? `${url}?bridge=${encodeURIComponent(pin.bridgeToken)}&sha256=${encodeURIComponent(pin.sha256)}` : url;
+  if (!pin) return url;
+  const bridge = pin.bridgeToken === undefined ? "" : `bridge=${encodeURIComponent(pin.bridgeToken)}&`;
+  return `${url}?${bridge}sha256=${encodeURIComponent(pin.sha256)}`;
 }
 
 /** Summaries only — no version list; `getArtifact` for that. */
@@ -2924,8 +2927,10 @@ export async function saveArtifactVersion(id: string, content: string, note?: st
 }
 
 /** One version's source as text — never executed, only shown or fed to MarkdownRenderer. */
-export async function getArtifactVersionSource(id: string, version: number): Promise<string> {
-  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}`, { credentials: "include" });
+/** `sha256` pins the bytes: the server answers 409 if the version no longer hashes to it. */
+export async function getArtifactVersionSource(id: string, version: number, sha256?: string): Promise<string> {
+  const pin = sha256 === undefined ? "" : `?sha256=${encodeURIComponent(sha256)}`;
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}${pin}`, { credentials: "include" });
   await assertOk(res, "Failed to read artifact version");
   return res.text();
 }

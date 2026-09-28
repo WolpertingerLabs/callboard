@@ -35,19 +35,22 @@
  *   the only key any operation addresses; a `key` in the payload is ignored.
  * - Names are re-validated here (the server validates again) and writes are
  *   size-checked here (the server enforces again).
- * - Every request that would reach the server is metered first
- *   ({@link ARTIFACT_BRIDGE_LIMITS}: ≤ 4 in flight, a 30-request burst
- *   refilling at 1/s). Over the limit it fails at once with a `rate limited`
- *   error and never leaves the browser — one polling artifact must not spend
- *   the per-client API budget the whole UI shares.
- * - The grant is live, not frozen at mount: before every write and delete —
- *   and before a read or list whose last check is older than
- *   {@link ARTIFACT_BRIDGE_READ_RECHECK_MS} — the host re-checks the artifact
- *   (it still exists, its current declared access, the pinned sha256) via
- *   `recheck`, and on the page becoming visible again. A downgrade lowers the
- *   grant for the rest of the mount (read ⇒ writes refused; none, deleted or
- *   replaced ⇒ every call refused); it never rises again. Those checks are
- *   requests too, and are metered like any other.
+ * - Every request that would reach the server is metered first, against ONE
+ *   budget shared by every bridge in the tab ({@link tabBudget},
+ *   {@link ARTIFACT_BRIDGE_LIMITS}), plus ≤ 4 in flight per mount. Over the
+ *   limit it fails at once with a `rate limited` error and never leaves the
+ *   browser — artifacts, however many are open, must not spend the per-client
+ *   API budget the whole UI shares.
+ * - The grant is live, not frozen at mount: every request is judged against a
+ *   check of the artifact (it still exists, its current declared access, the
+ *   pinned sha256) that started at most {@link ARTIFACT_BRIDGE_WRITE_RECHECK_MS}
+ *   ago for a write or delete, {@link ARTIFACT_BRIDGE_READ_RECHECK_MS} for a
+ *   read or list, via `recheck` — and so is the page becoming visible again.
+ *   Checks are shared per artifact across the tab (artifactGrant's lookup), so
+ *   one that is fresh enough costs nothing; one that goes to the server is
+ *   metered like any other request. A downgrade lowers the grant for the rest
+ *   of the mount (read ⇒ writes refused; none, deleted or replaced ⇒ every call
+ *   refused); it never rises again.
  *
  * Accepted, by design: the artifact itself knows its token and can hand it to
  * a page it navigates to (which would then bind nothing — the host is bound
@@ -60,6 +63,7 @@
 import {
   ARTIFACT_BRIDGE_LIMITS,
   ARTIFACT_BRIDGE_READ_RECHECK_MS,
+  ARTIFACT_BRIDGE_WRITE_RECHECK_MS,
   deleteStorageItem,
   fetchStorageItem,
   getStorageKey,
@@ -70,6 +74,9 @@ import {
   STORAGE_MAX_ITEM_BYTES,
 } from "../api";
 import type { ArtifactBridgeInit, ArtifactBridgeOp, ArtifactBridgeReply, ArtifactStorageAccess, StorageItem } from "../api";
+import { RATE_LIMITED, RateLimitedError, tabBudget, type RequestBudget } from "./artifactBudget";
+
+export { RATE_LIMITED };
 
 export const BRIDGE_HELLO = "artifact-bridge-hello";
 export const BRIDGE_INIT = "artifact-bridge-init";
@@ -157,6 +164,12 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 
 class BridgeRefusal extends Error {}
 
+/** Built on use, not at import: tests that mock ../api wholesale import this module too. */
+const rateLimitMessage = () =>
+  `${RATE_LIMITED}: the artifacts in this tab share at most ${Math.round(ARTIFACT_BRIDGE_LIMITS.refillPerSecond * 60)} storage requests a minute ` +
+  `(burst ${ARTIFACT_BRIDGE_LIMITS.burst}; a write also spends one on re-checking access at most every ${ARTIFACT_BRIDGE_WRITE_RECHECK_MS / 1000} s, ` +
+  `a read every ${ARTIFACT_BRIDGE_READ_RECHECK_MS / 1000} s); slow down and retry`;
+
 export interface ArtifactBridgeOptions {
   /** The frame window this mount rendered — read fresh on every check. */
   getFrameWindow: () => Window | null | undefined;
@@ -166,17 +179,20 @@ export interface ArtifactBridgeOptions {
   /** Test seam; production mints one per mount. */
   token?: string;
   /**
-   * The artifact's grant as it stands NOW: re-reads the artifact and returns
-   * the most this mount may still do — "none" if it is gone, replaced (sha256
-   * differs from the served one) or lowered to none. Throws only when it could
-   * not look (network); the request that needed the check is then refused, but
-   * the grant is kept. Omitted ⇒ the grant is never re-checked (tests only).
+   * The artifact's grant as of a check that started at most `maxAgeMs` ago
+   * (shared per artifact; a fresh enough one is reused, otherwise one is made
+   * and metered against `budget`): the most this mount may still do — "none"
+   * if it is gone, replaced (sha256 differs from the served one) or lowered to
+   * none. Throws when it could not look — {@link RateLimitedError} if the
+   * budget refused the fetch, anything else for the network; the request that
+   * needed the check is then refused, but the grant is kept. Omitted ⇒ the
+   * grant is never re-checked (tests only).
    */
-  recheck?: () => Promise<ArtifactStorageAccess>;
+  recheck?: (maxAgeMs: number, budget: RequestBudget) => Promise<ArtifactStorageAccess>;
   /** Told whenever a re-check lowers the grant (the renderer's badge follows it). */
   onAccessChange?: (access: ArtifactStorageAccess) => void;
-  /** Clock, ms. Test seam for the rate limiter and the read re-check cache. */
-  now?: () => number;
+  /** The budget this bridge spends. Production: {@link tabBudget}, shared by every bridge in the tab. Test seam. */
+  budget?: RequestBudget;
 }
 
 export interface ArtifactBridge {
@@ -193,14 +209,11 @@ export interface ArtifactBridge {
   readonly access: ArtifactStorageAccess;
   /** Resolves once every request received so far has been answered (or dropped). Test seam. */
   settled(): Promise<void>;
-  /** Host-initiated re-check (the page became visible again). Metered; skipped, and the cache dropped, when over budget. */
+  /** Host-initiated re-check (the page became visible again). Shared and metered like a read's: free if one under ARTIFACT_BRIDGE_READ_RECHECK_MS exists; errors (over budget included) are ignored — the next request checks. */
   refresh(): Promise<void>;
   /** Kill the bridge: nothing more is answered, and the host's end of the port is closed. */
   revoke(): void;
 }
-
-/** The message of every metered refusal; artifacts can match on the prefix. */
-export const RATE_LIMITED = "rate limited";
 
 export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridge {
   const api = opts.api ?? restBridgeApi;
@@ -208,28 +221,12 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
   // Unbound renders get no authority at all, whatever access was passed.
   const storageKey = opts.storageKey ?? null;
   let access: ArtifactStorageAccess = storageKey ? opts.access : "none";
-  const now = opts.now ?? (() => Date.now());
+  const budget = opts.budget ?? tabBudget;
   let loads = 0;
   let revoked = false;
   let port: MessagePort | null = null;
   const inFlight = new Set<Promise<void>>();
   let active = 0;
-
-  // Token bucket (ARTIFACT_BRIDGE_LIMITS). Starts full.
-  let tokens: number = ARTIFACT_BRIDGE_LIMITS.burst;
-  let refilledAt = now();
-  function spend(cost: number): boolean {
-    const t = now();
-    tokens = Math.min(ARTIFACT_BRIDGE_LIMITS.burst, tokens + ((t - refilledAt) / 1000) * ARTIFACT_BRIDGE_LIMITS.refillPerSecond);
-    refilledAt = t;
-    if (tokens < cost) return false;
-    tokens -= cost;
-    return true;
-  }
-
-  // The renderer judged the artifact just before mounting, so the mount starts with a fresh check.
-  let checkedAt = now();
-  let checking: Promise<void> | null = null;
 
   const granted = (): ArtifactStorageAccess => access;
 
@@ -240,17 +237,9 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     opts.onAccessChange?.(access);
   }
 
-  /** One re-check at a time; concurrent callers share it. Rejects if the check could not be made. */
-  function runCheck(recheck: () => Promise<ArtifactStorageAccess>): Promise<void> {
-    checking ??= recheck()
-      .then((current) => {
-        lower(current);
-        checkedAt = now();
-      })
-      .finally(() => {
-        checking = null;
-      });
-    return checking;
+  /** Lower the grant to a check at most `maxAgeMs` old. Rejects if the check could not be made. */
+  async function check(recheck: NonNullable<ArtifactBridgeOptions["recheck"]>, maxAgeMs: number): Promise<void> {
+    lower(await recheck(maxAgeMs, budget));
   }
 
   /**
@@ -322,23 +311,20 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     if (access === "none" || !storageKey) throw new BridgeRefusal("This artifact has no storage access");
     const { mutating, run } = prepare(req, storageKey);
 
-    // From here on the request reaches the server: meter it first — the call
-    // itself, plus the re-check it needs (always for a write or delete; for a
-    // read, when the last check is stale and none is already under way).
+    // From here on the request reaches the server, so everything is metered.
+    // The re-check comes first, metered by the shared lookup and only if it has
+    // to fetch (no check of this artifact fresh enough for this op, from any
+    // mount); then the call. That order matters under contention: paying for
+    // the call first let a token trickling in go to a call whose stale check
+    // could then not be paid for — every time, so a few spinning artifacts
+    // starved each other forever. A check paid for is shared and kept, so the
+    // next attempt needs only the call's token.
     const recheck = opts.recheck;
-    const needsCheck = !!recheck && (mutating || now() - checkedAt >= ARTIFACT_BRIDGE_READ_RECHECK_MS);
-    const cost = 1 + (needsCheck && !(checking && !mutating) ? 1 : 0);
-    if (!spend(cost)) {
-      throw new BridgeRefusal(
-        `${RATE_LIMITED}: this artifact may make at most ${ARTIFACT_BRIDGE_LIMITS.refillPerSecond * 60} storage requests a minute (burst ${ARTIFACT_BRIDGE_LIMITS.burst}); slow down and retry`,
-      );
-    }
-    if (needsCheck && recheck) {
-      // A write needs a check that started after it arrived, not one already in flight.
-      if (mutating && checking) await checking.catch(() => undefined);
+    if (recheck) {
       try {
-        await runCheck(recheck);
-      } catch {
+        await check(recheck, mutating ? ARTIFACT_BRIDGE_WRITE_RECHECK_MS : ARTIFACT_BRIDGE_READ_RECHECK_MS);
+      } catch (err) {
+        if (err instanceof RateLimitedError) throw new BridgeRefusal(rateLimitMessage());
         throw new BridgeRefusal("Could not re-check the artifact's storage access; try again");
       }
       // Read through a call: TS narrowed `access` above and cannot see that the check may have lowered it.
@@ -346,6 +332,7 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
       if (current === "none") throw new BridgeRefusal("This artifact's storage access has been revoked");
       if (mutating && current !== "readwrite") throw new BridgeRefusal("This artifact has read-only storage access");
     }
+    if (!budget.spend(1)) throw new BridgeRefusal(rateLimitMessage());
     return run();
   }
 
@@ -429,14 +416,9 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
     },
     async refresh() {
       const recheck = opts.recheck;
-      if (revoked || !port || !recheck || access === "none" || checking) return;
-      if (!spend(1)) {
-        checkedAt = -Infinity; // over budget: the next request re-checks instead
-        return;
-      }
-      await runCheck(recheck).catch(() => {
-        checkedAt = -Infinity; // could not look: same
-      });
+      if (revoked || !port || !recheck || access === "none") return;
+      // Over budget or could not look: nothing recorded, so the next request checks instead.
+      await check(recheck, ARTIFACT_BRIDGE_READ_RECHECK_MS).catch(() => undefined);
     },
     revoke,
   };

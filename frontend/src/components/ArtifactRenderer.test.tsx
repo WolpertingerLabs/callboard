@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { StrictMode } from "react";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import ArtifactRenderer from "./ArtifactRenderer";
-import { judgeRender } from "./artifactGrant";
+import { artifactLookup, judgeRender } from "./artifactGrant";
 import { BRIDGE_HELLO, BRIDGE_INIT, BRIDGE_REPLY, BRIDGE_REQUEST, type BridgeStorageApi } from "./artifactBridge";
+import { ARTIFACT_BRIDGE_READ_RECHECK_MS, ARTIFACT_BRIDGE_WRITE_RECHECK_MS } from "../api";
 import type { Artifact, RenderArtifactToolResult } from "../api";
 
 /**
@@ -111,10 +112,12 @@ beforeEach(() => {
     },
   );
   h.getArtifact.mockResolvedValue(artifact());
+  artifactLookup.clear(); // the tab-wide re-check cache outlives mounts — and cases
 });
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
@@ -314,7 +317,7 @@ describe("ArtifactRenderer — other types", () => {
   it("renders svg through <img>, never a frame", async () => {
     h.getArtifact.mockResolvedValue(artifact({ contentType: "svg" }));
     const { container } = render(<ArtifactRenderer data={{ ...base, content_type: "svg" }} />);
-    await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("/api/artifacts/cramhouse/versions/3/render"));
+    await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe(`/api/artifacts/cramhouse/versions/3/render?sha256=${SHA}`));
     expect(container.querySelector("iframe")).toBeNull();
   });
 
@@ -338,7 +341,7 @@ describe("ArtifactRenderer — other types", () => {
     fireEvent.error(img);
     expect((await screen.findByRole("alert")).textContent).toMatch(/image failed to load/);
     rerender(<ArtifactRenderer data={{ ...svg, version: 4 }} />);
-    await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("/api/artifacts/cramhouse/versions/4/render"));
+    await waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe(`/api/artifacts/cramhouse/versions/4/render?sha256=${SHA}`));
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -347,7 +350,8 @@ describe("ArtifactRenderer — other types", () => {
     h.getArtifactVersionSource.mockResolvedValue("# Deck notes\n\n<script>window.pwned = 1</script>");
     const { container } = render(<ArtifactRenderer data={{ ...base, content_type: "markdown" }} />);
     expect(await screen.findByRole("heading", { name: "Deck notes" })).toBeTruthy();
-    expect(h.getArtifactVersionSource).toHaveBeenCalledWith("cramhouse", 3);
+    // Pinned like the frame: the source route refuses bytes that no longer hash to the judged sha.
+    expect(h.getArtifactVersionSource).toHaveBeenCalledWith("cramhouse", 3, SHA);
     expect(container.querySelector("iframe")).toBeNull();
     expect(container.querySelector("script")).toBeNull();
   });
@@ -387,7 +391,8 @@ describe("ArtifactRenderer — the live grant and the port's lifetime", () => {
     expect(sent(port)[1]).toMatchObject({ id: "r1", ok: true });
   });
 
-  it("a write re-checks the artifact first: lowered to read since mount ⇒ refused, and the badge follows", async () => {
+  it(`a write re-checks the artifact once the last check is ${ARTIFACT_BRIDGE_WRITE_RECHECK_MS} ms old: lowered to read since mount ⇒ refused, and the badge follows`, async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const storage = api();
     h.getArtifact.mockResolvedValue(artifact({ storageAccess: "readwrite" }));
     const { container } = render(<ArtifactRenderer data={{ ...base, storage_access: "readwrite" }} bridgeApi={storage} />);
@@ -397,28 +402,52 @@ describe("ArtifactRenderer — the live grant and the port's lifetime", () => {
     fireEvent.load(frame);
     expect(screen.getByTestId("artifact-key-badge").textContent).toBe("birds · rw");
     h.getArtifact.mockClear();
+    // Straight after mounting, the pre-mount judgement is the check: no request.
+    request(port, token, { id: "w0", op: "write", name: "deck.json", data: "x" });
+    await waitFor(() => expect(sent(port)).toHaveLength(2));
+    expect(sent(port)[1]).toMatchObject({ id: "w0", ok: true });
+    expect(h.getArtifact).not.toHaveBeenCalled();
+    vi.setSystemTime(Date.now() + ARTIFACT_BRIDGE_WRITE_RECHECK_MS);
     h.getArtifact.mockResolvedValue(artifact({ storageAccess: "read" }));
     request(port, token, { id: "w1", op: "write", name: "deck.json", data: "x" });
-    await waitFor(() => expect(sent(port)).toHaveLength(2));
+    await waitFor(() => expect(sent(port)).toHaveLength(3));
     expect(h.getArtifact).toHaveBeenCalledWith("cramhouse");
-    expect(sent(port)[1]).toMatchObject({ id: "w1", ok: false, error: expect.stringMatching(/read-only/) });
-    expect(storage.write).not.toHaveBeenCalled();
+    expect(sent(port)[2]).toMatchObject({ id: "w1", ok: false, error: expect.stringMatching(/read-only/) });
+    expect(storage.write).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.getByTestId("artifact-key-badge").textContent).toBe("birds · read"));
     // Same frame — a lowered grant is never a remount.
     expect(container.querySelector("iframe")).toBe(frame);
   });
 
-  it("the page becoming visible re-checks: deleted since ⇒ no access, no badge", async () => {
-    const { container } = render(<ArtifactRenderer data={base} bridgeApi={api()} />);
-    const frame = await frameOf(container);
-    hello(frame);
-    fireEvent.load(frame);
+  it(`the page becoming visible re-checks — at most once per ${ARTIFACT_BRIDGE_READ_RECHECK_MS} ms for all bubbles of an artifact: deleted since ⇒ no access, no badge`, async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { container } = render(
+      <>
+        <ArtifactRenderer data={base} bridgeApi={api()} />
+        <ArtifactRenderer data={{ ...base, caption: "again" }} bridgeApi={api()} />
+      </>,
+    );
+    await waitFor(() => expect(container.querySelectorAll("iframe")).toHaveLength(2));
+    for (const frame of container.querySelectorAll("iframe")) {
+      hello(frame);
+      fireEvent.load(frame);
+    }
+    const visible = () =>
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
     h.getArtifact.mockClear();
+    // Inside the window of the pre-mount judgement: switching costs nothing.
+    visible();
+    visible();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(h.getArtifact).not.toHaveBeenCalled();
+    vi.setSystemTime(Date.now() + ARTIFACT_BRIDGE_READ_RECHECK_MS);
     h.getArtifact.mockRejectedValue(new Error("Artifact not found: cramhouse"));
-    act(() => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await waitFor(() => expect(screen.queryByTestId("artifact-key-badge")).toBeNull());
+    visible();
+    visible();
+    await waitFor(() => expect(screen.queryAllByTestId("artifact-key-badge")).toHaveLength(0));
+    // Two bubbles, two switches: one request.
     expect(h.getArtifact).toHaveBeenCalledTimes(1);
   });
 });

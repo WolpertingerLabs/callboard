@@ -153,28 +153,57 @@ export const ARTIFACT_BRIDGE_TOKEN_PATTERN = /^[0-9a-f]{32}$/;
 export const ARTIFACT_RENDER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 /**
- * Per-bridge request budget, enforced host-side before any request reaches the
- * server (every storage call — and every re-check of the artifact the bridge
- * makes on the artifact's behalf — costs one token). The server's per-client
- * API limit is 300 requests/min, shared by the whole UI in every tab, so one
- * artifact must stay well clear of it: a bridge sustains at most 60/min with a
- * burst of 30 (≤ 90 in any one minute — under a third of the global budget,
- * leaving room for the UI and a couple of other open artifacts), and holds at
- * most 4 requests in flight. Over the limit, a request fails at once with a
- * `rate limited` error and never leaves the browser.
+ * The artifact request budget, enforced host-side before any request reaches
+ * the server. It is ONE budget per browser tab, shared by every artifact
+ * rendered in it — not one per render: the server's API limit (300
+ * requests/min per client) is shared by the whole UI, and a per-render budget
+ * let a handful of copies of one polling artifact spend it all.
+ *
+ * What costs a token: every storage call (list/read/write/delete), plus every
+ * re-check of an artifact's grant that actually goes to the server. Re-checks
+ * are shared per artifact across the tab (see the two `*_RECHECK_MS` windows
+ * below), so they are at most one per artifact per window, not one per call:
+ * a read reuses a check under 5 s old, a write or delete one under 2 s old.
+ *
+ * Effective rates, for the whole tab: a sustained 105 tokens/min with a burst
+ * of 20 (≤ 125 in any one minute). The rest of the server's 300 is the UI's:
+ * opening a chat alone costs ~55 requests, so ~175 is about three chat opens
+ * a minute on top of artifacts running flat out. Hence, for ONE artifact
+ * alone in the tab:
+ *  - writes sustain up to ~75/min (≤ 30 re-checks/min at one per 2 s); at 1
+ *    write/s a check lands on every other write, so a write costs 1.5 tokens
+ *    on average (90/min, under the 105 refill) and it never runs dry;
+ *  - reads sustain up to ~93/min (≤ 12 re-checks/min at one per 5 s);
+ *  - a load-time burst of ~15 calls always fits.
+ * Several artifacts in one tab divide those numbers between them. Each render
+ * also holds at most 4 requests in flight (the shim queues the rest). Over the
+ * limit, a call fails at once with a `rate limited` error and never leaves the
+ * browser.
  */
 export const ARTIFACT_BRIDGE_LIMITS = {
   maxInFlight: 4,
-  burst: 30,
-  refillPerSecond: 1,
+  burst: 20,
+  refillPerSecond: 1.75,
 } as const;
 
 /**
- * How long a `read`/`list` may rely on the last check of the artifact (current
- * declared access, existence, pinned sha256). Writes and deletes never use the
- * cache: each is preceded by a fresh check.
+ * How old a check of the artifact (current declared access, existence, pinned
+ * sha256) a `read`/`list` — or the re-check when the page becomes visible
+ * again — may rely on. Checks are shared per artifact across the tab, so this
+ * is also the most often any one artifact is re-checked for reads.
  */
 export const ARTIFACT_BRIDGE_READ_RECHECK_MS = 5000;
+
+/**
+ * How old a check a `write`/`delete` may rely on — measured from when the
+ * check STARTED (the earliest moment it could have read the server), and
+ * shared per artifact like the read window. 2 s: well under the time it takes
+ * anyone to lower an artifact's access in Settings and expect it to have
+ * taken effect, yet long enough that a writer at 1/s pays for a check on at
+ * most every other write (the old "every write checks first" rule made a
+ * write cost 2 tokens, so the documented rate was really half).
+ */
+export const ARTIFACT_BRIDGE_WRITE_RECHECK_MS = 2000;
 
 /** The shim resolves `ready` as unbound if no init has arrived by then (see the shim's doc). */
 export const ARTIFACT_BRIDGE_READY_TIMEOUT_MS = 10_000;

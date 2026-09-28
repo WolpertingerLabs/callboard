@@ -37,7 +37,8 @@ import { MessageChannel, type MessagePort } from "node:worker_threads";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READ_RECHECK_MS } from "shared/types/index.js";
+import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READ_RECHECK_MS, ARTIFACT_BRIDGE_WRITE_RECHECK_MS } from "shared/types/index.js";
+import type { Artifact } from "shared/types/index.js";
 import type { ArtifactStorageAccess, RenderArtifactToolResult } from "shared/types/index.js";
 import { listenRaw, type RawServer } from "../backend/src/routes/__fixtures__/raw-http.js";
 
@@ -50,6 +51,8 @@ const storage = await import("../backend/src/services/storage-service.js");
 const artifacts = await import("../backend/src/services/artifact-service.js");
 const { createArtifactBridge, RATE_LIMITED } = await import("../frontend/src/components/artifactBridge.js");
 const { recheckGrant } = await import("../frontend/src/components/artifactGrant.js");
+const { createRequestBudget, createSharedLookup } = await import("../frontend/src/components/artifactBudget.js");
+const { getArtifact } = await import("../frontend/src/api.js");
 
 // 1×1 transparent PNG.
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -125,7 +128,10 @@ function runDocument(frameWindow: Record<string, unknown>, code: string) {
  * that bridge's token. The frame's `window.parent.postMessage` delivers to the
  * host as a browser would: source = the frame's window, ports = the transfer.
  * The live re-check is the renderer's real one (`recheckGrant`) against the
- * real artifact route, pinned to the sha256 the page was served for.
+ * real artifact route, pinned to the sha256 the page was served for, through a
+ * shared lookup seeded — as the renderer seeds it — by a judgement just before
+ * mounting. Each mount gets its own budget and lookup (in the browser they are
+ * the tab's), so cases do not drain each other.
  */
 async function mount(storageKey: string | null, access: ArtifactStorageAccess, id = "study", now?: () => number) {
   const pin = pinOf(id);
@@ -153,12 +159,16 @@ async function mount(storageKey: string | null, access: ArtifactStorageAccess, i
       throw new Error("host posted to the frame's window");
     },
   };
+  const clock = now ?? (() => Date.now());
+  const lookup = createSharedLookup<Artifact>((a) => getArtifact(a), clock);
+  const startedAt = clock();
+  lookup.seed(id, startedAt, await getArtifact(id));
   const bridge = createArtifactBridge({
     getFrameWindow: () => frameWindow as unknown as Window,
     storageKey,
     access,
-    recheck: () => recheckGrant(result, pin),
-    now,
+    recheck: (maxAgeMs, budget) => recheckGrant(result, pin, maxAgeMs, budget, lookup),
+    budget: createRequestBudget(clock),
   });
   runDocument(frameWindow, await servedShim(bridge.token, id));
   bridge.handleLoad();
@@ -317,7 +327,8 @@ describe("the live grant: re-checked against the real artifact route, while moun
 
   it("lowered to read while mounted (Settings PATCH): reads go on, the next write is refused and never reaches storage", async () => {
     await fresh("live-a");
-    const { cb, bridge } = await mount("deck", "readwrite", "live-a");
+    let t = 500_000;
+    const { cb, bridge } = await mount("deck", "readwrite", "live-a", () => t);
     await cb.storage.write("live-a.txt", "1");
     const patched = await realFetch(`${server.origin}/api/artifacts/live-a`, {
       method: "PATCH",
@@ -325,21 +336,26 @@ describe("the live grant: re-checked against the real artifact route, while moun
       body: JSON.stringify({ storageAccess: "read" }),
     });
     expect(patched.status).toBe(200);
+    // A write may rely on a check under ARTIFACT_BRIDGE_WRITE_RECHECK_MS old; past that it sees the change.
+    t += ARTIFACT_BRIDGE_WRITE_RECHECK_MS;
     await expect(cb.storage.read("live-a.txt")).resolves.toBe("1");
     await expect(cb.storage.write("live-a.txt", "2")).rejects.toThrow(/read-only/);
     expect(storage.readStorageItemBytes("deck", "live-a.txt").data.toString()).toBe("1");
     expect(bridge.access).toBe("read");
     // Never rises again, even if the artifact does.
     await artifacts.updateArtifact("live-a", { storageAccess: "readwrite" });
+    t += ARTIFACT_BRIDGE_WRITE_RECHECK_MS;
     await expect(cb.storage.write("live-a.txt", "3")).rejects.toThrow(/read-only/);
     await storage.deleteStorageItem("deck", "live-a.txt");
   });
 
   it("deleted while mounted: the next write is refused and every call after it too", async () => {
     await fresh("live-b");
-    const { cb, bridge } = await mount("deck", "readwrite", "live-b");
+    let t = 600_000;
+    const { cb, bridge } = await mount("deck", "readwrite", "live-b", () => t);
     await cb.storage.write("live-b.txt", "1");
     expect((await realFetch(`${server.origin}/api/artifacts/live-b`, { method: "DELETE" })).status).toBe(200);
+    t += ARTIFACT_BRIDGE_WRITE_RECHECK_MS;
     await expect(cb.storage.write("live-b.txt", "2")).rejects.toThrow(/revoked/);
     expect(bridge.access).toBe("none");
     await expect(cb.storage.read("live-b.txt")).rejects.toThrow(/no storage access/);
@@ -349,13 +365,15 @@ describe("the live grant: re-checked against the real artifact route, while moun
 
   it("deleted and recreated (different code, same id and version) while mounted: the running code's grant is gone", async () => {
     await fresh("live-c");
-    const { cb } = await mount("deck", "readwrite", "live-c");
+    let t = 700_000;
+    const { cb } = await mount("deck", "readwrite", "live-c", () => t);
     await fresh("live-c", "<!doctype html><html><head></head><body>impostor</body></html>");
+    t += ARTIFACT_BRIDGE_WRITE_RECHECK_MS;
     await expect(cb.storage.delete("deck.json")).rejects.toThrow(/revoked/);
     expect(storage.listStorageItems("deck").some((i) => i.name === "deck.json")).toBe(true);
   });
 
-  it("reads rely on a check for at most ARTIFACT_BRIDGE_READ_RECHECK_MS; writes always check first", async () => {
+  it("reads rely on a check for at most ARTIFACT_BRIDGE_READ_RECHECK_MS, writes and deletes for at most ARTIFACT_BRIDGE_WRITE_RECHECK_MS", async () => {
     await fresh("live-d");
     let t = 1_000_000;
     const { cb } = await mount("deck", "readwrite", "live-d", () => t);
@@ -367,8 +385,13 @@ describe("the live grant: re-checked against the real artifact route, while moun
     apiCalls.length = 0;
     await cb.storage.read("deck.json");
     expect(apiCalls).toEqual(["GET /api/artifacts/live-d", "GET /api/storage/deck/items/deck.json"]);
+    // That check just started: a write may rely on it.
     apiCalls.length = 0;
     await cb.storage.write("live-d.txt", "x");
+    expect(apiCalls).toEqual(["PUT /api/storage/deck/items/live-d.txt"]);
+    t += ARTIFACT_BRIDGE_WRITE_RECHECK_MS;
+    apiCalls.length = 0;
+    await cb.storage.write("live-d.txt", "y");
     expect(apiCalls).toEqual(["GET /api/artifacts/live-d", "PUT /api/storage/deck/items/live-d.txt"]);
     await storage.deleteStorageItem("deck", "live-d.txt");
   });
@@ -395,8 +418,9 @@ describe("the live grant: re-checked against the real artifact route, while moun
     apiCalls.length = 0;
     ok = 0;
     for (let i = 0; i < 50; i++) await cb.storage.list().then(() => ok++, () => undefined);
-    expect(ok).toBe(9);
-    expect(apiCalls).toHaveLength(10);
+    const refill = Math.floor(10 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond);
+    expect(ok).toBe(refill - 1);
+    expect(apiCalls).toHaveLength(refill);
     expect(apiCalls[0]).toBe("GET /api/artifacts/study");
   });
 

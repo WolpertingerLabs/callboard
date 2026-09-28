@@ -171,6 +171,25 @@ describe("render route", () => {
     expect(res.body.toString()).not.toContain("artifact-bridge-request");
   });
 
+  it("svg (render) and markdown (raw source) honour the sha256 pin too: swapped code is a 409, never the new bytes", async () => {
+    for (const [id, contentType, route] of [
+      ["pinsvg", "svg", "/render"],
+      ["pinmd", "markdown", ""],
+    ] as const) {
+      const original = contentType === "svg" ? "<svg xmlns='http://www.w3.org/2000/svg'><title>original</title></svg>" : "# original";
+      await post("/api/artifacts", { id, name: id, contentType, content: original });
+      const pinned = sha(original);
+      expect((await server.request("GET", `/api/artifacts/${id}/versions/1${route}?sha256=${pinned}`)).status).toBe(200);
+      expect((await server.request("DELETE", `/api/artifacts/${id}`)).status).toBe(200);
+      await post("/api/artifacts", { id, name: id, contentType, content: original.replace("original", "impostor") });
+      const res = await server.request("GET", `/api/artifacts/${id}/versions/1${route}?sha256=${pinned}`);
+      expect(res.status).toBe(409);
+      expect(res.body.toString()).not.toContain("impostor");
+      // A malformed pin is a 400 on the source route, as on render.
+      expect((await server.request("GET", `/api/artifacts/${id}/versions/1${route}?sha256=abc`)).status).toBe(400);
+    }
+  });
+
   it("rejects bad versions and hostile ids without touching the filesystem", async () => {
     for (const v of ["0", "-1", "1.5", "abc", "01", "99999999999"]) {
       expect((await server.request("GET", `/api/artifacts/app/versions/${v}/render`)).status, v).toBe(400);

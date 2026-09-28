@@ -4,6 +4,7 @@
  */
 import { getArtifact, minArtifactStorageAccess } from "../api";
 import type { Artifact, ArtifactStorageAccess, RenderArtifactToolResult } from "../api";
+import { createSharedLookup, type RequestBudget, type SharedLookup } from "./artifactBudget";
 
 /**
  * What mounting this render is allowed to do, decided from the artifact as it
@@ -54,16 +55,34 @@ export function judgeRender(data: RenderArtifactToolResult, artifact: Artifact):
 }
 
 /**
- * The live bridge's re-check: {@link judgeRender} against the artifact as it
- * is now, for the bytes this mount is running (`servedSha256`). Anything but
- * the same code still granted is "none" — deleted, replaced, pruned, lowered.
- * Throws only when the artifact could not be looked at (the bridge then
- * refuses that one request but keeps the grant).
+ * Every re-check in the tab goes through this one lookup of `GET
+ * /api/artifacts/:id`, shared per artifact: all mounts of an artifact reuse a
+ * fetch fresh enough for the caller (see createSharedLookup), and the
+ * renderer's judgement before mounting seeds it.
  */
-export async function recheckGrant(data: RenderArtifactToolResult, servedSha256: string): Promise<ArtifactStorageAccess> {
+export const artifactLookup: SharedLookup<Artifact> = createSharedLookup((id) => getArtifact(id));
+
+/**
+ * The live bridge's re-check: {@link judgeRender} against the artifact as
+ * seen by a check that started at most `maxAgeMs` ago (shared; a new fetch
+ * spends one token of `budget`), for the bytes this mount is running
+ * (`servedSha256`). Anything but the same code still granted is "none" —
+ * deleted (a 404 the server itself reported), replaced, pruned, lowered.
+ * Throws only when the artifact could not be looked at — over budget
+ * (RateLimitedError), aborted, a 5xx, a 404 that is not the API's own answer
+ * (a proxy's HTML page) — and the bridge then refuses that one request but
+ * keeps the grant.
+ */
+export async function recheckGrant(
+  data: RenderArtifactToolResult,
+  servedSha256: string,
+  maxAgeMs: number,
+  budget: RequestBudget | null,
+  lookup: SharedLookup<Artifact> = artifactLookup,
+): Promise<ArtifactStorageAccess> {
   let artifact: Artifact;
   try {
-    artifact = await getArtifact(data.artifact_id);
+    artifact = await lookup.get(data.artifact_id, maxAgeMs, budget);
   } catch (err) {
     if (err instanceof Error && /not found/i.test(err.message)) return "none";
     throw err;

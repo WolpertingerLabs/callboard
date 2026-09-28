@@ -11,7 +11,14 @@ import {
   type ArtifactBridgeOptions,
   type BridgeStorageApi,
 } from "./artifactBridge";
-import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READ_RECHECK_MS, ARTIFACT_BRIDGE_TOKEN_PATTERN, type ArtifactStorageAccess } from "../api";
+import {
+  ARTIFACT_BRIDGE_LIMITS,
+  ARTIFACT_BRIDGE_READ_RECHECK_MS,
+  ARTIFACT_BRIDGE_WRITE_RECHECK_MS,
+  ARTIFACT_BRIDGE_TOKEN_PATTERN,
+  type ArtifactStorageAccess,
+} from "../api";
+import { createRequestBudget, createSharedLookup, type RequestBudget } from "./artifactBudget";
 
 /**
  * The host half of the artifact storage bridge, driven directly.
@@ -58,12 +65,21 @@ function fakeApi(): BridgeStorageApi & { [K in keyof BridgeStorageApi]: ReturnTy
 function setup(
   access: ArtifactStorageAccess = "readwrite",
   storageKey: string | null = BOUND,
-  extra: Pick<ArtifactBridgeOptions, "recheck" | "now" | "onAccessChange"> = {},
+  extra: Pick<ArtifactBridgeOptions, "recheck" | "budget" | "onAccessChange"> = {},
 ) {
   // The frame's window. The host must never post to it — every case checks.
   const frame = { postMessage: vi.fn() };
   const api = fakeApi();
-  const bridge = createArtifactBridge({ getFrameWindow: () => frame as unknown as Window, storageKey, access, api, token: TOKEN, ...extra });
+  // A budget of its own unless the case shares one: the tab-wide default would leak between cases.
+  const bridge = createArtifactBridge({
+    getFrameWindow: () => frame as unknown as Window,
+    storageKey,
+    access,
+    api,
+    token: TOKEN,
+    budget: createRequestBudget(),
+    ...extra,
+  });
   const port = fakePort();
   /** A hello as the window `message` event the host listens for. */
   const hello = (over: Record<string, unknown> = {}, source: unknown = frame, ports: unknown[] = [port]) =>
@@ -475,18 +491,39 @@ describe("artifact bridge — budget (host-side, before any request leaves)", ()
 
   it(`a burst of ${ARTIFACT_BRIDGE_LIMITS.burst}, then ${ARTIFACT_BRIDGE_LIMITS.refillPerSecond}/s: over it, ${RATE_LIMITED} and no storage call`, async () => {
     let now = 0;
-    const t = setup("read", BOUND, { now: () => now });
+    const t = setup("read", BOUND, { budget: createRequestBudget(() => now) });
     t.ready();
     for (let i = 0; i < ARTIFACT_BRIDGE_LIMITS.burst + 5; i++) await t.send(t.req({ id: `l${i}`, op: "list" }));
     expect(t.api.list).toHaveBeenCalledTimes(ARTIFACT_BRIDGE_LIMITS.burst);
     expect(t.replies().filter((r) => !r.ok).map((r) => r.error.split(":")[0])).toEqual(Array(5).fill(RATE_LIMITED));
-    now += 3000;
-    for (let i = 0; i < 5; i++) await t.send(t.req({ id: `m${i}`, op: "list" }));
-    expect(t.api.list).toHaveBeenCalledTimes(ARTIFACT_BRIDGE_LIMITS.burst + 3 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond);
+    now += 4000;
+    for (let i = 0; i < 10; i++) await t.send(t.req({ id: `m${i}`, op: "list" }));
+    expect(t.api.list).toHaveBeenCalledTimes(ARTIFACT_BRIDGE_LIMITS.burst + Math.floor(4 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond));
+  });
+
+  it("the budget is the tab's, not the mount's: by default every bridge spends the same one", async () => {
+    // Far enough ahead that the module's bucket has refilled to full, then frozen.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 3_600_000);
+    try {
+      const mk = () => setup("read", BOUND, { budget: undefined });
+      const a = mk();
+      const b = mk();
+      a.ready();
+      b.ready();
+      for (let i = 0; i < ARTIFACT_BRIDGE_LIMITS.burst; i++) await a.send(a.req({ id: `a${i}`, op: "list" }));
+      expect(a.replies().every((r) => r.ok)).toBe(true);
+      // A second mount — five bubbles of one artifact, say — gets no budget of its own.
+      await b.send(b.req({ id: "b0", op: "list" }));
+      expect(b.replies()).toEqual([expect.objectContaining({ id: "b0", ok: false, error: expect.stringMatching(new RegExp(`^${RATE_LIMITED}`)) })]);
+      expect(b.api.list).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refusals that need no server cost nothing: a flood of invalid names does not spend the budget", async () => {
-    const t = setup("read", BOUND, { now: () => 0 });
+    const t = setup("read", BOUND, { budget: createRequestBudget(() => 0) });
     t.ready();
     for (let i = 0; i < 100; i++) await t.send(t.req({ id: `b${i}`, op: "read", name: "../x" }));
     for (let i = 0; i < 100; i++) await t.send(t.req({ id: `w${i}`, op: "write", name: "a", data: "x" }));
@@ -496,45 +533,66 @@ describe("artifact bridge — budget (host-side, before any request leaves)", ()
 });
 
 describe("artifact bridge — the live grant", () => {
-  function live(access: ArtifactStorageAccess, current: ArtifactStorageAccess | Error) {
+  /**
+   * Bridges whose re-check is the real shared lookup over a fake artifact
+   * fetch (`fetches` counts server round-trips), on one clock and one budget —
+   * as every bubble in a tab shares them.
+   */
+  function world(current: ArtifactStorageAccess | Error) {
     let now = 0;
     const state = { current };
-    const recheck = vi.fn(async () => {
+    const fetches = vi.fn(async () => {
       if (state.current instanceof Error) throw state.current;
       return state.current;
     });
-    const onAccessChange = vi.fn();
-    const t = setup(access, BOUND, { recheck, now: () => now, onAccessChange });
-    t.ready();
-    return { ...t, recheck, onAccessChange, state, tick: (ms: number) => (now += ms) };
+    const clock = () => now;
+    const lookup = createSharedLookup<ArtifactStorageAccess>(fetches, clock);
+    const budget: RequestBudget = createRequestBudget(clock);
+    const mount = (access: ArtifactStorageAccess = "readwrite") => {
+      const onAccessChange = vi.fn();
+      const recheck = (maxAgeMs: number, b: RequestBudget) => lookup.get("art", maxAgeMs, b);
+      const t = setup(access, BOUND, { recheck, budget, onAccessChange });
+      t.ready();
+      return { ...t, onAccessChange };
+    };
+    return { state, fetches, lookup, budget, mount, tick: (ms: number) => (now += ms), at: () => now };
   }
+  const write = (id: string) => ({ __callboard: BRIDGE_REQUEST, token: TOKEN, id, op: "write", name: "a", data: "x" });
 
-  it("every write and delete is preceded by a fresh check; a downgrade to read refuses it before any storage call", async () => {
-    const t = live("readwrite", "readwrite");
-    await t.send(t.req({ id: "w1", op: "write", name: "a", data: "x" }));
-    expect(t.recheck).toHaveBeenCalledTimes(1);
-    expect(t.api.write).toHaveBeenCalledTimes(1);
-    t.state.current = "read";
-    await t.send(t.req({ id: "w2", op: "write", name: "a", data: "y" }));
+  it(`a write or delete relies on a check under ${ARTIFACT_BRIDGE_WRITE_RECHECK_MS} ms old, else checks first; a downgrade to read refuses it before any storage call`, async () => {
+    const w = world("readwrite");
+    const t = w.mount();
+    await t.send(write("w1"));
+    expect(w.fetches).toHaveBeenCalledTimes(1);
+    w.tick(ARTIFACT_BRIDGE_WRITE_RECHECK_MS - 1);
+    await t.send(write("w2"));
+    expect(w.fetches).toHaveBeenCalledTimes(1);
+    expect(t.api.write).toHaveBeenCalledTimes(2);
+    w.state.current = "read";
+    w.tick(1);
+    await t.send(write("w3"));
     await t.send(t.req({ id: "d1", op: "delete", name: "a" }));
-    expect(t.api.write).toHaveBeenCalledTimes(1);
+    expect(w.fetches).toHaveBeenCalledTimes(2);
+    expect(t.api.write).toHaveBeenCalledTimes(2);
     expect(t.api.remove).not.toHaveBeenCalled();
-    expect(t.replies().slice(1)).toEqual([
-      expect.objectContaining({ id: "w2", ok: false, error: expect.stringMatching(/read-only/) }),
+    expect(t.replies().slice(2)).toEqual([
+      expect.objectContaining({ id: "w3", ok: false, error: expect.stringMatching(/read-only/) }),
       expect.objectContaining({ id: "d1", ok: false, error: expect.stringMatching(/read-only/) }),
     ]);
     expect(t.onAccessChange).toHaveBeenCalledWith("read");
     expect(t.bridge.access).toBe("read");
     // Reads still work, and the grant never rises back.
-    t.state.current = "readwrite";
+    w.state.current = "readwrite";
+    w.tick(ARTIFACT_BRIDGE_READ_RECHECK_MS);
     await t.send(t.req({ id: "r", op: "read", name: "a" }));
     expect(t.replies().at(-1)).toMatchObject({ id: "r", ok: true });
     expect(t.bridge.access).toBe("read");
   });
 
-  it("gone / replaced / lowered to none (recheck says none): every call is refused from then on", async () => {
-    const t = live("readwrite", "none");
-    await t.send(t.req({ id: "w", op: "write", name: "a", data: "x" }));
+  it("gone / replaced / lowered to none (the check says none): every call is refused from then on", async () => {
+    const w = world("none");
+    const t = w.mount();
+    await t.send(write("w"));
     await t.send(t.req({ id: "r", op: "read", name: "a" }));
     expect(t.replies().map((r) => [r.id, r.ok, r.error])).toEqual([
       ["w", false, expect.stringMatching(/revoked/)],
@@ -543,45 +601,130 @@ describe("artifact bridge — the live grant", () => {
     expect(t.storageCalls()).toBe(0);
   });
 
-  it(`reads use the last check for up to ${ARTIFACT_BRIDGE_READ_RECHECK_MS} ms, then check again first`, async () => {
-    const t = live("read", "read");
+  it(`reads use a check for up to ${ARTIFACT_BRIDGE_READ_RECHECK_MS} ms, then check again first`, async () => {
+    const w = world("read");
+    const t = w.mount("read");
     await t.send(t.req({ id: "r1", op: "read", name: "a" }));
-    t.tick(ARTIFACT_BRIDGE_READ_RECHECK_MS - 1);
+    expect(w.fetches).toHaveBeenCalledTimes(1);
+    w.tick(ARTIFACT_BRIDGE_READ_RECHECK_MS - 1);
     await t.send(t.req({ id: "r2", op: "list" }));
-    expect(t.recheck).not.toHaveBeenCalled();
-    t.tick(1);
-    t.state.current = "none";
+    expect(w.fetches).toHaveBeenCalledTimes(1);
+    w.tick(1);
+    w.state.current = "none";
     await t.send(t.req({ id: "r3", op: "read", name: "a" }));
-    expect(t.recheck).toHaveBeenCalledTimes(1);
+    expect(w.fetches).toHaveBeenCalledTimes(2);
     expect(t.replies().at(-1)).toMatchObject({ id: "r3", ok: false, error: expect.stringMatching(/revoked/) });
     expect(t.api.readText).toHaveBeenCalledTimes(1);
   });
 
   it("a check that cannot be made refuses that request but keeps the grant", async () => {
-    const t = live("readwrite", new Error("network down"));
-    await t.send(t.req({ id: "w", op: "write", name: "a", data: "x" }));
+    const w = world(new Error("network down"));
+    const t = w.mount();
+    await t.send(write("w"));
     expect(t.replies().at(-1)).toMatchObject({ id: "w", ok: false, error: expect.stringMatching(/could not re-check/i) });
     expect(t.api.write).not.toHaveBeenCalled();
-    t.state.current = "readwrite";
-    await t.send(t.req({ id: "w2", op: "write", name: "a", data: "x" }));
+    // The failure was not cached: the next request looks again at once.
+    w.state.current = "readwrite";
+    await t.send(write("w2"));
     expect(t.replies().at(-1)).toMatchObject({ id: "w2", ok: true });
+    expect(w.fetches).toHaveBeenCalledTimes(2);
   });
 
-  it("refresh() (the page became visible) re-checks and lowers the grant, and is metered", async () => {
-    const t = live("readwrite", "read");
+  it("a check the budget cannot pay for is a rate-limit refusal, and the grant is kept", async () => {
+    const w = world("readwrite");
+    const t = w.mount();
+    while (w.budget.spend(1));
+    await t.send(write("w"));
+    expect(t.replies().at(-1)).toMatchObject({ id: "w", ok: false, error: expect.stringMatching(new RegExp(`^${RATE_LIMITED}`)) });
+    expect(w.fetches).not.toHaveBeenCalled();
+    expect(t.api.write).not.toHaveBeenCalled();
+    expect(t.bridge.access).toBe("readwrite");
+  });
+
+  it("the check is paid for before the call, so a lone token is never wasted: under contention requests still get through", async () => {
+    const w = world("read");
+    const mounts = Array.from({ length: 5 }, () => w.mount("read"));
+    while (w.budget.spend(1));
+    // One token per 500 ms, five spinners, a read window long expired: were the
+    // call paid first, each token would go to a call whose check it then could
+    // not pay for, and nothing would ever succeed.
+    let ok = 0;
+    for (let i = 0; i < 40; i++) {
+      w.tick(1000 / ARTIFACT_BRIDGE_LIMITS.refillPerSecond);
+      for (const m of mounts) await m.send(m.req({ id: `r${i}`, op: "list" }));
+    }
+    for (const m of mounts) ok += m.replies().filter((r) => r.ok).length;
+    // 40 tokens over the run: ≤ 5 checks (one per 5 s window) and the rest are calls.
+    expect(ok).toBeGreaterThanOrEqual(40 - 5);
+    expect(w.fetches.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it("checks are shared per artifact: mounts of one artifact reuse each other's, and concurrent requests share one in flight", async () => {
+    const w = world("readwrite");
+    const mounts = Array.from({ length: 5 }, () => w.mount());
+    // Five bubbles each write at once: one check between them.
+    mounts.forEach((m, i) => m.port.onmessage?.({ data: write(`w${i}`) } as MessageEvent));
+    await Promise.all(mounts.map((m) => m.bridge.settled()));
+    expect(w.fetches).toHaveBeenCalledTimes(1);
+    expect(mounts.every((m) => m.replies().every((r) => r.ok))).toBe(true);
+    // A lowering seen through one bubble's check reaches the others' next requests without another fetch.
+    w.tick(ARTIFACT_BRIDGE_WRITE_RECHECK_MS);
+    w.state.current = "read";
+    await mounts[0].send(write("x"));
+    expect(w.fetches).toHaveBeenCalledTimes(2);
+    await mounts[1].send(write("y"));
+    expect(w.fetches).toHaveBeenCalledTimes(2);
+    expect(mounts[1].replies().at(-1)).toMatchObject({ id: "y", ok: false, error: expect.stringMatching(/read-only/) });
+  });
+
+  it(`refresh() (the page became visible) is gated by the ${ARTIFACT_BRIDGE_READ_RECHECK_MS} ms read window and shared: 10 bubbles × 60 switches in 12 s cost 3 checks`, async () => {
+    const w = world("readwrite");
+    const mounts = Array.from({ length: 10 }, () => w.mount());
+    for (let i = 0; i < 60; i++) {
+      await Promise.all(mounts.map((m) => m.bridge.refresh()));
+      w.tick(200);
+    }
+    expect(w.fetches).toHaveBeenCalledTimes(3); // t = 0, 5 s, 10 s
+    // And it still lowers the grant when a check does happen.
+    w.state.current = "read";
+    w.tick(ARTIFACT_BRIDGE_READ_RECHECK_MS);
+    await Promise.all(mounts.map((m) => m.bridge.refresh()));
+    expect(w.fetches).toHaveBeenCalledTimes(4);
+    expect(mounts.every((m) => m.bridge.access === "read")).toBe(true);
+  });
+
+  it("refresh() out of budget skips the fetch and leaves the next request to check instead", async () => {
+    const w = world("readwrite");
+    const t = w.mount();
+    while (w.budget.spend(1));
     await t.bridge.refresh();
-    expect(t.recheck).toHaveBeenCalledTimes(1);
-    expect(t.bridge.access).toBe("read");
-    // Out of budget: it skips the fetch and leaves the next request to check instead.
-    const u = live("readwrite", "readwrite");
-    for (let i = 0; i < ARTIFACT_BRIDGE_LIMITS.burst; i++) await u.send(u.req({ id: `l${i}`, op: "list" }));
-    await u.bridge.refresh();
-    expect(u.recheck).not.toHaveBeenCalled();
-    u.tick(2000);
-    u.state.current = "none";
-    await u.send(u.req({ id: "r", op: "read", name: "a" }));
-    expect(u.recheck).toHaveBeenCalledTimes(1);
-    expect(u.replies().at(-1)).toMatchObject({ id: "r", ok: false });
+    expect(w.fetches).not.toHaveBeenCalled();
+    w.tick(2000);
+    w.state.current = "none";
+    await t.send(t.req({ id: "r", op: "read", name: "a" }));
+    expect(w.fetches).toHaveBeenCalledTimes(1);
+    expect(t.replies().at(-1)).toMatchObject({ id: "r", ok: false, error: expect.stringMatching(/revoked/) });
+  });
+
+  it("a writer at 1 write/s for 120 s, after a 10-write burst on load, loses no write", async () => {
+    const w = world("readwrite");
+    const t = w.mount();
+    await t.send(t.req({ id: "load", op: "read", name: "deck.json" }));
+    // The shim keeps ≤ 4 in flight and queues the rest: the burst arrives in waves.
+    for (let i = 0; i < 10; i++) {
+      t.port.onmessage?.({ data: write(`b${i}`) } as MessageEvent);
+      if (i % ARTIFACT_BRIDGE_LIMITS.maxInFlight === ARTIFACT_BRIDGE_LIMITS.maxInFlight - 1) await t.bridge.settled();
+    }
+    await t.bridge.settled();
+    for (let i = 0; i < 120; i++) {
+      w.tick(1000);
+      await t.send(write(`s${i}`));
+    }
+    const failed = t.replies().filter((r) => !r.ok);
+    expect(failed).toEqual([]);
+    expect(t.api.write).toHaveBeenCalledTimes(130);
+    // A check on at most every other write: ≤ 1.5 tokens a write (90/min), under the refill.
+    expect(w.fetches.mock.calls.length).toBeLessThanOrEqual(62);
   });
 });
 

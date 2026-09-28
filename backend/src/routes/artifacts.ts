@@ -106,6 +106,16 @@ function parseRenderPin(raw: unknown): string | null {
   return raw;
 }
 
+/** A pinned read (non-null `pin`) of bytes that no longer hash to the pin is a 409. */
+function assertPinned(id: string, version: number, content: string, pin: string | null): void {
+  if (pin !== null && createHash("sha256").update(content, "utf-8").digest("hex") !== pin) {
+    throw new StorageError(
+      "conflict",
+      `Version ${version} of "${id}" has changed since it was checked (the artifact was deleted and recreated), so it is not run here. Render the artifact again.`,
+    );
+  }
+}
+
 const HTML_ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
 /**
@@ -241,14 +251,19 @@ artifactsRouter.post(
 );
 
 /**
- * GET /api/artifacts/:id/versions/:n — raw source, as text.
+ * GET /api/artifacts/:id/versions/:n — raw source, as text. `?sha256=` pins
+ * the bytes as on the render route (409 when they differ): the chat's markdown
+ * renderer reads through here.
  */
 artifactsRouter.get(
   "/:id/versions/:n",
   wrap("Read artifact source", (req, res) => {
     // #swagger.tags = ['Artifacts']
     // #swagger.summary = 'Raw source of one artifact version (text/plain)'
-    const { content } = readArtifactVersion(req.params.id, parseVersion(req.params.n));
+    const version = parseVersion(req.params.n);
+    const pin = parseRenderPin(req.query.sha256);
+    const { artifact, content } = readArtifactVersion(req.params.id, version);
+    assertPinned(artifact.id, version, content, pin);
     sendText(res, content, "text/plain; charset=utf-8", ARTIFACT_TEXT_CSP);
   }),
 );
@@ -283,12 +298,7 @@ artifactsRouter.get("/:id/versions/:n/render", (req, res) => {
       throw new StorageError("conflict", "This render is not pinned to a version sha256, so it is not run. Render the artifact again.");
     }
     const { artifact, content } = readArtifactVersion(req.params.id, version);
-    if (pin !== null && createHash("sha256").update(content, "utf-8").digest("hex") !== pin) {
-      throw new StorageError(
-        "conflict",
-        `Version ${version} of "${artifact.id}" has changed since it was checked (the artifact was deleted and recreated), so it is not run here. Render the artifact again.`,
-      );
-    }
+    assertPinned(artifact.id, version, content, pin);
     if (artifact.contentType === "html") {
       sendText(res, renderArtifactHtml(content, token), "text/html; charset=utf-8", ARTIFACT_HTML_CSP);
     } else if (artifact.contentType === "svg") {
