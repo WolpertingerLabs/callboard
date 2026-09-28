@@ -182,6 +182,23 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
   // token in any family below, so without this entry it would fall through to
   // `codeExecution` and prompt on every file preview.
   ["render_file", "fileRead"],
+
+  // Storage + artifact tools (storage-artifact-tools.ts). Every name below
+  // already tokenizes to the right family, but the category is pinned here
+  // rather than inferred — except `render_artifact`, which tokenizes to
+  // nothing (like `render_file`) and would otherwise fall to `codeExecution`.
+  ["list_storage_keys", "fileRead"],
+  ["list_storage_items", "fileRead"],
+  ["read_storage_item", "fileRead"],
+  ["list_artifacts", "fileRead"],
+  ["read_artifact", "fileRead"],
+  ["render_artifact", "fileRead"],
+  ["create_storage_key", "fileWrite"],
+  ["save_storage_item", "fileWrite"],
+  ["delete_storage_item", "fileWrite"],
+  ["delete_storage_key", "fileWrite"],
+  ["save_artifact", "fileWrite"],
+  ["delete_artifact", "fileWrite"],
 ]);
 
 /**

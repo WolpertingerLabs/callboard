@@ -1,32 +1,11 @@
 import { Router } from "express";
 import { createReadStream, readFileSync, statSync } from "fs";
 import { resolveSnapshot } from "../services/canvas-service.js";
+import { SIZE_REPORTER_SCRIPT, injectBeforeBodyClose } from "../services/html-injection.js";
 
 export const canvasRouter = Router();
 
 const CANVAS_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
-
-/**
- * Small script injected before </body> in HTML canvases.
- * Reports document dimensions to the parent via postMessage so the
- * iframe can auto-resize and scale to fit. Works even with
- * sandbox="allow-scripts" (no allow-same-origin needed).
- * Uses ResizeObserver to track dynamic changes.
- */
-const SIZE_REPORTER_SCRIPT = `<script>
-(function(){
-  function send(){
-    var h = document.documentElement.scrollHeight;
-    var w = document.documentElement.scrollWidth;
-    window.parent.postMessage({type:"canvas-resize",height:h,width:w},"*");
-  }
-  if(typeof ResizeObserver!=="undefined"){
-    new ResizeObserver(send).observe(document.documentElement);
-  }
-  window.addEventListener("load",send);
-  send();
-})();
-</script>`;
 
 /**
  * GET /api/canvas/:canvasId/:version
@@ -58,14 +37,8 @@ canvasRouter.get("/:canvasId/:version", (req, res) => {
 
   // For HTML content, inject the height reporter script
   if (mimeType!.startsWith("text/html")) {
-    let html = readFileSync(filePath!, "utf-8");
-
     // Inject before </body> if present, otherwise append
-    if (html.includes("</body>")) {
-      html = html.replace("</body>", SIZE_REPORTER_SCRIPT + "</body>");
-    } else {
-      html += SIZE_REPORTER_SCRIPT;
-    }
+    const html = injectBeforeBodyClose(readFileSync(filePath!, "utf-8"), SIZE_REPORTER_SCRIPT);
 
     const buf = Buffer.from(html, "utf-8");
     res.setHeader("Content-Type", mimeType!);

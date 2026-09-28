@@ -78,7 +78,7 @@ describe("direct UI config", () => {
     const servers = collectCodexMcpServers(options.mcpServers, true);
     expect(servers.handles).toEqual([handle]);
     expect(servers.config!["callboard-ui"].args).toEqual(servers.config!["callboard-tools"].args);
-    expect(servers.config!["callboard-ui"].enabled_tools).toEqual(["render_file", "create_canvas", "update_canvas"]);
+    expect(servers.config!["callboard-ui"].enabled_tools).toEqual(["render_file", "create_canvas", "update_canvas", "render_artifact"]);
     expect(servers.config!["callboard-tools"].disabled_tools).toEqual(servers.config!["callboard-ui"].enabled_tools);
     for (const enabled of [true, false]) {
       expect(
@@ -155,7 +155,7 @@ describe("direct UI native history", () => {
   });
 });
 
-it.each(["render_file", "create_canvas", "update_canvas"])("native SDK %s retains stable live pair IDs", (tool) => {
+it.each(["render_file", "create_canvas", "update_canvas", "render_artifact"])("native SDK %s retains stable live pair IDs", (tool) => {
   const item = { id: "item_2", type: "mcp_tool_call" as const, server: "callboard-ui", tool, arguments: {}, status: "in_progress" as const };
   const started = translateCodexEvent({ type: "item.started", item });
   expect(started).toMatchObject({ type: "tool_use", toolName: `callboard-ui__${tool}`, callId: "item_2" });

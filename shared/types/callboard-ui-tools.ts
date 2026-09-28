@@ -2,7 +2,7 @@
 export const CALLBOARD_UI_SERVER = "callboard-ui";
 /** Codex 0.153.4 normalizes '-' in MCP server names to '_' in native namespaces. */
 export const CALLBOARD_UI_NAMESPACE = "mcp__callboard_ui";
-export const CALLBOARD_UI_TOOLS = ["render_file", "create_canvas", "update_canvas"] as const;
+export const CALLBOARD_UI_TOOLS = ["render_file", "create_canvas", "update_canvas", "render_artifact"] as const;
 export type CallboardUiTool = (typeof CALLBOARD_UI_TOOLS)[number];
 
 export function isCallboardUiTool(tool: string): tool is CallboardUiTool {

@@ -35,6 +35,7 @@ import type { ConditionWatch, UiAgentProviderKind } from "shared/types/index.js"
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelAliasTools } from "./model-alias-tools.js";
 import { buildWorkspaceTools } from "./workspace-tools.js";
+import { buildStorageArtifactTools } from "./storage-artifact-tools.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("callboard-tools");
@@ -1701,6 +1702,12 @@ export function buildCallboardToolsSpec(
       // refuses a worktree directory outright.
       ...buildWorkspaceTools(),
       ...buildChatQueryTools(opts?.chatView),
+
+      // ── Storage + artifacts: the key catalogue and reusable apps ────
+      // Global. Storage keys are named buckets the user also browses in
+      // Settings; artifacts are versioned HTML/SVG/markdown rendered with
+      // render_artifact (a UI tool) and optionally bound to one key.
+      ...buildStorageArtifactTools(),
     ],
   };
 }
