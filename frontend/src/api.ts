@@ -238,13 +238,15 @@ export type {
 export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
 
 import type {
-  StorageItemMeta,
+  StorageItem,
   StorageKeySummary,
   StorageKeyDetail,
-  StorageAccess,
+  PutStorageItemJsonBody,
   Artifact,
-  ArtifactContentType,
-} from "./types/storageArtifacts";
+  ArtifactSummary,
+  CreateArtifactInput,
+  UpdateArtifactInput,
+} from "shared/types/index.js";
 
 /**
  * Capability handshake headers (`X-Callboard-Protocol` / `X-Callboard-Caps`).
@@ -2729,18 +2731,31 @@ export async function getReasoningCapability(provider: string, model: string, cw
 
 // ── Storage ─────────────────────────────────────────────────────────
 //
-// Key-catalogued named buckets of flat items (plan §2). Types are local until
-// the shared ones land — see `types/storageArtifacts.ts`.
+// Key-catalogued named buckets of flat items (plan §2).
 
 export type {
-  StorageItemMeta,
+  StorageItem,
   StorageKeySummary,
   StorageKeyDetail,
-  StorageAccess,
+  ArtifactStorageAccess,
   Artifact,
+  ArtifactSummary,
   ArtifactVersion,
   ArtifactContentType,
-} from "./types/storageArtifacts";
+  RenderArtifactToolResult,
+  ArtifactBridgeInit,
+  ArtifactBridgeOp,
+  ArtifactBridgeRequest,
+  ArtifactBridgeReply,
+} from "shared/types/index.js";
+
+export {
+  ARTIFACT_ID_PATTERN,
+  STORAGE_MAX_ITEM_BYTES,
+  isValidStorageItemName,
+  isValidStorageKey,
+  minArtifactStorageAccess,
+} from "shared/types/index.js";
 
 /** Same-origin URL of one stored item's raw bytes (inline only for raster images and text/plain). */
 export function storageItemUrl(key: string, name: string): string {
@@ -2800,13 +2815,13 @@ export async function fetchStorageItem(key: string, name: string): Promise<Respo
 /**
  * Create or overwrite one item. Exactly one of `content` (utf-8) or
  * `content_base64` travels as JSON; a `File`/`Blob` goes up as multipart `file`.
- * Returns the item's meta when the server includes it.
+ * Resolves to the saved item's meta (`{ item }`).
  */
 export async function putStorageItem(
   key: string,
   name: string,
-  body: { content: string; mimeType?: string } | { content_base64: string; mimeType?: string } | { file: Blob },
-): Promise<StorageItemMeta | undefined> {
+  body: PutStorageItemJsonBody | { file: Blob },
+): Promise<StorageItem> {
   let init: RequestInit;
   if ("file" in body) {
     const form = new FormData();
@@ -2817,7 +2832,7 @@ export async function putStorageItem(
   }
   const res = await fetch(storageItemUrl(key, name), init);
   await assertOk(res, "Failed to save storage item");
-  const data = await res.json().catch(() => ({}));
+  const data = await res.json();
   return data.item;
 }
 
@@ -2835,7 +2850,8 @@ export function artifactRenderUrl(id: string, version: number): string {
   return `${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/render`;
 }
 
-export async function listArtifacts(): Promise<Artifact[]> {
+/** Summaries only — no version list; `getArtifact` for that. */
+export async function listArtifacts(): Promise<ArtifactSummary[]> {
   const res = await fetch(`${BASE}/artifacts`, { credentials: "include" });
   await assertOk(res, "Failed to list artifacts");
   const data = await res.json();
@@ -2849,15 +2865,7 @@ export async function getArtifact(id: string): Promise<Artifact> {
   return data.artifact;
 }
 
-export async function createArtifact(input: {
-  id: string;
-  name: string;
-  contentType: ArtifactContentType;
-  content: string;
-  description?: string;
-  storageAccess?: StorageAccess;
-  note?: string;
-}): Promise<Artifact> {
+export async function createArtifact(input: CreateArtifactInput): Promise<Artifact> {
   const res = await fetch(`${BASE}/artifacts`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2869,7 +2877,7 @@ export async function createArtifact(input: {
   return data.artifact;
 }
 
-export async function updateArtifact(id: string, updates: { name?: string; description?: string; storageAccess?: StorageAccess }): Promise<Artifact> {
+export async function updateArtifact(id: string, updates: UpdateArtifactInput): Promise<Artifact> {
   const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },

@@ -2,22 +2,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import type { ParsedMessage } from "shared";
-import { isCallboardUiTool } from "shared/types/callboard-ui-tools.js";
 import ToolCallBubble from "./ToolCallBubble";
 import { parseUiToolResult } from "./uiToolResult";
 
 /**
  * `render_artifact` through the real UI-tool registry.
- *
- * NEEDS THE BACKEND MERGE. Recognition goes through `callboardUiTool()`, which
- * only knows `render_artifact` once the backend branch adds it to
- * `CALLBOARD_UI_TOOLS` in shared/. Until then this whole file is skipped — the
- * `describe.skipIf` below is the one switch, and it turns itself on when the
- * registry gains the name. The strict validation branch itself is covered today
- * in `uiToolResult.artifactBranch.test.ts`, which stubs the registry.
+ * Recognition goes through the unstubbed `callboardUiTool()` and
+ * `CALLBOARD_UI_TOOLS`; the strict validation branch itself is covered in
+ * `uiToolResult.artifactBranch.test.ts`.
  */
-
-const REGISTERED = isCallboardUiTool("render_artifact");
 
 beforeEach(() =>
   vi.stubGlobal(
@@ -50,7 +43,7 @@ function pair(name: string, payload: unknown = artifact, namespace?: string): [P
   ];
 }
 
-describe.skipIf(!REGISTERED)("[needs backend merge] render_artifact via the real CALLBOARD_UI_TOOLS", () => {
+describe("render_artifact via the real CALLBOARD_UI_TOOLS", () => {
   it.each(["render_artifact", "mcp__callboard-tools__render_artifact", "callboard-tools__render_artifact", "callboard-ui__render_artifact"])(
     "%s renders through ArtifactRenderer",
     (name) => {

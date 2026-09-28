@@ -18,6 +18,16 @@ export const STORAGE_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 /** Item name: no `/`, `\`, NUL or leading dot. `.` and `..` are rejected separately. */
 export const STORAGE_ITEM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
+/** True iff `key` is a valid storage key. The backend service is the enforcing chokepoint; clients use this to fail early. */
+export function isValidStorageKey(key: unknown): key is string {
+  return typeof key === "string" && key !== "." && key !== ".." && STORAGE_KEY_PATTERN.test(key);
+}
+
+/** True iff `name` is a valid item name. The backend service is the enforcing chokepoint; clients use this to fail early. */
+export function isValidStorageItemName(name: unknown): name is string {
+  return typeof name === "string" && name !== "." && name !== ".." && STORAGE_ITEM_NAME_PATTERN.test(name);
+}
+
 /** Hard limits, enforced by the service before any bytes are written. */
 export const STORAGE_MAX_ITEM_BYTES = 25 * 1024 * 1024;
 export const STORAGE_MAX_KEY_BYTES = 250 * 1024 * 1024;

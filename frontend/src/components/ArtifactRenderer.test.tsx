@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import ArtifactRenderer from "./ArtifactRenderer";
 import { BRIDGE_INIT, BRIDGE_REPLY, BRIDGE_REQUEST, type BridgeStorageApi } from "./artifactBridge";
-import type { RenderArtifactData } from "../types/storageArtifacts";
+import type { RenderArtifactToolResult } from "../api";
 
 /**
  * ArtifactRenderer as mounted — the wiring `artifactBridge.test.ts` cannot see.
@@ -23,7 +23,7 @@ vi.mock("../api", async (importOriginal) => {
   return { ...actual, getArtifactVersionSource: h.getArtifactVersionSource };
 });
 
-const base: RenderArtifactData = {
+const base: RenderArtifactToolResult = {
   type: "render_artifact",
   artifact_id: "cramhouse",
   version: 3,
@@ -38,7 +38,7 @@ function api(): BridgeStorageApi & { readText: ReturnType<typeof vi.fn>; write: 
     list: vi.fn(async () => []),
     readText: vi.fn(async () => "hello"),
     readBlob: vi.fn(async () => new Blob()),
-    write: vi.fn(async () => undefined),
+    write: vi.fn(async (_k: string, name: string) => ({ name, mimeType: "text/plain", size: 1, sha256: "s", created: "c", updated: "u" })),
     remove: vi.fn(async () => undefined),
   };
 }

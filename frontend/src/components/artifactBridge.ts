@@ -7,7 +7,8 @@
  * against the authenticated REST API, scoped to the single storage key the
  * render bound, at the access level the render granted.
  *
- * Protocol (the in-iframe shim lives in the backend and speaks exactly this):
+ * Protocol (typed in shared/types/artifact.ts; the in-iframe shim lives in
+ * backend/src/services/artifact-bridge-shim.ts and speaks exactly this):
  *
  *   host → frame, first `load` only:
  *     { __callboard: "artifact-bridge-init", nonce, storageKey, access }
@@ -33,36 +34,24 @@
  *   size-checked here (the server enforces again).
  */
 
-import { deleteStorageItem, fetchStorageItem, getStorageKey, putStorageItem } from "../api";
-import { isValidStorageItemName, STORAGE_ITEM_MAX_BYTES, type StorageAccess, type StorageItemMeta } from "../types/storageArtifacts";
+import { deleteStorageItem, fetchStorageItem, getStorageKey, isValidStorageItemName, putStorageItem, STORAGE_MAX_ITEM_BYTES } from "../api";
+import type { ArtifactBridgeInit, ArtifactBridgeOp, ArtifactBridgeReply, ArtifactStorageAccess, StorageItem } from "../api";
 
 export const BRIDGE_INIT = "artifact-bridge-init";
 export const BRIDGE_REQUEST = "artifact-bridge-request";
 export const BRIDGE_REPLY = "artifact-bridge-reply";
 
-export type BridgeOp = "list" | "read" | "write" | "delete";
-
-export interface BridgeInitMessage {
-  __callboard: typeof BRIDGE_INIT;
-  nonce: string;
-  storageKey: string | null;
-  access: StorageAccess;
-}
-
-export interface BridgeReplyMessage {
-  __callboard: typeof BRIDGE_REPLY;
-  id: string | number;
-  ok: boolean;
-  result?: unknown;
-  error?: string;
-}
+/** Aliases kept for readability here; the protocol types live in shared/types/artifact.ts. */
+export type BridgeOp = ArtifactBridgeOp;
+export type BridgeInitMessage = ArtifactBridgeInit;
+export type BridgeReplyMessage = ArtifactBridgeReply;
 
 /** The storage operations the bridge may perform — injectable for tests. Every one takes the bound key from the bridge, never from the frame. */
 export interface BridgeStorageApi {
-  list(key: string): Promise<StorageItemMeta[]>;
+  list(key: string): Promise<StorageItem[]>;
   readText(key: string, name: string): Promise<string>;
   readBlob(key: string, name: string): Promise<Blob>;
-  write(key: string, name: string, body: { content: string; mimeType?: string } | { content_base64: string; mimeType?: string }): Promise<StorageItemMeta | undefined>;
+  write(key: string, name: string, body: { content: string; mimeType?: string } | { content_base64: string; mimeType?: string }): Promise<StorageItem>;
   remove(key: string, name: string): Promise<void>;
 }
 
@@ -108,7 +97,7 @@ export interface ArtifactBridgeOptions {
   /** The frame window this mount rendered — read fresh on every check. */
   getFrameWindow: () => Window | null | undefined;
   storageKey: string | null;
-  access: StorageAccess;
+  access: ArtifactStorageAccess;
   api?: BridgeStorageApi;
   nonce?: string;
 }
@@ -128,7 +117,7 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
   const nonce = opts.nonce ?? makeBridgeNonce();
   // Unbound renders get no authority at all, whatever access was passed.
   const storageKey = opts.storageKey ?? null;
-  const access: StorageAccess = storageKey ? opts.access : "none";
+  const access: ArtifactStorageAccess = storageKey ? opts.access : "none";
   let loads = 0;
   let revoked = false;
 
@@ -166,14 +155,14 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
       if (typeof data !== "string") throw new BridgeRefusal("Write data must be a string");
       if (encoding !== "utf8" && encoding !== "base64") throw new BridgeRefusal("Invalid encoding");
       if (encoding === "base64" && (data.length % 4 !== 0 || !BASE64_RE.test(data))) throw new BridgeRefusal("Invalid base64 data");
-      if (payloadBytes(data, encoding) > STORAGE_ITEM_MAX_BYTES) throw new BridgeRefusal("Item exceeds the 25 MB item limit");
+      if (payloadBytes(data, encoding) > STORAGE_MAX_ITEM_BYTES) throw new BridgeRefusal("Item exceeds the 25 MB item limit");
       let mimeType: string | undefined;
       if (req.mimeType !== undefined) {
         if (typeof req.mimeType !== "string" || !MIME_RE.test(req.mimeType)) throw new BridgeRefusal("Invalid mimeType");
         mimeType = req.mimeType;
       }
       const body = encoding === "utf8" ? { content: data, mimeType } : { content_base64: data, mimeType };
-      return (await api.write(storageKey, name, body)) ?? null;
+      return api.write(storageKey, name, body);
     }
 
     throw new BridgeRefusal("Unknown operation");
@@ -204,7 +193,7 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
       if (!msg || typeof msg !== "object" || msg.__callboard !== BRIDGE_REQUEST) return;
       if (typeof msg.nonce !== "string" || msg.nonce !== nonce) return;
       const id = msg.id;
-      if (typeof id !== "string" && typeof id !== "number") return;
+      if (typeof id !== "string") return;
 
       let reply: BridgeReplyMessage;
       try {

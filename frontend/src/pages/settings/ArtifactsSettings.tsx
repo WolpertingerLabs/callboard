@@ -9,9 +9,10 @@ import {
   saveArtifactVersion,
   getArtifactVersionSource,
   listStorageKeys,
+  ARTIFACT_ID_PATTERN,
+  minArtifactStorageAccess,
 } from "../../api";
-import type { Artifact, ArtifactContentType, StorageAccess, StorageKeySummary } from "../../api";
-import { ARTIFACT_ID_RE, minAccess, type RenderArtifactData } from "../../types/storageArtifacts";
+import type { ArtifactSummary, Artifact, ArtifactContentType, ArtifactStorageAccess, StorageKeySummary, RenderArtifactToolResult } from "../../api";
 import ConfirmModal from "../../components/ConfirmModal";
 import ArtifactRenderer from "../../components/ArtifactRenderer";
 
@@ -77,7 +78,7 @@ const secondaryButton: React.CSSProperties = {
 
 const subheadStyle: React.CSSProperties = { fontSize: 13, fontWeight: 600, margin: "0 0 8px 0" };
 
-const ACCESS_LABEL: Record<StorageAccess, string> = { none: "No storage", read: "Read", readwrite: "Read/write" };
+const ACCESS_LABEL: Record<ArtifactStorageAccess, string> = { none: "No storage", read: "Read", readwrite: "Read/write" };
 
 /** Reads a picked file as text for "new version"/"new artifact" — artifacts are single text files. */
 function readFileText(file: File): Promise<string> {
@@ -90,9 +91,9 @@ function readFileText(file: File): Promise<string> {
  * the user ticks "allow writes" — a preview is someone looking, and should not
  * mutate a key as a side effect of looking.
  */
-export function previewAccess(declared: StorageAccess, storageKey: string, allowWrites: boolean): StorageAccess {
+export function previewAccess(declared: ArtifactStorageAccess, storageKey: string, allowWrites: boolean): ArtifactStorageAccess {
   if (!storageKey) return "none";
-  return minAccess(declared, allowWrites ? "readwrite" : "read");
+  return minArtifactStorageAccess(declared, allowWrites ? "readwrite" : "read");
 }
 
 interface NewArtifactDraft {
@@ -100,7 +101,7 @@ interface NewArtifactDraft {
   name: string;
   description: string;
   contentType: ArtifactContentType;
-  storageAccess: StorageAccess;
+  storageAccess: ArtifactStorageAccess;
   content: string;
 }
 
@@ -108,7 +109,7 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [meta, setMeta] = useState<{ name: string; description: string; storageAccess: StorageAccess } | null>(null);
+  const [meta, setMeta] = useState<{ name: string; description: string; storageAccess: ArtifactStorageAccess } | null>(null);
   const [viewVersion, setViewVersion] = useState<number | null>(null);
   const [source, setSource] = useState<string | null>(null);
   const [newVersion, setNewVersion] = useState<{ content: string; note: string } | null>(null);
@@ -123,8 +124,8 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
       setArtifact(a);
       setMeta({ name: a.name, description: a.description ?? "", storageAccess: a.storageAccess });
       setViewVersion((v) => (v !== null && a.versions.some((x) => x.version === v) ? v : a.currentVersion));
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }, [id]);
 
@@ -156,8 +157,8 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
     setError(null);
     try {
       await fn();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -170,7 +171,7 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
   const metaDirty = meta.name !== artifact.name || meta.description !== (artifact.description ?? "") || meta.storageAccess !== artifact.storageAccess;
   const shownVersion = viewVersion ?? artifact.currentVersion;
   const access = previewAccess(artifact.storageAccess, previewKey, allowWrites);
-  const previewData: RenderArtifactData = {
+  const previewData: RenderArtifactToolResult = {
     type: "render_artifact",
     artifact_id: artifact.id,
     version: shownVersion,
@@ -214,7 +215,7 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
               id="artifact-access"
               style={inputStyle}
               value={meta.storageAccess}
-              onChange={(e) => setMeta({ ...meta, storageAccess: e.target.value as StorageAccess })}
+              onChange={(e) => setMeta({ ...meta, storageAccess: e.target.value as ArtifactStorageAccess })}
             >
               <option value="none">None</option>
               <option value="read">Read</option>
@@ -420,7 +421,7 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
 }
 
 export default function ArtifactsSettings() {
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -454,14 +455,14 @@ export default function ArtifactsSettings() {
       setDraft(null);
       await refresh();
       setSelected(created.id);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   };
 
-  const draftValid = draft !== null && ARTIFACT_ID_RE.test(draft.id.trim()) && !!draft.name.trim() && !!draft.content;
+  const draftValid = draft !== null && ARTIFACT_ID_PATTERN.test(draft.id.trim()) && !!draft.name.trim() && !!draft.content;
 
   return (
     <div style={{ maxWidth: 1000 }}>
@@ -523,7 +524,7 @@ export default function ArtifactsSettings() {
                     style={inputStyle}
                     aria-label="Artifact storage access"
                     value={draft.storageAccess}
-                    onChange={(e) => setDraft({ ...draft, storageAccess: e.target.value as StorageAccess })}
+                    onChange={(e) => setDraft({ ...draft, storageAccess: e.target.value as ArtifactStorageAccess })}
                   >
                     <option value="none">Storage: none</option>
                     <option value="read">Storage: read</option>

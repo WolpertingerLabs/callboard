@@ -1,25 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ParsedMessage } from "shared";
 import { parseUiToolResult } from "./uiToolResult";
 
 /**
- * The strict `render_artifact` validation branch in `parseUiToolResult`.
- *
- * The registry is stubbed to include `render_artifact` because shared/ does not
- * have it yet (the backend branch adds it). The stub changes only *recognition*
- * — which tool name this is — and nothing about validation, which is what this
- * file tests. The unstubbed end-to-end check lives in
- * `uiToolResult.artifact.test.tsx` and switches on after the backend merge.
+ * The strict `render_artifact` validation branch in `parseUiToolResult`, via
+ * the real UI-tool registry. The end-to-end render lives in
+ * `uiToolResult.artifact.test.tsx`.
  */
-
-vi.mock("shared/types/callboard-ui-tools.js", async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import("shared/types/callboard-ui-tools.js");
-  return {
-    ...actual,
-    callboardUiTool: (raw: string, namespace?: string) =>
-      raw === "render_artifact" && namespace === undefined ? "render_artifact" : actual.callboardUiTool(raw, namespace),
-  };
-});
 
 const good = {
   type: "render_artifact",

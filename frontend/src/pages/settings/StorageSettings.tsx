@@ -10,9 +10,10 @@ import {
   putStorageItem,
   deleteStorageItem,
   storageItemUrl,
+  isValidStorageItemName,
+  isValidStorageKey,
 } from "../../api";
-import type { StorageKeySummary, StorageKeyDetail, StorageItemMeta } from "../../api";
-import { isValidStorageItemName, isValidStorageKey } from "../../types/storageArtifacts";
+import type { StorageKeySummary, StorageKeyDetail, StorageItem } from "../../api";
 import ConfirmModal from "../../components/ConfirmModal";
 import MarkdownRenderer from "../../components/MarkdownRenderer";
 
@@ -94,7 +95,7 @@ export function formatBytes(n: number): string {
  * (markdown through MarkdownRenderer), so HTML and SVG items are displayed as
  * their source and never rendered.
  */
-export function previewKind(item: Pick<StorageItemMeta, "name" | "mimeType">): "image" | "markdown" | "text" | "binary" {
+export function previewKind(item: Pick<StorageItem, "name" | "mimeType">): "image" | "markdown" | "text" | "binary" {
   const mime = item.mimeType.toLowerCase().split(";")[0].trim();
   if (RASTER_TYPES.has(mime)) return "image";
   if (mime === "text/markdown" || /\.(md|markdown)$/i.test(item.name)) return "markdown";
@@ -108,7 +109,7 @@ export function previewKind(item: Pick<StorageItemMeta, "name" | "mimeType">): "
   return "binary";
 }
 
-function ItemPreview({ storageKey, item }: { storageKey: string; item: StorageItemMeta }) {
+function ItemPreview({ storageKey, item }: { storageKey: string; item: StorageItem }) {
   const kind = previewKind(item);
   const [text, setText] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
@@ -205,8 +206,8 @@ export default function StorageSettings() {
   const refreshDetail = useCallback(async (key: string) => {
     try {
       setDetail(await getStorageKey(key));
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
@@ -227,8 +228,8 @@ export default function StorageSettings() {
     setError(null);
     try {
       await fn();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }

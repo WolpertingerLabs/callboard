@@ -5,10 +5,10 @@ import MarkdownRenderer from "./MarkdownRenderer";
 import { useFrameSizing } from "./useFrameSizing";
 import { createArtifactBridge, type ArtifactBridge, type BridgeStorageApi } from "./artifactBridge";
 import { artifactRenderUrl, getArtifactVersionSource } from "../api";
-import type { RenderArtifactData, StorageAccess } from "../types/storageArtifacts";
+import type { RenderArtifactToolResult, ArtifactStorageAccess } from "../api";
 
 interface ArtifactRendererProps {
-  data: RenderArtifactData;
+  data: RenderArtifactToolResult;
   /** Wrapper max width. Chat bubbles use the default; the Settings preview pane passes "100%". */
   maxWidth?: CSSProperties["maxWidth"];
   /** Test seam for the bridge's storage calls; production uses the REST API. */
@@ -28,7 +28,7 @@ interface ArtifactFrameProps {
   src: string;
   title: string;
   storageKey: string | null;
-  access: StorageAccess;
+  access: ArtifactStorageAccess;
   frameRef?: MutableRefObject<HTMLIFrameElement | null>;
   style: CSSProperties;
   onLoaded: () => void;
@@ -100,7 +100,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
 
   const src = artifactRenderUrl(data.artifact_id, data.version);
   const storageKey = data.storage_key ?? null;
-  const access: StorageAccess = storageKey ? data.storage_access : "none";
+  const access: ArtifactStorageAccess = storageKey ? data.storage_access : "none";
   const frameKey = `${src}|${storageKey ?? ""}|${access}`;
   const isHtml = data.content_type === "html";
 

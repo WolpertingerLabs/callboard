@@ -2,11 +2,11 @@ import type { ParsedMessage } from "shared";
 import { callboardUiTool } from "shared/types/callboard-ui-tools.js";
 import type { RenderFileData } from "./MediaRenderer";
 import type { RenderCanvasData } from "./CanvasRenderer";
-import { ARTIFACT_ID_RE, isValidStorageKey, type RenderArtifactData } from "../types/storageArtifacts";
+import { ARTIFACT_ID_PATTERN, isValidStorageKey, type RenderArtifactToolResult } from "../api";
 
 /** UI identity AND a complete renderer contract are required. Arbitrary JSON,
  * failed envelopes, partial payloads and foreign namespaces remain generic. */
-export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | null): RenderFileData | RenderCanvasData | RenderArtifactData | null {
+export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | null): RenderFileData | RenderCanvasData | RenderArtifactToolResult | null {
   const tool = callboardUiTool(use.toolName ?? "", use.toolNamespace);
   if (use.type !== "tool_use" || !tool || !result || result.type !== "tool_result" || (use.toolUseId && result.toolUseId && use.toolUseId !== result.toolUseId))
     return null;
@@ -35,14 +35,11 @@ export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | n
         return null;
       return p as RenderFileData;
     }
-    // `CallboardUiTool` gains "render_artifact" when the backend branch adds it
-    // to CALLBOARD_UI_TOOLS; compared as a string so this compiles either side
-    // of that merge.
-    if ((tool as string) === "render_artifact") {
+    if (tool === "render_artifact") {
       if (
         p.type !== "render_artifact" ||
         typeof p.artifact_id !== "string" ||
-        !ARTIFACT_ID_RE.test(p.artifact_id) ||
+        !ARTIFACT_ID_PATTERN.test(p.artifact_id) ||
         !Number.isSafeInteger(p.version) ||
         p.version < 1 ||
         typeof p.name !== "string" ||
@@ -55,7 +52,7 @@ export function parseUiToolResult(use: ParsedMessage, result?: ParsedMessage | n
         (p.display_mode !== undefined && !["inline", "fullscreen"].includes(p.display_mode))
       )
         return null;
-      return p as RenderArtifactData;
+      return p as RenderArtifactToolResult;
     }
     if (
       p.type !== "render_canvas" ||
