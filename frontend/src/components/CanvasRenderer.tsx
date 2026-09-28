@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Maximize2 } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
+import { useFrameSizing } from "./useFrameSizing";
 
 export interface RenderCanvasData {
   type: "render_canvas";
@@ -16,17 +17,10 @@ interface CanvasRendererProps {
   data: RenderCanvasData;
 }
 
-const MIN_HEIGHT = 60;
-const MAX_HEIGHT = 2000;
-const DEFAULT_HEIGHT = 400;
-
 export default function CanvasRenderer({ data }: CanvasRendererProps) {
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  // Natural content dimensions reported by the iframe
-  const [contentHeight, setContentHeight] = useState(DEFAULT_HEIGHT);
-  const [contentWidth, setContentWidth] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -48,50 +42,13 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
     }
   }, [expanded, handleKeyDown]);
 
-  // Listen for size reports from the injected script inside the iframe
-  useEffect(() => {
-    if (data.content_type !== "html") return;
-
-    const handler = (e: MessageEvent) => {
-      if (e.data?.type !== "canvas-resize" || typeof e.data.height !== "number") return;
-      // Only accept messages from our iframe
-      if (iframeRef.current && e.source === iframeRef.current.contentWindow) {
-        const h = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, e.data.height));
-        setContentHeight(h);
-        if (typeof e.data.width === "number" && e.data.width > 0) {
-          setContentWidth(e.data.width);
-        }
-      }
-    };
-
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
-  }, [data.content_type]);
-
-  // Track container width so we can scale oversized content
-  const [containerWidth, setContainerWidth] = useState(0);
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setContainerWidth(entry.contentRect.width);
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  const { contentHeight, contentWidth, needsScale, scale, displayHeight } = useFrameSizing(iframeRef, containerRef, data.content_type === "html");
 
   const onLoad = () => setLoading(false);
   const onError = () => {
     setLoading(false);
     setError(true);
   };
-
-  // If the content is wider than the container, scale it down proportionally
-  const needsScale = contentWidth > 0 && containerWidth > 0 && contentWidth > containerWidth;
-  const scale = needsScale ? containerWidth / contentWidth : 1;
-  const displayHeight = contentHeight * scale;
 
   if (error) {
     return (
