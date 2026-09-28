@@ -237,6 +237,15 @@ export type {
 
 export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
 
+import type {
+  StorageItemMeta,
+  StorageKeySummary,
+  StorageKeyDetail,
+  StorageAccess,
+  Artifact,
+  ArtifactContentType,
+} from "./types/storageArtifacts";
+
 /**
  * Capability handshake headers (`X-Callboard-Protocol` / `X-Callboard-Caps`).
  * Re-exported here so callers that hand-roll a `fetch` — the SSE streams in
@@ -2716,4 +2725,182 @@ export async function getReasoningCapability(provider: string, model: string, cw
     throw new Error("Invalid reasoning capability response");
   }
   return data;
+}
+
+// ── Storage ─────────────────────────────────────────────────────────
+//
+// Key-catalogued named buckets of flat items (plan §2). Types are local until
+// the shared ones land — see `types/storageArtifacts.ts`.
+
+export type {
+  StorageItemMeta,
+  StorageKeySummary,
+  StorageKeyDetail,
+  StorageAccess,
+  Artifact,
+  ArtifactVersion,
+  ArtifactContentType,
+} from "./types/storageArtifacts";
+
+/** Same-origin URL of one stored item's raw bytes (inline only for raster images and text/plain). */
+export function storageItemUrl(key: string, name: string): string {
+  return `${BASE}/storage/${encodeURIComponent(key)}/items/${encodeURIComponent(name)}`;
+}
+
+export async function listStorageKeys(): Promise<StorageKeySummary[]> {
+  const res = await fetch(`${BASE}/storage`, { credentials: "include" });
+  await assertOk(res, "Failed to list storage keys");
+  const data = await res.json();
+  return data.keys;
+}
+
+export async function createStorageKey(key: string, description?: string): Promise<StorageKeyDetail> {
+  const res = await fetch(`${BASE}/storage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ key, description }),
+  });
+  await assertOk(res, "Failed to create storage key");
+  const data = await res.json();
+  return data.key;
+}
+
+export async function getStorageKey(key: string): Promise<StorageKeyDetail> {
+  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get storage key");
+  const data = await res.json();
+  return data.key;
+}
+
+export async function updateStorageKey(key: string, description: string): Promise<StorageKeyDetail> {
+  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ description }),
+  });
+  await assertOk(res, "Failed to update storage key");
+  const data = await res.json();
+  return data.key;
+}
+
+export async function deleteStorageKey(key: string): Promise<void> {
+  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, { method: "DELETE", credentials: "include" });
+  await assertOk(res, "Failed to delete storage key");
+}
+
+/** The raw response for one item; callers pick `.text()` or `.blob()`. */
+export async function fetchStorageItem(key: string, name: string): Promise<Response> {
+  const res = await fetch(storageItemUrl(key, name), { credentials: "include" });
+  await assertOk(res, "Failed to read storage item");
+  return res;
+}
+
+/**
+ * Create or overwrite one item. Exactly one of `content` (utf-8) or
+ * `content_base64` travels as JSON; a `File`/`Blob` goes up as multipart `file`.
+ * Returns the item's meta when the server includes it.
+ */
+export async function putStorageItem(
+  key: string,
+  name: string,
+  body: { content: string; mimeType?: string } | { content_base64: string; mimeType?: string } | { file: Blob },
+): Promise<StorageItemMeta | undefined> {
+  let init: RequestInit;
+  if ("file" in body) {
+    const form = new FormData();
+    form.append("file", body.file, name);
+    init = { method: "PUT", credentials: "include", body: form };
+  } else {
+    init = { method: "PUT", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) };
+  }
+  const res = await fetch(storageItemUrl(key, name), init);
+  await assertOk(res, "Failed to save storage item");
+  const data = await res.json().catch(() => ({}));
+  return data.item;
+}
+
+export async function deleteStorageItem(key: string, name: string): Promise<void> {
+  const res = await fetch(storageItemUrl(key, name), { method: "DELETE", credentials: "include" });
+  await assertOk(res, "Failed to delete storage item");
+}
+
+// ── Artifacts ───────────────────────────────────────────────────────
+//
+// Named, versioned single-file apps rendered in a sandboxed iframe (plan §3).
+
+/** The served document for one version — the only thing an artifact iframe may load. */
+export function artifactRenderUrl(id: string, version: number): string {
+  return `${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/render`;
+}
+
+export async function listArtifacts(): Promise<Artifact[]> {
+  const res = await fetch(`${BASE}/artifacts`, { credentials: "include" });
+  await assertOk(res, "Failed to list artifacts");
+  const data = await res.json();
+  return data.artifacts;
+}
+
+export async function getArtifact(id: string): Promise<Artifact> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, { credentials: "include" });
+  await assertOk(res, "Failed to get artifact");
+  const data = await res.json();
+  return data.artifact;
+}
+
+export async function createArtifact(input: {
+  id: string;
+  name: string;
+  contentType: ArtifactContentType;
+  content: string;
+  description?: string;
+  storageAccess?: StorageAccess;
+  note?: string;
+}): Promise<Artifact> {
+  const res = await fetch(`${BASE}/artifacts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(input),
+  });
+  await assertOk(res, "Failed to create artifact");
+  const data = await res.json();
+  return data.artifact;
+}
+
+export async function updateArtifact(id: string, updates: { name?: string; description?: string; storageAccess?: StorageAccess }): Promise<Artifact> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  await assertOk(res, "Failed to update artifact");
+  const data = await res.json();
+  return data.artifact;
+}
+
+export async function deleteArtifact(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
+  await assertOk(res, "Failed to delete artifact");
+}
+
+export async function saveArtifactVersion(id: string, content: string, note?: string): Promise<Artifact> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ content, note }),
+  });
+  await assertOk(res, "Failed to save artifact version");
+  const data = await res.json();
+  return data.artifact;
+}
+
+/** One version's source as text — never executed, only shown or fed to MarkdownRenderer. */
+export async function getArtifactVersionSource(id: string, version: number): Promise<string> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}`, { credentials: "include" });
+  await assertOk(res, "Failed to read artifact version");
+  return res.text();
 }

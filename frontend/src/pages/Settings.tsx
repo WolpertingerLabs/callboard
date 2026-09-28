@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
-import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags, Braces } from "lucide-react";
+import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags, Braces, Database, AppWindow } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import GeneralSettings from "./settings/GeneralSettings";
 import PluginsSettings from "./settings/PluginsSettings";
@@ -13,6 +13,8 @@ import SkillsSettings from "./settings/SkillsSettings";
 import KeywordsSettings from "./settings/KeywordsSettings";
 import JobsSettings from "./settings/JobsSettings";
 import ModelAliasesSettings from "./settings/ModelAliasesSettings";
+import StorageSettings from "./settings/StorageSettings";
+import ArtifactsSettings from "./settings/ArtifactsSettings";
 
 const tabs = [
   { key: "general", label: "General", icon: SlidersHorizontal },
@@ -21,6 +23,8 @@ const tabs = [
   { key: "skills", label: "Skills", icon: Sparkles },
   { key: "keywords", label: "Keywords", icon: Braces },
   { key: "jobs", label: "Jobs", icon: Workflow },
+  { key: "storage", label: "Storage", icon: Database },
+  { key: "artifacts", label: "Artifacts", icon: AppWindow },
   { key: "plugins", label: "Plugins & MCP", icon: Plug },
   { key: "proxy", label: "Proxy", icon: Globe },
   { key: "remote", label: "Remote Access", icon: Wifi },
@@ -158,6 +162,8 @@ export default function Settings({ onLogout }: SettingsProps) {
         {activeTab === "skills" && <SkillsSettings />}
         {activeTab === "keywords" && <KeywordsSettings />}
         {activeTab === "jobs" && <JobsSettings />}
+        {activeTab === "storage" && <StorageSettings />}
+        {activeTab === "artifacts" && <ArtifactsSettings />}
         {activeTab === "plugins" && <PluginsSettings />}
         {activeTab === "proxy" && <ProxySettings />}
         {activeTab === "remote" && <RemoteAccessSettings />}
