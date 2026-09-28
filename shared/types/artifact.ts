@@ -154,36 +154,61 @@ export const ARTIFACT_RENDER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 /**
  * The artifact request budget, enforced host-side before any request reaches
- * the server. It is ONE budget per browser tab, shared by every artifact
- * rendered in it — not one per render: the server's API limit (300
+ * the server. It is ONE budget per browser tab, capping every artifact
+ * rendered in it together — not one per render: the server's API limit (300
  * requests/min per client) is shared by the whole UI, and a per-render budget
  * let a handful of copies of one polling artifact spend it all.
+ *
+ * Within that cap it is divided FAIRLY between renders, not first come: each
+ * render has its own share, which no other render can spend, and the tab's
+ * refill is dealt out evenly to the renders that are making requests (a
+ * render that wants less than an even split gets what it asks for, and the
+ * rest goes to the others). A render that retries the instant it is refused
+ * therefore holds exactly its share and cannot take anyone else's.
  *
  * What costs a token: every storage call (list/read/write/delete), plus every
  * re-check of an artifact's grant that actually goes to the server. Re-checks
  * are shared per artifact across the tab (see the two `*_RECHECK_MS` windows
  * below), so they are at most one per artifact per window, not one per call:
  * a read reuses a check under 5 s old, a write or delete one under 2 s old.
+ * A re-check serves every render of its artifact, so its cost is split
+ * between those that are in use.
  *
  * Effective rates, for the whole tab: a sustained 105 tokens/min with a burst
  * of 20 (≤ 125 in any one minute). The rest of the server's 300 is the UI's:
  * opening a chat alone costs ~55 requests, so ~175 is about three chat opens
- * a minute on top of artifacts running flat out. Hence, for ONE artifact
- * alone in the tab:
+ * a minute on top of artifacts running flat out. Hence, for ONE render that
+ * is the only one in the tab making requests:
  *  - writes sustain up to ~75/min (≤ 30 re-checks/min at one per 2 s); at 1
  *    write/s a check lands on every other write, so a write costs 1.5 tokens
  *    on average (90/min, under the 105 refill) and it never runs dry;
  *  - reads sustain up to ~93/min (≤ 12 re-checks/min at one per 5 s);
- *  - a load-time burst of ~15 calls always fits.
- * Several artifacts in one tab divide those numbers between them. Each render
- * also holds at most 4 requests in flight (the shim queues the rest). Over the
- * limit, a call fails at once with a `rate limited` error and never leaves the
- * browser.
+ *  - a load-time burst of ~15 calls fits.
+ * With N renders all asking for more than an even split, each is guaranteed
+ * 1/N of the rate and no more: 52.5 tokens/min beside one other busy render
+ * (~35 writes/min, one per ~1.7 s; or ~40 reads), 26 beside three (~13
+ * writes/min — writes that far apart each need a check of their own, 2 tokens
+ * a write — or ~14 reads). So 1 write/s is safe only while no other render in
+ * the tab is busy. The burst above an
+ * even share is the tab's unclaimed pool, first come.
+ *
+ * Each render also holds at most 4 requests in flight (the shim queues the
+ * rest). Over the limit, a call fails at once with a `rate limited` error and
+ * never leaves the browser; the refusal carries `retryAfterMs` (when that
+ * render's share will next hold a token), and the shim holds the render's
+ * later calls back until then — they wait rather than fail — so a retry
+ * loop costs a round trip per token instead of spinning.
  */
 export const ARTIFACT_BRIDGE_LIMITS = {
   maxInFlight: 4,
   burst: 20,
   refillPerSecond: 1.75,
+  /** The most tokens one mount's own share holds; above it, a lone mount draws on the tab's unclaimed pool. */
+  shareBurst: 5,
+  /** A mount counts toward the division for this long after its last request (or after a retry hint it was given runs out). */
+  activeWindowMs: 5000,
+  /** The longest `retryAfterMs` the host sends, and the longest the shim holds a render's calls back. */
+  maxRetryAfterMs: 5000,
 } as const;
 
 /**
@@ -265,4 +290,11 @@ export interface ArtifactBridgeReply {
   ok: boolean;
   result?: unknown;
   error?: string;
+  /**
+   * On a `rate limited` refusal by the budget: about how long, in ms, until
+   * this render's share holds a token again. The shim holds the render's next
+   * calls back until then (waiting, not failing), so a retry loop costs one
+   * round trip per token rather than spinning.
+   */
+  retryAfterMs?: number;
 }

@@ -115,11 +115,27 @@ async function servedShim(token: string | null, id = "study"): Promise<string> {
   return m[1];
 }
 
-/** A document in the frame: runs `code` with the frame's window as its global `window`. */
-function runDocument(frameWindow: Record<string, unknown>, code: string) {
+/** A document in the frame: runs `code` with the frame's window as its global `window` (and `now` as its clock, if given). */
+function runDocument(frameWindow: Record<string, unknown>, code: string, now?: () => number) {
   vm.runInContext(
     code,
-    vm.createContext({ window: frameWindow, Promise, Object, JSON, Math, String, Error, TypeError, ArrayBuffer, Uint8Array, btoa, MessageChannel, setTimeout, clearTimeout }),
+    vm.createContext({
+      window: frameWindow,
+      Promise,
+      Object,
+      JSON,
+      Math,
+      String,
+      Error,
+      TypeError,
+      ArrayBuffer,
+      Uint8Array,
+      btoa,
+      MessageChannel,
+      setTimeout,
+      clearTimeout,
+      ...(now ? { Date: { now } } : {}),
+    }),
   );
 }
 
@@ -170,7 +186,7 @@ async function mount(storageKey: string | null, access: ArtifactStorageAccess, i
     recheck: (maxAgeMs, budget) => recheckGrant(result, pin, maxAgeMs, budget, lookup),
     budget: createRequestBudget(clock),
   });
-  runDocument(frameWindow, await servedShim(bridge.token, id));
+  runDocument(frameWindow, await servedShim(bridge.token, id), now);
   bridge.handleLoad();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return { cb: frameWindow.callboard as any, bridge, frameWindow };
@@ -396,32 +412,46 @@ describe("the live grant: re-checked against the real artifact route, while moun
     await storage.deleteStorageItem("deck", "live-d.txt");
   });
 
-  it(`a polling artifact is cut off host-side after its burst: ${RATE_LIMITED}, and nothing more reaches the server`, async () => {
+  it(`a polling artifact is cut off host-side after its burst: ${RATE_LIMITED} with a retry hint, which the served shim honours — nothing more reaches the server until then`, async () => {
     let t = 2_000_000;
     const { cb } = await mount("deck", "read", "study", () => t);
     apiCalls.length = 0;
     let ok = 0;
-    const errors = new Set<string>();
-    for (let i = 0; i < 200; i++) {
+    let refusal: Error | null = null;
+    for (let i = 0; i < 30 && !refusal; i++) {
       try {
         await cb.storage.list();
         ok++;
       } catch (err) {
-        errors.add((err as Error).message.split(":")[0]);
+        refusal = err as Error;
       }
     }
     expect(ok).toBe(ARTIFACT_BRIDGE_LIMITS.burst);
-    expect(errors).toEqual(new Set([RATE_LIMITED]));
+    expect(refusal?.message).toMatch(new RegExp(`^${RATE_LIMITED}`));
     expect(apiCalls).toHaveLength(ARTIFACT_BRIDGE_LIMITS.burst);
-    // It refills at the sustained rate (a re-check is due by now, and costs a token of its own).
+    // Retried at once, as a polling loop would: held by the shim, so not even the host sees it.
+    let held = true;
+    const retry = cb.storage.list().finally(() => (held = false));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(held).toBe(true);
+    expect(apiCalls).toHaveLength(ARTIFACT_BRIDGE_LIMITS.burst);
+    // The hint was when one token would be back (1/1.75 s); once the clock passes it the call goes out, and succeeds.
     t += 10_000;
-    apiCalls.length = 0;
-    ok = 0;
-    for (let i = 0; i < 50; i++) await cb.storage.list().then(() => ok++, () => undefined);
+    await retry;
+    // It refills at the sustained rate (a re-check is due by now, and costs a token of its own).
+    ok = 1;
+    for (let i = 0; i < 50; i++) {
+      const r = await cb.storage.list().then(
+        () => true,
+        () => false,
+      );
+      if (!r) break;
+      ok++;
+    }
     const refill = Math.floor(10 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond);
     expect(ok).toBe(refill - 1);
-    expect(apiCalls).toHaveLength(refill);
-    expect(apiCalls[0]).toBe("GET /api/artifacts/study");
+    expect(apiCalls).toHaveLength(ARTIFACT_BRIDGE_LIMITS.burst + refill);
+    expect(apiCalls[ARTIFACT_BRIDGE_LIMITS.burst]).toBe("GET /api/artifacts/study");
   });
 
   it("Promise.all over more reads than the in-flight cap succeeds: the shim queues, the host never sees more than the cap", async () => {

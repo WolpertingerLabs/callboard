@@ -60,7 +60,7 @@ function fakeTimers(): Timers & { setTimeout: (fn: () => void, ms: number) => nu
   };
 }
 
-function boot(token: string | null = TOKEN, opts: { topLevel?: boolean; timers?: ReturnType<typeof fakeTimers> } = {}): Harness {
+function boot(token: string | null = TOKEN, opts: { topLevel?: boolean; timers?: ReturnType<typeof fakeTimers>; clock?: { now: number } } = {}): Harness {
   const h: Harness = {
     cb: undefined,
     toParent: [],
@@ -104,6 +104,7 @@ function boot(token: string | null = TOKEN, opts: { topLevel?: boolean; timers?:
     MessageChannel,
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
+    Date: opts.clock ? { now: () => opts.clock!.now } : Date,
   });
   vm.runInContext(`${ARTIFACT_BRIDGE_SHIM_JS}(${JSON.stringify(token)});`, ctx);
   h.cb = win.callboard;
@@ -241,6 +242,51 @@ describe("artifact bridge shim", () => {
     h.cb.ready.then(settled);
     await flush();
     expect(settled).not.toHaveBeenCalled();
+  });
+
+  it("a rate-limit refusal carrying retryAfterMs holds the render's next calls back until then — they wait, not fail — and a bad hint is capped", async () => {
+    const timers = fakeTimers();
+    const clock = { now: 1_000_000 };
+    const h = boot(TOKEN, { timers, clock });
+    h.send(init());
+    await h.cb.ready;
+    timers.pending.clear(); // the ready timeout, settled already
+    const first = h.cb.storage.list();
+    await flush();
+    h.send(reply(h.requests[0].id, { ok: false, error: "rate limited: slow down", retryAfterMs: 800 }));
+    await expect(first).rejects.toThrow(/^rate limited/);
+    // A retry at once, as a loop would: queued here, nothing sent.
+    const retry = h.cb.storage.list();
+    const other = h.cb.storage.read("a");
+    await flush();
+    expect(h.requests).toHaveLength(1);
+    expect([...timers.pending.values()].map((t) => t.ms)).toEqual([800]);
+    clock.now += 800;
+    timers.fire();
+    await flush();
+    expect(h.requests.map((r) => r.op)).toEqual(["list", "list", "read"]);
+    h.send(reply(h.requests[1].id, { result: [] }));
+    h.send(reply(h.requests[2].id, { result: "A" }));
+    expect(await retry).toEqual([]);
+    expect(await other).toBe("A");
+    // A success, or a failure without a hint, holds nothing back.
+    h.send(reply("nope"));
+    const next = h.cb.storage.read("b");
+    await flush();
+    expect(h.requests).toHaveLength(4);
+    h.send(reply(h.requests[3].id, { ok: false, error: "Item not found" }));
+    await expect(next).rejects.toThrow("Item not found");
+    const c = h.cb.storage.read("c");
+    await flush();
+    expect(h.requests).toHaveLength(5);
+    // An absurd hint is capped at ARTIFACT_BRIDGE_LIMITS.maxRetryAfterMs.
+    h.send(reply(h.requests[4].id, { ok: false, error: "rate limited: x", retryAfterMs: 1e12 }));
+    await expect(c).rejects.toThrow(/^rate limited/);
+    await flush();
+    void h.cb.storage.read("d");
+    await flush();
+    expect(h.requests).toHaveLength(5);
+    expect([...timers.pending.values()].map((t) => t.ms)).toEqual([ARTIFACT_BRIDGE_LIMITS.maxRetryAfterMs]);
   });
 
   it("rejects with the host's error message", async () => {
