@@ -243,9 +243,11 @@ import type {
   StorageKeyDetail,
   PutStorageItemJsonBody,
   Artifact,
+  ArtifactBinding,
   ArtifactSummary,
   CreateArtifactInput,
   UpdateArtifactInput,
+  UpdateStorageKeyInput,
 } from "shared/types/index.js";
 
 /**
@@ -2739,6 +2741,7 @@ export type {
   StorageKeyDetail,
   ArtifactStorageAccess,
   Artifact,
+  ArtifactBinding,
   ArtifactSummary,
   ArtifactVersion,
   ArtifactContentType,
@@ -2759,10 +2762,13 @@ export {
   ARTIFACT_RENDER_SHA256_PATTERN,
   ARTIFACT_ID_PATTERN,
   STORAGE_ITEM_MIME_HEADER,
+  STORAGE_KEY_MAX_ARTIFACTS,
   STORAGE_MAX_ITEM_BYTES,
   isValidStorageItemName,
   isValidStorageKey,
   minArtifactStorageAccess,
+  storageKeyBindingRefusal,
+  storageKeyBindsArtifact,
 } from "shared/types/index.js";
 
 /** Same-origin URL of one stored item's raw bytes (inline only for raster images and text/plain). */
@@ -2777,12 +2783,13 @@ export async function listStorageKeys(): Promise<StorageKeySummary[]> {
   return data.keys;
 }
 
-export async function createStorageKey(key: string, description?: string): Promise<StorageKeyDetail> {
+/** `artifacts`: ids of the artifacts designed for the key — the only ones that bind to it. */
+export async function createStorageKey(key: string, description?: string, artifacts?: string[]): Promise<StorageKeyDetail> {
   const res = await fetch(`${BASE}/storage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ key, description }),
+    body: JSON.stringify({ key, description, artifacts }),
   });
   await assertOk(res, "Failed to create storage key");
   const data = await res.json();
@@ -2796,12 +2803,13 @@ export async function getStorageKey(key: string): Promise<StorageKeyDetail> {
   return data.key;
 }
 
-export async function updateStorageKey(key: string, description: string): Promise<StorageKeyDetail> {
+/** Omitted fields are left alone; `artifacts` replaces the key's whole list. */
+export async function updateStorageKey(key: string, patch: UpdateStorageKeyInput): Promise<StorageKeyDetail> {
   const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ description }),
+    body: JSON.stringify(patch),
   });
   await assertOk(res, "Failed to update storage key");
   const data = await res.json();
@@ -2883,6 +2891,17 @@ export async function getArtifact(id: string): Promise<Artifact> {
   await assertOk(res, "Failed to get artifact");
   const data = await res.json();
   return data.artifact;
+}
+
+/**
+ * The artifact plus the artifact list of the one key a render binds it to —
+ * one request, for judging a bound render before mounting and re-checking it
+ * live. Rejects (with "…not found…") when either is gone.
+ */
+export async function getArtifactBinding(id: string, storageKey: string): Promise<ArtifactBinding> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/binding/${encodeURIComponent(storageKey)}`, { credentials: "include" });
+  await assertOk(res, "Failed to check the artifact's storage key");
+  return res.json();
 }
 
 export async function createArtifact(input: CreateArtifactInput): Promise<Artifact> {

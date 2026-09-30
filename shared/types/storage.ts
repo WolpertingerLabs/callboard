@@ -9,9 +9,20 @@
  *   DATA_DIR/storage/<key>/meta.json            {@link StorageKeyMetaFile}
  *   DATA_DIR/storage/<key>/items/<name>~<hex>   raw bytes of item <name> (see {@link StorageItemRecord.file})
  *
+ * **Which artifacts a key is for.** A key's `artifacts` lists the ids of the
+ * artifacts designed to use it, and an artifact that is not on the list does
+ * not bind to the key at all — no read, no write. A key with no list (absent
+ * or empty) binds nothing. The list is metadata the user (Settings → Storage)
+ * or an agent (`create_storage_key` / `update_storage_key`, REST) sets; an
+ * artifact can never change it — the bridge has no key-level operation. It
+ * only narrows: a listed artifact still gets no more than its declared
+ * `storageAccess` and, outside chat, the per-browser write choice.
+ *
  * These types are REST/tool shapes, not stream wire types — they deliberately
  * live outside `stream.ts`.
  */
+
+import { ARTIFACT_ID_PATTERN } from "./artifact.js";
 
 /** Key: lowercase slug. `.` and `..` are rejected separately (the regex alone admits them). */
 export const STORAGE_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -48,6 +59,48 @@ export const STORAGE_MAX_KEY_BYTES = 250 * 1024 * 1024;
 export const STORAGE_MAX_STORE_BYTES = 2 * 1024 * 1024 * 1024;
 export const STORAGE_MAX_ITEMS_PER_KEY = 5000;
 
+/** The most artifact ids one key's `artifacts` list may hold. */
+export const STORAGE_KEY_MAX_ARTIFACTS = 32;
+
+/**
+ * Whether a key whose list is `artifacts` binds `artifactId`. Strict: no list
+ * (undefined or empty) binds nothing. Matching is by id.
+ */
+export function storageKeyBindsArtifact(artifacts: readonly string[] | undefined | null, artifactId: string): boolean {
+  return Array.isArray(artifacts) && artifacts.includes(artifactId);
+}
+
+/**
+ * The refusal when a key does not list an artifact — the same words from the
+ * render_artifact tool, the chat bubble, the standalone page and the Settings
+ * preview, naming the fix.
+ */
+export function storageKeyBindingRefusal(storageKey: string, artifactId: string): string {
+  return (
+    `storage key "${storageKey}" is not designed for artifact "${artifactId}", so the artifact is not bound to it — ` +
+    `add "${artifactId}" to storage key "${storageKey}"'s artifacts via update_storage_key or Settings → Storage`
+  );
+}
+
+/**
+ * Validate and normalise an `artifacts` list for a key: an array of artifact
+ * ids ({@link ARTIFACT_ID_PATTERN}), deduplicated in order, at most
+ * {@link STORAGE_KEY_MAX_ARTIFACTS}. Returns the list, or a reason it is
+ * invalid. Ids that name no existing artifact are allowed (shown as missing).
+ */
+export function normalizeStorageKeyArtifacts(value: unknown): { ok: true; artifacts: string[] } | { ok: false; reason: string } {
+  if (!Array.isArray(value)) return { ok: false, reason: "artifacts must be an array of artifact ids" };
+  const out: string[] = [];
+  for (const id of value) {
+    if (typeof id !== "string" || !ARTIFACT_ID_PATTERN.test(id)) {
+      return { ok: false, reason: `invalid artifact id in artifacts: ${JSON.stringify(id)} (must match ${ARTIFACT_ID_PATTERN})` };
+    }
+    if (!out.includes(id)) out.push(id);
+  }
+  if (out.length > STORAGE_KEY_MAX_ARTIFACTS) return { ok: false, reason: `too many artifacts (max ${STORAGE_KEY_MAX_ARTIFACTS} per key)` };
+  return { ok: true, artifacts: out };
+}
+
 /** Per-item metadata as recorded in a key's `meta.json`. */
 export interface StorageItemMeta {
   /** Recorded MIME type. Informational — never trusted for serving. */
@@ -76,6 +129,8 @@ export interface StorageKeyMetaFile {
   version: 1;
   key: string;
   description?: string;
+  /** Ids of the artifacts designed for this key. Absent (every key written before it existed) ⇒ none. */
+  artifacts?: string[];
   created: string;
   updated: string;
   items: { [name: string]: StorageItemRecord };
@@ -90,6 +145,8 @@ export interface StorageItem extends StorageItemMeta {
 export interface StorageKeySummary {
   key: string;
   description?: string;
+  /** Ids of the artifacts this key binds — the only ones that may read or write it. Empty ⇒ it binds none. */
+  artifacts: string[];
   itemCount: number;
   totalSize: number;
   created: string;
@@ -105,11 +162,18 @@ export interface StorageKeyDetail extends StorageKeySummary {
 export interface CreateStorageKeyInput {
   key: string;
   description?: string;
+  /** Ids of the artifacts designed for this key (see the module doc). Omitted ⇒ none. */
+  artifacts?: string[];
 }
 
-/** `PATCH /api/storage/:key` body. An empty string clears the description. */
+/**
+ * `PATCH /api/storage/:key` body — at least one field. An omitted field is
+ * left as it is; an empty description clears it; `artifacts` replaces the
+ * whole list (`[]` ⇒ the key binds no artifact).
+ */
 export interface UpdateStorageKeyInput {
-  description: string;
+  description?: string;
+  artifacts?: string[];
 }
 
 /**

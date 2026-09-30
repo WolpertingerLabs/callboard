@@ -80,15 +80,18 @@ storageRouter.get(
 );
 
 /**
- * POST /api/storage  { key, description? }
+ * POST /api/storage  { key, description?, artifacts? }
+ *
+ * `artifacts`: ids of the artifacts designed for the key — the only ones that
+ * bind to it (none if omitted).
  */
 storageRouter.post(
   "/",
   wrap("Create storage key", async (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Create a storage key'
-    const { key, description } = (req.body ?? {}) as { key?: unknown; description?: unknown };
-    res.status(201).json({ key: await createStorageKey(key as string, description as string | undefined) });
+    const { key, description, artifacts } = (req.body ?? {}) as { key?: unknown; description?: unknown; artifacts?: unknown };
+    res.status(201).json({ key: await createStorageKey(key as string, description as string | undefined, artifacts) });
   }),
 );
 
@@ -105,16 +108,20 @@ storageRouter.get(
 );
 
 /**
- * PATCH /api/storage/:key  { description }
+ * PATCH /api/storage/:key  { description?, artifacts? }
+ *
+ * At least one field. Omitted fields are left alone; `artifacts` replaces the
+ * key's whole list (`[]` ⇒ it binds no artifact).
  */
 storageRouter.patch(
   "/:key",
   wrap("Update storage key", async (req, res) => {
     // #swagger.tags = ['Storage']
-    // #swagger.summary = 'Update a storage key description'
-    const { description } = (req.body ?? {}) as { description?: unknown };
-    if (typeof description !== "string") throw new StorageError("invalid", "description must be a string");
-    res.json({ key: await updateStorageKey(req.params.key, { description }) });
+    // #swagger.summary = 'Update a storage key description and/or the artifacts it is designed for'
+    const { description, artifacts } = (req.body ?? {}) as { description?: unknown; artifacts?: unknown };
+    if (description === undefined && artifacts === undefined) throw new StorageError("invalid", "Provide description and/or artifacts");
+    if (description !== undefined && typeof description !== "string") throw new StorageError("invalid", "description must be a string");
+    res.json({ key: await updateStorageKey(req.params.key, { description, artifacts }) });
   }),
 );
 

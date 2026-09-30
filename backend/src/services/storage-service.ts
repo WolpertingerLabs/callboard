@@ -57,6 +57,7 @@ import {
   STORAGE_MAX_STORE_BYTES,
 } from "shared/types/index.js";
 import type { StorageItem, StorageItemRecord, StorageKeyDetail, StorageKeyMetaFile, StorageKeySummary } from "shared/types/index.js";
+import { ARTIFACT_ID_PATTERN, normalizeStorageKeyArtifacts } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -370,10 +371,22 @@ function totalSize(meta: StorageKeyMetaFile): number {
   return total;
 }
 
+/**
+ * The key's artifact list as recorded. A meta written before the field existed
+ * has none; a malformed field (not an array) counts as none and malformed
+ * entries are dropped — this list only ever grants by inclusion, so reading
+ * too little fails closed.
+ */
+function artifactsOf(meta: StorageKeyMetaFile): string[] {
+  if (!Array.isArray(meta.artifacts)) return [];
+  return meta.artifacts.filter((id, i, all): id is string => typeof id === "string" && ARTIFACT_ID_PATTERN.test(id) && all.indexOf(id) === i);
+}
+
 function summarize(meta: StorageKeyMetaFile): StorageKeySummary {
   return {
     key: meta.key,
     ...(meta.description ? { description: meta.description } : {}),
+    artifacts: artifactsOf(meta),
     itemCount: Object.keys(meta.items).length,
     totalSize: totalSize(meta),
     created: meta.created,
@@ -468,6 +481,13 @@ function validateDescription(description: unknown): string | undefined {
   return description.trim() || undefined;
 }
 
+function validateArtifacts(artifacts: unknown): string[] | undefined {
+  if (artifacts === undefined) return undefined;
+  const result = normalizeStorageKeyArtifacts(artifacts);
+  if (!result.ok) throw new StorageError("invalid", result.reason);
+  return result.artifacts;
+}
+
 /** Every key's meta that parses. Directories that are not valid keys, or have no meta, are skipped. */
 function allMetas(): StorageKeyMetaFile[] {
   if (!existsSync(STORAGE_ROOT)) return [];
@@ -508,30 +528,63 @@ export function getStorageKey(key: string): StorageKeyDetail {
   return { ...summarize(meta), items: itemsOf(meta) };
 }
 
-function createKeySync(key: string, description?: string): StorageKeyDetail {
+/**
+ * The ids of the artifacts `key` binds (see `artifacts` on StorageKeyMetaFile)
+ * — only meta is read, not the item list. Throws not_found for a missing key.
+ */
+export function getStorageKeyArtifacts(key: string): string[] {
+  assertStorageKey(key);
+  return artifactsOf(readMeta(key));
+}
+
+function createKeySync(key: string, description?: string, artifacts?: string[]): StorageKeyDetail {
   assertContainedKeyDir(key);
   if (existsSync(metaPath(key))) throw new StorageError("conflict", `Storage key already exists: ${key}`);
   mkdirSync(itemsDir(key), { recursive: true });
   assertContainedKeyDir(key);
   const now = new Date().toISOString();
-  const meta: StorageKeyMetaFile = { version: 1, key, ...(description ? { description } : {}), created: now, updated: now, items: {} };
+  const meta: StorageKeyMetaFile = {
+    version: 1,
+    key,
+    ...(description ? { description } : {}),
+    ...(artifacts?.length ? { artifacts } : {}),
+    created: now,
+    updated: now,
+    items: {},
+  };
   writeMeta(key, meta);
   return { ...summarize(meta), items: [] };
 }
 
-export async function createStorageKey(key: string, description?: string): Promise<StorageKeyDetail> {
+/** `artifacts`: ids of the artifacts designed for the key (validated: artifact-id shaped, deduplicated, ≤ STORAGE_KEY_MAX_ARTIFACTS). */
+export async function createStorageKey(key: string, description?: string, artifacts?: unknown): Promise<StorageKeyDetail> {
   assertStorageKey(key);
   const desc = validateDescription(description);
-  return serialize(`storage:${key}`, () => createKeySync(key, desc));
+  const list = validateArtifacts(artifacts);
+  return serialize(`storage:${key}`, () => createKeySync(key, desc, list));
 }
 
-export async function updateStorageKey(key: string, patch: { description?: string }): Promise<StorageKeyDetail> {
+/**
+ * Change a key's metadata. A field left undefined is untouched; an empty
+ * description clears it; `artifacts` replaces the whole list (`[]` ⇒ the key
+ * binds no artifact). Callers are the user (REST) and agents (tools) — never
+ * an artifact: the bridge has no key-level operation.
+ */
+export async function updateStorageKey(key: string, patch: { description?: unknown; artifacts?: unknown }): Promise<StorageKeyDetail> {
   assertStorageKey(key);
+  const changeDescription = patch.description !== undefined;
   const desc = validateDescription(patch.description);
+  const list = validateArtifacts(patch.artifacts);
   return serialize(`storage:${key}`, () => {
     const meta = readMeta(key);
-    if (desc) meta.description = desc;
-    else delete meta.description;
+    if (changeDescription) {
+      if (desc) meta.description = desc;
+      else delete meta.description;
+    }
+    if (list !== undefined) {
+      if (list.length) meta.artifacts = list;
+      else delete meta.artifacts;
+    }
     meta.updated = new Date().toISOString();
     writeMeta(key, meta);
     return { ...summarize(meta), items: itemsOf(meta) };

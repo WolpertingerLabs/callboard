@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   fetchStorageItem: vi.fn(),
   putStorageItem: vi.fn(),
   deleteStorageItem: vi.fn(),
+  listArtifacts: vi.fn(),
 }));
 
 vi.mock("../../api", async (importOriginal) => {
@@ -35,6 +36,8 @@ const item = (name: string, mimeType: string, size = 10) => ({ name, mimeType, s
 const birds = {
   key: "birds",
   description: "Birds deck",
+  // One that exists and takes storage, one that takes none, one deleted since.
+  artifacts: ["cramhouse", "readme", "gone-app"],
   created: "2026-09-01T00:00:00Z",
   updated: "2026-09-02T00:00:00Z",
   items: [
@@ -72,6 +75,8 @@ beforeEach(() => {
   h.deleteStorageItem.mockResolvedValue(undefined);
   h.deleteStorageKey.mockResolvedValue(undefined);
   h.updateStorageKey.mockResolvedValue(birds);
+  const summary = (id: string, name: string, storageAccess: string) => ({ id, name, contentType: "html", storageAccess, currentVersion: 1, created: "c", updated: "u" });
+  h.listArtifacts.mockResolvedValue([summary("cramhouse", "Cramhouse", "readwrite"), summary("flag-deck", "Flag deck", "read"), summary("readme", "Readme", "none")]);
 });
 
 afterEach(() => {
@@ -228,7 +233,7 @@ describe("StorageSettings", () => {
     fireEvent.click(screen.getByTitle("Edit description"));
     fireEvent.change(screen.getByLabelText("Edit key description"), { target: { value: "Updated" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(h.updateStorageKey).toHaveBeenCalledWith("birds", "Updated"));
+    await waitFor(() => expect(h.updateStorageKey).toHaveBeenCalledWith("birds", { description: "Updated" }));
   });
 
   it("surfaces API errors", async () => {
@@ -253,3 +258,67 @@ describe("previewKind", () => {
     expect(previewKind({ name, mimeType })).toBe(kind);
   });
 });
+
+describe("StorageSettings — Designed for", () => {
+  it("shows each listed artifact: existing ones by name with an 'Open with' link to the standalone page, deleted ones as missing", async () => {
+    await openBirds();
+    const cram = await screen.findByTestId("designed-for-cramhouse");
+    const link = within(cram).getByRole("link", { name: /Open with Cramhouse/ });
+    expect(link.getAttribute("href")).toBe("/a/cramhouse?key=birds");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toMatch(/\bnoopener\b/);
+    expect(link.getAttribute("href")).not.toMatch(/access|write/i);
+    // An artifact that takes no storage cannot be opened with a key.
+    const readme = screen.getByTestId("designed-for-readme");
+    expect(within(readme).queryByRole("link")).toBeNull();
+    expect(readme.textContent).toMatch(/takes no storage/);
+    const gone = screen.getByTestId("designed-for-gone-app");
+    expect(gone.textContent).toMatch(/missing/);
+    expect(within(gone).queryByRole("link")).toBeNull();
+  });
+
+  it("a key with no list says it binds nothing", async () => {
+    h.getStorageKey.mockResolvedValue({ ...birds, artifacts: [] });
+    await openBirds();
+    expect((await screen.findByTestId("designed-for")).textContent).toMatch(/No artifact — none can be bound to this key/);
+  });
+
+  it("the list shows in the key list too", async () => {
+    h.listStorageKeys.mockResolvedValue([{ key: "birds", artifacts: ["cramhouse"], itemCount: 5, totalSize: 2048, updated: "x" }]);
+    renderPage();
+    expect((await screen.findByTestId("storage-key-list")).textContent).toMatch(/for cramhouse/);
+  });
+
+  it("edits the list: pick from existing artifacts, untick a missing one; saving replaces the whole list", async () => {
+    await openBirds();
+    await screen.findByTestId("designed-for-cramhouse");
+    fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    const editor = screen.getByTestId("designed-for-editor");
+    // Every existing artifact, plus the listed id that no longer exists (so it can be removed).
+    expect(within(editor).getAllByRole("checkbox").map((c) => c.getAttribute("aria-label"))).toEqual([
+      "Designed for cramhouse",
+      "Designed for flag-deck",
+      "Designed for readme",
+      "Designed for gone-app",
+    ]);
+    expect(within(editor).getByText("missing")).toBeTruthy();
+    fireEvent.click(within(editor).getByLabelText("Designed for gone-app"));
+    fireEvent.click(within(editor).getByLabelText("Designed for flag-deck"));
+    fireEvent.click(within(editor).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(h.updateStorageKey).toHaveBeenCalledWith("birds", { artifacts: ["cramhouse", "readme", "flag-deck"] }));
+    await waitFor(() => expect(h.getStorageKey).toHaveBeenCalledTimes(2)); // re-read after saving
+  });
+
+  it("cancel leaves the list alone; a failed save shows the server's error", async () => {
+    await openBirds();
+    await screen.findByTestId("designed-for-cramhouse");
+    fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    fireEvent.click(within(screen.getByTestId("designed-for-editor")).getByRole("button", { name: "Cancel" }));
+    expect(h.updateStorageKey).not.toHaveBeenCalled();
+    h.updateStorageKey.mockRejectedValue(new Error("too many artifacts (max 32 per key)"));
+    fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    fireEvent.click(within(screen.getByTestId("designed-for-editor")).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("too many artifacts (max 32 per key)")).toBeTruthy();
+  });
+});
+

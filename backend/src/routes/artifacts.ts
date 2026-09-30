@@ -6,7 +6,7 @@ import type { ArtifactContentType } from "shared/types/index.js";
 import { deleteArtifact, getArtifact, listArtifacts, readArtifactVersion, saveArtifact, updateArtifact } from "../services/artifact-service.js";
 import { artifactBridgeShimScript } from "../services/artifact-bridge-shim.js";
 import { SIZE_REPORTER_SCRIPT, injectBeforeBodyClose } from "../services/html-injection.js";
-import { StorageError, httpStatusFor } from "../services/storage-service.js";
+import { StorageError, getStorageKeyArtifacts, httpStatusFor } from "../services/storage-service.js";
 import { sendStorageError } from "./storage.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -205,6 +205,25 @@ artifactsRouter.get(
     // #swagger.tags = ['Artifacts']
     // #swagger.summary = 'Get an artifact with its versions'
     res.json({ artifact: getArtifact(req.params.id) });
+  }),
+);
+
+/**
+ * GET /api/artifacts/:id/binding/:key → ArtifactBinding
+ *
+ * The artifact and the artifact list of the one key a render binds it to, in
+ * one response: the host judges a bound render before mounting it, and
+ * re-checks it live, from this — one request per check, as for an unbound one.
+ * 404 when either is gone. Read-only, like everything the host fetches for the
+ * bridge; the key's list changes only through PATCH /api/storage/:key.
+ */
+artifactsRouter.get(
+  "/:id/binding/:key",
+  wrap("Get artifact binding", (req, res) => {
+    // #swagger.tags = ['Artifacts']
+    // #swagger.summary = 'Get an artifact together with the artifact list of one storage key'
+    const artifact = getArtifact(req.params.id);
+    res.json({ artifact, storageKey: { key: req.params.key, artifacts: getStorageKeyArtifacts(req.params.key) } });
   }),
 );
 

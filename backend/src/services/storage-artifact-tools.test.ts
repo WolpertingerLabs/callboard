@@ -1,5 +1,5 @@
 /**
- * The twelve storage/artifact tools, driven through their handlers, plus the
+ * The thirteen storage/artifact tools, driven through their handlers, plus the
  * wiring that makes them reachable: the callboard-tools spec, the manifest,
  * and `render_artifact`'s membership of CALLBOARD_UI_TOOLS.
  */
@@ -22,6 +22,7 @@ const { ARTIFACTS_ROOT } = await import("./artifact-service.js");
 const STORAGE_ARTIFACT_TOOL_NAMES = [
   "list_storage_keys",
   "create_storage_key",
+  "update_storage_key",
   "list_storage_items",
   "read_storage_item",
   "save_storage_item",
@@ -56,7 +57,7 @@ beforeEach(() => {
 });
 
 describe("wiring", () => {
-  it("builds exactly the twelve tools", () => {
+  it("builds exactly the thirteen tools", () => {
     expect(buildStorageArtifactTools().map((t) => t.name)).toEqual([...STORAGE_ARTIFACT_TOOL_NAMES]);
   });
 
@@ -177,7 +178,7 @@ describe("artifact tools", () => {
 
   it("render_artifact: result shape, unbound → none, bound → the declared access", async () => {
     await call("save_artifact", { id: "rw", name: "RW", content_type: "html", content: "x", storage_access: "readwrite" });
-    await call("create_storage_key", { key: "deck" });
+    await call("create_storage_key", { key: "deck", artifacts: ["rw", "ro"] });
     const { getArtifact } = await import("./artifact-service.js");
     const sha256 = getArtifact("rw").versions[0].sha256;
     expect(sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -211,9 +212,67 @@ describe("artifact tools", () => {
     await call("save_artifact", { id: "pic", name: "Pic", content_type: "svg", content: "<svg/>" });
     expect((await call("render_artifact", { id: "rw", storage_key: "nope" })).error).toMatch(/Storage key not found/);
     expect((await call("render_artifact", { id: "rw", storage_key: "../etc" })).error).toMatch(/Invalid storage key/);
-    await call("create_storage_key", { key: "deck" });
+    await call("create_storage_key", { key: "deck", artifacts: ["pic"] });
     expect((await call("render_artifact", { id: "pic", storage_key: "deck" })).error).toMatch(/storage_access "none"/);
     expect((await call("render_artifact", { id: "rw", version: 9 })).error).toMatch(/Version 9/);
     expect((await call("render_artifact", { id: "ghost" })).error).toMatch(/not found/);
+  });
+
+  it("render_artifact refuses a key that does not list the artifact — strict: no list binds nothing — and names the fix", async () => {
+    await call("save_artifact", { id: "rw", name: "RW", content_type: "html", content: "x", storage_access: "readwrite" });
+    await call("create_storage_key", { key: "bare" });
+    await call("create_storage_key", { key: "other", artifacts: ["cramhouse"] });
+    const fix = (key: string) =>
+      `add "rw" to storage key "${key}"'s artifacts via update_storage_key or Settings → Storage`;
+    for (const key of ["bare", "other"]) {
+      const res = await call("render_artifact", { id: "rw", storage_key: key });
+      expect(res.type).toBeUndefined();
+      expect(res.error).toContain(`storage key "${key}" is not designed for artifact "rw"`);
+      expect(res.error).toContain(fix(key));
+    }
+    // Unbound renders are untouched by any key's list.
+    expect((await call("render_artifact", { id: "rw" })).storage_access).toBe("none");
+    // An agent fixes it with update_storage_key, and the same call now binds.
+    await call("update_storage_key", { key: "bare", artifacts: ["rw"] });
+    expect(await call("render_artifact", { id: "rw", storage_key: "bare" })).toMatchObject({ storage_key: "bare", storage_access: "readwrite" });
+  });
+});
+
+describe("storage key artifacts list (tools)", () => {
+  it("create_storage_key and update_storage_key validate the list; list_storage_keys returns it", async () => {
+    expect((await call("create_storage_key", { key: "deck", artifacts: ["cramhouse", "cramhouse", "flag-deck"] })).key).toMatchObject({
+      artifacts: ["cramhouse", "flag-deck"],
+    });
+    expect((await call("create_storage_key", { key: "bad", artifacts: ["Not An Id"] })).error).toMatch(/invalid artifact id/);
+    expect((await call("list_storage_keys")).keys).toEqual([expect.objectContaining({ key: "deck", artifacts: ["cramhouse", "flag-deck"] })]);
+
+    expect((await call("update_storage_key", { key: "deck" })).error).toMatch(/description and\/or artifacts/);
+    expect((await call("update_storage_key", { key: "deck", artifacts: ["../x"] })).error).toMatch(/invalid artifact id/);
+    expect((await call("update_storage_key", { key: "deck", artifacts: Array.from({ length: 33 }, (_, i) => `a${i}`) })).error).toMatch(/max 32/);
+    expect((await call("update_storage_key", { key: "nope", artifacts: [] })).error).toMatch(/not found/);
+
+    const updated = await call("update_storage_key", { key: "deck", description: "Birds", artifacts: ["gone-artifact"] });
+    expect(updated.key).toMatchObject({ key: "deck", description: "Birds", artifacts: ["gone-artifact"] });
+    expect(updated.key.items).toBeUndefined();
+    expect((await call("update_storage_key", { key: "deck", description: "" })).key).toMatchObject({ artifacts: ["gone-artifact"] });
+    expect((await call("update_storage_key", { key: "deck", artifacts: [] })).key.artifacts).toEqual([]);
+  });
+
+  it("list_artifacts names the keys each artifact can be rendered against", async () => {
+    await call("save_artifact", { id: "app", name: "App", content_type: "html", content: "x", storage_access: "read" });
+    await call("save_artifact", { id: "solo", name: "Solo", content_type: "html", content: "x" });
+    await call("create_storage_key", { key: "a", artifacts: ["app"] });
+    await call("create_storage_key", { key: "b", artifacts: ["app", "solo"] });
+    await call("create_storage_key", { key: "c" });
+    const { artifacts } = await call("list_artifacts");
+    expect(Object.fromEntries(artifacts.map((a: { id: string; storage_keys: string[] }) => [a.id, a.storage_keys]))).toEqual({ app: ["a", "b"], solo: ["b"] });
+  });
+
+  it("the tool schemas take a plain string array (no z.record) and every description states the rule", () => {
+    const tools = buildStorageArtifactTools();
+    for (const name of ["create_storage_key", "update_storage_key"]) {
+      expect(tools.find((t) => t.name === name)!.description, name).toMatch(/ONLY those artifacts can be rendered against the key/);
+    }
+    expect(tools.find((t) => t.name === "render_artifact")!.description).toMatch(/an artifact not on the list does not bind to the key at all/);
   });
 });

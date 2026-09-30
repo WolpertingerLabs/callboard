@@ -212,4 +212,35 @@ describe("REST surface", () => {
     expect(res.status).toBe(413);
     expect(svc.listStorageItems("big")).toEqual([]);
   });
+
+  it("POST/PATCH carry the key's artifacts list; GET and the listing return it; invalid lists are a 400 that changes nothing", async () => {
+    const json = { "Content-Type": "application/json" };
+    const body = async (r: Promise<{ status: number; body: Buffer }>) => {
+      const res = await r;
+      return { status: res.status, json: JSON.parse(res.body.toString()) };
+    };
+    const created = await body(server.request("POST", "/api/storage", JSON.stringify({ key: "designed", artifacts: ["cramhouse", "cramhouse"] }), json));
+    expect(created.status).toBe(201);
+    expect(created.json.key).toMatchObject({ key: "designed", artifacts: ["cramhouse"] });
+    expect((await body(server.request("GET", "/api/storage/designed"))).json.key.artifacts).toEqual(["cramhouse"]);
+    expect((await body(server.request("GET", "/api/storage"))).json.keys.find((k: { key: string }) => k.key === "designed").artifacts).toEqual(["cramhouse"]);
+    // A key created without one binds nothing.
+    expect((await body(server.request("GET", "/api/storage/k"))).json.key.artifacts).toEqual([]);
+
+    // PATCH with only artifacts leaves the description; with only a description leaves the list.
+    await server.request("PATCH", "/api/storage/designed", JSON.stringify({ description: "Birds" }), json);
+    const patched = await body(server.request("PATCH", "/api/storage/designed", JSON.stringify({ artifacts: ["flag-deck", "gone-one"] }), json));
+    expect(patched.status).toBe(200);
+    expect(patched.json.key).toMatchObject({ description: "Birds", artifacts: ["flag-deck", "gone-one"] });
+
+    for (const bad of [{}, { artifacts: "flag-deck" }, { artifacts: ["Flag Deck"] }, { artifacts: [1] }, { artifacts: Array.from({ length: 33 }, (_, i) => `a${i}`) }, { description: 5 }]) {
+      const r = await body(server.request("PATCH", "/api/storage/designed", JSON.stringify(bad), json));
+      expect(r.status, JSON.stringify(bad)).toBe(400);
+      expect(r.json.error).toBeTruthy();
+    }
+    expect((await body(server.request("POST", "/api/storage", JSON.stringify({ key: "bad-list", artifacts: ["../x"] }), json))).status).toBe(400);
+    expect(svc.storageKeyExists("bad-list")).toBe(false);
+    expect(svc.getStorageKey("designed")).toMatchObject({ description: "Birds", artifacts: ["flag-deck", "gone-one"] });
+    expect((await server.request("PATCH", "/api/storage/missing", JSON.stringify({ artifacts: [] }), json)).status).toBe(404);
+  });
 });

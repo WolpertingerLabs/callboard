@@ -15,20 +15,23 @@ import { parseUiToolResult } from "./uiToolResult";
 const SHA = "5e".repeat(32);
 
 // The renderer re-checks the result against the artifact as it is now before mounting anything.
+// A bound result is checked through the binding route: the artifact plus the key's list, which names it.
 vi.mock("../api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
+  const current = () => ({
+    id: "cramhouse",
+    name: "Cramhouse",
+    contentType: "html",
+    storageAccess: "readwrite",
+    currentVersion: 2,
+    created: "c",
+    updated: "u",
+    versions: [{ version: 2, created: "c", size: 1, sha256: SHA }],
+  });
   return {
     ...actual,
-    getArtifact: vi.fn(async () => ({
-      id: "cramhouse",
-      name: "Cramhouse",
-      contentType: "html",
-      storageAccess: "readwrite",
-      currentVersion: 2,
-      created: "c",
-      updated: "u",
-      versions: [{ version: 2, created: "c", size: 1, sha256: SHA }],
-    })),
+    getArtifact: vi.fn(async () => current()),
+    getArtifactBinding: vi.fn(async (_id: string, key: string) => ({ artifact: current(), storageKey: { key, artifacts: ["cramhouse"] } })),
   };
 });
 

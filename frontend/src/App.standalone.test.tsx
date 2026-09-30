@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   checkClaudeStatus: vi.fn(),
   getArtifact: vi.fn(),
   listStorageKeys: vi.fn(),
+  getArtifactBinding: vi.fn(),
 }));
 
 vi.mock("./api", async (importOriginal) => {
@@ -63,7 +64,8 @@ beforeEach(() => {
     updated: "u",
     versions: [{ version: 1, created: "c", size: 1, sha256: "a".repeat(64) }],
   });
-  h.listStorageKeys.mockResolvedValue([{ key: "birds", itemCount: 1, totalSize: 1, updated: "x" }]);
+  h.listStorageKeys.mockResolvedValue([{ key: "birds", artifacts: ["cramhouse"], itemCount: 1, totalSize: 1, updated: "x" }]);
+  h.getArtifactBinding.mockImplementation(async (id: string, key: string) => ({ artifact: await h.getArtifact(id), storageKey: { key, artifacts: ["cramhouse"] } }));
 });
 
 afterEach(() => {

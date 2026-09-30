@@ -4,9 +4,9 @@ import ModalOverlay from "./ModalOverlay";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { useFrameSizing } from "./useFrameSizing";
 import { createArtifactBridge, type ArtifactBridge, type BridgeStorageApi } from "./artifactBridge";
-import { artifactRenderUrl, getArtifact, getArtifactVersionSource } from "../api";
+import { artifactRenderUrl, getArtifact, getArtifactBinding, getArtifactVersionSource } from "../api";
 import type { RenderArtifactToolResult, ArtifactStorageAccess } from "../api";
-import { artifactLookup, judgeRender, recheckGrant, type Verdict } from "./artifactGrant";
+import { artifactLookup, bindingLookup, bindingRef, judgeRender, recheckGrant, type Verdict } from "./artifactGrant";
 import type { RequestBudget } from "./artifactBudget";
 import { standaloneArtifactHref } from "./artifactStandalone";
 
@@ -131,7 +131,8 @@ function ArtifactFrame({
       api: bridgeApi,
       recheck,
       onAccessChange,
-      budgetGroup: artifactId,
+      // Mounts that share a re-check share its cost: a bound mount is re-checked per (artifact, key).
+      budgetGroup: storageKey ? bindingRef(artifactId, storageKey) : artifactId,
     });
     return [b, h] as const;
   })[0];
@@ -201,7 +202,9 @@ const FULLSCREEN_FRAME_BOX: CSSProperties = {
  * and rendered by MarkdownRenderer, never executed.
  *
  * Nothing is mounted until {@link judgeRender} has checked the result against
- * the artifact as it is now; a refusal shows the error box instead.
+ * the artifact as it is now — and, for a render bound to a key, against that
+ * key's artifact list as it is now (a key that does not list the artifact
+ * binds nothing); a refusal shows the error box instead.
  *
  * Fullscreen for HTML is the SAME frame restyled to cover the viewport, never
  * a second mount: two live instances bound to one key would each hold their
@@ -250,19 +253,32 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi, fi
 
   // Re-judge whenever the result changes; a failure to look is a refusal. The
   // fetch is always fresh (a preview just after a save must see the new
-  // version) and seeds the shared re-check, so the mount starts checked.
+  // version) and seeds the shared re-check, so the mount starts checked. A
+  // bound render reads the artifact and its key's list in one request.
   useEffect(() => {
     let cancelled = false;
     const key = renderKey;
     const startedAt = Date.now();
-    getArtifact(data.artifact_id)
-      .then((artifact) => {
-        artifactLookup.seed(data.artifact_id, startedAt, artifact);
-        if (!cancelled) setJudged({ key, verdict: judgeRender(data, artifact), declared: artifact.storageAccess });
+    const look = storageKey
+      ? getArtifactBinding(data.artifact_id, storageKey).then((binding) => {
+          bindingLookup.seed(bindingRef(data.artifact_id, storageKey), startedAt, binding);
+          return { artifact: binding.artifact, keyArtifacts: binding.storageKey?.artifacts };
+        })
+      : getArtifact(data.artifact_id).then((artifact) => {
+          artifactLookup.seed(data.artifact_id, startedAt, artifact);
+          return { artifact, keyArtifacts: undefined };
+        });
+    look
+      .then(({ artifact, keyArtifacts }) => {
+        if (!cancelled) setJudged({ key, verdict: judgeRender(data, artifact, keyArtifacts), declared: artifact.storageAccess });
       })
       .catch((err: Error) => {
         if (cancelled) return;
-        const reason = /not found/i.test(err.message) ? `"${data.artifact_id}" no longer exists.` : `could not check the artifact (${err.message}).`;
+        const reason = /storage key not found/i.test(err.message)
+          ? `storage key "${storageKey}" no longer exists.`
+          : /not found/i.test(err.message)
+            ? `"${data.artifact_id}" no longer exists.`
+            : `could not check the artifact (${err.message}).`;
         setJudged({ key, verdict: { status: "refused", reason } });
       });
     return () => {

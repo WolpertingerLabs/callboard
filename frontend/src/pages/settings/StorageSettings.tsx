@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Database, Plus, Trash2, Upload, FilePlus, Download, Pencil } from "lucide-react";
+import { Database, Plus, Trash2, Upload, FilePlus, Download, Pencil, ExternalLink } from "lucide-react";
 import {
   listStorageKeys,
   createStorageKey,
@@ -10,10 +10,13 @@ import {
   putStorageItem,
   deleteStorageItem,
   storageItemUrl,
+  listArtifacts,
   isValidStorageItemName,
   isValidStorageKey,
+  STORAGE_KEY_MAX_ARTIFACTS,
 } from "../../api";
-import type { StorageKeySummary, StorageKeyDetail, StorageItem } from "../../api";
+import type { StorageKeySummary, StorageKeyDetail, StorageItem, ArtifactSummary } from "../../api";
+import { standaloneArtifactHref } from "../../components/artifactStandalone";
 import ConfirmModal from "../../components/ConfirmModal";
 import MarkdownRenderer from "../../components/MarkdownRenderer";
 
@@ -180,6 +183,141 @@ function ItemPreview({ storageKey, item }: { storageKey: string; item: StorageIt
   );
 }
 
+/**
+ * "Designed for": the artifacts a key binds — the only ones that can read or
+ * write it. Shows each listed id (a name and an "Open with" link to the
+ * standalone page when the artifact exists and takes storage, "missing" when
+ * no artifact has that id any more) and edits the list: tick existing
+ * artifacts, untick to remove. Saving replaces the key's whole list.
+ */
+function DesignedFor({
+  detail,
+  artifacts,
+  busy,
+  onSave,
+}: {
+  detail: StorageKeyDetail;
+  artifacts: ArtifactSummary[] | null;
+  busy: boolean;
+  onSave: (next: string[]) => void;
+}) {
+  const [editing, setEditing] = useState<string[] | null>(null);
+  const listed = detail.artifacts ?? [];
+  const byId = new Map((artifacts ?? []).map((a) => [a.id, a]));
+
+  if (editing !== null) {
+    // Every existing artifact, then any listed id that no longer exists — so it can be unticked.
+    const choices = [...(artifacts ?? []).map((a) => a.id), ...listed.filter((id) => !byId.has(id))];
+    const toggle = (id: string) => setEditing(editing.includes(id) ? editing.filter((x) => x !== id) : [...editing, id]);
+    const over = editing.length > STORAGE_KEY_MAX_ARTIFACTS;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 12, border: "1px solid var(--border)", borderRadius: 6 }} data-testid="designed-for-editor">
+        <div style={{ fontSize: 12, fontWeight: 600 }}>Designed for</div>
+        {choices.length === 0 ? (
+          <div style={helpStyle}>There are no artifacts yet. Create one in Settings → Artifacts, or have an agent save one.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 240, overflow: "auto" }}>
+            {choices.map((id) => {
+              const a = byId.get(id);
+              return (
+                <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, minWidth: 0 }}>
+                  <input type="checkbox" checked={editing.includes(id)} onChange={() => toggle(id)} aria-label={`Designed for ${id}`} />
+                  <span style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis" }}>{id}</span>
+                  {a ? (
+                    <span style={{ color: "var(--text-muted)", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {a.name}
+                      {a.storageAccess === "none" ? " · takes no storage" : ""}
+                    </span>
+                  ) : (
+                    <span style={{ color: "var(--danger)", fontSize: 12 }}>missing</span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <div style={helpStyle}>
+          Only the ticked artifacts can be bound to this key — by an agent&apos;s render_artifact, on an artifact&apos;s own page, or in the Settings preview. No
+          artifact can change this list itself.{over ? ` At most ${STORAGE_KEY_MAX_ARTIFACTS}.` : ""}
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button style={secondaryButton} onClick={() => setEditing(null)} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            style={{ ...primaryButton, opacity: over ? 0.5 : 1 }}
+            disabled={busy || over}
+            onClick={() => {
+              onSave(editing);
+              setEditing(null);
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }} data-testid="designed-for">
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)" }}>
+        <span style={{ fontWeight: 600, color: "var(--text)" }}>Designed for</span>
+        <button title="Edit which artifacts this key is for" style={iconButton} onClick={() => setEditing(listed)} disabled={busy}>
+          <Pencil size={12} />
+        </button>
+      </div>
+      {listed.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No artifact — none can be bound to this key until you pick which ones it is for.</div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {listed.map((id) => {
+            const a = byId.get(id);
+            const canOpen = a !== undefined && a.storageAccess !== "none";
+            return (
+              <span
+                key={id}
+                data-testid={`designed-for-${id}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "3px 8px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  fontSize: 12,
+                  maxWidth: "100%",
+                  minWidth: 0,
+                }}
+              >
+                <span style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={a?.name}>
+                  {id}
+                </span>
+                {artifacts !== null && !a && <span style={{ color: "var(--danger)" }}>missing</span>}
+                {a && a.storageAccess === "none" && <span style={{ color: "var(--text-muted)" }}>takes no storage</span>}
+                {canOpen && (
+                  // The page's URL names the artifact and the key — never an access level.
+                  <a
+                    href={standaloneArtifactHref(id, { storageKey: detail.key })}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Open ${a.name} with this key, on its own page`}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--accent-text)", textDecoration: "none", whiteSpace: "nowrap" }}
+                  >
+                    Open with {a.name}
+                    <ExternalLink size={11} aria-hidden />
+                  </a>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type Pending = { kind: "key"; key: string } | { kind: "item"; key: string; name: string };
 
 export default function StorageSettings() {
@@ -194,6 +332,8 @@ export default function StorageSettings() {
   const [editingDescription, setEditingDescription] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
+  // For "Designed for": names, "Open with" links and the editor's choices. null until loaded (so nothing is called missing early).
+  const [artifacts, setArtifacts] = useState<ArtifactSummary[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const refreshKeys = useCallback(() => {
@@ -218,6 +358,9 @@ export default function StorageSettings() {
 
   useEffect(() => {
     refreshKeys();
+    listArtifacts()
+      .then(setArtifacts)
+      .catch((err: Error) => setError(err.message));
   }, [refreshKeys]);
 
   useEffect(() => {
@@ -254,8 +397,15 @@ export default function StorageSettings() {
   const handleSaveDescription = () =>
     run(async () => {
       if (!selected || editingDescription === null) return;
-      await updateStorageKey(selected, editingDescription);
+      await updateStorageKey(selected, { description: editingDescription });
       setEditingDescription(null);
+      await Promise.all([refreshDetail(selected), refreshKeys()]);
+    });
+
+  const handleSaveArtifacts = (next: string[]) =>
+    run(async () => {
+      if (!selected) return;
+      await updateStorageKey(selected, { artifacts: next });
       await Promise.all([refreshDetail(selected), refreshKeys()]);
     });
 
@@ -331,7 +481,8 @@ export default function StorageSettings() {
         </div>
         <div style={{ ...helpStyle, marginBottom: 16 }}>
           Named buckets of files that agents and artifacts share. Agents use <code>list_storage_keys</code>, <code>read_storage_item</code> and{" "}
-          <code>save_storage_item</code>; an artifact rendered against a key can read (and, if granted, write) that key&apos;s items only.
+          <code>save_storage_item</code>; an artifact rendered against a key can read (and, if granted, write) that key&apos;s items only — and only if the key is
+          designed for it (&ldquo;Designed for&rdquo; below).
         </div>
 
         {error && <div style={errorBoxStyle}>{error}</div>}
@@ -399,6 +550,7 @@ export default function StorageSettings() {
                       <div style={{ fontSize: 13, fontWeight: 600, fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis" }}>{k.key}</div>
                       <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {k.itemCount} item{k.itemCount === 1 ? "" : "s"} · {formatBytes(k.totalSize)}
+                        {k.artifacts?.length ? ` · for ${k.artifacts.join(", ")}` : ""}
                         {k.description ? ` · ${k.description}` : ""}
                       </div>
                     </div>
@@ -452,6 +604,8 @@ export default function StorageSettings() {
                     </div>
                   )}
                 </div>
+
+                <DesignedFor key={detail.key} detail={detail} artifacts={artifacts} busy={busy} onSave={handleSaveArtifacts} />
 
                 <div style={{ display: "flex", gap: 8 }}>
                   <button style={secondaryButton} onClick={() => fileInput.current?.click()} disabled={busy}>

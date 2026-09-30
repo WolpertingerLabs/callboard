@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   saveArtifactVersion: vi.fn(),
   getArtifactVersionSource: vi.fn(),
   listStorageKeys: vi.fn(),
+  getArtifactBinding: vi.fn(),
 }));
 
 vi.mock("../../api", async (importOriginal) => {
@@ -99,7 +100,18 @@ beforeEach(() => {
   h.listArtifacts.mockResolvedValue([cramhouse, readme]);
   h.getArtifact.mockImplementation(async (id: string) => (id === "readme" ? readme : cramhouse));
   h.getArtifactVersionSource.mockImplementation(async (_id: string, v: number) => `<html>source v${v}</html>`);
-  h.listStorageKeys.mockResolvedValue([{ key: "birds", itemCount: 1, totalSize: 1, updated: "x" }]);
+  h.listStorageKeys.mockResolvedValue([
+    { key: "birds", artifacts: ["cramhouse"], itemCount: 1, totalSize: 1, updated: "x" },
+    { key: "bare", artifacts: [], itemCount: 1, totalSize: 1, updated: "x" },
+    { key: "flags", artifacts: ["flag-deck"], itemCount: 1, totalSize: 1, updated: "x" },
+  ]);
+  // The binding route, from the same mocked catalogue: the renderer's own check sees the lists the picker was filtered by.
+  h.getArtifactBinding.mockImplementation(async (id: string, key: string) => {
+    const artifact = await h.getArtifact(id);
+    const found = ((await h.listStorageKeys()) as { key: string; artifacts: string[] }[]).find((k) => k.key === key);
+    if (!found) throw new Error(`Storage key not found: ${key}`);
+    return { artifact, storageKey: { key, artifacts: found.artifacts } };
+  });
   h.createArtifact.mockResolvedValue({ ...cramhouse, id: "new-app" });
   h.updateArtifact.mockResolvedValue(cramhouse);
   h.saveArtifactVersion.mockResolvedValue({ ...cramhouse, currentVersion: 3 });
@@ -313,3 +325,32 @@ describe("previewAccess", () => {
     expect(previewAccess(declared, key, allow)).toBe(expected);
   });
 });
+
+describe("ArtifactsSettings — the preview binds only keys designed for the artifact", () => {
+  it("the key picker offers only keys whose list names the artifact", async () => {
+    await openCramhouse();
+    const picker = (await screen.findByLabelText("Storage key")) as HTMLSelectElement;
+    await within(picker).findByText("birds");
+    expect([...picker.options].map((o) => o.value)).toEqual(["", "birds"]);
+  });
+
+  it("no key lists it: the picker is empty and the help says where to add it", async () => {
+    h.listStorageKeys.mockResolvedValue([{ key: "bare", artifacts: [], itemCount: 1, totalSize: 1, updated: "x" }]);
+    await openCramhouse();
+    await waitFor(() => expect(h.listStorageKeys).toHaveBeenCalled());
+    expect(await screen.findByText(/No storage key lists "cramhouse" yet — add it to a key's "Designed for" in Settings → Storage/)).toBeTruthy();
+    expect([...(screen.getByLabelText("Storage key") as HTMLSelectElement).options].map((o) => o.value)).toEqual([""]);
+  });
+
+  it("taken off the list after the picker loaded: the preview's own check refuses — the error box with the fix, no frame", async () => {
+    await openCramhouse();
+    const picker = await screen.findByLabelText("Storage key");
+    await within(picker).findByText("birds");
+    h.getArtifactBinding.mockImplementation(async (id: string, key: string) => ({ artifact: await h.getArtifact(id), storageKey: { key, artifacts: [] } }));
+    fireEvent.change(picker, { target: { value: "birds" } });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(`add "cramhouse" to storage key "birds"'s artifacts via update_storage_key or Settings → Storage`);
+    expect(document.querySelector("iframe")).toBeNull();
+  });
+});
+

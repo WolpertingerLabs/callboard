@@ -17,7 +17,23 @@ import type { Artifact } from "../api";
  * sees it, not as the page loaded it.
  */
 
-const h = vi.hoisted(() => ({ getArtifact: vi.fn(), listStorageKeys: vi.fn(), getArtifactVersionSource: vi.fn() }));
+const h = vi.hoisted(() => {
+  const getArtifact = vi.fn();
+  const listStorageKeys = vi.fn();
+  return {
+    getArtifact,
+    listStorageKeys,
+    getArtifactVersionSource: vi.fn(),
+    // What the binding route answers, from the same mocked catalogue the page lists — so the renderer's own check
+    // (before mounting and live) sees exactly the lists the picker was filtered by.
+    getArtifactBinding: vi.fn(async (id: string, key: string) => {
+      const artifact = await getArtifact(id);
+      const found = ((await listStorageKeys()) as { key: string; artifacts?: string[] }[]).find((k) => k.key === key);
+      if (!found) throw new Error(`Storage key not found: ${key}`);
+      return { artifact, storageKey: { key, artifacts: found.artifacts ?? [] } };
+    }),
+  };
+});
 
 vi.mock("../api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -109,8 +125,10 @@ beforeEach(() => {
     throw new Error("Artifact not found");
   });
   h.listStorageKeys.mockResolvedValue([
-    { key: "birds", itemCount: 1, totalSize: 1, updated: "x" },
-    { key: "trees", itemCount: 1, totalSize: 1, updated: "x" },
+    { key: "birds", artifacts: ["cramhouse", "other-app"], itemCount: 1, totalSize: 1, updated: "x" },
+    { key: "trees", artifacts: ["cramhouse", "other-app"], itemCount: 1, totalSize: 1, updated: "x" },
+    { key: "bare", artifacts: [], itemCount: 1, totalSize: 1, updated: "x" },
+    { key: "flags", artifacts: ["flag-deck"], itemCount: 1, totalSize: 1, updated: "x" },
   ]);
 });
 
@@ -279,3 +297,43 @@ describe("ArtifactPage — the write grant", () => {
     await waitFor(() => expect(screen.getByTestId("artifact-page-access").textContent).toBe("read-only"));
   });
 });
+
+describe("ArtifactPage — only keys designed for the artifact", () => {
+  const FIX = (key: string) => `add "cramhouse" to storage key "${key}"'s artifacts via update_storage_key or Settings → Storage`;
+
+  it("the picker offers only keys whose list names the artifact", async () => {
+    visit("/a/cramhouse?key=birds");
+    await frameNow();
+    const options = [...(screen.getByLabelText("Storage key") as HTMLSelectElement).options].map((o) => o.value);
+    expect(options).toEqual(["", "birds", "trees"]);
+    expect(screen.queryByTestId("artifact-page-no-keys")).toBeNull();
+  });
+
+  it.each([
+    ["has no list", "bare"],
+    ["lists only other artifacts", "flags"],
+  ])("a URL naming a key that %s: the readable box with the fix, no frame, no key lookup for the render", async (_label, key) => {
+    visit(`/a/cramhouse?key=${key}`);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(`storage key "${key}" is not designed for artifact "cramhouse"`);
+    expect(alert.textContent).toContain(FIX(key));
+    expect(document.querySelector("iframe")).toBeNull();
+    expect(h.getArtifactBinding).not.toHaveBeenCalled();
+  });
+
+  it("no key lists the artifact: an empty picker and a hint saying where to fix it; unbound still renders", async () => {
+    h.listStorageKeys.mockResolvedValue([{ key: "bare", artifacts: [], itemCount: 1, totalSize: 1, updated: "x" }]);
+    expect(await grantOf("/a/cramhouse")).toMatchObject({ storageKey: null, access: "none" });
+    expect([...(screen.getByLabelText("Storage key") as HTMLSelectElement).options].map((o) => o.value)).toEqual([""]);
+    expect(screen.getByTestId("artifact-page-no-keys").textContent).toMatch(/No storage key lists "cramhouse" — add it to a key in Settings → Storage/);
+  });
+
+  it("the key's list changed after the page listed keys: the renderer's own check refuses — the page is not the boundary", async () => {
+    h.getArtifactBinding.mockImplementationOnce(async (id: string, key: string) => ({ artifact: await h.getArtifact(id), storageKey: { key, artifacts: [] } }));
+    visit("/a/cramhouse?key=birds");
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(FIX("birds"));
+    expect(document.querySelector("iframe")).toBeNull();
+  });
+});
+
