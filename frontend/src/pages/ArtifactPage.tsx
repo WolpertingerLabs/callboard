@@ -64,9 +64,9 @@ type Loaded = { artifact: Artifact; keys: StorageKeySummary[] } | { error: strin
  * instances: last write wins.
  */
 export default function ArtifactPage() {
-  const { artifactId } = useParams();
+  const { artifactId, "*": rest } = useParams();
   const [search, setSearch] = useSearchParams();
-  const params = parseStandaloneParams(artifactId, search);
+  const params = parseStandaloneParams(artifactId, search, rest);
   const id = params.ok ? params.artifactId : null;
 
   const [loaded, setLoaded] = useState<{ id: string; value: Loaded } | null>(null);
@@ -98,7 +98,7 @@ export default function ArtifactPage() {
   const declared = artifact?.storageAccess ?? "none";
   // An artifact that takes no storage is shown unbound, whatever key the link names.
   const storageKey = params.ok && declared !== "none" ? params.storageKey : null;
-  const [allowWrites, setAllowWrites] = useArtifactWriteGrant(id ?? "", storageKey);
+  const [allowWrites, setAllowWrites] = useArtifactWriteGrant(id ?? "", artifact?.created ?? null, storageKey);
 
   useEffect(() => {
     if (!artifact) return;

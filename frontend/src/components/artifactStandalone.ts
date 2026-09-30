@@ -8,13 +8,19 @@
  * artifact's current declared access (and re-checked live by the bridge), so a
  * link someone else built can never hand an artifact write access.
  */
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { ARTIFACT_ID_PATTERN, isValidStorageKey, minArtifactStorageAccess } from "../api";
 import type { ArtifactStorageAccess } from "../api";
-import { ARTIFACT_WRITE_GRANT_CHANGE_EVENT, getArtifactWriteGrant, saveArtifactWriteGrant, SETTINGS_STORAGE_KEY } from "../utils/localStorage";
+import {
+  ARTIFACT_WRITE_GRANT_CHANGE_EVENT,
+  clearArtifactWriteGrants,
+  getArtifactWriteGrant,
+  saveArtifactWriteGrant,
+  SETTINGS_STORAGE_KEY,
+} from "../utils/localStorage";
 
-/** Route pattern, as registered in App.tsx. */
-export const ARTIFACT_STANDALONE_ROUTE = "/a/:artifactId";
+/** Route pattern, as registered in App.tsx. The splat catches `/a/<id>/<anything>`, which is an error box rather than a blank page. */
+export const ARTIFACT_STANDALONE_ROUTE = "/a/:artifactId/*";
 
 /** A version number the page will ask for: a positive integer of at most 9 digits. */
 const VERSION_PARAM_PATTERN = /^[1-9][0-9]{0,8}$/;
@@ -29,7 +35,8 @@ export type StandaloneParams =
  * field here for it to land in. Each value is validated to the same shape the
  * API enforces, so nothing malformed is ever put into a request path.
  */
-export function parseStandaloneParams(artifactId: string | undefined, search: URLSearchParams): StandaloneParams {
+export function parseStandaloneParams(artifactId: string | undefined, search: URLSearchParams, rest?: string): StandaloneParams {
+  if (rest) return { ok: false, reason: `there is no page at "/${rest}" under an artifact — the address is /a/<id>?key=<key>.` };
   if (!artifactId || !ARTIFACT_ID_PATTERN.test(artifactId)) {
     return { ok: false, reason: `"${artifactId ?? ""}" is not a valid artifact id.` };
   }
@@ -83,16 +90,22 @@ function subscribe(onChange: () => void): () => void {
 /**
  * The remembered "allow saving" choice for (artifact, key), live: unticking in
  * one tab revokes in every other open on the same pair, since the change is a
- * new requested access and so a fresh frame. `storageKey` null ⇒ always false.
+ * new requested access and so a fresh frame. `created` is the loaded
+ * artifact's `created` — the grant is bound to it, so one left by a deleted
+ * artifact of the same id never counts, and is dropped once seen. `created` or
+ * `storageKey` null ⇒ always false.
  */
-export function useArtifactWriteGrant(artifactId: string, storageKey: string | null): [boolean, (allowed: boolean) => void] {
-  const allowed = useSyncExternalStore(subscribe, () => (storageKey ? getArtifactWriteGrant(artifactId, storageKey) : false));
+export function useArtifactWriteGrant(artifactId: string, created: string | null, storageKey: string | null): [boolean, (allowed: boolean) => void] {
+  const allowed = useSyncExternalStore(subscribe, () => (created && storageKey ? getArtifactWriteGrant(artifactId, created, storageKey) : false));
+  useEffect(() => {
+    if (created) clearArtifactWriteGrants(artifactId, created);
+  }, [artifactId, created]);
   const set = useCallback(
     (next: boolean) => {
-      if (!storageKey) return;
-      saveArtifactWriteGrant(artifactId, storageKey, next);
+      if (!created || !storageKey) return;
+      saveArtifactWriteGrant(artifactId, created, storageKey, next);
     },
-    [artifactId, storageKey],
+    [artifactId, created, storageKey],
   );
   return [allowed, set];
 }

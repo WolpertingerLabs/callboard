@@ -12,6 +12,11 @@ import { clearArtifactWriteGrants, getArtifactWriteGrant, saveArtifactWriteGrant
 const q = (s: string) => new URLSearchParams(s);
 
 describe("parseStandaloneParams", () => {
+  it("refuses a path under the artifact, whatever the query", () => {
+    expect(parseStandaloneParams("cramhouse", q("key=birds"), "x/y")).toEqual({ ok: false, reason: expect.stringContaining('no page at "/x/y"') });
+    expect(parseStandaloneParams("cramhouse", q("key=birds"), "").ok).toBe(true);
+  });
+
   it("reads id, key and v", () => {
     expect(parseStandaloneParams("cramhouse", q("key=birds&v=3"))).toEqual({ ok: true, artifactId: "cramhouse", storageKey: "birds", version: 3 });
     expect(parseStandaloneParams("cramhouse", q(""))).toEqual({ ok: true, artifactId: "cramhouse", storageKey: null, version: null });
@@ -78,40 +83,57 @@ describe("requestedAccess", () => {
 
 describe("remembered write grants", () => {
   beforeEach(() => localStorage.clear());
+  const C = "2026-09-01T00:00:00.000Z";
 
   it("default is not granted; saving is per (artifact, key)", () => {
-    expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(false);
-    saveArtifactWriteGrant("cramhouse", "birds", true);
-    expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(true);
-    expect(getArtifactWriteGrant("cramhouse", "trees")).toBe(false);
-    expect(getArtifactWriteGrant("other", "birds")).toBe(false);
-    saveArtifactWriteGrant("cramhouse", "birds", false);
-    expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(false);
+    expect(getArtifactWriteGrant("cramhouse", C, "birds")).toBe(false);
+    saveArtifactWriteGrant("cramhouse", C, "birds", true);
+    expect(getArtifactWriteGrant("cramhouse", C, "birds")).toBe(true);
+    expect(getArtifactWriteGrant("cramhouse", C, "trees")).toBe(false);
+    expect(getArtifactWriteGrant("other", C, "birds")).toBe(false);
+    saveArtifactWriteGrant("cramhouse", C, "birds", false);
+    expect(getArtifactWriteGrant("cramhouse", C, "birds")).toBe(false);
     expect(JSON.parse(localStorage.getItem("claude-code-settings")!).artifactWriteGrants).toEqual({});
   });
 
-  it("keeps the rest of the settings blob and other grants", () => {
-    localStorage.setItem("claude-code-settings", JSON.stringify({ themeMode: "dark", artifactWriteGrants: { "a/b": true } }));
-    saveArtifactWriteGrant("cramhouse", "birds", true);
-    expect(JSON.parse(localStorage.getItem("claude-code-settings")!)).toEqual({ themeMode: "dark", artifactWriteGrants: { "a/b": true, "cramhouse/birds": true } });
+  it("is bound to the artifact's identity: the same id recreated (a new `created`) is not granted", () => {
+    saveArtifactWriteGrant("cramhouse", C, "birds", true);
+    expect(getArtifactWriteGrant("cramhouse", "2026-09-30T00:00:00.000Z", "birds")).toBe(false);
+    expect(getArtifactWriteGrant("cramhouse", "", "birds")).toBe(false);
+    // Nothing is remembered without an identity to bind it to.
+    saveArtifactWriteGrant("cramhouse", "", "trees", true);
+    expect(JSON.parse(localStorage.getItem("claude-code-settings")!).artifactWriteGrants).toEqual({ "cramhouse/birds": C });
   });
 
-  it("only a literal true counts, and invalid names are neither read nor written", () => {
-    localStorage.setItem("claude-code-settings", JSON.stringify({ artifactWriteGrants: { "cramhouse/birds": "yes", "x/y": 1 } }));
-    expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(false);
-    expect(getArtifactWriteGrant("x", "y")).toBe(false);
-    saveArtifactWriteGrant("cramhouse", "../birds", true);
-    saveArtifactWriteGrant("Cram/house", "birds", true);
+  it("keeps the rest of the settings blob and other grants", () => {
+    localStorage.setItem("claude-code-settings", JSON.stringify({ themeMode: "dark", artifactWriteGrants: { "a/b": C } }));
+    saveArtifactWriteGrant("cramhouse", C, "birds", true);
+    expect(JSON.parse(localStorage.getItem("claude-code-settings")!)).toEqual({ themeMode: "dark", artifactWriteGrants: { "a/b": C, "cramhouse/birds": C } });
+  });
+
+  it("only the matching identity string counts, and invalid names are neither read nor written", () => {
+    localStorage.setItem("claude-code-settings", JSON.stringify({ artifactWriteGrants: { "cramhouse/birds": true, "x/y": 1 } }));
+    expect(getArtifactWriteGrant("cramhouse", C, "birds")).toBe(false);
+    expect(getArtifactWriteGrant("x", "1", "y")).toBe(false);
+    saveArtifactWriteGrant("cramhouse", C, "../birds", true);
+    saveArtifactWriteGrant("Cram/house", C, "birds", true);
     expect(Object.keys(JSON.parse(localStorage.getItem("claude-code-settings")!).artifactWriteGrants)).toEqual(["cramhouse/birds", "x/y"]);
   });
 
   it("clearArtifactWriteGrants forgets one artifact's grants on every key, and nothing else — not even an id it prefixes", () => {
-    saveArtifactWriteGrant("cram", "birds", true);
-    saveArtifactWriteGrant("cram", "trees", true);
-    saveArtifactWriteGrant("cramhouse", "birds", true);
+    saveArtifactWriteGrant("cram", C, "birds", true);
+    saveArtifactWriteGrant("cram", C, "trees", true);
+    saveArtifactWriteGrant("cramhouse", C, "birds", true);
     clearArtifactWriteGrants("cram");
-    expect(getArtifactWriteGrant("cram", "birds")).toBe(false);
-    expect(getArtifactWriteGrant("cram", "trees")).toBe(false);
-    expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(true);
+    expect(getArtifactWriteGrant("cram", C, "birds")).toBe(false);
+    expect(getArtifactWriteGrant("cram", C, "trees")).toBe(false);
+    expect(getArtifactWriteGrant("cramhouse", C, "birds")).toBe(true);
+  });
+
+  it("clearArtifactWriteGrants with keepCreated drops only the id's grants from another identity", () => {
+    const NEW = "2026-09-30T00:00:00.000Z";
+    localStorage.setItem("claude-code-settings", JSON.stringify({ artifactWriteGrants: { "cram/birds": C, "cram/trees": NEW, "cram/old": true, "cramhouse/birds": C } }));
+    clearArtifactWriteGrants("cram", NEW);
+    expect(JSON.parse(localStorage.getItem("claude-code-settings")!).artifactWriteGrants).toEqual({ "cram/trees": NEW, "cramhouse/birds": C });
   });
 });

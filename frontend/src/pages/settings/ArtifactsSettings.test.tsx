@@ -37,12 +37,15 @@ const cramhouse = {
   contentType: "html",
   storageAccess: "readwrite",
   currentVersion: 2,
+  created: "2026-09-01T00:00:00Z",
   versions: [
     { version: 1, created: "2026-09-01T00:00:00Z", size: 10, sha256: "a".repeat(64), note: "first cut" },
     { version: 2, created: "2026-09-02T00:00:00Z", size: 12, sha256: "b".repeat(64), note: "flip animation" },
   ],
   updated: "2026-09-02T00:00:00Z",
 };
+
+const CREATED = cramhouse.created;
 
 const readme = { ...cramhouse, id: "readme", name: "Readme", contentType: "markdown", storageAccess: "none", currentVersion: 1, versions: [cramhouse.versions[0]] };
 
@@ -236,17 +239,17 @@ describe("ArtifactsSettings", () => {
 
   it("lowering to none also forgets this browser's remembered write opt-ins for the artifact (every key), not others'", async () => {
     const { saveArtifactWriteGrant, getArtifactWriteGrant } = await import("../../utils/localStorage");
-    saveArtifactWriteGrant("cramhouse", "birds", true);
-    saveArtifactWriteGrant("cramhouse", "trees", true);
-    saveArtifactWriteGrant("other-app", "birds", true);
+    saveArtifactWriteGrant("cramhouse", CREATED, "birds", true);
+    saveArtifactWriteGrant("cramhouse", CREATED, "trees", true);
+    saveArtifactWriteGrant("other-app", CREATED, "birds", true);
     await openCramhouse();
     h.updateArtifact.mockResolvedValue({ ...cramhouse, storageAccess: "none" });
     h.getArtifact.mockResolvedValue({ ...cramhouse, storageAccess: "none" });
     fireEvent.change(screen.getByLabelText("Storage access (maximum)"), { target: { value: "none" } });
     fireEvent.click(screen.getByRole("button", { name: "Save details" }));
-    await waitFor(() => expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(false));
-    expect(getArtifactWriteGrant("cramhouse", "trees")).toBe(false);
-    expect(getArtifactWriteGrant("other-app", "birds")).toBe(true);
+    await waitFor(() => expect(getArtifactWriteGrant("cramhouse", CREATED, "birds")).toBe(false));
+    expect(getArtifactWriteGrant("cramhouse", CREATED, "trees")).toBe(false);
+    expect(getArtifactWriteGrant("other-app", CREATED, "birds")).toBe(true);
   });
 
   it("no storage picker for an artifact declared storageAccess none", async () => {
@@ -283,6 +286,19 @@ describe("ArtifactsSettings", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(h.deleteArtifact).toHaveBeenCalledWith("cramhouse"));
     await screen.findByTestId("artifact-list");
+  });
+
+  it("deleting forgets this browser's remembered write opt-ins for the artifact (every key), not others'", async () => {
+    const { saveArtifactWriteGrant } = await import("../../utils/localStorage");
+    saveArtifactWriteGrant("cramhouse", CREATED, "birds", true);
+    saveArtifactWriteGrant("cramhouse", CREATED, "trees", true);
+    saveArtifactWriteGrant("other-app", CREATED, "birds", true);
+    await openCramhouse();
+    fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
+    const dialog = screen.getByText(/and all 2 version\(s\)/).parentElement!;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await screen.findByTestId("artifact-list");
+    expect(JSON.parse(localStorage.getItem("claude-code-settings")!).artifactWriteGrants).toEqual({ "other-app/birds": CREATED });
   });
 });
 

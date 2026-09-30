@@ -167,12 +167,15 @@ interface LocalStorageData {
   jsonViewMode?: JsonViewMode;
   /**
    * "Allow saving" for one artifact on one storage key, keyed
-   * `<artifactId>/<storageKey>` (neither pattern admits a `/`). Only `true` is
-   * ever stored; unticking deletes the entry. This is a request, never a
-   * grant: the renderer takes the lesser of it and the artifact's *current*
-   * declared access — see {@link getArtifactWriteGrant}.
+   * `<artifactId>/<storageKey>` (neither pattern admits a `/`). The value is
+   * the artifact's server-issued `created` timestamp at the time of the tick,
+   * so a grant names one artifact, not just an id: delete + recreate under the
+   * same id gives a new `created`, and the old entry stops counting. Unticking
+   * deletes the entry. This is a request, never a grant: the renderer takes
+   * the lesser of it and the artifact's *current* declared access — see
+   * {@link getArtifactWriteGrant}.
    */
-  artifactWriteGrants?: Partial<Record<string, boolean>>;
+  artifactWriteGrants?: Partial<Record<string, string>>;
 }
 
 export type JsonViewMode = "tree" | "pretty" | "raw";
@@ -543,35 +546,45 @@ function artifactWriteGrantKey(artifactId: string, storageKey: string): string |
 }
 
 /**
- * Whether the user ticked "allow saving" for this artifact on this key, in this
- * browser. Shared by the standalone page and the Settings preview. `=== true`
+ * Whether the user ticked "allow saving" for this artifact — the one created at
+ * `created`, not merely one with this id — on this key, in this browser.
+ * Shared by the standalone page and the Settings preview. Compared as a string
  * because this is JSON another bundle or a hand edit could have written
  * anything into, and the answer decides whether a frame may write.
  */
-export function getArtifactWriteGrant(artifactId: string, storageKey: string): boolean {
+export function getArtifactWriteGrant(artifactId: string, created: string, storageKey: string): boolean {
   const k = artifactWriteGrantKey(artifactId, storageKey);
-  return k !== null && getStorageData().artifactWriteGrants?.[k] === true;
+  const v = k === null ? undefined : getStorageData().artifactWriteGrants?.[k];
+  return typeof v === "string" && v !== "" && v === created;
 }
 
 /** Merge, never replace: other (artifact, key) pairs — possibly written by another tab — are left alone. */
-export function saveArtifactWriteGrant(artifactId: string, storageKey: string, allowed: boolean): void {
+export function saveArtifactWriteGrant(artifactId: string, created: string, storageKey: string, allowed: boolean): void {
   const k = artifactWriteGrantKey(artifactId, storageKey);
-  if (k === null) return;
+  if (k === null || (allowed && !created)) return;
   const data = getStorageData();
   const grants = { ...data.artifactWriteGrants };
-  if (allowed) grants[k] = true;
+  if (allowed) grants[k] = created;
   else delete grants[k];
   data.artifactWriteGrants = grants;
   setStorageData(data);
   window.dispatchEvent(new Event(ARTIFACT_WRITE_GRANT_CHANGE_EVENT));
 }
 
-/** Forgets every remembered write opt-in for one artifact — used when it is lowered to storage access none. */
-export function clearArtifactWriteGrants(artifactId: string): void {
+/**
+ * Forgets remembered write opt-ins for one artifact id: all of them, or with
+ * `keepCreated`, only those given to a different artifact under that id (one
+ * since deleted and recreated). Used on delete, on lowering to storage access
+ * none, and to drop stale entries once the current `created` is known.
+ */
+export function clearArtifactWriteGrants(artifactId: string, keepCreated?: string): void {
   const data = getStorageData();
   if (!data.artifactWriteGrants) return;
   const prefix = `${artifactId}/`;
-  data.artifactWriteGrants = Object.fromEntries(Object.entries(data.artifactWriteGrants).filter(([k]) => !k.startsWith(prefix)));
+  const entries = Object.entries(data.artifactWriteGrants);
+  const kept = entries.filter(([k, v]) => !k.startsWith(prefix) || (keepCreated !== undefined && v === keepCreated));
+  if (kept.length === entries.length) return;
+  data.artifactWriteGrants = Object.fromEntries(kept);
   setStorageData(data);
   window.dispatchEvent(new Event(ARTIFACT_WRITE_GRANT_CHANGE_EVENT));
 }

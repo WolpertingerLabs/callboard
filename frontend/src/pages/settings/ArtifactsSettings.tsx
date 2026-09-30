@@ -119,7 +119,7 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
   const [keys, setKeys] = useState<StorageKeySummary[]>([]);
   const [previewKey, setPreviewKey] = useState("");
   // The key picker still starts unbound on every visit, so opening the preview never binds anything by itself.
-  const [allowWrites, setAllowWrites] = useArtifactWriteGrant(id, previewKey || null);
+  const [allowWrites, setAllowWrites] = useArtifactWriteGrant(id, artifact?.created ?? null, previewKey || null);
 
   const load = useCallback(async () => {
     try {
@@ -421,6 +421,9 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
         onConfirm={() =>
           run(async () => {
             await deleteArtifact(artifact.id);
+            // A later artifact under this id is a different one; the grants' `created` binding already refuses
+            // them, and this stops stale entries lingering in this browser.
+            clearArtifactWriteGrants(artifact.id);
             onDeleted();
           })
         }

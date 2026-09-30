@@ -33,6 +33,9 @@ export type Verdict = { status: "checking" } | { status: "ok"; access: ArtifactS
  */
 export function judgeRender(data: RenderArtifactToolResult, artifact: Artifact): Verdict {
   const v = artifact.versions.find((x) => x.version === data.version);
+  if (!v && data.version > artifact.currentVersion) {
+    return { status: "refused", reason: `version ${data.version} of "${artifact.name}" does not exist — the latest is v${artifact.currentVersion}.` };
+  }
   if (!v) {
     return { status: "refused", reason: `version ${data.version} of "${artifact.name}" is no longer kept — render the artifact again.` };
   }

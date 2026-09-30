@@ -160,6 +160,8 @@ describe("ArtifactPage — errors: the readable box, no frame", () => {
     ["a key with a slash", `/a/cramhouse?key=${encodeURIComponent("birds/x")}`, /not a valid storage key/],
     ["a huge v", "/a/cramhouse?key=birds&v=99999999999999999999", /not a valid version/],
     ["v=0", "/a/cramhouse?key=birds&v=0", /not a valid version/],
+    ["a path under the artifact", "/a/cramhouse/x", /there is no page at "\/x" under an artifact/],
+    ["a deeper path, with a key", "/a/cramhouse/x/y?key=birds", /there is no page at "\/x\/y" under an artifact/],
     ["a non-numeric v", "/a/cramhouse?key=birds&v=1e3", /not a valid version/],
   ])("%s is refused before any request", async (_label, url, reason) => {
     visit(url);
@@ -171,11 +173,18 @@ describe("ArtifactPage — errors: the readable box, no frame", () => {
 
   it.each([
     ["a missing artifact", "/a/nope?key=birds", /"nope" does not exist/],
-    ["a pruned version", "/a/cramhouse?key=birds&v=7", /version 7 of "Cramhouse" is no longer kept/],
+    ["a version past the latest", "/a/cramhouse?key=birds&v=7", /version 7 of "Cramhouse" does not exist — the latest is v2/],
     ["a missing key", "/a/cramhouse?key=gone", /storage key "gone" does not exist/],
   ])("%s", async (_label, url, reason) => {
     visit(url);
     expect((await screen.findByRole("alert")).textContent).toMatch(reason);
+    expect(document.querySelector("iframe")).toBeNull();
+  });
+
+  it("a pruned version is named as no longer kept", async () => {
+    h.getArtifact.mockResolvedValue(artifact({ versions: [{ version: 2, created: "c", size: 12, sha256: SHA2 }] }));
+    visit("/a/cramhouse?key=birds&v=1");
+    expect((await screen.findByRole("alert")).textContent).toMatch(/version 1 of "Cramhouse" is no longer kept/);
     expect(document.querySelector("iframe")).toBeNull();
   });
 });
@@ -194,7 +203,7 @@ describe("ArtifactPage — the write grant", () => {
     "/a/cramhouse?access=readwrite&key=birds&write=true&v=2",
   ])("no URL parameter grants write: %s", async (url) => {
     expect(await grantOf(url)).toMatchObject({ storageKey: "birds", access: "read" });
-    expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(false);
+    expect(getArtifactWriteGrant("cramhouse", "c", "birds")).toBe(false);
   });
 
   it("ticking 'Allow saving' remounts read/write and is remembered across reloads", async () => {
@@ -210,7 +219,7 @@ describe("ArtifactPage — the write grant", () => {
   });
 
   it("the remembered grant is per (artifact, key): another key or another artifact starts at read", async () => {
-    saveArtifactWriteGrant("cramhouse", "birds", true);
+    saveArtifactWriteGrant("cramhouse", "c", "birds", true);
     expect(await grantOf("/a/cramhouse?key=trees")).toMatchObject({ access: "read" });
     cleanup();
     expect(await grantOf("/a/other-app?key=birds")).toMatchObject({ access: "read" });
@@ -218,18 +227,31 @@ describe("ArtifactPage — the write grant", () => {
     expect(await grantOf("/a/cramhouse?key=birds")).toMatchObject({ access: "readwrite" });
   });
 
+  it("a grant left by a deleted artifact does not carry to a new one recreated under the same id, and is dropped", async () => {
+    // Ticked for the artifact created at "c"; that one was deleted and a different one created as "cramhouse".
+    saveArtifactWriteGrant("cramhouse", "c", "birds", true);
+    h.getArtifact.mockResolvedValue(artifact({ created: "c2" }));
+    expect(await grantOf("/a/cramhouse?key=birds")).toMatchObject({ storageKey: "birds", access: "read" });
+    expect((screen.getByLabelText("Allow saving") as HTMLInputElement).checked).toBe(false);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("claude-code-settings")!).artifactWriteGrants).toEqual({}));
+    // Ticking now grants the new artifact, bound to its own identity.
+    fireEvent.click(screen.getByLabelText("Allow saving"));
+    expect(getArtifactWriteGrant("cramhouse", "c2", "birds")).toBe(true);
+    expect(getArtifactWriteGrant("cramhouse", "c", "birds")).toBe(false);
+  });
+
   it("unticking revokes at once: a fresh frame with read, and the choice is forgotten", async () => {
-    saveArtifactWriteGrant("cramhouse", "birds", true);
+    saveArtifactWriteGrant("cramhouse", "c", "birds", true);
     visit("/a/cramhouse?key=birds");
     const rwFrame = await frameNow();
     expect(await initFor(rwFrame)).toMatchObject({ access: "readwrite" });
     fireEvent.click(screen.getByLabelText("Allow saving"));
     expect(await initFor(await frameNow((f) => f !== rwFrame))).toMatchObject({ access: "read" });
-    expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(false);
+    expect(getArtifactWriteGrant("cramhouse", "c", "birds")).toBe(false);
   });
 
   it("unticking in another tab revokes this one too", async () => {
-    saveArtifactWriteGrant("cramhouse", "birds", true);
+    saveArtifactWriteGrant("cramhouse", "c", "birds", true);
     visit("/a/cramhouse?key=birds");
     const rwFrame = await frameNow();
     expect(await initFor(rwFrame)).toMatchObject({ access: "readwrite" });
@@ -243,14 +265,14 @@ describe("ArtifactPage — the write grant", () => {
   });
 
   it("an artifact declared read gets no write even with a remembered grant, and offers no toggle", async () => {
-    saveArtifactWriteGrant("cramhouse", "birds", true);
+    saveArtifactWriteGrant("cramhouse", "c", "birds", true);
     h.getArtifact.mockResolvedValue(artifact({ storageAccess: "read" }));
     expect(await grantOf("/a/cramhouse?key=birds")).toMatchObject({ access: "read" });
     expect(screen.queryByLabelText("Allow saving")).toBeNull();
   });
 
   it("declared access lowered after the page loaded: the render's own fresh check wins, so no write", async () => {
-    saveArtifactWriteGrant("cramhouse", "birds", true);
+    saveArtifactWriteGrant("cramhouse", "c", "birds", true);
     // The page's load sees readwrite; the renderer's judge-before-mount (the next fetch) sees it lowered to read.
     h.getArtifact.mockResolvedValueOnce(artifact()).mockResolvedValue(artifact({ storageAccess: "read" }));
     expect(await grantOf("/a/cramhouse?key=birds")).toMatchObject({ access: "read" });

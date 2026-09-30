@@ -202,3 +202,41 @@ describe("across a tab suspend", () => {
     expect(staleText()).toBe(V2);
   });
 });
+
+describe("on the standalone artifact page", () => {
+  // Stubbed rather than navigated: an earlier test here replaces `window.location` outright.
+  let path = "/";
+  beforeEach(() => {
+    path = "/";
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        get pathname() {
+          return path;
+        },
+      },
+    });
+  });
+
+  it("polls once a minute instead of once a second, and still notices a moved daemon", async () => {
+    path = "/a/cramhouse";
+    await mount();
+    expect(calls).toHaveLength(1);
+    for (let i = 0; i < 58; i++) await nextPoll();
+    expect(calls).toHaveLength(1);
+    current = V2;
+    await nextPoll();
+    await nextPoll();
+    expect(calls).toHaveLength(2);
+    expect(staleText()).toBe(V2);
+  });
+
+  it("goes back to once a second off the page", async () => {
+    path = "/a/cramhouse";
+    await mount();
+    path = "/chat/x";
+    await nextPoll();
+    await nextPoll();
+    expect(calls).toHaveLength(3);
+  });
+});
