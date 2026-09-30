@@ -1,6 +1,7 @@
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { DefaultPermissions } from "../api";
 import type { EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
+import { ARTIFACT_ID_PATTERN, isValidStorageKey } from "shared/types/index.js";
 
 export type { EffortLevel };
 export type AgentProviderKind = UiAgentProviderKind;
@@ -164,6 +165,14 @@ interface LocalStorageData {
    * pretty-printed JSON text, or the raw string. Toggled inline from any
    * tool view. */
   jsonViewMode?: JsonViewMode;
+  /**
+   * "Allow saving" for one artifact on one storage key, keyed
+   * `<artifactId>/<storageKey>` (neither pattern admits a `/`). Only `true` is
+   * ever stored; unticking deletes the entry. This is a request, never a
+   * grant: the renderer takes the lesser of it and the artifact's *current*
+   * declared access — see {@link getArtifactWriteGrant}.
+   */
+  artifactWriteGrants?: Partial<Record<string, boolean>>;
 }
 
 export type JsonViewMode = "tree" | "pretty" | "raw";
@@ -528,6 +537,50 @@ export function saveJsonViewMode(mode: JsonViewMode): void {
   data.jsonViewMode = mode;
   setStorageData(data);
 }
+
+function artifactWriteGrantKey(artifactId: string, storageKey: string): string | null {
+  return ARTIFACT_ID_PATTERN.test(artifactId) && isValidStorageKey(storageKey) ? `${artifactId}/${storageKey}` : null;
+}
+
+/**
+ * Whether the user ticked "allow saving" for this artifact on this key, in this
+ * browser. Shared by the standalone page and the Settings preview. `=== true`
+ * because this is JSON another bundle or a hand edit could have written
+ * anything into, and the answer decides whether a frame may write.
+ */
+export function getArtifactWriteGrant(artifactId: string, storageKey: string): boolean {
+  const k = artifactWriteGrantKey(artifactId, storageKey);
+  return k !== null && getStorageData().artifactWriteGrants?.[k] === true;
+}
+
+/** Merge, never replace: other (artifact, key) pairs — possibly written by another tab — are left alone. */
+export function saveArtifactWriteGrant(artifactId: string, storageKey: string, allowed: boolean): void {
+  const k = artifactWriteGrantKey(artifactId, storageKey);
+  if (k === null) return;
+  const data = getStorageData();
+  const grants = { ...data.artifactWriteGrants };
+  if (allowed) grants[k] = true;
+  else delete grants[k];
+  data.artifactWriteGrants = grants;
+  setStorageData(data);
+  window.dispatchEvent(new Event(ARTIFACT_WRITE_GRANT_CHANGE_EVENT));
+}
+
+/** Forgets every remembered write opt-in for one artifact — used when it is lowered to storage access none. */
+export function clearArtifactWriteGrants(artifactId: string): void {
+  const data = getStorageData();
+  if (!data.artifactWriteGrants) return;
+  const prefix = `${artifactId}/`;
+  data.artifactWriteGrants = Object.fromEntries(Object.entries(data.artifactWriteGrants).filter(([k]) => !k.startsWith(prefix)));
+  setStorageData(data);
+  window.dispatchEvent(new Event(ARTIFACT_WRITE_GRANT_CHANGE_EVENT));
+}
+
+/** Same-tab notification of a write-grant change; the `storage` event covers other tabs only. */
+export const ARTIFACT_WRITE_GRANT_CHANGE_EVENT = "artifact-write-grant-change";
+
+/** The localStorage entry the settings (and so the write grants) live in — for `storage`-event listeners. */
+export const SETTINGS_STORAGE_KEY = STORAGE_KEYS.SETTINGS;
 
 export function getThemeMode(): ThemeMode {
   const data = getStorageData();

@@ -483,3 +483,67 @@ describe("ArtifactRenderer — the live grant and the port's lifetime", () => {
   });
 });
 
+
+describe("ArtifactRenderer — the standalone page's link and fill layout", () => {
+  const linkOf = async () => (await screen.findByTestId("artifact-standalone-link")) as HTMLAnchorElement;
+
+  it("a bound chat render links to its key and pinned version, in a new tab, with no access in the href", async () => {
+    render(<ArtifactRenderer data={{ ...base, storage_access: "readwrite" }} bridgeApi={api()} />);
+    const link = await linkOf();
+    expect(link.getAttribute("href")).toBe("/a/cramhouse?key=birds&v=3");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toMatch(/\bnoopener\b/);
+    expect(link.getAttribute("href")).not.toMatch(/access|write|rw/i);
+  });
+
+  it("standaloneLatest leaves the version out, so the link follows the current version", async () => {
+    render(<ArtifactRenderer data={base} bridgeApi={api()} standaloneLatest />);
+    expect((await linkOf()).getAttribute("href")).toBe("/a/cramhouse?key=birds");
+  });
+
+  it("an unbound render of an artifact that can take a key links without one", async () => {
+    render(<ArtifactRenderer data={{ ...base, storage_key: undefined, storage_access: "none" }} bridgeApi={api()} />);
+    expect((await linkOf()).getAttribute("href")).toBe("/a/cramhouse?v=3");
+  });
+
+  it("no link for an artifact that takes no storage and is unbound, nor for a refused render", async () => {
+    h.getArtifact.mockResolvedValue(artifact({ storageAccess: "none" }));
+    const { container } = render(<ArtifactRenderer data={{ ...base, storage_key: undefined, storage_access: "none" }} bridgeApi={api()} />);
+    await frameOf(container);
+    expect(screen.queryByTestId("artifact-standalone-link")).toBeNull();
+    cleanup();
+    h.getArtifact.mockResolvedValue(artifact({ versions: [] }));
+    render(<ArtifactRenderer data={base} bridgeApi={api()} />);
+    await screen.findByRole("alert");
+    expect(screen.queryByTestId("artifact-standalone-link")).toBeNull();
+  });
+
+  it("fill: no header, link or fullscreen button; the frame fills the box; a display_mode of fullscreen is ignored", async () => {
+    const { container } = render(<ArtifactRenderer data={{ ...base, display_mode: "fullscreen" }} bridgeApi={api()} fill />);
+    const frame = await frameOf(container);
+    fireEvent.load(frame);
+    expect(frame.style.width).toBe("100%");
+    expect(frame.style.height).toBe("100%");
+    expect(screen.queryByTestId("artifact-key-badge")).toBeNull();
+    expect(screen.queryByTestId("artifact-standalone-link")).toBeNull();
+    expect(screen.queryByTitle("Fullscreen")).toBeNull();
+    expect(screen.queryByTestId("artifact-fullscreen-backdrop")).toBeNull();
+  });
+
+  it("reports the live access: none before mounting, the grant once mounted, and a live lowering", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const onAccessChange = vi.fn();
+    const storage = api();
+    const { container } = render(<ArtifactRenderer data={{ ...base, storage_access: "readwrite" }} bridgeApi={storage} fill onAccessChange={onAccessChange} />);
+    expect(onAccessChange).toHaveBeenLastCalledWith("none");
+    const frame = await frameOf(container);
+    const token = tokenOf(frame);
+    const port = hello(frame);
+    expect(onAccessChange).toHaveBeenLastCalledWith("readwrite");
+    vi.setSystemTime(Date.now() + ARTIFACT_BRIDGE_WRITE_RECHECK_MS);
+    h.getArtifact.mockResolvedValue(artifact({ storageAccess: "read" }));
+    request(port, token, { id: "w1", op: "write", name: "deck.json", data: "x" });
+    await waitFor(() => expect(onAccessChange).toHaveBeenLastCalledWith("read"));
+    expect(storage.write).not.toHaveBeenCalled();
+  });
+});

@@ -84,6 +84,8 @@ async function openCramhouse() {
 }
 
 beforeEach(() => {
+  // The write opt-in is remembered in localStorage; each test starts from a browser that never ticked it.
+  localStorage.clear();
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -181,6 +183,41 @@ describe("ArtifactsSettings", () => {
     expect(await initFor(await frameNow((f) => f !== readFrame))).toMatchObject({ storageKey: "birds", access: "readwrite" });
   });
 
+  it("'allow writes' is remembered per (artifact, key) across visits, and unticking revokes with a fresh frame", async () => {
+    await openCramhouse();
+    const picker = await screen.findByLabelText("Storage key");
+    await within(picker).findByText("birds");
+    fireEvent.change(picker, { target: { value: "birds" } });
+    fireEvent.click(screen.getByLabelText("Allow writes"));
+    await waitFor(() => expect(screen.getByTestId("artifact-key-badge").textContent).toBe("birds · rw"));
+    cleanup();
+
+    // A later visit: the picker starts unbound (opening the preview binds nothing), but picking the key restores the tick.
+    await openCramhouse();
+    expect((screen.getByLabelText("Allow writes") as HTMLInputElement).checked).toBe(false);
+    fireEvent.change(await screen.findByLabelText("Storage key"), { target: { value: "birds" } });
+    expect((screen.getByLabelText("Allow writes") as HTMLInputElement).checked).toBe(true);
+    const rwFrame = await frameNow();
+    expect(await initFor(rwFrame)).toMatchObject({ storageKey: "birds", access: "readwrite" });
+
+    fireEvent.click(screen.getByLabelText("Allow writes"));
+    expect(await initFor(await frameNow((f) => f !== rwFrame))).toMatchObject({ storageKey: "birds", access: "read" });
+    expect(localStorage.getItem("claude-code-settings")).not.toMatch(/cramhouse\/birds/);
+  });
+
+  it("links to the standalone page with the picked key and no access; pins v only for a non-current version", async () => {
+    await openCramhouse();
+    fireEvent.change(await screen.findByLabelText("Storage key"), { target: { value: "birds" } });
+    fireEvent.click(screen.getByLabelText("Allow writes"));
+    const link = (await screen.findByTestId("artifact-standalone-link")) as HTMLAnchorElement;
+    await waitFor(() => expect(link.getAttribute("href")).toBe("/a/cramhouse?key=birds"));
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toMatch(/noopener/);
+    fireEvent.click(within(screen.getByTestId("artifact-versions")).getByText("first cut"));
+    await waitFor(() => expect(screen.getByTestId("artifact-standalone-link").getAttribute("href")).toBe("/a/cramhouse?key=birds&v=1"));
+    expect(screen.getByTestId("artifact-standalone-link").getAttribute("href")).not.toMatch(/access|write|rw/i);
+  });
+
   it("lowering the artifact to storage access none drops the picked key: no badge, no binding", async () => {
     await openCramhouse();
     const picker = await screen.findByLabelText("Storage key");
@@ -195,6 +232,21 @@ describe("ArtifactsSettings", () => {
     await waitFor(() => expect(screen.queryByLabelText("Storage key")).toBeNull());
     await waitFor(() => expect(screen.queryByTestId("artifact-key-badge")).toBeNull());
     expect(await initFor(await frameNow())).toMatchObject({ storageKey: null, access: "none" });
+  });
+
+  it("lowering to none also forgets this browser's remembered write opt-ins for the artifact (every key), not others'", async () => {
+    const { saveArtifactWriteGrant, getArtifactWriteGrant } = await import("../../utils/localStorage");
+    saveArtifactWriteGrant("cramhouse", "birds", true);
+    saveArtifactWriteGrant("cramhouse", "trees", true);
+    saveArtifactWriteGrant("other-app", "birds", true);
+    await openCramhouse();
+    h.updateArtifact.mockResolvedValue({ ...cramhouse, storageAccess: "none" });
+    h.getArtifact.mockResolvedValue({ ...cramhouse, storageAccess: "none" });
+    fireEvent.change(screen.getByLabelText("Storage access (maximum)"), { target: { value: "none" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save details" }));
+    await waitFor(() => expect(getArtifactWriteGrant("cramhouse", "birds")).toBe(false));
+    expect(getArtifactWriteGrant("cramhouse", "trees")).toBe(false);
+    expect(getArtifactWriteGrant("other-app", "birds")).toBe(true);
   });
 
   it("no storage picker for an artifact declared storageAccess none", async () => {

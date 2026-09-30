@@ -10,11 +10,12 @@ import {
   getArtifactVersionSource,
   listStorageKeys,
   ARTIFACT_ID_PATTERN,
-  minArtifactStorageAccess,
 } from "../../api";
 import type { ArtifactSummary, Artifact, ArtifactContentType, ArtifactStorageAccess, StorageKeySummary, RenderArtifactToolResult } from "../../api";
 import ConfirmModal from "../../components/ConfirmModal";
 import ArtifactRenderer from "../../components/ArtifactRenderer";
+import { requestedAccess, useArtifactWriteGrant } from "../../components/artifactStandalone";
+import { clearArtifactWriteGrants } from "../../utils/localStorage";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -89,11 +90,12 @@ function readFileText(file: File): Promise<string> {
  * What the Settings preview grants. The artifact's declared access is the
  * ceiling; the preview itself defaults to read and only reaches readwrite when
  * the user ticks "allow writes" — a preview is someone looking, and should not
- * mutate a key as a side effect of looking.
+ * mutate a key as a side effect of looking. That tick is the same remembered
+ * per-(artifact, key) choice the standalone page's "Allow saving" makes, so
+ * the two never disagree about whether this browser lets an artifact write a key.
  */
 export function previewAccess(declared: ArtifactStorageAccess, storageKey: string, allowWrites: boolean): ArtifactStorageAccess {
-  if (!storageKey) return "none";
-  return minArtifactStorageAccess(declared, allowWrites ? "readwrite" : "read");
+  return requestedAccess(declared, storageKey || null, allowWrites);
 }
 
 interface NewArtifactDraft {
@@ -116,7 +118,8 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [keys, setKeys] = useState<StorageKeySummary[]>([]);
   const [previewKey, setPreviewKey] = useState("");
-  const [allowWrites, setAllowWrites] = useState(false);
+  // The key picker still starts unbound on every visit, so opening the preview never binds anything by itself.
+  const [allowWrites, setAllowWrites] = useArtifactWriteGrant(id, previewKey || null);
 
   const load = useCallback(async () => {
     try {
@@ -242,11 +245,12 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
             onClick={() =>
               run(async () => {
                 await updateArtifact(artifact.id, { name: meta.name.trim(), description: meta.description, storageAccess: meta.storageAccess });
-                // Lowered to none: nothing may be bound, so the picked key and the write opt-in go too
-                // (the preview already binds nothing — `boundKey` — this stops them resurfacing if access is raised again).
+                // Lowered to none: nothing may be bound, so the picked key and this browser's remembered write
+                // opt-ins (every key) go too — the preview already binds nothing (`boundKey`); this stops them
+                // resurfacing if access is raised again.
                 if (meta.storageAccess === "none") {
                   setPreviewKey("");
-                  setAllowWrites(false);
+                  clearArtifactWriteGrants(artifact.id);
                 }
                 await load();
               })
@@ -274,7 +278,7 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
               ))}
             </select>
             {artifact.storageAccess === "readwrite" && (
-              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }} title="Remembered for this artifact and key in this browser — shared with its standalone page">
                 <input type="checkbox" checked={allowWrites} onChange={(e) => setAllowWrites(e.target.checked)} disabled={!previewKey} />
                 Allow writes
               </label>
@@ -288,7 +292,7 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
             </span>
           </div>
         )}
-        <ArtifactRenderer data={previewData} maxWidth="100%" />
+        <ArtifactRenderer data={previewData} maxWidth="100%" standaloneLatest={shownVersion === artifact.currentVersion} />
       </div>
 
       {/* Versions */}

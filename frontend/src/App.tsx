@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, matchPath } from "react-router-dom";
 import SplitLayout from "./components/SplitLayout";
 import Login from "./pages/Login";
+import ArtifactPage from "./pages/ArtifactPage";
+import { ARTIFACT_STANDALONE_ROUTE } from "./components/artifactStandalone";
 import CodeLoginModal from "./components/CodeLoginModal";
 import StaleBundleBanner from "./components/StaleBundleBanner";
 import { SessionProvider } from "./contexts/SessionContext";
@@ -142,7 +144,9 @@ export default function App() {
       .then((status) => {
         setClaudeLoggedIn(status.loggedIn);
         setClaudeStatus(status);
-        if (!status.loggedIn) {
+        // Not over the standalone artifact page: it runs no chats, and a
+        // sessionStorage dismissal would not survive into the next tab it opens in.
+        if (!status.loggedIn && !matchPath(ARTIFACT_STANDALONE_ROUTE, window.location.pathname)) {
           // Show modal unless dismissed this session
           try {
             if (!sessionStorage.getItem("claude-login-dismissed")) {
@@ -208,6 +212,10 @@ export default function App() {
             path="/agents/:alias/*"
             element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
           />
+
+          {/* One artifact filling the window, outside the app chrome. Logged out, the
+              Login screen renders in place at this same URL, so signing in lands here. */}
+          <Route path={ARTIFACT_STANDALONE_ROUTE} element={<ArtifactPage />} />
         </Routes>
       </BrowserRouter>
       <CodeLoginModal isOpen={showClaudeModal} onClose={handleCloseClaudeModal} onStatusChange={handleClaudeStatusChange} status={claudeStatus} />

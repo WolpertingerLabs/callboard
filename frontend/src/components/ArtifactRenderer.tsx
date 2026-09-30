@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, type CSSProperties, type MutableRefObject } from "react";
-import { Maximize2 } from "lucide-react";
+import { Maximize2, ExternalLink } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { useFrameSizing } from "./useFrameSizing";
@@ -8,6 +8,7 @@ import { artifactRenderUrl, getArtifact, getArtifactVersionSource } from "../api
 import type { RenderArtifactToolResult, ArtifactStorageAccess } from "../api";
 import { artifactLookup, judgeRender, recheckGrant, type Verdict } from "./artifactGrant";
 import type { RequestBudget } from "./artifactBudget";
+import { standaloneArtifactHref } from "./artifactStandalone";
 
 interface ArtifactRendererProps {
   data: RenderArtifactToolResult;
@@ -15,6 +16,41 @@ interface ArtifactRendererProps {
   maxWidth?: CSSProperties["maxWidth"];
   /** Test seam for the bridge's storage calls; production uses the REST API. */
   bridgeApi?: BridgeStorageApi;
+  /**
+   * Fill the parent box — the standalone page. No header, border, caption or
+   * fullscreen button (the page is already the whole window and carries its
+   * own bar), and the frame is sized to the box rather than to its content.
+   */
+  fill?: boolean;
+  /**
+   * The "Open standalone" link follows the artifact's current version instead
+   * of pinning this render's — the Settings preview passes it while showing
+   * the current version, so a bookmark keeps up with new versions.
+   */
+  standaloneLatest?: boolean;
+  /** The access the mounted render holds now (live-lowered included); "none" while nothing is mounted. */
+  onAccessChange?: (access: ArtifactStorageAccess) => void;
+}
+
+/** The readable refusal: no frame, just why. Shared with the standalone page for failures before a render exists. */
+export function ArtifactErrorBox({ children, maxWidth }: { children: React.ReactNode; maxWidth?: CSSProperties["maxWidth"] }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        margin: "4px 0",
+        maxWidth,
+        padding: "12px 16px",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--radius)",
+        background: "var(--surface)",
+        color: "var(--text-muted)",
+        fontSize: 13,
+      }}
+    >
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -173,14 +209,15 @@ const FULLSCREEN_FRAME_BOX: CSSProperties = {
  * reload the document (and a reload revokes the bridge). SVG and markdown are
  * stateless, so they use a plain modal.
  */
-export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: ArtifactRendererProps) {
-  const [expanded, setExpanded] = useState(data.display_mode === "fullscreen");
+export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi, fill = false, standaloneLatest = false, onAccessChange }: ArtifactRendererProps) {
+  const [expanded, setExpanded] = useState(!fill && data.display_mode === "fullscreen");
   const [loading, setLoading] = useState(true);
   // Keyed by the result they belong to, so switching result (another version,
   // another grant) starts clean instead of inheriting the last one's state.
   const [errorFor, setErrorFor] = useState<{ key: string; message: string } | null>(null);
   const [markdown, setMarkdown] = useState<string | null>(null);
-  const [judged, setJudged] = useState<{ key: string; verdict: Verdict } | null>(null);
+  // `declared` is the artifact's own access as the check saw it — whether the render could be bound at all.
+  const [judged, setJudged] = useState<{ key: string; verdict: Verdict; declared?: ArtifactStorageAccess } | null>(null);
   // A live re-check can lower a mounted frame's grant; the badge follows it (the frame does not remount).
   const [lowered, setLowered] = useState<{ frameKey: string; access: ArtifactStorageAccess } | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -196,10 +233,20 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
   const frameKey = `${renderKey}|${access}`;
   const mounted = verdict.status === "ok";
   const shownAccess: ArtifactStorageAccess = lowered?.frameKey === frameKey ? lowered.access : access;
+  const reportedAccess: ArtifactStorageAccess = mounted ? shownAccess : "none";
+  // Only for a render that could hold a key: bound, or unbound but the artifact takes one.
+  const standaloneHref =
+    mounted && (storageKey || (judged?.declared ?? "none") !== "none")
+      ? standaloneArtifactHref(data.artifact_id, { storageKey, version: standaloneLatest ? null : data.version })
+      : null;
+
+  useEffect(() => {
+    onAccessChange?.(reportedAccess);
+  }, [onAccessChange, reportedAccess]);
 
   // Sizing follows the inline layout only: what the document reports while it
   // fills the viewport must not become its inline size when fullscreen closes.
-  const { contentHeight, contentWidth, needsScale, scale, displayHeight } = useFrameSizing(iframeRef, containerRef, isHtml && mounted && !expanded);
+  const { contentHeight, contentWidth, needsScale, scale, displayHeight } = useFrameSizing(iframeRef, containerRef, isHtml && mounted && !expanded && !fill);
 
   // Re-judge whenever the result changes; a failure to look is a refusal. The
   // fetch is always fresh (a preview just after a save must see the new
@@ -211,7 +258,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
     getArtifact(data.artifact_id)
       .then((artifact) => {
         artifactLookup.seed(data.artifact_id, startedAt, artifact);
-        if (!cancelled) setJudged({ key, verdict: judgeRender(data, artifact) });
+        if (!cancelled) setJudged({ key, verdict: judgeRender(data, artifact), declared: artifact.storageAccess });
       })
       .catch((err: Error) => {
         if (cancelled) return;
@@ -262,21 +309,9 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
   const failure = verdict.status === "refused" ? verdict.reason : error;
   if (failure) {
     return (
-      <div
-        role="alert"
-        style={{
-          margin: "4px 0",
-          maxWidth,
-          padding: "12px 16px",
-          border: "1px solid var(--border)",
-          borderRadius: "var(--radius)",
-          background: "var(--surface)",
-          color: "var(--text-muted)",
-          fontSize: 13,
-        }}
-      >
+      <ArtifactErrorBox maxWidth={fill ? "100%" : maxWidth}>
         Failed to load artifact: {data.name} (v{data.version}) — {failure}
-      </div>
+      </ArtifactErrorBox>
     );
   }
 
@@ -287,7 +322,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
       case "html":
         // One frame, always at this position in the tree; fullscreen only restyles its box.
         return (
-          <div style={{ width: "100%", height: displayHeight, overflow: "hidden", transition: "height 0.15s ease" }}>
+          <div style={fill ? { width: "100%", height: "100%" } : { width: "100%", height: displayHeight, overflow: "hidden", transition: "height 0.15s ease" }}>
             <div
               style={htmlFullscreen ? { ...FULLSCREEN_FRAME_BOX, ...DOCUMENT_BACKDROP } : { width: "100%", height: "100%" }}
               data-testid="artifact-frame-box"
@@ -307,8 +342,8 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
                   bridgeApi={bridgeApi}
                   onLoaded={() => setLoading(false)}
                   style={
-                    htmlFullscreen
-                      ? { width: "100%", height: "100%" }
+                    htmlFullscreen || fill
+                      ? { width: "100%", height: "100%", display: "block" }
                       : {
                           width: needsScale ? contentWidth : "100%",
                           height: contentHeight,
@@ -340,8 +375,9 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
               setError("image failed to load");
             }}
             style={{
-              maxHeight: isModal ? "85vh" : 400,
+              maxHeight: isModal ? "85vh" : fill ? "100%" : 400,
               maxWidth: isModal ? "90vw" : "100%",
+              margin: fill ? "0 auto" : undefined,
               objectFit: "contain",
               display: "block",
               ...DOCUMENT_BACKDROP,
@@ -353,7 +389,9 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
           <div
             style={{
               padding: "8px 16px",
-              maxHeight: isModal ? "85vh" : 600,
+              maxHeight: isModal ? "85vh" : fill ? undefined : 600,
+              height: fill ? "100%" : undefined,
+              boxSizing: "border-box",
               overflow: "auto",
               background: "var(--surface)",
               color: "var(--text)",
@@ -366,6 +404,33 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
         return null;
     }
   };
+
+  const loadingOverlay = loading && (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        background: "var(--surface)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "var(--text-muted)",
+        fontSize: 13,
+        minHeight: 100,
+      }}
+    >
+      Loading...
+    </div>
+  );
+
+  if (fill) {
+    return (
+      <div ref={containerRef} style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden" }} data-testid="artifact-renderer">
+        {loadingOverlay}
+        {renderContent(false)}
+      </div>
+    );
+  }
 
   return (
     <>
@@ -391,6 +456,21 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
                 {storageKey} · {shownAccess === "readwrite" ? "rw" : shownAccess}
               </span>
             )}
+            {standaloneHref && (
+              // A new tab on the host page, not from the sandboxed frame (which has no allow-popups).
+              // The href names the artifact, key and version — never an access level.
+              <a
+                href={standaloneHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open this artifact on its own page, in a new tab"
+                style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11, color: "var(--accent-text)", textDecoration: "none", flexShrink: 0 }}
+                data-testid="artifact-standalone-link"
+              >
+                Open standalone
+                <ExternalLink size={11} aria-hidden />
+              </a>
+            )}
             <span
               style={{
                 fontSize: 11,
@@ -407,23 +487,7 @@ export default function ArtifactRenderer({ data, maxWidth = "85%", bridgeApi }: 
           </div>
 
           <div ref={containerRef} style={{ position: "relative" }}>
-            {loading && (
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  background: "var(--surface)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--text-muted)",
-                  fontSize: 13,
-                  minHeight: 100,
-                }}
-              >
-                Loading...
-              </div>
-            )}
+            {loadingOverlay}
             {renderContent(false)}
             {!loading && !htmlFullscreen && (
               <button
