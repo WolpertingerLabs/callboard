@@ -1,6 +1,7 @@
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { DefaultPermissions } from "../api";
 import type { EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
+import { ARTIFACT_ID_PATTERN, isValidStorageKey } from "shared/types/index.js";
 
 export type { EffortLevel };
 export type AgentProviderKind = UiAgentProviderKind;
@@ -164,6 +165,17 @@ interface LocalStorageData {
    * pretty-printed JSON text, or the raw string. Toggled inline from any
    * tool view. */
   jsonViewMode?: JsonViewMode;
+  /**
+   * "Allow saving" for one artifact on one storage key, keyed
+   * `<artifactId>/<storageKey>` (neither pattern admits a `/`). The value is
+   * the artifact's server-issued `created` timestamp at the time of the tick,
+   * so a grant names one artifact, not just an id: delete + recreate under the
+   * same id gives a new `created`, and the old entry stops counting. Unticking
+   * deletes the entry. This is a request, never a grant: the renderer takes
+   * the lesser of it and the artifact's *current* declared access — see
+   * {@link getArtifactWriteGrant}.
+   */
+  artifactWriteGrants?: Partial<Record<string, string>>;
 }
 
 export type JsonViewMode = "tree" | "pretty" | "raw";
@@ -528,6 +540,60 @@ export function saveJsonViewMode(mode: JsonViewMode): void {
   data.jsonViewMode = mode;
   setStorageData(data);
 }
+
+function artifactWriteGrantKey(artifactId: string, storageKey: string): string | null {
+  return ARTIFACT_ID_PATTERN.test(artifactId) && isValidStorageKey(storageKey) ? `${artifactId}/${storageKey}` : null;
+}
+
+/**
+ * Whether the user ticked "allow saving" for this artifact — the one created at
+ * `created`, not merely one with this id — on this key, in this browser.
+ * Shared by the standalone page and the Settings preview. Compared as a string
+ * because this is JSON another bundle or a hand edit could have written
+ * anything into, and the answer decides whether a frame may write.
+ */
+export function getArtifactWriteGrant(artifactId: string, created: string, storageKey: string): boolean {
+  const k = artifactWriteGrantKey(artifactId, storageKey);
+  const v = k === null ? undefined : getStorageData().artifactWriteGrants?.[k];
+  return typeof v === "string" && v !== "" && v === created;
+}
+
+/** Merge, never replace: other (artifact, key) pairs — possibly written by another tab — are left alone. */
+export function saveArtifactWriteGrant(artifactId: string, created: string, storageKey: string, allowed: boolean): void {
+  const k = artifactWriteGrantKey(artifactId, storageKey);
+  if (k === null || (allowed && !created)) return;
+  const data = getStorageData();
+  const grants = { ...data.artifactWriteGrants };
+  if (allowed) grants[k] = created;
+  else delete grants[k];
+  data.artifactWriteGrants = grants;
+  setStorageData(data);
+  window.dispatchEvent(new Event(ARTIFACT_WRITE_GRANT_CHANGE_EVENT));
+}
+
+/**
+ * Forgets remembered write opt-ins for one artifact id: all of them, or with
+ * `keepCreated`, only those given to a different artifact under that id (one
+ * since deleted and recreated). Used on delete, on lowering to storage access
+ * none, and to drop stale entries once the current `created` is known.
+ */
+export function clearArtifactWriteGrants(artifactId: string, keepCreated?: string): void {
+  const data = getStorageData();
+  if (!data.artifactWriteGrants) return;
+  const prefix = `${artifactId}/`;
+  const entries = Object.entries(data.artifactWriteGrants);
+  const kept = entries.filter(([k, v]) => !k.startsWith(prefix) || (keepCreated !== undefined && v === keepCreated));
+  if (kept.length === entries.length) return;
+  data.artifactWriteGrants = Object.fromEntries(kept);
+  setStorageData(data);
+  window.dispatchEvent(new Event(ARTIFACT_WRITE_GRANT_CHANGE_EVENT));
+}
+
+/** Same-tab notification of a write-grant change; the `storage` event covers other tabs only. */
+export const ARTIFACT_WRITE_GRANT_CHANGE_EVENT = "artifact-write-grant-change";
+
+/** The localStorage entry the settings (and so the write grants) live in — for `storage`-event listeners. */
+export const SETTINGS_STORAGE_KEY = STORAGE_KEYS.SETTINGS;
 
 export function getThemeMode(): ThemeMode {
   const data = getStorageData();

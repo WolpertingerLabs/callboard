@@ -83,6 +83,15 @@ const POLL_INTERVAL_MS = 1_000;
 const FAILURE_THRESHOLD = 3;
 
 /**
+ * The standalone artifact page (`/a/…`) shows no sessions, so there the poll
+ * only has to carry the build id for `StaleBundleBanner`: once a minute, not
+ * once a second — it may live for days as a phone home-screen tab. Read per
+ * tick rather than at mount, since the provider sits outside the router.
+ */
+const QUIET_POLL_PATH = /^\/a\//;
+const QUIET_POLL_INTERVAL_MS = 60_000;
+
+/**
  * Provider that polls /api/sessions/poll every second and keeps an
  * in-memory map of all active chat sessions.
  *
@@ -116,7 +125,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
+    let lastPollAt = 0;
     const poll = async () => {
+      lastPollAt = Date.now();
       try {
         const params = new URLSearchParams();
         if (lastVersionRef.current !== undefined) params.set("v", String(lastVersionRef.current));
@@ -197,7 +208,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
     // Immediate first poll, then every POLL_INTERVAL_MS
     poll();
-    const interval = setInterval(poll, POLL_INTERVAL_MS);
+    const interval = setInterval(() => {
+      if (QUIET_POLL_PATH.test(window.location.pathname) && Date.now() - lastPollAt < QUIET_POLL_INTERVAL_MS) return;
+      poll();
+    }, POLL_INTERVAL_MS);
 
     // On tab resume (or network restore while visible), force an immediate
     // full poll so downstream consumers get accurate session state without
