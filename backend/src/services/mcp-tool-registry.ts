@@ -511,11 +511,13 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "update_storage_key",
     qualifiedName: "mcp__callboard-tools__update_storage_key",
-    description: "Change a storage key's description and/or the list of artifacts it is designed for (the list is replaced whole).",
+    description: "Change a storage key's description and/or the list of artifacts it is designed for (add/remove ids, or replace the list whole).",
     parameters: [
       { name: "key", type: "string", description: "The storage key", required: true },
       { name: "description", type: "string", description: "New description (empty clears it)", required: false },
-      { name: "artifacts", type: "array", description: "Artifact ids this key is designed for; replaces the list ([] = none)", required: false },
+      { name: "add_artifacts", type: "array", description: "Artifact ids to add to the list (preferred for edits)", required: false },
+      { name: "remove_artifacts", type: "array", description: "Artifact ids to remove from the list (preferred for edits)", required: false },
+      { name: "artifacts", type: "array", description: "Replaces the whole list ([] = none); overwrites concurrent changes", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",

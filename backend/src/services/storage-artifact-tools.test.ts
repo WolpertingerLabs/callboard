@@ -246,7 +246,7 @@ describe("storage key artifacts list (tools)", () => {
     expect((await call("create_storage_key", { key: "bad", artifacts: ["Not An Id"] })).error).toMatch(/invalid artifact id/);
     expect((await call("list_storage_keys")).keys).toEqual([expect.objectContaining({ key: "deck", artifacts: ["cramhouse", "flag-deck"] })]);
 
-    expect((await call("update_storage_key", { key: "deck" })).error).toMatch(/description and\/or artifacts/);
+    expect((await call("update_storage_key", { key: "deck" })).error).toMatch(/Provide description, artifacts, or add_artifacts/);
     expect((await call("update_storage_key", { key: "deck", artifacts: ["../x"] })).error).toMatch(/invalid artifact id/);
     expect((await call("update_storage_key", { key: "deck", artifacts: Array.from({ length: 33 }, (_, i) => `a${i}`) })).error).toMatch(/max 32/);
     expect((await call("update_storage_key", { key: "nope", artifacts: [] })).error).toMatch(/not found/);
@@ -256,6 +256,27 @@ describe("storage key artifacts list (tools)", () => {
     expect(updated.key.items).toBeUndefined();
     expect((await call("update_storage_key", { key: "deck", description: "" })).key).toMatchObject({ artifacts: ["gone-artifact"] });
     expect((await call("update_storage_key", { key: "deck", artifacts: [] })).key.artifacts).toEqual([]);
+  });
+
+  it("update_storage_key add_artifacts / remove_artifacts change the stored list; artifacts cannot be combined with them", async () => {
+    await call("create_storage_key", { key: "deck", artifacts: ["app-a", "app-b", "ghost"] });
+    // Someone else narrows the list; an agent adding by delta keeps that change.
+    await call("update_storage_key", { key: "deck", artifacts: ["app-a"] });
+    expect((await call("update_storage_key", { key: "deck", add_artifacts: ["app-p"] })).key.artifacts).toEqual(["app-a", "app-p"]);
+    expect((await call("update_storage_key", { key: "deck", remove_artifacts: ["app-a", "absent"], add_artifacts: ["app-q"] })).key.artifacts).toEqual([
+      "app-p",
+      "app-q",
+    ]);
+    expect((await call("update_storage_key", { key: "deck", artifacts: ["x"], add_artifacts: ["y"] })).error).toMatch(/cannot be combined/);
+    expect((await call("update_storage_key", { key: "deck", artifacts: [], remove_artifacts: [] })).error).toMatch(/cannot be combined/);
+    expect((await call("update_storage_key", { key: "deck", add_artifacts: ["../x"] })).error).toMatch(/invalid artifact id in artifacts to add/);
+    expect((await call("update_storage_key", { key: "deck", add_artifacts: ["z"], remove_artifacts: ["z"] })).error).toMatch(/both added and removed/);
+    expect((await call("update_storage_key", { key: "deck", add_artifacts: Array.from({ length: 31 }, (_, i) => `n${i}`) })).error).toMatch(/max 32/);
+    expect((await call("list_storage_keys")).keys[0].artifacts).toEqual(["app-p", "app-q"]);
+    // The description steers agents to the delta and warns what replacing does.
+    const desc = buildStorageArtifactTools().find((t) => t.name === "update_storage_key")!.description;
+    expect(desc).toMatch(/prefer add_artifacts \/ remove_artifacts/);
+    expect(desc).toMatch(/overwrites any change made since you last read the list/);
   });
 
   it("list_artifacts names the keys each artifact can be rendered against", async () => {

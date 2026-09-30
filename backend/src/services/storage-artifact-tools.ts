@@ -139,17 +139,32 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
     defineTool(
       "update_storage_key",
       "Change a storage key's metadata: its description and/or the list of artifacts it is designed for. Fields you omit are left as they are. " +
-        "artifacts REPLACES the whole list (read it first with list_storage_keys to add or remove one id; [] means no artifact binds the key). " +
+        "To change the list, prefer add_artifacts / remove_artifacts: they are applied to the list as it is stored at that moment, so a concurrent " +
+        "change by the user or another agent is kept (adding a present id or removing an absent one is a no-op). artifacts instead REPLACES the " +
+        "whole list ([] means no artifact binds the key) — it overwrites any change made since you last read the list, so use it only to set the " +
+        "list deliberately. artifacts cannot be combined with add_artifacts / remove_artifacts, and an id cannot be in both of those. " +
         ARTIFACTS_LIST_RULE,
       {
         key: z.string().describe("The storage key"),
         description: z.string().optional().describe("New description (an empty string clears it)"),
-        artifacts: ARTIFACTS_ARG,
+        add_artifacts: z.array(z.string()).optional().describe('Artifact ids to add to the key\'s list, e.g. ["cramhouse"] (preferred for edits)'),
+        remove_artifacts: z.array(z.string()).optional().describe("Artifact ids to remove from the key's list (preferred for edits)"),
+        artifacts: ARTIFACTS_ARG.describe("Replaces the whole list ([] = none); overwrites concurrent changes — prefer add_artifacts / remove_artifacts"),
       },
       async (args) =>
         guard("update_storage_key", async () => {
-          if (args.description === undefined && args.artifacts === undefined) return error("Provide description and/or artifacts");
-          const { items: _items, ...key } = await updateStorageKey(args.key, { description: args.description, artifacts: args.artifacts });
+          if (args.description === undefined && args.artifacts === undefined && args.add_artifacts === undefined && args.remove_artifacts === undefined) {
+            return error("Provide description, artifacts, or add_artifacts / remove_artifacts");
+          }
+          if (args.artifacts !== undefined && (args.add_artifacts !== undefined || args.remove_artifacts !== undefined)) {
+            return error("artifacts replaces the whole list; it cannot be combined with add_artifacts / remove_artifacts");
+          }
+          const { items: _items, ...key } = await updateStorageKey(args.key, {
+            description: args.description,
+            artifacts: args.artifacts,
+            addArtifacts: args.add_artifacts,
+            removeArtifacts: args.remove_artifacts,
+          });
           return ok({ key });
         }),
     ),

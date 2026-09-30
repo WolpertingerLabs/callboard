@@ -57,7 +57,7 @@ import {
   STORAGE_MAX_STORE_BYTES,
 } from "shared/types/index.js";
 import type { StorageItem, StorageItemRecord, StorageKeyDetail, StorageKeyMetaFile, StorageKeySummary } from "shared/types/index.js";
-import { ARTIFACT_ID_PATTERN, normalizeStorageKeyArtifacts } from "shared/types/index.js";
+import { ARTIFACT_ID_PATTERN, applyStorageKeyArtifactsDelta, normalizeStorageKeyArtifactIds, normalizeStorageKeyArtifacts } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -488,6 +488,21 @@ function validateArtifacts(artifacts: unknown): string[] | undefined {
   return result.artifacts;
 }
 
+/** The add/remove delta, validated; undefined when neither side is given. An id on both sides is ambiguous. */
+function validateArtifactsDelta(add: unknown, remove: unknown): { add: string[]; remove: string[] } | undefined {
+  if (add === undefined && remove === undefined) return undefined;
+  const sides = { add: [] as string[], remove: [] as string[] };
+  for (const [side, value, field] of [["add", add, "artifacts to add"], ["remove", remove, "artifacts to remove"]] as const) {
+    if (value === undefined) continue;
+    const result = normalizeStorageKeyArtifactIds(value, field);
+    if (!result.ok) throw new StorageError("invalid", result.reason);
+    sides[side] = result.ids;
+  }
+  const both = sides.add.find((id) => sides.remove.includes(id));
+  if (both) throw new StorageError("invalid", `artifact id ${JSON.stringify(both)} is both added and removed`);
+  return sides;
+}
+
 /** Every key's meta that parses. Directories that are not valid keys, or have no meta, are skipped. */
 function allMetas(): StorageKeyMetaFile[] {
   if (!existsSync(STORAGE_ROOT)) return [];
@@ -566,23 +581,37 @@ export async function createStorageKey(key: string, description?: string, artifa
 
 /**
  * Change a key's metadata. A field left undefined is untouched; an empty
- * description clears it; `artifacts` replaces the whole list (`[]` ⇒ the key
- * binds no artifact). Callers are the user (REST) and agents (tools) — never
+ * description clears it. The list changes either by delta — `addArtifacts` /
+ * `removeArtifacts`, applied on the key's chain to the list as stored then, so
+ * concurrent editors each land their own change — or by `artifacts`, which
+ * replaces the whole list (`[]` ⇒ the key binds no artifact). The two forms are
+ * mutually exclusive. Callers are the user (REST) and agents (tools) — never
  * an artifact: the bridge has no key-level operation.
  */
-export async function updateStorageKey(key: string, patch: { description?: unknown; artifacts?: unknown }): Promise<StorageKeyDetail> {
+export async function updateStorageKey(
+  key: string,
+  patch: { description?: unknown; artifacts?: unknown; addArtifacts?: unknown; removeArtifacts?: unknown },
+): Promise<StorageKeyDetail> {
   assertStorageKey(key);
   const changeDescription = patch.description !== undefined;
   const desc = validateDescription(patch.description);
   const list = validateArtifacts(patch.artifacts);
+  const delta = validateArtifactsDelta(patch.addArtifacts, patch.removeArtifacts);
+  if (list !== undefined && delta) throw new StorageError("invalid", "artifacts replaces the whole list; it cannot be combined with artifacts to add or remove");
   return serialize(`storage:${key}`, () => {
     const meta = readMeta(key);
     if (changeDescription) {
       if (desc) meta.description = desc;
       else delete meta.description;
     }
-    if (list !== undefined) {
-      if (list.length) meta.artifacts = list;
+    let next = list;
+    if (delta) {
+      const applied = applyStorageKeyArtifactsDelta(artifactsOf(meta), delta.add, delta.remove);
+      if (!applied.ok) throw new StorageError("invalid", applied.reason);
+      next = applied.artifacts;
+    }
+    if (next !== undefined) {
+      if (next.length) meta.artifacts = next;
       else delete meta.artifacts;
     }
     meta.updated = new Date().toISOString();

@@ -101,6 +101,43 @@ export function normalizeStorageKeyArtifacts(value: unknown): { ok: true; artifa
   return { ok: true, artifacts: out };
 }
 
+/**
+ * Validate one side of an `artifacts` delta (`addArtifacts` / `removeArtifacts`
+ * on REST, `add_artifacts` / `remove_artifacts` on the tool): an array of
+ * artifact ids, deduplicated in order. No cap here — the cap applies to the
+ * list that results once the delta is applied ({@link applyStorageKeyArtifactsDelta}).
+ */
+export function normalizeStorageKeyArtifactIds(value: unknown, field: string): { ok: true; ids: string[] } | { ok: false; reason: string } {
+  if (!Array.isArray(value)) return { ok: false, reason: `${field} must be an array of artifact ids` };
+  const out: string[] = [];
+  for (const id of value) {
+    if (typeof id !== "string" || !ARTIFACT_ID_PATTERN.test(id)) {
+      return { ok: false, reason: `invalid artifact id in ${field}: ${JSON.stringify(id)} (must match ${ARTIFACT_ID_PATTERN})` };
+    }
+    if (!out.includes(id)) out.push(id);
+  }
+  return { ok: true, ids: out };
+}
+
+/**
+ * Apply an add/remove delta to a key's stored list: removed ids go (an absent
+ * one is a no-op), added ids are appended unless already present, order is
+ * otherwise kept. Fails when adding takes the result past {@link STORAGE_KEY_MAX_ARTIFACTS}.
+ * The caller is expected to have rejected an id that is in both `add` and `remove`.
+ */
+export function applyStorageKeyArtifactsDelta(
+  current: readonly string[],
+  add: readonly string[],
+  remove: readonly string[],
+): { ok: true; artifacts: string[] } | { ok: false; reason: string } {
+  const out = current.filter((id) => !remove.includes(id));
+  const kept = out.length;
+  for (const id of add) if (!out.includes(id)) out.push(id);
+  // Only growth is refused: a delta that merely removes from an over-long list stays allowed.
+  if (out.length > STORAGE_KEY_MAX_ARTIFACTS && out.length > kept) return { ok: false, reason: `too many artifacts (max ${STORAGE_KEY_MAX_ARTIFACTS} per key)` };
+  return { ok: true, artifacts: out };
+}
+
 /** Per-item metadata as recorded in a key's `meta.json`. */
 export interface StorageItemMeta {
   /** Recorded MIME type. Informational — never trusted for serving. */
@@ -168,12 +205,23 @@ export interface CreateStorageKeyInput {
 
 /**
  * `PATCH /api/storage/:key` body — at least one field. An omitted field is
- * left as it is; an empty description clears it; `artifacts` replaces the
- * whole list (`[]` ⇒ the key binds no artifact).
+ * left as it is; an empty description clears it.
+ *
+ * The list changes one of two ways, never both in one request (400):
+ * - `addArtifacts` / `removeArtifacts` — a delta applied server-side to the
+ *   list as stored at write time. Use this to toggle ids: two clients editing
+ *   at once each land their own change instead of overwriting the other's.
+ * - `artifacts` — replaces the whole list (`[]` ⇒ the key binds no artifact).
+ *   Only for a deliberate replacement: a client with a stale copy of the list
+ *   silently undoes whatever changed since it read it.
  */
 export interface UpdateStorageKeyInput {
   description?: string;
   artifacts?: string[];
+  /** Ids to add to the stored list (already present ⇒ no-op). */
+  addArtifacts?: string[];
+  /** Ids to remove from the stored list (absent ⇒ no-op). */
+  removeArtifacts?: string[];
 }
 
 /**

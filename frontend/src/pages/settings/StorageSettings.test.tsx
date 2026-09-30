@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, cleanup, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { applyStorageKeyArtifactsDelta } from "shared/types/index.js";
 import StorageSettings, { previewKind, TEXT_PREVIEW_BYTES } from "./StorageSettings";
 
 /**
@@ -289,9 +290,10 @@ describe("StorageSettings — Designed for", () => {
     expect((await screen.findByTestId("storage-key-list")).textContent).toMatch(/for cramhouse/);
   });
 
-  it("edits the list: pick from existing artifacts, untick a missing one; saving replaces the whole list", async () => {
+  it("edits the list: pick from existing artifacts, untick a missing one; saving sends only that delta and adopts the list the server returns", async () => {
     await openBirds();
     await screen.findByTestId("designed-for-cramhouse");
+    h.updateStorageKey.mockResolvedValue({ ...birds, artifacts: ["cramhouse", "readme", "flag-deck", "from-elsewhere"] });
     fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
     const editor = screen.getByTestId("designed-for-editor");
     // Every existing artifact, plus the listed id that no longer exists (so it can be removed).
@@ -304,9 +306,112 @@ describe("StorageSettings — Designed for", () => {
     expect(within(editor).getByText("missing")).toBeTruthy();
     fireEvent.click(within(editor).getByLabelText("Designed for gone-app"));
     fireEvent.click(within(editor).getByLabelText("Designed for flag-deck"));
+    // Ticked then unticked again: back to what the list says, so not part of the delta.
+    fireEvent.click(within(editor).getByLabelText("Designed for readme"));
+    fireEvent.click(within(editor).getByLabelText("Designed for readme"));
     fireEvent.click(within(editor).getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(h.updateStorageKey).toHaveBeenCalledWith("birds", { artifacts: ["cramhouse", "readme", "flag-deck"] }));
-    await waitFor(() => expect(h.getStorageKey).toHaveBeenCalledTimes(2)); // re-read after saving
+    await waitFor(() => expect(h.updateStorageKey).toHaveBeenCalledWith("birds", { addArtifacts: ["flag-deck"], removeArtifacts: ["gone-app"] }));
+    expect(h.updateStorageKey.mock.calls[0][1]).not.toHaveProperty("artifacts");
+    // The server's post-write list is what shows — including a change this tab never made.
+    expect(await screen.findByTestId("designed-for-from-elsewhere")).toBeTruthy();
+    expect(screen.queryByTestId("designed-for-gone-app")).toBeNull();
+  });
+
+  it("Save with nothing toggled sends nothing", async () => {
+    await openBirds();
+    await screen.findByTestId("designed-for-cramhouse");
+    fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    fireEvent.click(within(screen.getByTestId("designed-for-editor")).getByRole("button", { name: "Save" }));
+    expect(screen.queryByTestId("designed-for-editor")).toBeNull();
+    expect(h.updateStorageKey).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The review's reproduction (PR #462): a tab opens the editor; meanwhile
+   * another client narrows the list; the tab then ticks one artifact and
+   * saves. Against a fake server that applies PATCHes to its stored list the
+   * way the real one does, the result must be the other client's list plus
+   * the tick — nothing the other client removed may come back.
+   */
+  it("a stale tab's save cannot re-add what another client removed while its editor was open", async () => {
+    let stored = ["cramhouse", "readme", "gone-app"];
+    h.getStorageKey.mockImplementation(async () => ({ ...birds, artifacts: [...stored] }));
+    h.updateStorageKey.mockImplementation(async (_key: string, patch: { artifacts?: string[]; addArtifacts?: string[]; removeArtifacts?: string[] }) => {
+      if (patch.artifacts) stored = [...patch.artifacts];
+      else {
+        const applied = applyStorageKeyArtifactsDelta(stored, patch.addArtifacts ?? [], patch.removeArtifacts ?? []);
+        if (!applied.ok) throw new Error(applied.reason);
+        stored = applied.artifacts;
+      }
+      return { ...birds, artifacts: [...stored] };
+    });
+    await openBirds();
+    await screen.findByTestId("designed-for-cramhouse");
+    fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    const editor = screen.getByTestId("designed-for-editor");
+    await waitFor(() => expect(h.getStorageKey).toHaveBeenCalledTimes(2)); // the editor re-read the key on opening
+    stored = ["cramhouse"]; // another tab or an agent, after this editor opened
+    fireEvent.click(within(editor).getByLabelText("Designed for flag-deck"));
+    fireEvent.click(within(editor).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(h.updateStorageKey).toHaveBeenCalledTimes(1));
+    expect(stored).toEqual(["cramhouse", "flag-deck"]);
+    // And the tab shows the server's list, not its own old copy.
+    expect(await screen.findByTestId("designed-for-flag-deck")).toBeTruthy();
+    expect(screen.queryByTestId("designed-for-readme")).toBeNull();
+  });
+
+  it("opening the editor re-reads the key: untouched rows follow the fresh list", async () => {
+    await openBirds();
+    await screen.findByTestId("designed-for-cramhouse");
+    h.getStorageKey.mockResolvedValue({ ...birds, artifacts: ["flag-deck"] });
+    fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    const editor = screen.getByTestId("designed-for-editor");
+    await waitFor(() => expect((within(editor).getByLabelText("Designed for flag-deck") as HTMLInputElement).checked).toBe(true));
+    expect((within(editor).getByLabelText("Designed for cramhouse") as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("re-reads the selected key when the tab becomes visible again", async () => {
+    await openBirds();
+    await screen.findByTestId("designed-for-cramhouse");
+    expect(h.getStorageKey).toHaveBeenCalledTimes(1);
+    h.getStorageKey.mockResolvedValue({ ...birds, artifacts: ["flag-deck"] });
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    try {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(h.getStorageKey).toHaveBeenCalledTimes(1);
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(await screen.findByTestId("designed-for-flag-deck")).toBeTruthy();
+      expect(screen.queryByTestId("designed-for-cramhouse")).toBeNull();
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it("the editor calls nothing missing while the artifact list is loading, or if it failed to load", async () => {
+    h.listArtifacts.mockReturnValue(new Promise(() => {}));
+    await openBirds();
+    await screen.findByTestId("designed-for-cramhouse");
+    fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    let editor = screen.getByTestId("designed-for-editor");
+    expect(within(editor).queryByText("missing")).toBeNull();
+    expect(within(editor).getByTestId("designed-for-artifacts-unknown").textContent).toMatch(/Loading artifacts/);
+    // The listed ids are still there to untick.
+    expect(within(editor).getAllByRole("checkbox").map((c) => c.getAttribute("aria-label"))).toEqual([
+      "Designed for cramhouse",
+      "Designed for readme",
+      "Designed for gone-app",
+    ]);
+    cleanup();
+
+    h.listArtifacts.mockRejectedValue(new Error("artifacts unavailable"));
+    await openBirds();
+    await screen.findByTestId("designed-for-cramhouse");
+    fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    editor = screen.getByTestId("designed-for-editor");
+    expect(within(editor).queryByText("missing")).toBeNull();
+    expect(within(editor).getByTestId("designed-for-artifacts-unknown").textContent).toMatch(/Couldn't load the artifact list/);
   });
 
   it("cancel leaves the list alone; a failed save shows the server's error", async () => {
@@ -317,6 +422,7 @@ describe("StorageSettings — Designed for", () => {
     expect(h.updateStorageKey).not.toHaveBeenCalled();
     h.updateStorageKey.mockRejectedValue(new Error("too many artifacts (max 32 per key)"));
     fireEvent.click(screen.getByTitle("Edit which artifacts this key is for"));
+    fireEvent.click(within(screen.getByTestId("designed-for-editor")).getByLabelText("Designed for flag-deck"));
     fireEvent.click(within(screen.getByTestId("designed-for-editor")).getByRole("button", { name: "Save" }));
     expect(await screen.findByText("too many artifacts (max 32 per key)")).toBeTruthy();
   });

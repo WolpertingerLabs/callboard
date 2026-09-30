@@ -423,6 +423,62 @@ describe("artifacts: which artifacts a key is designed for", () => {
     expect(metaOf("deck")).not.toHaveProperty("artifacts");
   });
 
+  it("a delta (addArtifacts / removeArtifacts) applies to the list as stored: absent removes and present adds are no-ops", async () => {
+    await svc.createStorageKey("deck", "Birds", ["app-a", "app-b", "ghost"]);
+    expect((await svc.updateStorageKey("deck", { addArtifacts: ["app-p", "app-a"], removeArtifacts: ["app-b", "never-there"] })).artifacts).toEqual([
+      "app-a",
+      "ghost",
+      "app-p",
+    ]);
+    expect(svc.getStorageKey("deck")).toMatchObject({ description: "Birds", artifacts: ["app-a", "ghost", "app-p"] });
+    // One side alone is enough; removing the rest clears the field like artifacts: [] does.
+    expect((await svc.updateStorageKey("deck", { removeArtifacts: ["app-a", "ghost", "app-p"] })).artifacts).toEqual([]);
+    expect(metaOf("deck")).not.toHaveProperty("artifacts");
+    expect((await svc.updateStorageKey("deck", { addArtifacts: ["app-a", "app-a"] })).artifacts).toEqual(["app-a"]);
+    // An empty delta changes nothing but is not an error.
+    expect((await svc.updateStorageKey("deck", { addArtifacts: [], removeArtifacts: [] })).artifacts).toEqual(["app-a"]);
+  });
+
+  it("a delta is validated before anything is written; the cap applies to the list after the delta", async () => {
+    const ids = (n: number, p = "a") => Array.from({ length: n }, (_, i) => `${p}${i}`);
+    await svc.createStorageKey("deck", undefined, ids(31));
+    const before = readFileSync(join(STORAGE_ROOT, "deck", "meta.json"), "utf-8");
+    for (const patch of [
+      { addArtifacts: ["Bad Id"] },
+      { removeArtifacts: ["../x"] },
+      { addArtifacts: "a0" },
+      { removeArtifacts: [null] },
+      { addArtifacts: ["x"], removeArtifacts: ["x"] }, // an id on both sides is ambiguous
+      { artifacts: ["x"], addArtifacts: ["y"] }, // replace and delta are exclusive
+      { artifacts: [], removeArtifacts: [] },
+      { addArtifacts: ["b0", "b1"] }, // 31 + 2 = 33
+    ]) {
+      await expectCode(svc.updateStorageKey("deck", patch), "invalid");
+    }
+    expect(readFileSync(join(STORAGE_ROOT, "deck", "meta.json"), "utf-8")).toBe(before);
+    // 31 − 1 + 2 = 32: within the cap once the removal is applied.
+    expect((await svc.updateStorageKey("deck", { addArtifacts: ["b0", "b1"], removeArtifacts: ["a0"] })).artifacts).toHaveLength(32);
+    // A removal from an (out-of-band) over-long list is still allowed; growing it is not.
+    writeFileSync(join(STORAGE_ROOT, "deck", "meta.json"), JSON.stringify({ ...metaOf("deck"), artifacts: ids(40, "c") }));
+    expect((await svc.updateStorageKey("deck", { removeArtifacts: ["c0"] })).artifacts).toHaveLength(39);
+    await expectCode(svc.updateStorageKey("deck", { addArtifacts: ["d0"], removeArtifacts: ["c1"] }), "invalid");
+    await expectCode(svc.updateStorageKey("missing", { addArtifacts: ["a"] }), "not_found");
+  });
+
+  it("concurrent deltas from two clients all land: each applies to the list the previous one left", async () => {
+    await svc.createStorageKey("deck", undefined, ["keep", "drop-1", "drop-2", "drop-3"]);
+    // Client A adds, client B removes, interleaved and all in flight at once.
+    await Promise.all([
+      svc.updateStorageKey("deck", { addArtifacts: ["a-1"] }),
+      svc.updateStorageKey("deck", { removeArtifacts: ["drop-1"] }),
+      svc.updateStorageKey("deck", { addArtifacts: ["a-2"] }),
+      svc.updateStorageKey("deck", { removeArtifacts: ["drop-2"] }),
+      svc.updateStorageKey("deck", { addArtifacts: ["a-3"], description: "raced" }),
+      svc.updateStorageKey("deck", { removeArtifacts: ["drop-3"] }),
+    ]);
+    expect(svc.getStorageKey("deck")).toMatchObject({ description: "raced", artifacts: ["keep", "a-1", "a-2", "a-3"] });
+  });
+
   it("item writes keep the list", async () => {
     await svc.createStorageKey("deck", undefined, ["cramhouse"]);
     await svc.saveStorageItem("deck", "deck.json", Buffer.from("{}"));

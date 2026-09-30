@@ -188,40 +188,69 @@ function ItemPreview({ storageKey, item }: { storageKey: string; item: StorageIt
  * write it. Shows each listed id (a name and an "Open with" link to the
  * standalone page when the artifact exists and takes storage, "missing" when
  * no artifact has that id any more) and edits the list: tick existing
- * artifacts, untick to remove. Saving replaces the key's whole list.
+ * artifacts, untick to remove.
+ *
+ * The editor holds only what the user toggled, laid over the key's list as
+ * last fetched — never a copy of the whole list — and Save sends just that
+ * delta (`addArtifacts` / `removeArtifacts`), which the server applies to the
+ * list as stored then. Another tab's or an agent's change made while this
+ * editor was open is therefore kept, not overwritten. Opening the editor
+ * re-fetches the key so it starts from the current list.
  */
 function DesignedFor({
   detail,
   artifacts,
+  artifactsFailed,
   busy,
+  onOpen,
   onSave,
 }: {
   detail: StorageKeyDetail;
   artifacts: ArtifactSummary[] | null;
+  /** listArtifacts() failed — `artifacts` stays null, so nothing can be called missing. */
+  artifactsFailed: boolean;
   busy: boolean;
-  onSave: (next: string[]) => void;
+  onOpen: () => void;
+  onSave: (delta: { add: string[]; remove: string[] }) => void;
 }) {
-  const [editing, setEditing] = useState<string[] | null>(null);
+  // id → ticked, for the ids the user changed from the list as fetched. null ⇔ not editing.
+  const [toggled, setToggled] = useState<Map<string, boolean> | null>(null);
   const listed = detail.artifacts ?? [];
   const byId = new Map((artifacts ?? []).map((a) => [a.id, a]));
 
-  if (editing !== null) {
-    // Every existing artifact, then any listed id that no longer exists — so it can be unticked.
-    const choices = [...(artifacts ?? []).map((a) => a.id), ...listed.filter((id) => !byId.has(id))];
-    const toggle = (id: string) => setEditing(editing.includes(id) ? editing.filter((x) => x !== id) : [...editing, id]);
-    const over = editing.length > STORAGE_KEY_MAX_ARTIFACTS;
+  if (toggled !== null) {
+    const isTicked = (id: string) => toggled.get(id) ?? listed.includes(id);
+    const add = [...toggled].filter(([id, on]) => on && !listed.includes(id)).map(([id]) => id);
+    const remove = [...toggled].filter(([id, on]) => !on && listed.includes(id)).map(([id]) => id);
+    // Every existing artifact, then any listed or ticked id that no longer exists (or is not loaded) — so it can be unticked.
+    const choices = [...(artifacts ?? []).map((a) => a.id)];
+    for (const id of [...listed, ...add]) if (!choices.includes(id)) choices.push(id);
+    const toggle = (id: string) => {
+      const next = new Map(toggled);
+      const on = !isTicked(id);
+      // Back to what the list says ⇒ no longer a change of ours.
+      if (on === listed.includes(id)) next.delete(id);
+      else next.set(id, on);
+      setToggled(next);
+    };
+    const over = listed.filter((id) => !remove.includes(id)).length + add.length > STORAGE_KEY_MAX_ARTIFACTS && add.length > 0;
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 12, border: "1px solid var(--border)", borderRadius: 6 }} data-testid="designed-for-editor">
         <div style={{ fontSize: 12, fontWeight: 600 }}>Designed for</div>
+        {artifacts === null && (
+          <div style={helpStyle} data-testid="designed-for-artifacts-unknown">
+            {artifactsFailed ? "Couldn't load the artifact list — only the ids already on this key are shown." : "Loading artifacts…"}
+          </div>
+        )}
         {choices.length === 0 ? (
-          <div style={helpStyle}>There are no artifacts yet. Create one in Settings → Artifacts, or have an agent save one.</div>
+          artifacts !== null && <div style={helpStyle}>There are no artifacts yet. Create one in Settings → Artifacts, or have an agent save one.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 240, overflow: "auto" }}>
             {choices.map((id) => {
               const a = byId.get(id);
               return (
                 <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, minWidth: 0 }}>
-                  <input type="checkbox" checked={editing.includes(id)} onChange={() => toggle(id)} aria-label={`Designed for ${id}`} />
+                  <input type="checkbox" checked={isTicked(id)} onChange={() => toggle(id)} aria-label={`Designed for ${id}`} />
                   <span style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis" }}>{id}</span>
                   {a ? (
                     <span style={{ color: "var(--text-muted)", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -229,7 +258,7 @@ function DesignedFor({
                       {a.storageAccess === "none" ? " · takes no storage" : ""}
                     </span>
                   ) : (
-                    <span style={{ color: "var(--danger)", fontSize: 12 }}>missing</span>
+                    artifacts !== null && <span style={{ color: "var(--danger)", fontSize: 12 }}>missing</span>
                   )}
                 </label>
               );
@@ -241,15 +270,15 @@ function DesignedFor({
           artifact can change this list itself.{over ? ` At most ${STORAGE_KEY_MAX_ARTIFACTS}.` : ""}
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button style={secondaryButton} onClick={() => setEditing(null)} disabled={busy}>
+          <button style={secondaryButton} onClick={() => setToggled(null)} disabled={busy}>
             Cancel
           </button>
           <button
             style={{ ...primaryButton, opacity: over ? 0.5 : 1 }}
             disabled={busy || over}
             onClick={() => {
-              onSave(editing);
-              setEditing(null);
+              if (add.length || remove.length) onSave({ add, remove });
+              setToggled(null);
             }}
           >
             Save
@@ -263,7 +292,15 @@ function DesignedFor({
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }} data-testid="designed-for">
       <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)" }}>
         <span style={{ fontWeight: 600, color: "var(--text)" }}>Designed for</span>
-        <button title="Edit which artifacts this key is for" style={iconButton} onClick={() => setEditing(listed)} disabled={busy}>
+        <button
+          title="Edit which artifacts this key is for"
+          style={iconButton}
+          onClick={() => {
+            setToggled(new Map());
+            onOpen();
+          }}
+          disabled={busy}
+        >
           <Pencil size={12} />
         </button>
       </div>
@@ -334,6 +371,7 @@ export default function StorageSettings() {
   const [busy, setBusy] = useState(false);
   // For "Designed for": names, "Open with" links and the editor's choices. null until loaded (so nothing is called missing early).
   const [artifacts, setArtifacts] = useState<ArtifactSummary[] | null>(null);
+  const [artifactsFailed, setArtifactsFailed] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const refreshKeys = useCallback(() => {
@@ -346,6 +384,7 @@ export default function StorageSettings() {
   // Only the latest detail request may land: clicking key A then B quickly
   // must not leave A's items on screen (where uploads would go to B).
   const detailSeq = useRef(0);
+  const selectedRef = useRef(selected);
   const refreshDetail = useCallback(async (key: string) => {
     const seq = ++detailSeq.current;
     try {
@@ -360,11 +399,26 @@ export default function StorageSettings() {
     refreshKeys();
     listArtifacts()
       .then(setArtifacts)
-      .catch((err: Error) => setError(err.message));
+      .catch((err: Error) => {
+        setArtifactsFailed(true);
+        setError(err.message);
+      });
   }, [refreshKeys]);
+
+  // A tab left in the background shows the key as it was; catch up when it is looked at again.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      refreshKeys();
+      if (selected) refreshDetail(selected);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [selected, refreshKeys, refreshDetail]);
 
   useEffect(() => {
     detailSeq.current++; // whatever was in flight is for another selection now
+    selectedRef.current = selected;
     setDetail(null);
     setPreviewName(null);
     setNewItem(null);
@@ -402,11 +456,20 @@ export default function StorageSettings() {
       await Promise.all([refreshDetail(selected), refreshKeys()]);
     });
 
-  const handleSaveArtifacts = (next: string[]) =>
+  // A delta, never the whole list: the server applies it to the list as stored, and we adopt what it returns.
+  const handleSaveArtifacts = ({ add, remove }: { add: string[]; remove: string[] }) =>
     run(async () => {
       if (!selected) return;
-      await updateStorageKey(selected, { artifacts: next });
-      await Promise.all([refreshDetail(selected), refreshKeys()]);
+      const updated = await updateStorageKey(selected, {
+        ...(add.length ? { addArtifacts: add } : {}),
+        ...(remove.length ? { removeArtifacts: remove } : {}),
+      });
+      // Still showing this key: adopt, and stop any GET that started before the write from landing over it.
+      if (selectedRef.current === selected) {
+        detailSeq.current++;
+        setDetail(updated);
+      }
+      await refreshKeys();
     });
 
   const handleUpload = (fileList: FileList | null) =>
@@ -605,7 +668,15 @@ export default function StorageSettings() {
                   )}
                 </div>
 
-                <DesignedFor key={detail.key} detail={detail} artifacts={artifacts} busy={busy} onSave={handleSaveArtifacts} />
+                <DesignedFor
+                  key={detail.key}
+                  detail={detail}
+                  artifacts={artifacts}
+                  artifactsFailed={artifactsFailed}
+                  busy={busy}
+                  onOpen={() => refreshDetail(detail.key)}
+                  onSave={handleSaveArtifacts}
+                />
 
                 <div style={{ display: "flex", gap: 8 }}>
                   <button style={secondaryButton} onClick={() => fileInput.current?.click()} disabled={busy}>

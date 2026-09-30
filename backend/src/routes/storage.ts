@@ -108,20 +108,29 @@ storageRouter.get(
 );
 
 /**
- * PATCH /api/storage/:key  { description?, artifacts? }
+ * PATCH /api/storage/:key  { description?, artifacts?, addArtifacts?, removeArtifacts? }
  *
- * At least one field. Omitted fields are left alone; `artifacts` replaces the
- * key's whole list (`[]` ⇒ it binds no artifact).
+ * At least one field. Omitted fields are left alone. `addArtifacts` /
+ * `removeArtifacts` change the list as stored at write time — what an editor
+ * toggling ids should send; `artifacts` replaces the key's whole list (`[]` ⇒
+ * it binds no artifact) and cannot be combined with them (400).
  */
 storageRouter.patch(
   "/:key",
   wrap("Update storage key", async (req, res) => {
     // #swagger.tags = ['Storage']
     // #swagger.summary = 'Update a storage key description and/or the artifacts it is designed for'
-    const { description, artifacts } = (req.body ?? {}) as { description?: unknown; artifacts?: unknown };
-    if (description === undefined && artifacts === undefined) throw new StorageError("invalid", "Provide description and/or artifacts");
+    const { description, artifacts, addArtifacts, removeArtifacts } = (req.body ?? {}) as {
+      description?: unknown;
+      artifacts?: unknown;
+      addArtifacts?: unknown;
+      removeArtifacts?: unknown;
+    };
+    if (description === undefined && artifacts === undefined && addArtifacts === undefined && removeArtifacts === undefined) {
+      throw new StorageError("invalid", "Provide description, artifacts, or addArtifacts/removeArtifacts");
+    }
     if (description !== undefined && typeof description !== "string") throw new StorageError("invalid", "description must be a string");
-    res.json({ key: await updateStorageKey(req.params.key, { description, artifacts }) });
+    res.json({ key: await updateStorageKey(req.params.key, { description, artifacts, addArtifacts, removeArtifacts }) });
   }),
 );
 
