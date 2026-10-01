@@ -19,7 +19,8 @@ import { ENV_FILE, ensureDataDir, ensureEnvFile, ensureInstanceName, isValidIgno
 ensureDataDir();
 const __isFirstRun = ensureEnvFile();
 migrateDrawlatchDirs();
-migrateKeyDirectories();
+// Before anything reads drawlatch keys — see migrateDrawlatchKeyLayouts.
+migrateDrawlatchKeyLayouts();
 if (existsSync(ENV_FILE)) {
   dotenv.config({ path: ENV_FILE, override: true });
 }
@@ -79,7 +80,7 @@ import { migrateCardsToMetadata, repairStrandedCardFields } from "./services/car
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
 import { shutdownDebounce } from "./services/trigger-debounce.js";
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
-import { getAgentSettings, ensureRemoteProxyConfigDir, migrateDrawlatchDirs, migrateKeyDirectories } from "./services/agent-settings.js";
+import { getAgentSettings, migrateDrawlatchDirs, migrateDrawlatchKeyLayouts } from "./services/agent-settings.js";
 import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
 import { startWebTunnel, stopWebTunnel } from "./services/web-tunnel.js";
@@ -522,13 +523,12 @@ app.listen(PORT, () => {
   }
 
   // Start the drawlatch daemon based on configured mode, then initialize event
-  // watchers. Local: spawn + supervise a managed daemon and auto-enroll the
-  // default caller before the watchers (which use getProxy()) come up. Remote:
-  // connect to the external daemon; keys come from the Sync flow.
+  // watchers. Local: spawn + supervise a managed daemon, which writes the
+  // default caller's keys at boot, before the watchers (which use getProxy())
+  // come up. Remote: connect to the external daemon; callers arrive as
+  // imported bundles.
   const settings = getAgentSettings();
   if (settings.proxyMode === "remote") {
-    // Ensure the remote config directory and key scaffold exist
-    ensureRemoteProxyConfigDir();
     try {
       initEventWatchers();
     } catch (err: any) {

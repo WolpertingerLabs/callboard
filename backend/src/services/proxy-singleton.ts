@@ -16,7 +16,7 @@
 import { join } from "path";
 import { existsSync } from "fs";
 import { ProxyClient } from "./proxy-client.js";
-import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, getRemoteMcpConfigDir, ensureRemoteProxyConfigDir } from "./agent-settings.js";
+import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, getRemoteMcpConfigDir } from "./agent-settings.js";
 import { getLocalDaemonUrl, startLocalDaemon, stopLocalDaemon } from "./local-daemon.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -134,16 +134,12 @@ export async function ensureCallerEnrolled(alias: string): Promise<boolean> {
 }
 
 /**
- * Check whether the proxy is configured (mcpConfigDir set with usable keys
- * for at least one caller, or local mode which auto-enrolls on demand).
+ * Check whether the proxy is configured: always in local mode (the managed
+ * daemon writes the default caller's keys at boot), and in remote mode once at
+ * least one caller with usable keys has been imported.
  */
 export function isProxyConfigured(): boolean {
   const settings = getAgentSettings();
-  const configDir = getActiveMcpConfigDir();
-  if (!configDir) return false;
-
-  // Local mode auto-enrolls callers on demand, so it's always "configured"
-  // once a config dir exists.
   if (settings.proxyMode !== "remote") return true;
 
   // Remote mode needs at least one caller with usable keys.
@@ -307,16 +303,15 @@ export async function fetchProxyRoutes(alias: string, opts?: { force?: boolean }
 /**
  * Handle proxy mode switching at runtime.
  *
- * Local: start (and supervise) the managed daemon, auto-enroll the default
- * caller. Remote: stop any managed daemon and ensure the remote config dir
- * scaffold exists. Always resets cached clients so the new endpoint is used.
+ * Local: start (and supervise) the managed daemon and wait for the default
+ * caller. Remote: stop any managed daemon. Always resets cached clients so the
+ * new endpoint is used.
  */
 export async function switchProxyMode(newMode: string | undefined): Promise<void> {
   resetAllClients();
 
   if (newMode === "remote") {
     await stopLocalDaemon();
-    ensureRemoteProxyConfigDir();
   } else {
     const healthy = await startLocalDaemon();
     if (healthy) {

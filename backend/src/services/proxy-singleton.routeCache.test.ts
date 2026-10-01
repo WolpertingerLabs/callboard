@@ -24,7 +24,6 @@ vi.mock("./agent-settings.js", () => ({
   discoverKeyAliases: () => [{ alias: "a", hasSigningPub: true, hasExchangePub: true }],
   getActiveMcpConfigDir: () => "/cfg",
   getRemoteMcpConfigDir: () => "/cfg",
-  ensureRemoteProxyConfigDir: vi.fn(),
 }));
 
 vi.mock("./local-daemon.js", () => ({

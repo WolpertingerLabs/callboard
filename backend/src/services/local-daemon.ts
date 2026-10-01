@@ -24,6 +24,7 @@ import { spawn, type ChildProcess } from "child_process";
 import { existsSync, openSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { migrateKeyLayout } from "@wolpertingerlabs/drawlatch/shared/migrations";
 import { getActiveMcpConfigDir, readAgentSettings } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -107,12 +108,19 @@ async function waitForHealth(url: string, deadlineMs: number): Promise<boolean> 
 /**
  * Run `drawlatch init` (idempotent) so the config dir has a server keypair,
  * remote.config.json, and .env before the daemon boots.
+ *
+ * Migrates the legacy key layout first. On an old-layout dir the server keypair
+ * is at `keys/remote/`, so without the migration the check below misses it,
+ * `drawlatch init` mints a fresh one at `keys/server/`, and the daemon's own
+ * boot-time migration then skips `remote → server` because the target exists —
+ * stranding the old server identity every caller had pinned.
  */
-function ensureInitialized(configDir: string): Promise<void> {
+export function ensureInitialized(configDir: string): Promise<void> {
   const { binEntry } = resolveDrawlatchPaths();
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true, mode: 0o700 });
   }
+  migrateKeyLayout(join(configDir, "keys"));
   // Already initialised — skip the spawn.
   if (existsSync(join(configDir, "remote.config.json")) && existsSync(join(configDir, "keys", "server", "signing.key.pem"))) {
     return Promise.resolve();
@@ -154,10 +162,6 @@ export async function startLocalDaemon(): Promise<boolean> {
     }
 
     const configDir = getActiveMcpConfigDir();
-    if (!configDir) {
-      log.warn("Cannot start local daemon: no MCP config directory configured");
-      return false;
-    }
 
     let serverEntry: string;
     let pkgRoot: string;
