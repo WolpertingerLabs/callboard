@@ -5,8 +5,25 @@
  * Currently stores the MCP config directory path and provides key alias
  * discovery from the configured drawlatch directory.
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync, rmSync } from "fs";
-import { join } from "path";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  readdirSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  accessSync,
+  chmodSync,
+  openSync,
+  fsyncSync,
+  closeSync,
+  unlinkSync,
+  constants as fsConstants,
+} from "fs";
+import { join, dirname, basename } from "path";
+import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
 import { migrateKeyLayout } from "@wolpertingerlabs/drawlatch/shared/migrations";
@@ -214,58 +231,86 @@ export function migrateOpenRouterUtilityCompletions(settings: AgentSettings): Ag
 }
 
 /**
- * The model fields that only ever hold an OpenRouter slug, and are sent to
- * OpenRouter verbatim: the Claude Code role models (as `ANTHROPIC_*MODEL`), the
- * routed Codex default, and the three utility-completion tiers.
+ * Claude Code's own model names, as its CLI resolves them in `ANTHROPIC_MODEL`
+ * and `CLAUDE_CODE_SUBAGENT_MODEL` (taken from the installed CLI's list; the
+ * subagent field also takes `inherit`). Through OpenRouter these still work:
+ * the CLI maps `opus` to `ANTHROPIC_DEFAULT_OPUS_MODEL` and so on.
  */
-const OPENROUTER_ONLY_MODEL_FIELDS = [
-  "claudeCodeOpenRouterModel",
-  "claudeCodeOpenRouterOpusModel",
-  "claudeCodeOpenRouterSonnetModel",
-  "claudeCodeOpenRouterHaikuModel",
-  "claudeCodeOpenRouterSubagentModel",
-  "codexOpenRouterModel",
-  "openRouterUtilityHaikuModel",
-  "openRouterUtilitySonnetModel",
-  "openRouterUtilityOpusModel",
-] as const satisfies readonly (keyof AgentSettings)[];
-
-/** `field=value` pairs already warned about, so a constant re-read logs once. */
-const warnedUnrepairableAliasFields = new Set<string>();
+const CLAUDE_CODE_MODEL_NAMES = new Set(["sonnet", "opus", "haiku", "fable", "best", "sonnet[1m]", "opus[1m]", "fable[1m]", "opusplan", "inherit"]);
 
 /**
- * Replace an alias *name* saved in an OpenRouter-only model field with that
- * alias's `openrouter` target.
+ * The model fields an OpenRouter-only alias name can be stuck in, each with the
+ * test for "this value already works today, leave it alone". Traced per field:
+ *
+ * - `claudeCodeOpenRouterModel` / `…SubagentModel` → `ANTHROPIC_MODEL` /
+ *   `CLAUDE_CODE_SUBAGENT_MODEL` in {@link getApiEnvOverrides}, verbatim. Callboard
+ *   resolves nothing there; the CLI resolves its own model names.
+ * - `claudeCodeOpenRouter{Opus,Sonnet,Haiku}Model` → `ANTHROPIC_DEFAULT_*_MODEL`,
+ *   verbatim, which the CLI reads as a concrete id. Nothing resolves.
+ * - `codexOpenRouterModel` → `resolveReasoningTarget` →
+ *   `resolveSessionModel(…, "codex")`: an alias with a **codex** target already
+ *   resolves, and is a supported setup.
+ * - `openRouterUtility*Model` → `resolveUtilityModel` → the OpenRouter request,
+ *   verbatim. Nothing resolves.
+ */
+const OPENROUTER_MODEL_FIELDS: readonly { field: keyof AgentSettings; resolvesToday: (value: string, alias: ModelAlias) => boolean }[] = [
+  { field: "claudeCodeOpenRouterModel", resolvesToday: (value) => CLAUDE_CODE_MODEL_NAMES.has(value.trim().toLowerCase()) },
+  { field: "claudeCodeOpenRouterOpusModel", resolvesToday: () => false },
+  { field: "claudeCodeOpenRouterSonnetModel", resolvesToday: () => false },
+  { field: "claudeCodeOpenRouterHaikuModel", resolvesToday: () => false },
+  { field: "claudeCodeOpenRouterSubagentModel", resolvesToday: (value) => CLAUDE_CODE_MODEL_NAMES.has(value.trim().toLowerCase()) },
+  { field: "codexOpenRouterModel", resolvesToday: (_value, alias) => Boolean(alias.targets.codex?.trim()) },
+  { field: "openRouterUtilityHaikuModel", resolvesToday: () => false },
+  { field: "openRouterUtilitySonnetModel", resolvesToday: () => false },
+  { field: "openRouterUtilityOpusModel", resolvesToday: () => false },
+];
+
+/**
+ * `field=value` pairs already logged about, so the constant re-reads of a
+ * settings file that cannot be written log once per process, not per read.
+ */
+const loggedAliasRepairs = new Set<string>();
+
+function logOnce(key: string, write: () => void): void {
+  if (loggedAliasRepairs.has(key)) return;
+  loggedAliasRepairs.add(key);
+  write();
+}
+
+/**
+ * Replace an alias *name* saved in an OpenRouter model field with that alias's
+ * `openrouter` target, where the name cannot resolve today.
  *
  * The OpenRouter model picker used to pin the deprecated OpenRouter-only aliases
- * at the top of its list, so those fields could hold `planner`, which then went
- * to OpenRouter as `ANTHROPIC_MODEL="planner"`. These fields hold OpenRouter
- * slugs and nothing else, so the alias's `openrouter` target (folded into the
- * registry by {@link migrateModelAliases}) is the unambiguous replacement.
+ * at the top of its list, so these fields could hold `planner`, which then went
+ * to OpenRouter as `ANTHROPIC_MODEL="planner"`. Each of these fields means "the
+ * model OpenRouter runs", so the alias's `openrouter` target (folded into the
+ * registry by {@link migrateModelAliases}) is the replacement. A value that
+ * already resolves (see {@link OPENROUTER_MODEL_FIELDS}) is left alone and is not
+ * warned about.
  *
- * Real model ids match no alias and are left alone. A name whose alias has no
- * `openrouter` target is left as-is, with a warning, rather than guessed at.
- * Pure and idempotent; returns `settings` itself when nothing changed.
+ * Real model ids match no alias and are left alone. A broken name whose alias
+ * has no `openrouter` target is left as-is, with a warning, rather than guessed
+ * at. Pure and idempotent; returns `settings` itself when nothing changed.
  */
 export function repairAliasNamesInOpenRouterModelFields(settings: AgentSettings): AgentSettings {
   let next = settings;
-  for (const field of OPENROUTER_ONLY_MODEL_FIELDS) {
+  for (const { field, resolvesToday } of OPENROUTER_MODEL_FIELDS) {
     const value = settings[field];
     if (typeof value !== "string" || !value.trim()) continue;
     const alias = findModelAlias(value, settings);
-    if (!alias) continue;
+    if (!alias || resolvesToday(value, alias)) continue;
     const slug = alias.targets.openrouter?.trim();
+    const key = `${field}=${value}`;
     if (!slug) {
-      const key = `${field}=${value}`;
-      if (!warnedUnrepairableAliasFields.has(key)) {
-        warnedUnrepairableAliasFields.add(key);
-        log.warn(`${field} holds model alias "${value}", which has no openrouter target; leaving it as-is. Set an OpenRouter slug in Settings → API.`);
-      }
+      logOnce(key, () =>
+        log.warn(`${field} holds model alias "${value}", which has no openrouter target; leaving it as-is. Set an OpenRouter slug in Settings → API.`),
+      );
       continue;
     }
     if (slug === value) continue;
     next = { ...next, [field]: slug };
-    log.info(`Replaced model alias "${value}" in ${field} with its OpenRouter target "${slug}"`);
+    logOnce(key, () => log.info(`Replaced model alias "${value}" in ${field} with its OpenRouter target "${slug}"`));
   }
   return next;
 }
@@ -275,13 +320,50 @@ function persistRepairedSettings(settings: AgentSettings): void {
   try {
     saveSettings(settings);
   } catch (err: any) {
-    log.warn(`Could not persist repaired agent settings (they still apply in memory): ${err?.message ?? String(err)}`);
+    const message = err?.message ?? String(err);
+    logOnce(`persist:${message}`, () => log.warn(`Could not persist repaired agent settings (they still apply in memory): ${message}`));
   }
 }
 
+/**
+ * Replace the settings file atomically: write a uniquely named temp file in the
+ * same directory, fsync it, and rename it over the target, so a failed or
+ * interrupted write leaves the previous file whole rather than truncated. The
+ * file holds API keys, so the temp file takes the existing file's mode before it
+ * is renamed into place.
+ *
+ * A rename would replace a read-only file that a truncating write could not, so
+ * the existing file is checked for write access first: an operator who made the
+ * file read-only still gets EACCES, as before.
+ */
 function saveSettings(settings: AgentSettings): void {
   ensureDataDir();
-  writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  const data = JSON.stringify(settings, null, 2);
+  let mode: number | undefined;
+  if (existsSync(SETTINGS_FILE)) {
+    accessSync(SETTINGS_FILE, fsConstants.W_OK);
+    mode = statSync(SETTINGS_FILE).mode & 0o777;
+  }
+  const tmp = join(dirname(SETTINGS_FILE), `.${basename(SETTINGS_FILE)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
+  try {
+    writeFileSync(tmp, data, { flag: "wx", ...(mode !== undefined && { mode }) });
+    // `mode` above is filtered through the umask; set it exactly.
+    if (mode !== undefined) chmodSync(tmp, mode);
+    const fd = openSync(tmp, "r+");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, SETTINGS_FILE);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* never created, or already renamed */
+    }
+    throw err;
+  }
 }
 
 // ── Public API ──────────────────────────────────────────────────────
