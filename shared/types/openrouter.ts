@@ -46,9 +46,10 @@ export interface OpenRouterModelInfo {
 
 /**
  * A user-defined model alias joined with its target model's catalog info.
- * Returned by GET /api/openrouter/models alongside the model list. The
- * target fields are absent when the target slug isn't in the cached
- * tool-calling model list (stale cache, typo, or a non-tool-calling model).
+ * The element type of GET /api/openrouter/models' `aliases`, which is now
+ * always empty: the only aliases it ever listed were the deprecated
+ * OpenRouter-only ones, whose `openrouter` target resolves nowhere since the
+ * OpenRouter engine was removed. Kept so older tabs still parse the response.
  */
 export interface OpenRouterModelAliasInfo {
   /** The user-chosen alias name, e.g. "low coder". */
