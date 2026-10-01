@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
-import type { QueueItem, DefaultPermissions } from "shared/types/index.js";
+import type { QueueItem, QueueItemImage, DefaultPermissions } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 
 export type { QueueItem };
@@ -11,6 +11,18 @@ const queueDir = join(DATA_DIR, "queue");
 // Ensure queue directory exists
 if (!existsSync(queueDir)) {
   mkdirSync(queueDir, { recursive: true });
+}
+
+/** Draft ids are `randomUUID()`s, and always have been (the SQLite store before this used `uuid()` too). */
+const QUEUE_ITEM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether `id` can name a draft. Every lookup by id goes through this, since
+ * the id becomes a file name: `../victim` would otherwise read or unlink any
+ * `*.json` relative to the queue directory.
+ */
+export function isValidQueueItemId(id: string): boolean {
+  return QUEUE_ITEM_ID.test(id);
 }
 
 export class QueueFileService {
@@ -45,6 +57,7 @@ export class QueueFileService {
 
   // Get a specific queue item
   getQueueItem(id: string): QueueItem | null {
+    if (!isValidQueueItemId(id)) return null;
     const filepath = join(queueDir, `${id}.json`);
 
     if (!existsSync(filepath)) {
@@ -61,7 +74,13 @@ export class QueueFileService {
   }
 
   // Create a new draft item
-  createQueueItem(chatId: string | null, userMessage: string, folder?: string, defaultPermissions?: DefaultPermissions): QueueItem {
+  createQueueItem(
+    chatId: string | null,
+    userMessage: string,
+    folder?: string,
+    defaultPermissions?: DefaultPermissions,
+    images?: QueueItemImage[],
+  ): QueueItem {
     const id = randomUUID();
     const now = new Date().toISOString();
 
@@ -73,6 +92,7 @@ export class QueueFileService {
       created_at: now,
       ...(folder && { folder }),
       ...(defaultPermissions && { defaultPermissions }),
+      ...(images?.length && { images }),
     };
 
     this.saveQueueItem(item);
@@ -87,12 +107,15 @@ export class QueueFileService {
     }
 
     const updatedItem = { ...item, ...updates };
+    // An empty list is stored as no list, the same shape create writes.
+    if (!updatedItem.images?.length) delete updatedItem.images;
     this.saveQueueItem(updatedItem);
     return true;
   }
 
   // Delete a queue item
   deleteQueueItem(id: string): boolean {
+    if (!isValidQueueItemId(id)) return false;
     const filepath = join(queueDir, `${id}.json`);
 
     if (!existsSync(filepath)) {

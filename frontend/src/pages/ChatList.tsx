@@ -274,13 +274,13 @@ export default function ChatList({
     (draft: QueueItem) => {
       if (draft.chat_id) {
         navigate(`/chat/${draft.chat_id}`, {
-          state: { draft: { id: draft.id, user_message: draft.user_message } },
+          state: { draft: { id: draft.id, user_message: draft.user_message, images: draft.images } },
         });
       } else if (draft.folder) {
         navigate(`/chat/new?folder=${encodeURIComponent(draft.folder)}`, {
           state: {
             defaultPermissions: draft.defaultPermissions,
-            draft: { id: draft.id, user_message: draft.user_message },
+            draft: { id: draft.id, user_message: draft.user_message, images: draft.images },
           },
         });
       }

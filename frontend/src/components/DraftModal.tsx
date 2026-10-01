@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { createDraft, updateDraft, type DefaultPermissions } from "../api";
+import { useRef, useState } from "react";
+import { createDraft, updateDraft, uploadDraftImages, type DefaultPermissions, type QueueItemImage } from "../api";
 import ModalOverlay from "./ModalOverlay";
 
 interface DraftModalProps {
@@ -7,15 +7,37 @@ interface DraftModalProps {
   onClose: () => void;
   chatId: string | null;
   message: string;
+  /** Attachments still to upload; saved with the draft so opening it restores them. */
+  images?: File[];
+  /**
+   * Images already stored for this draft, saved again by id: the ones its
+   * restore put back in the composer and are still there, and any it could
+   * not restore. Never re-uploaded.
+   */
+  keptImages?: QueueItemImage[];
   onSuccess?: () => void;
   folder?: string;
   defaultPermissions?: DefaultPermissions;
   existingDraftId?: string | null;
 }
 
-export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess, folder, defaultPermissions, existingDraftId }: DraftModalProps) {
+export default function DraftModal({
+  isOpen,
+  onClose,
+  chatId,
+  message,
+  images = [],
+  keptImages = [],
+  onSuccess,
+  folder,
+  defaultPermissions,
+  existingDraftId,
+}: DraftModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Uploads that landed on an attempt whose draft write then failed, so a
+  // retry reuses them instead of leaving another copy of each on disk.
+  const uploadedRef = useRef(new WeakMap<File, QueueItemImage>());
 
   if (!isOpen) return null;
 
@@ -28,10 +50,18 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
     setError(null);
 
     try {
+      const pending = images.filter((file) => !uploadedRef.current.has(file));
+      const uploaded = await uploadDraftImages(pending);
+      pending.forEach((file, i) => uploadedRef.current.set(file, uploaded[i]));
+      const draftImages = [...keptImages, ...images.map((file) => uploadedRef.current.get(file)!)];
       if (existingDraftId) {
-        await updateDraft(existingDraftId, message.trim());
+        // Always sent, `[]` included: Chat holds Save until the draft's restore
+        // has settled and passes what it could not restore as kept, so this
+        // is the draft's full set. (Dropping one only drops the reference —
+        // the server never deletes a draft's image files.)
+        await updateDraft(existingDraftId, message.trim(), draftImages);
       } else {
-        await createDraft(chatId, message.trim(), folder, defaultPermissions);
+        await createDraft(chatId, message.trim(), folder, defaultPermissions, draftImages);
       }
       onSuccess?.();
       onClose();
@@ -80,6 +110,11 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
             >
               {message || "No message content"}
             </div>
+            {images.length + keptImages.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                {images.length + keptImages.length === 1 ? "1 image attached" : `${images.length + keptImages.length} images attached`}
+              </div>
+            )}
           </div>
 
           {error && (

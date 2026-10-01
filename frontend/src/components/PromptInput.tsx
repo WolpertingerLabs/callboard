@@ -130,6 +130,12 @@ interface Props {
    * typing `$` is a keyboard layer away on iOS — so it is not a nicety.
    */
   onInsertAtCaret?: (insert: (text: string) => void) => void;
+  /**
+   * Registration callback handing out an add-attachments function, same shape
+   * as {@link Props.onSetValue}. Opening a saved draft restores its images
+   * through this.
+   */
+  onAddImages?: (add: (files: File[]) => void) => void;
 }
 
 export default function PromptInput({
@@ -147,6 +153,7 @@ export default function PromptInput({
   keywords = [],
   onKeywordCreated,
   onInsertAtCaret,
+  onAddImages,
 }: Props) {
   const [value, setValue] = useState("");
   const [images, setImages] = useState<File[]>([]);
@@ -614,6 +621,12 @@ export default function PromptInput({
     // this in a `useState`, which would otherwise call it as an updater.
     onInsertAtCaret?.(() => insertAtCaret);
   }, [onInsertAtCaret, insertAtCaret]);
+
+  useEffect(() => {
+    // Arrow-wrapped like the two registrations above. `setImages` is stable, so
+    // this registers once.
+    onAddImages?.(() => (files: File[]) => setImages((prev) => [...prev, ...files]));
+  }, [onAddImages]);
 
   /**
    * Restore the caret after a programmatic value change lands in the DOM.
