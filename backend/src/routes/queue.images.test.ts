@@ -33,7 +33,7 @@ import type { Request, Response } from "express";
 const DATA_DIR = mkdtempSync(join(tmpdir(), "callboard-queue-images-"));
 process.env.CALLBOARD_DATA_DIR = DATA_DIR;
 
-vi.mock("../services/claude.js", () => ({ sendMessage: vi.fn() }));
+vi.mock("../services/claude.js", () => ({ sendMessage: vi.fn(), RetiredProviderError: class RetiredProviderError extends Error {} }));
 vi.mock("../services/image-metadata.js", () => ({ storeMessageImages: vi.fn(async () => {}) }));
 
 const { queueRouter } = await import("./queue.js");
@@ -218,6 +218,33 @@ describe("POST /:id/execute-now", () => {
     expect(opts.imageMetadata![0].buffer.toString()).toBe("png-bytes-exec.png");
     expect(storeMessageImages).toHaveBeenCalledWith("chat-1", [id]);
     expect(exists(id)).toBe(true);
+    // Sent, so retired.
+    expect((await call("get", "/:id", { params: { id: created.body.id } })).code).toBe(404);
+  });
+
+  it("keeps the draft when the send fails", async () => {
+    vi.mocked(sendMessage).mockRejectedValueOnce(new Error("Chat not found"));
+    const created = await call("post", "/", { body: { chat_id: "chat-gone", user_message: "keep me" } });
+
+    const res = await call("post", "/:id/execute-now", { params: { id: created.body.id } });
+    expect(res.code).toBe(500);
+    const read = await call("get", "/:id", { params: { id: created.body.id } });
+    expect(read).toMatchObject({ code: 200, body: { user_message: "keep me" } });
+  });
+
+  it("refuses a second execute-now for a draft whose send is still starting", async () => {
+    let started!: (emitter: EventEmitter) => void;
+    vi.mocked(sendMessage).mockClear();
+    vi.mocked(sendMessage).mockImplementationOnce(() => new Promise((resolve) => (started = resolve as (emitter: EventEmitter) => void)) as any);
+    const created = await call("post", "/", { body: { chat_id: "chat-1", user_message: "once" } });
+
+    const first = call("post", "/:id/execute-now", { params: { id: created.body.id } });
+    const second = await call("post", "/:id/execute-now", { params: { id: created.body.id } });
+    expect(second.code).toBe(409);
+
+    started(new EventEmitter());
+    expect((await first).code).toBe(200);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it("records a new chat's images once the chat exists", async () => {

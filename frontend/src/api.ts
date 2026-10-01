@@ -779,12 +779,13 @@ export async function uploadDraftImages(images: File[]): Promise<QueueItemImage[
 /**
  * A draft's stored images, back as Files the composer can attach and send.
  * Settled per image, in order: one that fails to load must not take the rest
- * down with it.
+ * down with it. Aborting `signal` rejects every image still in flight, the
+ * same as a failed load.
  */
-export async function fetchDraftImages(images: QueueItemImage[]): Promise<PromiseSettledResult<File>[]> {
+export async function fetchDraftImages(images: QueueItemImage[], signal?: AbortSignal): Promise<PromiseSettledResult<File>[]> {
   return Promise.allSettled(
     images.map(async (image) => {
-      const res = await fetch(`${BASE}/images/${encodeURIComponent(image.id)}`);
+      const res = await fetch(`${BASE}/images/${encodeURIComponent(image.id)}`, { signal });
       await assertOk(res, "Failed to load draft image");
       const blob = await res.blob();
       return new File([blob], image.originalName, { type: blob.type });

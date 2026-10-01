@@ -23,7 +23,7 @@
 import { useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 import Chat from "./Chat";
 
 vi.mock("../components/PromptInput", () => {
@@ -79,12 +79,25 @@ vi.mock("../components/PromptInput", () => {
 });
 
 const FOLDER = "/tmp/project";
+const OTHER_FOLDER = "/tmp/other";
 const UPLOADED_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const STORED_ID = "12345678-1234-4234-8234-123456789abc";
 const MISSING_ID = "87654321-4321-4321-8321-cba987654321";
 
-/** Set per test: makes `GET /api/images/:id` for the stored image never answer. */
+/**
+ * Set per test: makes `GET /api/images/:id` for the stored image never answer
+ * on its own. It still rejects when its signal aborts, like a real fetch.
+ */
 let hangImageFetch = false;
+/**
+ * Set per test: holds the stored image's GET until `releaseHeldImage()` and
+ * ignores its signal — a response already past the point an abort can stop
+ * it. Only the restore's generation check can keep this one out.
+ */
+let holdImageFetch = false;
+let releaseHeldImage: () => void = () => {};
+/** Set per test: `POST /api/chats/new/message` fails. */
+let failSend = false;
 /** Set per test: how many draft writes fail before one succeeds. */
 let failingDraftWrites = 0;
 
@@ -106,7 +119,15 @@ function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
     return Promise.resolve(jsonResponse({ success: true, images: files.map((f) => ({ id: UPLOADED_ID, originalName: f.name })) }));
   }
   if (method === "GET" && url === `/api/images/${STORED_ID}`) {
-    if (hangImageFetch) return new Promise(() => {});
+    if (hangImageFetch) {
+      return new Promise((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError"))));
+    }
+    if (holdImageFetch) {
+      const blob = new Blob(["stored-png"], { type: "image/png" });
+      return new Promise((resolve) => {
+        releaseHeldImage = () => resolve({ ok: true, status: 200, blob: async () => blob } as unknown as Response);
+      });
+    }
     const blob = new Blob(["stored-png"], { type: "image/png" });
     return Promise.resolve({ ok: true, status: 200, blob: async () => blob } as unknown as Response);
   }
@@ -122,6 +143,9 @@ function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
   if (method === "POST" && url.endsWith("/queue")) return Promise.resolve(jsonResponse({ id: "draft-new", ...(body as object) }));
   if (method === "DELETE" && url.includes("/queue/")) return Promise.resolve(jsonResponse({ ok: true }));
   if (method === "POST" && url.includes("/chats/new/message")) {
+    if (failSend) {
+      return Promise.resolve({ ok: false, status: 500, body: null, json: async () => ({ error: "agent unavailable" }) } as unknown as Response);
+    }
     const stream = new ReadableStream({ start: (controller) => controller.close() });
     return Promise.resolve({ ok: true, status: 200, body: stream, json: async () => ({}) } as unknown as Response);
   }
@@ -135,9 +159,25 @@ function fakeServer(input: RequestInfo | URL, init?: RequestInit): Promise<Respo
   return Promise.reject(new Error(`unmocked request: ${method} ${url}`));
 }
 
+/** Navigation the way the app does it: the same Chat instance stays mounted. */
+function NavProbe() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate(`/chat/new?folder=${encodeURIComponent(OTHER_FOLDER)}`)}>
+        go to another folder
+      </button>
+      <button type="button" onClick={() => navigate(`/chat/new?folder=${encodeURIComponent(FOLDER)}`)}>
+        start a fresh compose here
+      </button>
+    </>
+  );
+}
+
 function renderCompose(state?: unknown) {
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/chat/new", search: `?folder=${encodeURIComponent(FOLDER)}`, state }]}>
+      <NavProbe />
       <Routes>
         <Route path="/chat/new" element={<Chat />} />
       </Routes>
@@ -168,6 +208,8 @@ const WITH_ONE_MISSING = {
 beforeEach(() => {
   calls = [];
   hangImageFetch = false;
+  holdImageFetch = false;
+  failSend = false;
   failingDraftWrites = 0;
   vi.stubGlobal("fetch", vi.fn(fakeServer));
   vi.stubGlobal(
@@ -183,6 +225,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -350,5 +393,81 @@ describe("draft images", () => {
     await waitFor(() => expect(draftWrites()).toHaveLength(2));
     expect(uploads()).toHaveLength(1);
     expect(draftWrites()[1].body).toMatchObject({ images: [{ id: UPLOADED_ID, originalName: "shot.png" }] });
+  });
+
+  it("a send that fails keeps the draft", async () => {
+    failSend = true;
+    renderCompose(WITH_STORED);
+    await waitFor(() => expect(screen.getByTestId("composer-images").textContent).toContain("diagram.png"));
+    await waitFor(() => expect(screen.getByTestId("send-blocked").textContent).toBe(""));
+
+    fireEvent.click(screen.getByText("send"));
+    await waitFor(() => expect(sends()).toHaveLength(1));
+    await flush();
+
+    expect(draftDeletes()).toEqual([]);
+  });
+
+  describe("a restore that does not settle", () => {
+    it("stops holding Send after the timeout, and the draft keeps the images it never got", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      hangImageFetch = true;
+      renderCompose(WITH_STORED);
+      await waitFor(() => expect(screen.getByTestId("send-blocked").textContent).toMatch(/restoring/i));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+
+      await waitFor(() => expect(screen.getByTestId("send-blocked").textContent).toBe(""));
+      expect(screen.getByText(/couldn't restore this draft's images/i)).toBeTruthy();
+      fireEvent.click(screen.getByText("send"));
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      await flush();
+      expect(draftDeletes()).toEqual([]);
+    });
+
+    it("stops holding Send as soon as the user navigates to another chat", async () => {
+      hangImageFetch = true;
+      renderCompose(WITH_STORED);
+      await waitFor(() => expect(screen.getByTestId("send-blocked").textContent).toMatch(/restoring/i));
+
+      fireEvent.click(screen.getByText("go to another folder"));
+      await flush();
+
+      expect(screen.getByTestId("send-blocked").textContent).toBe("");
+      expect(screen.queryByText(/restoring this draft's images/i)).toBeNull();
+      // The aborted restore is superseded, so its failure isn't reported here either.
+      expect(screen.queryByText(/couldn't restore/i)).toBeNull();
+    });
+
+    it("stops holding Send on a fresh compose at the same URL", async () => {
+      hangImageFetch = true;
+      renderCompose(WITH_STORED);
+      await waitFor(() => expect(screen.getByTestId("send-blocked").textContent).toMatch(/restoring/i));
+
+      fireEvent.click(screen.getByText("start a fresh compose here"));
+      await flush();
+
+      expect(screen.getByTestId("send-blocked").textContent).toBe("");
+    });
+
+    it("never lands a late image in the chat the user moved on to, and a send there leaves the draft alone", async () => {
+      holdImageFetch = true;
+      renderCompose(WITH_STORED);
+      await waitFor(() => expect(screen.getByTestId("send-blocked").textContent).toMatch(/restoring/i));
+
+      fireEvent.click(screen.getByText("go to another folder"));
+      await flush();
+      await act(async () => releaseHeldImage());
+      await flush();
+
+      expect(screen.getByTestId("composer-images").textContent).toBe("");
+      fireEvent.click(screen.getByText("send"));
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      await flush();
+      expect(sends()[0].body).not.toHaveProperty("imageIds");
+      expect(draftDeletes()).toEqual([]);
+    });
   });
 });

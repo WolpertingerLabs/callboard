@@ -210,15 +210,23 @@ queueRouter.delete("/:id", (req, res) => {
   }
 });
 
+/**
+ * Drafts with an execute-now in flight. The draft is deleted only once its
+ * send has started, so for the length of that await it still exists; this is
+ * what turns a second request for it (a double click, a retry) into a 409
+ * rather than a second send.
+ */
+const executingDrafts = new Set<string>();
+
 // Execute a draft immediately
 queueRouter.post("/:id/execute-now", async (req, res) => {
   // #swagger.tags = ['Drafts']
   // #swagger.summary = 'Execute draft now'
-  // #swagger.description = 'Immediately execute a draft message, with its images, sending it to Claude. The draft is deleted on success. A draft whose images can no longer all be loaded is refused and kept.'
+  // #swagger.description = 'Immediately execute a draft message, with its images, sending it to Claude. The draft is deleted once the send has started, and kept if it fails. A draft whose images can no longer all be loaded is refused and kept.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Draft item ID' } */
   /* #swagger.responses[200] = { description: "Execution started" } */
   /* #swagger.responses[404] = { description: "Draft not found" } */
-  /* #swagger.responses[409] = { description: "One of the draft's images is gone; the draft is kept" } */
+  /* #swagger.responses[409] = { description: "One of the draft's images is gone, or the draft is already being sent; the draft is kept" } */
   const queueItem = queueFileService.getQueueItem(req.params.id);
 
   if (!queueItem) {
@@ -237,10 +245,12 @@ queueRouter.post("/:id/execute-now", async (req, res) => {
     return res.status(409).json({ error: "Some of this draft's images could not be loaded; open the draft to send it" });
   }
 
-  try {
-    // Delete the draft before executing
-    queueFileService.deleteQueueItem(req.params.id);
+  if (executingDrafts.has(queueItem.id)) {
+    return res.status(409).json({ error: "This draft is already being sent" });
+  }
+  executingDrafts.add(queueItem.id);
 
+  try {
     // Kick off the message but don't wait for completion — the user can
     // navigate to the chat and connect to the active session via /stream.
     const images = imageMetadata.length > 0 ? { imageMetadata } : {};
@@ -266,6 +276,8 @@ queueRouter.post("/:id/execute-now", async (req, res) => {
       emitter.on("event", onEvent);
     }
 
+    // Only now that the send has started: a send that throws keeps the draft.
+    queueFileService.deleteQueueItem(queueItem.id);
     res.json({ success: true, message: "Message execution started" });
   } catch (error: any) {
     // Same 410-not-500 rule as POST /api/chats/:id/message: a draft saved
@@ -273,5 +285,7 @@ queueRouter.post("/:id/execute-now", async (req, res) => {
     // hit that is not a server fault.
     if (sendRetiredProviderError(res, error)) return;
     res.status(500).json({ error: error.message });
+  } finally {
+    executingDrafts.delete(queueItem.id);
   }
 });

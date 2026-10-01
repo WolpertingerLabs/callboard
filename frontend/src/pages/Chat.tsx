@@ -103,6 +103,16 @@ import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgrou
 import { sameActivityPayload } from "../utils/activitySnapshot";
 
 /**
+ * How long an opened draft's images get to come back before the composer stops
+ * waiting for them. Send and Save are held meanwhile, so this is the longest
+ * that hold can last. 30 s covers the largest image the upload route accepts
+ * (10 MB) over a ~3 Mbit/s mobile link, and is still far short of the minutes
+ * Chromium will sit on a stalled GET. Whatever is still loading then counts as
+ * not restored: the draft keeps it, and a send won't delete the draft.
+ */
+const DRAFT_RESTORE_TIMEOUT_MS = 30_000;
+
+/**
  * Detect if the messages contain an unresolved ExitPlanMode tool_use
  * (no matching tool_result). This happens when the page is refreshed
  * after the backend session has ended but before the user approved/rejected.
@@ -270,6 +280,24 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    * open draft (if any) has no images.
    */
   const [draftRestore, setDraftRestore] = useState<{ settled: boolean; restored: Map<File, QueueItemImage>; unrestored: QueueItemImage[] } | null>(null);
+  /**
+   * The opened draft, for as long as it belongs to what's on screen. Chat is
+   * not remounted on navigation, so without this a draft opened here — its id,
+   * its pending restore, and the hold that restore puts on Send — follows the
+   * user into the next chat. `key` is the history entry the draft belongs to:
+   * `undefined` until the prefill's own state-stripping replace lands (which
+   * rotates `location.key` without the user going anywhere), and from then on
+   * any other key means they left. `abort` cancels the image restore.
+   */
+  const openDraftRef = useRef<{ key: string | undefined; abort: () => void } | null>(null);
+  /**
+   * Bumped whenever a draft restore is superseded. A restore applies its
+   * result only if the generation it started under is still current, so an
+   * image that loads after the user has left can never land in another
+   * chat's composer — aborting alone can't promise that, since a response can
+   * already be past the point where the signal is checked.
+   */
+  const draftRestoreGenerationRef = useRef(0);
 
   const [chat, setChat] = useState<ChatType | null>(null);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
@@ -1979,8 +2007,22 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Back as Files, so the send that follows is the ordinary one: the
       // composer uploads them exactly as it would freshly attached images.
       if (draftImages.length > 0) {
+        const generation = ++draftRestoreGenerationRef.current;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), DRAFT_RESTORE_TIMEOUT_MS);
+        openDraftRef.current = {
+          key: undefined,
+          abort: () => {
+            clearTimeout(timer);
+            controller.abort();
+          },
+        };
         setDraftRestore({ settled: false, restored: new Map(), unrestored: draftImages });
-        void fetchDraftImages(draftImages).then((results) => {
+        // Timed out or aborted images reject like failed ones, so they land
+        // in `unrestored` and the keep-the-draft path takes over.
+        void fetchDraftImages(draftImages, controller.signal).then((results) => {
+          clearTimeout(timer);
+          if (generation !== draftRestoreGenerationRef.current) return;
           const restored = new Map<File, QueueItemImage>();
           const unrestored: QueueItemImage[] = [];
           results.forEach((result, i) => (result.status === "fulfilled" ? restored.set(result.value, draftImages[i]) : unrestored.push(draftImages[i])));
@@ -1993,6 +2035,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           }
           setDraftRestore({ settled: true, restored, unrestored });
         });
+      } else {
+        openDraftRef.current = { key: undefined, abort: () => {} };
       }
       routerDraftRef.current = undefined;
       // Clean draft from router state so back/forward doesn't re-apply
@@ -2000,6 +2044,32 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       navigate(location.pathname + location.search, { replace: true, state: Object.keys(rest).length > 0 ? rest : undefined });
     }
   }, [promptInputSetValue, promptInputAddImages, navigate, location.state, location.pathname, location.search]);
+
+  // Leaving the draft's view — another chat, another compose screen, or
+  // /chat/new → /chat/new — lets go of the draft: its restore is cancelled and
+  // superseded, the hold comes off, and nothing sent from the next view
+  // deletes it. It is still in Staging.
+  useEffect(() => {
+    const open = openDraftRef.current;
+    if (!open) return;
+    if (open.key === undefined) {
+      open.key = location.key; // the prefill's own replace
+      return;
+    }
+    if (open.key === location.key) return;
+    open.abort();
+    openDraftRef.current = null;
+    draftRestoreGenerationRef.current++;
+    setDraftRestore(null);
+    setActiveDraftId(null);
+  }, [location.key]);
+  useEffect(
+    () => () => {
+      openDraftRef.current?.abort();
+      draftRestoreGenerationRef.current++;
+    },
+    [],
+  );
 
   /**
    * Is the branch box on screen? The one condition, read by everything that
@@ -2044,7 +2114,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const composerBlockedReason = sendBlockedReason ?? (draftRestoring ? DRAFT_RESTORING : undefined);
 
   const handleSend = useCallback(
-    async (prompt: string, images?: File[]) => {
+    /**
+     * `notFromComposer` marks a send that isn't the composer's contents — the
+     * canned plan-review replies. Those don't carry an opened draft's text or
+     * images, so they are neither held for its restore nor allowed to retire it.
+     */
+    async (prompt: string, images?: File[], { notFromComposer = false }: { notFromComposer?: boolean } = {}) => {
       // The composer greys Send out for this, so reaching here means some other
       // caller (a plan-review auto-reply, a retry) got in. Bail before the
       // in-flight bubble and the streaming flag, because there is no config to
@@ -2241,10 +2316,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         // been sent — unless it wasn't, or it went without images the draft
         // still lists (a restore that couldn't fetch them). Then the draft
         // stays in Staging rather than taking those references with it.
-        if (activeDraftId && res.ok) {
+        if (activeDraftId && res.ok && !notFromComposer) {
           if (!draftRestore || (draftRestore.settled && draftRestore.unrestored.length === 0)) {
             deleteDraft(activeDraftId).catch(() => {});
           }
+          openDraftRef.current = null;
           setActiveDraftId(null);
           setDraftRestore(null);
           onChatListRefreshRef.current?.();
@@ -2375,9 +2451,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         setPendingAction(null);
         finishResponse(ticket);
         if (allow) {
-          handleSend("Proceed with the plan.");
+          handleSend("Proceed with the plan.", undefined, { notFromComposer: true });
         } else {
-          handleSend("I rejected the plan. Please revise it.");
+          handleSend("I rejected the plan. Please revise it.", undefined, { notFromComposer: true });
         }
         return;
       }
