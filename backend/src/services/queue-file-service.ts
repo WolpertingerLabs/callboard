@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
-import type { QueueItem, DefaultPermissions } from "shared/types/index.js";
+import type { QueueItem, QueueItemImage, DefaultPermissions } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 
 export type { QueueItem };
@@ -61,7 +61,13 @@ export class QueueFileService {
   }
 
   // Create a new draft item
-  createQueueItem(chatId: string | null, userMessage: string, folder?: string, defaultPermissions?: DefaultPermissions): QueueItem {
+  createQueueItem(
+    chatId: string | null,
+    userMessage: string,
+    folder?: string,
+    defaultPermissions?: DefaultPermissions,
+    images?: QueueItemImage[],
+  ): QueueItem {
     const id = randomUUID();
     const now = new Date().toISOString();
 
@@ -73,6 +79,7 @@ export class QueueFileService {
       created_at: now,
       ...(folder && { folder }),
       ...(defaultPermissions && { defaultPermissions }),
+      ...(images?.length && { images }),
     };
 
     this.saveQueueItem(item);
@@ -87,6 +94,8 @@ export class QueueFileService {
     }
 
     const updatedItem = { ...item, ...updates };
+    // An empty list is stored as no list, the same shape create writes.
+    if (!updatedItem.images?.length) delete updatedItem.images;
     this.saveQueueItem(updatedItem);
     return true;
   }

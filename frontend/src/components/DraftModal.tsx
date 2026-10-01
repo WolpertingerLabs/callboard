@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createDraft, updateDraft, type DefaultPermissions } from "../api";
+import { createDraft, updateDraft, uploadDraftImages, type DefaultPermissions } from "../api";
 import ModalOverlay from "./ModalOverlay";
 
 interface DraftModalProps {
@@ -7,13 +7,15 @@ interface DraftModalProps {
   onClose: () => void;
   chatId: string | null;
   message: string;
+  /** The composer's attachments; saved with the draft so opening it restores them. */
+  images?: File[];
   onSuccess?: () => void;
   folder?: string;
   defaultPermissions?: DefaultPermissions;
   existingDraftId?: string | null;
 }
 
-export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess, folder, defaultPermissions, existingDraftId }: DraftModalProps) {
+export default function DraftModal({ isOpen, onClose, chatId, message, images = [], onSuccess, folder, defaultPermissions, existingDraftId }: DraftModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,10 +30,13 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
     setError(null);
 
     try {
+      const draftImages = await uploadDraftImages(images);
       if (existingDraftId) {
-        await updateDraft(existingDraftId, message.trim());
+        // Always sent, `[]` included: the composer held the draft's images, so
+        // whatever it holds now is the draft's full set.
+        await updateDraft(existingDraftId, message.trim(), draftImages);
       } else {
-        await createDraft(chatId, message.trim(), folder, defaultPermissions);
+        await createDraft(chatId, message.trim(), folder, defaultPermissions, draftImages);
       }
       onSuccess?.();
       onClose();
@@ -80,6 +85,11 @@ export default function DraftModal({ isOpen, onClose, chatId, message, onSuccess
             >
               {message || "No message content"}
             </div>
+            {images.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                {images.length === 1 ? "1 image attached" : `${images.length} images attached`}
+              </div>
+            )}
           </div>
 
           {error && (

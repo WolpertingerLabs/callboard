@@ -2,8 +2,33 @@ import { Router } from "express";
 import { queueFileService } from "../services/queue-file-service.js";
 import { sendMessage } from "../services/claude.js";
 import { sendRetiredProviderError } from "../utils/route-errors.js";
+import { ImageStorageService, isValidImageId } from "../services/image-storage.js";
+import type { QueueItemImage } from "shared/types/index.js";
 
 export const queueRouter = Router();
+
+/**
+ * Read a request's `images` field: `undefined` when absent, `null` when it is
+ * not a list of upload ids. Only `id` and `originalName` are kept.
+ */
+function parseDraftImages(raw: unknown): QueueItemImage[] | undefined | null {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) return null;
+  const images: QueueItemImage[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry.id !== "string" || !isValidImageId(entry.id)) return null;
+    images.push({ id: entry.id, originalName: typeof entry.originalName === "string" ? entry.originalName : entry.id });
+  }
+  return images;
+}
+
+/** A draft's images are its own — they were uploaded for it and nothing else references them. */
+function deleteDraftImages(images: QueueItemImage[] | undefined, keep: QueueItemImage[] = []): void {
+  const kept = new Set(keep.map((image) => image.id));
+  for (const image of images ?? []) {
+    if (!kept.has(image.id)) ImageStorageService.deleteImage(image.id);
+  }
+}
 
 // Get all draft messages
 queueRouter.get("/", (req, res) => {
@@ -38,7 +63,8 @@ queueRouter.post("/", (req, res) => {
             chat_id: { type: "string", description: "Existing chat ID (null for new chat)" },
             user_message: { type: "string", description: "The message to save" },
             folder: { type: "string", description: "Project folder for new chats" },
-            defaultPermissions: { type: "object", description: "Default permissions for new chats" }
+            defaultPermissions: { type: "object", description: "Default permissions for new chats" },
+            images: { type: "array", items: { type: "object", properties: { id: { type: "string" }, originalName: { type: "string" } } }, description: "Images from POST /api/images/upload to attach" }
           }
         }
       }
@@ -47,6 +73,7 @@ queueRouter.post("/", (req, res) => {
   /* #swagger.responses[201] = { description: "Draft created" } */
   /* #swagger.responses[400] = { description: "Missing required fields" } */
   const { chat_id, user_message, folder, defaultPermissions } = req.body;
+  const images = parseDraftImages(req.body.images);
 
   if (!user_message) {
     return res.status(400).json({
@@ -61,8 +88,12 @@ queueRouter.post("/", (req, res) => {
     });
   }
 
+  if (images === null) {
+    return res.status(400).json({ error: "images must be a list of { id, originalName } from the image upload route" });
+  }
+
   try {
-    const item = queueFileService.createQueueItem(chat_id || null, user_message, folder, defaultPermissions);
+    const item = queueFileService.createQueueItem(chat_id || null, user_message, folder, defaultPermissions, images);
     res.status(201).json(item);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -88,7 +119,7 @@ queueRouter.get("/:id", (req, res) => {
 queueRouter.put("/:id", (req, res) => {
   // #swagger.tags = ['Drafts']
   // #swagger.summary = 'Update a draft message'
-  // #swagger.description = 'Update the message content of an existing draft.'
+  // #swagger.description = 'Update the message content of an existing draft. Sending images replaces the draft\'s images; omitting it leaves them as they are.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Draft item ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -98,7 +129,8 @@ queueRouter.put("/:id", (req, res) => {
           type: "object",
           required: ["user_message"],
           properties: {
-            user_message: { type: "string", description: "The updated message" }
+            user_message: { type: "string", description: "The updated message" },
+            images: { type: "array", items: { type: "object", properties: { id: { type: "string" }, originalName: { type: "string" } } }, description: "Replacement images; omit to keep the current ones" }
           }
         }
       }
@@ -108,15 +140,22 @@ queueRouter.put("/:id", (req, res) => {
   /* #swagger.responses[400] = { description: "Missing required fields" } */
   /* #swagger.responses[404] = { description: "Draft not found" } */
   const { user_message } = req.body;
+  const images = parseDraftImages(req.body.images);
 
   if (!user_message || !user_message.trim()) {
     return res.status(400).json({ error: "user_message is required" });
   }
 
-  const updated = queueFileService.updateQueueItem(req.params.id, { user_message: user_message.trim() });
+  if (images === null) {
+    return res.status(400).json({ error: "images must be a list of { id, originalName } from the image upload route" });
+  }
+
+  const previous = queueFileService.getQueueItem(req.params.id);
+  const updated = queueFileService.updateQueueItem(req.params.id, { user_message: user_message.trim(), ...(images && { images }) });
   if (!updated) {
     return res.status(404).json({ error: "Draft not found" });
   }
+  if (images) deleteDraftImages(previous?.images, images);
 
   const item = queueFileService.getQueueItem(req.params.id);
   res.json(item);
@@ -126,12 +165,14 @@ queueRouter.put("/:id", (req, res) => {
 queueRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Drafts']
   // #swagger.summary = 'Delete draft message'
-  // #swagger.description = 'Delete a saved draft message.'
+  // #swagger.description = 'Delete a saved draft message, and the images attached to it.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Draft item ID' } */
   /* #swagger.responses[200] = { description: "Draft deleted" } */
   /* #swagger.responses[404] = { description: "Draft not found" } */
+  const item = queueFileService.getQueueItem(req.params.id);
   const deleted = queueFileService.deleteQueueItem(req.params.id);
   if (deleted) {
+    deleteDraftImages(item?.images);
     res.json({ ok: true });
   } else {
     res.status(404).json({ error: "Draft not found" });

@@ -15,7 +15,7 @@ mkdirSync(IMAGES_DIR, { recursive: true });
 // UUID v4 format: 8-4-4-4-12 hex characters
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function isValidImageId(imageId: string): boolean {
+export function isValidImageId(imageId: string): boolean {
   return UUID_REGEX.test(imageId);
 }
 

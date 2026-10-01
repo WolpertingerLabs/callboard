@@ -47,6 +47,7 @@ import {
   markAsRead,
   getMcpTools,
   deleteDraft,
+  fetchDraftImages,
   forkChat,
   getCard,
   handshakeHeaders,
@@ -58,6 +59,7 @@ import {
   type Plugin,
   type NewChatInfo,
   type DefaultPermissions,
+  type QueueItemImage,
   listKeywords,
   type BranchConfig,
   type AppPluginsData,
@@ -258,7 +260,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const transitionInFlightMessages = transitionInFlightMessagesRef.current;
 
   // Draft loaded from staging in chat list
-  const routerDraftRef = useRef((location.state as any)?.draft as { id: string; user_message: string } | undefined);
+  const routerDraftRef = useRef((location.state as any)?.draft as { id: string; user_message: string; images?: QueueItemImage[] } | undefined);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(routerDraftRef.current?.id ?? null);
 
   const [chat, setChat] = useState<ChatType | null>(null);
@@ -310,6 +312,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const resolvedFavorites = useResolvedFavorites(!id);
   const [promptInputSetValue, setPromptInputSetValue] = useState<((value: ComposerValueUpdate) => void) | null>(null);
   const [promptInputInsertAtCaret, setPromptInputInsertAtCaret] = useState<((text: string) => void) | null>(null);
+  const [promptInputAddImages, setPromptInputAddImages] = useState<((files: File[]) => void) | null>(null);
   // `autoScroll` state drives rendering (the jump-to-bottom button, mounting
   // the pin loop). The two refs are the pin loop's and scroll listener's view
   // of the same latch, updated synchronously: a wheel-up on a long chat can
@@ -1961,14 +1964,23 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Pre-populate prompt input when navigating from a draft in staging
   useEffect(() => {
-    if (routerDraftRef.current && promptInputSetValue) {
-      promptInputSetValue(routerDraftRef.current.user_message);
+    const draft = routerDraftRef.current;
+    const draftImages = draft?.images ?? [];
+    if (draft && promptInputSetValue && (draftImages.length === 0 || promptInputAddImages)) {
+      promptInputSetValue(draft.user_message);
+      // Back as Files, so the send that follows is the ordinary one: the
+      // composer uploads them exactly as it would freshly attached images.
+      if (draftImages.length > 0) {
+        fetchDraftImages(draftImages)
+          .then((files) => promptInputAddImages?.(files))
+          .catch(() => setNetworkError("Couldn't restore this draft's images — they may have been deleted."));
+      }
       routerDraftRef.current = undefined;
       // Clean draft from router state so back/forward doesn't re-apply
       const { draft: _, ...rest } = (location.state ?? {}) as Record<string, unknown>;
       navigate(location.pathname + location.search, { replace: true, state: Object.keys(rest).length > 0 ? rest : undefined });
     }
-  }, [promptInputSetValue, navigate, location.state, location.pathname, location.search]);
+  }, [promptInputSetValue, promptInputAddImages, navigate, location.state, location.pathname, location.search]);
 
   /**
    * Is the branch box on screen? The one condition, read by everything that
@@ -2624,16 +2636,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   }, [latestTodoIndex, unlatch]);
 
   const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
+  const [draftImages, setDraftImages] = useState<File[]>([]);
 
   const handleSaveDraft = useCallback((message: string, images?: File[], onSuccess?: () => void) => {
     if (!message.trim()) return;
     setDraftMessage(message.trim());
+    setDraftImages(images ?? []);
     setShowDraftModal(true);
     // Store the success callback to call when draft is saved
     if (onSuccess) {
       setDraftSuccessCallback(() => onSuccess);
     }
-    // TODO: Handle images in draft
   }, []);
 
   /**
@@ -3825,6 +3838,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           commandDescriptions={pluginCommandDescriptions}
           onSetValue={setPromptInputSetValue}
           onInsertAtCaret={setPromptInputInsertAtCaret}
+          onAddImages={setPromptInputAddImages}
           keywords={keywords}
           onKeywordCreated={handleKeywordCreated}
           chatId={id}
@@ -3866,10 +3880,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         onClose={() => {
           setShowDraftModal(false);
           setDraftMessage("");
+          setDraftImages([]);
           setDraftSuccessCallback(null);
         }}
         chatId={id || null}
         message={draftMessage}
+        images={draftImages}
         onSuccess={draftSuccessCallback || undefined}
         folder={!id ? folder : undefined}
         defaultPermissions={!id ? defaultPermissions : undefined}

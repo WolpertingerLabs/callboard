@@ -81,7 +81,7 @@ export { TASK_LIST_TOOLS, parseTaskList, isTaskListTool } from "./taskList.js";
 
 export type { StoredImage, ImageUploadResult } from "./image.js";
 
-export type { QueueItem } from "./queue.js";
+export type { QueueItem, QueueItemImage } from "./queue.js";
 
 export type { FolderItem, BrowseResult, ValidateResult, FolderSuggestion } from "./folders.js";
 

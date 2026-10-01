@@ -27,6 +27,7 @@ import type {
   StoredImage,
   ImageUploadResult,
   QueueItem,
+  QueueItemImage,
   BranchConfig,
   FolderItem,
   BrowseResult,
@@ -144,6 +145,7 @@ export type {
   StoredImage,
   ImageUploadResult,
   QueueItem,
+  QueueItemImage,
   BranchConfig,
   FolderItem,
   BrowseResult,
@@ -732,7 +734,13 @@ export async function getDrafts(chatId?: string): Promise<QueueItem[]> {
   return res.json();
 }
 
-export async function createDraft(chatId: string | null, message: string, folder?: string, defaultPermissions?: DefaultPermissions): Promise<QueueItem> {
+export async function createDraft(
+  chatId: string | null,
+  message: string,
+  folder?: string,
+  defaultPermissions?: DefaultPermissions,
+  images?: QueueItemImage[],
+): Promise<QueueItem> {
   const res = await fetch(`${BASE}/queue`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -741,20 +749,43 @@ export async function createDraft(chatId: string | null, message: string, folder
       user_message: message,
       ...(folder && { folder }),
       ...(defaultPermissions && { defaultPermissions: normalizePermissions(defaultPermissions) }),
+      ...(images?.length && { images }),
     }),
   });
   await assertOk(res, "Failed to save draft");
   return res.json();
 }
 
-export async function updateDraft(id: string, message: string): Promise<QueueItem> {
+/** `images` replaces the draft's images, `[]` included; omit it to leave them alone. */
+export async function updateDraft(id: string, message: string, images?: QueueItemImage[]): Promise<QueueItem> {
   const res = await fetch(`${BASE}/queue/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_message: message }),
+    body: JSON.stringify({ user_message: message, ...(images && { images }) }),
   });
   await assertOk(res, "Failed to update draft");
   return res.json();
+}
+
+/** Upload a draft's attachments through the regular upload route. */
+export async function uploadDraftImages(images: File[]): Promise<QueueItemImage[]> {
+  if (images.length === 0) return [];
+  const result = await uploadImagesOnly(images);
+  const stored = result.images ?? [];
+  if (stored.length !== images.length) throw new Error(result.errors?.join("; ") || "Failed to upload images");
+  return stored.map((image) => ({ id: image.id, originalName: image.originalName }));
+}
+
+/** A draft's stored images, back as Files the composer can attach and send. */
+export async function fetchDraftImages(images: QueueItemImage[]): Promise<File[]> {
+  return Promise.all(
+    images.map(async (image) => {
+      const res = await fetch(`${BASE}/images/${image.id}`);
+      await assertOk(res, "Failed to load draft image");
+      const blob = await res.blob();
+      return new File([blob], image.originalName, { type: blob.type });
+    }),
+  );
 }
 
 export async function deleteDraft(id: string): Promise<void> {
