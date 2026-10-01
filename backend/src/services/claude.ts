@@ -30,7 +30,7 @@ import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
 import { buildObjectiveToolsSpec, clearObjectiveCompletion, hasObjectiveCompletion } from "./objective-tools.js";
-import { clearActivitiesForChat, migrateActivities, getWatch, startActivity, endActivity } from "./chat-activity.js";
+import { clearActivitiesForChat, migrateActivities, getWatch, hasOpenConditionWatch, startActivity, endActivity } from "./chat-activity.js";
 import { decideNudge } from "./nudge-decision.js";
 import { decideHold, HeldPrompt, OutstandingTasks, DEFAULT_MAX_HOLD_MS, createHoldEpisodeBudget } from "./background-task-hold.js";
 import { getRun as getJobRun } from "./job-store.js";
@@ -2503,11 +2503,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // watch left open by wait(require_condition). User aborts, provider
         // errors, /clear and hard caps still end the session as before.
         // See nudge-decision.ts — the logic is pure so it can be tested.
+        // An exhausted watch stays in the map to deny the condition a fresh
+        // budget, but it is not owed: wait has already refused the agent, so
+        // nudging it to "keep polling" would contradict that refusal.
         const watch = getWatch(trackingId);
         const decision = decideNudge({
           requireCompletion,
           objectiveSatisfied: isObjectiveSatisfied(),
-          watchOpen: watch !== undefined,
+          watchOpen: hasOpenConditionWatch(trackingId),
           ...(watch && { watchText: watch.text, watchAttempts: watch.attempts, watchMaxAttempts: watch.maxAttempts }),
           nudgesUsed,
           maxNudges,
