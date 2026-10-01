@@ -2097,7 +2097,11 @@ export async function getCodexModels(): Promise<CodexModelInfo[]> {
   return Array.isArray(data.models) ? data.models : [];
 }
 
-/** Models plus user-defined aliases (joined with target pricing) in one fetch. */
+/**
+ * The OpenRouter model catalog. `aliases` is always empty: the route stopped
+ * serving the deprecated OpenRouter-only aliases (#465), whose `openrouter`
+ * target resolves nowhere. It is read here only so the type stays honest.
+ */
 export async function getOpenRouterCatalog(): Promise<{ models: OpenRouterModelInfo[]; aliases: OpenRouterModelAliasInfo[] }> {
   const res = await fetch(`${BASE}/openrouter/models`, { credentials: "include" });
   await assertOk(res, "Failed to get OpenRouter models");

@@ -368,13 +368,22 @@ describe("periodic refresh is gated on OpenRouter being configured", () => {
     ["claudeCodeOpenRouterApiKey", { claudeCodeOpenRouterApiKey: "sk-or-x" }],
     ["codexOpenRouterApiKey", { codexOpenRouterApiKey: "sk-or-x" }],
     ["acpOpenRouterApiKey", { acpOpenRouterApiKey: "sk-or-x" }],
-    ["openRouterModelAliases", { openRouterModelAliases: { fast: "anthropic/claude-haiku-4.5" } }],
   ])("counts %s as OpenRouter being in use", async (_label, extra) => {
     mockGetAgentSettings.mockReturnValue({ proxyMode: "local", ...extra } as AgentSettings);
     await initAndWarm();
 
     await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not count a leftover legacy alias map as OpenRouter being in use", async () => {
+    // Nothing in `openRouterModelAliases` is served or resolved any more (#465),
+    // so on its own it is no reason to pull 690KB an hour.
+    mockGetAgentSettings.mockReturnValue({ proxyMode: "local", openRouterModelAliases: { fast: "anthropic/claude-haiku-4.5" } });
+    await initAndWarm();
+
+    await vi.advanceTimersByTimeAsync(OPENROUTER_MODELS_TTL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("treats a blank key as not configured", async () => {

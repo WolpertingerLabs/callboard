@@ -89,7 +89,13 @@ export function readAgentSettings(): AgentSettingsRead {
     if (!raw.proxyMode) {
       raw.proxyMode = "local";
     }
-    return { settings: migrateOpenRouterUtilityCompletions(migrateOpenRouterRoutingModels(migrateModelAliases(raw))), state: "ok" };
+    const migrated = migrateOpenRouterUtilityCompletions(migrateOpenRouterRoutingModels(migrateModelAliases(raw)));
+    const repaired = repairAliasNamesInOpenRouterModelFields(migrated);
+    // Unlike the transforms above, this one is written back as soon as it fires:
+    // it corrects a value that is broken today, and once written the pass is a
+    // no-op on every later read.
+    if (repaired !== migrated) persistRepairedSettings(repaired);
+    return { settings: repaired, state: "ok" };
   } catch (err: any) {
     log.warn(`Failed to load agent settings: ${err.message}`);
     return { settings: { proxyMode: "local" }, state: "unreadable", error: err?.message ?? String(err) };
@@ -205,6 +211,72 @@ export function migrateOpenRouterUtilityCompletions(settings: AgentSettings): Ag
   // on every read until the next save persists the flag.
   log.debug("Enabling OpenRouter utility completions for an existing OpenRouter key (preserving pre-upgrade behavior)");
   return { ...settings, openRouterUtilityCompletions: true };
+}
+
+/**
+ * The model fields that only ever hold an OpenRouter slug, and are sent to
+ * OpenRouter verbatim: the Claude Code role models (as `ANTHROPIC_*MODEL`), the
+ * routed Codex default, and the three utility-completion tiers.
+ */
+const OPENROUTER_ONLY_MODEL_FIELDS = [
+  "claudeCodeOpenRouterModel",
+  "claudeCodeOpenRouterOpusModel",
+  "claudeCodeOpenRouterSonnetModel",
+  "claudeCodeOpenRouterHaikuModel",
+  "claudeCodeOpenRouterSubagentModel",
+  "codexOpenRouterModel",
+  "openRouterUtilityHaikuModel",
+  "openRouterUtilitySonnetModel",
+  "openRouterUtilityOpusModel",
+] as const satisfies readonly (keyof AgentSettings)[];
+
+/** `field=value` pairs already warned about, so a constant re-read logs once. */
+const warnedUnrepairableAliasFields = new Set<string>();
+
+/**
+ * Replace an alias *name* saved in an OpenRouter-only model field with that
+ * alias's `openrouter` target.
+ *
+ * The OpenRouter model picker used to pin the deprecated OpenRouter-only aliases
+ * at the top of its list, so those fields could hold `planner`, which then went
+ * to OpenRouter as `ANTHROPIC_MODEL="planner"`. These fields hold OpenRouter
+ * slugs and nothing else, so the alias's `openrouter` target (folded into the
+ * registry by {@link migrateModelAliases}) is the unambiguous replacement.
+ *
+ * Real model ids match no alias and are left alone. A name whose alias has no
+ * `openrouter` target is left as-is, with a warning, rather than guessed at.
+ * Pure and idempotent; returns `settings` itself when nothing changed.
+ */
+export function repairAliasNamesInOpenRouterModelFields(settings: AgentSettings): AgentSettings {
+  let next = settings;
+  for (const field of OPENROUTER_ONLY_MODEL_FIELDS) {
+    const value = settings[field];
+    if (typeof value !== "string" || !value.trim()) continue;
+    const alias = findModelAlias(value, settings);
+    if (!alias) continue;
+    const slug = alias.targets.openrouter?.trim();
+    if (!slug) {
+      const key = `${field}=${value}`;
+      if (!warnedUnrepairableAliasFields.has(key)) {
+        warnedUnrepairableAliasFields.add(key);
+        log.warn(`${field} holds model alias "${value}", which has no openrouter target; leaving it as-is. Set an OpenRouter slug in Settings → API.`);
+      }
+      continue;
+    }
+    if (slug === value) continue;
+    next = { ...next, [field]: slug };
+    log.info(`Replaced model alias "${value}" in ${field} with its OpenRouter target "${slug}"`);
+  }
+  return next;
+}
+
+/** Write a load-time repair back. A failed write must not turn a good read into an unreadable one. */
+function persistRepairedSettings(settings: AgentSettings): void {
+  try {
+    saveSettings(settings);
+  } catch (err: any) {
+    log.warn(`Could not persist repaired agent settings (they still apply in memory): ${err?.message ?? String(err)}`);
+  }
 }
 
 function saveSettings(settings: AgentSettings): void {

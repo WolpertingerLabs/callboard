@@ -223,9 +223,11 @@ function ensureOpenRouterModels(opts?: { force?: boolean }): Promise<OpenRouterM
  *
  * Deliberately a little over-inclusive, so don't "tighten" it: only the two
  * `claudeCode*` fields feed the synchronous consumer the timer exists for, but
- * the Codex, ACP and alias surfaces are read-triggered paths that benefit from
- * a warm catalog anyway — `GET /api/openrouter/models` returning instantly
- * rather than blocking on 690KB, for someone who has plainly opted in.
+ * the Codex and ACP surfaces are read-triggered paths that benefit from a warm
+ * catalog anyway — `GET /api/openrouter/models` returning instantly rather than
+ * blocking on 690KB, for someone who has plainly opted in. The deprecated
+ * `openRouterModelAliases` map is not a signal: nothing it holds is served or
+ * resolved any more.
  */
 function isOpenRouterInUse(): boolean {
   try {
@@ -233,8 +235,7 @@ function isOpenRouterInUse(): boolean {
     const configured = [s.claudeCodeOpenRouterApiKey, s.openRouterApiKey, s.codexOpenRouterApiKey, s.acpOpenRouterApiKey];
     return (
       Boolean(s.claudeCodeUseOpenRouter || s.codexUseOpenRouter) ||
-      configured.some((key) => typeof key === "string" && key.trim().length > 0) ||
-      Object.keys(s.openRouterModelAliases ?? {}).length > 0
+      configured.some((key) => typeof key === "string" && key.trim().length > 0)
     );
   } catch (err) {
     // `getAgentSettings` reads from disk. An uncaught throw here would be an
