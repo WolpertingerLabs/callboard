@@ -320,7 +320,7 @@ function logOnce(key: string, write: () => void): void {
  * has no `openrouter` target is left as-is, with a warning, rather than guessed
  * at. Pure and idempotent; returns `settings` itself when nothing changed.
  */
-export function repairAliasNamesInOpenRouterModelFields(settings: AgentSettings): AgentSettings {
+function repairAliasNamesInOpenRouterModelFields(settings: AgentSettings): AgentSettings {
   const legacyEntries = Object.entries(settings.openRouterModelAliases ?? {});
   const legacySlugs = legacyEntries.length > 0 ? new Map(legacyEntries.map(([name, slug]) => [name.trim().toLowerCase(), slug?.trim() ?? ""])) : null;
   let next = settings;
@@ -733,7 +733,7 @@ export function getCodexExecutablePath(settings?: AgentSettings): string | undef
  * hand-editing agent-settings.json) falls through to the default, so callers
  * need no "no config dir" guard.
  */
-export function getMcpConfigDirForMode(mode: "local" | "remote"): string {
+function getMcpConfigDirForMode(mode: "local" | "remote"): string {
   const settings = loadSettings();
   if (mode === "remote") {
     return settings.remoteMcpConfigDir || settings.mcpConfigDir || DEFAULT_MCP_REMOTE_DIR;
@@ -774,8 +774,9 @@ export function updateAgentSettings(updates: Partial<AgentSettings>): AgentSetti
  * Returns info about what key files exist in each alias directory so the
  * frontend can show which aliases are usable.
  *
- * Filesystem-only: callboard enrolls callers (auto-enroll for the managed local
- * daemon, sync for remote) which writes a keypair under keys/callers/<alias>/.
+ * Filesystem-only: a caller's keypair lands under keys/callers/<alias>/ either
+ * from the managed local daemon, which writes the default caller's keys there
+ * at boot, or from importing a caller credential bundle (remote mode).
  * We never read drawlatch's remote.config.json — connection/caller config is
  * the daemon's concern.
  */
@@ -899,7 +900,7 @@ export function resolveAgentKeyAlias(agent: AgentConfig): AgentConfig {
  *
  * Used to associate agents with enrolled callers in a given mode's key store.
  */
-export function resolveAgentKeyAliasForMode(agent: AgentConfig, mode: "local" | "remote"): string | undefined {
+function resolveAgentKeyAliasForMode(agent: AgentConfig, mode: "local" | "remote"): string | undefined {
   const hasPerMode = agent.mcpKeyAliasLocal !== undefined || agent.mcpKeyAliasRemote !== undefined;
   if (hasPerMode) {
     return mode === "remote" ? agent.mcpKeyAliasRemote : agent.mcpKeyAliasLocal;
@@ -925,7 +926,7 @@ function isCallerEnrolled(alias: string, mode: "local" | "remote"): boolean {
  *   - ""         → explicitly no default; returns undefined (no proxy access).
  *   - "<alias>"  → that caller, when still enrolled; otherwise undefined.
  */
-export function resolveDefaultCallerForMode(mode: "local" | "remote"): string | undefined {
+function resolveDefaultCallerForMode(mode: "local" | "remote"): string | undefined {
   const settings = loadSettings();
   const field = mode === "remote" ? settings.defaultCallerRemote : settings.defaultCallerLocal;
 
@@ -978,7 +979,7 @@ export function setDefaultCaller(alias: string | null, overrideMode?: "local" | 
  * Uses drawlatch's exact fingerprint algorithm so it matches what was shown at
  * import time. Returns null if the keys are missing or unparseable.
  */
-export function getCallerFingerprint(alias: string, mode: "local" | "remote"): string | null {
+function getCallerFingerprint(alias: string, mode: "local" | "remote"): string | null {
   const callerDir = join(getMcpConfigDirForMode(mode), "keys", "callers", alias);
   try {
     const signing = readFileSync(join(callerDir, "signing.pub.pem"), "utf-8");

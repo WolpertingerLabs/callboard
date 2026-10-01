@@ -118,10 +118,13 @@ export default function ChatDebugPanel({ messages }: Props) {
   // Build rows: one row per unique model generation.
   //
   // Grouping key selection:
-  //   • Codex: `generationKey` = "<turnId>/<genIndex>". Each intra-turn
-  //     generation gets a distinct key, so multi-generation agentic turns
-  //     produce multiple rows instead of collapsing to one.
-  //   • pi: `generationKey` is the session entry's own id — one row per entry.
+  //   • Codex: `generationKey` = "<turnId>/<n>" ("turn/<n>" before any
+  //     turn_context), where <n> counts token_count events across the whole
+  //     rollout file — it is never reset per turn. Each generation gets a
+  //     distinct key, so multi-generation agentic turns produce multiple rows
+  //     instead of collapsing to one.
+  //   • pi: `generationKey` = "pi:<sessionId>/<entryId>" — one row per session
+  //     entry, i.e. per API call.
   //   • Claude Code: `generationKey` is absent; falls back to `requestId`,
   //     which is already unique per API call — behaviour unchanged.
   //
