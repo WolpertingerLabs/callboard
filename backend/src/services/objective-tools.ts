@@ -40,10 +40,6 @@ export function hasObjectiveCompletion(chatId: string): boolean {
   return completions.has(chatId);
 }
 
-export function getObjectiveCompletion(chatId: string): ObjectiveCompletion | undefined {
-  return completions.get(chatId);
-}
-
 export function clearObjectiveCompletion(chatId: string): void {
   completions.delete(chatId);
 }

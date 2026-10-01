@@ -183,12 +183,6 @@ export async function getLatestVersions(packages: string[], opts: { refresh?: bo
   return result;
 }
 
-/** {@link getLatestVersions} for a single package, when the age is not needed. */
-export async function getLatestVersion(pkg: string, opts: { refresh?: boolean } = {}): Promise<string | undefined> {
-  const versions = await getLatestVersions([pkg], opts);
-  return versions[pkg]?.version;
-}
-
 /**
  * Is `remote` newer than `local`?
  *

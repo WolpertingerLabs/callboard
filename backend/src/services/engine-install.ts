@@ -370,7 +370,7 @@ export async function getInstallCapability(opts: { local: boolean }): Promise<En
     };
   }
 
-  return { oneClick: true, ...(installVisibilityNote(root, binDir) ?? {}) };
+  return { oneClick: true, ...(installVisibilityNote(binDir) ?? {}) };
 }
 
 /**
@@ -403,7 +403,7 @@ export async function getInstallCapability(opts: { local: boolean }): Promise<En
  * - **unrecognised layout** (no derivable bin directory) — also nothing, because
  *   nothing was checked.
  */
-function installVisibilityNote(root: string, binDir: string | undefined): { note: string } | undefined {
+function installVisibilityNote(binDir: string | undefined): { note: string } | undefined {
   if (!binDir) return undefined;
 
   if (!isOnDaemonPath(binDir)) {

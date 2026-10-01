@@ -28,7 +28,7 @@
 import type { Dirent, Stats } from "fs";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, symlinkSync, utimesSync } from "fs";
 import { execFileSync } from "child_process";
-import { join, resolve } from "path";
+import { join } from "path";
 import type {
   TrashEntryView,
   TrashListing,
@@ -501,9 +501,4 @@ export function restoreTrashEntry(entryName: string, opts?: { root?: string }): 
   }
 
   return { ok: true, entry: entryName, originalPath, ...counts, trashRetained: true };
-}
-
-/** Absolute path of one trash entry. Exported for the route's error messages. */
-export function trashEntryPath(entryName: string): string {
-  return resolve(join(trashRoot(), entryName));
 }

@@ -408,7 +408,7 @@ describe("job step — pause/resume and restart", () => {
     const parentId = makeJob({ steps: [{ id: "sub", type: "job", jobId: childId }] });
     const { parentRunId, childRunId } = await spawnParentAndChild(parentId);
 
-    store.deleteRun(childRunId);
+    rmSync(join(dataDir, "jobs", "runs", `${childRunId}.json`));
     await load(dataDir);
 
     await flush(() => store.getRun(parentRunId)!.status === "failed");

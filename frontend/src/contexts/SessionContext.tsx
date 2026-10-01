@@ -66,13 +66,6 @@ export function useMetadataVersion(): number {
 }
 
 /**
- * Hook to get the set of chat IDs that currently have an active summon.
- */
-export function useSummonedChatIds(): Set<string> {
-  return useSessionContext().summonedChatIds;
-}
-
-/**
  * Hook for the daemon build id this tab has fallen behind, or null.
  */
 export function useStaleBuildId(): string | null {

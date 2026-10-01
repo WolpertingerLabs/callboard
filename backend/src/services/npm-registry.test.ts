@@ -14,9 +14,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../utils/paths.js";
-import { getLatestVersion, getLatestVersions, isNewerVersion, resetNpmVersionCache } from "./npm-registry.js";
+import { getLatestVersions, isNewerVersion, resetNpmVersionCache } from "./npm-registry.js";
 
 const CACHE_FILE = join(DATA_DIR, "engine-versions.json");
+
+/** {@link getLatestVersions} for one package, version only. */
+async function getLatestVersion(pkg: string, opts: { refresh?: boolean } = {}): Promise<string | undefined> {
+  return (await getLatestVersions([pkg], opts))[pkg]?.version;
+}
 
 /** A registry response for `/<pkg>/latest`. */
 function okResponse(version: string) {

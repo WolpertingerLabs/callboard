@@ -9,7 +9,6 @@ import {
   startActivity,
   endActivity,
   listActivities,
-  getActivity,
   releaseActivity,
   withActivity,
   migrateActivities,
@@ -48,7 +47,6 @@ describe("activities", () => {
 
     expect(started).not.toHaveProperty("release");
     expect(listActivities("chat-1")[0]).not.toHaveProperty("release");
-    expect(getActivity(started.id)).not.toHaveProperty("release");
   });
 
   it("ends an activity, and tolerates ending it twice", () => {

@@ -260,12 +260,6 @@ export async function stopLocalDaemon(): Promise<void> {
   log.info("Local drawlatch daemon stopped");
 }
 
-/** Restart the daemon. */
-export async function restartLocalDaemon(): Promise<boolean> {
-  await stopLocalDaemon();
-  return startLocalDaemon();
-}
-
 export interface LocalDaemonStatus {
   /** Whether callboard is supervising the child process. */
   managed: boolean;

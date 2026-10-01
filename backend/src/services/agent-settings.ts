@@ -566,20 +566,6 @@ export function discoverKeyAliases(overrideProxyMode?: "local" | "remote"): KeyA
 }
 
 /**
- * Ensure the local proxy config directory exists.
- * Creates the directory (and parent dirs) if missing.
- * Safe to call multiple times (idempotent).
- */
-export function ensureLocalProxyConfigDir(): void {
-  const configDir = getActiveMcpConfigDir();
-  if (!configDir) return;
-  if (!existsSync(configDir)) {
-    mkdirSync(configDir, { recursive: true, mode: 0o700 });
-    log.info(`Created local proxy config directory: ${configDir}`);
-  }
-}
-
-/**
  * Ensure the remote proxy config directory and key structure exist.
  * Creates the directory tree and a stub proxy.config.json if missing.
  *

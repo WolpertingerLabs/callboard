@@ -475,15 +475,6 @@ export function findRunByExecutionKey(key: ExecutionKey): JobRun | null {
  * of the chat that spawned it.
  */
 
-export function deleteRun(runId: string): boolean {
-  const filepath = join(runsDir, `${runId}.json`);
-  if (!existsSync(filepath)) return false;
-  const run = getRun(runId);
-  unlinkSync(filepath);
-  if (run?.executionKey) executionKeyIndex?.delete(run.executionKey);
-  return true;
-}
-
 /**
  * Newest child run spawned by a given parent step, excluding already-harvested
  * ones. Restart-only path: lets a parent that crashed between spawning a child

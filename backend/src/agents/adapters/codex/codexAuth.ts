@@ -75,11 +75,6 @@ export function getCodexAuthSource(): CodexAuthSource {
   return null;
 }
 
-/** True when Codex has usable credentials for the active auth mode. */
-export function isCodexConfigured(): boolean {
-  return getCodexAuthSource() !== null;
-}
-
 /**
  * Detect whether the ambient environment already routes the native Codex
  * harness through OpenRouter — either OPENAI_BASE_URL points at openrouter.ai,

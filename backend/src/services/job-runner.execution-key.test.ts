@@ -353,7 +353,7 @@ describe("execution keys — crash windows around a sub-job spawn", () => {
     // Nothing was ever spawned under the intent's key: drop the child and the
     // linkage, keeping the durable intent (status + key) the spawn would have
     // been made under.
-    store.deleteRun(childRunId);
+    rmSync(join(dataDir, "jobs", "runs", `${childRunId}.json`));
     const parent = store.getRun(parentRunId)!;
     delete parent.activeStep!.childRunId;
     store.saveRun(parent);

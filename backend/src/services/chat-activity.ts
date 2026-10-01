@@ -106,12 +106,6 @@ export function listActivities(chatId: string): ChatActivity[] {
   return out.sort((a, b) => a.startedAt - b.startedAt);
 }
 
-/** One activity by id, or undefined. Never leaks `release`. */
-export function getActivity(activityId: string): ChatActivity | undefined {
-  const record = activities.get(activityId);
-  return record ? publicView(record) : undefined;
-}
-
 export type ReleaseOutcome = { ok: true; kind: ActivityKind } | { ok: false; reason: "not_found" | "not_interruptible" };
 
 /**

@@ -73,17 +73,6 @@ export function readCss(relativeToSrc: string): string {
 }
 
 /**
- * What a `<button>` with no author `background` resolves to — the fill this
- * codebase's bare buttons fall through to. Supplied by jsdom's own UA
- * stylesheet, not by anything here, so a test that depends on it should assert
- * it is live rather than assume a future jsdom still ships it.
- */
-export const UA_BUTTON_FILL = "buttonface";
-
-/** Fully transparent, as `getComputedStyle` reports it. */
-export const TRANSPARENT = "rgba(0, 0, 0, 0)";
-
-/**
  * Append the given sources to the document as one `<style>` element.
  *
  * The `sheet` is checked rather than asserted: jsdom refuses a stylesheet it

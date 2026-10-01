@@ -186,28 +186,6 @@ export function cancelJob(jobId: string): void {
 }
 
 /**
- * Pause a running job (stop execution but keep in map for resume).
- */
-export function pauseJob(jobId: string): void {
-  const task = scheduledTasks.get(jobId);
-  if (task) {
-    task.stop();
-    log.debug(`Paused job ${jobId}`);
-  }
-}
-
-/**
- * Resume a paused job.
- */
-export function resumeJob(jobId: string): void {
-  const task = scheduledTasks.get(jobId);
-  if (task) {
-    task.start();
-    log.debug(`Resumed job ${jobId}`);
-  }
-}
-
-/**
  * Cancel all jobs for a specific agent (used when agent is deleted).
  */
 export function cancelAllJobsForAgent(alias: string): void {
