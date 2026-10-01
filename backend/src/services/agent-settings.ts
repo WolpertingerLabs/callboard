@@ -5,10 +5,11 @@
  * Currently stores the MCP config directory path and provides key alias
  * discovery from the configured drawlatch directory.
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync, copyFileSync, rmSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, renameSync, rmSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
+import { migrateKeyLayout } from "@wolpertingerlabs/drawlatch/shared/migrations";
 import { DATA_DIR, ensureDataDir, DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, LEGACY_MCP_LOCAL_DIR, LEGACY_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { BINARY_OVERRIDE_PHRASING, checkBinaryPath, type BinaryPathCheck } from "../utils/binary-path.js";
 import { createLogger } from "../utils/logger.js";
@@ -487,13 +488,17 @@ export function getCodexExecutablePath(settings?: AgentSettings): string | undef
  * of truth — the per-mode override fields are kept only as a migration fallback
  * for installs that set a custom dir before the dir picker was removed; they are
  * no longer user-settable from the UI.
+ *
+ * Never returns an empty string: a blank override (only reachable by
+ * hand-editing agent-settings.json) falls through to the default, so callers
+ * need no "no config dir" guard.
  */
 export function getMcpConfigDirForMode(mode: "local" | "remote"): string {
   const settings = loadSettings();
   if (mode === "remote") {
-    return settings.remoteMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_REMOTE_DIR;
+    return settings.remoteMcpConfigDir || settings.mcpConfigDir || DEFAULT_MCP_REMOTE_DIR;
   }
-  return settings.localMcpConfigDir ?? settings.mcpConfigDir ?? DEFAULT_MCP_LOCAL_DIR;
+  return settings.localMcpConfigDir || settings.mcpConfigDir || DEFAULT_MCP_LOCAL_DIR;
 }
 
 /**
@@ -566,46 +571,6 @@ export function discoverKeyAliases(overrideProxyMode?: "local" | "remote"): KeyA
 }
 
 /**
- * Ensure the remote proxy config directory and key structure exist.
- * Creates the directory tree and a stub proxy.config.json if missing.
- *
- * Directory structure:
- *   {configDir}/
- *     proxy.config.json          — stub with default remoteUrl
- *     keys/callers/default/      — place your caller keypair here
- *     keys/server/               — place the server's public keys here
- *
- * Safe to call multiple times (idempotent).
- */
-export function ensureRemoteProxyConfigDir(): void {
-  const configDir = getActiveMcpConfigDir();
-  if (!configDir) return;
-
-  // Create key directory scaffold
-  const callerKeysDir = join(configDir, "keys", "callers", "default");
-  const serverKeysDir = join(configDir, "keys", "server");
-
-  if (!existsSync(callerKeysDir)) {
-    mkdirSync(callerKeysDir, { recursive: true, mode: 0o700 });
-  }
-  if (!existsSync(serverKeysDir)) {
-    mkdirSync(serverKeysDir, { recursive: true, mode: 0o700 });
-  }
-
-  // Write a stub proxy.config.json if one doesn't exist
-  const stubConfigPath = join(configDir, "proxy.config.json");
-  if (!existsSync(stubConfigPath)) {
-    const stubConfig = {
-      remoteUrl: "http://127.0.0.1:9999",
-      connectTimeout: 10000,
-      requestTimeout: 30000,
-    };
-    writeFileSync(stubConfigPath, JSON.stringify(stubConfig, null, 2), { mode: 0o600 });
-    log.info(`Created remote proxy config scaffold: ${configDir}`);
-  }
-}
-
-/**
  * Migrate legacy drawlatch directory names to the new convention and
  * ensure both directories exist.
  *
@@ -651,101 +616,21 @@ export function migrateDrawlatchDirs(): void {
 }
 
 /**
- * Migrate old key directory layout to the new callers/server structure.
+ * Migrate the legacy key layout (`keys/local`, `keys/remote`, `keys/peers`) to
+ * `keys/callers` + `keys/server` in both drawlatch config dirs, using
+ * drawlatch's own `migrateKeyLayout`. Idempotent; call at startup.
  *
- * Old layout:
- *   keys/local/<alias>/         → keys/callers/<alias>/
- *   keys/remote/                → keys/server/
- *   keys/peers/remote-server/   → keys/server/  (public keys only)
- *   keys/peers/<alias>/         → keys/callers/<alias>/  (public keys only)
- *
- * Safe to call multiple times (idempotent). Only renames if old dirs exist
- * and new dirs don't.
+ * drawlatch's daemon runs the same migration at boot, but only for its own
+ * dir and only after callboard has already checked that dir for
+ * `keys/server/signing.key.pem` (see `ensureInitialized` in local-daemon.ts),
+ * and nothing ever runs it for the remote dir. So callboard runs it first, for
+ * both — the configured dirs as well as the defaults, in case a legacy
+ * per-mode override still points somewhere else.
  */
-export function migrateKeyDirectories(): void {
-  const dirs = [DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR];
+export function migrateDrawlatchKeyLayouts(): void {
+  const dirs = new Set([DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR, getMcpConfigDirForMode("local"), getMcpConfigDirForMode("remote")]);
   for (const configDir of dirs) {
-    if (!existsSync(configDir)) continue;
-    const keysDir = join(configDir, "keys");
-    if (!existsSync(keysDir)) continue;
-
-    try {
-      migrateKeysInDir(keysDir);
-    } catch (err: any) {
-      log.warn(`Failed to migrate key directories in ${keysDir}: ${err.message}`);
-    }
-  }
-}
-
-function migrateKeysInDir(keysDir: string): void {
-  const oldLocal = join(keysDir, "local");
-  const oldRemote = join(keysDir, "remote");
-  const oldPeers = join(keysDir, "peers");
-  const newCallers = join(keysDir, "callers");
-  const newServer = join(keysDir, "server");
-
-  // keys/local/ → keys/callers/
-  if (existsSync(oldLocal) && !existsSync(newCallers)) {
-    renameSync(oldLocal, newCallers);
-    log.info(`Migrated ${oldLocal} -> ${newCallers}`);
-  }
-
-  // keys/remote/ → keys/server/
-  if (existsSync(oldRemote) && !existsSync(newServer)) {
-    renameSync(oldRemote, newServer);
-    log.info(`Migrated ${oldRemote} -> ${newServer}`);
-  }
-
-  // keys/peers/ — merge individual peer dirs into callers/server
-  if (existsSync(oldPeers)) {
-    const entries = readdirSync(oldPeers, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      if (entry.name === "remote-server") {
-        // peers/remote-server/ → server/ (copy .pub.pem files)
-        copyPublicKeys(join(oldPeers, entry.name), newServer);
-        log.info(`Migrated ${join(oldPeers, entry.name)} -> ${newServer}`);
-      } else {
-        // peers/<alias>/ → callers/<alias>/ (copy .pub.pem files)
-        const targetDir = join(newCallers, entry.name);
-        copyPublicKeys(join(oldPeers, entry.name), targetDir);
-        log.info(`Migrated ${join(oldPeers, entry.name)} -> ${targetDir}`);
-      }
-    }
-
-    // Remove empty peers directory
-    try {
-      rmSync(oldPeers, { recursive: true });
-      log.info(`Removed old ${oldPeers} directory`);
-    } catch {
-      // Not critical — may still have unexpected files
-    }
-  }
-
-  // Clean up empty old directories
-  for (const dir of [oldLocal, oldRemote]) {
-    if (existsSync(dir)) {
-      try {
-        const remaining = readdirSync(dir);
-        if (remaining.length === 0) rmSync(dir);
-      } catch {
-        // ignore
-      }
-    }
-  }
-}
-
-/** Copy .pub.pem files from src to dest, creating dest if needed. */
-function copyPublicKeys(src: string, dest: string): void {
-  if (!existsSync(src)) return;
-  mkdirSync(dest, { recursive: true, mode: 0o700 });
-  const files = readdirSync(src).filter((f) => f.endsWith(".pub.pem"));
-  for (const file of files) {
-    const destFile = join(dest, file);
-    if (!existsSync(destFile)) {
-      copyFileSync(join(src, file), destFile);
-    }
+    migrateKeyLayout(join(configDir, "keys"));
   }
 }
 

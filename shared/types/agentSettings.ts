@@ -10,7 +10,7 @@ export interface AgentSettings {
   /** Absolute path to the .drawlatch.remote/ directory for remote mode */
   remoteMcpConfigDir?: string;
 
-  /** Proxy mode: 'local' runs in-process, 'remote' connects to external server */
+  /** Proxy mode: 'local' runs a callboard-managed drawlatch daemon, 'remote' connects to an external one */
   proxyMode?: "local" | "remote";
 
   // ── Default enrolled caller for regular (non-agent) sessions ──────
@@ -102,12 +102,6 @@ export interface AgentSettings {
    * @see plans/engine-availability-and-install.md — Phase 3
    */
   allowEngineInstalls?: boolean;
-
-  /** Default local MCP config directory path (read-only, computed by backend) */
-  defaultLocalMcpConfigDir?: string;
-
-  /** Default remote MCP config directory path (read-only, computed by backend) */
-  defaultRemoteMcpConfigDir?: string;
 
   // ── Claude Agent SDK API / auth / model overrides ─────────────────
   // Each field maps to a single environment variable that the Agent SDK

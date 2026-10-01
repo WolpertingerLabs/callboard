@@ -45,7 +45,6 @@ import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { ensureCallerEnrolled, fetchProxyRoutes } from "./proxy-singleton.js";
 import {
   getAgentSettings,
-  getActiveMcpConfigDir,
   resolveAgentKeyAlias,
   resolveDefaultCaller,
   getApiEnvOverrides,
@@ -1472,7 +1471,6 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
   const agentSettings = getAgentSettings();
-  const activeMcpConfigDir = getActiveMcpConfigDir();
   // Resolve the caller alias that gives this session its drawlatch identity:
   //   - Agent sessions use ONLY the agent's explicitly-assigned alias. There is
   //     no implicit "default" fallback — an agent must be granted a caller
@@ -1489,9 +1487,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     proxyKeyAlias = resolveDefaultCaller();
   }
 
-  if (agentSettings.proxyMode && activeMcpConfigDir && proxyKeyAlias) {
-    // Make sure this caller is enrolled against the daemon (local: auto-enroll
-    // a fresh keypair on demand; remote: no-op — sync provisions keys).
+  if (agentSettings.proxyMode && proxyKeyAlias) {
+    // Make sure this caller is usable (local: the managed daemon is up and has
+    // written the default caller's keys; remote: a pure key check).
     try {
       await ensureCallerEnrolled(proxyKeyAlias);
     } catch (err: any) {
@@ -1895,7 +1893,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       // Inject proxy connections listing into system prompt before starting the
       // conversation. Skipped when no caller alias resolved (e.g. an agent with
       // no caller assigned) — there's no identity to list connections for.
-      if (agentSettings.proxyMode && activeMcpConfigDir && proxyKeyAlias) {
+      if (agentSettings.proxyMode && proxyKeyAlias) {
         try {
           const connectionsPrompt = await buildProxyConnectionsPrompt(proxyKeyAlias);
           if (connectionsPrompt) {

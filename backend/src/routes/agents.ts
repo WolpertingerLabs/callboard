@@ -22,7 +22,6 @@ import { agentExportImportRouter } from "./agent-export-import.js";
 import { cancelAllJobsForAgent, scheduleJob } from "../services/cron-scheduler.js";
 import { ensureDefaultCronJobs, listCronJobs } from "../services/agent-cron-jobs.js";
 import { appendActivity } from "../services/agent-activity.js";
-import { ensureCallerEnrolled } from "../services/proxy-singleton.js";
 import { resolveAgentKeyAlias, routeKeyAliasForPersist } from "../services/agent-settings.js";
 
 export const agentsRouter = Router();
@@ -243,14 +242,7 @@ agentsRouter.put("/:alias", (req: Request, res: Response): void => {
   // Persist (createAgent acts as upsert — mkdirSync with recursive is a no-op)
   createAgent(updated);
 
-  // Auto-enroll the caller against the drawlatch daemon when the agent was
-  // assigned a proxy key alias (local: provisions a fresh keypair; remote:
-  // a no-op — keys are provisioned via Sync). Fire-and-forget: enrollment
-  // failures shouldn't block saving the agent.
   const resolved = resolveAgentKeyAlias(updated);
-  if (resolved.mcpKeyAlias) {
-    void ensureCallerEnrolled(resolved.mcpKeyAlias).catch(() => {});
-  }
 
   const workspacePath = ensureAgentWorkspaceDir(alias);
   res.json({ agent: { ...resolved, workspacePath, serverTimezone: SERVER_TIMEZONE } });

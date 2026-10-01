@@ -24,7 +24,6 @@ import {
   deleteEnrolledCaller,
   setDefaultCaller,
 } from "../services/agent-settings.js";
-import { DEFAULT_MCP_LOCAL_DIR, DEFAULT_MCP_REMOTE_DIR } from "../utils/paths.js";
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
@@ -135,7 +134,7 @@ function favoritesOf(settings: { favoriteSkills?: string[]; favoriteJobs?: strin
 agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
   try {
     const settings = getAgentSettings();
-    res.json({ ...settings, defaultLocalMcpConfigDir: DEFAULT_MCP_LOCAL_DIR, defaultRemoteMcpConfigDir: DEFAULT_MCP_REMOTE_DIR });
+    res.json(settings);
   } catch (err: any) {
     log.error(`Error getting agent settings: ${err.message}`);
     res.status(500).json({ error: "Failed to get agent settings" });

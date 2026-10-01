@@ -275,7 +275,6 @@ export async function buildSystemInfo({ pkgRoot }: BuildSystemInfoOptions) {
     sdkVersion,
     claudeCliVersion,
     claudeCliBinary,
-    proxyMode: process.env.MCP_PROXY_MODE || undefined,
     environment: process.env.NODE_ENV || "development",
     account: sdkInfo.account || undefined,
     models: sdkInfo.models.length > 0 ? sdkInfo.models : undefined,
