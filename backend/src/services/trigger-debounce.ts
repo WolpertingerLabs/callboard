@@ -87,13 +87,6 @@ export function shutdownDebounce(): void {
   }
 }
 
-/**
- * Get the number of pending debounce batches (for diagnostics).
- */
-export function pendingBatchCount(): number {
-  return batches.size;
-}
-
 // ── Internal ───────────────────────────────────────────────────────
 
 /**

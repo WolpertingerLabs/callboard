@@ -104,8 +104,6 @@ export type { SlashCommand } from "./slashCommand.js";
 export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
 export { worktreeDirName } from "./git.js";
 
-export type { SessionStatus } from "./session.js";
-
 export type { BuildIdFile } from "./build.js";
 export { DEV_BUILD_ID, UNKNOWN_BUILD_ID, BUILD_ID_FILENAME } from "./build.js";
 
@@ -124,8 +122,6 @@ export type {
 } from "./agentFeatures.js";
 
 export type { AgentSettings, KeyAliasInfo, EnrolledCaller, EnrolledCallerAgent } from "./agentSettings.js";
-
-export type { CallerInfo, ConnectionStatus } from "./connections.js";
 
 export type { CustomTheme, ThemeVariables, ThemeListItem, ThemeContrastReport, ThemeContrastFailure } from "./theme.js";
 

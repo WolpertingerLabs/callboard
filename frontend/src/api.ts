@@ -762,11 +762,6 @@ export async function deleteDraft(id: string): Promise<void> {
   await assertOk(res, "Failed to delete draft");
 }
 
-export async function executeDraft(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/queue/${id}/execute-now`, { method: "POST" });
-  await assertOk(res, "Failed to execute draft");
-}
-
 export async function getSlashCommandsAndPlugins(chatId: string): Promise<{ slashCommands: string[]; plugins: Plugin[]; appPlugins?: AppPluginsData }> {
   const res = await fetch(`${BASE}/chats/${chatId}/slash-commands`);
   await assertOk(res, "Failed to get slash commands");
@@ -1295,17 +1290,6 @@ export async function getProxyEvents(caller: string, limit?: number, offset?: nu
 
   const res = await fetch(`${BASE}/proxy/events?${params}`, { credentials: "include" });
   await assertOk(res, "Failed to get proxy events");
-  return res.json();
-}
-
-export async function getProxyEventsBySource(caller: string, source: string, limit?: number, offset?: number): Promise<{ events: StoredEvent[] }> {
-  const params = new URLSearchParams();
-  params.append("caller", caller);
-  if (limit !== undefined) params.append("limit", limit.toString());
-  if (offset !== undefined) params.append("offset", offset.toString());
-
-  const res = await fetch(`${BASE}/proxy/events/${encodeURIComponent(source)}?${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get proxy events for source");
   return res.json();
 }
 
@@ -2106,13 +2090,6 @@ export function resetSystemInfoCache(): void {
   systemInfoInFlight = null;
 }
 
-export async function getOpenRouterModels(): Promise<OpenRouterModelInfo[]> {
-  const res = await fetch(`${BASE}/openrouter/models`, { credentials: "include" });
-  await assertOk(res, "Failed to get OpenRouter models");
-  const data = await res.json();
-  return Array.isArray(data.models) ? data.models : [];
-}
-
 export async function getCodexModels(): Promise<CodexModelInfo[]> {
   const res = await fetch(`${BASE}/codex/models`, { credentials: "include" });
   await assertOk(res, "Failed to get Codex models");
@@ -2129,14 +2106,6 @@ export async function getOpenRouterCatalog(): Promise<{ models: OpenRouterModelI
     models: Array.isArray(data.models) ? data.models : [],
     aliases: Array.isArray(data.aliases) ? data.aliases : [],
   };
-}
-
-// Server restart API
-
-export async function restartServer(): Promise<{ success: boolean; message: string }> {
-  const res = await fetch(`${BASE}/restart`, { method: "POST", credentials: "include" });
-  await assertOk(res, "Failed to restart server");
-  return res.json();
 }
 
 // Instance name API
@@ -2251,18 +2220,6 @@ export async function getTheme(name: string): Promise<CustomTheme> {
   return data.theme;
 }
 
-export async function createTheme(theme: { name: string; dark: Record<string, string>; light: Record<string, string> }): Promise<CustomTheme> {
-  const res = await fetch(`${BASE}/themes`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(theme),
-  });
-  await assertOk(res, "Failed to create theme");
-  const data = await res.json();
-  return data.theme;
-}
-
 export async function generateTheme(name: string, description: string): Promise<CustomTheme> {
   const res = await fetch(`${BASE}/themes/generate`, {
     method: "POST",
@@ -2271,21 +2228,6 @@ export async function generateTheme(name: string, description: string): Promise<
     body: JSON.stringify({ name, description }),
   });
   await assertOk(res, "Failed to generate theme");
-  const data = await res.json();
-  return data.theme;
-}
-
-export async function updateTheme(
-  originalName: string,
-  theme: { name: string; dark: Record<string, string>; light: Record<string, string> },
-): Promise<CustomTheme> {
-  const res = await fetch(`${BASE}/themes/${encodeURIComponent(originalName)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(theme),
-  });
-  await assertOk(res, "Failed to update theme");
   const data = await res.json();
   return data.theme;
 }
@@ -2403,13 +2345,6 @@ export async function listJobs(): Promise<JobDefinition[]> {
   await assertOk(res, "Failed to list jobs");
   const data = await res.json();
   return data.jobs;
-}
-
-export async function getJob(id: string): Promise<JobDefinition> {
-  const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get job");
-  const data = await res.json();
-  return data.job;
 }
 
 export interface JobDefinitionPayload {

@@ -354,20 +354,6 @@ export function clearCardFieldsOn(chatId: string): boolean {
 }
 
 /**
- * Whether a chat qualifies as a card root: it is a lineage root (no parent),
- * not triggered, and not a job-step chat. This is the exact set the old
- * auto-card logic created cards for, so board membership is unchanged. Pure
- * over the record — safe to call over a snapshot.
- */
-export function isCardRoot(chat: { metadata?: string | null }): boolean {
-  const meta = parseMeta(chat);
-  const hasParent =
-    (typeof meta.parentChatId === "string" && meta.parentChatId) ||
-    (typeof meta.forkedFrom === "string" && meta.forkedFrom);
-  return !hasParent && isCardEligible(chat);
-}
-
-/**
  * Whether a record is allowed to anchor a card, independent of whether its
  * parent pointer still resolves. This distinction matters after an ancestor
  * is deleted: `walkToRootId` promotes the highest surviving descendant to the

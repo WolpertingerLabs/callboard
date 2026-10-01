@@ -273,15 +273,6 @@ export function readCanvas(
 }
 
 /**
- * Get canvas metadata without reading content.
- */
-export function getCanvasMeta(canvasId: string): { error?: string; meta?: CanvasMeta } {
-  const idErr = validateCanvasId(canvasId);
-  if (idErr) return { error: idErr };
-  return { meta: readMeta(canvasId) };
-}
-
-/**
  * Resolve the snapshot file path and MIME type for serving.
  */
 export function resolveSnapshot(

@@ -1532,37 +1532,6 @@ export function resolveBranch(opts: ResolveBranchOptions): ResolveBranchResult {
   return { ok: true, folder };
 }
 
-/**
- * Get the git diff (unstaged + staged) for a repository.
- * Returns the raw unified diff string.
- */
-export function getGitDiff(directory: string): string {
-  if (!directory || !existsSync(directory)) {
-    return "";
-  }
-
-  try {
-    const unstaged = execSync("git diff", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
-
-    const staged = execSync("git diff --cached", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
-
-    // Combine both; staged changes come first
-    return (staged + unstaged).trim();
-  } catch {
-    return "";
-  }
-}
-
 // --- Enhanced structured diff support ---
 
 const LARGE_FILE_THRESHOLD = 10 * 1024; // 10 KB

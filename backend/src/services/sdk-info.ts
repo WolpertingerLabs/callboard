@@ -129,13 +129,6 @@ export function initSdkInfoCache(): void {
 }
 
 /**
- * Get cached SDK info. Returns null if not yet fetched.
- */
-export function getSdkInfo(): SdkInfoCache | null {
-  return cache;
-}
-
-/**
  * Get cached SDK info, waiting for the initial fetch if needed.
  */
 export async function getSdkInfoAsync(): Promise<SdkInfoCache> {

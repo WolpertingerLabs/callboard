@@ -19,7 +19,7 @@ vi.mock("./claude.js", () => ({
   hasPendingRequest: () => false,
 }));
 
-const { resolveParentage, getAncestors, buildChatTree, getParentChatId, paginateTreeRows, buildLineageIndex } = await import("./chat-lineage.js");
+const { resolveParentage, buildChatTree, getParentChatId, paginateTreeRows, buildLineageIndex } = await import("./chat-lineage.js");
 type ChatTreeNode = import("shared/types/index.js").ChatTreeNode;
 
 const chatsDir = join(tmpRoot, "chats");
@@ -92,23 +92,23 @@ describe("resolveParentage", () => {
   });
 });
 
-describe("getAncestors", () => {
+describe("buildChatTree ancestors", () => {
   it("returns ancestors root-first with titles and roles", () => {
     writeChat("root", { title: "Root chat" });
     writeChat("mid", { parentChatId: "root", rootChatId: "root", chatRole: "subagent", title: "Mid" });
     writeChat("leaf", { parentChatId: "mid", rootChatId: "root", chatRole: "monitor" });
 
-    expect(getAncestors("leaf")).toEqual([
+    expect(buildChatTree("leaf")!.ancestors).toEqual([
       { chatId: "root", title: "Root chat" },
       { chatId: "mid", title: "Mid", role: "subagent" },
     ]);
-    expect(getAncestors("root")).toEqual([]);
+    expect(buildChatTree("root")!.ancestors).toEqual([]);
   });
 
   it("survives cyclic corrupt data via the visited set", () => {
     writeChat("a", { parentChatId: "b" });
     writeChat("b", { parentChatId: "a" });
-    const ancestors = getAncestors("a");
+    const ancestors = buildChatTree("a")!.ancestors;
     expect(ancestors.map((n: { chatId: string }) => n.chatId)).toEqual(["b"]);
   });
 });

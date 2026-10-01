@@ -327,14 +327,6 @@ export function paginateTreeRows<T>(
 }
 
 /**
- * Ancestors of `chatId`, ordered root-first (empty when the chat is a
- * root or has no lineage).
- */
-export function getAncestors(chatId: string): ChatTreeAncestor[] {
-  return buildChatTree(chatId)?.ancestors ?? [];
-}
-
-/**
  * Assemble the full tree containing `chatId`: resolve its root (highest
  * existing ancestor), then attach every stored chat whose parent pointer
  * reaches into the tree. Returns null when the chat has no file-storage

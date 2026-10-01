@@ -323,12 +323,10 @@ describe("native caller boundaries with real storage and registry", () => {
     // Prove these consumers require neither a rollout nor transient enrichment.
     rmSync(file);
     const { walkToRootId, buildLineageIndex } = await import("./chat-lineage.js");
-    const { isCardRoot } = await import("./card-fields.js");
     const { buildCardSummaries } = await import("./card-rollup.js");
     const snapshot = chatFileService.getAllChats();
     expect(walkToRootId(CHILD)).toBe("stored-root");
     expect(buildLineageIndex(snapshot).existingRootIdOf(CHILD)).toBe("stored-root");
-    expect(isCardRoot(child)).toBe(false);
     const cards = buildCardSummaries(snapshot, [], {
       isSessionActive: () => false,
       pendingKindOf: () => undefined,
