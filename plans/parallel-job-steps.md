@@ -1,6 +1,6 @@
 # Plan: parallel job steps
 
-Status: proposed for implementation.
+Status: **Shipped** in #200 and #201 (2026-06-16). Originally: proposed for implementation.
 
 This plan adds a composite `parallel` job step that can run multiple child branches concurrently. It supports two modes:
 

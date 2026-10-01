@@ -580,8 +580,8 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       ...(maxCallbackChainDepth !== undefined && { maxCallbackChainDepth: normalizeCount(maxCallbackChainDepth) }),
       ...(maxPendingCallbacks !== undefined && { maxPendingCallbacks: normalizeCount(maxPendingCallbacks) }),
     });
-    // Handle proxy mode switching — creates/destroys LocalProxy as needed and
-    // resets cached ProxyClient instances. Only when the endpoint actually
+    // Handle proxy mode switching — starts/stops the managed local daemon as
+    // needed and resets cached ProxyClient instances. Only when the endpoint actually
     // moved: an unrelated settings save should never bounce the daemon or drop
     // the route cache.
     if (updated.proxyMode !== before.proxyMode || updated.remoteServerUrl !== before.remoteServerUrl) {

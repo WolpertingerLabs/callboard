@@ -86,7 +86,7 @@ export interface ClineAdapterOptions extends ClineRunOptions {
  * the tools will run under. So the "handle" stored in `mcpServers` is the spec
  * itself, and this narrows the bag back to the ones this adapter put there.
  */
-export function collectClineToolSpecs(mcpServers: unknown): ToolServerSpec[] {
+function collectClineToolSpecs(mcpServers: unknown): ToolServerSpec[] {
   if (!mcpServers || typeof mcpServers !== "object") return [];
   return Object.values(mcpServers as Record<string, unknown>).filter(isToolServerSpec);
 }

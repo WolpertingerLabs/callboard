@@ -547,7 +547,7 @@ export function stopSession(chatId: string): boolean {
 }
 
 /** How long {@link stopSessionAndWait} waits for a run to actually unwind. */
-export const SESSION_TEARDOWN_TIMEOUT_MS = 15000;
+const SESSION_TEARDOWN_TIMEOUT_MS = 15000;
 
 export type SessionStopOutcome =
   /** Nothing was running. */

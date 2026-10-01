@@ -90,7 +90,7 @@ async function waitForSpec(mock: MockAgentProvider, attempts = 50): Promise<void
  * tool_use stream event through the harness, so it does not exercise the
  * allowedTools / permission gate the real adapters apply before a tool runs.
  * Driving a gated tool_use event would be a larger MockAgentProvider change; the
- * gate itself is covered by the OR harness's own tool-filter tests, and these
+ * gate itself is covered by each adapter's own permission tests, and these
  * tests focus on quick-completion's capture/routing logic above that seam.
  */
 async function fireReturnResult(mock: MockAgentProvider, text: string): Promise<void> {

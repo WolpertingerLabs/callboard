@@ -2,7 +2,8 @@
 
 Add OpenAI Codex as the second agent provider in callboard, building on the AgentProvider (PR #125) and SessionProvider (PR #126) abstractions.
 
-Status: **Not started.** Prerequisites landed.
+Status: **Superseded** by `codex-adapter-job.md`, which is the plan the Codex provider was
+built from (shipped in `e5422470`, 2026-06-14). Kept for history. Originally: **Not started.** Prerequisites landed.
 
 ---
 

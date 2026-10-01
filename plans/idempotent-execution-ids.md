@@ -4,7 +4,7 @@ Replace the job runner's scan-and-guess crash recovery with a deterministic **ex
 key** written *before* every spawn, so restart reconciliation is an exact lookup instead of
 a filesystem sweep plus a "newest unharvested wins" heuristic.
 
-Status: **Proposed.** Pattern observed in getpaseo/paseo's Hub design (AGPLv3) —
+Status: **Shipped** in #279 (2026-07-27). Originally: **Proposed.** Pattern observed in getpaseo/paseo's Hub design (AGPLv3) —
 architecture only, no code reuse.
 
 ---

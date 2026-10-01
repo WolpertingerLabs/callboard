@@ -62,7 +62,7 @@ export interface RequestBudget {
 }
 
 /** The time constant of an account's recent spending rate. */
-export const RECENT_MS = 2 * ARTIFACT_BRIDGE_LIMITS.activeWindowMs;
+const RECENT_MS = 2 * ARTIFACT_BRIDGE_LIMITS.activeWindowMs;
 
 /** One mount's claim on the {@link TabBudget}. */
 export interface BudgetAccount extends RequestBudget {

@@ -167,7 +167,7 @@ export interface FailureContext {
  */
 const CONFIRMED_BY_HUMAN = Symbol("callboard.computerUse.confirmedByHuman");
 
-export function markConfirmedFailure<E>(error: E): E {
+function markConfirmedFailure<E>(error: E): E {
   if (error && typeof error === "object") Object.defineProperty(error, CONFIRMED_BY_HUMAN, { value: true, enumerable: false });
   return error;
 }
@@ -269,7 +269,7 @@ export function logUnattendedAction(chatId: string, sessionId: string, redactedS
  * failure. The caller holds the signal; it says so, exactly as `call()`'s own
  * `logContext()` does. `escalate` has no meaning here — nobody approved this.
  */
-export function logUnattendedFailure(chatId: string, sessionId: string, error: unknown, context: FailureContext = {}): void {
+function logUnattendedFailure(chatId: string, sessionId: string, error: unknown, context: FailureContext = {}): void {
   const label = context.cancelled || isAbort(error) ? "cancelled" : controlCode(error) || envelopeCode(error) || "unavailable";
   log.info(`Computer control ${controlIds({ chatId, sessionId })} unattended action did NOT complete (computerControl=allow) code=${label}`);
 }
@@ -493,7 +493,7 @@ export { CU_ACTION_TOOL_NAME };
  * chat set to "ask" reaches here, nothing short of the authenticated human's
  * POST returns `approved: true`.
  */
-export const confirmAgentActionInChat: ConfirmAgentAction = (request) =>
+const confirmAgentActionInChat: ConfirmAgentAction = (request) =>
   requestHumanApproval(request.chatId, {
     toolName: CU_ACTION_TOOL_NAME,
     input: { summary: request.summary, target: request.target, action: request.action },

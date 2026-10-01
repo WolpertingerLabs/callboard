@@ -1,7 +1,6 @@
 /**
  * Codex auth-readiness check, surfaced to the frontend via
- * `GET /api/system-info`'s `codexConfigured` flag (same pattern as
- * `openRouterConfigured`). The New Chat panel / ApiSettings use it to enable
+ * `GET /api/system-info`'s `codexConfigured` flag. The New Chat panel / ApiSettings use it to enable
  * or gray-out the Codex provider toggle without ever exposing credentials.
  *
  * "Configured" mirrors the three auth paths the Codex CLI accepts:

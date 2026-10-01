@@ -18,7 +18,7 @@ export function buildClaudeCodeToolServer(spec: ToolServerSpec): ReturnType<type
   });
 }
 
-export function claudeToolCallContext(extra: unknown): ToolCallContext {
+function claudeToolCallContext(extra: unknown): ToolCallContext {
   if (!extra || typeof extra !== "object") return {};
   const signal = "signal" in extra && extra.signal instanceof AbortSignal ? extra.signal : undefined;
   const requestId = "requestId" in extra ? extra.requestId : undefined;

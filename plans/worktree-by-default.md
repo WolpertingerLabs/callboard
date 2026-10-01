@@ -5,7 +5,7 @@ sticky **New worktree** toggle, an always-visible branch-name field where empty 
 "generate one", and a one-line summary that states in plain words what the current
 selection will do.
 
-Status: **Implemented.** Branch `refactor/auto-create-worktree`. Each phase records below
+Status: **Shipped** in #404 (2026-09-03). Originally: **Implemented.** Branch `refactor/auto-create-worktree`. Each phase records below
 how it actually landed, including five live bugs found along the way that this plan did
 not anticipate.
 

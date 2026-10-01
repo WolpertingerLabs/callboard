@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 
-export const MAX_IMAGE_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_IMAGE_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 export const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
 
 export function validateImageFiles(fileList: FileList | File[]): File[] {

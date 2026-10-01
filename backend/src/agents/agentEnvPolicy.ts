@@ -67,7 +67,6 @@ export const CALLBOARD_AGENT_ENV_EXCLUSIONS: readonly string[] = [
   // ── Server data / workspace paths ──
   "CALLBOARD_DATA_DIR",
   "CALLBOARD_WORKSPACES_DIR",
-  "CCUI_AGENTS_DIR",
 
   // ── Event-watcher subsystem ──
   "EVENT_WATCHER_REMOTE_URL",
@@ -92,7 +91,7 @@ export const CALLBOARD_AGENT_ENV_EXCLUSIONS: readonly string[] = [
  *                    DRAWLATCH_LOCAL_CALLER_ALIAS, DRAWLATCH_LOCAL_CALLER_KEYS_DIR
  *   EVENT_WATCHER_*  (also enumerated above for the exact-name record)
  */
-export const CALLBOARD_AGENT_ENV_EXCLUSION_PREFIXES: readonly string[] = ["DRAWLATCH_", "EVENT_WATCHER_"] as const;
+const CALLBOARD_AGENT_ENV_EXCLUSION_PREFIXES: readonly string[] = ["DRAWLATCH_", "EVENT_WATCHER_"] as const;
 
 const EXCLUSION_SET = new Set(CALLBOARD_AGENT_ENV_EXCLUSIONS);
 

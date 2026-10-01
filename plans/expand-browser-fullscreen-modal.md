@@ -1,6 +1,6 @@
 # Expanded browser / desktop viewer investigation
 
-Status: recommended first version implemented; independent Callboard-session review pending.
+Status: **Shipped** in #435 (2026-09-09). Originally: recommended first version implemented; independent Callboard-session review pending.
 Inspected checkout: `19618c7`.
 
 ## Conclusion

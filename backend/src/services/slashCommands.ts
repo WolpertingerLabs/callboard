@@ -52,7 +52,7 @@ function saveSlashCommandsData(data: SlashCommandsData): void {
 /**
  * Get slash commands for a specific directory
  */
-export function getSlashCommandsForDirectory(directory: string): string[] {
+function getSlashCommandsForDirectory(directory: string): string[] {
   const data = loadSlashCommandsData();
   return data[directory] || [];
 }

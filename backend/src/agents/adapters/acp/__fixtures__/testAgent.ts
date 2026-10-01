@@ -13,7 +13,7 @@ import type { AcpVendorPreset } from "../vendors.js";
 import type { FakeAcpScenario } from "./fake-acp-agent.js";
 
 /** Absolute path to the test double. */
-export function fakeAcpAgentPath(): string {
+function fakeAcpAgentPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "fake-acp-agent.ts");
 }
 

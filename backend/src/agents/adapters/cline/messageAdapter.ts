@@ -44,7 +44,7 @@ import type { AgentEvent as ClineAgentEvent, CoreSessionEvent } from "@cline/sdk
 import type { AgentEvent, AgentResultStatus, TokenUsage } from "../../ports/events.js";
 
 /** The adapter tag on `adapter_specific` events. */
-export const CLINE_ADAPTER = "cline";
+const CLINE_ADAPTER = "cline";
 
 /**
  * Unwrap a {@link CoreSessionEvent} for one session.
@@ -390,7 +390,7 @@ export function translateUsage(event: Extract<ClineAgentEvent, { type: "usage" }
 }
 
 /** Render a tool's output as the string callboard's `tool_result` carries. */
-export function renderToolOutput(output: unknown): string {
+function renderToolOutput(output: unknown): string {
   if (output === null || output === undefined) return "";
   if (typeof output === "string") return output;
   try {

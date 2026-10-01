@@ -49,7 +49,7 @@ import { createLogger } from "../../../utils/logger.js";
 const log = createLogger("cline-transcript");
 
 /** Directory name under the callboard data dir. */
-export const CLINE_SESSIONS_DIRNAME = "cline-sessions";
+const CLINE_SESSIONS_DIRNAME = "cline-sessions";
 
 /**
  * Root for Cline transcripts, resolved at CALL time.

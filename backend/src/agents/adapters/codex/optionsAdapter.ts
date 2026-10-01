@@ -198,7 +198,7 @@ export interface CodexTranslatedOptions {
  *     Codex forwards only a bearer token (via env var), not arbitrary headers,
  *     so custom `headers` are dropped with a warning rather than silently lost.
  */
-export function externalToCodexMcpConfig(name: string, value: Record<string, unknown>): CodexMcpServerConfig | null {
+function externalToCodexMcpConfig(name: string, value: Record<string, unknown>): CodexMcpServerConfig | null {
   if (typeof value.command === "string") {
     const cfg: CodexMcpServerConfig = {
       command: value.command,

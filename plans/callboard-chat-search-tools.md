@@ -1,6 +1,7 @@
 # Callboard chat search tools
 
-Status: implemented on feat/callboard-chat-search-tools; consolidated with
+Status: **Shipped** in #454 (2026-09-16), hardened in #455, consolidated with `find_chats`
+in #456 (2026-09-17). Originally: implemented on feat/callboard-chat-search-tools; consolidated with
 `find_chats` on feat/consolidate-chat-search-tools. See both as-built sections
 below — the 2026-09-17 one supersedes the earlier "keep `find_chats`
 compatible" recommendation and records why.

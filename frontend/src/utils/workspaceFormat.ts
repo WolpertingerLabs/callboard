@@ -9,7 +9,7 @@
 import type { WorkspaceRemovalBlocker, WorktreeDiskUsage } from "../api";
 
 /** `9.4 GB`. Sizes here run to tens of gigabytes, so the ladder goes that far. */
-export function formatBytes(bytes: number): string {
+function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let value = bytes / 1024;

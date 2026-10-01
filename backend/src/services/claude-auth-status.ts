@@ -63,7 +63,7 @@ export interface ClaudeAuthStatusResult {
 }
 
 /** How long a *positive* answer is reused. Negatives are never cached, so a fresh login is seen at once. */
-export const CLAUDE_STATUS_TTL_MS = 60_000;
+const CLAUDE_STATUS_TTL_MS = 60_000;
 
 let cache: { data: ClaudeAuthStatusResult; ts: number } | null = null;
 

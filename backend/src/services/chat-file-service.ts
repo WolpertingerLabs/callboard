@@ -88,7 +88,7 @@ function invalidateRecord(sessionId: string): void {
   sortedCache = null;
 }
 
-export class ChatFileService {
+class ChatFileService {
   /**
    * Every record, newest first, optionally paginated.
    *

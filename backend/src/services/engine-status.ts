@@ -112,7 +112,7 @@ function callboardDependencies(): Record<string, string> | null {
  * mismatched name here would be dropped silently rather than caught at compile
  * time. `engine-status.test.ts` asserts the field arrives.
  */
-export function callboardDependencyRange(pkg: string): { dependencyRange?: string; pinned?: boolean } {
+function callboardDependencyRange(pkg: string): { dependencyRange?: string; pinned?: boolean } {
   const declared = callboardDependencies()?.[pkg];
   if (typeof declared !== "string" || !declared.trim()) return {};
   const dependencyRange = declared.trim();

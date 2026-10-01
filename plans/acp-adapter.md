@@ -4,7 +4,8 @@ Add `acp` as a callboard `AgentProviderKind` backed by the **Agent Client Protoc
 (`@agentclientprotocol/sdk`), so that Copilot, Cursor, Kiro, Trae, Gemini CLI, and any
 future ACP-speaking agent become configuration rather than code.
 
-Status: **Proposed.** Derived from a read of getpaseo/paseo (AGPLv3) on 2026-07-26 —
+Status: **Shipped.** Phase 1 in #284 (2026-07-28); vendor presets in #307/#308 (2026-08-04),
+with OpenCode the only shipped preset. Originally: **Proposed.** Derived from a read of getpaseo/paseo (AGPLv3) on 2026-07-26 —
 architecture only, no code reuse.
 
 ---

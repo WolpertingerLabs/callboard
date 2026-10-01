@@ -4,7 +4,8 @@ Introduce a persisted **workspace** entity that owns "where work happens" — pa
 isolation, lifecycle — instead of deriving it from chat rows and filesystem archaeology.
 Make worktrees reference-counted and actually removable.
 
-Status: **Proposed.** Model observed in getpaseo/paseo (AGPLv3) — architecture only, no code
+Status: **Shipped.** Phase 1 #281, Phase 2 #282, Phase 2b #287, Phase 3 #289, Phase 4 #291 and
+#294 (2026-07-27 to 2026-07-28). Originally: **Proposed.** Model observed in getpaseo/paseo (AGPLv3) — architecture only, no code
 reuse.
 
 ---
