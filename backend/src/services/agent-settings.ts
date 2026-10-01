@@ -21,12 +21,12 @@ import {
   closeSync,
   unlinkSync,
   realpathSync,
-  readlinkSync,
+  lstatSync,
   fchownSync,
   constants as fsConstants,
   type Stats,
 } from "fs";
-import { join, dirname, basename, resolve } from "path";
+import { join, dirname, basename } from "path";
 import { randomBytes } from "crypto";
 import { homedir } from "os";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
@@ -357,21 +357,28 @@ function persistRepairedSettings(settings: AgentSettings): void {
 }
 
 /**
- * The file a save should replace. A settings path kept as a symlink (dotfiles, a
- * synced folder) is written through, so the link survives, including a link
- * whose target does not exist yet. A missing path with no link is created as is.
+ * The real file a save should replace, so that a settings path kept as a symlink
+ * (dotfiles, a synced folder) survives the save. A missing path with no link is
+ * returned as is, for the first save to create.
+ *
+ * `null` means the path is a symlink whose target does not exist yet. Callboard
+ * does not work out where that is: the kernel resolves each relative hop from
+ * the link's *real* directory, so resolving it as text goes wrong under a
+ * symlinked data dir, and a chain has more than one hop. {@link saveSettings}
+ * writes through the link instead.
  */
-function resolveSettingsWriteTarget(): string {
+function resolveSettingsWriteTarget(): string | null {
   try {
     return realpathSync(SETTINGS_FILE);
   } catch (err: any) {
     if (err?.code !== "ENOENT") throw err;
   }
   try {
-    return resolve(dirname(SETTINGS_FILE), readlinkSync(SETTINGS_FILE));
-  } catch {
-    return SETTINGS_FILE;
+    if (lstatSync(SETTINGS_FILE).isSymbolicLink()) return null;
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") throw err;
   }
+  return SETTINGS_FILE;
 }
 
 /**
@@ -380,10 +387,14 @@ function resolveSettingsWriteTarget(): string {
  * failed or interrupted write leaves the previous file whole rather than
  * truncated. The temp file is removed on failure.
  *
- * - **Links:** the target is resolved through symlinks first. A file with more
- *   than one hard link is written in place instead, since a rename would split
- *   it from its other names. That gives up atomicity, which the old writer never
- *   had either.
+ * - **Links:** the target is resolved through symlinks first. A symlink whose
+ *   target does not exist yet is written *through* with a plain write, which
+ *   lets the kernel follow the whole chain and create the final file. That is
+ *   only ever a first save, with no previous content to protect, and the new
+ *   file gets the same mode (0666 less the umask) as any other first save. A
+ *   file with more than one hard link is written in place, since a rename would
+ *   split it from its other names. That gives up atomicity, which the old
+ *   writer never had either.
  * - **Mode and owner:** the file holds API keys, so the temp file takes the
  *   existing file's exact mode (set with chmod, so the umask cannot strip bits)
  *   and, best effort, its owner and group. A non-root process may not chown;
@@ -398,6 +409,10 @@ function saveSettings(settings: AgentSettings): void {
   ensureDataDir();
   const data = JSON.stringify(settings, null, 2);
   const target = resolveSettingsWriteTarget();
+  if (target === null) {
+    writeFileSync(SETTINGS_FILE, data);
+    return;
+  }
   let existing: Stats | undefined;
   if (existsSync(target)) {
     accessSync(target, fsConstants.W_OK);
