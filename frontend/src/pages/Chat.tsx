@@ -459,7 +459,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     [id, refreshActivity],
   );
 
-  const handleSendRef = useRef<(prompt: string) => void>(() => {});
+  // Typed as handleSend itself, options included: a narrower type here once
+  // hid this ref's canned send from a search for sends that aren't the
+  // composer's.
+  const handleSendRef = useRef<(prompt: string, images?: File[], options?: { notFromComposer?: boolean }) => void>(() => {});
   const planApprovedRef = useRef(false);
   const tempChatIdRef = useRef<string | null>(null);
   const streamingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1101,7 +1104,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   });
                   // Send a continuation message to start the implementation
                   // This mirrors how the CLI handles plan approval - it auto-continues
-                  handleSendRef.current("Proceed with the plan.");
+                  // Not the composer's contents, so an opened draft sitting
+                  // in the composer stays open (see handleSend).
+                  handleSendRef.current("Proceed with the plan.", undefined, { notFromComposer: true });
                   return;
                 }
 

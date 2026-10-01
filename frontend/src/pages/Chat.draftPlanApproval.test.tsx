@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
- * Approving a stale plan review sends a canned reply ("Proceed with the
- * plan.") through `handleSend`. That reply is not the composer's contents, so
+ * Approving a plan review sends a canned reply ("Proceed with the plan.")
+ * through `handleSend` — directly for a stale review, and through
+ * `handleSendRef` from the stream reader once a live approval's run completes. That reply is not the composer's contents, so
  * it must not retire a draft the user just opened in the composer. It used to
  * clear the open draft's id and restore mid-flight without deleting the
  * draft: the restore then landed anyway, the user's own send of the draft no
@@ -17,7 +18,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import Chat from "./Chat";
-import { deleteDraft } from "../api";
+import { deleteDraft, getMessages, getPending, respondToChat } from "../api";
 
 const STORED_ID = "12345678-1234-4234-8234-123456789abc";
 const restore = vi.hoisted(() => ({ release: (_files: File[]) => {} }));
@@ -45,6 +46,7 @@ vi.mock("../api", async (importOriginal) => ({
       }),
   ),
   deleteDraft: vi.fn(async () => {}),
+  respondToChat: vi.fn(async () => ({ ok: true, toolName: "ExitPlanMode" })),
 }));
 vi.mock("../contexts/SessionContext", () => ({ useIsSessionActive: () => null, useMetadataVersion: () => 0 }));
 vi.mock("../components/ChatTreeIndicator", () => ({ default: () => null }));
@@ -107,6 +109,21 @@ beforeEach(() => {
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.endsWith("/stream")) {
+        // A live approval's run finishing: what triggers the auto-continue.
+        const frame = new TextEncoder().encode(`data: ${JSON.stringify({ type: "message_complete" })}\n\n`);
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream({
+            start: (c) => {
+              c.enqueue(frame);
+              c.close();
+            },
+          }),
+          json: async () => ({}),
+        };
+      }
       if ((init?.method ?? "GET").toUpperCase() === "POST" && url.endsWith("/message")) {
         posts.push(JSON.parse(String(init!.body)).prompt);
         return { ok: true, status: 200, body: new ReadableStream({ start: (c) => c.close() }), json: async () => ({}) };
@@ -147,4 +164,29 @@ it("a plan approval mid-restore leaves the opened draft alone, and sending the d
   });
   await waitFor(() => expect(posts).toEqual(["Proceed with the plan.", "with pic"]));
   await waitFor(() => expect(deleteDraft).toHaveBeenCalledWith("draft-1"));
+});
+
+it("a live plan approval's auto-continue leaves the opened draft in the composer and in Staging", async () => {
+  vi.mocked(getMessages).mockResolvedValueOnce([{ role: "user", type: "text", content: "plan it" }] as never);
+  vi.mocked(getPending).mockResolvedValueOnce({ type: "plan_review", content: JSON.stringify({ plan: "1. Do the thing" }), requestId: "req-1" });
+  render(
+    <MemoryRouter initialEntries={[{ pathname: "/chat/planning", state: { draft: { id: "draft-1", user_message: "with pic", images: [{ id: STORED_ID, originalName: "pic.png" }] } } }]}>
+      <Routes>
+        <Route path="/chat/:id" element={<Chat />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(screen.getByTestId("send-blocked").textContent).toMatch(/restoring/i));
+  await act(async () => restore.release([new File(["png"], "pic.png", { type: "image/png" })]));
+  await waitFor(() => expect(screen.getByTestId("composer-images").textContent).toBe("pic.png"));
+
+  await act(async () => {
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  });
+  await waitFor(() => expect(respondToChat).toHaveBeenCalled());
+  await waitFor(() => expect(posts).toEqual(["Proceed with the plan."]));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(deleteDraft).not.toHaveBeenCalled();
+  expect(screen.getByTestId("composer-images").textContent).toBe("pic.png");
 });

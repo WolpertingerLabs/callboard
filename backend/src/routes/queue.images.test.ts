@@ -232,6 +232,17 @@ describe("POST /:id/execute-now", () => {
     expect(read).toMatchObject({ code: 200, body: { user_message: "keep me" } });
   });
 
+  it("lets a draft whose send failed be executed again, instead of answering 409 from then on", async () => {
+    vi.mocked(sendMessage).mockRejectedValueOnce(new Error("agent unavailable"));
+    const created = await call("post", "/", { body: { chat_id: "chat-1", user_message: "try again" } });
+    expect((await call("post", "/:id/execute-now", { params: { id: created.body.id } })).code).toBe(500);
+
+    vi.mocked(sendMessage).mockResolvedValueOnce(new EventEmitter() as any);
+    const retry = await call("post", "/:id/execute-now", { params: { id: created.body.id } });
+    expect(retry.code).toBe(200);
+    expect((await call("get", "/:id", { params: { id: created.body.id } })).code).toBe(404);
+  });
+
   it("refuses a second execute-now for a draft whose send is still starting", async () => {
     let started!: (emitter: EventEmitter) => void;
     vi.mocked(sendMessage).mockClear();
