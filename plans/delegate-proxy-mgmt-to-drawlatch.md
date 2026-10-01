@@ -1,6 +1,6 @@
 # Plan: Delegate all proxy/connection management to drawlatch
 
-Status: **Approved (Ben, 2026-06-16).** Paired with the drawlatch plan
+Status: **Shipped** in #202 (2026-06-17). Originally: **Approved (Ben, 2026-06-16).** Paired with the drawlatch plan
 `self-managed-admin-ui.md` (branch `feat/self-managed-admin-ui`). **Depends on that PR** —
 land drawlatch first.
 
@@ -56,6 +56,11 @@ the management UI moves to (and is deleted in favor of) drawlatch's dashboard.
   dashboard** for all actual connection/secret/listener/logs management.
 
 ### 4. Caller enrollment
+
+> **Retired.** Neither enrollment flow below survived. The managed local daemon writes the
+> default caller's keys straight into callboard's keys dir at boot (`0b01f1b5`), and remote
+> callers are imported as credential bundles (`836f16c9`, #206). There is no `sync`
+> invite-code flow and no auto-enroll handshake.
 
 - For a callboard-managed **local** daemon, enroll via drawlatch's new
   programmatic/auto-enroll path (drawlatch plan item E) — zero invite-code friction

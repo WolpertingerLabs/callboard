@@ -40,7 +40,7 @@ const failedAliases = new Set<string>();
  * The drawlatch endpoint URL for the current proxy mode: the callboard-managed
  * local daemon, or the configured external server.
  */
-export function resolveEndpointUrl(): string {
+function resolveEndpointUrl(): string {
   const settings = getAgentSettings();
   if (settings.proxyMode === "remote") {
     return settings.remoteServerUrl || REMOTE_URL;
@@ -82,7 +82,7 @@ export function getProxy(alias: string): ProxyLike | null {
  * Get a ProxyClient for a specific caller alias. Creates and caches the client
  * on first call. Returns null if keys are missing or client creation fails.
  */
-export function getProxyClient(alias: string): ProxyClient | null {
+function getProxyClient(alias: string): ProxyClient | null {
   if (failedAliases.has(alias)) return null;
 
   const cached = clientCache.get(alias);

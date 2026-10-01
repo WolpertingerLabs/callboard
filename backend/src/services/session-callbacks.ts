@@ -31,7 +31,7 @@ const STORE_PATH = join(DATA_DIR, "session-callbacks.json");
 
 /** Loop-safety defaults (overridable via AgentSettings). */
 export const DEFAULT_MAX_CALLBACK_CHAIN_DEPTH = 10;
-export const DEFAULT_MAX_PENDING_CALLBACKS = 25;
+const DEFAULT_MAX_PENDING_CALLBACKS = 25;
 
 /**
  * How the parent came to be waiting on the child — only affects the wording of
@@ -103,7 +103,7 @@ export interface AddCallbackInput {
   kind?: CallbackKind;
 }
 
-export function addCallback(input: AddCallbackInput): PendingCallback {
+function addCallback(input: AddCallbackInput): PendingCallback {
   const store = readStore();
   const cb: PendingCallback = {
     id: randomUUID(),
@@ -245,7 +245,7 @@ export function parentsWithReadyCallbacks(): string[] {
 // ── Chat-depth tracking (for chain-depth enforcement) ───────────────
 
 /** Depth at which a chat was (re-)invoked via a callback. Defaults to 0 (root). */
-export function getChatDepth(chatId: string): number {
+function getChatDepth(chatId: string): number {
   return readStore().chatDepths[chatId] ?? 0;
 }
 

@@ -5,7 +5,9 @@ append-only evolution rule — so a new event type or enum value can ship withou
 browser tab that hasn't reloaded, and so wire drift becomes a lint failure rather than a
 support ticket.
 
-Status: **Proposed.** Pattern observed in getpaseo/paseo (AGPLv3) — architecture only, no
+Status: **Partly shipped.** Phase 1 in #280 and Phase 2 in #283 (both 2026-07-27); Phase 4's
+first gated value (`human_prompt_identity`) in #437 (2026-09-09). Phase 3, the discriminated
+union, has not landed: `StreamEvent` is still one interface. Originally: **Proposed.** Pattern observed in getpaseo/paseo (AGPLv3) — architecture only, no
 code reuse.
 
 ---

@@ -1,6 +1,6 @@
 # Plan: cards-as-prompt-metadata — cards as metadata on the prompt that created them
 
-Status: **Draft — proposed.**
+Status: **Shipped** in #392 (2026-08-26). Originally: **Draft — proposed.**
 
 Today a card is a first-class entity: a JSON file in `~/.callboard/data/cards/`, created and deleted through REST and MCP tools, joined by chats and job runs through a denormalized `metadata.cardId` pointer, and rolled up by scan. In practice the system already collapsed most of the way to a simpler model: **every top-level human-started chat gets its own auto-created card** (`createCard` defaults to true on the stream route), children inherit membership at creation, and the card's title is just the chat's prompt preview. The entity layer is overhead on top of a relationship that already exists — "this conversation and everything spawned from it".
 

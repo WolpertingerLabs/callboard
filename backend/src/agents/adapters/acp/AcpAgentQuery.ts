@@ -368,7 +368,7 @@ export class AcpAgentQuery implements AgentQuery {
  * and a prompt that flattens to nothing still yields one empty text block: ACP
  * requires a non-empty `prompt` array, and an empty one is a protocol error.
  */
-export async function resolveAcpPrompt(prompt: string | AsyncIterable<unknown>): Promise<ContentBlock[]> {
+async function resolveAcpPrompt(prompt: string | AsyncIterable<unknown>): Promise<ContentBlock[]> {
   if (typeof prompt === "string") return [{ type: "text", text: prompt }];
 
   const blocks: ContentBlock[] = [];

@@ -48,7 +48,7 @@ function getNestedValue(obj: unknown, path: string): unknown {
 }
 
 /** Resolve a context ref like "steps.plan.outputs.plan_md". */
-export function resolveRef(ctx: JobRunContext, ref: string): unknown {
+function resolveRef(ctx: JobRunContext, ref: string): unknown {
   return getNestedValue(ctx, ref.trim());
 }
 

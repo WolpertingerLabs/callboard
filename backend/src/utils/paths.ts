@@ -50,7 +50,7 @@ let _ignoredPrefixesCache: string[] | null = null;
  * Applied on **read** as well as on write, because the file is on disk and a
  * hand-edited or restored one must not be trusted either.
  */
-export const IGNORED_PREFIX_PATTERN = /^[A-Za-z0-9-]+$/;
+const IGNORED_PREFIX_PATTERN = /^[A-Za-z0-9-]+$/;
 
 /** True when `prefix` could name (the start of) a real slugified project dir. */
 export function isValidIgnoredPrefix(prefix: unknown): prefix is string {
@@ -256,12 +256,9 @@ export const ENV_FILE = join(DATA_DIR, ".env");
 
 /**
  * Base directory for agent workspaces (~/.callboard/agent-workspaces by default).
- * Override via CALLBOARD_WORKSPACES_DIR (or legacy CCUI_AGENTS_DIR).
+ * Override via CALLBOARD_WORKSPACES_DIR.
  */
-export const WORKSPACES_DIR =
-  process.env.CALLBOARD_WORKSPACES_DIR ||
-  process.env.CCUI_AGENTS_DIR || // backward compat
-  join(DATA_DIR, "agent-workspaces");
+export const WORKSPACES_DIR = process.env.CALLBOARD_WORKSPACES_DIR || join(DATA_DIR, "agent-workspaces");
 
 /** Default MCP config directory for local proxy mode. */
 export const DEFAULT_MCP_LOCAL_DIR = join(DATA_DIR, ".drawlatch.local");

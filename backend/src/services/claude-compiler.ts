@@ -89,7 +89,7 @@ export function scaffoldWorkspace(workspacePath: string): void {
 /**
  * Read a workspace file if it exists. Returns undefined if not found.
  */
-export function readWorkspaceFile(workspacePath: string, filename: string): string | undefined {
+function readWorkspaceFile(workspacePath: string, filename: string): string | undefined {
   const filePath = join(workspacePath, filename);
   if (!existsSync(filePath)) return undefined;
   return readFileSync(filePath, "utf-8");

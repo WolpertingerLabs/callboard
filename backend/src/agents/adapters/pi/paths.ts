@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { DATA_DIR } from "../../../utils/paths.js";
 
 /** Directory name under the callboard data dir. */
-export const PI_SESSIONS_DIRNAME = "pi-sessions";
+const PI_SESSIONS_DIRNAME = "pi-sessions";
 
 /**
  * Root for pi session files.

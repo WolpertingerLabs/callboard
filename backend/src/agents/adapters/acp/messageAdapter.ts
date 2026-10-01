@@ -406,7 +406,7 @@ function planEntries(entries: readonly PlanEntry[] | null | undefined): TaskList
  * reported — OpenCode's free models genuinely cost nothing, and suppressing that
  * would look like "no data" instead of "no charge".
  */
-export function acpTurnCost(cost: unknown): number | null {
+function acpTurnCost(cost: unknown): number | null {
   if (!cost || typeof cost !== "object") return null;
   const { amount, currency } = cost as { amount?: unknown; currency?: unknown };
   if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) return null;

@@ -32,7 +32,7 @@ import { createLogger } from "./logger.js";
 const log = createLogger("tree-kill");
 
 /** Default wait between SIGTERM and SIGKILL. */
-export const DEFAULT_KILL_GRACE_MS = 3000;
+const DEFAULT_KILL_GRACE_MS = 3000;
 
 /**
  * Spawn options that make a child eligible for group-kill.

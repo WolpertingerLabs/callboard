@@ -286,7 +286,7 @@ interface PiSessionUsage {
  * positional counter — it is the file's own identifier for the generation, and
  * the panel's rows land one-per-API-call rather than one-per-turn.
  */
-export function entryGenerationKey(sessionId: string, entryId: string): string {
+function entryGenerationKey(sessionId: string, entryId: string): string {
   return `pi:${sessionId}/${entryId}`;
 }
 
@@ -314,7 +314,7 @@ export function entryGenerationKey(sessionId: string, entryId: string): string {
  * why the agent *loop* ended, which is a different fact from why the model
  * stopped. pi's is the model's.
  */
-export function normalizeStopReason(stopReason: string): string {
+function normalizeStopReason(stopReason: string): string {
   switch (stopReason) {
     case "stop":
       return "end_turn";

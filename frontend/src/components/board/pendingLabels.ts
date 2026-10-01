@@ -1,7 +1,7 @@
 import type { CardSummary, CardPendingKind } from "../../api";
 
 /** Card-face wording for what a waiting chat is blocked on. */
-export const PENDING_LABELS: Record<CardPendingKind, string> = {
+const PENDING_LABELS: Record<CardPendingKind, string> = {
   permission: "Approval needed",
   question: "Question for you",
   plan: "Plan review",

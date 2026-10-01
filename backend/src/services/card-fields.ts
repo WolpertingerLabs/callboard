@@ -42,12 +42,12 @@ import { chatFileService, type Chat } from "./chat-file-service.js";
 
 export const CARD_TITLE_MAX = 200;
 export const CARD_STATUS_MAX = 160;
-export const CARD_METADATA_KEY_MAX = 64;
+const CARD_METADATA_KEY_MAX = 64;
 export const CARD_METADATA_VALUE_MAX = 2048;
-export const CARD_METADATA_MAX_ENTRIES = 50;
+const CARD_METADATA_MAX_ENTRIES = 50;
 
 export class CardFieldError extends Error {}
-export class CardFieldWriteError extends Error {}
+class CardFieldWriteError extends Error {}
 
 /**
  * The raw nested shape on `metadata.card`. Everything optional: absent means

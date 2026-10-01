@@ -31,7 +31,7 @@ function formatTimeAgo(date: Date): string {
   return `${Math.floor(diffDays / 30)} month${Math.floor(diffDays / 30) === 1 ? "" : "s"} ago`;
 }
 
-export class FolderService {
+class FolderService {
   private cache = new Map<string, { data: BrowseResult; timestamp: number }>();
   private readonly CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 

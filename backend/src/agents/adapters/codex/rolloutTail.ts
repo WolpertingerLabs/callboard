@@ -68,7 +68,7 @@ export const ROLLOUT_POLL_MS = 500;
  * line), it does not drop data — the offset advances by what was read, so the
  * remainder arrives on the next tick.
  */
-export const ROLLOUT_MAX_CHUNK_BYTES = 1024 * 1024;
+const ROLLOUT_MAX_CHUNK_BYTES = 1024 * 1024;
 
 /**
  * A compaction observed in the rollout. `id` is the CLI's own item id, used for

@@ -10,7 +10,7 @@ import type { DiffFileEntry, DiffFileType, WorkspaceCleanliness } from "shared/t
  * Rejects characters and patterns that are invalid or dangerous in git branch names.
  * Based on git-check-ref-format rules.
  */
-export function validateGitRef(ref: string): void {
+function validateGitRef(ref: string): void {
   if (!ref || typeof ref !== "string") {
     throw new Error("Branch name is required");
   }
@@ -593,7 +593,7 @@ export function getGitWorktrees(directory: string): WorktreeInfo[] {
  * anything from here — see that function's doc for why the rule lives there and
  * only the `dirname` split lives here.
  */
-export function worktreePathForBranch(repoDir: string, branch: string): string {
+function worktreePathForBranch(repoDir: string, branch: string): string {
   return join(dirname(repoDir), worktreeDirName(basename(repoDir), branch));
 }
 

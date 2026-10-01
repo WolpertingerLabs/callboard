@@ -279,12 +279,14 @@ export interface WorkspaceEntry extends Workspace {
  * the express thread was simply gone, SSE and chat input with it.
  *
  * So a listing is {@link WorkspaceEntry}, and a verdict is asked for per
- * workspace at the moment it decides something — the click on Archive, and
- * nowhere else. `GET /api/workspaces` does still fill this in unless a caller
- * passes `includeRemovability=false`, but that default is a temporary shim for
- * browser tabs running a bundle that predates the split (they read the field
- * unconditionally and crash without it), not an invitation: every caller in this
- * repo declines it. See the constant in backend/src/routes/workspaces.ts for the
+ * workspace at the moment it decides something — the click on Archive — or
+ * for the whole list only on an explicit user request (the Workspace manager's
+ * "Check all" button, which passes `includeRemovability=true`). `GET
+ * /api/workspaces` does still fill this in unless a caller passes
+ * `includeRemovability=false`, but that default is a temporary shim for browser
+ * tabs running a bundle that predates the split (they read the field
+ * unconditionally and crash without it), not an invitation: no caller in this
+ * repo relies on it. See the constant in backend/src/routes/workspaces.ts for the
  * condition under which the default flips back.
  *
  * **The verdict is an affordance, never the gate.** `archiveWorkspace`

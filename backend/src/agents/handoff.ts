@@ -296,7 +296,7 @@ class ImageBudget {
  * and that the tool results are point-in-time (the working tree has since
  * moved on, possibly a lot).
  */
-export function buildHandoffPreamble(from: AgentProviderKind, to: AgentProviderKind, dropped?: { imagesSkipped: number; imagesMissing: number }): string {
+function buildHandoffPreamble(from: AgentProviderKind, to: AgentProviderKind, dropped?: { imagesSkipped: number; imagesMissing: number }): string {
   const missing = (dropped?.imagesSkipped ?? 0) + (dropped?.imagesMissing ?? 0);
   return [
     `<conversation_handoff from="${providerLabel(from)}" to="${providerLabel(to)}">`,
@@ -320,7 +320,7 @@ export function buildHandoffPreamble(from: AgentProviderKind, to: AgentProviderK
 }
 
 /** The assistant acknowledgement that closes the preamble exchange. */
-export function buildHandoffAck(from: AgentProviderKind): string {
+function buildHandoffAck(from: AgentProviderKind): string {
   return `Understood — I have the prior conversation from ${providerLabel(from)} as context and will continue from there, re-verifying anything I depend on.`;
 }
 

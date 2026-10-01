@@ -8,7 +8,8 @@ every implementation slice is expressed as a job step with a prompt sketch, decl
 outputs, and a green-build gate, ordered so no step forward-references a later step's
 outputs.
 
-Status: **Ready to build.** Supersedes `plans/codex-adapter.md` (written pre-OpenRouter-
+Status: **Shipped** — merged in `e5422470` (2026-06-14, released as 1.0.0-alpha.27).
+Originally: **Ready to build.** Supersedes `plans/codex-adapter.md` (written pre-OpenRouter-
 adapter; did not cover subscription auth or job-structured rollout). Keep the old file for
 history; build from this one.
 
@@ -19,7 +20,7 @@ history; build from this one.
 - **It is** a third *engine* for the same callboard chat/session surface: OpenAI-native
   agentic coding (gpt‑5.x) with Codex's own tool loop, sandbox, and apply-patch.
 - **It is not** a Claude replacement. Per the in-repo deep research
-  (`deep-research-claude-agent-sdk-alternatives.md` §2.1, §4.1), Claude is post-trained
+  (`plans/deep-research-claude-agent-sdk-alternatives.md` §2.1, §4.1), Claude is post-trained
   for the Claude Code harness (Terminal-Bench #33 generic → #5 in-harness) and Codex's SDK
   has **no official Claude/local-model path** — it's OpenAI-first. So Codex is the right
   third option *for OpenAI models*, not a drop-in swap. Keep quick-completions (titles,
@@ -275,7 +276,7 @@ Notes for the job author (when you build it later):
   `messageAdapter.ts`, `optionsAdapter.ts`, `OpenRouterSessionProvider.ts`)
 - Ports: `backend/src/agents/ports/{AgentProvider,SessionProvider,events,tools}.ts`
 - Jobs system: `plans/jobs.md`; MCP tools `create_job` / `spawn_job` / `complete_job_step`
-- In-repo research: `deep-research-claude-agent-sdk-alternatives.md` (§2.1 Codex, §4.1 harness effect, §5 Callboard paths)
+- In-repo research: `plans/deep-research-claude-agent-sdk-alternatives.md` (§2.1 Codex, §4.1 harness effect, §5 Callboard paths)
 - `@openai/codex-sdk` — https://www.npmjs.com/package/@openai/codex-sdk · https://developers.openai.com/codex/sdk
 - Codex auth (ChatGPT login) — https://developers.openai.com/codex/auth
 - Abort feature request — https://github.com/openai/codex/issues/5494

@@ -42,7 +42,7 @@ for (const dir of [jobsDir, definitionsDir, runsDir]) {
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-_]*$/;
 
-export function slugifyJobId(name: string): string {
+function slugifyJobId(name: string): string {
   return name
     .toLowerCase()
     .trim()
@@ -355,6 +355,13 @@ export interface RunParentLink {
   depth: number;
 }
 
+/**
+ * Runs inherit their card membership through the run tree: createRun stamps
+ * the spawning chat's lineage root as `rootChatId`, and the "job" step passes
+ * the parent run's rootChatId to its child (see job-runner.ts). There is no
+ * retroactive attach — membership is lineage, and a run belongs to the tree
+ * of the chat that spawned it.
+ */
 export function createRun(
   job: JobDefinition,
   inputs: Record<string, string>,
@@ -466,14 +473,6 @@ export function findRunByExecutionKey(key: ExecutionKey): JobRun | null {
   }
   return run;
 }
-
-/**
- * Runs inherit their card membership through the run tree: createRun stamps
- * the spawning chat's lineage root as `rootChatId`, and the "job" step passes
- * the parent run's rootChatId to its child (see job-runner.ts). There is no
- * retroactive attach — membership is lineage, and a run belongs to the tree
- * of the chat that spawned it.
- */
 
 /**
  * Newest child run spawned by a given parent step, excluding already-harvested
@@ -1024,7 +1023,7 @@ function findJobReferenceCycle(rootJobId: string, fromJobId: string, readJob: (j
 }
 
 /** Extract `a.b.c` paths from `{{a.b.c}}` placeholders. */
-export function extractTemplateRefs(template: string): string[] {
+function extractTemplateRefs(template: string): string[] {
   const refs: string[] = [];
   for (const match of template.matchAll(/\{\{([^}]+)\}\}/g)) {
     refs.push(match[1].trim());

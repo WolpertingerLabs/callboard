@@ -118,11 +118,10 @@ export default function ChatDebugPanel({ messages }: Props) {
   // Build rows: one row per unique model generation.
   //
   // Grouping key selection:
-  //   • OpenRouter (transcript path): `generationKey` = "<requestId>/<turnNumber>"
-  //     Each intra-cycle generation gets a distinct key, so multi-generation
-  //     agentic turns produce multiple rows instead of collapsing to one.
-  //   • OpenRouter (legacy state.json path): `generationKey` = "<reqDirName>/<genIndex>"
-  //     Same granularity — one row per gen_N directory.
+  //   • Codex: `generationKey` = "<turnId>/<genIndex>". Each intra-turn
+  //     generation gets a distinct key, so multi-generation agentic turns
+  //     produce multiple rows instead of collapsing to one.
+  //   • pi: `generationKey` is the session entry's own id — one row per entry.
   //   • Claude Code: `generationKey` is absent; falls back to `requestId`,
   //     which is already unique per API call — behaviour unchanged.
   //
@@ -146,7 +145,7 @@ export default function ChatDebugPanel({ messages }: Props) {
       }
     }
 
-    // Step 2: Group by generationKey (OR) or requestId (Claude), maintaining
+    // Step 2: Group by generationKey or requestId (Claude), maintaining
     // first-seen order. Messages without either are treated as their own group.
     const requestOrder: string[] = [];
     const byRequest = new Map<string, ParsedMessage[]>();

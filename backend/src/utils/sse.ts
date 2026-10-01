@@ -16,7 +16,7 @@ export const HUMAN_PROMPT_RELOAD =
 export function requiresPromptReload(data: Record<string, unknown>, client: StreamSession | undefined): boolean {
   return data.humanOnly === true && !client?.supports(CLIENT_CAPS.humanPromptIdentity);
 }
-export function presentPendingPrompt(data: Record<string, unknown>, client: StreamSession | undefined): Record<string, unknown> {
+function presentPendingPrompt(data: Record<string, unknown>, client: StreamSession | undefined): Record<string, unknown> {
   return requiresPromptReload(data, client) ? { type: "message_error", content: HUMAN_PROMPT_RELOAD } : data;
 }
 

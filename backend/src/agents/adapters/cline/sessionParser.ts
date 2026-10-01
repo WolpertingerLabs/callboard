@@ -110,7 +110,7 @@ export function readClineTranscriptLines(filePath: string): ClineTranscriptLine[
 }
 
 /** The header line, or null if the transcript has none (truncated / mid-write). */
-export function readClineTranscriptHeader(filePath: string): ClineTranscriptHeader | null {
+function readClineTranscriptHeader(filePath: string): ClineTranscriptHeader | null {
   for (const line of readClineTranscriptLines(filePath)) {
     if (line.type === "session_meta") return line;
   }

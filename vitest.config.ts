@@ -15,7 +15,7 @@ export default defineConfig({
       reporter: ["text", "html", "lcov", "json-summary"],
       reportsDirectory: "./coverage",
       // Only measure first-party source in the three workspaces.
-      include: ["shared/src/**/*.{ts,tsx}", "backend/src/**/*.{ts,tsx}", "frontend/src/**/*.{ts,tsx}"],
+      include: ["shared/types/**/*.{ts,tsx}", "backend/src/**/*.{ts,tsx}", "frontend/src/**/*.{ts,tsx}"],
       exclude: [
         "**/node_modules/**",
         "**/dist/**",
@@ -29,9 +29,11 @@ export default defineConfig({
         "scripts/**",
         "backend/src/scaffold/**",
         "backend/src/swagger.ts",
-        // Type-only declarations
+        // Type-only declarations. Not `**/types/**`: shared's source lives in
+        // shared/types/, and much of it is runtime code (protocol caps, alias
+        // validation, permission merging) that the include above exists to measure.
         "**/*.d.ts",
-        "**/types/**",
+        "frontend/src/types/**",
       ],
     },
     projects: [

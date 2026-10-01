@@ -5,7 +5,8 @@ use of OpenRouter in the product intact: the credential-override modes for the
 other engines, the model catalog, and the AI-generated chat metadata (titles,
 branch names, themes).
 
-Status: planned. Execute the phases in order — each is a separate commit/PR and
+Status: **Done.** All four phases landed; the engine itself went in #336 (`a7095578`,
+2026-08-15). Originally: planned. Execute the phases in order — each is a separate commit/PR and
 each leaves the tree compiling and green.
 
 ## Why this is not a simple deletion
@@ -230,7 +231,7 @@ mock an agent provider; rewrite against a mocked `fetch`. Add: shared base-URL
 resolution, retry-on-5xx, usage mapping, missing-key error, and the settings
 migration (alongside `agent-settings.openRouterEndpoint.test.ts`).
 
-## Phase 3 — Delete the engine
+## Phase 3 — Delete the engine — **DONE** (`a7095578`, #336)
 
 - Delete `backend/src/agents/adapters/openrouter/` entirely (30 files, ~8,950 LOC).
 - Delete model routing: `services/model-routing.ts`, `services/model-routing-tools.ts`,

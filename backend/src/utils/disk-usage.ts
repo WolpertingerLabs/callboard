@@ -34,7 +34,7 @@ import { resolve } from "path";
 import type { WorktreeDiskUsage } from "shared/types/index.js";
 
 /** Per-directory ceiling. A cold `node_modules` on a slow disk is seconds. */
-export const DISK_USAGE_TIMEOUT_MS = 15000;
+const DISK_USAGE_TIMEOUT_MS = 15000;
 
 /**
  * How many `du` processes this daemon runs at once, across every listing.
@@ -95,7 +95,7 @@ export const DISK_USAGE_BUDGET_MS = 120000;
  * order-of-magnitude prompt for "which of these is worth cleaning up", never an
  * input to a decision about whether to delete something.
  */
-export const DISK_USAGE_TTL_MS = 5 * 60 * 1000;
+const DISK_USAGE_TTL_MS = 5 * 60 * 1000;
 
 interface CacheEntry {
   measuredAt: number;
@@ -165,7 +165,7 @@ function releaseSlot(): void {
  * the wait happens in the background rather than inside a blocking syscall, so
  * the daemon keeps serving HTTP and flushing SSE while `du` walks the tree.
  */
-export function directoryDiskUsageAsync(directory: string, timeoutMs: number = DISK_USAGE_TIMEOUT_MS): Promise<WorktreeDiskUsage> {
+function directoryDiskUsageAsync(directory: string, timeoutMs: number = DISK_USAGE_TIMEOUT_MS): Promise<WorktreeDiskUsage> {
   if (!directory || !existsSync(directory)) {
     return Promise.resolve({ error: `Directory does not exist: ${directory}` });
   }

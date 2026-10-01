@@ -32,9 +32,9 @@ export { ARTIFACT_MAX_SOURCE_BYTES, ARTIFACT_MAX_VERSIONS };
 
 export const ARTIFACTS_ROOT = path.join(DATA_DIR, "artifacts");
 
-export const ARTIFACT_MAX_NAME = 200;
-export const ARTIFACT_MAX_DESCRIPTION = 4000;
-export const ARTIFACT_MAX_NOTE = 1000;
+const ARTIFACT_MAX_NAME = 200;
+const ARTIFACT_MAX_DESCRIPTION = 4000;
+const ARTIFACT_MAX_NOTE = 1000;
 
 const EXT: Record<ArtifactContentType, string> = { html: ".html", svg: ".svg", markdown: ".md" };
 
@@ -104,7 +104,7 @@ function assertContained(id: string): void {
   }
 }
 
-export function versionFilePath(id: string, contentType: ArtifactContentType, version: number): string {
+function versionFilePath(id: string, contentType: ArtifactContentType, version: number): string {
   assertArtifactId(id);
   if (!Number.isSafeInteger(version) || version < 1) throw new StorageError("invalid", `Invalid version ${version}`);
   assertContained(id);

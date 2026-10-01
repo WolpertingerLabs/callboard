@@ -343,7 +343,7 @@ const GIT_DIR_SEARCH_DEPTH = 40;
  * A worktree's `.git` is a file rather than a directory, which `existsSync`
  * covers either way.
  */
-export function nearestExistingGitDir(start: string): string | null {
+function nearestExistingGitDir(start: string): string | null {
   let current = resolve(start);
   for (let depth = 0; depth < GIT_DIR_SEARCH_DEPTH; depth++) {
     if (existsSync(join(current, ".git"))) return current;

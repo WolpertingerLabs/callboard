@@ -58,10 +58,11 @@ const ADOPT_PATH_LIMIT = 100;
  * compatibility shim rather than the intended shape.**
  *
  * The verdict is expensive (see the route description) and default-off is the
- * right long-term design: no caller in this repo wants a verdict per record,
- * and the one HTTP caller passes `false` explicitly. It shipped default-off and
- * had to be inverted, because of the upgrade window rather than anything about
- * the API:
+ * right long-term design: the frontend passes the param explicitly either way —
+ * `false` for every routine listing, `true` only from the Workspace manager's
+ * deliberate "Check all" click — so none of its calls rely on the default. It
+ * shipped default-off and had to be inverted, because of the upgrade window
+ * rather than anything about the API:
  *
  * > A browser tab open across `callboard restart` keeps its old bundle
  * > indefinitely — SSE reconnects, nothing reloads the page. A pre-#364 bundle

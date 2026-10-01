@@ -14,7 +14,7 @@ Users can create/edit/spawn/manage jobs three ways:
 3. **Chat view** — chats that belong to a run get a "Job" view-mode tab showing the
    stepper (current stage, attempts, links to sibling step chats, approve/reject).
 
-Status: **Proposed.**
+Status: **Shipped** in #189 (2026-06-11). Originally: **Proposed.**
 
 ---
 

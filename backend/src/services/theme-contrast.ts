@@ -321,7 +321,7 @@ export function composite(fg: Rgba, backdrop: Rgba): Rgba {
   };
 }
 
-export function relativeLuminance(c: Rgba): number {
+function relativeLuminance(c: Rgba): number {
   const lin = (n: number) => {
     const s = n / 255;
     return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);

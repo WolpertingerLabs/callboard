@@ -5,7 +5,8 @@ answer today — **"is this engine actually usable on this machine?"** and
 **"what do I run to install or update it?"** — and make the second one a button
 wherever a button can be honest.
 
-Status: planned. Phases are ordered so each is a separate PR that leaves the
+Status: **Shipped.** Phase 0 #354, Phase 1 #356, Phase 2 #358, Phase 3 #359, Phase 4 #360,
+follow-ups #361 (2026-08-21 to 2026-08-22). Originally: planned. Phases are ordered so each is a separate PR that leaves the
 tree compiling and green. Phases 0–2 ship real value with **zero** process
 execution; Phase 3 is the only one that shells out.
 

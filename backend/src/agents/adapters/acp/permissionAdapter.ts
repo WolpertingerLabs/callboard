@@ -185,7 +185,7 @@ const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly stri
  * Deliberately strict — no spaces, no quotes, no punctuation beyond what real
  * tool names use (`read_file`, `mcp__server__tool`, `fs.read`, `web-search`).
  */
-export function isToolIdentifier(value: string): boolean {
+function isToolIdentifier(value: string): boolean {
   return /^[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,63}$/.test(value);
 }
 

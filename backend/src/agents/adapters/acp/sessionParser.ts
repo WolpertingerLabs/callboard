@@ -100,7 +100,7 @@ export function findAcpTranscript(sessionId: string, providerId?: string): AcpTr
 }
 
 /** Parse every well-formed line of a transcript, skipping the rest. */
-export function readAcpTranscriptLines(filePath: string): AcpTranscriptLine[] {
+function readAcpTranscriptLines(filePath: string): AcpTranscriptLine[] {
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf8");
@@ -123,7 +123,7 @@ export function readAcpTranscriptLines(filePath: string): AcpTranscriptLine[] {
 }
 
 /** The header line, or null if the transcript has none (truncated / mid-write). */
-export function readAcpTranscriptHeader(filePath: string): AcpTranscriptHeader | null {
+function readAcpTranscriptHeader(filePath: string): AcpTranscriptHeader | null {
   for (const line of readAcpTranscriptLines(filePath)) {
     if (line.type === "session_meta") return line;
   }

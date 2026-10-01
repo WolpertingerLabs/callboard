@@ -135,7 +135,7 @@ export function dispatchEvent(event: StoredEvent): void {
  * All specified fields must match (AND logic).
  * Unspecified fields (undefined/empty) are treated as "match any".
  */
-export function matchesFilter(event: StoredEvent, filter: TriggerFilter): boolean {
+function matchesFilter(event: StoredEvent, filter: TriggerFilter): boolean {
   // Source match (exact, case-sensitive)
   if (filter.source && filter.source !== event.source) return false;
 

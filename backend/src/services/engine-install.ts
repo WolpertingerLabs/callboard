@@ -100,7 +100,7 @@ const execFileAsync = promisify(execFile);
 // ── Bounds ──────────────────────────────────────────────────────────
 
 /** Wall-clock ceiling on one install. A global npm install that has not finished in this long is not going to. */
-export const INSTALL_TIMEOUT_MS = 10 * 60_000;
+const INSTALL_TIMEOUT_MS = 10 * 60_000;
 
 /** How long `npm root -g` is remembered. Short, because a user who fixes their prefix should not have to wait long to be believed. */
 const NPM_ROOT_TTL_MS = 60_000;
@@ -458,7 +458,7 @@ export interface InstallRun {
 let current: InstallRun | null = null;
 
 /** True while a child process is alive. The `busy` gate. */
-export function isInstallRunning(): boolean {
+function isInstallRunning(): boolean {
   return current !== null && !current.done;
 }
 

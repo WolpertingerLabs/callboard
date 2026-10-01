@@ -160,7 +160,7 @@ function allDeclarations(sheet: CSSStyleSheet): Declaration[] {
  * Wrapped only so a selector jsdom's engine cannot parse names itself in the
  * failure. Nothing in `index.css` throws today, `:has()` included.
  */
-export function matchesSelector(element: Element, selectorText: string): boolean {
+function matchesSelector(element: Element, selectorText: string): boolean {
   try {
     return element.matches(selectorText);
   } catch (cause) {

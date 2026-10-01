@@ -25,7 +25,7 @@ Callboard currently embeds the Claude Agent SDK directly. Every assumption about
 
 This plan establishes the seam now, while the scope is still manageable, so later migration is a _sprint_, not a _rewrite_.
 
-Companion research report: [`deep-research-claude-agent-sdk-alternatives.md`](../deep-research-claude-agent-sdk-alternatives.md).
+Companion research report: [`deep-research-claude-agent-sdk-alternatives.md`](deep-research-claude-agent-sdk-alternatives.md).
 
 ---
 
@@ -207,6 +207,6 @@ Build a `MockAdapter` first (for tests — drives the events stream from fixture
 
 ## Companion Context
 
-- Research report: [`deep-research-claude-agent-sdk-alternatives.md`](../deep-research-claude-agent-sdk-alternatives.md) (full 100-source analysis)
-- Research citations: [`deep-research-claude-agent-sdk-alternatives-citations.md`](../deep-research-claude-agent-sdk-alternatives-citations.md)
+- Research report: [`deep-research-claude-agent-sdk-alternatives.md`](deep-research-claude-agent-sdk-alternatives.md) (full 100-source analysis)
+- Research citations: [`deep-research-claude-agent-sdk-alternatives-citations.md`](deep-research-claude-agent-sdk-alternatives-citations.md)
 - Related plans: [`mcp-memory-server.md`](mcp-memory-server.md), [`mcp-channel-bridge.md`](mcp-channel-bridge.md)

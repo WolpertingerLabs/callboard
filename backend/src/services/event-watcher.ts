@@ -112,7 +112,7 @@ export function shutdownEventWatchers(): void {
 /**
  * Start (or restart) a watcher for a specific alias.
  */
-export function startWatcherForAlias(alias: string): void {
+function startWatcherForAlias(alias: string): void {
   // Stop existing watcher if running
   stopWatcherForAlias(alias);
 
@@ -138,7 +138,7 @@ export function startWatcherForAlias(alias: string): void {
 /**
  * Stop a watcher for a specific alias.
  */
-export function stopWatcherForAlias(alias: string): void {
+function stopWatcherForAlias(alias: string): void {
   const state = watchers.get(alias);
   if (!state) return;
 

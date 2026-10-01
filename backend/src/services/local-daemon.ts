@@ -37,7 +37,7 @@ const DAEMON_PORT = parseInt(process.env.DRAWLATCH_LOCAL_PORT || "9999", 10);
 
 // The default co-located caller the daemon auto-shares at boot. Kept as
 // "default" (overridable) so existing agent bindings keep resolving.
-export const LOCAL_CALLER_ALIAS = process.env.DRAWLATCH_LOCAL_CALLER_ALIAS || "default";
+const LOCAL_CALLER_ALIAS = process.env.DRAWLATCH_LOCAL_CALLER_ALIAS || "default";
 
 // ── Package resolution ──────────────────────────────────────────────
 
@@ -47,10 +47,8 @@ let cachedPaths: { pkgRoot: string; serverEntry: string; binEntry: string } | nu
  * Resolve the drawlatch package's server entry, CLI bin, and package root from
  * a known export. Throws if the package can't be resolved (not installed).
  *
- * Uses the ESM resolver (`import.meta.resolve`) instead of `createRequire().resolve()`
- * because drawlatch's `exports` field only declares the `"import"` condition — a CJS
- * resolver matches `"require"` and would (misleadingly) report the subpath as
- * "not defined by exports".
+ * Uses the ESM resolver (`import.meta.resolve`), so the lookup goes through the
+ * same `exports` conditions as callboard's own imports of the package.
  */
 function resolveDrawlatchPaths(): { pkgRoot: string; serverEntry: string; binEntry: string } {
   if (cachedPaths) return cachedPaths;

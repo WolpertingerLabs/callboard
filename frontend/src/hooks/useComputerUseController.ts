@@ -9,11 +9,11 @@ export const isPending = (session: ComputerUseSession) => ["pending", "awaiting_
 // confirmed in the chat (or, under Allow, not at all) and never appears here.
 // Real package sessions start at generation one; never retire one merely because
 // its state uses a pending alias or it disappears from a read.
-export const isPendingRequest = (session: ComputerUseSession) => session.generation === 0 && isPending(session);
+const isPendingRequest = (session: ComputerUseSession) => session.generation === 0 && isPending(session);
 
 // Bound the UI wait, not the accepted server operation. In particular, a timed-out
 // stop may still complete: do not abort it on timeout, navigation or viewer cleanup.
-export const COMPUTER_CONTROL_WAIT_MS = 5000;
+const COMPUTER_CONTROL_WAIT_MS = 5000;
 async function bounded<T>(request: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -28,7 +28,7 @@ async function bounded<T>(request: Promise<T>): Promise<T> {
   }
 }
 
-export const COMPUTER_STATUS_POLL_MS = 3000;
+const COMPUTER_STATUS_POLL_MS = 3000;
 
 /** Chat-scoped status only. No target creation, permission changes or observation.
  * Each closure retains its original chat ID; stale results cannot publish to a new route.
