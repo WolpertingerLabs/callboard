@@ -15,7 +15,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import ts from "typescript";
 import { tmpdir } from "os";
 
 // Own scratch data dir, set before paths.ts resolves DEFAULT_MCP_*_DIR.
@@ -148,5 +150,50 @@ describe("migrateDrawlatchKeyLayouts (startup)", () => {
   it("is a no-op when the config dirs don't exist", () => {
     expect(() => migrateDrawlatchKeyLayouts()).not.toThrow();
     expect(existsSync(DEFAULT_MCP_LOCAL_DIR)).toBe(false);
+  });
+});
+
+/**
+ * The startup call in index.ts is the only thing that migrates the *remote*
+ * dir (ensureInitialized covers the local one), and booting index.ts in a test
+ * starts a listener, the scheduler and the drawlatch supervisor. So this reads
+ * the call out of the source — as an AST, not text, so a commented-out call, a
+ * mention in a string, or a call tucked inside a branch or callback does not
+ * count. It must be an unconditional top-level statement, ahead of
+ * `app.listen(...)`, calling the function imported from agent-settings.
+ */
+describe("index.ts startup", () => {
+  const indexPath = join(dirname(fileURLToPath(import.meta.url)), "..", "index.ts");
+  const source = ts.createSourceFile(indexPath, readFileSync(indexPath, "utf-8"), ts.ScriptTarget.Latest, true);
+
+  /** Index of the top-level `<callee>(...)` / `<obj>.<callee>(...)` expression statement, or -1. */
+  function topLevelCallIndex(callee: string): number {
+    return source.statements.findIndex((st) => {
+      if (!ts.isExpressionStatement(st) || !ts.isCallExpression(st.expression)) return false;
+      const fn = st.expression.expression;
+      const name = ts.isIdentifier(fn) ? fn.text : ts.isPropertyAccessExpression(fn) ? fn.name.text : undefined;
+      return name === callee;
+    });
+  }
+
+  it("imports migrateDrawlatchKeyLayouts from agent-settings", () => {
+    const imported = source.statements.some(
+      (st) =>
+        ts.isImportDeclaration(st) &&
+        ts.isStringLiteral(st.moduleSpecifier) &&
+        st.moduleSpecifier.text === "./services/agent-settings.js" &&
+        st.importClause?.namedBindings !== undefined &&
+        ts.isNamedImports(st.importClause.namedBindings) &&
+        st.importClause.namedBindings.elements.some((el) => el.name.text === "migrateDrawlatchKeyLayouts" && !el.propertyName),
+    );
+    expect(imported, "index.ts no longer imports migrateDrawlatchKeyLayouts from ./services/agent-settings.js").toBe(true);
+  });
+
+  it("calls it unconditionally at top level, before the server starts listening", () => {
+    const migrate = topLevelCallIndex("migrateDrawlatchKeyLayouts");
+    const listen = topLevelCallIndex("listen");
+    expect(migrate, "no top-level migrateDrawlatchKeyLayouts() statement in index.ts").toBeGreaterThan(-1);
+    expect(listen, "no top-level app.listen(...) statement in index.ts — update this guard").toBeGreaterThan(-1);
+    expect(migrate).toBeLessThan(listen);
   });
 });
