@@ -262,6 +262,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Draft loaded from staging in chat list
   const routerDraftRef = useRef((location.state as any)?.draft as { id: string; user_message: string; images?: QueueItemImage[] } | undefined);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(routerDraftRef.current?.id ?? null);
+  /**
+   * The opened draft's images on their way back into the composer. `restored`
+   * maps each File handed to the composer to the stored image it came from, so
+   * a re-save can keep those by id; `unrestored` are the ones that failed to
+   * load, which a re-save carries forward rather than drops. `null` when the
+   * open draft (if any) has no images.
+   */
+  const [draftRestore, setDraftRestore] = useState<{ settled: boolean; restored: Map<File, QueueItemImage>; unrestored: QueueItemImage[] } | null>(null);
 
   const [chat, setChat] = useState<ChatType | null>(null);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
@@ -1971,9 +1979,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Back as Files, so the send that follows is the ordinary one: the
       // composer uploads them exactly as it would freshly attached images.
       if (draftImages.length > 0) {
-        fetchDraftImages(draftImages)
-          .then((files) => promptInputAddImages?.(files))
-          .catch(() => setNetworkError("Couldn't restore this draft's images — they may have been deleted."));
+        setDraftRestore({ settled: false, restored: new Map(), unrestored: draftImages });
+        void fetchDraftImages(draftImages).then((results) => {
+          const restored = new Map<File, QueueItemImage>();
+          const unrestored: QueueItemImage[] = [];
+          results.forEach((result, i) => (result.status === "fulfilled" ? restored.set(result.value, draftImages[i]) : unrestored.push(draftImages[i])));
+          if (restored.size > 0) promptInputAddImages?.([...restored.keys()]);
+          if (unrestored.length > 0) {
+            setNetworkError(
+              `Couldn't restore ${unrestored.length === draftImages.length ? "this draft's images" : `${unrestored.length} of this draft's ${draftImages.length} images`}. ` +
+                "The draft keeps them, and sending won't delete it.",
+            );
+          }
+          setDraftRestore({ settled: true, restored, unrestored });
+        });
       }
       routerDraftRef.current = undefined;
       // Clean draft from router state so back/forward doesn't re-apply
@@ -2012,6 +2031,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    * over) cannot leave the composer blocked by a name nobody can see to fix.
    */
   const sendBlockedReason = branchBoxShown && branchConfig === null ? "The branch name above is not one git will accept." : undefined;
+
+  /**
+   * The composer's own block: the page's, plus "this draft's images are still
+   * on their way". Until the restore settles the composer holds none of them,
+   * so a send would go out without them and a save would record the draft as
+   * having none. Kept off `sendBlockedReason` itself, which `handleSend` also
+   * applies to callers that aren't sending the composer's contents.
+   */
+  const draftRestoring = draftRestore !== null && !draftRestore.settled;
+  const DRAFT_RESTORING = "Restoring this draft's images…";
+  const composerBlockedReason = sendBlockedReason ?? (draftRestoring ? DRAFT_RESTORING : undefined);
 
   const handleSend = useCallback(
     async (prompt: string, images?: File[]) => {
@@ -2207,10 +2237,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           });
         }
 
-        // If this message came from a draft, delete the draft now that it's been sent
-        if (activeDraftId) {
-          deleteDraft(activeDraftId).catch(() => {});
+        // If this message came from a draft, delete the draft now that it's
+        // been sent — unless it wasn't, or it went without images the draft
+        // still lists (a restore that couldn't fetch them). Then the draft
+        // stays in Staging rather than taking those references with it.
+        if (activeDraftId && res.ok) {
+          if (!draftRestore || (draftRestore.settled && draftRestore.unrestored.length === 0)) {
+            deleteDraft(activeDraftId).catch(() => {});
+          }
           setActiveDraftId(null);
+          setDraftRestore(null);
           onChatListRefreshRef.current?.();
         }
 
@@ -2285,6 +2321,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       branchConfig,
       branchBoxShown,
       sendBlockedReason,
+      draftRestore,
       activeDraftId,
     ],
   );
@@ -2637,17 +2674,36 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
   const [draftImages, setDraftImages] = useState<File[]>([]);
+  const [draftKeptImages, setDraftKeptImages] = useState<QueueItemImage[]>([]);
 
-  const handleSaveDraft = useCallback((message: string, images?: File[], onSuccess?: () => void) => {
-    if (!message.trim()) return;
-    setDraftMessage(message.trim());
-    setDraftImages(images ?? []);
-    setShowDraftModal(true);
-    // Store the success callback to call when draft is saved
-    if (onSuccess) {
-      setDraftSuccessCallback(() => onSuccess);
-    }
-  }, []);
+  const handleSaveDraft = useCallback(
+    (message: string, images?: File[], onSuccess?: () => void) => {
+      if (!message.trim()) return;
+      if (draftRestore && !draftRestore.settled) {
+        // The composer keeps its contents: `onSuccess` is what clears it.
+        setNetworkError("This draft's images are still loading — save again once they appear.");
+        return;
+      }
+      // Images the restore put back go in by their stored id; anything newly
+      // attached is uploaded by the modal.
+      const kept: QueueItemImage[] = [];
+      const fresh: File[] = [];
+      for (const file of images ?? []) {
+        const stored = draftRestore?.restored.get(file);
+        if (stored) kept.push(stored);
+        else fresh.push(file);
+      }
+      setDraftMessage(message.trim());
+      setDraftImages(fresh);
+      setDraftKeptImages([...kept, ...(draftRestore?.unrestored ?? [])]);
+      setShowDraftModal(true);
+      // Store the success callback to call when draft is saved
+      if (onSuccess) {
+        setDraftSuccessCallback(() => onSuccess);
+      }
+    },
+    [draftRestore],
+  );
 
   /**
    * Put a slash command in the composer without taking the message with it.
@@ -3829,10 +3885,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             </a>
           </div>
         )}
+        {draftRestoring && (
+          // The composer's Send is greyed out meanwhile and carries no tooltip,
+          // so the reason is said here.
+          <div role="status" style={{ padding: "4px 12px", fontSize: 12, color: "var(--text-muted)" }}>
+            {DRAFT_RESTORING}
+          </div>
+        )}
         <PromptInput
           onSend={handleSend}
           disabled={!!nativeAgent || (!id && streaming)}
-          sendBlockedReason={sendBlockedReason}
+          sendBlockedReason={composerBlockedReason}
           onSaveDraft={handleSaveDraft}
           slashCommands={allSlashCommands}
           commandDescriptions={pluginCommandDescriptions}
@@ -3881,11 +3944,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           setShowDraftModal(false);
           setDraftMessage("");
           setDraftImages([]);
+          setDraftKeptImages([]);
           setDraftSuccessCallback(null);
         }}
         chatId={id || null}
         message={draftMessage}
         images={draftImages}
+        keptImages={draftKeptImages}
         onSuccess={draftSuccessCallback || undefined}
         folder={!id ? folder : undefined}
         defaultPermissions={!id ? defaultPermissions : undefined}

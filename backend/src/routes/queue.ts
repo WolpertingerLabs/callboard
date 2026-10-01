@@ -1,15 +1,58 @@
 import { Router } from "express";
-import { queueFileService } from "../services/queue-file-service.js";
+import { queueFileService, isValidQueueItemId } from "../services/queue-file-service.js";
 import { sendMessage } from "../services/claude.js";
 import { sendRetiredProviderError } from "../utils/route-errors.js";
-import { ImageStorageService, isValidImageId } from "../services/image-storage.js";
+import { isValidImageId, loadImageBuffers } from "../services/image-storage.js";
+import { storeMessageImages } from "../services/image-metadata.js";
+import { createLogger } from "../utils/logger.js";
 import type { QueueItemImage } from "shared/types/index.js";
+
+const log = createLogger("queue");
 
 export const queueRouter = Router();
 
 /**
+ * Every `:id` here names a file under the queue directory, and Express hands
+ * the handler a percent-decoded param: `/api/queue/..%2Fvictim` arrives as
+ * `../victim`. Draft ids have always been UUIDs, so anything else is refused
+ * before a handler can turn it into a path. `QueueFileService` checks again.
+ */
+queueRouter.param("id", (req, res, next, id) => {
+  if (!isValidQueueItemId(id)) {
+    res.status(400).json({ error: "Invalid draft id" });
+    return;
+  }
+  next();
+});
+
+/** Longest `originalName` kept; it only ever becomes a client-side File name. */
+const MAX_IMAGE_NAME_LENGTH = 255;
+
+/**
+ * Tidy a client-supplied file name: last path segment, no control characters,
+ * capped. Falls back to the image id rather than refusing the save — a draft
+ * is worth more than its attachment's name.
+ */
+function cleanImageName(raw: unknown, fallback: string): string {
+  if (typeof raw !== "string") return fallback;
+  // eslint-disable-next-line no-control-regex
+  const name = (raw.split(/[/\\]/).pop() ?? "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, MAX_IMAGE_NAME_LENGTH).trim();
+  return name || fallback;
+}
+
+/**
  * Read a request's `images` field: `undefined` when absent, `null` when it is
  * not a list of upload ids. Only `id` and `originalName` are kept.
+ *
+ * Nothing in this router deletes an image file. A draft only *references* the
+ * uploads it lists: dropping one from a draft, deleting the draft, or sending
+ * it leaves the file where it is, exactly like every other upload (there is no
+ * image sweeper; only an explicit `DELETE /api/images/:id` removes one). The
+ * alternative — the draft owning and deleting its files — turned every way of
+ * getting the list wrong into a lost image: a re-save that raced the composer's
+ * restore, a `storeBase64Image` dedup hit that pointed chat history at a
+ * draft's file, a traversal-chosen JSON file listing someone else's image. A
+ * stray file on disk is the failure this trades them for.
  */
 function parseDraftImages(raw: unknown): QueueItemImage[] | undefined | null {
   if (raw === undefined) return undefined;
@@ -17,17 +60,9 @@ function parseDraftImages(raw: unknown): QueueItemImage[] | undefined | null {
   const images: QueueItemImage[] = [];
   for (const entry of raw) {
     if (!entry || typeof entry.id !== "string" || !isValidImageId(entry.id)) return null;
-    images.push({ id: entry.id, originalName: typeof entry.originalName === "string" ? entry.originalName : entry.id });
+    images.push({ id: entry.id, originalName: cleanImageName(entry.originalName, entry.id) });
   }
   return images;
-}
-
-/** A draft's images are its own — they were uploaded for it and nothing else references them. */
-function deleteDraftImages(images: QueueItemImage[] | undefined, keep: QueueItemImage[] = []): void {
-  const kept = new Set(keep.map((image) => image.id));
-  for (const image of images ?? []) {
-    if (!kept.has(image.id)) ImageStorageService.deleteImage(image.id);
-  }
 }
 
 // Get all draft messages
@@ -150,12 +185,10 @@ queueRouter.put("/:id", (req, res) => {
     return res.status(400).json({ error: "images must be a list of { id, originalName } from the image upload route" });
   }
 
-  const previous = queueFileService.getQueueItem(req.params.id);
   const updated = queueFileService.updateQueueItem(req.params.id, { user_message: user_message.trim(), ...(images && { images }) });
   if (!updated) {
     return res.status(404).json({ error: "Draft not found" });
   }
-  if (images) deleteDraftImages(previous?.images, images);
 
   const item = queueFileService.getQueueItem(req.params.id);
   res.json(item);
@@ -165,14 +198,12 @@ queueRouter.put("/:id", (req, res) => {
 queueRouter.delete("/:id", (req, res) => {
   // #swagger.tags = ['Drafts']
   // #swagger.summary = 'Delete draft message'
-  // #swagger.description = 'Delete a saved draft message, and the images attached to it.'
+  // #swagger.description = 'Delete a saved draft message. Its image uploads are left in place.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Draft item ID' } */
   /* #swagger.responses[200] = { description: "Draft deleted" } */
   /* #swagger.responses[404] = { description: "Draft not found" } */
-  const item = queueFileService.getQueueItem(req.params.id);
   const deleted = queueFileService.deleteQueueItem(req.params.id);
   if (deleted) {
-    deleteDraftImages(item?.images);
     res.json({ ok: true });
   } else {
     res.status(404).json({ error: "Draft not found" });
@@ -183,10 +214,11 @@ queueRouter.delete("/:id", (req, res) => {
 queueRouter.post("/:id/execute-now", async (req, res) => {
   // #swagger.tags = ['Drafts']
   // #swagger.summary = 'Execute draft now'
-  // #swagger.description = 'Immediately execute a draft message, sending it to Claude. The draft is deleted on success.'
+  // #swagger.description = 'Immediately execute a draft message, with its images, sending it to Claude. The draft is deleted on success. A draft whose images can no longer all be loaded is refused and kept.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Draft item ID' } */
   /* #swagger.responses[200] = { description: "Execution started" } */
   /* #swagger.responses[404] = { description: "Draft not found" } */
+  /* #swagger.responses[409] = { description: "One of the draft's images is gone; the draft is kept" } */
   const queueItem = queueFileService.getQueueItem(req.params.id);
 
   if (!queueItem) {
@@ -197,21 +229,42 @@ queueRouter.post("/:id/execute-now", async (req, res) => {
     return res.status(400).json({ error: "Item is not a draft" });
   }
 
+  // Same shape the chat send routes build from `imageIds`. All or nothing: a
+  // draft that would go out short an image is kept for the user to open.
+  const imageIds = (queueItem.images ?? []).map((image) => image.id);
+  const imageMetadata = imageIds.length ? loadImageBuffers(imageIds) : [];
+  if (imageMetadata.length !== imageIds.length) {
+    return res.status(409).json({ error: "Some of this draft's images could not be loaded; open the draft to send it" });
+  }
+
   try {
     // Delete the draft before executing
     queueFileService.deleteQueueItem(req.params.id);
 
     // Kick off the message but don't wait for completion — the user can
     // navigate to the chat and connect to the active session via /stream.
-    await sendMessage(
+    const images = imageMetadata.length > 0 ? { imageMetadata } : {};
+    if (queueItem.chat_id && imageIds.length) await storeMessageImages(queueItem.chat_id, imageIds);
+    const emitter = await sendMessage(
       queueItem.chat_id
-        ? { chatId: queueItem.chat_id, prompt: queueItem.user_message }
+        ? { chatId: queueItem.chat_id, prompt: queueItem.user_message, ...images }
         : {
             folder: queueItem.folder!,
             prompt: queueItem.user_message,
             defaultPermissions: queueItem.defaultPermissions,
+            ...images,
           },
     );
+    // A new chat has no id to record the images against until it is created —
+    // the same wait POST /api/chats/new/message does.
+    if (!queueItem.chat_id && imageIds.length) {
+      const onEvent = (event: { type: string; chatId?: string }) => {
+        if (event.type !== "chat_created") return;
+        emitter.removeListener("event", onEvent);
+        if (event.chatId) storeMessageImages(event.chatId, imageIds).catch((err) => log.warn(`Failed to store draft message images: ${err.message}`));
+      };
+      emitter.on("event", onEvent);
+    }
 
     res.json({ success: true, message: "Message execution started" });
   } catch (error: any) {

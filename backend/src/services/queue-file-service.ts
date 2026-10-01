@@ -13,6 +13,18 @@ if (!existsSync(queueDir)) {
   mkdirSync(queueDir, { recursive: true });
 }
 
+/** Draft ids are `randomUUID()`s, and always have been (the SQLite store before this used `uuid()` too). */
+const QUEUE_ITEM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether `id` can name a draft. Every lookup by id goes through this, since
+ * the id becomes a file name: `../victim` would otherwise read or unlink any
+ * `*.json` relative to the queue directory.
+ */
+export function isValidQueueItemId(id: string): boolean {
+  return QUEUE_ITEM_ID.test(id);
+}
+
 export class QueueFileService {
   // Get all draft items
   getAllQueueItems(chatId?: string): QueueItem[] {
@@ -45,6 +57,7 @@ export class QueueFileService {
 
   // Get a specific queue item
   getQueueItem(id: string): QueueItem | null {
+    if (!isValidQueueItemId(id)) return null;
     const filepath = join(queueDir, `${id}.json`);
 
     if (!existsSync(filepath)) {
@@ -102,6 +115,7 @@ export class QueueFileService {
 
   // Delete a queue item
   deleteQueueItem(id: string): boolean {
+    if (!isValidQueueItemId(id)) return false;
     const filepath = join(queueDir, `${id}.json`);
 
     if (!existsSync(filepath)) {

@@ -758,7 +758,7 @@ export async function createDraft(
 
 /** `images` replaces the draft's images, `[]` included; omit it to leave them alone. */
 export async function updateDraft(id: string, message: string, images?: QueueItemImage[]): Promise<QueueItem> {
-  const res = await fetch(`${BASE}/queue/${id}`, {
+  const res = await fetch(`${BASE}/queue/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_message: message, ...(images && { images }) }),
@@ -776,11 +776,15 @@ export async function uploadDraftImages(images: File[]): Promise<QueueItemImage[
   return stored.map((image) => ({ id: image.id, originalName: image.originalName }));
 }
 
-/** A draft's stored images, back as Files the composer can attach and send. */
-export async function fetchDraftImages(images: QueueItemImage[]): Promise<File[]> {
-  return Promise.all(
+/**
+ * A draft's stored images, back as Files the composer can attach and send.
+ * Settled per image, in order: one that fails to load must not take the rest
+ * down with it.
+ */
+export async function fetchDraftImages(images: QueueItemImage[]): Promise<PromiseSettledResult<File>[]> {
+  return Promise.allSettled(
     images.map(async (image) => {
-      const res = await fetch(`${BASE}/images/${image.id}`);
+      const res = await fetch(`${BASE}/images/${encodeURIComponent(image.id)}`);
       await assertOk(res, "Failed to load draft image");
       const blob = await res.blob();
       return new File([blob], image.originalName, { type: blob.type });
@@ -789,7 +793,7 @@ export async function fetchDraftImages(images: QueueItemImage[]): Promise<File[]
 }
 
 export async function deleteDraft(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/queue/${id}`, { method: "DELETE" });
+  const res = await fetch(`${BASE}/queue/${encodeURIComponent(id)}`, { method: "DELETE" });
   await assertOk(res, "Failed to delete draft");
 }
 

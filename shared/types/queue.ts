@@ -22,7 +22,8 @@ export interface QueueItem {
   /**
    * Images attached when the draft was saved. Absent on drafts saved before
    * drafts kept images, and on drafts saved without any — both mean "none".
-   * The draft owns these: deleting the draft deletes them.
+   * The draft references these; it does not own them. Nothing deletes an
+   * image file because a draft dropped it, was deleted, or was sent.
    */
   images?: QueueItemImage[];
 }
