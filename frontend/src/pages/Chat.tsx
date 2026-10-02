@@ -184,6 +184,11 @@ const STOP_CONFIRM_TIMEOUT_MS = 10_000;
 // which lands after the terminal event the settle path refetches on.
 const STOP_RESYNC_DELAY_MS = 2_500;
 
+// At most one `/activity` re-read per window per chat from a stream ending or
+// failing to connect — see refreshActivityAfterStreamEnd. 60/min worst case,
+// against the API limiter's 300/min.
+const STREAM_END_REREAD_WINDOW_MS = 1_000;
+
 /**
  * Optimistic user bubbles, styled like a sent message but dimmed and without
  * the copy/fork affordances a persisted message gets. Rendered in both the
@@ -417,6 +422,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const hasReceivedFirstResponseRef = useRef<boolean>(false);
   const currentIdRef = useRef<string | undefined>(id);
+  // refreshActivity's request order: issued, and the newest one applied.
+  const activityRequestSeqRef = useRef(0);
+  const activityAppliedSeqRef = useRef(0);
+  const streamEndReadRef = useRef<{ chatId: string | null; at: number; timer: ReturnType<typeof setTimeout> | null }>({ chatId: null, at: 0, timer: null });
 
   /**
    * Re-read what the chat is blocked on. Best-effort: a failure here must
@@ -433,17 +442,53 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
    * down and rebuilt on every render.
    */
   const refreshActivity = useCallback((chatId: string) => {
-    const store = (next: ChatActivityResponse) => setActivity((prev) => (sameActivityPayload(prev, next) ? prev : next));
+    // Requests overlap (a slow poll tick and an end-of-run re-read), and a
+    // late answer to an older one would put back a row the newer one took down.
+    const seq = ++activityRequestSeqRef.current;
+    const store = (next: ChatActivityResponse) => {
+      if (currentIdRef.current !== chatId || seq < activityAppliedSeqRef.current) return;
+      activityAppliedSeqRef.current = seq;
+      setActivity((prev) => (sameActivityPayload(prev, next) ? prev : next));
+    };
     getActivity(chatId)
-      .then((next) => {
-        if (currentIdRef.current !== chatId) return;
-        store(next);
-      })
-      .catch(() => {
-        if (currentIdRef.current !== chatId) return;
-        store({ activities: [], conditionWatch: null, awaitingChildren: 0 });
-      });
+      .then(store)
+      .catch(() => store({ activities: [], conditionWatch: null, awaitingChildren: 0 }));
   }, []);
+
+  /**
+   * `refreshActivity` for a stream that just ended or failed to connect. These
+   * ride the auto-connect loop, which reconnects with no backoff for as long
+   * as the registry still says the session is active, and `/activity` is
+   * rate-limited where `/stream` is not. So at most one read per window per
+   * chat: the first goes out at once, later ones collapse into a single
+   * trailing read, so the last stream end is still always re-read.
+   */
+  const refreshActivityAfterStreamEnd = useCallback(
+    (chatId: string) => {
+      const gate = streamEndReadRef.current;
+      if (gate.chatId !== chatId) {
+        if (gate.timer) clearTimeout(gate.timer);
+        streamEndReadRef.current = { chatId, at: 0, timer: null };
+      }
+      const current = streamEndReadRef.current;
+      if (current.timer) return;
+      const wait = current.at + STREAM_END_REREAD_WINDOW_MS - Date.now();
+      const read = () => {
+        current.timer = null;
+        current.at = Date.now();
+        refreshActivity(chatId);
+      };
+      if (wait <= 0) read();
+      else current.timer = setTimeout(read, wait);
+    },
+    [refreshActivity],
+  );
+  useEffect(
+    () => () => {
+      if (streamEndReadRef.current.timer) clearTimeout(streamEndReadRef.current.timer);
+    },
+    [],
+  );
 
   const handleReleaseActivity = useCallback(
     async (activityId: string) => {
@@ -959,8 +1004,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         abortRef.current.abort();
         abortRef.current = null;
       }
+      // An abort skips readSSE's own re-read, and with streaming off nothing
+      // polls: this is the dock's last chance to drop a row the run left up.
+      if (currentIdRef.current) refreshActivity(currentIdRef.current);
     }, STREAMING_INACTIVITY_TIMEOUT_MS);
-  }, [clearStreamingTimeout]);
+  }, [clearStreamingTimeout, refreshActivity]);
 
   // Start/stop the safety timeout when streaming state changes
   useEffect(() => {
@@ -974,7 +1022,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Shared SSE reader that processes notifications and refetches chat data
   const readSSE = useCallback(
-    async (body: ReadableStream<Uint8Array>) => {
+    async (body: ReadableStream<Uint8Array>, signal?: AbortSignal) => {
       const reader = body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -983,7 +1031,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Set by the frames that end a run, which re-read the dock themselves.
       // A stream that stops without one (network drop, daemon restart) is
       // re-read in the finally instead: streaming=false stops the dock's poll,
-      // and nothing else would ever take down a row the dead run left up.
+      // and nothing else would ever take down a row the dead run left up. Not
+      // when we aborted it: whoever aborts re-reads (or, on unmount, has no
+      // dock left to update).
       let runEnded = false;
 
       try {
@@ -1186,8 +1236,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 setCompacting(false);
                 setStreaming(false);
                 clearInFlightMessages();
-                // Same teardown as message_complete: the run is over.
-                refreshActivity(streamChatId!);
+                // Same teardown as message_complete: the run is over. Throttled
+                // because, unlike message_complete, this frame doesn't stop the
+                // auto-connect loop from coming straight back here.
+                refreshActivityAfterStreamEnd(streamChatId!);
                 // Refetch messages to show any partial content, then add error.
                 // OpenRouter sessions persist the failure on the session
                 // record (transcript session_end → session_error system
@@ -1311,11 +1363,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         // refetch paths settle them, and the error paths clear them.
         if (currentIdRef.current === streamChatId) {
           setStreaming(false);
-          if (!runEnded && streamChatId) refreshActivity(streamChatId);
+          if (!runEnded && !signal?.aborted && streamChatId) refreshActivityAfterStreamEnd(streamChatId);
         }
       }
     },
-    [id, resetStreamingTimeout],
+    [id, resetStreamingTimeout, refreshActivityAfterStreamEnd],
   );
 
   // Connect to an existing SSE stream (e.g. after page refresh)
@@ -1340,21 +1392,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       });
       if (!res.ok || !res.body) {
         setStreaming(false);
-        if (id) refreshActivity(id);
+        if (id) refreshActivityAfterStreamEnd(id);
         return;
       }
       reading = true;
-      await readSSE(res.body);
+      await readSSE(res.body, controller.signal);
     } catch (err: any) {
       if (err.name !== "AbortError") {
         setNetworkError("network error");
         setStreaming(false);
-        if (!reading && id) refreshActivity(id);
+        if (!reading && id) refreshActivityAfterStreamEnd(id);
       }
     } finally {
       abortRef.current = null;
     }
-  }, [id, readSSE, refreshActivity]);
+  }, [id, readSSE, refreshActivityAfterStreamEnd]);
 
   // Auto-connect to active sessions when the global session registry reports activity.
   // This replaces the old one-shot checkSessionStatus() call with a reactive approach:
@@ -2388,7 +2440,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           return;
         }
 
-        await readSSE(res.body);
+        await readSSE(res.body, controller.signal);
       } catch (err: any) {
         if (err.name !== "AbortError") {
           setNetworkError("network error");
