@@ -10,9 +10,9 @@
  * no countdown to run down, so a stale "Checking: …" line reads as live work.
  *
  * The other half is cost: `/activity` is rate-limited and `/stream` is not, and
- * the auto-connect loop reconnects with no backoff while the registry says the
- * session is active. Re-reads on that loop's path must stay bounded, and an
- * abort the page issues itself must not re-read twice.
+ * the auto-connect loop keeps reconnecting (on a backoff) while the registry
+ * says the session is active. Re-reads on that loop's path must stay bounded,
+ * and an abort the page issues itself must not re-read twice.
  *
  * Real `Chat` and `ActivityDock`; `getActivity` answers from a mutable
  * `server` record, `/stream` connects are scripted per call (default: a
@@ -302,7 +302,6 @@ it("re-reads the dock from the Reconnect button", async () => {
 
 // --- What the re-reads cost ---------------------------------------------
 
-const SPINS = 40;
 const LOOP_MODES: Array<[string, (c: Connect) => void]> = [
   ["the connect is rejected (daemon down)", (c) => c.reject(new TypeError("Failed to fetch"))],
   ["the connect is refused (502 from a tunnel)", (c) => c.resolve({ ok: false, status: 502, body: null, json: async () => ({}) })],
@@ -326,51 +325,65 @@ const LOOP_MODES: Array<[string, (c: Connect) => void]> = [
 ];
 
 /**
- * Freeze the throttle's clock (`Date`, `setTimeout`) so its windows open and
- * close only when the test says, however slow the box runs the loop. Promises,
- * React's scheduler, `setInterval` and `performance` stay real, so the page
- * still runs; `waitFor`'s own timeout is a faked setTimeout under vitest, so
- * waits while frozen go through `pollUntil` instead.
+ * Freeze the page's clock (`Date`, `setTimeout`) so the throttle's windows and
+ * the reconnect backoff advance only when the test says, however slow the box
+ * runs the loop. Promises, React's scheduler, `setInterval` and `performance`
+ * stay real, so the page still runs; `waitFor`'s own timeout is a faked
+ * setTimeout under vitest, so waits while frozen go through `pollUntil` instead.
  */
 function freezeClock() {
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
 }
+
+/** Wait one real 10ms tick (the frozen clock doesn't move). */
+const realTick = () =>
+  act(
+    () =>
+      new Promise<void>((resolve) => {
+        const t = setInterval(() => {
+          clearInterval(t);
+          resolve();
+        }, 10);
+      }),
+  );
 
 /** Poll on the real `setInterval` with a real deadline. */
 async function pollUntil(check: () => boolean, timeoutMs: number, what: string) {
   const deadline = performance.now() + timeoutMs;
   while (!check()) {
     if (performance.now() > deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
-    await act(() => new Promise<void>((resolve) => {
-      const t = setInterval(() => {
-        clearInterval(t);
-        resolve();
-      }, 10);
-    }));
+    await realTick();
   }
 }
 
-it.each(LOOP_MODES)("keeps /activity reads bounded while the reconnect loop spins: %s", async (_label, fail) => {
-  // The pre-existing auto-connect loop: registry still active, every connect
-  // fails fast, and each failure reconnects at once. Capped at SPINS, after
-  // which the connect is left pending.
-  connectPlan = (i, c) => {
-    if (i < SPINS) fail(c);
-  };
-  // The loop can run to its cap inside the act that starts it, so the
-  // baseline is taken before going live.
+/** Let a connect that just failed finish unwinding, on the frozen clock. */
+async function unwind() {
+  for (let i = 0; i < 5; i++) await realTick();
+}
+
+it.each(LOOP_MODES)("keeps /activity reads to one per second across the reconnect loop's stream ends: %s", async (_label, fail) => {
+  // Registry still active, every connect fails fast. The backoff spaces the
+  // reconnects (Chat.reconnectBackoff.test.tsx), but its first retry, at most
+  // 500ms later, still lands inside the window the first stream end's read
+  // opened: the throttle is what keeps those two to one read each window.
+  connectPlan = (_i, c) => fail(c);
   let before = 0;
   await mountThenGoLive(() => {
     freezeClock();
     before = reads();
     server.activity = TORN_DOWN;
   });
-  await pollUntil(() => connects.length === SPINS + 1, 10_000, `${SPINS} reconnects`);
-  // All SPINS stream ends fell in one window: one read at once…
+  await pollUntil(() => connects.length === 1 && reads() - before === 1, 10_000, "the first stream end's read");
+  await unwind();
+  // The backoff's first retry fails too, inside the same window…
+  await act(() => vi.advanceTimersByTimeAsync(500));
+  await pollUntil(() => connects.length === 2, 10_000, "the first retry");
+  await unwind();
   expect(reads() - before).toBe(1);
-  // …and the rest collapsed into one trailing read when it closes.
-  await act(() => vi.advanceTimersByTimeAsync(1_000));
+  // …so its read is the trailing one, when the window closes.
+  await act(() => vi.advanceTimersByTimeAsync(500));
   expect(reads() - before).toBe(2);
+  expect(connects).toHaveLength(2);
   // Bounded without losing the read that matters.
   expect(screen.queryByText(CHECKING)).toBeNull();
 });
@@ -389,9 +402,14 @@ it("drops a trailing read still queued for the chat being left", async () => {
   );
   await screen.findByText(CHECKING);
   freezeClock();
-  // Two stream ends for c1 inside one window: one read now, one queued.
+  // Two stream ends for c1 inside one window, the second from the backoff's
+  // first retry: one read now, one queued.
   await act(async () => registry.set({ type: "web", startedAt: 1 }));
-  await pollUntil(() => connects.length === 3, 10_000, "two failed connects");
+  await pollUntil(() => connects.length === 1, 10_000, "c1's first connect");
+  await unwind();
+  await act(() => vi.advanceTimersByTimeAsync(500));
+  await pollUntil(() => connects.length === 2, 10_000, "c1's retry");
+  await unwind();
   const readsOf = (chatId: string) => vi.mocked(getActivity).mock.calls.filter(([arg]) => arg === chatId).length;
   const c1Before = readsOf("c1");
   fireEvent.click(screen.getByText("open c2"));
