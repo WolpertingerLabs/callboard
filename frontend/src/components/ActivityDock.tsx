@@ -73,7 +73,12 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
   // else is a bug elsewhere; showing the first is the honest fallback.
   const primary = activities[0];
 
-  if (!primary && awaitingChildren === 0) return null;
+  // An exhausted watch is not being polled at all: `wait` has refused further
+  // attempts and the server keeps the record only to deny the same condition a
+  // fresh budget. Only an open one is live work.
+  const watchOpen = conditionWatch !== null && !conditionWatch.exhausted;
+
+  if (!primary && !watchOpen && awaitingChildren === 0) return null;
 
   const handleConfirm = async () => {
     if (!confirming) return;
@@ -106,19 +111,25 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
           color: "var(--text-muted)",
         }}
       >
+        {/* One element for both live states, ahead of either: a wait and the
+            check between waits alternate every cycle, and a dot that belonged
+            to each would remount and restart its bounce on every swap. */}
+        {(primary || watchOpen) && (
+          <span
+            aria-hidden="true"
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: "var(--accent)",
+              flexShrink: 0,
+              animation: "thinking-bounce 1.4s ease-in-out infinite",
+            }}
+          />
+        )}
+
         {primary && (
           <>
-            <span
-              aria-hidden="true"
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: "var(--accent)",
-                flexShrink: 0,
-                animation: "thinking-bounce 1.4s ease-in-out infinite",
-              }}
-            />
             <span style={{ color: "var(--text)", fontWeight: 500 }}>{primary.label}</span>
 
             {primary.expiresAt !== undefined && <span style={{ fontVariantNumeric: "tabular-nums" }}>— {formatRemaining(primary.expiresAt - now)} left</span>}
@@ -140,6 +151,12 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
                 disabled={releasing}
                 style={{
                   marginLeft: "auto",
+                  // Cancels the button's own padding + border, so the text sets
+                  // the line's height in every state. Otherwise the row is 7px
+                  // taller while a wait shows this button than during the check
+                  // between waits, and it jumps on every poll.
+                  marginTop: -4,
+                  marginBottom: -4,
                   padding: "3px 10px",
                   borderRadius: 6,
                   fontSize: 12,
@@ -156,23 +173,23 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
           </>
         )}
 
+        {/* A watch with no live wait means the agent is between polls — doing
+            its check right now. Without this the row would vanish and reappear
+            every interval. It takes the live activity's slot after the dot, so
+            the wait → check → wait cycle swaps the first line's text rather
+            than reshaping the row. */}
+        {watchOpen && !primary && (
+          <span>
+            Checking: {conditionWatch.text} (attempt {conditionWatch.attempts}/{conditionWatch.maxAttempts})
+          </span>
+        )}
+
         {/* Shown with or without a live activity: a parent that spawned work
             and finished its own turn is precisely the case that used to look
             idle and done. */}
         {awaitingChildren > 0 && (
-          <span style={{ ...(primary ? { flexBasis: "100%" } : {}), opacity: 0.9 }}>
+          <span style={{ ...(primary || watchOpen ? { flexBasis: "100%" } : {}), opacity: 0.9 }}>
             Awaiting {awaitingChildren} spawned chat{awaitingChildren === 1 ? "" : "s"}
-          </span>
-        )}
-
-        {/* A watch with no live wait means the agent is between polls — doing
-            its check right now. Without this the row would vanish and reappear
-            every interval. An exhausted watch is not being polled at all: `wait`
-            has refused further attempts and the server keeps the record only to
-            deny the same condition a fresh budget, so it gets no line. */}
-        {conditionWatch && !conditionWatch.exhausted && !primary && (
-          <span>
-            Checking: {conditionWatch.text} (attempt {conditionWatch.attempts}/{conditionWatch.maxAttempts})
           </span>
         )}
       </div>
