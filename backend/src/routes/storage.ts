@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { NextFunction, Request, Response } from "express";
 import multer from "multer";
-import { MULTIPART_FIELD_LIMITS } from "../utils/multipart-limits.js";
+import { MULTIPART_FIELD_LIMITS, withUploadErrors } from "../utils/multipart-limits.js";
 import { closeSync, createReadStream } from "fs";
 import { STORAGE_ITEM_MIME_HEADER } from "shared/types/index.js";
 import {
@@ -173,18 +173,14 @@ storageRouter.get(
   }),
 );
 
+const uploadItem = withUploadErrors(upload.single("file"), {
+  tooLarge: `Item too large; the per-item limit is ${STORAGE_MAX_ITEM_BYTES / 1024 / 1024}MB`,
+});
+
 /** Multer only when the request is multipart — JSON bodies are already parsed by express.json. */
 function maybeMultipart(req: Request, res: Response, next: NextFunction): void {
   if (!req.is("multipart/form-data")) return next();
-  upload.single("file")(req, res, (err: unknown) => {
-    if (!err) return next();
-    const tooLarge = err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE";
-    res.status(tooLarge ? 413 : 400).json({
-      error: tooLarge
-        ? `Item too large; the per-item limit is ${STORAGE_MAX_ITEM_BYTES / 1024 / 1024}MB`
-        : `Upload failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  });
+  uploadItem(req, res, next);
 }
 
 /**

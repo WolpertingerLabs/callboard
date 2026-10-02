@@ -9,7 +9,20 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import express from "express";
 import AdmZip from "adm-zip";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -204,6 +217,75 @@ describe("agent import: hostile archives", () => {
   });
 });
 
+describe("agent import: a refused import leaves the workspace byte-identical", () => {
+  const ws = () => join(WORKSPACES_DIR, "partial");
+
+  /** Every entry under `dir`: type, mode, bytes or link target — lstat, so links are never followed. */
+  function snapshot(dir: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const rel of readdirSync(dir, { recursive: true }) as string[]) {
+      const p = join(dir, rel);
+      const st = lstatSync(p);
+      const mode = (st.mode & 0o7777).toString(8);
+      if (st.isSymbolicLink()) out[rel] = `link ${readlinkSync(p)}`;
+      else if (st.isDirectory()) out[rel] = `dir ${mode}`;
+      else out[rel] = `file ${mode} ${readFileSync(p).toString("base64")}`;
+    }
+    return out;
+  }
+
+  function seedWorkspace(): void {
+    mkdirSync(ws(), { recursive: true });
+    writeFileSync(join(ws(), "SOUL.md"), "preexisting soul");
+  }
+
+  function partialZip(extra: Record<string, string>): Buffer {
+    const zip = baseZip("partial");
+    zip.addFile("workspace/A.md", Buffer.from("A from zip"));
+    zip.addFile("workspace/SOUL.md", Buffer.from("SOUL from zip"));
+    for (const [name, body] of Object.entries(extra)) zip.addFile(name, Buffer.from(body));
+    return zip.toBuffer();
+  }
+
+  async function expectUntouched(zip: Buffer, status = 400): Promise<void> {
+    const before = snapshot(ws());
+    const res = await upload(zip);
+    expect(res.status).toBe(status);
+    expect(snapshot(ws())).toEqual(before);
+    expect(outsideFiles()).toEqual([]);
+    expect(agentCreated("partial")).toBe(false);
+  }
+
+  it("a planted memory -> outside symlink (the review's repro)", async () => {
+    seedWorkspace();
+    symlinkSync(OUTSIDE, join(ws(), "memory"));
+    await expectUntouched(partialZip({ "workspace/memory/x.md": "PWNED" }));
+  });
+
+  it("a file where the archive needs a directory", async () => {
+    seedWorkspace();
+    writeFileSync(join(ws(), "memory"), "i am a file");
+    await expectUntouched(partialZip({ "workspace/memory/x.md": "x" }));
+  });
+
+  it("a directory where the archive needs a file", async () => {
+    seedWorkspace();
+    mkdirSync(join(ws(), "B.md"));
+    await expectUntouched(partialZip({ "workspace/B.md": "b" }));
+  });
+
+  it.skipIf(process.getuid?.() === 0)("a write that fails after validation is rolled back", async () => {
+    seedWorkspace();
+    writeFileSync(join(ws(), "Z.md"), "read-only");
+    chmodSync(join(ws(), "Z.md"), 0o444);
+    try {
+      await expectUntouched(partialZip({ "workspace/Z.md": "z" }), 500);
+    } finally {
+      chmodSync(join(ws(), "Z.md"), 0o644);
+    }
+  });
+});
+
 describe("multipart uploads with hostile field names", () => {
   // A regression here freezes the event loop, which would hang the whole test
   // worker — so the real routers are driven from a child with a hard timeout.
@@ -262,7 +344,7 @@ describe("multipart uploads with hostile field names", () => {
     const results = JSON.parse(child.stdout.trim().split("\n").pop()!) as { path: string; names: string; status: number; ms: number }[];
     expect(results).toHaveLength(9);
     for (const r of results) {
-      expect(r.status, `${r.path} ${r.names}`).toBeGreaterThanOrEqual(400);
+      expect(r.status, `${r.path} ${r.names}`).toBe(400);
       expect(r.ms, `${r.path} ${r.names}`).toBeLessThan(5_000);
     }
   }, 40_000);

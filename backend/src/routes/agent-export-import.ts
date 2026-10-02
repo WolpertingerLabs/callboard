@@ -10,13 +10,16 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
+  rmdirSync,
+  type Stats,
   writeFileSync,
 } from "fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import archiver from "archiver";
 import AdmZip from "adm-zip";
 import multer from "multer";
-import { MULTIPART_FIELD_LIMITS } from "../utils/multipart-limits.js";
+import { MULTIPART_FIELD_LIMITS, withUploadErrors } from "../utils/multipart-limits.js";
 import type { AgentConfig } from "shared";
 import {
   getAgent,
@@ -127,33 +130,136 @@ export function readEntryData(entry: AdmZip.IZipEntry): Buffer {
   return entry.getData();
 }
 
-/**
- * Write `data` to `relativePath` under `root` without following symlinks out
- * of it. ensureAgentWorkspaceDir adopts whatever directory already exists, and
- * every agent has a shell in a sibling of it under the same workspaces root,
- * so an import can meet a planted `<alias>/memory -> ~/.ssh`.
- * The mode is fixed at 0o644; archive permission bits are never applied.
- */
-export function writeFileContained(root: string, relativePath: string, data: Buffer): void {
-  if (lstatSync(root).isSymbolicLink()) throw new Error("workspace directory is a symbolic link");
-  const realRoot = realpathSync(root);
-  const target = resolve(realRoot, relativePath);
-  const rel = relative(realRoot, target);
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`path escapes the workspace: ${relativePath}`);
-
-  const parent = dirname(target);
-  mkdirSync(parent, { recursive: true });
-  const realParent = realpathSync(parent);
-  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) {
-    throw new Error(`path escapes the workspace through a symbolic link: ${relativePath}`);
+function lstatOrNull(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
+}
 
-  // O_NOFOLLOW: a symlink at the final component fails with ELOOP instead of being written through.
-  const fd = openSync(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o644);
+interface PlannedWrite {
+  target: string;
+  data: Buffer;
+  existing: boolean;
+}
+
+export interface WorkspacePlan {
+  root: string;
+  rootExists: boolean;
+  /** Directories to create, parents before children. */
+  dirs: string[];
+  writes: PlannedWrite[];
+}
+
+/**
+ * Validate every workspace write before any of them happens — no filesystem
+ * changes. ensureAgentWorkspaceDir adopts whatever directory already exists,
+ * and every agent has a shell in a sibling of it under the same workspaces
+ * root, so an import can meet a planted `<alias>/memory -> ~/.ssh`. Every path
+ * component under the root must be a real directory or absent, and every
+ * target a regular file or absent; a symlink anywhere refuses the whole import.
+ */
+export function planWorkspaceWrites(root: string, files: [relativePath: string, data: Buffer][]): WorkspacePlan {
+  const rootStat = lstatOrNull(root);
+  if (rootStat?.isSymbolicLink()) throw new Error("workspace directory is a symbolic link");
+  if (rootStat && !rootStat.isDirectory()) throw new Error("workspace path exists and is not a directory");
+
+  const dirs = new Set<string>();
+  const targets = new Set<string>();
+  const writes: PlannedWrite[] = [];
+  for (const [relativePath, data] of files) {
+    const target = resolve(root, relativePath);
+    const rel = relative(root, target);
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`path escapes the workspace: ${relativePath}`);
+    if (targets.has(target)) throw new Error(`duplicate target: ${relativePath}`);
+    targets.add(target);
+
+    let dir = root;
+    for (const part of rel.split(sep).slice(0, -1)) {
+      dir = join(dir, part);
+      const st = lstatOrNull(dir);
+      if (!st) dirs.add(dir);
+      else if (st.isSymbolicLink()) throw new Error(`path escapes the workspace through a symbolic link: ${relativePath}`);
+      else if (!st.isDirectory()) throw new Error(`${relative(root, dir)} exists and is not a directory`);
+    }
+    const st = lstatOrNull(target);
+    if (st?.isSymbolicLink()) throw new Error(`${relativePath} is a symbolic link`);
+    if (st && !st.isFile()) throw new Error(`${relativePath} exists and is not a regular file`);
+    writes.push({ target, data, existing: st !== null });
+  }
+  return { root, rootExists: rootStat !== null, dirs: [...dirs], writes };
+}
+
+/** O_NOFOLLOW: a symlink at the final component fails with ELOOP instead of being written through. */
+function writeNoFollow(target: string, data: Buffer, flag: number): void {
+  const fd = openSync(target, fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW | flag, 0o644);
   try {
     writeFileSync(fd, data);
   } finally {
     closeSync(fd);
+  }
+}
+
+/**
+ * Carry out a validated plan, all or nothing: an existing file is backed up
+ * before it is truncated, and on any failure every backup is restored and
+ * every file and directory this call created is removed. New files are
+ * created O_EXCL with mode 0o644; archive permission bits are never applied.
+ *
+ * Accepted TOCTOU: between planWorkspaceWrites' lstat walk (and the realpath
+ * check below) and openSync, a parent directory could be swapped for a
+ * symlink — O_NOFOLLOW covers only the last component, and Node has no
+ * openat() to pin the parent. Racing it needs a same-user shell, which can
+ * already write anywhere the daemon can; the window is microseconds; and the
+ * only reachable names are `*.md` at most two levels deep.
+ */
+export function applyWorkspacePlan(plan: WorkspacePlan): void {
+  const createdDirs: string[] = [];
+  const createdFiles: string[] = [];
+  const backups: [string, Buffer][] = [];
+  try {
+    if (!plan.rootExists) {
+      mkdirSync(dirname(plan.root), { recursive: true });
+      mkdirSync(plan.root);
+      createdDirs.push(plan.root);
+    }
+    for (const dir of plan.dirs) {
+      mkdirSync(dir); // not recursive: EEXIST if something appeared since the plan
+      createdDirs.push(dir);
+    }
+    const realRoot = realpathSync(plan.root);
+    for (const { target, data, existing } of plan.writes) {
+      const realParent = realpathSync(dirname(target));
+      if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) {
+        throw new Error(`path escapes the workspace through a symbolic link: ${relative(plan.root, target)}`);
+      }
+      if (existing) {
+        backups.push([target, readFileSync(target)]);
+        writeNoFollow(target, data, fsConstants.O_TRUNC);
+      } else {
+        writeNoFollow(target, data, fsConstants.O_CREAT | fsConstants.O_EXCL);
+        createdFiles.push(target);
+      }
+    }
+  } catch (error) {
+    for (const [target, original] of backups.reverse()) {
+      try {
+        writeNoFollow(target, original, fsConstants.O_TRUNC);
+      } catch (restoreError) {
+        log.error(`Import rollback: could not restore ${target}: ${(restoreError as Error).message}`);
+      }
+    }
+    for (const target of createdFiles) rmSync(target, { force: true });
+    for (const dir of createdDirs.reverse()) {
+      try {
+        rmdirSync(dir);
+      } catch (rmError) {
+        log.error(`Import rollback: could not remove ${dir}: ${(rmError as Error).message}`);
+      }
+    }
+    throw error;
   }
 }
 
@@ -242,7 +348,7 @@ agentExportImportRouter.get("/:alias/export", (req: Request, res: Response): voi
 });
 
 // ── Import: POST /api/agents/import ──────────────────────────────
-agentExportImportRouter.post("/import", upload.single("file"), async (req: Request, res: Response): Promise<void> => {
+agentExportImportRouter.post("/import", withUploadErrors(upload.single("file"), { tooLarge: "Zip too large; the limit is 50MB" }), async (req: Request, res: Response): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ error: "No file uploaded. Please upload a .zip file." });
     return;
@@ -368,21 +474,28 @@ agentExportImportRouter.post("/import", upload.single("file"), async (req: Reque
   const alias = agentConfig.alias;
 
   // ── Write workspace files ─────────────────────────────────
-  // First, so a write refused by writeFileContained leaves no agent behind.
-  const workspacePath = ensureAgentWorkspaceDir(alias);
+  // Before createAgent, and all or nothing: every target is validated before
+  // the first write, and a write that still fails is rolled back.
+  const workspaceFiles = [...contents]
+    .filter(([name]) => name.startsWith("workspace/"))
+    .map(([name, data]): [string, Buffer] => [name.slice("workspace/".length), data]);
 
-  for (const [name, data] of contents) {
-    if (!name.startsWith("workspace/")) continue;
-    // Strip "workspace/" prefix to get the relative path within the workspace
-    const relativePath = name.slice("workspace/".length);
-    try {
-      writeFileContained(workspacePath, relativePath, data);
-    } catch (error) {
-      log.warn(`Import rejected — ${alias}: ${(error as Error).message}`);
-      res.status(400).json({ error: `Could not write ${name}: ${(error as Error).message}` });
-      return;
-    }
+  let plan: WorkspacePlan;
+  try {
+    plan = planWorkspaceWrites(getAgentWorkspacePath(alias), workspaceFiles);
+  } catch (error) {
+    log.warn(`Import rejected — ${alias}: ${(error as Error).message}`);
+    res.status(400).json({ error: `Import refused: ${(error as Error).message}` });
+    return;
   }
+  try {
+    applyWorkspacePlan(plan);
+  } catch (error) {
+    log.error(`Import failed — ${alias}: ${(error as Error).message}; workspace rolled back`);
+    res.status(500).json({ error: `Could not write workspace files (${(error as Error).message}); nothing was changed` });
+    return;
+  }
+  const workspacePath = ensureAgentWorkspaceDir(alias);
 
   // ── Write agent data ──────────────────────────────────────
   // Set createdAt to now
