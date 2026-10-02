@@ -1,5 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
+import { MULTIPART_FIELD_LIMITS } from "../utils/multipart-limits.js";
 import { ImageStorageService, type StoredImage } from "../services/image-storage.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { updateChatWithImages } from "../services/image-metadata.js";
@@ -12,6 +13,7 @@ const upload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB
     files: 10, // Max 10 files per request
+    ...MULTIPART_FIELD_LIMITS,
   },
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];

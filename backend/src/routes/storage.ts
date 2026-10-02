@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { NextFunction, Request, Response } from "express";
 import multer from "multer";
+import { MULTIPART_FIELD_LIMITS } from "../utils/multipart-limits.js";
 import { closeSync, createReadStream } from "fs";
 import { STORAGE_ITEM_MIME_HEADER } from "shared/types/index.js";
 import {
@@ -25,7 +26,7 @@ export const storageRouter = Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: STORAGE_MAX_ITEM_BYTES, files: 1 },
+  limits: { fileSize: STORAGE_MAX_ITEM_BYTES, files: 1, ...MULTIPART_FIELD_LIMITS },
 });
 
 /**

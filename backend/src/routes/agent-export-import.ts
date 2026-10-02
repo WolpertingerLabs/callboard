@@ -1,10 +1,22 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from "fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import archiver from "archiver";
 import AdmZip from "adm-zip";
 import multer from "multer";
+import { MULTIPART_FIELD_LIMITS } from "../utils/multipart-limits.js";
 import type { AgentConfig } from "shared";
 import {
   getAgent,
@@ -54,6 +66,7 @@ const upload = multer({
   limits: {
     fileSize: 50 * 1024 * 1024, // 50MB
     files: 1,
+    ...MULTIPART_FIELD_LIMITS,
   },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype === "application/zip" || file.mimetype === "application/x-zip-compressed" || file.originalname.endsWith(".zip")) {
@@ -80,6 +93,68 @@ function isAllowedEntry(entryName: string): boolean {
   }
 
   return false;
+}
+
+// ── Hostile-archive guards ───────────────────────────────────────
+// Import never calls adm-zip's extractAllTo/extractEntryTo, so the extraction
+// advisories (destination symlinks, SUID/SGID bits) don't reach the library —
+// but the same classes of bug apply to this route's own reads and writes.
+
+const S_IFMT = 0o170000;
+const S_IFLNK = 0o120000;
+const ZIP_STORED = 0;
+const ZIP_DEFLATED = 8;
+
+/** Why an archive entry is refused before anything is read, or null if it is acceptable. */
+export function rejectEntryReason(entry: AdmZip.IZipEntry): string | null {
+  // Unix mode lives in the high 16 bits of the external attributes.
+  if (((entry.attr >>> 16) & S_IFMT) === S_IFLNK) return "symbolic links are not allowed";
+  if (entry.header.flags & 0x1) return "encrypted entries are not supported";
+  if (entry.header.method !== ZIP_STORED && entry.header.method !== ZIP_DEFLATED) return "unsupported compression method";
+  return null;
+}
+
+/**
+ * Read one entry's bytes without the adm-zip ≤0.6.0 decompression-bomb bypass
+ * (GHSA-rcw4-f5rp-g42v): when the declared uncompressed size is 0, adm-zip
+ * inflates with no output cap. A declared-empty entry is therefore treated as
+ * empty instead of being inflated. Any other declared size caps both the
+ * allocation and the inflate, and the caller has already bounded it by the
+ * ratio and total-size checks. Throws on CRC or format errors.
+ */
+export function readEntryData(entry: AdmZip.IZipEntry): Buffer {
+  if (entry.header.size === 0) return Buffer.alloc(0);
+  return entry.getData();
+}
+
+/**
+ * Write `data` to `relativePath` under `root` without following symlinks out
+ * of it. ensureAgentWorkspaceDir adopts whatever directory already exists, and
+ * every agent has a shell in a sibling of it under the same workspaces root,
+ * so an import can meet a planted `<alias>/memory -> ~/.ssh`.
+ * The mode is fixed at 0o644; archive permission bits are never applied.
+ */
+export function writeFileContained(root: string, relativePath: string, data: Buffer): void {
+  if (lstatSync(root).isSymbolicLink()) throw new Error("workspace directory is a symbolic link");
+  const realRoot = realpathSync(root);
+  const target = resolve(realRoot, relativePath);
+  const rel = relative(realRoot, target);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error(`path escapes the workspace: ${relativePath}`);
+
+  const parent = dirname(target);
+  mkdirSync(parent, { recursive: true });
+  const realParent = realpathSync(parent);
+  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) {
+    throw new Error(`path escapes the workspace through a symbolic link: ${relativePath}`);
+  }
+
+  // O_NOFOLLOW: a symlink at the final component fails with ELOOP instead of being written through.
+  const fd = openSync(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o644);
+  try {
+    writeFileSync(fd, data);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 // ── Export: GET /api/agents/:alias/export ──────────────────────────
@@ -216,6 +291,23 @@ agentExportImportRouter.post("/import", upload.single("file"), async (req: Reque
 
   const entryNames = fileEntries.map((e: AdmZip.IZipEntry) => e.entryName);
 
+  // getEntry() resolves a duplicate name to a different entry than iteration
+  // does (GHSA-p634-w6r4-rjp2), so one archive could carry two agent.json.
+  const duplicate = entryNames.find((name, i) => entryNames.indexOf(name) !== i);
+  if (duplicate) {
+    res.status(400).json({ error: `Zip contains duplicate entry: ${duplicate}` });
+    return;
+  }
+
+  for (const entry of entries) {
+    const reason = rejectEntryReason(entry);
+    if (reason) {
+      log.warn(`Import rejected — ${entry.entryName}: ${reason}`);
+      res.status(400).json({ error: `Zip entry ${entry.entryName} rejected: ${reason}` });
+      return;
+    }
+  }
+
   // 1. Must contain agent.json at root
   if (!entryNames.includes("agent.json")) {
     res.status(400).json({ error: "Zip must contain agent.json at the root level" });
@@ -232,16 +324,23 @@ agentExportImportRouter.post("/import", upload.single("file"), async (req: Reque
     return;
   }
 
-  // 3. Parse and validate agent.json
-  const agentEntry = zip.getEntry("agent.json");
-  if (!agentEntry) {
-    res.status(400).json({ error: "Could not read agent.json from zip" });
-    return;
+  // 3. Read every entry before anything is written, so a corrupt archive
+  // can't leave a half-imported agent behind.
+  const contents = new Map<string, Buffer>();
+  for (const entry of fileEntries) {
+    try {
+      contents.set(entry.entryName, readEntryData(entry));
+    } catch (error) {
+      log.warn(`Import rejected — could not read ${entry.entryName}: ${(error as Error).message}`);
+      res.status(400).json({ error: `Could not read ${entry.entryName} from zip` });
+      return;
+    }
   }
 
+  // 4. Parse and validate agent.json
   let agentConfig: AgentConfig;
   try {
-    agentConfig = JSON.parse(agentEntry.getData().toString("utf8")) as AgentConfig;
+    agentConfig = JSON.parse(contents.get("agent.json")!.toString("utf8")) as AgentConfig;
   } catch {
     res.status(400).json({ error: "agent.json is not valid JSON" });
     return;
@@ -252,7 +351,7 @@ agentExportImportRouter.post("/import", upload.single("file"), async (req: Reque
     return;
   }
 
-  // 4. Validate alias format
+  // 5. Validate alias format
   if (!isValidAlias(agentConfig.alias)) {
     res.status(400).json({
       error: "Alias must be 2-64 characters: lowercase letters, numbers, hyphens, underscores. Must start with a letter or number.",
@@ -260,13 +359,30 @@ agentExportImportRouter.post("/import", upload.single("file"), async (req: Reque
     return;
   }
 
-  // 5. Check if agent already exists
+  // 6. Check if agent already exists
   if (agentExists(agentConfig.alias)) {
     res.status(409).json({ error: `An agent with alias "${agentConfig.alias}" already exists` });
     return;
   }
 
   const alias = agentConfig.alias;
+
+  // ── Write workspace files ─────────────────────────────────
+  // First, so a write refused by writeFileContained leaves no agent behind.
+  const workspacePath = ensureAgentWorkspaceDir(alias);
+
+  for (const [name, data] of contents) {
+    if (!name.startsWith("workspace/")) continue;
+    // Strip "workspace/" prefix to get the relative path within the workspace
+    const relativePath = name.slice("workspace/".length);
+    try {
+      writeFileContained(workspacePath, relativePath, data);
+    } catch (error) {
+      log.warn(`Import rejected — ${alias}: ${(error as Error).message}`);
+      res.status(400).json({ error: `Could not write ${name}: ${(error as Error).message}` });
+      return;
+    }
+  }
 
   // ── Write agent data ──────────────────────────────────────
   // Set createdAt to now
@@ -276,10 +392,10 @@ agentExportImportRouter.post("/import", upload.single("file"), async (req: Reque
   const dataDir = getAgentDataDir(alias);
 
   // Write cron-jobs.json if present
-  const cronEntry = zip.getEntry("cron-jobs.json");
-  if (cronEntry) {
+  const cronBytes = contents.get("cron-jobs.json");
+  if (cronBytes) {
     try {
-      const cronData = JSON.parse(cronEntry.getData().toString("utf8"));
+      const cronData = JSON.parse(cronBytes.toString("utf8"));
       await dropUnsupportedActionEfforts(alias, "cron-jobs.json", cronData);
       writeFileSync(join(dataDir, "cron-jobs.json"), JSON.stringify(cronData, null, 2));
     } catch {
@@ -288,10 +404,10 @@ agentExportImportRouter.post("/import", upload.single("file"), async (req: Reque
   }
 
   // Write triggers.json if present
-  const triggersEntry = zip.getEntry("triggers.json");
-  if (triggersEntry) {
+  const triggersBytes = contents.get("triggers.json");
+  if (triggersBytes) {
     try {
-      const triggersData = JSON.parse(triggersEntry.getData().toString("utf8"));
+      const triggersData = JSON.parse(triggersBytes.toString("utf8"));
       await dropUnsupportedActionEfforts(alias, "triggers.json", triggersData);
       writeFileSync(join(dataDir, "triggers.json"), JSON.stringify(triggersData, null, 2));
     } catch {
@@ -307,28 +423,6 @@ agentExportImportRouter.post("/import", upload.single("file"), async (req: Reque
   for (const job of allJobs) {
     if (job.status === "active") {
       scheduleJob(alias, job);
-    }
-  }
-
-  // ── Write workspace files ─────────────────────────────────
-  const workspacePath = ensureAgentWorkspaceDir(alias);
-
-  for (const entry of entries) {
-    if (entry.isDirectory) continue;
-
-    if (entry.entryName.startsWith("workspace/")) {
-      // Strip "workspace/" prefix to get the relative path within the workspace
-      const relativePath = entry.entryName.slice("workspace/".length);
-
-      if (!relativePath.endsWith(".md")) continue;
-
-      const targetPath = join(workspacePath, relativePath);
-
-      // Ensure parent directory exists (for memory/ subdir)
-      const targetDir = join(targetPath, "..");
-      mkdirSync(targetDir, { recursive: true });
-
-      writeFileSync(targetPath, entry.getData());
     }
   }
 
