@@ -23,7 +23,7 @@
     "express": "^4.21.0",
     "express-rate-limit": "^7.5.1",
     "ipaddr.js": "^2.4.0",
-    "multer": "^2.0.2",
+    "multer": "^2.4.0",
     "node-cron": "^3.0.3",
     "shared": "*",
     "winston": "^3.19.0",
@@ -38,6 +38,6 @@
     "@types/multer": "^2.0.0",
     "@types/node-cron": "^3.0.11",
     "swagger-autogen": "^2.23.7",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.11"
   }
 }
