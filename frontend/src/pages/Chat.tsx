@@ -980,6 +980,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       let buffer = "";
       // Capture the chat ID this stream was created for
       const streamChatId = id;
+      // Set by the frames that end a run, which re-read the dock themselves.
+      // A stream that stops without one (network drop, daemon restart) is
+      // re-read in the finally instead: streaming=false stops the dock's poll,
+      // and nothing else would ever take down a row the dead run left up.
+      let runEnded = false;
 
       try {
         while (true) {
@@ -1075,6 +1080,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
               if (event.type === "message_complete") {
                 if (currentIdRef.current !== streamChatId) return;
+                runEnded = true;
                 setCompacting(false);
                 // The server clears activities on teardown; re-read so the dock
                 // empties with the run rather than on the next poll.
@@ -1175,10 +1181,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
               if (event.type === "message_error") {
                 if (currentIdRef.current !== streamChatId) return;
+                runEnded = true;
                 planApprovedRef.current = false;
                 setCompacting(false);
                 setStreaming(false);
                 clearInFlightMessages();
+                // Same teardown as message_complete: the run is over.
+                refreshActivity(streamChatId!);
                 // Refetch messages to show any partial content, then add error.
                 // OpenRouter sessions persist the failure on the session
                 // record (transcript session_end → session_error system
@@ -1302,6 +1311,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         // refetch paths settle them, and the error paths clear them.
         if (currentIdRef.current === streamChatId) {
           setStreaming(false);
+          if (!runEnded && streamChatId) refreshActivity(streamChatId);
         }
       }
     },
@@ -1317,6 +1327,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
     const controller = new AbortController();
     abortRef.current = controller;
+    // Once readSSE has the body, its finally re-reads the dock on a dropped
+    // stream; before that, a failed connect has to do it here.
+    let reading = false;
     try {
       const res = await fetch(`/api/chats/${id}/stream`, {
         // Advertise what this bundle understands; the server answers with a
@@ -1327,18 +1340,21 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       });
       if (!res.ok || !res.body) {
         setStreaming(false);
+        if (id) refreshActivity(id);
         return;
       }
+      reading = true;
       await readSSE(res.body);
     } catch (err: any) {
       if (err.name !== "AbortError") {
         setNetworkError("network error");
         setStreaming(false);
+        if (!reading && id) refreshActivity(id);
       }
     } finally {
       abortRef.current = null;
     }
-  }, [id, readSSE]);
+  }, [id, readSSE, refreshActivity]);
 
   // Auto-connect to active sessions when the global session registry reports activity.
   // This replaces the old one-shot checkSessionStatus() call with a reactive approach:
@@ -1401,8 +1417,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         abortRef.current.abort();
         abortRef.current = null;
       }
+      // The run tore down its activities with it. With streaming off nothing
+      // else polls, so a row left by a stream that never delivered the run's
+      // end would otherwise outlive the session.
+      if (id) refreshActivity(id);
     }
-  }, [globalSessionActive]);
+    // Keyed on the registry alone: `id` changing is the chat switch, which resets
+    // and re-reads on its own.
+  }, [globalSessionActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Tab resume: clean up stale SSE connections and refresh data.
   // When a tab is backgrounded, browsers kill fetch streams silently — the
@@ -2496,8 +2518,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   );
 
   /**
-   * Refetch the persisted transcript for a stopped run, without touching
-   * run state. Only a chat that exists server-side can be refetched — a
+   * Refetch the persisted transcript (and the dock) for a stopped run, without
+   * touching run state. Only a chat that exists server-side can be refetched — a
    * brand-new chat stopped during startup is still keyed by its temp tracking
    * id, which no record answers to.
    */
@@ -2528,8 +2550,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         })
         .catch(() => {})
         .finally(() => clearInFlightMessages());
+      refreshActivity(chatId);
     },
-    [id],
+    [id, refreshActivity],
   );
 
   /**
@@ -2628,6 +2651,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     getChat(id!).then((data) => {
       if (currentIdRef.current === id) setChat(data);
     });
+    refreshActivity(id!);
     const pendingSnapshot = capturePending();
     Promise.all([getMessages(id!), getPending(id!)]).then(([msgs, pending]) => {
       // Switched chats while the refetch was in flight — don't apply the old
