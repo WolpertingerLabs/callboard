@@ -33,10 +33,13 @@ import {
   clearChatDepth,
 } from "./session-callbacks.js";
 import { createLogger } from "../utils/logger.js";
+import type { SendMessageOptions } from "./claude.js";
 
 const log = createLogger("session-completion");
 
-type MessageSender = (opts: { prompt: string | AsyncIterable<unknown>; chatId?: string; maxTurns?: number }) => Promise<EventEmitter>;
+// The real options type, imported type-only: a value import would close the
+// cycle this indirection exists to break (the emitted JS has no import).
+type MessageSender = (opts: SendMessageOptions) => Promise<EventEmitter>;
 
 type ActiveSessionLookup = (chatId: string) => unknown | undefined;
 

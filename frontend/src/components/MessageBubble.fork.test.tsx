@@ -87,11 +87,37 @@ describe("MessageBubble fork affordance", () => {
     fireEvent.click(screen.getByText("Fork here"));
     // No argument => same-harness fork, which the backend serves from the
     // high-fidelity native-log path.
-    expect(onFork).toHaveBeenCalledWith(undefined);
+    expect(onFork).toHaveBeenCalledWith(message.timestamp, undefined);
 
     fireEvent.click(screen.getByTitle("Fork conversation from here"));
     fireEvent.click(screen.getByText("Codex"));
-    expect(onFork).toHaveBeenLastCalledWith("codex");
+    expect(onFork).toHaveBeenLastCalledWith(message.timestamp, "codex");
+  });
+
+  // Chat hands every bubble the same stable callback (so the memo holds); the
+  // bubble is what supplies the fork point.
+  it("forks at the timestamp of the message it renders, not a shared one", () => {
+    const onFork = vi.fn();
+    const later = { ...message, content: "a later reply", timestamp: "2026-01-01T00:05:00.000Z" } as ParsedMessage;
+    render(
+      <>
+        <MessageBubble message={message} onFork={onFork} forkCurrentProvider="claude-code" />
+        <MessageBubble message={later} onFork={onFork} forkCurrentProvider="claude-code" />
+      </>,
+    );
+
+    fireEvent.click(screen.getAllByTitle("Fork conversation from here")[1]);
+    fireEvent.click(screen.getByText("Fork here"));
+    expect(onFork).toHaveBeenCalledWith(later.timestamp, undefined);
+
+    fireEvent.click(screen.getAllByTitle("Fork conversation from here")[0]);
+    fireEvent.click(screen.getByText("Codex"));
+    expect(onFork).toHaveBeenLastCalledWith(message.timestamp, "codex");
+  });
+
+  it("renders no affordance for a message without a timestamp", () => {
+    const { container } = render(<MessageBubble message={{ ...message, timestamp: undefined } as ParsedMessage} onFork={vi.fn()} />);
+    expect(container.querySelector(".fork-affordance")).toBeNull();
   });
 
   it("closes the menu on an outside click", () => {

@@ -25,7 +25,6 @@ import { existsSync } from "fs";
 import type {
   AgentJobStep,
   ApprovalJobStep,
-  EffortLevel,
   JobRun,
   JobRunHistoryEntry,
   JobStep,
@@ -34,7 +33,6 @@ import type {
   ParallelJobStep,
   PollJobStep,
   SubJobStep,
-  UiAgentProviderKind,
 } from "shared";
 import { sessionRegistry, type SessionEvent } from "./session-registry.js";
 import {
@@ -67,6 +65,7 @@ import { getAgent, getAgentWorkspacePath } from "./agent-file-service.js";
 import { compileSystemPrompt } from "./claude-compiler.js";
 import { readChatSessionMessages, findChat, findChatIdByJobExecutionKey } from "../utils/chat-lookup.js";
 import { createLogger } from "../utils/logger.js";
+import type { SendMessageOptions } from "./claude.js";
 
 const log = createLogger("job-runner");
 
@@ -88,22 +87,9 @@ export interface JobContext {
   rootChatId?: string;
 }
 
-type MessageSender = (opts: {
-  prompt: AsyncIterable<unknown>;
-  folder?: string;
-  systemPrompt?: string;
-  agentAlias?: string;
-  maxTurns?: number;
-  defaultPermissions?: any;
-  triggered?: boolean;
-  triggeredBy?: "cron" | "event" | "trigger" | "tool" | "job";
-  provider?: UiAgentProviderKind;
-  model?: string;
-  effort?: EffortLevel;
-  jobContext?: JobContext;
-  requireExplicitCompletion?: boolean;
-  chatTitle?: string;
-}) => Promise<EventEmitter>;
+// The real options type, imported type-only: a value import would close the
+// cycle this indirection exists to break (the emitted JS has no import).
+type MessageSender = (opts: SendMessageOptions) => Promise<EventEmitter>;
 
 interface JobRunnerDeps {
   sendMessage: MessageSender;

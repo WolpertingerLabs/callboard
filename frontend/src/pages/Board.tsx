@@ -20,6 +20,7 @@ import SelectionBar from "../components/SelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
 import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { usePolling } from "../hooks/usePolling";
 
 /** A category's cards inside one status section. `label: null` is uncategorized. */
 type Group = { key: string; label: string | null; cards: CardSummary[] };
@@ -225,19 +226,7 @@ export default function Board() {
   // stopping bumps the session version, not metadataVersion), so poll the
   // cards every 15s as a safety net. Skipped while the tab is hidden; a
   // visibility change refreshes immediately to catch up.
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (!document.hidden) loadCards();
-    }, 15_000);
-    const onVisible = () => {
-      if (!document.hidden) loadCards();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [loadCards]);
+  usePolling(loadCards, 15_000);
 
   const open = cards.filter((c) => c.lifecycle === "open");
   // Sorted HERE rather than inline in the JSX, so the shift+click range order

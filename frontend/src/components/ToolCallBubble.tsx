@@ -1,5 +1,5 @@
 import { parseUiToolResult } from "./uiToolResult";
-import { useEffect, useState, useMemo } from "react";
+import { memo, useEffect, useState, useMemo } from "react";
 import { RotateCw, ChevronRight, ChevronDown } from "lucide-react";
 import type { ParsedMessage } from "../api";
 import { parseTodoItems, TodoList, MessageMetadata, ToolSourceBadge, ImageThumbnails } from "./MessageBubble";
@@ -77,7 +77,7 @@ export function formatElapsed(ms: number): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
-export default function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = false }: ToolCallBubbleProps) {
+function ToolCallBubble({ toolUse, toolResult, isRunning, backgroundPending = false }: ToolCallBubbleProps) {
   const [inputExpanded, setInputExpanded] = useState(false);
   const [resultExpanded, setResultExpanded] = useState(false);
   // Both kinds of "still going" get the clock and the spinner. For a background
@@ -255,3 +255,7 @@ export default function ToolCallBubble({ toolUse, toolResult, isRunning, backgro
     </div>
   );
 }
+
+// Memoized for the same reason as MessageBubble: Chat passes only stable
+// message references and primitives, so unchanged calls skip re-rendering.
+export default memo(ToolCallBubble);

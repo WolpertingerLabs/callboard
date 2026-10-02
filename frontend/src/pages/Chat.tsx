@@ -1457,9 +1457,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // has something to report. Without a poll the row would appear only on the
   // next unrelated event, i.e. usually after the thing it was describing had
   // already ended. Cheap (an in-memory read), and it stops with the run.
+  // Ticks are skipped while the tab is hidden; not usePolling, because the
+  // tab-resume handler above already refreshes activity on return and its
+  // catch-up would double that request.
   useEffect(() => {
     if (!streaming || !id) return;
-    const timer = setInterval(() => refreshActivity(id), 5000);
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "hidden") refreshActivity(id);
+    }, 5000);
     return () => clearInterval(timer);
   }, [streaming, id, refreshActivity]);
 
@@ -3700,14 +3705,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   // native session log where the provider supports it, and a
                   // cross-harness fork seeds the target from the parsed
                   // history.
-                  const msgTimestamp = item.message.timestamp;
-                  const canFork = item.message.type === "text" && !item.message.teamName && !!msgTimestamp && !!id && forkSourceProvider !== null;
+                  // `handleFork` is stable and takes the message's timestamp, so
+                  // the memoized bubble isn't handed a fresh closure per render.
+                  const canFork =
+                    item.message.type === "text" && !item.message.teamName && !!item.message.timestamp && !!id && forkSourceProvider !== null;
                   return (
                     <div key={item.originalIndex} data-message-index={item.originalIndex}>
                       <MessageBubble
                         message={item.message}
                         teamColorMap={teamColorMap}
-                        onFork={canFork ? (provider) => handleFork(msgTimestamp!, provider) : undefined}
+                        onFork={canFork ? handleFork : undefined}
                         forkCurrentProvider={forkSourceProvider ?? undefined}
                       />
                     </div>

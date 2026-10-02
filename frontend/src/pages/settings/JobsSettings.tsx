@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePolling } from "../../hooks/usePolling";
 import { Workflow, Plus, Pencil, Trash2, Play, ChevronDown, ChevronRight, RefreshCw, Download, Upload } from "lucide-react";
 import { listJobs, createJob, updateJob, deleteJob, spawnJob, listJobRuns, getJobExportUrl, importJob } from "../../api";
 import type { JobDefinition, JobDefinitionPayload, JobRunListItem } from "../../api";
@@ -157,13 +158,10 @@ export default function JobsSettings() {
     refreshRuns();
   }, [refreshJobs, refreshRuns]);
 
-  // Keep the runs table live while any run is active.
-  useEffect(() => {
-    const hasActive = runs.some((r) => !["succeeded", "failed", "cancelled"].includes(r.status));
-    if (!hasActive) return;
-    const interval = setInterval(refreshRuns, 5000);
-    return () => clearInterval(interval);
-  }, [runs, refreshRuns]);
+  // Keep the runs table live while any run is active. Keyed on the derived
+  // boolean, not `runs`, so each fetch doesn't tear down and rebuild the timer.
+  const hasActiveRuns = runs.some((r) => !["succeeded", "failed", "cancelled"].includes(r.status));
+  usePolling(refreshRuns, 5000, { enabled: hasActiveRuns });
 
   const handleSave = async () => {
     if (!editor) return;

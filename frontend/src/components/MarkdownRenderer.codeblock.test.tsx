@@ -80,6 +80,32 @@ describe("MarkdownRenderer code block copy button", () => {
     await waitFor(() => expect(button.querySelector(".lucide-check")).not.toBeNull());
   });
 
+  // The components map and plugin arrays must be module-stable: built inline,
+  // every render handed React a new `pre` component type, which remounted each
+  // code block — resetting the confirmation below on every stream event/poll.
+  it.each([
+    ["the same props", (rerender: (ui: React.ReactElement) => void) => rerender(<MarkdownRenderer content={FENCED} />)],
+    ["a new className", (rerender: (ui: React.ReactElement) => void) => rerender(<MarkdownRenderer content={FENCED} className="x" />)],
+    [
+      "streamed text appended after the block",
+      (rerender: (ui: React.ReactElement) => void) => rerender(<MarkdownRenderer content={`${FENCED}\n\nand more`} />),
+    ],
+  ])("keeps a code block mounted across a re-render with %s", async (_label, rerenderWith) => {
+    const { container, rerender } = render(<MarkdownRenderer content={FENCED} />);
+
+    const pre = container.querySelector("pre");
+    const button = screen.getByRole("button", { name: "Copy code" });
+    button.click();
+    await waitFor(() => expect(button.querySelector(".lucide-check")).not.toBeNull());
+
+    rerenderWith(rerender);
+
+    expect(container.querySelector("pre")).toBe(pre);
+    const after = screen.getByRole("button", { name: "Copy code" });
+    expect(after).toBe(button);
+    expect(after.querySelector(".lucide-check")).not.toBeNull();
+  });
+
   it("falls back to execCommand when the Clipboard API is unavailable", async () => {
     // Callboard is routinely served over plain HTTP on a LAN address, where
     // navigator.clipboard is absent entirely.

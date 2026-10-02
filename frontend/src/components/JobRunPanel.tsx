@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { usePolling } from "../hooks/usePolling";
 import { useNavigate } from "react-router-dom";
 import {
   CheckCircle2,
@@ -67,11 +68,9 @@ export default function JobRunPanel({ runId, compact, nested }: JobRunPanelProps
     refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    if (!run || TERMINAL_STATUSES.includes(run.status)) return;
-    const interval = setInterval(refresh, 4000);
-    return () => clearInterval(interval);
-  }, [run, refresh]);
+  // Keyed on the derived boolean, not `run`, so each fetch doesn't tear down
+  // and rebuild the timer.
+  usePolling(refresh, 4000, { enabled: !!run && !TERMINAL_STATUSES.includes(run.status) });
 
   const act = async (fn: () => Promise<JobRun>) => {
     setActing(true);

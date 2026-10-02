@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { usePolling } from "../../hooks/usePolling";
 import { Globe, ShieldAlert, Loader2, Check, Copy, ExternalLink, AlertTriangle, X } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getRemoteAccessStatus } from "../../api";
 import type { RemoteAccessStatus } from "../../api";
@@ -27,7 +28,6 @@ export default function RemoteAccessSettings() {
   const [copied, setCopied] = useState(false);
 
   const [status, setStatus] = useState<RemoteAccessStatus | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Load persisted settings ──────────────────────────────────────────
   useEffect(() => {
@@ -53,11 +53,9 @@ export default function RemoteAccessSettings() {
 
   useEffect(() => {
     refreshStatus();
-    pollRef.current = setInterval(refreshStatus, 3000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
   }, [refreshStatus]);
+
+  usePolling(refreshStatus, 3000);
 
   // ── Persist + apply ───────────────────────────────────────────────────
   const persist = async (nextEnabled: boolean) => {

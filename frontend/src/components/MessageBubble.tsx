@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
+import { memo, useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
 import { Check, GitFork, RotateCw, Square, X } from "lucide-react";
 import type { ForkProvider, ParsedMessage } from "../api";
 import { parseTaskList, type TaskListItem } from "shared/types/index.js";
@@ -392,11 +392,16 @@ interface Props {
   message: ParsedMessage;
   teamColorMap?: Map<string, number>;
   /**
-   * When set, shows a hover button that forks the conversation at this
-   * message. Called with no argument to fork within the current harness, or
-   * with a target harness to hand the conversation over to another engine.
+   * When set (and the message has a timestamp), shows a hover button that
+   * forks the conversation at this message. Called with the message's
+   * timestamp, plus no provider to fork within the current harness or a
+   * target harness to hand the conversation over to another engine.
+   *
+   * Takes the timestamp rather than closing over it so the parent can pass one
+   * stable callback to every bubble — a per-message closure would defeat the
+   * memo below.
    */
-  onFork?: (provider?: ForkProvider) => void;
+  onFork?: (timestamp: string, provider?: ForkProvider) => void;
   /** The harness this chat runs on — omitted from the "continue in" choices. */
   forkCurrentProvider?: ForkProvider;
 }
@@ -540,7 +545,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   );
 }
 
-export default function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code" }: Props) {
+function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code" }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
@@ -842,7 +847,9 @@ export default function MessageBubble({ message, teamColorMap, onFork, forkCurre
         }}
       >
         <MessageCopyButton text={message.content} />
-        {onFork && <ForkButton onFork={onFork} currentProvider={forkCurrentProvider} />}
+        {onFork && message.timestamp && (
+          <ForkButton onFork={(provider) => onFork(message.timestamp!, provider)} currentProvider={forkCurrentProvider} />
+        )}
         {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>
@@ -850,3 +857,8 @@ export default function MessageBubble({ message, teamColorMap, onFork, forkCurre
     </div>
   );
 }
+
+// Memoized: Chat re-renders on every stream event, poll and composer keystroke,
+// and a long transcript re-rendering (and re-parsing its markdown) each time is
+// the dominant cost. Chat keeps every prop identity-stable between refetches.
+export default memo(MessageBubble);

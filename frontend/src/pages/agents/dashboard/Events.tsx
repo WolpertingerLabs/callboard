@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 // useOutletContext removed — agent is now passed as a prop
 import { Radio, Loader2, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
+import { usePolling } from "../../../hooks/usePolling";
 import { getProxyEvents, getProxyIngestors } from "../../../api";
 import type { StoredEvent, IngestorStatus, AgentConfig } from "../../../api";
 
@@ -46,7 +47,6 @@ export default function Events({ agent }: { agent: AgentConfig }) {
   const [ingestors, setIngestors] = useState<IngestorStatus[]>([]);
   const [refreshingIngestors, setRefreshingIngestors] = useState(false);
   const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const hasKeys = !!agent.mcpKeyAlias;
 
@@ -67,26 +67,22 @@ export default function Events({ agent }: { agent: AgentConfig }) {
       .catch(() => setIngestors([]));
   }, [hasKeys, agent.mcpKeyAlias]);
 
-  // Poll events on interval
+  // Fetch events now, then poll on an interval (paused while the tab is hidden)
+  const fetchEvents = useCallback(() => {
+    getProxyEvents(agent.mcpKeyAlias!, 100)
+      .then((data) => {
+        setEvents(data.events);
+        setSources(data.sources);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [agent.mcpKeyAlias]);
+
   useEffect(() => {
-    if (!hasKeys) return;
-    const fetchEvents = () => {
-      getProxyEvents(agent.mcpKeyAlias!, 100)
-        .then((data) => {
-          setEvents(data.events);
-          setSources(data.sources);
-          setLoading(false);
-        })
-        .catch(() => setLoading(false));
-    };
+    if (hasKeys) fetchEvents();
+  }, [hasKeys, fetchEvents]);
 
-    fetchEvents();
-    intervalRef.current = setInterval(fetchEvents, POLL_INTERVAL);
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [hasKeys, agent.mcpKeyAlias]);
+  usePolling(fetchEvents, POLL_INTERVAL, { enabled: hasKeys });
 
   // Filter events by active source
   const filteredEvents = activeSource ? events.filter((e) => e.source === activeSource) : events;

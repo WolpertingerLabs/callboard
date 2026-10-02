@@ -665,7 +665,7 @@ export function taskListStreamEvent(items: TaskListItem[]): StreamEvent {
 type PromptImageMetadata = { buffer: Buffer; mimeType: string; storagePath?: string };
 
 function buildFormattedPrompt(
-  prompt: string | any,
+  prompt: string | AsyncIterable<unknown>,
   imageMetadata?: PromptImageMetadata[],
   providerKind: AgentProviderKind = "claude-code",
 ): string | AsyncIterable<any> {
@@ -676,12 +676,16 @@ function buildFormattedPrompt(
   // Build content array for multimodal message (Anthropic API format)
   const content: any[] = [];
 
-  if (prompt && prompt.trim()) {
+  // Images only ever arrive with a text prompt (the composer path); an
+  // already-structured iterable prompt has nothing to merge them into.
+  if (typeof prompt !== "string") {
+    throw new Error("buildFormattedPrompt: images cannot be attached to an AsyncIterable prompt");
+  }
+  if (prompt.trim()) {
     content.push({ type: "text", text: prompt.trim() });
   }
 
   for (const { buffer, mimeType, storagePath } of imageMetadata) {
-    const base64 = buffer.toString("base64");
     if (providerKind === "codex" && storagePath) {
       // Codex consumes images as `local_image` paths. Keep the durable
       // callboard image-store path in the intermediate block so the Codex
@@ -694,7 +698,7 @@ function buildFormattedPrompt(
     } else {
       content.push({
         type: "image",
-        source: { type: "base64", media_type: mimeType, data: base64 },
+        source: { type: "base64", media_type: mimeType, data: buffer.toString("base64") },
       });
     }
   }
@@ -836,9 +840,9 @@ export function buildCanUseTool(
   };
 }
 
-interface SendMessageOptions {
+export interface SendMessageOptions {
   chatView?: ChatViewBinding;
-  prompt: string | any;
+  prompt: string | AsyncIterable<unknown>;
   imageMetadata?: PromptImageMetadata[];
   activePlugins?: string[];
   /** For existing chats: the chat ID to continue */
