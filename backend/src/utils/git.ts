@@ -866,9 +866,17 @@ export interface EnsuredWorktree {
 }
 
 /**
- * {@link ensureWorktree}, but reporting whether the worktree was created here
- * or reused. Callers that persist worktree provenance need the distinction;
- * everyone else wants the path and can use the wrapper below.
+ * Create or reuse a git worktree as a sibling directory of the repo.
+ * Worktree path: [repo-parent]/[repo-name].[sanitized-branch]
+ *
+ * If the worktree already exists at the expected path, returns the path without
+ * creating. Reports whether the worktree was created here or reused, which
+ * callers that persist worktree provenance need.
+ *
+ * @param repoDir - The original repository directory
+ * @param branch - Branch name to checkout in the worktree
+ * @param createBranch - If true and branch doesn't exist, create it from baseBranch
+ * @param baseBranch - Base branch for new branch creation
  */
 export function ensureWorktreeDetailed(repoDir: string, branch: string, createBranch: boolean, baseBranch?: string): EnsuredWorktree {
   validateGitRef(branch);
@@ -951,22 +959,6 @@ function hasGitDirectory(path: string): boolean {
   } catch {
     return false;
   }
-}
-
-/**
- * Create or reuse a git worktree as a sibling directory of the repo.
- * Worktree path: [repo-parent]/[repo-name].[sanitized-branch]
- *
- * If the worktree already exists at the expected path, returns the path without creating.
- *
- * @param repoDir - The original repository directory
- * @param branch - Branch name to checkout in the worktree
- * @param createBranch - If true and branch doesn't exist, create it from baseBranch
- * @param baseBranch - Base branch for new branch creation
- * @returns The absolute path to the worktree directory
- */
-export function ensureWorktree(repoDir: string, branch: string, createBranch: boolean, baseBranch?: string): string {
-  return ensureWorktreeDetailed(repoDir, branch, createBranch, baseBranch).path;
 }
 
 /**

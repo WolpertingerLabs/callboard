@@ -40,13 +40,3 @@ export function findSessionLogPath(sessionId: string, metadata?: string | null):
   return resolveSessionLog(sessionId, metadata)?.logPath ?? null;
 }
 
-/**
- * Find all subagent/child-session files across all registered providers.
- */
-export function findSubagentFiles(sessionId: string): { agentId: string; filePath: string }[] {
-  for (const provider of getSessionProviders()) {
-    const files = provider.findSubagentFiles(sessionId);
-    if (files.length > 0) return files;
-  }
-  return [];
-}

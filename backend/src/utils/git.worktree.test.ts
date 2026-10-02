@@ -67,7 +67,7 @@ describe("ensureWorktreeDetailed", () => {
   });
 
   it("reports the main checkout as one when the branch is already checked out there", () => {
-    // `main` lives in the main checkout — ensureWorktree hands back that path
+    // `main` lives in the main checkout — ensureWorktreeDetailed hands back that path
     // rather than failing. It is emphatically not ours to remove, and it is not
     // a worktree: a record written from this resolution must say so.
     const ensured = ensureWorktreeDetailed(repoDir, "main", false);

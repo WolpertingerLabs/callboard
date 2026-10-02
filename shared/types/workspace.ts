@@ -447,7 +447,7 @@ export interface ArchiveWorkspaceResult {
 /**
  * Which Callboard worktree naming convention a path looks like.
  *
- * A GUESS, always. `current` is the layout `ensureWorktree` produces today
+ * A GUESS, always. `current` is the layout `ensureWorktreeDetailed` produces today
  * (`<repo-parent>/<repo-name>.<branch-with-slashes-hyphenated>`); `legacy` is
  * the older `<repo-name>-wt-<suffix>` form. Neither proves Callboard created
  * anything — a user can make either by hand, and Callboard may have made a
