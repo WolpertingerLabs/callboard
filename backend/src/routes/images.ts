@@ -1,5 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
+import { MULTIPART_FIELD_LIMITS, withUploadErrors } from "../utils/multipart-limits.js";
 import { ImageStorageService, type StoredImage } from "../services/image-storage.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { updateChatWithImages } from "../services/image-metadata.js";
@@ -12,6 +13,7 @@ const upload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB
     files: 10, // Max 10 files per request
+    ...MULTIPART_FIELD_LIMITS,
   },
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
@@ -23,11 +25,16 @@ const upload = multer({
   },
 });
 
+const uploadImages = withUploadErrors(upload.array("images", 10), {
+  tooLarge: "Image too large; the limit is 10MB per image",
+  tooMany: { field: "images", message: "Too many images; at most 10 per upload" },
+});
+
 /**
  * Upload images for a chat
  * POST /api/chats/:chatId/images
  */
-imagesRouter.post("/:chatId/images", upload.array("images", 10), async (req, res) => {
+imagesRouter.post("/:chatId/images", uploadImages, async (req, res) => {
   // #swagger.tags = ['Images']
   // #swagger.summary = 'Upload images for a chat'
   // #swagger.description = 'Upload up to 10 images (max 10MB each) for a chat. Accepts PNG, JPEG, GIF, and WebP. Uses multipart/form-data with field name "images".'
@@ -92,7 +99,7 @@ imagesRouter.post("/:chatId/images", upload.array("images", 10), async (req, res
  * Upload images without associating them to a chat (e.g. for new chat creation).
  * POST /api/images/upload
  */
-imagesRouter.post("/upload", upload.array("images", 10), async (req, res) => {
+imagesRouter.post("/upload", uploadImages, async (req, res) => {
   // #swagger.tags = ['Images']
   // #swagger.summary = 'Upload images (no chat required)'
   // #swagger.description = 'Upload up to 10 images (max 10MB each) without associating them to a chat. Returns image IDs that can be passed to /new/message. Accepts PNG, JPEG, GIF, and WebP via multipart/form-data with field name "images".'
