@@ -140,7 +140,7 @@ export function readEntryData(entry: AdmZip.IZipEntry): Buffer {
  * test can inject a failure at any single step or give the writer a
  * case-insensitive view of the disk.
  */
-export const workspaceFs = { lstatSync, realpathSync, mkdirSync, rmdirSync, openSync, renameSync, linkSync, unlinkSync };
+export const workspaceFs = { lstatSync, realpathSync, mkdirSync, rmdirSync, rmSync, openSync, renameSync, linkSync, unlinkSync };
 
 function lstatOrNull(path: string): Stats | null {
   try {
@@ -155,8 +155,8 @@ interface PlannedWrite {
   target: string;
   data: Buffer;
   existing: boolean;
-  /** Permission bits for the new file: the replaced file's (minus setuid/setgid/sticky), else 0o644. */
-  mode: number;
+  /** A replaced file's permission bits minus setuid/setgid/sticky; unset for a new file, which gets 0o666 & ~umask like writeFileSync. */
+  mode?: number;
 }
 
 export interface WorkspacePlan {
@@ -201,7 +201,7 @@ export function planWorkspaceWrites(root: string, files: [relativePath: string, 
     const st = lstatOrNull(target);
     if (st?.isSymbolicLink()) throw new Error(`${relativePath} is a symbolic link`);
     if (st && !st.isFile()) throw new Error(`${relativePath} exists and is not a regular file`);
-    writes.push({ target, data, existing: st !== null, mode: st ? st.mode & 0o777 : 0o644 });
+    writes.push({ target, data, existing: st !== null, mode: st ? st.mode & 0o777 : undefined });
   }
   return { root, rootExists: rootStat !== null, dirs: [...dirs], writes };
 }
@@ -212,11 +212,21 @@ function sideName(target: string, kind: "tmp" | "backup"): string {
 }
 
 /** Write `data` to a fresh temp sibling of `target` (O_EXCL|O_NOFOLLOW) and return its path. */
-function writeTemp(target: string, data: Buffer, mode: number): string {
+const CREATE_EXCLUSIVE = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
+
+/** Filesystems without hard links (vfat, some FUSE/SMB mounts) refuse link() with one of these. */
+const NO_HARD_LINKS = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
+
+/**
+ * Write `data` to a fresh temp sibling of `target` (O_EXCL|O_NOFOLLOW) and
+ * return its path. Created 0o666 so the umask applies, as with writeFileSync;
+ * `mode`, when given, is a replaced file's bits and is set exactly.
+ */
+function writeTemp(target: string, data: Buffer, mode: number | undefined): string {
   const temp = sideName(target, "tmp");
-  const fd = workspaceFs.openSync(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+  const fd = workspaceFs.openSync(temp, CREATE_EXCLUSIVE, 0o666);
   try {
-    fchmodSync(fd, mode);
+    if (mode !== undefined) fchmodSync(fd, mode);
     writeFileSync(fd, data);
   } catch (error) {
     closeSync(fd);
@@ -263,7 +273,8 @@ export interface AppliedWorkspace {
  *    planted hard link to a file outside the workspace is never written
  *    through, and the archive's permission bits never apply;
  *  - a new file is published with link(temp, target), which fails instead of
- *    clobbering something that appeared since the plan.
+ *    clobbering something that appeared since the plan; where the filesystem
+ *    has no hard links, it is created directly with O_EXCL instead.
  *
  * Each change is recorded only once it has happened. On failure the changes
  * are undone newest-first and a WorkspaceWriteError says what, if anything,
@@ -323,8 +334,22 @@ export function applyWorkspacePlan(plan: WorkspacePlan): AppliedWorkspace {
           changes.push({ kind: "replaced", path: target, backup });
           workspaceFs.renameSync(temp, target);
         } else {
-          workspaceFs.linkSync(temp, target);
-          changes.push({ kind: "created", path: target });
+          try {
+            workspaceFs.linkSync(temp, target);
+            changes.push({ kind: "created", path: target });
+          } catch (error) {
+            if (!NO_HARD_LINKS.has((error as NodeJS.ErrnoException).code ?? "")) throw error;
+            // No hard links here: create the target itself, still exclusively, so
+            // nothing that appeared since the plan is clobbered. There is no
+            // original to lose; only the atomic publish is given up.
+            const fd = workspaceFs.openSync(target, CREATE_EXCLUSIVE, 0o666);
+            changes.push({ kind: "created", path: target });
+            try {
+              writeFileSync(fd, data);
+            } finally {
+              closeSync(fd);
+            }
+          }
         }
       } finally {
         // Gone already when it was renamed into place.
@@ -609,8 +634,21 @@ agentExportImportRouter.post("/import", withUploadErrors(upload.single("file"), 
   try {
     createAgent(agentConfig);
   } catch (error) {
-    if (!agentDirExisted) rmSync(getAgentDataDir(alias), { recursive: true, force: true });
-    const failure = new WorkspaceWriteError(error as Error, applied.rollback());
+    // Workspace first: a failure removing the agent dir must not skip it.
+    let failures: RollbackFailure[];
+    try {
+      failures = applied.rollback();
+    } catch (rollbackError) {
+      failures = [{ path: ".", error: (rollbackError as Error).message }];
+    }
+    if (!agentDirExisted) {
+      try {
+        workspaceFs.rmSync(getAgentDataDir(alias), { recursive: true, force: true });
+      } catch (rmError) {
+        log.error(`Import: could not remove partial agent dir for ${alias}: ${(rmError as Error).message}`);
+      }
+    }
+    const failure = new WorkspaceWriteError(error as Error, failures);
     log.error(`Import failed creating ${alias}: ${failure.message}`);
     res.status(500).json(workspaceFailureBody(failure));
     return;

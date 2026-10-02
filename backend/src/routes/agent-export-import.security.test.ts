@@ -10,6 +10,7 @@ import express from "express";
 import AdmZip from "adm-zip";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   linkSync,
   lstatSync,
@@ -143,7 +144,40 @@ describe("agent import: hostile archives", () => {
     expect((await upload(zip.toBuffer())).status).toBe(201);
     const mode = statSync(join(WORKSPACES_DIR, "probe", "SOUL.md")).mode;
     expect(mode & 0o7000).toBe(0);
-    expect(mode & 0o022).toBe(0); // 0o644 minus umask — never group/world-writable
+  });
+
+  /** The mode writeFileSync gives a new file under this process's umask. */
+  function writeFileSyncMode(): number {
+    const probe = join(OUTSIDE, "umask-probe");
+    writeFileSync(probe, "");
+    const mode = statSync(probe).mode & 0o777;
+    rmSync(probe);
+    return mode;
+  }
+
+  it("creates new files with writeFileSync's mode, so the process umask applies", async () => {
+    const previous = process.umask(0o077);
+    try {
+      expect(writeFileSyncMode()).toBe(0o600);
+      const zip = baseZip();
+      zip.addFile("workspace/SOUL.md", Buffer.from("x"));
+      expect((await upload(zip.toBuffer())).status).toBe(201);
+      expect(statSync(join(WORKSPACES_DIR, "probe", "SOUL.md")).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previous);
+    }
+  });
+
+  it("a replaced file keeps its own mode, not the umask's", async () => {
+    const ws = join(WORKSPACES_DIR, "probe");
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, "SOUL.md"), "old");
+    chmodSync(join(ws, "SOUL.md"), 0o640);
+    const zip = baseZip();
+    zip.addFile("workspace/SOUL.md", Buffer.from("new"));
+    expect((await upload(zip.toBuffer())).status).toBe(201);
+    expect(readFileSync(join(ws, "SOUL.md"), "utf8")).toBe("new");
+    expect(statSync(join(ws, "SOUL.md")).mode & 0o7777).toBe(0o640);
   });
 
   it.each([
@@ -322,11 +356,11 @@ describe("agent import: a refused import leaves the workspace byte-identical", (
   }
 
   /** Make `op` throw when it touches a file whose name starts with `name` (and `when` agrees). */
-  function failOn(name: string, op: FsOp, when: (paths: string[]) => boolean = () => true): void {
+  function failOn(name: string, op: FsOp, when: (paths: string[]) => boolean = () => true, code = "EIO"): void {
     wrapFs(op, (inner, args) => {
       const paths = args.filter((a): a is string => typeof a === "string");
       if (paths.some((p) => basename(p).replace(/^\./, "").toLowerCase().startsWith(name.toLowerCase())) && when(paths)) {
-        throw Object.assign(new Error(`injected ${op} failure`), { code: "EIO" });
+        throw Object.assign(new Error(`injected ${op} failure`), { code });
       }
       return inner(...args);
     });
@@ -378,6 +412,46 @@ describe("agent import: a refused import leaves the workspace byte-identical", (
     const body = await expectUntouched(partialZip({ "workspace/memory/new.md": "m", "workspace/zz.md": "z" }), 500);
     expect(body.error).toMatch(/injected openSync failure.*nothing was changed/);
     expect(existsSync(join(ws(), "memory"))).toBe(false);
+  });
+
+  it("a failed temp->target rename puts the original back", async () => {
+    seedWorkspace();
+    writeFileSync(join(ws(), "SOUL.md"), "precious original");
+    failOn("SOUL.md", "renameSync", ([from]) => basename(from).includes(".import-tmp-"));
+    const before = snapshot(ws());
+    const res = await upload(partialZip({}));
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/injected renameSync failure.*nothing was changed/);
+    expect(snapshot(ws())).toEqual(before);
+  });
+
+  it("where link() is unsupported (EPERM), new files are created directly and the import succeeds", async () => {
+    seedWorkspace();
+    failOn("", "linkSync", () => true, "EPERM");
+    const res = await upload(partialZip({ "workspace/memory/m.md": "m" }));
+    expect(res.status).toBe(201);
+    expect(readFileSync(join(ws(), "A.md"), "utf8")).toBe("A from zip");
+    expect(readFileSync(join(ws(), "SOUL.md"), "utf8")).toBe("SOUL from zip");
+    expect(readFileSync(join(ws(), "memory", "m.md"), "utf8")).toBe("m");
+    expect((readdirSync(ws(), { recursive: true }) as string[]).filter((n) => n.includes(".import-"))).toEqual([]);
+    expect(agentCreated("partial")).toBe(true);
+  });
+
+  it("a pre-existing agent dir survives a createAgent failure", async () => {
+    seedWorkspace();
+    mkdirSync(join(DATA, "agents", "partial"), { recursive: true });
+    writeFileSync(join(DATA, "agents", "partial", "keep.txt"), "keep");
+    fileService.createAgentFailure = Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    expect((await upload(partialZip({}))).status).toBe(500);
+    expect(readFileSync(join(DATA, "agents", "partial", "keep.txt"), "utf8")).toBe("keep");
+  });
+
+  it("a createAgent failure still rolls back and answers when removing the agent dir also fails", async () => {
+    seedWorkspace();
+    fileService.createAgentFailure = Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    failOn("partial", "rmSync");
+    const body = await expectUntouched(partialZip({ "workspace/memory/new.md": "m" }), 500);
+    expect(body.error).toMatch(/ENOSPC.*nothing was changed/);
   });
 
   it("a createAgent failure after the workspace writes rolls them back", async () => {
