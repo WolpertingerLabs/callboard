@@ -405,7 +405,7 @@ function worktreeRecordMatchesDisk(workspace: Workspace): boolean {
     return false;
   }
   // Degenerate case: a record whose cwd is its own repoPath, which is what
-  // ensureWorktree handing back the *main* checkout used to produce. The write
+  // ensureWorktreeDetailed handing back the *main* checkout used to produce. The write
   // path now records those as `local` ({@link recordMainCheckoutWorkspace}), so
   // this covers the ones already on disk — they are not migrated. The directory
   // is not a worktree of anything, so existence of the repo is all there is to

@@ -108,7 +108,7 @@ writeFileSync(join(repoDir, ".gitignore"), ".env\n*.sqlite\nnode_modules/\n");
 git(["add", ".gitignore"], repoDir);
 git(["commit", "-q", "-m", "ignore local state"], repoDir);
 
-/** Where ensureWorktree would put a worktree for `branch`. */
+/** Where ensureWorktreeDetailed would put a worktree for `branch`. */
 function worktreePathFor(branch: string): string {
   return join(gitRoot, `repo.${branch.replace(/\//g, "-")}`);
 }

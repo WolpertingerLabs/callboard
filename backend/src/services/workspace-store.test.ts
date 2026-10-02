@@ -51,7 +51,7 @@ function git(args: string[], cwd: string): void {
 execFileSync("git", ["init", "-q", "-b", "main", repoDir], { stdio: "pipe" });
 git(["commit", "-q", "--allow-empty", "-m", "init"], repoDir);
 
-/** The path ensureWorktree would pick for a branch — `/` sanitized to `-`. */
+/** The path ensureWorktreeDetailed would pick for a branch — `/` sanitized to `-`. */
 function worktreePathFor(branch: string): string {
   return join(gitRoot, `repo.${branch.replace(/\//g, "-")}`);
 }
@@ -437,7 +437,7 @@ describe("recordWorktreeWorkspace revalidation", () => {
     mkdirSync(cwd, { recursive: true });
     writeFileSync(join(cwd, "notes.md"), "the user's own directory\n");
 
-    // New chat, same request. ensureWorktree sees the directory and reuses it,
+    // New chat, same request. ensureWorktreeDetailed sees the directory and reuses it,
     // so `created` is false.
     const resolved = resolveBranch({ folder: repoDir, baseBranch: "feat/gap", useWorktree: true });
     expect(resolved.ok).toBe(true);
