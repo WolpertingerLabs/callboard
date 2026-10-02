@@ -38,7 +38,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ARTIFACT_BRIDGE_LIMITS, ARTIFACT_BRIDGE_READ_RECHECK_MS, ARTIFACT_BRIDGE_WRITE_RECHECK_MS } from "shared/types/index.js";
-import type { Artifact } from "shared/types/index.js";
+import type { Artifact, ArtifactBinding } from "shared/types/index.js";
 import type { ArtifactStorageAccess, RenderArtifactToolResult } from "shared/types/index.js";
 import { listenRaw, type RawServer } from "../backend/src/routes/__fixtures__/raw-http.js";
 
@@ -49,10 +49,10 @@ const { storageRouter } = await import("../backend/src/routes/storage.js");
 const { artifactsRouter } = await import("../backend/src/routes/artifacts.js");
 const storage = await import("../backend/src/services/storage-service.js");
 const artifacts = await import("../backend/src/services/artifact-service.js");
-const { createArtifactBridge, RATE_LIMITED } = await import("../frontend/src/components/artifactBridge.js");
-const { recheckGrant } = await import("../frontend/src/components/artifactGrant.js");
+const { createArtifactBridge, RATE_LIMITED, restBridgeApi } = await import("../frontend/src/components/artifactBridge.js");
+const { bindingRef, recheckGrant } = await import("../frontend/src/components/artifactGrant.js");
 const { createRequestBudget, createSharedLookup } = await import("../frontend/src/components/artifactBudget.js");
-const { getArtifact } = await import("../frontend/src/api.js");
+const { getArtifact, getArtifactBinding } = await import("../frontend/src/api.js");
 
 // 1×1 transparent PNG.
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -72,7 +72,8 @@ beforeAll(async () => {
   app.use("/api/artifacts", artifactsRouter);
   server = await listenRaw(app);
 
-  await storage.createStorageKey("deck");
+  // The key lists every artifact mounted on it below — an unlisted one would not bind at all.
+  await storage.createStorageKey("deck", undefined, ["study", "live-a", "live-b", "live-c", "live-d"]);
   await storage.saveStorageItem("deck", "deck.json", Buffer.from(JSON.stringify(DECK)));
   await storage.saveStorageItem("deck", "img-c1.png", Buffer.from(PNG_B64, "base64"));
   await storage.createStorageKey("other");
@@ -144,9 +145,10 @@ function runDocument(frameWindow: Record<string, unknown>, code: string, now?: (
  * that bridge's token. The frame's `window.parent.postMessage` delivers to the
  * host as a browser would: source = the frame's window, ports = the transfer.
  * The live re-check is the renderer's real one (`recheckGrant`) against the
- * real artifact route, pinned to the sha256 the page was served for, through a
- * shared lookup seeded — as the renderer seeds it — by a judgement just before
- * mounting. Each mount gets its own budget and lookup (in the browser they are
+ * real artifact route (the binding route for a bound mount, so the key's
+ * artifact list is re-read too), pinned to the sha256 the page was served for,
+ * through shared lookups seeded — as the renderer seeds them — by a judgement
+ * just before mounting. Each mount gets its own budget and lookup (in the browser they are
  * the tab's), so cases do not drain each other.
  */
 async function mount(storageKey: string | null, access: ArtifactStorageAccess, id = "study", now?: () => number) {
@@ -176,14 +178,18 @@ async function mount(storageKey: string | null, access: ArtifactStorageAccess, i
     },
   };
   const clock = now ?? (() => Date.now());
-  const lookup = createSharedLookup<Artifact>((a) => getArtifact(a), clock);
+  const lookups = {
+    artifact: createSharedLookup<Artifact>((a) => getArtifact(a), clock),
+    binding: createSharedLookup<ArtifactBinding>((ref) => getArtifactBinding(ref.split("/")[0], ref.split("/")[1]), clock),
+  };
   const startedAt = clock();
-  lookup.seed(id, startedAt, await getArtifact(id));
+  if (storageKey) lookups.binding.seed(bindingRef(id, storageKey), startedAt, await getArtifactBinding(id, storageKey));
+  else lookups.artifact.seed(id, startedAt, await getArtifact(id));
   const bridge = createArtifactBridge({
     getFrameWindow: () => frameWindow as unknown as Window,
     storageKey,
     access,
-    recheck: (maxAgeMs, budget) => recheckGrant(result, pin, maxAgeMs, budget, lookup),
+    recheck: (maxAgeMs, budget) => recheckGrant(result, pin, maxAgeMs, budget, lookups),
     budget: createRequestBudget(clock),
   });
   runDocument(frameWindow, await servedShim(bridge.token, id), now);
@@ -400,7 +406,7 @@ describe("the live grant: re-checked against the real artifact route, while moun
     t += ARTIFACT_BRIDGE_READ_RECHECK_MS;
     apiCalls.length = 0;
     await cb.storage.read("deck.json");
-    expect(apiCalls).toEqual(["GET /api/artifacts/live-d", "GET /api/storage/deck/items/deck.json"]);
+    expect(apiCalls).toEqual(["GET /api/artifacts/live-d/binding/deck", "GET /api/storage/deck/items/deck.json"]);
     // That check just started: a write may rely on it.
     apiCalls.length = 0;
     await cb.storage.write("live-d.txt", "x");
@@ -408,7 +414,7 @@ describe("the live grant: re-checked against the real artifact route, while moun
     t += ARTIFACT_BRIDGE_WRITE_RECHECK_MS;
     apiCalls.length = 0;
     await cb.storage.write("live-d.txt", "y");
-    expect(apiCalls).toEqual(["GET /api/artifacts/live-d", "PUT /api/storage/deck/items/live-d.txt"]);
+    expect(apiCalls).toEqual(["GET /api/artifacts/live-d/binding/deck", "PUT /api/storage/deck/items/live-d.txt"]);
     await storage.deleteStorageItem("deck", "live-d.txt");
   });
 
@@ -451,7 +457,7 @@ describe("the live grant: re-checked against the real artifact route, while moun
     const refill = Math.floor(10 * ARTIFACT_BRIDGE_LIMITS.refillPerSecond);
     expect(ok).toBe(refill - 1);
     expect(apiCalls).toHaveLength(ARTIFACT_BRIDGE_LIMITS.burst + refill);
-    expect(apiCalls[ARTIFACT_BRIDGE_LIMITS.burst]).toBe("GET /api/artifacts/study");
+    expect(apiCalls[ARTIFACT_BRIDGE_LIMITS.burst]).toBe("GET /api/artifacts/study/binding/deck");
   });
 
   it("Promise.all over more reads than the in-flight cap succeeds: the shim queues, the host never sees more than the cap", async () => {
@@ -460,3 +466,108 @@ describe("the live grant: re-checked against the real artifact route, while moun
     expect(new Set(texts)).toEqual(new Set([JSON.stringify(DECK)]));
   });
 });
+
+describe("the key's artifact list: set by the user or an agent, never by the artifact", () => {
+  const patchKey = (key: string, body: unknown) =>
+    realFetch(`${server.origin}/api/storage/${key}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  it("taken off the key's list while mounted (Settings → Storage PATCH): the next write is refused and never reaches storage; reads stop too", async () => {
+    await artifacts.saveArtifact({ id: "live-e", name: "live-e", contentType: "html", storageAccess: "readwrite", content: "<html><head></head></html>" }, "create");
+    await storage.createStorageKey("listed", undefined, ["live-e"]);
+    let t = 3_000_000;
+    const { cb, bridge } = await mount("listed", "readwrite", "live-e", () => t);
+    await cb.storage.write("e.txt", "1");
+    expect((await patchKey("listed", { artifacts: ["someone-else"] })).status).toBe(200);
+    t += ARTIFACT_BRIDGE_WRITE_RECHECK_MS;
+    await expect(cb.storage.write("e.txt", "2")).rejects.toThrow(/revoked/);
+    expect(bridge.access).toBe("none");
+    await expect(cb.storage.read("e.txt")).rejects.toThrow(/no storage access/);
+    expect(storage.readStorageItemBytes("listed", "e.txt").data.toString()).toBe("1");
+  });
+
+  it("a key that does not list the artifact is never re-granted by a live check, and one never listed binds nothing from the first check", async () => {
+    await artifacts.saveArtifact({ id: "live-f", name: "live-f", contentType: "html", storageAccess: "readwrite", content: "<html><head></head></html>" }, "create");
+    let t = 4_000_000;
+    // "other" has no list: the recheck — the same judgement the renderer makes before mounting — says none.
+    const result: RenderArtifactToolResult = {
+      type: "render_artifact",
+      artifact_id: "live-f",
+      version: 1,
+      sha256: pinOf("live-f"),
+      name: "live-f",
+      content_type: "html",
+      storage_key: "other",
+      storage_access: "readwrite",
+    };
+    const lookups = {
+      artifact: createSharedLookup<Artifact>((a) => getArtifact(a), () => t),
+      binding: createSharedLookup<ArtifactBinding>((ref) => getArtifactBinding(ref.split("/")[0], ref.split("/")[1]), () => t),
+    };
+    await expect(recheckGrant(result, pinOf("live-f"), 0, null, lookups)).resolves.toBe("none");
+    expect((await patchKey("other", { artifacts: ["live-f"] })).status).toBe(200);
+    t += 1;
+    await expect(recheckGrant(result, pinOf("live-f"), 0, null, lookups)).resolves.toBe("readwrite");
+    expect((await patchKey("other", { artifacts: [] })).status).toBe(200);
+  });
+
+  it("no bridge op can change a key's metadata: every op, legitimate or forged, leaves description and artifacts as they were", async () => {
+    await artifacts.saveArtifact({ id: "meddler", name: "meddler", contentType: "html", storageAccess: "readwrite", content: "<html><head></head></html>" }, "create");
+    await storage.createStorageKey("guarded", "Guarded key", ["meddler"]);
+    const before = storage.getStorageKey("guarded");
+    // The host's storage surface has exactly the item-level operations — nothing that names key metadata.
+    expect(Object.keys(restBridgeApi).sort()).toEqual(["list", "readBlob", "readText", "remove", "write"]);
+
+    const { cb, bridge } = await mount("guarded", "readwrite", "meddler");
+    apiCalls.length = 0;
+    // Everything the shim offers, including item names that look like key metadata.
+    await cb.storage.list();
+    await cb.storage.write("meta.json", { artifacts: ["evil"], description: "pwned" });
+    await cb.storage.write("artifacts", "evil");
+    await cb.storage.read("meta.json", { as: "json" });
+    await cb.storage.delete("artifacts");
+    await expect(cb.storage.write("../meta.json", "x")).rejects.toThrow();
+    await bridge.settled();
+
+    // A hostile document that skips the shim: its own hello with the real token, then raw requests for
+    // operations and fields the bridge does not have (the host is the boundary, not the shim).
+    const replies: { id?: string; ok?: boolean; error?: string }[] = [];
+    const frameWindow = {};
+    const hostile = createArtifactBridge({ getFrameWindow: () => frameWindow as unknown as Window, storageKey: "guarded", access: "readwrite" });
+    const { port1, port2 } = new MessageChannel();
+    openPorts.push(port1, port2);
+    port1.on("message", (m) => replies.push(m));
+    hostile.handleMessage({ data: { __callboard: "artifact-bridge-hello", token: hostile.token }, source: frameWindow, ports: [port2] } as unknown as MessageEvent);
+    const forged = [
+      { op: "update", artifacts: ["evil"], description: "pwned" },
+      { op: "updateKey", key: "guarded", artifacts: ["evil"] },
+      { op: "patch", artifacts: [] },
+      { op: "setArtifacts", artifacts: ["evil"] },
+      { op: "createKey", key: "evil-key" },
+      { op: "deleteKey", key: "guarded" },
+      { op: "list", key: "other", artifacts: ["evil"] },
+      { op: "write", name: "x.txt", data: "x", encoding: "utf8", artifacts: ["evil"], description: "pwned", key: "other" },
+    ];
+    for (const [i, f] of forged.entries()) port1.postMessage({ __callboard: "artifact-bridge-request", token: hostile.token, id: `f${i}`, ...f });
+    await vi.waitFor(() => expect(replies).toHaveLength(1 + forged.length));
+    await hostile.settled();
+    const byId = Object.fromEntries(replies.slice(1).map((r) => [r.id, r]));
+    for (const i of [0, 1, 2, 3, 4, 5]) expect(byId[`f${i}`], String(forged[i].op)).toMatchObject({ ok: false, error: "Unknown operation" });
+    // The two real ops ignore the extra fields: they act on the ONE bound key's items, nothing else.
+    expect(byId.f6).toMatchObject({ ok: true });
+    expect(byId.f7).toMatchObject({ ok: true });
+    expect(storage.listStorageItems("guarded").some((i) => i.name === "x.txt")).toBe(true);
+
+    const after = storage.getStorageKey("guarded");
+    expect({ description: after.description, artifacts: after.artifacts }).toEqual({ description: before.description, artifacts: before.artifacts });
+    expect(storage.storageKeyExists("evil-key")).toBe(false);
+    expect(storage.storageKeyExists("guarded")).toBe(true);
+    // No key-level request ever left the host: only item reads/writes/deletes, the key's item list, and the read-only re-check.
+    for (const call of apiCalls) {
+      expect(call, call).toMatch(/^(GET|PUT|DELETE) \/api\/storage\/guarded\/items\/[^/]+$|^GET \/api\/storage\/guarded$|^GET \/api\/artifacts\/meddler\/binding\/guarded$/);
+    }
+    expect(apiCalls.some((c) => c.startsWith("PATCH") || c.startsWith("POST"))).toBe(false);
+    expect(storage.storageKeyExists("other")).toBe(true);
+    expect(storage.listStorageItems("other").map((i) => i.name)).toEqual(["secret.txt"]);
+  });
+});
+

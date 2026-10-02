@@ -299,6 +299,7 @@ export function getToolSummary(toolName: string, content: string): string {
       case "read_canvas":
         return input.canvas_id ? ` - ${input.canvas_id}` : "";
       case "create_storage_key":
+      case "update_storage_key":
       case "list_storage_items":
       case "delete_storage_key":
         return input.key ? ` - ${String(input.key)}` : "";

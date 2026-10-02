@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Database, Plus, Trash2, Upload, FilePlus, Download, Pencil } from "lucide-react";
+import { Database, Plus, Trash2, Upload, FilePlus, Download, Pencil, ExternalLink } from "lucide-react";
 import {
   listStorageKeys,
   createStorageKey,
@@ -10,10 +10,13 @@ import {
   putStorageItem,
   deleteStorageItem,
   storageItemUrl,
+  listArtifacts,
   isValidStorageItemName,
   isValidStorageKey,
+  STORAGE_KEY_MAX_ARTIFACTS,
 } from "../../api";
-import type { StorageKeySummary, StorageKeyDetail, StorageItem } from "../../api";
+import type { StorageKeySummary, StorageKeyDetail, StorageItem, ArtifactSummary } from "../../api";
+import { standaloneArtifactHref } from "../../components/artifactStandalone";
 import ConfirmModal from "../../components/ConfirmModal";
 import MarkdownRenderer from "../../components/MarkdownRenderer";
 
@@ -180,6 +183,178 @@ function ItemPreview({ storageKey, item }: { storageKey: string; item: StorageIt
   );
 }
 
+/**
+ * "Designed for": the artifacts a key binds — the only ones that can read or
+ * write it. Shows each listed id (a name and an "Open with" link to the
+ * standalone page when the artifact exists and takes storage, "missing" when
+ * no artifact has that id any more) and edits the list: tick existing
+ * artifacts, untick to remove.
+ *
+ * The editor holds only what the user toggled, laid over the key's list as
+ * last fetched — never a copy of the whole list — and Save sends just that
+ * delta (`addArtifacts` / `removeArtifacts`), which the server applies to the
+ * list as stored then. Another tab's or an agent's change made while this
+ * editor was open is therefore kept, not overwritten. Opening the editor
+ * re-fetches the key so it starts from the current list.
+ */
+function DesignedFor({
+  detail,
+  artifacts,
+  artifactsFailed,
+  busy,
+  onOpen,
+  onSave,
+}: {
+  detail: StorageKeyDetail;
+  artifacts: ArtifactSummary[] | null;
+  /** listArtifacts() failed — `artifacts` stays null, so nothing can be called missing. */
+  artifactsFailed: boolean;
+  busy: boolean;
+  onOpen: () => void;
+  onSave: (delta: { add: string[]; remove: string[] }) => void;
+}) {
+  // id → ticked, for the ids the user changed from the list as fetched. null ⇔ not editing.
+  const [toggled, setToggled] = useState<Map<string, boolean> | null>(null);
+  const listed = detail.artifacts ?? [];
+  const byId = new Map((artifacts ?? []).map((a) => [a.id, a]));
+
+  if (toggled !== null) {
+    const isTicked = (id: string) => toggled.get(id) ?? listed.includes(id);
+    const add = [...toggled].filter(([id, on]) => on && !listed.includes(id)).map(([id]) => id);
+    const remove = [...toggled].filter(([id, on]) => !on && listed.includes(id)).map(([id]) => id);
+    // Every existing artifact, then any listed or ticked id that no longer exists (or is not loaded) — so it can be unticked.
+    const choices = [...(artifacts ?? []).map((a) => a.id)];
+    for (const id of [...listed, ...add]) if (!choices.includes(id)) choices.push(id);
+    const toggle = (id: string) => {
+      const next = new Map(toggled);
+      const on = !isTicked(id);
+      // Back to what the list says ⇒ no longer a change of ours.
+      if (on === listed.includes(id)) next.delete(id);
+      else next.set(id, on);
+      setToggled(next);
+    };
+    const over = listed.filter((id) => !remove.includes(id)).length + add.length > STORAGE_KEY_MAX_ARTIFACTS && add.length > 0;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 12, border: "1px solid var(--border)", borderRadius: 6 }} data-testid="designed-for-editor">
+        <div style={{ fontSize: 12, fontWeight: 600 }}>Designed for</div>
+        {artifacts === null && (
+          <div style={helpStyle} data-testid="designed-for-artifacts-unknown">
+            {artifactsFailed ? "Couldn't load the artifact list — only the ids already on this key are shown." : "Loading artifacts…"}
+          </div>
+        )}
+        {choices.length === 0 ? (
+          artifacts !== null && <div style={helpStyle}>There are no artifacts yet. Create one in Settings → Artifacts, or have an agent save one.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 240, overflow: "auto" }}>
+            {choices.map((id) => {
+              const a = byId.get(id);
+              return (
+                <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, minWidth: 0 }}>
+                  <input type="checkbox" checked={isTicked(id)} onChange={() => toggle(id)} aria-label={`Designed for ${id}`} />
+                  <span style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis" }}>{id}</span>
+                  {a ? (
+                    <span style={{ color: "var(--text-muted)", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {a.name}
+                      {a.storageAccess === "none" ? " · takes no storage" : ""}
+                    </span>
+                  ) : (
+                    artifacts !== null && <span style={{ color: "var(--danger)", fontSize: 12 }}>missing</span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <div style={helpStyle}>
+          Only the ticked artifacts can be bound to this key — by an agent&apos;s render_artifact, on an artifact&apos;s own page, or in the Settings preview. No
+          artifact can change this list itself.{over ? ` At most ${STORAGE_KEY_MAX_ARTIFACTS}.` : ""}
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button style={secondaryButton} onClick={() => setToggled(null)} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            style={{ ...primaryButton, opacity: over ? 0.5 : 1 }}
+            disabled={busy || over}
+            onClick={() => {
+              if (add.length || remove.length) onSave({ add, remove });
+              setToggled(null);
+            }}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }} data-testid="designed-for">
+      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)" }}>
+        <span style={{ fontWeight: 600, color: "var(--text)" }}>Designed for</span>
+        <button
+          title="Edit which artifacts this key is for"
+          style={iconButton}
+          onClick={() => {
+            setToggled(new Map());
+            onOpen();
+          }}
+          disabled={busy}
+        >
+          <Pencil size={12} />
+        </button>
+      </div>
+      {listed.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No artifact — none can be bound to this key until you pick which ones it is for.</div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {listed.map((id) => {
+            const a = byId.get(id);
+            const canOpen = a !== undefined && a.storageAccess !== "none";
+            return (
+              <span
+                key={id}
+                data-testid={`designed-for-${id}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "3px 8px",
+                  borderRadius: 6,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  fontSize: 12,
+                  maxWidth: "100%",
+                  minWidth: 0,
+                }}
+              >
+                <span style={{ fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={a?.name}>
+                  {id}
+                </span>
+                {artifacts !== null && !a && <span style={{ color: "var(--danger)" }}>missing</span>}
+                {a && a.storageAccess === "none" && <span style={{ color: "var(--text-muted)" }}>takes no storage</span>}
+                {canOpen && (
+                  // The page's URL names the artifact and the key — never an access level.
+                  <a
+                    href={standaloneArtifactHref(id, { storageKey: detail.key })}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Open ${a.name} with this key, on its own page`}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--accent-text)", textDecoration: "none", whiteSpace: "nowrap" }}
+                  >
+                    Open with {a.name}
+                    <ExternalLink size={11} aria-hidden />
+                  </a>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type Pending = { kind: "key"; key: string } | { kind: "item"; key: string; name: string };
 
 export default function StorageSettings() {
@@ -194,6 +369,9 @@ export default function StorageSettings() {
   const [editingDescription, setEditingDescription] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
+  // For "Designed for": names, "Open with" links and the editor's choices. null until loaded (so nothing is called missing early).
+  const [artifacts, setArtifacts] = useState<ArtifactSummary[] | null>(null);
+  const [artifactsFailed, setArtifactsFailed] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const refreshKeys = useCallback(() => {
@@ -206,6 +384,7 @@ export default function StorageSettings() {
   // Only the latest detail request may land: clicking key A then B quickly
   // must not leave A's items on screen (where uploads would go to B).
   const detailSeq = useRef(0);
+  const selectedRef = useRef(selected);
   const refreshDetail = useCallback(async (key: string) => {
     const seq = ++detailSeq.current;
     try {
@@ -218,10 +397,28 @@ export default function StorageSettings() {
 
   useEffect(() => {
     refreshKeys();
+    listArtifacts()
+      .then(setArtifacts)
+      .catch((err: Error) => {
+        setArtifactsFailed(true);
+        setError(err.message);
+      });
   }, [refreshKeys]);
+
+  // A tab left in the background shows the key as it was; catch up when it is looked at again.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      refreshKeys();
+      if (selected) refreshDetail(selected);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [selected, refreshKeys, refreshDetail]);
 
   useEffect(() => {
     detailSeq.current++; // whatever was in flight is for another selection now
+    selectedRef.current = selected;
     setDetail(null);
     setPreviewName(null);
     setNewItem(null);
@@ -254,9 +451,25 @@ export default function StorageSettings() {
   const handleSaveDescription = () =>
     run(async () => {
       if (!selected || editingDescription === null) return;
-      await updateStorageKey(selected, editingDescription);
+      await updateStorageKey(selected, { description: editingDescription });
       setEditingDescription(null);
       await Promise.all([refreshDetail(selected), refreshKeys()]);
+    });
+
+  // A delta, never the whole list: the server applies it to the list as stored, and we adopt what it returns.
+  const handleSaveArtifacts = ({ add, remove }: { add: string[]; remove: string[] }) =>
+    run(async () => {
+      if (!selected) return;
+      const updated = await updateStorageKey(selected, {
+        ...(add.length ? { addArtifacts: add } : {}),
+        ...(remove.length ? { removeArtifacts: remove } : {}),
+      });
+      // Still showing this key: adopt, and stop any GET that started before the write from landing over it.
+      if (selectedRef.current === selected) {
+        detailSeq.current++;
+        setDetail(updated);
+      }
+      await refreshKeys();
     });
 
   const handleUpload = (fileList: FileList | null) =>
@@ -331,7 +544,8 @@ export default function StorageSettings() {
         </div>
         <div style={{ ...helpStyle, marginBottom: 16 }}>
           Named buckets of files that agents and artifacts share. Agents use <code>list_storage_keys</code>, <code>read_storage_item</code> and{" "}
-          <code>save_storage_item</code>; an artifact rendered against a key can read (and, if granted, write) that key&apos;s items only.
+          <code>save_storage_item</code>; an artifact rendered against a key can read (and, if granted, write) that key&apos;s items only — and only if the key is
+          designed for it (&ldquo;Designed for&rdquo; below).
         </div>
 
         {error && <div style={errorBoxStyle}>{error}</div>}
@@ -399,6 +613,7 @@ export default function StorageSettings() {
                       <div style={{ fontSize: 13, fontWeight: 600, fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis" }}>{k.key}</div>
                       <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {k.itemCount} item{k.itemCount === 1 ? "" : "s"} · {formatBytes(k.totalSize)}
+                        {k.artifacts?.length ? ` · for ${k.artifacts.join(", ")}` : ""}
                         {k.description ? ` · ${k.description}` : ""}
                       </div>
                     </div>
@@ -452,6 +667,16 @@ export default function StorageSettings() {
                     </div>
                   )}
                 </div>
+
+                <DesignedFor
+                  key={detail.key}
+                  detail={detail}
+                  artifacts={artifacts}
+                  artifactsFailed={artifactsFailed}
+                  busy={busy}
+                  onOpen={() => refreshDetail(detail.key)}
+                  onSave={handleSaveArtifacts}
+                />
 
                 <div style={{ display: "flex", gap: 8 }}>
                   <button style={secondaryButton} onClick={() => fileInput.current?.click()} disabled={busy}>

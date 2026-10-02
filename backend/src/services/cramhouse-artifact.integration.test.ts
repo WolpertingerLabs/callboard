@@ -156,7 +156,9 @@ describe("cramhouse = one artifact + one storage key per deck", () => {
       note: "flip UI",
     });
     expect(saved).toMatchObject({ created: true, version: { version: 1 } });
-    expect(await tool("create_storage_key", { key: "cramhouse-birds-of-western-europe", description: "Birds of Western Europe" })).not.toHaveProperty("error");
+    expect(
+      await tool("create_storage_key", { key: "cramhouse-birds-of-western-europe", description: "Birds of Western Europe", artifacts: ["cramhouse"] }),
+    ).not.toHaveProperty("error");
     expect(await tool("save_storage_item", { key: "cramhouse-birds-of-western-europe", name: "deck.json", content: JSON.stringify(DECK) })).toMatchObject({
       item: { name: "deck.json", mimeType: "application/json" },
     });

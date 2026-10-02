@@ -1,5 +1,5 @@
 /**
- * Permission categories for the twelve storage/artifact tools, on every
+ * Permission categories for the thirteen storage/artifact tools, on every
  * name-based categorizer that sees them.
  *
  * Cline and pi receive callboard tools bare (`extraTools` / `customTools`) and
@@ -22,6 +22,7 @@ const EXPECTED = {
   read_artifact: "fileRead",
   render_artifact: "fileRead",
   create_storage_key: "fileWrite",
+  update_storage_key: "fileWrite",
   save_storage_item: "fileWrite",
   delete_storage_item: "fileWrite",
   delete_storage_key: "fileWrite",

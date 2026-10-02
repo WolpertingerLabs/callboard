@@ -220,4 +220,21 @@ describe("REST surface", () => {
     expect((await server.request("DELETE", "/api/artifacts/rest")).status).toBe(200);
     expect((await server.request("GET", "/api/artifacts/rest")).status).toBe(404);
   });
+
+  it("binding: the artifact plus the key's list in one response; 404 when either is gone, 400 on hostile segments", async () => {
+    const storage = await import("../services/storage-service.js");
+    await post("/api/artifacts", { id: "bound", name: "Bound", contentType: "html", content: "x", storageAccess: "read" });
+    await storage.createStorageKey("bk", undefined, ["bound"]);
+    await storage.createStorageKey("unlisted");
+    const ok = await server.request("GET", "/api/artifacts/bound/binding/bk");
+    expect(ok.status).toBe(200);
+    expect(JSON.parse(ok.body.toString())).toMatchObject({ artifact: { id: "bound", currentVersion: 1 }, storageKey: { key: "bk", artifacts: ["bound"] } });
+    // The route reports; it does not judge — an unlisted key is a 200 with a list that lacks the id.
+    expect(JSON.parse((await server.request("GET", "/api/artifacts/bound/binding/unlisted")).body.toString()).storageKey).toEqual({ key: "unlisted", artifacts: [] });
+    expect((await server.request("GET", "/api/artifacts/bound/binding/nope")).status).toBe(404);
+    expect((await server.request("GET", "/api/artifacts/nope/binding/bk")).status).toBe(404);
+    for (const seg of ["..", "%2e%2e", "BK", "a%00"]) {
+      expect([400, 404], seg).toContain((await server.request("GET", `/api/artifacts/bound/binding/${seg}`)).status);
+    }
+  });
 });

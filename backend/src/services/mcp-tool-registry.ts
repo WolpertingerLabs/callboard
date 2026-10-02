@@ -489,7 +489,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "list_storage_keys",
     qualifiedName: "mcp__callboard-tools__list_storage_keys",
-    description: "List the storage catalogue: every key with its description, item count, total size and last update.",
+    description: "List the storage catalogue: every key with its description, the artifacts it is designed for, item count, total size and last update.",
     parameters: [],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -502,6 +502,22 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     parameters: [
       { name: "key", type: "string", description: "The new key (lowercase slug)", required: true },
       { name: "description", type: "string", description: "What this key holds", required: false },
+      { name: "artifacts", type: "array", description: "Ids of the artifacts designed for this key — the only ones that can bind to it", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "update_storage_key",
+    qualifiedName: "mcp__callboard-tools__update_storage_key",
+    description: "Change a storage key's description and/or the list of artifacts it is designed for (add/remove ids, or replace the list whole).",
+    parameters: [
+      { name: "key", type: "string", description: "The storage key", required: true },
+      { name: "description", type: "string", description: "New description (empty clears it)", required: false },
+      { name: "add_artifacts", type: "array", description: "Artifact ids to add to the list (preferred for edits)", required: false },
+      { name: "remove_artifacts", type: "array", description: "Artifact ids to remove from the list (preferred for edits)", required: false },
+      { name: "artifacts", type: "array", description: "Replaces the whole list ([] = none); overwrites concurrent changes", required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",

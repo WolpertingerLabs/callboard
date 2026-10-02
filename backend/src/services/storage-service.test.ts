@@ -382,3 +382,125 @@ describe("source_path (render_file's checks)", () => {
     expect(await svc.saveStorageItemFromFile("k", "copied", link)).toMatchObject({ size: 2, mimeType: "image/png" });
   });
 });
+
+describe("artifacts: which artifacts a key is designed for", () => {
+  const metaOf = (key: string) => JSON.parse(readFileSync(join(STORAGE_ROOT, key, "meta.json"), "utf-8")) as StorageKeyMetaFile;
+
+  it("a key created without a list binds nothing, and records no field", async () => {
+    expect(await svc.createStorageKey("k")).toMatchObject({ artifacts: [] });
+    expect(svc.getStorageKeyArtifacts("k")).toEqual([]);
+    expect(metaOf("k")).not.toHaveProperty("artifacts");
+  });
+
+  it("create and update take a list: validated, deduplicated in order, capped", async () => {
+    expect(await svc.createStorageKey("deck", "Birds", ["cramhouse", "flag-deck", "cramhouse"])).toMatchObject({ artifacts: ["cramhouse", "flag-deck"] });
+    expect(metaOf("deck").artifacts).toEqual(["cramhouse", "flag-deck"]);
+    expect(svc.listStorageKeys()).toEqual([expect.objectContaining({ key: "deck", artifacts: ["cramhouse", "flag-deck"] })]);
+
+    for (const bad of ["Cramhouse", "-x", "a_b", "", "../x", 7, null, "a".repeat(65)]) {
+      await expectCode(svc.updateStorageKey("deck", { artifacts: [bad] }), "invalid");
+      await expectCode(svc.createStorageKey("other", undefined, [bad]), "invalid");
+    }
+    for (const notArray of ["cramhouse", { 0: "cramhouse" }, null, 3]) {
+      await expectCode(svc.updateStorageKey("deck", { artifacts: notArray }), "invalid");
+    }
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `a${i}`);
+    await expectCode(svc.updateStorageKey("deck", { artifacts: ids(33) }), "invalid");
+    // 33 entries that dedupe to 32 are fine: the cap is on the list as stored.
+    expect((await svc.updateStorageKey("deck", { artifacts: [...ids(32), "a0"] })).artifacts).toHaveLength(32);
+    // Nothing invalid was written along the way.
+    expect(svc.listStorageKeys().map((k) => k.key)).toEqual(["deck"]);
+  });
+
+  it("update changes only the fields it is given; [] clears the list", async () => {
+    await svc.createStorageKey("deck", "Birds", ["cramhouse"]);
+    await svc.updateStorageKey("deck", { artifacts: ["flag-deck"] });
+    expect(svc.getStorageKey("deck")).toMatchObject({ description: "Birds", artifacts: ["flag-deck"] });
+    await svc.updateStorageKey("deck", { description: "Birds of Europe" });
+    expect(svc.getStorageKey("deck")).toMatchObject({ description: "Birds of Europe", artifacts: ["flag-deck"] });
+    await svc.updateStorageKey("deck", { artifacts: [] });
+    expect(svc.getStorageKey("deck")).toMatchObject({ description: "Birds of Europe", artifacts: [] });
+    expect(metaOf("deck")).not.toHaveProperty("artifacts");
+  });
+
+  it("a delta (addArtifacts / removeArtifacts) applies to the list as stored: absent removes and present adds are no-ops", async () => {
+    await svc.createStorageKey("deck", "Birds", ["app-a", "app-b", "ghost"]);
+    expect((await svc.updateStorageKey("deck", { addArtifacts: ["app-p", "app-a"], removeArtifacts: ["app-b", "never-there"] })).artifacts).toEqual([
+      "app-a",
+      "ghost",
+      "app-p",
+    ]);
+    expect(svc.getStorageKey("deck")).toMatchObject({ description: "Birds", artifacts: ["app-a", "ghost", "app-p"] });
+    // One side alone is enough; removing the rest clears the field like artifacts: [] does.
+    expect((await svc.updateStorageKey("deck", { removeArtifacts: ["app-a", "ghost", "app-p"] })).artifacts).toEqual([]);
+    expect(metaOf("deck")).not.toHaveProperty("artifacts");
+    expect((await svc.updateStorageKey("deck", { addArtifacts: ["app-a", "app-a"] })).artifacts).toEqual(["app-a"]);
+    // An empty delta changes nothing but is not an error.
+    expect((await svc.updateStorageKey("deck", { addArtifacts: [], removeArtifacts: [] })).artifacts).toEqual(["app-a"]);
+  });
+
+  it("a delta is validated before anything is written; the cap applies to the list after the delta", async () => {
+    const ids = (n: number, p = "a") => Array.from({ length: n }, (_, i) => `${p}${i}`);
+    await svc.createStorageKey("deck", undefined, ids(31));
+    const before = readFileSync(join(STORAGE_ROOT, "deck", "meta.json"), "utf-8");
+    for (const patch of [
+      { addArtifacts: ["Bad Id"] },
+      { removeArtifacts: ["../x"] },
+      { addArtifacts: "a0" },
+      { removeArtifacts: [null] },
+      { addArtifacts: ["x"], removeArtifacts: ["x"] }, // an id on both sides is ambiguous
+      { artifacts: ["x"], addArtifacts: ["y"] }, // replace and delta are exclusive
+      { artifacts: [], removeArtifacts: [] },
+      { addArtifacts: ["b0", "b1"] }, // 31 + 2 = 33
+    ]) {
+      await expectCode(svc.updateStorageKey("deck", patch), "invalid");
+    }
+    expect(readFileSync(join(STORAGE_ROOT, "deck", "meta.json"), "utf-8")).toBe(before);
+    // 31 − 1 + 2 = 32: within the cap once the removal is applied.
+    expect((await svc.updateStorageKey("deck", { addArtifacts: ["b0", "b1"], removeArtifacts: ["a0"] })).artifacts).toHaveLength(32);
+    // A removal from an (out-of-band) over-long list is still allowed; growing it is not.
+    writeFileSync(join(STORAGE_ROOT, "deck", "meta.json"), JSON.stringify({ ...metaOf("deck"), artifacts: ids(40, "c") }));
+    expect((await svc.updateStorageKey("deck", { removeArtifacts: ["c0"] })).artifacts).toHaveLength(39);
+    await expectCode(svc.updateStorageKey("deck", { addArtifacts: ["d0"], removeArtifacts: ["c1"] }), "invalid");
+    await expectCode(svc.updateStorageKey("missing", { addArtifacts: ["a"] }), "not_found");
+  });
+
+  it("concurrent deltas from two clients all land: each applies to the list the previous one left", async () => {
+    await svc.createStorageKey("deck", undefined, ["keep", "drop-1", "drop-2", "drop-3"]);
+    // Client A adds, client B removes, interleaved and all in flight at once.
+    await Promise.all([
+      svc.updateStorageKey("deck", { addArtifacts: ["a-1"] }),
+      svc.updateStorageKey("deck", { removeArtifacts: ["drop-1"] }),
+      svc.updateStorageKey("deck", { addArtifacts: ["a-2"] }),
+      svc.updateStorageKey("deck", { removeArtifacts: ["drop-2"] }),
+      svc.updateStorageKey("deck", { addArtifacts: ["a-3"], description: "raced" }),
+      svc.updateStorageKey("deck", { removeArtifacts: ["drop-3"] }),
+    ]);
+    expect(svc.getStorageKey("deck")).toMatchObject({ description: "raced", artifacts: ["keep", "a-1", "a-2", "a-3"] });
+  });
+
+  it("item writes keep the list", async () => {
+    await svc.createStorageKey("deck", undefined, ["cramhouse"]);
+    await svc.saveStorageItem("deck", "deck.json", Buffer.from("{}"));
+    await svc.deleteStorageItem("deck", "deck.json");
+    expect(svc.getStorageKeyArtifacts("deck")).toEqual(["cramhouse"]);
+  });
+
+  it("an old meta.json without the field loads as binding nothing; a malformed one fails closed", async () => {
+    seedMeta("old", { "a.txt": fake(1) });
+    expect(svc.getStorageKey("old")).toMatchObject({ key: "old", itemCount: 1, artifacts: [] });
+    expect(svc.listStorageKeys()).toEqual([expect.objectContaining({ key: "old", artifacts: [] })]);
+    expect(svc.getStorageKeyArtifacts("old")).toEqual([]);
+
+    const bad = { ...metaOf("old"), artifacts: "cramhouse" };
+    writeFileSync(join(STORAGE_ROOT, "old", "meta.json"), JSON.stringify(bad));
+    expect(svc.getStorageKeyArtifacts("old")).toEqual([]);
+    writeFileSync(join(STORAGE_ROOT, "old", "meta.json"), JSON.stringify({ ...bad, artifacts: ["ok-id", 5, "../x", "ok-id"] }));
+    expect(svc.getStorageKeyArtifacts("old")).toEqual(["ok-id"]);
+  });
+
+  it("getStorageKeyArtifacts validates the key and reports a missing one", async () => {
+    await expectCode(() => svc.getStorageKeyArtifacts("../x"), "invalid");
+    await expectCode(() => svc.getStorageKeyArtifacts("nope"), "not_found");
+  });
+});

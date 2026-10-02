@@ -9,6 +9,7 @@ import {
   saveArtifactVersion,
   getArtifactVersionSource,
   listStorageKeys,
+  storageKeyBindsArtifact,
   ARTIFACT_ID_PATTERN,
 } from "../../api";
 import type { ArtifactSummary, Artifact, ArtifactContentType, ArtifactStorageAccess, StorageKeySummary, RenderArtifactToolResult } from "../../api";
@@ -173,6 +174,8 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
 
   const metaDirty = meta.name !== artifact.name || meta.description !== (artifact.description ?? "") || meta.storageAccess !== artifact.storageAccess;
   const shownVersion = viewVersion ?? artifact.currentVersion;
+  // The picker offers only keys whose list names this artifact — no other key can bind it.
+  const compatibleKeys = keys.filter((k) => storageKeyBindsArtifact(k.artifacts, artifact.id));
   const boundKey = artifact.storageAccess !== "none" ? previewKey : "";
   const access = previewAccess(artifact.storageAccess, boundKey, allowWrites);
   const previewData: RenderArtifactToolResult = {
@@ -271,7 +274,7 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
             </label>
             <select id="artifact-preview-key" style={{ ...inputStyle, width: "auto", minWidth: 200 }} value={previewKey} onChange={(e) => setPreviewKey(e.target.value)}>
               <option value="">(none — unbound)</option>
-              {keys.map((k) => (
+              {compatibleKeys.map((k) => (
                 <option key={k.key} value={k.key}>
                   {k.key}
                 </option>
@@ -285,7 +288,9 @@ function ArtifactDetail({ id, onBack, onDeleted }: { id: string; onBack: () => v
             )}
             <span style={{ ...helpStyle, marginTop: 0 }}>
               {!previewKey
-                ? "Unbound: the artifact's storage calls will be refused."
+                ? compatibleKeys.length === 0
+                  ? `No storage key lists "${artifact.id}" yet — add it to a key's "Designed for" in Settings → Storage to bind one.`
+                  : "Unbound: the artifact's storage calls will be refused."
                 : access === "readwrite"
                   ? `⚠ Read/write: this preview can change or delete items in "${previewKey}".`
                   : `Read-only preview of "${previewKey}" — writes are refused.`}

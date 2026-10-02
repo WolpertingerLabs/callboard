@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { recheckGrant } from "./artifactGrant";
+import { bindingRef, recheckGrant, type GrantLookups } from "./artifactGrant";
 import { createSharedLookup, RateLimitedError } from "./artifactBudget";
-import { getArtifact } from "../api";
+import { getArtifact, getArtifactBinding } from "../api";
 import type { Artifact, RenderArtifactToolResult } from "../api";
 
 /**
- * `recheckGrant` through the REAL `getArtifact` (global fetch stubbed), so the
+ * `recheckGrant` through the REAL `getArtifact` / `getArtifactBinding` (global
+ * fetch stubbed), so the
  * response shapes are the ones the browser sees. The line it must hold: only
  * the API's own "not found" (or a changed artifact) lowers the grant; failing
  * to look — aborted, a 5xx, a 404 page that is not the API's answer, the
@@ -45,12 +46,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** A fresh lookup per call, so every case really asks the (stubbed) server. */
-const check = () => recheckGrant(data, SHA, 0, null, createSharedLookup((id) => getArtifact(id)));
+/** What the binding route answers: the artifact, and the key's list (cramhouse on it unless said otherwise). */
+const bound = (a: Artifact, artifacts = ["cramhouse"]) => json(200, { artifact: a, storageKey: { key: "birds", artifacts } });
+
+/** Fresh lookups per call, so every case really asks the (stubbed) server. */
+const lookups = (): GrantLookups => ({
+  artifact: createSharedLookup((id) => getArtifact(id)),
+  binding: createSharedLookup((ref) => getArtifactBinding(ref.split("/")[0], ref.split("/")[1])),
+});
+const check = () => recheckGrant(data, SHA, 0, null, lookups());
 
 describe("recheckGrant — transient failures keep the grant (throw), definitive answers lower it", () => {
   it("unchanged → the grant stands", async () => {
-    fetchMock.mockResolvedValue(json(200, { artifact: artifact() }));
+    fetchMock.mockResolvedValue(bound(artifact()));
     await expect(check()).resolves.toBe("readwrite");
   });
 
@@ -66,7 +74,7 @@ describe("recheckGrant — transient failures keep the grant (throw), definitive
   });
 
   it("the budget refusing the fetch → throws RateLimitedError, nothing fetched", async () => {
-    await expect(recheckGrant(data, SHA, 0, { spend: () => false, retryAfterMs: () => 0, available: () => 0 }, createSharedLookup((id) => getArtifact(id)))).rejects.toBeInstanceOf(RateLimitedError);
+    await expect(recheckGrant(data, SHA, 0, { spend: () => false, retryAfterMs: () => 0, available: () => 0 }, lookups())).rejects.toBeInstanceOf(RateLimitedError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -76,16 +84,61 @@ describe("recheckGrant — transient failures keep the grant (throw), definitive
   });
 
   it("declared access lowered → the lower grant", async () => {
-    fetchMock.mockResolvedValue(json(200, { artifact: artifact({ storageAccess: "read" }) }));
+    fetchMock.mockResolvedValue(bound(artifact({ storageAccess: "read" })));
     await expect(check()).resolves.toBe("read");
-    fetchMock.mockResolvedValue(json(200, { artifact: artifact({ storageAccess: "none" }) }));
+    fetchMock.mockResolvedValue(bound(artifact({ storageAccess: "none" })));
     await expect(check()).resolves.toBe("none");
   });
 
   it("replaced (sha differs from the served bytes) or the version pruned → none", async () => {
-    fetchMock.mockResolvedValue(json(200, { artifact: artifact({ versions: [{ version: 3, created: "c", size: 10, sha256: "b".repeat(64) }] }) }));
+    fetchMock.mockResolvedValue(bound(artifact({ versions: [{ version: 3, created: "c", size: 10, sha256: "b".repeat(64) }] })));
     await expect(check()).resolves.toBe("none");
-    fetchMock.mockResolvedValue(json(200, { artifact: artifact({ versions: [{ version: 4, created: "c", size: 10, sha256: SHA }] }) }));
+    fetchMock.mockResolvedValue(bound(artifact({ versions: [{ version: 4, created: "c", size: 10, sha256: SHA }] })));
     await expect(check()).resolves.toBe("none");
   });
 });
+
+describe("recheckGrant — the key's artifact list", () => {
+  it("a bound render is re-checked through the binding route: artifact and list in ONE request", async () => {
+    fetchMock.mockResolvedValue(bound(artifact()));
+    await expect(check()).resolves.toBe("readwrite");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/artifacts/cramhouse/binding/birds");
+  });
+
+  it("an unbound render is re-checked against the artifact alone", async () => {
+    fetchMock.mockResolvedValue(json(200, { artifact: artifact() }));
+    await expect(recheckGrant({ ...data, storage_key: undefined, storage_access: "none" }, SHA, 0, null, lookups())).resolves.toBe("none");
+    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/artifacts/cramhouse");
+  });
+
+  it.each([
+    ["emptied", []],
+    ["lists only others", ["flag-deck"]],
+  ])("the artifact taken off the key's list (%s) → none", async (_label, list) => {
+    fetchMock.mockResolvedValue(bound(artifact(), list));
+    await expect(check()).resolves.toBe("none");
+  });
+
+  it("a response without a list (a malformed or older answer) → none: fail closed", async () => {
+    fetchMock.mockResolvedValue(json(200, { artifact: artifact() }));
+    await expect(check()).resolves.toBe("none");
+  });
+
+  it("the API's own 404 for the key (deleted) → none", async () => {
+    fetchMock.mockResolvedValue(json(404, { error: "Storage key not found: birds" }));
+    await expect(check()).resolves.toBe("none");
+  });
+
+  it("checks are shared per (artifact, key), not across keys", async () => {
+    fetchMock.mockImplementation(async () => bound(artifact(), ["cramhouse"]));
+    const shared = lookups();
+    await recheckGrant(data, SHA, 5000, null, shared);
+    await recheckGrant(data, SHA, 5000, null, shared);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await recheckGrant({ ...data, storage_key: "other" }, SHA, 5000, null, shared);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(bindingRef("cramhouse", "other")).toBe("cramhouse/other");
+  });
+});
+

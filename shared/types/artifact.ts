@@ -68,6 +68,16 @@ export interface ArtifactMetaFile extends Artifact {
   schemaVersion: 1;
 }
 
+/**
+ * `GET /api/artifacts/:id/binding/:key` — one artifact and the list of the one
+ * key a render binds it to, read together so the host judges (and live
+ * re-checks) a bound render with ONE request. 404 if either is gone.
+ */
+export interface ArtifactBinding {
+  artifact: Artifact;
+  storageKey: { key: string; artifacts: string[] };
+}
+
 /** `POST /api/artifacts` body. */
 export interface CreateArtifactInput {
   id: string;

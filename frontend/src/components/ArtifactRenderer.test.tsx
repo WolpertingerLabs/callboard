@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { StrictMode } from "react";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import ArtifactRenderer from "./ArtifactRenderer";
-import { artifactLookup, judgeRender } from "./artifactGrant";
+import { artifactLookup, bindingLookup, judgeRender } from "./artifactGrant";
 import { BRIDGE_HELLO, BRIDGE_INIT, BRIDGE_REPLY, BRIDGE_REQUEST, type BridgeStorageApi } from "./artifactBridge";
 import { ARTIFACT_BRIDGE_READ_RECHECK_MS, ARTIFACT_BRIDGE_WRITE_RECHECK_MS } from "../api";
 import type { Artifact, RenderArtifactToolResult } from "../api";
@@ -22,11 +22,30 @@ import type { Artifact, RenderArtifactToolResult } from "../api";
  * running document.
  */
 
-const h = vi.hoisted(() => ({ getArtifactVersionSource: vi.fn(), getArtifact: vi.fn() }));
+const h = vi.hoisted(() => {
+  const getArtifact = vi.fn();
+  /** The bound key's `artifacts` list as the server has it now (throw ⇒ the key is gone). */
+  const keyArtifacts = vi.fn();
+  return {
+    getArtifactVersionSource: vi.fn(),
+    getArtifact,
+    keyArtifacts,
+    // The binding route, as the server builds it: the artifact first (its 404 wins), then the key.
+    getArtifactBinding: vi.fn(async (id: string, key: string) => {
+      const artifact = await getArtifact(id);
+      return { artifact, storageKey: { key, artifacts: await keyArtifacts(key) } };
+    }),
+  };
+});
 
 vi.mock("../api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return { ...actual, getArtifactVersionSource: h.getArtifactVersionSource, getArtifact: h.getArtifact };
+  return {
+    ...actual,
+    getArtifactVersionSource: h.getArtifactVersionSource,
+    getArtifact: h.getArtifact,
+    getArtifactBinding: h.getArtifactBinding,
+  };
 });
 
 const SHA = "a".repeat(64);
@@ -112,7 +131,9 @@ beforeEach(() => {
     },
   );
   h.getArtifact.mockResolvedValue(artifact());
+  h.keyArtifacts.mockReturnValue(["cramhouse"]);
   artifactLookup.clear(); // the tab-wide re-check cache outlives mounts — and cases
+  bindingLookup.clear();
 });
 
 afterEach(() => {
@@ -133,6 +154,7 @@ describe("ArtifactRenderer — mounting", () => {
 
   it("encodes the id in the render URL", async () => {
     h.getArtifact.mockResolvedValue(artifact({ id: "a b/../c" }));
+    h.keyArtifacts.mockReturnValue(["a b/../c"]);
     const { container } = render(<ArtifactRenderer data={{ ...base, artifact_id: "a b/../c" }} bridgeApi={api()} />);
     expect((await frameOf(container)).getAttribute("src")).toMatch(/^\/api\/artifacts\/a%20b%2F..%2Fc\/versions\/3\/render\?bridge=/);
   });
@@ -270,10 +292,11 @@ describe("ArtifactRenderer — the grant is re-checked against the artifact as i
   });
 
   it("judgeRender: the rules on their own", () => {
-    expect(judgeRender(base, artifact())).toEqual({ status: "ok", access: "read", sha256: SHA });
-    expect(judgeRender({ ...base, storage_access: "readwrite" }, artifact({ storageAccess: "read" }))).toEqual({ status: "ok", access: "read", sha256: SHA });
+    const listed = ["cramhouse"];
+    expect(judgeRender(base, artifact(), listed)).toEqual({ status: "ok", access: "read", sha256: SHA });
+    expect(judgeRender({ ...base, storage_access: "readwrite" }, artifact({ storageAccess: "read" }), listed)).toEqual({ status: "ok", access: "read", sha256: SHA });
     expect(judgeRender({ ...base, storage_key: undefined, storage_access: "readwrite" }, artifact())).toEqual({ status: "ok", access: "none", sha256: SHA });
-    expect(judgeRender(base, artifact({ contentType: "svg" })).status).toBe("refused");
+    expect(judgeRender(base, artifact({ contentType: "svg" }), listed).status).toBe("refused");
   });
 });
 
@@ -547,3 +570,114 @@ describe("ArtifactRenderer — the standalone page's link and fill layout", () =
     expect(storage.write).not.toHaveBeenCalled();
   });
 });
+
+describe("ArtifactRenderer — the key must list the artifact", () => {
+  const FIX = `add "cramhouse" to storage key "birds"'s artifacts via update_storage_key or Settings → Storage`;
+
+  it("judgeRender: a bound render binds only when the key lists the artifact; strict — no list binds nothing; unbound is untouched", () => {
+    expect(judgeRender(base, artifact(), ["cramhouse"])).toEqual({ status: "ok", access: "read", sha256: SHA });
+    expect(judgeRender(base, artifact(), ["other", "cramhouse"]).status).toBe("ok");
+    for (const list of [[], undefined, null, ["other"], ["cramhouse-2"], ["Cramhouse"]]) {
+      const v = judgeRender(base, artifact(), list);
+      expect(v.status, JSON.stringify(list)).toBe("refused");
+      expect(v.status === "refused" && v.reason).toContain(FIX);
+    }
+    const unbound = { ...base, storage_key: undefined, storage_access: "none" as const };
+    expect(judgeRender(unbound, artifact(), undefined)).toEqual({ status: "ok", access: "none", sha256: SHA });
+  });
+
+  it("a bound bubble is judged with the key's list, read with the artifact in one request", async () => {
+    const { container } = render(<ArtifactRenderer data={base} bridgeApi={api()} />);
+    await frameOf(container);
+    expect(h.getArtifactBinding).toHaveBeenCalledTimes(1);
+    expect(h.getArtifactBinding).toHaveBeenCalledWith("cramhouse", "birds");
+  });
+
+  it("an unbound bubble never looks at a key", async () => {
+    const { container } = render(<ArtifactRenderer data={{ ...base, storage_key: undefined, storage_access: "none" }} bridgeApi={api()} />);
+    await frameOf(container);
+    expect(h.getArtifactBinding).not.toHaveBeenCalled();
+    expect(h.keyArtifacts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["has no list", []],
+    ["lists other artifacts", ["flag-deck"]],
+  ])("an old bubble whose key %s fails closed: the error box naming the fix, no frame, no standalone link", async (_label, list) => {
+    h.keyArtifacts.mockReturnValue(list);
+    const storage = api();
+    const { container } = render(<ArtifactRenderer data={{ ...base, storage_access: "readwrite" }} bridgeApi={storage} />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(`storage key "birds" is not designed for artifact "cramhouse"`);
+    expect(alert.textContent).toContain(FIX);
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(screen.queryByTestId("artifact-standalone-link")).toBeNull();
+    expect(storage.list).not.toHaveBeenCalled();
+  });
+
+  it("a key deleted since is named as gone", async () => {
+    h.keyArtifacts.mockRejectedValue(new Error("Storage key not found: birds"));
+    const { container } = render(<ArtifactRenderer data={base} bridgeApi={api()} />);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/storage key "birds" no longer exists/);
+    expect(container.querySelector("iframe")).toBeNull();
+  });
+
+  it(`removed from the key's list while mounted: revoked at the next re-check (reads: within ${ARTIFACT_BRIDGE_READ_RECHECK_MS} ms); re-adding restores it only on a new mount`, async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const storage = api();
+    const data = { ...base, storage_access: "readwrite" as const };
+    const { container, unmount } = render(<ArtifactRenderer data={data} bridgeApi={storage} />);
+    const frame = await frameOf(container);
+    const token = tokenOf(frame);
+    const port = hello(frame);
+    fireEvent.load(frame);
+    request(port, token, { id: "r0", op: "read", name: "deck.json" });
+    await waitFor(() => expect(sent(port)).toHaveLength(2));
+    expect(sent(port)[1]).toMatchObject({ id: "r0", ok: true });
+
+    // The user takes cramhouse off the key's list in Settings.
+    h.keyArtifacts.mockReturnValue([]);
+    // Inside the read window the last check still stands (the documented revocation window) …
+    request(port, token, { id: "r1", op: "read", name: "deck.json" });
+    await waitFor(() => expect(sent(port)).toHaveLength(3));
+    expect(sent(port)[2]).toMatchObject({ id: "r1", ok: true });
+    // … and past it the re-check sees the list: revoked, and nothing reaches storage.
+    vi.setSystemTime(Date.now() + ARTIFACT_BRIDGE_READ_RECHECK_MS);
+    h.getArtifactBinding.mockClear();
+    request(port, token, { id: "r2", op: "read", name: "deck.json" });
+    await waitFor(() => expect(sent(port)).toHaveLength(4));
+    expect(h.getArtifactBinding).toHaveBeenCalledTimes(1); // one request re-reads artifact AND list
+    expect(sent(port)[3]).toMatchObject({ id: "r2", ok: false, error: expect.stringMatching(/revoked/) });
+    expect(storage.readText).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByTestId("artifact-key-badge")).toBeNull());
+    expect(container.querySelector("iframe")).toBe(frame); // lowered live, never remounted
+
+    // Put back on the list: the live mount stays revoked — a grant only falls while mounted …
+    h.keyArtifacts.mockReturnValue(["cramhouse"]);
+    vi.setSystemTime(Date.now() + ARTIFACT_BRIDGE_WRITE_RECHECK_MS + ARTIFACT_BRIDGE_READ_RECHECK_MS);
+    request(port, token, { id: "r3", op: "read", name: "deck.json" });
+    await waitFor(() => expect(sent(port)).toHaveLength(5));
+    expect(sent(port)[4]).toMatchObject({ id: "r3", ok: false });
+    unmount();
+    // … and the next mount (reopening the chat, reloading the page) binds again.
+    const again = render(<ArtifactRenderer data={data} bridgeApi={storage} />);
+    expect(sent(hello(await frameOf(again.container)))[0]).toMatchObject({ storageKey: "birds", access: "readwrite" });
+  });
+
+  it("a write after removal is refused at the write window, before reaching storage", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const storage = api();
+    const { container } = render(<ArtifactRenderer data={{ ...base, storage_access: "readwrite" }} bridgeApi={storage} />);
+    const frame = await frameOf(container);
+    const token = tokenOf(frame);
+    const port = hello(frame);
+    fireEvent.load(frame);
+    h.keyArtifacts.mockReturnValue(["someone-else"]);
+    vi.setSystemTime(Date.now() + ARTIFACT_BRIDGE_WRITE_RECHECK_MS);
+    request(port, token, { id: "w1", op: "write", name: "deck.json", data: "x" });
+    await waitFor(() => expect(sent(port)).toHaveLength(2));
+    expect(sent(port)[1]).toMatchObject({ id: "w1", ok: false, error: expect.stringMatching(/revoked/) });
+    expect(storage.write).not.toHaveBeenCalled();
+  });
+});
+

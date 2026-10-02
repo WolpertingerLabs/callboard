@@ -194,6 +194,7 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
   ["read_artifact", "fileRead"],
   ["render_artifact", "fileRead"],
   ["create_storage_key", "fileWrite"],
+  ["update_storage_key", "fileWrite"],
   ["save_storage_item", "fileWrite"],
   ["delete_storage_item", "fileWrite"],
   ["delete_storage_key", "fileWrite"],

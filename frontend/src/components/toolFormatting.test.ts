@@ -143,6 +143,7 @@ describe("getToolSummary — snake_case harness tools", () => {
     expect(getToolSummary("read_artifact", j({ id: "cramhouse", version: 2 }))).toBe(" - cramhouse v2");
     expect(getToolSummary("callboard-tools__save_storage_item", j({ key: "birds", name: "deck.json" }))).toBe(" - birds/deck.json");
     expect(getToolSummary("create_storage_key", j({ key: "birds" }))).toBe(" - birds");
+    expect(getToolSummary("mcp__callboard-tools__update_storage_key", j({ key: "birds", artifacts: ["cramhouse"] }))).toBe(" - birds");
     expect(getToolSummary("delete_storage_key", j({ key: "birds", confirm: true }))).toBe(" - birds");
   });
 });

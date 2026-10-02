@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { getArtifact, listStorageKeys } from "../api";
+import { getArtifact, listStorageKeys, storageKeyBindingRefusal, storageKeyBindsArtifact } from "../api";
 import type { Artifact, ArtifactStorageAccess, RenderArtifactToolResult, StorageKeySummary } from "../api";
 import ArtifactRenderer, { ArtifactErrorBox } from "../components/ArtifactRenderer";
 import { parseStandaloneParams, requestedAccess, useArtifactWriteGrant } from "../components/artifactStandalone";
@@ -52,6 +52,10 @@ type Loaded = { artifact: Artifact; keys: StorageKeySummary[] } | { error: strin
  * judge-before-mount and live re-check) in its `fill` layout, under a slim bar.
  * The version defaults to the artifact's current one, pinned to its sha256 at
  * load like any render; `v` pins another.
+ *
+ * Only a key whose `artifacts` list names this artifact can be bound: the
+ * picker offers only those, and a URL naming another key shows why (and the
+ * fix) instead of a frame — the renderer's own judgement refuses it too.
  *
  * Access never comes from the URL (the parser reads only `key` and `v`): it
  * is read unless the user ticked "Allow saving" for this artifact on this key
@@ -129,6 +133,10 @@ export default function ArtifactPage() {
   const { keys } = current;
   const a = current.artifact;
   if (storageKey && !keys.some((k) => k.key === storageKey)) return failure(`storage key "${storageKey}" does not exist.`);
+  // Only keys designed for this artifact. The renderer re-reads the key's list before mounting and live, so this is the
+  // readable answer, not the boundary.
+  const compatible = keys.filter((k) => storageKeyBindsArtifact(k.artifacts, a.id));
+  if (storageKey && !compatible.some((k) => k.key === storageKey)) return failure(`${storageKeyBindingRefusal(storageKey, a.id)}.`);
 
   const version = params.version ?? a.currentVersion;
   const data: RenderArtifactToolResult = {
@@ -162,13 +170,18 @@ export default function ArtifactPage() {
             <span style={{ color: "var(--text-muted)" }}>Key</span>
             <select aria-label="Storage key" style={selectStyle} value={storageKey ?? ""} onChange={(e) => pickKey(e.target.value)}>
               <option value="">(none — unbound)</option>
-              {keys.map((k) => (
+              {compatible.map((k) => (
                 <option key={k.key} value={k.key}>
                   {k.key}
                 </option>
               ))}
             </select>
           </label>
+        )}
+        {declared !== "none" && compatible.length === 0 && (
+          <span style={{ color: "var(--text-muted)", fontSize: 12 }} data-testid="artifact-page-no-keys">
+            No storage key lists &quot;{a.id}&quot; — add it to a key in Settings → Storage.
+          </span>
         )}
         <span style={{ color: "var(--text-muted)", fontSize: 12 }} data-testid="artifact-page-access">
           {storageKey ? ACCESS_LABEL[shownAccess] : declared === "none" ? "no storage" : "unbound"}

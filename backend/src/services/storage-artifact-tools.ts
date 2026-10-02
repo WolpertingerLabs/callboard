@@ -2,9 +2,9 @@
  * Storage + artifact tools — folded into the always-on `callboard-tools`
  * server (see callboard-tools.ts), so every session can use them.
  *
- *   Storage:   list_storage_keys, create_storage_key, list_storage_items,
- *              read_storage_item, save_storage_item, delete_storage_item,
- *              delete_storage_key
+ *   Storage:   list_storage_keys, create_storage_key, update_storage_key,
+ *              list_storage_items, read_storage_item, save_storage_item,
+ *              delete_storage_item, delete_storage_key
  *   Artifacts: list_artifacts, read_artifact, save_artifact, delete_artifact,
  *              render_artifact (a UI tool — see CALLBOARD_UI_TOOLS)
  *
@@ -20,7 +20,14 @@ import { closeSync, readFileSync } from "fs";
 import { z } from "zod";
 import { defineTool } from "../agents/ports/tools.js";
 import type { AnyToolDefinition, ToolCallResult } from "../agents/ports/tools.js";
-import { ARTIFACT_CONTENT_TYPES, ARTIFACT_STORAGE_ACCESS } from "shared/types/index.js";
+import {
+  ARTIFACT_CONTENT_TYPES,
+  ARTIFACT_ID_PATTERN,
+  ARTIFACT_STORAGE_ACCESS,
+  STORAGE_KEY_MAX_ARTIFACTS,
+  storageKeyBindingRefusal,
+  storageKeyBindsArtifact,
+} from "shared/types/index.js";
 import type { RenderArtifactToolResult } from "shared/types/index.js";
 import {
   STORAGE_MAX_ITEM_BYTES,
@@ -32,12 +39,14 @@ import {
   decodeBase64Strict,
   deleteStorageItem,
   deleteStorageKey,
+  getStorageKeyArtifacts,
   listStorageItems,
   listStorageKeys,
   openStorageItem,
   saveStorageItem,
   saveStorageItemFromFile,
   storageKeyExists,
+  updateStorageKey,
 } from "./storage-service.js";
 import { deleteArtifact, getArtifact, listArtifacts, readArtifactVersion, saveArtifact, saveArtifactFromFile } from "./artifact-service.js";
 import { createLogger } from "../utils/logger.js";
@@ -90,13 +99,25 @@ function isTextual(mimeType: string): boolean {
 
 const MB = (n: number) => `${n / 1024 / 1024}MB`;
 
+/** How a key's `artifacts` list works — shared by create_storage_key and update_storage_key. */
+const ARTIFACTS_LIST_RULE =
+  "artifacts lists the ids of the artifacts this key is designed for: ONLY those artifacts can be rendered against the key (read or write) — " +
+  "a key with no list binds none. The list never grants more than an artifact's own storage_access, and ids that no longer exist are allowed. " +
+  `Up to ${STORAGE_KEY_MAX_ARTIFACTS} ids, each ${ARTIFACT_ID_PATTERN.source}; duplicates are dropped.`;
+
+const ARTIFACTS_ARG = z
+  .array(z.string())
+  .optional()
+  .describe('Artifact ids this key is designed for, e.g. ["cramhouse"] — the only artifacts that can bind to it');
+
 export function buildStorageArtifactTools(): AnyToolDefinition[] {
   return [
     // ── Storage ─────────────────────────────────────────────────────
 
     defineTool(
       "list_storage_keys",
-      "List the Callboard storage catalogue: every storage key (a named bucket of items) with its description, item count, total size and last update. " +
+      "List the Callboard storage catalogue: every storage key (a named bucket of items) with its description, the ids of the artifacts it is " +
+        "designed for (`artifacts` — the only artifacts that can be bound to it), item count, total size and last update. " +
         "Storage is shared with the user — they browse the same keys in Settings → Storage.",
       {},
       async () => guard("list_storage_keys", () => ok({ keys: listStorageKeys() })),
@@ -105,12 +126,47 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
     defineTool(
       "create_storage_key",
       "Create a new, empty storage key (a named bucket for items). Errors if the key already exists. Keys are lowercase slugs: " +
-        '^[a-z0-9][a-z0-9._-]{0,63}$ (e.g. "cramhouse-birds-of-europe").',
+        '^[a-z0-9][a-z0-9._-]{0,63}$ (e.g. "cramhouse-birds-of-europe"). ' +
+        ARTIFACTS_LIST_RULE,
       {
         key: z.string().describe('The new key, e.g. "project-notes"'),
         description: z.string().optional().describe("What this key holds (shown in the catalogue)"),
+        artifacts: ARTIFACTS_ARG,
       },
-      async (args) => guard("create_storage_key", async () => ok({ key: await createStorageKey(args.key, args.description) })),
+      async (args) => guard("create_storage_key", async () => ok({ key: await createStorageKey(args.key, args.description, args.artifacts) })),
+    ),
+
+    defineTool(
+      "update_storage_key",
+      "Change a storage key's metadata: its description and/or the list of artifacts it is designed for. Fields you omit are left as they are. " +
+        "To change the list, prefer add_artifacts / remove_artifacts: they are applied to the list as it is stored at that moment, so a concurrent " +
+        "change by the user or another agent is kept (adding a present id or removing an absent one is a no-op). artifacts instead REPLACES the " +
+        "whole list ([] means no artifact binds the key) — it overwrites any change made since you last read the list, so use it only to set the " +
+        "list deliberately. artifacts cannot be combined with add_artifacts / remove_artifacts, and an id cannot be in both of those. " +
+        ARTIFACTS_LIST_RULE,
+      {
+        key: z.string().describe("The storage key"),
+        description: z.string().optional().describe("New description (an empty string clears it)"),
+        add_artifacts: z.array(z.string()).optional().describe('Artifact ids to add to the key\'s list, e.g. ["cramhouse"] (preferred for edits)'),
+        remove_artifacts: z.array(z.string()).optional().describe("Artifact ids to remove from the key's list (preferred for edits)"),
+        artifacts: ARTIFACTS_ARG.describe("Replaces the whole list ([] = none); overwrites concurrent changes — prefer add_artifacts / remove_artifacts"),
+      },
+      async (args) =>
+        guard("update_storage_key", async () => {
+          if (args.description === undefined && args.artifacts === undefined && args.add_artifacts === undefined && args.remove_artifacts === undefined) {
+            return error("Provide description, artifacts, or add_artifacts / remove_artifacts");
+          }
+          if (args.artifacts !== undefined && (args.add_artifacts !== undefined || args.remove_artifacts !== undefined)) {
+            return error("artifacts replaces the whole list; it cannot be combined with add_artifacts / remove_artifacts");
+          }
+          const { items: _items, ...key } = await updateStorageKey(args.key, {
+            description: args.description,
+            artifacts: args.artifacts,
+            addArtifacts: args.add_artifacts,
+            removeArtifacts: args.remove_artifacts,
+          });
+          return ok({ key });
+        }),
     ),
 
     defineTool(
@@ -241,9 +297,16 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
     defineTool(
       "list_artifacts",
       "List Callboard artifacts: named, versioned, reusable single-file HTML apps, SVGs and markdown documents. Each has a stable id, a content type, " +
-        "the storage access it may be granted, and its current version.",
+        "the storage access it may be granted, its current version, and storage_keys: the keys whose artifacts list names it (the only keys it can be " +
+        "rendered against).",
       {},
-      async () => guard("list_artifacts", () => ok({ artifacts: listArtifacts() })),
+      async () =>
+        guard("list_artifacts", () => {
+          const keys = listStorageKeys();
+          return ok({
+            artifacts: listArtifacts().map((a) => ({ ...a, storage_keys: keys.filter((k) => storageKeyBindsArtifact(k.artifacts, a.id)).map((k) => k.key) })),
+          });
+        }),
     ),
 
     defineTool(
@@ -265,7 +328,8 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       "Create an artifact, or save a new immutable version of an existing one. An artifact is a single-file HTML app (inline CSS/JS), an SVG, or a markdown " +
         "document, rendered in chat with render_artifact. HTML artifacts run in a sandbox that cannot fetch/XHR or load any remote resource; their only data " +
         "source is window.callboard.storage — list(), read(name, {as: 'text'|'json'|'dataUrl'}), write(name, data, {mimeType}), delete(name) — scoped to the ONE " +
-        "storage key bound at render time (await window.callboard.ready first; it resolves to {storageKey, access}, or unbound with a reason if the host " +
+        "storage key bound at render time, which must list the artifact's id in its artifacts (create_storage_key / update_storage_key); the artifact itself " +
+        "can never change that list (await window.callboard.ready first; it resolves to {storageKey, access}, or unbound with a reason if the host " +
         "never answers within 10s, e.g. after navigating back into the frame). Storage calls are rate-limited host-side by ONE budget for the whole " +
         "browser tab — 105 requests a minute with a burst of 20 — divided evenly between the renders making requests (each has its own share, which no other " +
         "render can spend), and at most 4 in flight per render (the shim queues the rest). A call costs 1, and re-checking the artifact's access costs 1 more " +
@@ -327,7 +391,10 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       "render_artifact",
       "Render an artifact in the chat UI. HTML runs in a sandboxed frame that cannot fetch or load remote resources; SVG shows as an image; markdown is " +
         "rendered as a document. Pass storage_key to bind ONE existing storage key to this render: the artifact then reads (and, if its storage_access is " +
-        "readwrite, writes) that key's items through window.callboard.storage. Binding requires the artifact's storage_access to be read or readwrite; each " +
+        "readwrite, writes) that key's items through window.callboard.storage. Binding requires the artifact's storage_access to be read or readwrite AND " +
+        "the key to be designed for this artifact — its artifacts list (see list_storage_keys) must contain the artifact's id; an artifact not on the " +
+        "list does not bind to the key at all (add it with update_storage_key, or the user can in Settings → Storage). Removing it from the list later " +
+        "revokes live renders within seconds, like lowering its storage_access. Each " +
         "time the render is shown it is granted at most the artifact's CURRENT storage_access, and nothing if that version has since been deleted or replaced; " +
         "while it is shown, lowering the artifact's storage_access or deleting it takes effect at the next write (and within seconds for reads). " +
         "Every render bound to a key is an independent live instance: two chat bubbles bound readwrite to the same key do not see each other's writes " +
@@ -354,6 +421,10 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
               );
             }
             if (!storageKeyExists(args.storage_key)) return error(`Storage key not found: ${args.storage_key}`);
+            // The key's list decides whether this artifact binds to it at all; the host enforces it again on every mount and live.
+            if (!storageKeyBindsArtifact(getStorageKeyArtifacts(args.storage_key), artifact.id)) {
+              return error(`Cannot bind: ${storageKeyBindingRefusal(args.storage_key, artifact.id)}`);
+            }
           }
           const result: RenderArtifactToolResult = {
             type: "render_artifact",

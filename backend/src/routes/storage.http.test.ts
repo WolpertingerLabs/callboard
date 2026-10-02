@@ -212,4 +212,76 @@ describe("REST surface", () => {
     expect(res.status).toBe(413);
     expect(svc.listStorageItems("big")).toEqual([]);
   });
+
+  it("POST/PATCH carry the key's artifacts list; GET and the listing return it; invalid lists are a 400 that changes nothing", async () => {
+    const json = { "Content-Type": "application/json" };
+    const body = async (r: Promise<{ status: number; body: Buffer }>) => {
+      const res = await r;
+      return { status: res.status, json: JSON.parse(res.body.toString()) };
+    };
+    const created = await body(server.request("POST", "/api/storage", JSON.stringify({ key: "designed", artifacts: ["cramhouse", "cramhouse"] }), json));
+    expect(created.status).toBe(201);
+    expect(created.json.key).toMatchObject({ key: "designed", artifacts: ["cramhouse"] });
+    expect((await body(server.request("GET", "/api/storage/designed"))).json.key.artifacts).toEqual(["cramhouse"]);
+    expect((await body(server.request("GET", "/api/storage"))).json.keys.find((k: { key: string }) => k.key === "designed").artifacts).toEqual(["cramhouse"]);
+    // A key created without one binds nothing.
+    expect((await body(server.request("GET", "/api/storage/k"))).json.key.artifacts).toEqual([]);
+
+    // PATCH with only artifacts leaves the description; with only a description leaves the list.
+    await server.request("PATCH", "/api/storage/designed", JSON.stringify({ description: "Birds" }), json);
+    const patched = await body(server.request("PATCH", "/api/storage/designed", JSON.stringify({ artifacts: ["flag-deck", "gone-one"] }), json));
+    expect(patched.status).toBe(200);
+    expect(patched.json.key).toMatchObject({ description: "Birds", artifacts: ["flag-deck", "gone-one"] });
+
+    for (const bad of [{}, { artifacts: "flag-deck" }, { artifacts: ["Flag Deck"] }, { artifacts: [1] }, { artifacts: Array.from({ length: 33 }, (_, i) => `a${i}`) }, { description: 5 }]) {
+      const r = await body(server.request("PATCH", "/api/storage/designed", JSON.stringify(bad), json));
+      expect(r.status, JSON.stringify(bad)).toBe(400);
+      expect(r.json.error).toBeTruthy();
+    }
+    expect((await body(server.request("POST", "/api/storage", JSON.stringify({ key: "bad-list", artifacts: ["../x"] }), json))).status).toBe(400);
+    expect(svc.storageKeyExists("bad-list")).toBe(false);
+    expect(svc.getStorageKey("designed")).toMatchObject({ description: "Birds", artifacts: ["flag-deck", "gone-one"] });
+    expect((await server.request("PATCH", "/api/storage/missing", JSON.stringify({ artifacts: [] }), json)).status).toBe(404);
+  });
+
+  /**
+   * The review's reproduction (PR #462), over HTTP: a tab read the list, then
+   * another client narrowed it; the tab's save of one tick is a delta, so what
+   * the other client removed stays removed.
+   */
+  it("PATCH addArtifacts/removeArtifacts applies to the stored list, so a stale tab cannot re-add what another client removed", async () => {
+    const json = { "Content-Type": "application/json" };
+    const patch = async (b: unknown) => {
+      const res = await server.request("PATCH", "/api/storage/race", JSON.stringify(b), json);
+      return { status: res.status, json: JSON.parse(res.body.toString()) };
+    };
+    await svc.createStorageKey("race", undefined, ["app-a", "app-b", "ghost"]);
+    // The tab opens its editor on ["app-a","app-b","ghost"]; another client then replaces the list.
+    expect((await patch({ artifacts: ["app-a"] })).json.key.artifacts).toEqual(["app-a"]);
+    // The tab ticks app-p and saves just that.
+    const saved = await patch({ addArtifacts: ["app-p"] });
+    expect(saved.status).toBe(200);
+    expect(saved.json.key.artifacts).toEqual(["app-a", "app-p"]);
+    expect(svc.getStorageKeyArtifacts("race")).toEqual(["app-a", "app-p"]);
+
+    // Two clients' deltas in flight at once both land.
+    await Promise.all([patch({ addArtifacts: ["from-a"] }), patch({ removeArtifacts: ["app-a"] }), patch({ addArtifacts: ["from-b"], removeArtifacts: ["absent"] })]);
+    expect(svc.getStorageKeyArtifacts("race")).toEqual(["app-p", "from-a", "from-b"]);
+
+    // Replace and delta are exclusive; bad ids, an id on both sides and growth past the cap are 400s that change nothing.
+    for (const bad of [
+      { artifacts: ["x"], addArtifacts: ["y"] },
+      { artifacts: [], removeArtifacts: ["app-p"] },
+      { addArtifacts: ["Not An Id"] },
+      { removeArtifacts: "app-p" },
+      { addArtifacts: ["x"], removeArtifacts: ["x"] },
+      { addArtifacts: Array.from({ length: 30 }, (_, i) => `n${i}`) },
+    ]) {
+      const res = await patch(bad);
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+      expect(typeof res.json.error).toBe("string");
+    }
+    expect(svc.getStorageKeyArtifacts("race")).toEqual(["app-p", "from-a", "from-b"]);
+    expect((await server.request("PATCH", "/api/storage/missing", JSON.stringify({ addArtifacts: ["a"] }), json)).status).toBe(404);
+  });
 });
