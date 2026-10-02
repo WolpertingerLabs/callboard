@@ -5,13 +5,13 @@
  * The pass condition is never just a status code: a refused import must also
  * leave no agent behind and no byte outside the workspace.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import AdmZip from "adm-zip";
 import { spawnSync } from "node:child_process";
 import {
-  chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -24,7 +24,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listenRaw, type RawServer } from "./__fixtures__/raw-http.js";
 
@@ -34,8 +34,20 @@ const OUTSIDE = mkdtempSync(join(tmpdir(), "callboard-import-sec-outside-"));
 
 vi.mock("../services/cron-scheduler.js", () => ({ scheduleJob: vi.fn() }));
 vi.mock("../services/reasoning-capabilities.js", () => ({ assertStoredReasoningEffort: vi.fn(async () => {}) }));
+// createAgent is the real one unless a test sets a failure for it.
+const fileService = vi.hoisted(() => ({ createAgentFailure: null as Error | null }));
+vi.mock("../services/agent-file-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-file-service.js")>();
+  return {
+    ...actual,
+    createAgent: (config: Parameters<typeof actual.createAgent>[0]) => {
+      if (fileService.createAgentFailure) throw fileService.createAgentFailure;
+      return actual.createAgent(config);
+    },
+  };
+});
 
-const { agentExportImportRouter, readEntryData } = await import("./agent-export-import.js");
+const { agentExportImportRouter, readEntryData, workspaceFs } = await import("./agent-export-import.js");
 const { WORKSPACES_DIR } = await import("../utils/paths.js");
 
 let server: RawServer;
@@ -44,6 +56,11 @@ beforeAll(async () => {
   const app = express();
   app.use("/api/agents", agentExportImportRouter);
   server = await listenRaw(app);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  fileService.createAgentFailure = null;
 });
 
 afterAll(async () => {
@@ -86,11 +103,13 @@ function setDeclaredSize(raw: Buffer, name: string, size: number): Buffer {
   return out;
 }
 
-async function upload(zip: Buffer): Promise<{ status: number; body: { error?: string } }> {
+type ImportBody = { error?: string; rollbackFailures?: { path: string; backup?: string; error: string }[] };
+
+async function upload(zip: Buffer): Promise<{ status: number; body: ImportBody }> {
   const form = new FormData();
   form.append("file", new Blob([new Uint8Array(zip)], { type: "application/zip" }), "agent.zip");
   const res = await fetch(`${server.origin}/api/agents/import`, { method: "POST", body: form });
-  return { status: res.status, body: (await res.json().catch(() => ({}))) as { error?: string } };
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as ImportBody };
 }
 
 const agentCreated = (alias = "probe") => existsSync(join(DATA, "agents", alias, "agent.json"));
@@ -217,6 +236,23 @@ describe("agent import: hostile archives", () => {
   });
 });
 
+describe("agent import: replacing a hard-linked file", () => {
+  it("replaces the workspace entry and never writes through a link to a file outside", async () => {
+    const victim = join(OUTSIDE, "victim");
+    writeFileSync(victim, "original");
+    const ws = join(WORKSPACES_DIR, "probe");
+    mkdirSync(ws, { recursive: true });
+    linkSync(victim, join(ws, "SOUL.md"));
+    const zip = baseZip();
+    zip.addFile("workspace/SOUL.md", Buffer.from("PWNED"));
+    const res = await upload(zip.toBuffer());
+    expect(res.status).toBe(201);
+    expect(readFileSync(victim, "utf8")).toBe("original");
+    expect(readFileSync(join(ws, "SOUL.md"), "utf8")).toBe("PWNED");
+    expect(readdirSync(ws).filter((n) => n.includes(".import-"))).toEqual([]);
+  });
+});
+
 describe("agent import: a refused import leaves the workspace byte-identical", () => {
   const ws = () => join(WORKSPACES_DIR, "partial");
 
@@ -247,13 +283,14 @@ describe("agent import: a refused import leaves the workspace byte-identical", (
     return zip.toBuffer();
   }
 
-  async function expectUntouched(zip: Buffer, status = 400): Promise<void> {
+  async function expectUntouched(zip: Buffer, status = 400): Promise<ImportBody> {
     const before = snapshot(ws());
     const res = await upload(zip);
     expect(res.status).toBe(status);
     expect(snapshot(ws())).toEqual(before);
     expect(outsideFiles()).toEqual([]);
     expect(agentCreated("partial")).toBe(false);
+    return res.body;
   }
 
   it("a planted memory -> outside symlink (the review's repro)", async () => {
@@ -274,15 +311,100 @@ describe("agent import: a refused import leaves the workspace byte-identical", (
     await expectUntouched(partialZip({ "workspace/B.md": "b" }));
   });
 
-  it.skipIf(process.getuid?.() === 0)("a write that fails after validation is rolled back", async () => {
+  type FsOp = keyof typeof workspaceFs;
+  type AnyFn = (...args: unknown[]) => unknown;
+
+  /** Wrap one workspaceFs op around whatever it currently does — stacking, never re-spying a spy onto itself. */
+  function wrapFs(op: FsOp, wrapper: (inner: AnyFn, args: unknown[]) => unknown): void {
+    const current = workspaceFs[op] as unknown as AnyFn & { getMockImplementation?: () => AnyFn | undefined };
+    const inner: AnyFn = vi.isMockFunction(current) ? current.getMockImplementation()! : current;
+    vi.spyOn(workspaceFs, op).mockImplementation(((...args: unknown[]) => wrapper(inner, args)) as never);
+  }
+
+  /** Make `op` throw when it touches a file whose name starts with `name` (and `when` agrees). */
+  function failOn(name: string, op: FsOp, when: (paths: string[]) => boolean = () => true): void {
+    wrapFs(op, (inner, args) => {
+      const paths = args.filter((a): a is string => typeof a === "string");
+      if (paths.some((p) => basename(p).replace(/^\./, "").toLowerCase().startsWith(name.toLowerCase())) && when(paths)) {
+        throw Object.assign(new Error(`injected ${op} failure`), { code: "EIO" });
+      }
+      return inner(...args);
+    });
+  }
+
+  it("a write that fails after validation is rolled back", async () => {
     seedWorkspace();
-    writeFileSync(join(ws(), "Z.md"), "read-only");
-    chmodSync(join(ws(), "Z.md"), 0o444);
-    try {
-      await expectUntouched(partialZip({ "workspace/Z.md": "z" }), 500);
-    } finally {
-      chmodSync(join(ws(), "Z.md"), 0o644);
-    }
+    failOn("zz.md", "openSync");
+    const before = snapshot(ws());
+    const res = await upload(partialZip({ "workspace/zz.md": "z" }));
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/injected \w+ failure.*nothing was changed/);
+    expect(res.body.rollbackFailures).toBeUndefined();
+    expect(snapshot(ws())).toEqual(before);
+    expect(agentCreated("partial")).toBe(false);
+  });
+
+  it("a failure before anything changed reports nothing changed and restores nothing", async () => {
+    seedWorkspace();
+    // The first rename of SOUL.md is the move to its backup; it never happens.
+    failOn("SOUL.md", "renameSync", ([from]) => basename(from) === "SOUL.md");
+    const before = snapshot(ws());
+    const res = await upload(partialZip({}));
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/injected \w+ failure.*nothing was changed/);
+    expect(res.body.rollbackFailures).toBeUndefined();
+    expect(snapshot(ws())).toEqual(before);
+  });
+
+  it("a restore that fails keeps the original on disk and says where", async () => {
+    seedWorkspace();
+    writeFileSync(join(ws(), "SOUL.md"), "precious original");
+    failOn("zz.md", "openSync");
+    failOn("SOUL.md", "renameSync", ([from]) => basename(from).includes(".import-backup-"));
+    const res = await upload(partialZip({ "workspace/zz.md": "z" }));
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/injected openSync failure/);
+    expect(res.body.error).not.toMatch(/nothing was changed/);
+    expect(res.body.error).toMatch(/SOUL\.md/);
+    expect(res.body.rollbackFailures).toEqual([{ path: "SOUL.md", backup: expect.stringMatching(/^\.SOUL\.md\.import-backup-/), error: expect.any(String) }]);
+    const backup = res.body.rollbackFailures![0].backup!;
+    expect(readFileSync(join(ws(), backup), "utf8")).toBe("precious original");
+    expect(agentCreated("partial")).toBe(false);
+  });
+
+  it("a memory/ directory the import created is removed on rollback", async () => {
+    seedWorkspace();
+    failOn("zz.md", "openSync");
+    const body = await expectUntouched(partialZip({ "workspace/memory/new.md": "m", "workspace/zz.md": "z" }), 500);
+    expect(body.error).toMatch(/injected openSync failure.*nothing was changed/);
+    expect(existsSync(join(ws(), "memory"))).toBe(false);
+  });
+
+  it("a createAgent failure after the workspace writes rolls them back", async () => {
+    seedWorkspace();
+    fileService.createAgentFailure = Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    const body = await expectUntouched(partialZip({ "workspace/memory/new.md": "m" }), 500);
+    expect(body.error).toMatch(/ENOSPC.*nothing was changed/);
+    expect(existsSync(join(DATA, "agents", "partial"))).toBe(false);
+  });
+
+  it("rolls back in reverse order (two names for one file, as on a case-insensitive filesystem)", async () => {
+    // Every workspaceFs call sees file names lowercased: SOUL.md and soul.md are one directory entry.
+    const lower = (p: unknown) => (typeof p === "string" ? join(dirname(p), basename(p).toLowerCase()) : p);
+    for (const op of Object.keys(workspaceFs) as FsOp[]) wrapFs(op, (inner, args) => inner(...args.map(lower)));
+    mkdirSync(ws(), { recursive: true });
+    writeFileSync(join(ws(), "soul.md"), "original");
+    failOn("zz.md", "openSync");
+    const zip = baseZip("partial");
+    zip.addFile("workspace/SOUL.md", Buffer.from("upper"));
+    zip.addFile("workspace/soul.md", Buffer.from("lower"));
+    zip.addFile("workspace/zz.md", Buffer.from("z"));
+    const before = snapshot(ws());
+    const res = await upload(zip.toBuffer());
+    expect(res.status).toBe(500);
+    expect(res.body.error).toMatch(/injected openSync failure/); // reached zz.md, i.e. both replacements happened
+    expect(readFileSync(join(ws(), "soul.md"), "utf8")).toBe("original");
+    expect(snapshot(ws())).toEqual(before);
   });
 });
 

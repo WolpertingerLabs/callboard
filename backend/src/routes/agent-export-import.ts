@@ -1,21 +1,26 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { randomBytes } from "crypto";
 import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fchmodSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   rmdirSync,
   type Stats,
+  unlinkSync,
   writeFileSync,
 } from "fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import archiver from "archiver";
 import AdmZip from "adm-zip";
 import multer from "multer";
@@ -130,9 +135,16 @@ export function readEntryData(entry: AdmZip.IZipEntry): Buffer {
   return entry.getData();
 }
 
+/**
+ * Every path-based fs call the workspace writer makes goes through here, so a
+ * test can inject a failure at any single step or give the writer a
+ * case-insensitive view of the disk.
+ */
+export const workspaceFs = { lstatSync, realpathSync, mkdirSync, rmdirSync, openSync, renameSync, linkSync, unlinkSync };
+
 function lstatOrNull(path: string): Stats | null {
   try {
-    return lstatSync(path);
+    return workspaceFs.lstatSync(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -143,6 +155,8 @@ interface PlannedWrite {
   target: string;
   data: Buffer;
   existing: boolean;
+  /** Permission bits for the new file: the replaced file's (minus setuid/setgid/sticky), else 0o644. */
+  mode: number;
 }
 
 export interface WorkspacePlan {
@@ -187,80 +201,169 @@ export function planWorkspaceWrites(root: string, files: [relativePath: string, 
     const st = lstatOrNull(target);
     if (st?.isSymbolicLink()) throw new Error(`${relativePath} is a symbolic link`);
     if (st && !st.isFile()) throw new Error(`${relativePath} exists and is not a regular file`);
-    writes.push({ target, data, existing: st !== null });
+    writes.push({ target, data, existing: st !== null, mode: st ? st.mode & 0o777 : 0o644 });
   }
   return { root, rootExists: rootStat !== null, dirs: [...dirs], writes };
 }
 
-/** O_NOFOLLOW: a symlink at the final component fails with ELOOP instead of being written through. */
-function writeNoFollow(target: string, data: Buffer, flag: number): void {
-  const fd = openSync(target, fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW | flag, 0o644);
+/** A not-yet-existing sibling of `target`. Neither suffix ends in `.md`, so a leftover is never exported. */
+function sideName(target: string, kind: "tmp" | "backup"): string {
+  return join(dirname(target), `.${basename(target)}.import-${kind}-${randomBytes(6).toString("hex")}`);
+}
+
+/** Write `data` to a fresh temp sibling of `target` (O_EXCL|O_NOFOLLOW) and return its path. */
+function writeTemp(target: string, data: Buffer, mode: number): string {
+  const temp = sideName(target, "tmp");
+  const fd = workspaceFs.openSync(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
   try {
+    fchmodSync(fd, mode);
     writeFileSync(fd, data);
-  } finally {
+  } catch (error) {
     closeSync(fd);
+    workspaceFs.unlinkSync(temp);
+    throw error;
+  }
+  closeSync(fd);
+  return temp;
+}
+
+type WorkspaceChange = { kind: "dir"; path: string } | { kind: "created"; path: string } | { kind: "replaced"; path: string; backup: string };
+
+/** A change rollback could not undo. `backup`, when set, is where the original still is. Paths are workspace-relative. */
+export interface RollbackFailure {
+  path: string;
+  backup?: string;
+  error: string;
+}
+
+export class WorkspaceWriteError extends Error {
+  constructor(
+    readonly cause: Error,
+    readonly rollbackFailures: RollbackFailure[],
+  ) {
+    super(cause.message);
   }
 }
 
+export interface AppliedWorkspace {
+  /** Keep the writes: delete the backups. */
+  commit(): void;
+  /** Undo the writes, newest first. Returns what could not be undone; those backups stay on disk. */
+  rollback(): RollbackFailure[];
+}
+
 /**
- * Carry out a validated plan, all or nothing: an existing file is backed up
- * before it is truncated, and on any failure every backup is restored and
- * every file and directory this call created is removed. New files are
- * created O_EXCL with mode 0o644; archive permission bits are never applied.
+ * Carry out a validated plan without ever truncating a file in place, so that
+ * a crash at any point leaves each original either at its own path or at an
+ * on-disk backup beside it:
+ *
+ *  - the new bytes go to a temp sibling first (O_EXCL|O_NOFOLLOW);
+ *  - an existing file is renamed aside to a unique backup, then the temp is
+ *    renamed over the target. A rename replaces the directory entry, so a
+ *    planted hard link to a file outside the workspace is never written
+ *    through, and the archive's permission bits never apply;
+ *  - a new file is published with link(temp, target), which fails instead of
+ *    clobbering something that appeared since the plan.
+ *
+ * Each change is recorded only once it has happened. On failure the changes
+ * are undone newest-first and a WorkspaceWriteError says what, if anything,
+ * could not be. On success the caller decides: commit() deletes the backups,
+ * rollback() undoes everything (e.g. when createAgent then fails). A crash
+ * can leave `.<name>.import-tmp-*` / `.import-backup-*` siblings behind.
  *
  * Accepted TOCTOU: between planWorkspaceWrites' lstat walk (and the realpath
- * check below) and openSync, a parent directory could be swapped for a
- * symlink — O_NOFOLLOW covers only the last component, and Node has no
+ * check below) and the open/rename calls, a parent directory could be swapped
+ * for a symlink — O_NOFOLLOW covers only the last component, and Node has no
  * openat() to pin the parent. Racing it needs a same-user shell, which can
  * already write anywhere the daemon can; the window is microseconds; and the
  * only reachable names are `*.md` at most two levels deep.
  */
-export function applyWorkspacePlan(plan: WorkspacePlan): void {
-  const createdDirs: string[] = [];
-  const createdFiles: string[] = [];
-  const backups: [string, Buffer][] = [];
+export function applyWorkspacePlan(plan: WorkspacePlan): AppliedWorkspace {
+  const changes: WorkspaceChange[] = [];
+  const rel = (path: string) => relative(plan.root, path) || ".";
+
+  const rollback = (): RollbackFailure[] => {
+    const failures: RollbackFailure[] = [];
+    for (const change of changes.splice(0).reverse()) {
+      try {
+        if (change.kind === "replaced") workspaceFs.renameSync(change.backup, change.path);
+        else if (change.kind === "created") workspaceFs.unlinkSync(change.path);
+        else workspaceFs.rmdirSync(change.path);
+      } catch (error) {
+        const failure: RollbackFailure = { path: rel(change.path), error: (error as Error).message };
+        if (change.kind === "replaced") failure.backup = rel(change.backup);
+        log.error(`Import rollback: could not undo ${change.kind} ${failure.path}: ${failure.error}${failure.backup ? `; original kept at ${failure.backup}` : ""}`);
+        failures.push(failure);
+      }
+    }
+    return failures;
+  };
+
   try {
     if (!plan.rootExists) {
-      mkdirSync(dirname(plan.root), { recursive: true });
-      mkdirSync(plan.root);
-      createdDirs.push(plan.root);
+      workspaceFs.mkdirSync(dirname(plan.root), { recursive: true });
+      workspaceFs.mkdirSync(plan.root);
+      changes.push({ kind: "dir", path: plan.root });
     }
     for (const dir of plan.dirs) {
-      mkdirSync(dir); // not recursive: EEXIST if something appeared since the plan
-      createdDirs.push(dir);
+      workspaceFs.mkdirSync(dir); // not recursive: EEXIST if something appeared since the plan
+      changes.push({ kind: "dir", path: dir });
     }
-    const realRoot = realpathSync(plan.root);
-    for (const { target, data, existing } of plan.writes) {
-      const realParent = realpathSync(dirname(target));
+    const realRoot = workspaceFs.realpathSync(plan.root);
+    for (const { target, data, existing, mode } of plan.writes) {
+      const realParent = workspaceFs.realpathSync(dirname(target));
       if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) {
-        throw new Error(`path escapes the workspace through a symbolic link: ${relative(plan.root, target)}`);
+        throw new Error(`path escapes the workspace through a symbolic link: ${rel(target)}`);
       }
-      if (existing) {
-        backups.push([target, readFileSync(target)]);
-        writeNoFollow(target, data, fsConstants.O_TRUNC);
-      } else {
-        writeNoFollow(target, data, fsConstants.O_CREAT | fsConstants.O_EXCL);
-        createdFiles.push(target);
+      const temp = writeTemp(target, data, mode);
+      try {
+        if (existing) {
+          const backup = sideName(target, "backup");
+          workspaceFs.renameSync(target, backup);
+          changes.push({ kind: "replaced", path: target, backup });
+          workspaceFs.renameSync(temp, target);
+        } else {
+          workspaceFs.linkSync(temp, target);
+          changes.push({ kind: "created", path: target });
+        }
+      } finally {
+        // Gone already when it was renamed into place.
+        try {
+          workspaceFs.unlinkSync(temp);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") log.warn(`Import: could not remove ${rel(temp)}: ${(error as Error).message}`);
+        }
       }
     }
   } catch (error) {
-    for (const [target, original] of backups.reverse()) {
-      try {
-        writeNoFollow(target, original, fsConstants.O_TRUNC);
-      } catch (restoreError) {
-        log.error(`Import rollback: could not restore ${target}: ${(restoreError as Error).message}`);
-      }
-    }
-    for (const target of createdFiles) rmSync(target, { force: true });
-    for (const dir of createdDirs.reverse()) {
-      try {
-        rmdirSync(dir);
-      } catch (rmError) {
-        log.error(`Import rollback: could not remove ${dir}: ${(rmError as Error).message}`);
-      }
-    }
-    throw error;
+    throw new WorkspaceWriteError(error as Error, rollback());
   }
+
+  return {
+    commit() {
+      for (const change of changes.splice(0)) {
+        if (change.kind !== "replaced") continue;
+        try {
+          workspaceFs.unlinkSync(change.backup);
+        } catch (error) {
+          log.warn(`Import: could not remove backup ${rel(change.backup)}: ${(error as Error).message}`);
+        }
+      }
+    },
+    rollback,
+  };
+}
+
+/** The 500 body for a failed workspace write: "nothing was changed" only when that is true. */
+function workspaceFailureBody(error: WorkspaceWriteError): { error: string; rollbackFailures?: RollbackFailure[] } {
+  if (error.rollbackFailures.length === 0) {
+    return { error: `Could not write workspace files (${error.cause.message}); nothing was changed` };
+  }
+  const where = error.rollbackFailures.map((f) => (f.backup ? `${f.path} (original kept at ${f.backup})` : `${f.path} (${f.error})`)).join("; ");
+  return {
+    error: `Could not write workspace files (${error.cause.message}), and the rollback was incomplete: ${where}`,
+    rollbackFailures: error.rollbackFailures,
+  };
 }
 
 // ── Export: GET /api/agents/:alias/export ──────────────────────────
@@ -474,8 +577,9 @@ agentExportImportRouter.post("/import", withUploadErrors(upload.single("file"), 
   const alias = agentConfig.alias;
 
   // ── Write workspace files ─────────────────────────────────
-  // Before createAgent, and all or nothing: every target is validated before
-  // the first write, and a write that still fails is rolled back.
+  // All or nothing: every target is validated before the first write, and a
+  // write that still fails — or a createAgent that fails after them — is
+  // rolled back. Backups are only deleted once the agent exists.
   const workspaceFiles = [...contents]
     .filter(([name]) => name.startsWith("workspace/"))
     .map(([name, data]): [string, Buffer] => [name.slice("workspace/".length), data]);
@@ -488,19 +592,31 @@ agentExportImportRouter.post("/import", withUploadErrors(upload.single("file"), 
     res.status(400).json({ error: `Import refused: ${(error as Error).message}` });
     return;
   }
+  let applied: AppliedWorkspace;
   try {
-    applyWorkspacePlan(plan);
+    applied = applyWorkspacePlan(plan);
   } catch (error) {
-    log.error(`Import failed — ${alias}: ${(error as Error).message}; workspace rolled back`);
-    res.status(500).json({ error: `Could not write workspace files (${(error as Error).message}); nothing was changed` });
+    const failure = error instanceof WorkspaceWriteError ? error : new WorkspaceWriteError(error as Error, []);
+    log.error(`Import failed — ${alias}: ${failure.message}`);
+    res.status(500).json(workspaceFailureBody(failure));
     return;
   }
-  const workspacePath = ensureAgentWorkspaceDir(alias);
 
   // ── Write agent data ──────────────────────────────────────
   // Set createdAt to now
   agentConfig.createdAt = Date.now();
-  createAgent(agentConfig);
+  const agentDirExisted = existsSync(getAgentDataDir(alias));
+  try {
+    createAgent(agentConfig);
+  } catch (error) {
+    if (!agentDirExisted) rmSync(getAgentDataDir(alias), { recursive: true, force: true });
+    const failure = new WorkspaceWriteError(error as Error, applied.rollback());
+    log.error(`Import failed creating ${alias}: ${failure.message}`);
+    res.status(500).json(workspaceFailureBody(failure));
+    return;
+  }
+  applied.commit();
+  const workspacePath = ensureAgentWorkspaceDir(alias);
 
   const dataDir = getAgentDataDir(alias);
 
