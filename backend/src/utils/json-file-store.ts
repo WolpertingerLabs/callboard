@@ -4,14 +4,17 @@
  *
  * - Writes are atomic (tmp + rename, see atomic-write.ts) and created 0o600:
  *   these files hold secrets, and a crash mid-write must not leave a
- *   truncated file behind.
+ *   truncated file behind. No fsync: tmp + rename is what prevents truncation,
+ *   and sessions.json is rewritten on authenticated requests, where a
+ *   synchronous fsync of file and directory would stall the event loop.
  * - The cache is keyed on the file's real stat (inode, mtimeNs, size), so an
  *   out-of-band edit or replacement is picked up on the next load.
  * - A file that fails to parse does not throw. It is renamed aside to
  *   `<file>.corrupt-<timestamp>` (kept for inspection, never overwritten) and
  *   the store continues empty. For sessions that logs everyone out, which beats
  *   the alternative: every auth check throwing until someone fixes the file by
- *   hand. Nothing is written until the next legitimate save.
+ *   hand. The next load finds no file and recreates it empty; the corrupt
+ *   copy is never touched again.
  */
 import { renameSync, readFileSync, statSync, type BigIntStats } from "fs";
 import { atomicWriteFileSync } from "./atomic-write.js";
@@ -58,7 +61,7 @@ export function createJsonFileStore<T>(filePath: string, empty: () => T): JsonFi
   }
 
   function save(data: T): void {
-    atomicWriteFileSync(filePath, JSON.stringify(data, null, 2), { mode: SECRET_FILE_MODE });
+    atomicWriteFileSync(filePath, JSON.stringify(data, null, 2), { mode: SECRET_FILE_MODE, fsync: false });
     remember(data, statOrNull(filePath));
   }
 

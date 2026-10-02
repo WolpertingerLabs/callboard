@@ -53,10 +53,15 @@ export function createSession(token: string, expiresAt: number, ip?: string): vo
   saveSessions(data);
 }
 
+// Every cookie-authenticated request rolls its session. The stored expiry only
+// needs to be roughly current, so skip the rewrite unless it moves by more than
+// this — the same throttle api-keys applies to last_used_at.
+const EXTEND_WRITE_THRESHOLD_MS = 60 * 1000;
+
 export function extendSession(token: string, newExpiresAt: number): void {
   const data = loadSessions();
   const session = data.sessions[token];
-  if (session) {
+  if (session && newExpiresAt - session.expires_at > EXTEND_WRITE_THRESHOLD_MS) {
     session.expires_at = newExpiresAt;
     saveSessions(data);
   }

@@ -14,6 +14,16 @@ export interface DurableWriteOptions {
   mode?: number;
 }
 
+export interface AtomicWriteOptions extends DurableWriteOptions {
+  /**
+   * fsync the tmp file and the directory (default true). Without it the write
+   * is still atomic against a process crash — tmp + rename never exposes a
+   * truncated file — but not guaranteed durable across a power loss. Turn it
+   * off for small files rewritten on a hot path.
+   */
+  fsync?: boolean;
+}
+
 /** Write a new file (`wx`) and fsync its data before returning (fsync flushes the inode, whichever descriptor asks). */
 export function writeFileDurableSync(file: string, data: string | Buffer, options: DurableWriteOptions = {}): void {
   writeFileSync(file, data, { flag: "wx", ...(options.mode !== undefined ? { mode: options.mode } : {}) });
@@ -44,16 +54,19 @@ export function fsyncDirSync(dir: string): void {
 
 /**
  * Write `data` to `target` via a pid-suffixed dot-prefixed tmp file + rename,
- * durably (tmp fsynced before the rename, the directory after). The tmp is
+ * durably (tmp fsynced before the rename, the directory after — unless
+ * `fsync: false`). The tmp is
  * unlinked on failure; one orphaned by a crash is named
  * `.<basename>.<pid>.<8 hex>.tmp`.
  */
-export function atomicWriteFileSync(target: string, data: string | Buffer, options: DurableWriteOptions = {}): void {
+export function atomicWriteFileSync(target: string, data: string | Buffer, options: AtomicWriteOptions = {}): void {
+  const { fsync = true, ...writeOptions } = options;
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
   try {
-    writeFileDurableSync(tmp, data, options);
+    if (fsync) writeFileDurableSync(tmp, data, writeOptions);
+    else writeFileSync(tmp, data, { flag: "wx", ...(writeOptions.mode !== undefined ? { mode: writeOptions.mode } : {}) });
     renameSync(tmp, target);
-    fsyncDirSync(path.dirname(target));
+    if (fsync) fsyncDirSync(path.dirname(target));
   } catch (err) {
     try {
       unlinkSync(tmp);
