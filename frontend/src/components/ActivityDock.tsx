@@ -167,8 +167,10 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
 
         {/* A watch with no live wait means the agent is between polls — doing
             its check right now. Without this the row would vanish and reappear
-            every interval. */}
-        {conditionWatch && !primary && (
+            every interval. An exhausted watch is not being polled at all: `wait`
+            has refused further attempts and the server keeps the record only to
+            deny the same condition a fresh budget, so it gets no line. */}
+        {conditionWatch && !conditionWatch.exhausted && !primary && (
           <span>
             Checking: {conditionWatch.text} (attempt {conditionWatch.attempts}/{conditionWatch.maxAttempts})
           </span>
