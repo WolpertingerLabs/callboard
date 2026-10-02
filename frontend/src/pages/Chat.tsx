@@ -483,11 +483,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     },
     [refreshActivity],
   );
+  // A trailing read queued for the chat being left would only spend a
+  // rate-limited request on an answer refreshActivity then drops.
   useEffect(
     () => () => {
-      if (streamEndReadRef.current.timer) clearTimeout(streamEndReadRef.current.timer);
+      const gate = streamEndReadRef.current;
+      if (gate.timer) clearTimeout(gate.timer);
+      gate.timer = null;
     },
-    [],
+    [id],
   );
 
   const handleReleaseActivity = useCallback(

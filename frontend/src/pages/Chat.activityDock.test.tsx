@@ -22,7 +22,7 @@
 import { useSyncExternalStore } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import Chat from "./Chat";
 import { getActivity, stopChat } from "../api";
 import type { ChatActivityResponse } from "../api";
@@ -166,6 +166,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
@@ -174,6 +175,18 @@ afterEach(() => {
 const CHECKING = /Checking: CI to finish \(attempt 3\/20\)/;
 const reads = () => vi.mocked(getActivity).mock.calls.length;
 const settle = (ms = 100) => act(() => new Promise((resolve) => setTimeout(resolve, ms)));
+
+function ChatWithSwitch() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate("/chat/c2")}>
+        open c2
+      </button>
+      <Chat />
+    </>
+  );
+}
 
 function mount() {
   return render(
@@ -320,6 +333,31 @@ const LOOP_MODES: Array<[string, (c: Connect) => void]> = [
   ],
 ];
 
+/**
+ * Freeze the throttle's clock (`Date`, `setTimeout`) so its windows open and
+ * close only when the test says, however slow the box runs the loop. Promises,
+ * React's scheduler, `setInterval` and `performance` stay real, so the page
+ * still runs; `waitFor`'s own timeout is a faked setTimeout under vitest, so
+ * waits while frozen go through `pollUntil` instead.
+ */
+function freezeClock() {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+}
+
+/** Poll on the real `setInterval` with a real deadline. */
+async function pollUntil(check: () => boolean, timeoutMs: number, what: string) {
+  const deadline = performance.now() + timeoutMs;
+  while (!check()) {
+    if (performance.now() > deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
+    await act(() => new Promise<void>((resolve) => {
+      const t = setInterval(() => {
+        clearInterval(t);
+        resolve();
+      }, 10);
+    }));
+  }
+}
+
 it.each(LOOP_MODES)("keeps /activity reads bounded while the reconnect loop spins: %s", async (_label, fail) => {
   // The pre-existing auto-connect loop: registry still active, every connect
   // fails fast, and each failure reconnects at once. Capped at SPINS, after
@@ -331,17 +369,43 @@ it.each(LOOP_MODES)("keeps /activity reads bounded while the reconnect loop spin
   // baseline is taken before going live.
   let before = 0;
   await mountThenGoLive(() => {
+    freezeClock();
     before = reads();
     server.activity = TORN_DOWN;
   });
-  await waitFor(() => expect(connects).toHaveLength(SPINS + 1));
-  // Past the trailing read's window.
-  await settle(1_200);
-  const spent = reads() - before;
-  expect(spent).toBeGreaterThanOrEqual(1);
-  expect(spent).toBeLessThanOrEqual(2);
+  await pollUntil(() => connects.length === SPINS + 1, 10_000, `${SPINS} reconnects`);
+  // All SPINS stream ends fell in one window: one read at once…
+  expect(reads() - before).toBe(1);
+  // …and the rest collapsed into one trailing read when it closes.
+  await act(() => vi.advanceTimersByTimeAsync(1_000));
+  expect(reads() - before).toBe(2);
   // Bounded without losing the read that matters.
   expect(screen.queryByText(CHECKING)).toBeNull();
+});
+
+it("drops a trailing read still queued for the chat being left", async () => {
+  connectPlan = (i, c) => {
+    if (i < 2) c.reject(new TypeError("Failed to fetch"));
+  };
+  registry.set(null);
+  render(
+    <MemoryRouter initialEntries={["/chat/c1"]}>
+      <Routes>
+        <Route path="/chat/:id" element={<ChatWithSwitch />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByText(CHECKING);
+  freezeClock();
+  // Two stream ends for c1 inside one window: one read now, one queued.
+  await act(async () => registry.set({ type: "web", startedAt: 1 }));
+  await pollUntil(() => connects.length === 3, 10_000, "two failed connects");
+  const readsOf = (chatId: string) => vi.mocked(getActivity).mock.calls.filter(([arg]) => arg === chatId).length;
+  const c1Before = readsOf("c1");
+  fireEvent.click(screen.getByText("open c2"));
+  await pollUntil(() => readsOf("c2") > 0, 10_000, "c2's own read");
+  await act(() => vi.advanceTimersByTimeAsync(2_000));
+  expect(readsOf("c1")).toBe(c1Before);
 });
 
 it("still re-reads the last stream end when an earlier one in the window saw the watch", async () => {
