@@ -96,7 +96,7 @@ export function createJob(input: JobDefinitionInput, opts?: JobValidationOptions
   const id = input.id?.trim() || slugifyJobId(input.name);
   const errors = validateJobDefinition({ ...input, id }, opts);
   if (errors.length > 0) throw new JobValidationError(errors);
-  if (getJob(id)) throw new Error(`Job "${id}" already exists — use update_job to modify it`);
+  if (getJob(id)) throw new JobConflictError(`Job "${id}" already exists — use update_job to modify it`);
 
   const now = new Date().toISOString();
   const job: JobDefinition = {
@@ -120,7 +120,7 @@ export function createJob(input: JobDefinitionInput, opts?: JobValidationOptions
 
 export function updateJob(id: string, input: JobDefinitionInput, opts?: JobValidationOptions): JobDefinition {
   const existing = getJob(id);
-  if (!existing) throw new Error(`Job "${id}" not found`);
+  if (!existing) throw new JobNotFoundError(`Job "${id}" not found`);
   const errors = validateJobDefinition({ ...input, id }, opts);
   if (errors.length > 0) throw new JobValidationError(errors);
 
@@ -557,6 +557,22 @@ export function recordStepResult(runId: string, stepId: string, result: JobStepR
 }
 
 // ── Validation ──────────────────────────────────────────────────────
+
+/** A job or run that does not exist. The jobs routes answer 404. */
+export class JobNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JobNotFoundError";
+  }
+}
+
+/** A request the job's or run's current state refuses. The jobs routes answer 409. */
+export class JobConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JobConflictError";
+  }
+}
 
 export class JobValidationError extends Error {
   errors: string[];

@@ -14,17 +14,23 @@ import {
   importJobDefinition,
   JobValidationError,
   JobImportConflictError,
+  JobNotFoundError,
+  JobConflictError,
 } from "../services/job-store.js";
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "../services/job-runner.js";
 
 export const jobsRouter = Router();
 
+/**
+ * Map a job-store/job-runner error to a status by its type. Anything untyped —
+ * including a `TypeError` whose message happens to say "is not" — is a 500.
+ */
 function sendError(res: Response, err: any): void {
   if (err instanceof JobValidationError) {
     res.status(400).json({ error: err.message, errors: err.errors });
-  } else if (typeof err.message === "string" && err.message.includes("not found")) {
+  } else if (err instanceof JobNotFoundError) {
     res.status(404).json({ error: err.message });
-  } else if (typeof err.message === "string" && (err.message.includes("already exists") || err.message.includes("is not") || err.message.includes("cannot"))) {
+  } else if (err instanceof JobConflictError) {
     res.status(409).json({ error: err.message });
   } else {
     res.status(500).json({ error: err.message || "Internal error" });

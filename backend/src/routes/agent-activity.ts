@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { agentExists, getAgent } from "../services/agent-file-service.js";
+import { getAgent } from "../services/agent-file-service.js";
 import { getActivity, appendActivity } from "../services/agent-activity.js";
 import { getAllEvents } from "../services/event-log.js";
 import { resolveAgentKeyAlias } from "../services/agent-settings.js";
@@ -12,11 +12,6 @@ export const agentActivityRouter = Router({ mergeParams: true });
  *  Global proxy events are merged into the timeline as type="event" entries. */
 agentActivityRouter.get("/", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const type = req.query.type as ActivityEntry["type"] | undefined;
   const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
@@ -71,11 +66,6 @@ agentActivityRouter.get("/", (req: Request, res: Response): void => {
 /** POST /api/agents/:alias/activity — append a new activity entry */
 agentActivityRouter.post("/", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const { type, message, metadata } = req.body as Partial<ActivityEntry>;
 

@@ -255,8 +255,8 @@ export default function PluginsSettings() {
             style={{
               padding: "8px 12px",
               borderRadius: 6,
-              background: "var(--danger, #dc3545)22",
-              color: "var(--danger, #dc3545)",
+              background: "var(--danger-bg)",
+              color: "var(--danger)",
               fontSize: 12,
               marginBottom: 12,
             }}

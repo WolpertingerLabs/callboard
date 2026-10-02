@@ -34,18 +34,15 @@ import {
   constants as fsConstants,
   existsSync,
   fstatSync,
-  fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
   unlinkSync,
-  writeFileSync,
 } from "fs";
 import path from "path";
 import {
@@ -58,6 +55,7 @@ import {
 } from "shared/types/index.js";
 import type { StorageItem, StorageItemRecord, StorageKeyDetail, StorageKeyMetaFile, StorageKeySummary } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
+import { atomicWriteFileSync, fsyncDirSync, writeFileDurableSync } from "../utils/atomic-write.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("storage-service");
@@ -269,54 +267,9 @@ function containedItemsFile(key: string, fileName: string): string {
 // name, and meta's directory is fsynced after the rename, before the previous
 // blob is removed. A handful of fsyncs per save; the store is not hot.
 
-/** Write a new file (`wx`) and fsync its data before returning (fsync flushes the inode, whichever descriptor asks). */
-export function writeFileDurableSync(file: string, data: string | Buffer): void {
-  writeFileSync(file, data, { flag: "wx" });
-  const fd = openSync(file, "r+");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/**
- * fsync a directory so the names created or removed in it are durable. Best
- * effort: some platforms (Windows) cannot open a directory for fsync, and
- * there it is skipped — the ordering then holds for process crashes only.
- */
-export function fsyncDirSync(dir: string): void {
-  let fd: number | undefined;
-  try {
-    fd = openSync(dir, "r");
-    fsyncSync(fd);
-  } catch {
-    /* not supported here */
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
-
-/**
- * Write `data` to `target` via a pid-suffixed dot-prefixed tmp file + rename,
- * durably (tmp fsynced before the rename, the directory after). The tmp is
- * unlinked on failure; one orphaned by a crash matches {@link STALE_TMP_RE}.
- */
-export function atomicWriteFileSync(target: string, data: string | Buffer): void {
-  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
-  try {
-    writeFileDurableSync(tmp, data);
-    renameSync(tmp, target);
-    fsyncDirSync(path.dirname(target));
-  } catch (err) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      /* already gone */
-    }
-    throw err;
-  }
-}
+// The helpers live in utils/atomic-write.ts; a tmp left by a crash between
+// write and rename matches {@link STALE_TMP_RE}.
+export { atomicWriteFileSync, fsyncDirSync, writeFileDurableSync };
 
 // ── Per-key serialization ────────────────────────────────────────────
 

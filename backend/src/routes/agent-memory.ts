@@ -2,18 +2,13 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { agentExists, getAgentWorkspacePath } from "../services/agent-file-service.js";
+import { getAgentWorkspacePath } from "../services/agent-file-service.js";
 
 export const agentMemoryRouter = Router({ mergeParams: true });
 
 /** GET /api/agents/:alias/memory — list daily memory files + curated memory */
 agentMemoryRouter.get("/", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const workspacePath = getAgentWorkspacePath(alias);
   const memoryDir = join(workspacePath, "memory");
@@ -41,11 +36,6 @@ agentMemoryRouter.get("/", (req: Request, res: Response): void => {
 agentMemoryRouter.get("/:date", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
   const date = req.params.date as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   // Validate date format (YYYY-MM-DD)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {

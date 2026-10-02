@@ -2630,6 +2630,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     });
     const pendingSnapshot = capturePending();
     Promise.all([getMessages(id!), getPending(id!)]).then(([msgs, pending]) => {
+      // Switched chats while the refetch was in flight — don't apply the old
+      // chat's transcript to the new one.
+      if (currentIdRef.current !== id) return;
       const messageArray = Array.isArray(msgs) ? msgs : [];
       setMessages(messageArray);
       if (!isUnchangedPending(pendingSnapshot)) return;

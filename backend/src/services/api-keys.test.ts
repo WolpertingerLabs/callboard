@@ -4,7 +4,7 @@
  * last_used_at write throttle.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -110,6 +110,17 @@ describe("verifyApiToken", () => {
     vi.setSystemTime(1_000_000 + 61_000);
     const third = apiKeys.verifyApiToken(token);
     expect(third?.last_used_at).toBe(1_000_000 + 61_000);
+  });
+});
+
+describe("corrupt store file", () => {
+  it("rejects tokens instead of throwing when api-keys.json is truncated", () => {
+    const { token } = apiKeys.createApiKey("devboard", "", null);
+    writeFileSync(join(tmpRoot, "api-keys.json"), '{"keys": [{"id": "abc');
+
+    expect(() => apiKeys.verifyApiToken(token)).not.toThrow();
+    expect(apiKeys.verifyApiToken(token)).toBeNull();
+    expect(apiKeys.listApiKeys()).toEqual([]);
   });
 });
 

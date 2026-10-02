@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { agentExists, getAgentWorkspacePath } from "../services/agent-file-service.js";
+import { getAgentWorkspacePath } from "../services/agent-file-service.js";
 
 export const agentWorkspaceRouter = Router({ mergeParams: true });
 
@@ -12,11 +12,6 @@ const ALLOWED_FILES = new Set(["SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md",
 /** GET /api/agents/:alias/workspace — list workspace files */
 agentWorkspaceRouter.get("/", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const workspacePath = getAgentWorkspacePath(alias);
   if (!existsSync(workspacePath)) {
@@ -34,11 +29,6 @@ agentWorkspaceRouter.get("/", (req: Request, res: Response): void => {
 agentWorkspaceRouter.get("/:filename", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
   const filename = req.params.filename as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   if (!ALLOWED_FILES.has(filename)) {
     res.status(400).json({ error: `File "${filename}" is not a recognized workspace file` });
@@ -61,11 +51,6 @@ agentWorkspaceRouter.get("/:filename", (req: Request, res: Response): void => {
 agentWorkspaceRouter.put("/:filename", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
   const filename = req.params.filename as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   if (!ALLOWED_FILES.has(filename)) {
     res.status(400).json({ error: `File "${filename}" is not a recognized workspace file` });

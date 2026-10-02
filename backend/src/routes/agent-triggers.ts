@@ -1,7 +1,7 @@
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { agentExists, getAgent, getAgentWorkspacePath } from "../services/agent-file-service.js";
+import { getAgent, getAgentWorkspacePath } from "../services/agent-file-service.js";
 import { appendActivity } from "../services/agent-activity.js";
 import { listTriggers, getTrigger, createTrigger, updateTrigger, deleteTrigger } from "../services/agent-triggers.js";
 import { backtestFilter } from "../services/trigger-dispatcher.js";
@@ -50,11 +50,6 @@ function validateDebounce(debounce: TriggerDebounce | undefined): string | null 
 agentTriggersRouter.get("/", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
 
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
-
   const triggers = listTriggers(alias);
   res.json({ triggers });
 });
@@ -63,11 +58,6 @@ agentTriggersRouter.get("/", (req: Request, res: Response): void => {
 // Must be defined BEFORE /:triggerId to avoid Express treating "backtest" as a triggerId
 agentTriggersRouter.post("/backtest", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const { filter, limit } = req.body as { filter: TriggerFilter; limit?: number };
 
@@ -95,11 +85,6 @@ agentTriggersRouter.get("/:triggerId", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
   const triggerId = req.params.triggerId as string;
 
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
-
   const trigger = getTrigger(alias, triggerId);
   if (!trigger) {
     res.status(404).json({ error: "Trigger not found" });
@@ -112,11 +97,6 @@ agentTriggersRouter.get("/:triggerId", (req: Request, res: Response): void => {
 /** POST /api/agents/:alias/triggers — create a new trigger */
 agentTriggersRouter.post("/", async (req: Request, res: Response): Promise<void> => {
   const alias = req.params.alias as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const { name, description, filter, action, status, quietHours, debounce } = req.body as Partial<Trigger>;
 
@@ -170,11 +150,6 @@ agentTriggersRouter.put("/:triggerId", async (req: Request, res: Response): Prom
   const alias = req.params.alias as string;
   const triggerId = req.params.triggerId as string;
 
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
-
   const updates = req.body as Partial<Trigger>;
 
   const qhError = validateQuietHours(updates.quietHours);
@@ -218,11 +193,6 @@ agentTriggersRouter.put("/:triggerId", async (req: Request, res: Response): Prom
 agentTriggersRouter.delete("/:triggerId", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
   const triggerId = req.params.triggerId as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const existing = getTrigger(alias, triggerId);
   const deleted = deleteTrigger(alias, triggerId);

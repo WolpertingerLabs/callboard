@@ -49,6 +49,8 @@ import {
   listResumableRuns,
   validateJobDefinition,
   JobValidationError,
+  JobNotFoundError,
+  JobConflictError,
   JOB_TARGET_END,
   JOB_TARGET_FAIL,
   TERMINAL_JOB_RUN_STATUSES,
@@ -357,7 +359,7 @@ export function spawnJobRun(
   }
 
   const job = getJob(jobId);
-  if (!job) throw new Error(`Job "${jobId}" not found`);
+  if (!job) throw new JobNotFoundError(`Job "${jobId}" not found`);
 
   // Spawn-time validation skips cross-job checks: a "job" step whose child
   // was deleted or drifted must route its onFailure at step start, not block
@@ -384,7 +386,7 @@ export function spawnJobRun(
 export function respondToApproval(runId: string, decision: "approve" | "reject", comment?: string, via?: string): JobRun {
   const run = mustGetRun(runId);
   if (run.status !== "waiting_approval") {
-    throw new Error(`Run ${runId} is not waiting for approval (status: ${run.status})`);
+    throw new JobConflictError(`Run ${runId} is not waiting for approval (status: ${run.status})`);
   }
   const step = findStep(run, run.currentStepId!) as ApprovalJobStep;
   clearWakeTimer(run);
@@ -445,7 +447,7 @@ export function cancelRun(runId: string): JobRun {
 export function pauseRun(runId: string): JobRun {
   const run = mustGetRun(runId);
   if (!["sleeping", "waiting_approval", "waiting_event", "waiting_child"].includes(run.status)) {
-    throw new Error(`Run ${runId} cannot be paused while ${run.status} — only waiting/sleeping runs can pause`);
+    throw new JobConflictError(`Run ${runId} cannot be paused while ${run.status} — only waiting/sleeping runs can pause`);
   }
   clearWakeTimer(run);
   if (run.status === "waiting_event") unregisterEphemeralEventListener(`job-run:${runId}`);
@@ -461,7 +463,7 @@ export function pauseRun(runId: string): JobRun {
 
 export function resumeRun(runId: string): JobRun {
   const run = mustGetRun(runId);
-  if (run.status !== "paused") throw new Error(`Run ${runId} is not paused (status: ${run.status})`);
+  if (run.status !== "paused") throw new JobConflictError(`Run ${runId} is not paused (status: ${run.status})`);
   run.status = run.pausedFrom ?? "sleeping";
   // The pause suspended the clock: push any pending deadline (poll interval,
   // approval/event/child timeout) out by the paused duration, so resuming
@@ -481,7 +483,7 @@ export function resumeRun(runId: string): JobRun {
 /** Re-enter the current step of a failed run with a fresh attempt. */
 export function retryRunStep(runId: string): JobRun {
   const run = mustGetRun(runId);
-  if (run.status !== "failed") throw new Error(`Run ${runId} is not failed (status: ${run.status})`);
+  if (run.status !== "failed") throw new JobConflictError(`Run ${runId} is not failed (status: ${run.status})`);
   if (!run.currentStepId) throw new Error(`Run ${runId} has no current step to retry`);
   run.status = "running";
   delete run.error;
@@ -1816,7 +1818,7 @@ function activeChatIds(run: JobRun): string[] {
 
 function mustGetRun(runId: string): JobRun {
   const run = getRun(runId);
-  if (!run) throw new Error(`Job run "${runId}" not found`);
+  if (!run) throw new JobNotFoundError(`Job run "${runId}" not found`);
   return run;
 }
 

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { existsSync, rmSync } from "fs";
 import type { AgentConfig } from "shared";
 import {
@@ -26,12 +26,31 @@ import { resolveAgentKeyAlias, routeKeyAliasForPersist } from "../services/agent
 
 export const agentsRouter = Router();
 
+/**
+ * Gate for every `/:alias/...` sub-router: the alias must be well-formed (it is
+ * joined straight into a path under the agents dir, so `..` must never reach a
+ * handler) and name an existing agent. The sub-routers rely on this and do not
+ * re-check.
+ */
+function requireAgent(req: Request, res: Response, next: NextFunction): void {
+  const alias = req.params.alias as string;
+  if (!isValidAlias(alias)) {
+    res.status(400).json({ error: "Invalid agent alias" });
+    return;
+  }
+  if (!agentExists(alias)) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  next();
+}
+
 // Mount sub-routers for agent operational data
-agentsRouter.use("/:alias/workspace", agentWorkspaceRouter);
-agentsRouter.use("/:alias/memory", agentMemoryRouter);
-agentsRouter.use("/:alias/cron-jobs", agentCronJobsRouter);
-agentsRouter.use("/:alias/activity", agentActivityRouter);
-agentsRouter.use("/:alias/triggers", agentTriggersRouter);
+agentsRouter.use("/:alias/workspace", requireAgent, agentWorkspaceRouter);
+agentsRouter.use("/:alias/memory", requireAgent, agentMemoryRouter);
+agentsRouter.use("/:alias/cron-jobs", requireAgent, agentCronJobsRouter);
+agentsRouter.use("/:alias/activity", requireAgent, agentActivityRouter);
+agentsRouter.use("/:alias/triggers", requireAgent, agentTriggersRouter);
 agentsRouter.use("/", agentExportImportRouter);
 
 const SERVER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
