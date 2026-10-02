@@ -56,6 +56,17 @@ describe("ActivityDock — condition watch", () => {
     expect(screen.getByText(/Checking: CI to finish \(attempt 3\/10\)/)).toBeTruthy();
   });
 
+  it("lets a long check line wrap beside the dot rather than below it", () => {
+    // As one flex item with an auto basis, a line too long for the space next
+    // to the dot wrapped whole, leaving the dot alone on the first line (63px
+    // vs 48px at 320–390px in Chromium). A zero basis keeps it on the dot's line.
+    render(<ActivityDock activities={[]} conditionWatch={watch()} awaitingChildren={0} onRelease={noop} />);
+    const line = screen.getByText(/Checking:/);
+    expect(line.style.flexBasis).toMatch(/^0(px)?$/);
+    expect(line.style.flexGrow).toBe("1");
+    expect(line.style.minWidth).toMatch(/^0(px)?$/);
+  });
+
   it("shows an open watch between polls alongside awaited children", () => {
     render(<ActivityDock activities={[]} conditionWatch={watch()} awaitingChildren={1} onRelease={noop} />);
     expect(screen.getByText(/Checking: CI to finish \(attempt 3\/10\)/)).toBeTruthy();

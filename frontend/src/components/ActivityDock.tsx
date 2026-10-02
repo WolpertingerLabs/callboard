@@ -177,9 +177,10 @@ export default function ActivityDock({ activities, conditionWatch, awaitingChild
             its check right now. Without this the row would vanish and reappear
             every interval. It takes the live activity's slot after the dot, so
             the wait → check → wait cycle swaps the first line's text rather
-            than reshaping the row. */}
+            than reshaping the row. Zero basis so a long condition wraps beside
+            the dot instead of dropping below it as one block. */}
         {watchOpen && !primary && (
-          <span>
+          <span style={{ flex: "1 1 0", minWidth: 0, overflowWrap: "anywhere" }}>
             Checking: {conditionWatch.text} (attempt {conditionWatch.attempts}/{conditionWatch.maxAttempts})
           </span>
         )}
