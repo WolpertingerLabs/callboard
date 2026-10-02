@@ -1408,9 +1408,39 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (!reading && id) refreshActivityAfterStreamEnd(id);
       }
     } finally {
-      abortRef.current = null;
+      // Only if it is still ours. An aborted connect unwinds asynchronously,
+      // after a chat switch may already have attached the next chat's stream;
+      // nulling that one lets the next registry tick open a second stream.
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }, [id, readSSE, refreshActivityAfterStreamEnd]);
+
+  // Reset run state when the chat changes. Must be declared before the
+  // auto-connect effect below: effects run in declaration order, and switching
+  // in-app to a chat that is already running hands that effect a live
+  // `globalSessionActive` in this same commit. Reset after it, and the reset
+  // undoes the connect it just made — streaming=false (no indicator, no dock
+  // poll) and sessionWasActiveRef=false (no safety net) while the stream stays
+  // attached, which then keeps the effect from ever running again for the run.
+  useEffect(() => {
+    if (!id) return;
+    // A new-chat → existing-chat transition carries the run that was started
+    // on the compose screen (in-flight messages via router state, or
+    // tempChatIdRef for a same-component transition); keep it on screen.
+    const isNewChatTransition = transitionInFlightMessages.length > 0 || tempChatIdRef.current === id;
+    // Track the current chat ID for staleness detection in closures
+    currentIdRef.current = id;
+    if (!isNewChatTransition) {
+      setStreaming(false);
+      clearInFlightMessages();
+    }
+    hasReceivedFirstResponseRef.current = false;
+    planApprovedRef.current = false;
+    tempChatIdRef.current = null;
+    sessionWasActiveRef.current = false;
+    streamCompletedRef.current = false;
+    suppressReconnectAfterStopRef.current = false;
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-connect to active sessions when the global session registry reports activity.
   // This replaces the old one-shot checkSessionStatus() call with a reactive approach:
@@ -1674,23 +1704,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   useEffect(() => {
     if (!id) return;
 
-    // Detect if this is a new-chat → existing-chat transition.
-    // When navigating from /chat/new → /chat/:id, the in-flight messages are
-    // passed via router state (transitionInFlightMessages). We also check
-    // tempChatIdRef for same-component transitions (though those are rare with
-    // separate routes).
-    const isNewChatTransition = transitionInFlightMessages.length > 0 || tempChatIdRef.current === id;
-
-    // Track the current chat ID for staleness detection in closures
-    currentIdRef.current = id;
-
-    // Reset state for new chat — prevents old chat's streaming/error state
-    // from being visible while new chat data loads.
-    // Skip resetting the in-flight messages and streaming during new-chat transitions.
-    if (!isNewChatTransition) {
-      setStreaming(false);
-      clearInFlightMessages();
-    }
+    // Reset state for new chat — prevents old chat's error state from being
+    // visible while new chat data loads. Run state (streaming, in-flight
+    // messages, the session refs) is reset by the effect ahead of auto-connect.
     setPendingAction(null);
     // Cleared alongside pendingAction, not left to the refetch: the dock is
     // per-chat and its End-wait button is actionable, so carrying the previous
@@ -1701,14 +1717,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setInfo(null); // Clear new-chat info when transitioning to existing mode
     setViewMode("chat"); // Reset to chat view when switching chats
     latchNow(); // Opening a chat always starts latched to the latest messages
-
-    // Reset first response flag and plan approval tracking when chat ID changes
-    hasReceivedFirstResponseRef.current = false;
-    planApprovedRef.current = false;
-    tempChatIdRef.current = null;
-    sessionWasActiveRef.current = false;
-    streamCompletedRef.current = false;
-    suppressReconnectAfterStopRef.current = false;
 
     // Clear only the inFlightMessage from router state so back/forward navigation
     // doesn't re-apply it. Preserve other state values (e.g. agentSystemPrompt, agentAlias).

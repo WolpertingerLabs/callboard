@@ -72,7 +72,16 @@ beforeEach(() => {
   );
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => ({ ok: true, json: async () => ({}) })),
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      // The session reads active throughout, so the page attaches to its
+      // stream: hold it open, as a live run's would be, until aborted. A
+      // stream that failed at once would put the page in the reconnect loop.
+      if (String(input).endsWith("/stream"))
+        return new Promise((_resolve, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError"))),
+        );
+      return { ok: true, json: async () => ({}) };
+    }),
   );
   vi.mocked(client.status).mockResolvedValue({
     permission: "allow",
