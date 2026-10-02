@@ -206,11 +206,7 @@ async function mountWatching() {
   return view;
 }
 
-/**
- * Mount idle, then let the run start while the page is open: the path that
- * leaves `streaming` on and the safety net armed. (Mounting straight onto an
- * active chat leaves both off — a pre-existing bug with its own fix.)
- */
+/** Mount idle, then let the run start while the page is open. */
 async function mountThenGoLive(beforeLive?: () => void) {
   registry.set(null);
   const view = mount();
@@ -265,10 +261,6 @@ it.each([
 
 it("re-reads the dock when the session goes inactive before the stream delivered anything", async () => {
   await mountWatching();
-  // A registry poll tick after mount (any session's change bumps the version
-  // and rebuilds the map). The safety net only arms from an auto-connect run
-  // after the page's id-reset effect, which clears it on the mount commit.
-  await act(async () => registry.set({ type: "web", startedAt: 1 }));
   // The connect is still pending — nothing from the stream will ever arrive.
   server.activity = TORN_DOWN;
   registry.set(null);
@@ -425,7 +417,6 @@ it("still re-reads the last stream end when an earlier one in the window saw the
 
 it("re-reads once, not twice, when the safety net aborts a live stream", async () => {
   await mountWatching();
-  await act(async () => registry.set({ type: "web", startedAt: 1 }));
   openStream(0);
   await settle();
   const before = reads();
