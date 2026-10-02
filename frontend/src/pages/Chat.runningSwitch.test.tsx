@@ -19,7 +19,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import Chat from "./Chat";
-import { getActivity } from "../api";
+import { getActivity, stopChat } from "../api";
 import type { ChatActivityResponse } from "../api";
 
 type Session = { type: "web"; startedAt: number };
@@ -176,21 +176,26 @@ function Nav() {
   );
 }
 
-/** Mount on idle chat B, with in-app navigation to A. */
-async function mountOnIdleB() {
+/** Mount on a chat, with in-app navigation to the other. */
+async function mountOn(chatId: "a" | "b") {
   render(
-    <MemoryRouter initialEntries={["/chat/b"]}>
+    <MemoryRouter initialEntries={[`/chat/${chatId}`]}>
       <Nav />
       <Routes>
         <Route path="/chat/:id" element={<Chat />} />
       </Routes>
     </MemoryRouter>,
   );
-  await screen.findByText("message in b");
+  await screen.findByText(`message in ${chatId}`);
 }
+
+/** Mount on idle chat B, with in-app navigation to A. */
+const mountOnIdleB = () => mountOn("b");
 
 const readsOf = (chatId: string) => vi.mocked(getActivity).mock.calls.filter(([arg]) => arg === chatId).length;
 const liveConnects = () => connects.filter((c) => !c.signal.aborted);
+/** Every connect in order, `(x)` marking the aborted ones: `a(x),b`. */
+const connectLog = () => connects.map((c) => `${c.chatId}${c.signal.aborted ? "(x)" : ""}`).join(",");
 /** Let effects and promise chains run without advancing any clock. */
 const flush = () => act(async () => {});
 
@@ -289,6 +294,60 @@ it("restores the run state on every switch A → B → A without double-connecti
   await waitFor(() => expect(screen.queryByText(CHECKING)).toBeNull());
   expect(screen.queryByText(THINKING)).toBeNull();
   expect(polls.size).toBe(0);
+});
+
+// --- Leaving one running chat for another --------------------------------
+
+it.each([
+  ["streaming", () => openStream(0).send({ type: "message_update" })],
+  ["still connecting", () => {}],
+])("switching from running A (%s) to running B opens exactly one stream to B", async (_label, attachA) => {
+  registry.set("b", { type: "web", startedAt: 2 });
+  await mountOn("a");
+  await waitFor(() => expect(connects).toHaveLength(1));
+  await act(async () => attachA());
+  await go("b");
+  expect(connectLog()).toBe("a(x),b");
+  expect(screen.getByText(THINKING)).toBeTruthy();
+  expect(polls.size).toBe(1);
+  // A's aborted connect has unwound by now. Registry polls rebuild the map on
+  // every version bump, so B's entry is a fresh object each time and the
+  // auto-connect effect re-runs: it must still see B's stream as attached.
+  await act(async () => registry.set("b", { type: "web", startedAt: 2 }));
+  await act(async () => registry.set("b", { type: "web", startedAt: 2 }));
+  await flush();
+  expect(connectLog()).toBe("a(x),b");
+});
+
+it("stopping A and then switching to running B still follows B", async () => {
+  registry.set("b", { type: "web", startedAt: 2 });
+  vi.mocked(stopChat).mockResolvedValue({ stopped: true } as Awaited<ReturnType<typeof stopChat>>);
+  await mountOn("a");
+  await waitFor(() => expect(connects).toHaveLength(1));
+  openStream(0);
+  // The stop suppresses reconnecting to A until the registry catches up,
+  // which it hasn't by the time the user moves on.
+  await act(async () => fireEvent.click(screen.getByTitle("Stop generation")));
+  await waitFor(() => expect(stopChat).toHaveBeenCalledWith("a"));
+  await go("b");
+  expect(liveConnects().map((c) => c.chatId)).toEqual(["b"]);
+  expect(screen.getByText(THINKING)).toBeTruthy();
+});
+
+it("follows running B after A completes, even when both sessions report the same startedAt", async () => {
+  // startedAt is a timestamp, not an id: two chats can share one.
+  registry.set("b", { type: "web", startedAt: 1 });
+  await mountOn("a");
+  await waitFor(() => expect(connects).toHaveLength(1));
+  const stream = openStream(0);
+  // A's run ends while the registry still lags and reports it active.
+  await act(async () => {
+    stream.send({ type: "message_complete" });
+    stream.close();
+  });
+  await go("b");
+  expect(connects.filter((c) => c.chatId === "b" && !c.signal.aborted)).toHaveLength(1);
+  expect(screen.getByText(THINKING)).toBeTruthy();
 });
 
 // --- What following the run costs ----------------------------------------

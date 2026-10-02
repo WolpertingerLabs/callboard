@@ -1408,7 +1408,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (!reading && id) refreshActivityAfterStreamEnd(id);
       }
     } finally {
-      abortRef.current = null;
+      // Only if it is still ours. An aborted connect unwinds asynchronously,
+      // after a chat switch may already have attached the next chat's stream;
+      // nulling that one lets the next registry tick open a second stream.
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }, [id, readSSE, refreshActivityAfterStreamEnd]);
 
