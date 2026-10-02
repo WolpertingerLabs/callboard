@@ -24,6 +24,7 @@ import { type ChatCardMenu } from "../components/ChatListItem";
 import ChatTreeList, { buildRows } from "../components/ChatTreeList";
 import SelectionBar, { type SelectionAction } from "../components/SelectionBar";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { usePolling } from "../hooks/usePolling";
 import DraftListItem from "../components/DraftListItem";
 import ChatFilterBar from "../components/ChatFilterBar";
 import NewChatPanel from "../components/NewChatPanel";
@@ -511,12 +512,7 @@ export default function ChatList({
 
   // While any session is active, periodically refetch the chat list to pick up
   // title changes, timestamp updates, and reordering.
-  useEffect(() => {
-    if (activeSessions.size === 0) return;
-
-    const interval = setInterval(() => load(), 15_000);
-    return () => clearInterval(interval);
-  }, [activeSessions.size, load]);
+  usePolling(load, 15_000, { enabled: activeSessions.size > 0 });
 
   const handleDelete = (chat: Chat) => {
     let chatPreview: string | undefined;

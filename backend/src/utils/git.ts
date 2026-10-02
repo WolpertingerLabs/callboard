@@ -1710,7 +1710,7 @@ export function getGitDiffStructured(directory: string): DiffFileEntry[] {
     const trackedFiles = parseDiffIntoFiles((staged + unstaged).trim());
 
     for (const tf of trackedFiles) {
-      const fileType = tf.isBinary ? classifyFile(tf.filename) : classifyFile(tf.filename);
+      const fileType = classifyFile(tf.filename);
       const filePath = join(directory, tf.filename);
       let size = 0;
       try {

@@ -118,9 +118,11 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   // Match /agents/:alias (but not /agents or /agents/new)
   const isAgentDashboard = !isAgentList && !isCreateAgent && /^\/agents\/[^/]+/.test(location.pathname);
 
-  const refreshChatList = () => {
+  // Stable: Chat's fork handler depends on it, and that handler is passed to
+  // every memoized MessageBubble.
+  const refreshChatList = useCallback(() => {
     chatListRefreshRef.current?.();
-  };
+  }, []);
 
   // Mobile behavior - keep existing full-page navigation.
   // One region boundary around the whole page: on mobile there is only ever one

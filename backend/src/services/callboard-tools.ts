@@ -37,6 +37,7 @@ import { buildModelAliasTools } from "./model-alias-tools.js";
 import { buildWorkspaceTools } from "./workspace-tools.js";
 import { buildStorageArtifactTools } from "./storage-artifact-tools.js";
 import { createLogger } from "../utils/logger.js";
+import type { SendMessageOptions } from "./claude.js";
 
 const log = createLogger("callboard-tools");
 
@@ -45,23 +46,9 @@ const log = createLogger("callboard-tools");
 // callboard-tools.ts → claude.ts → (uses buildCallboardToolsSpec from callboard-tools.ts)
 // Instead, claude.ts registers itself at startup via setCallboardMessageSender().
 
-type MessageSender = (opts: {
-  prompt: string | AsyncIterable<any>;
-  chatId?: string;
-  folder?: string;
-  systemPrompt?: string;
-  agentAlias?: string;
-  maxTurns?: number;
-  defaultPermissions?: any;
-  provider?: UiAgentProviderKind;
-  /** Which ACP vendor, when `provider` is `"acp"`. Ignored for every other kind. */
-  acpProviderId?: string;
-  model?: string;
-  effort?: EffortLevel;
-  requireExplicitCompletion?: boolean;
-  parentChatId?: string;
-  chatRole?: string;
-}) => Promise<import("events").EventEmitter>;
+// The real options type, imported type-only: a value import would close the
+// cycle this indirection exists to break (the emitted JS has no import).
+type MessageSender = (opts: SendMessageOptions) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
 

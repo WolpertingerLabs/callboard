@@ -13,29 +13,16 @@ import { appendActivity } from "./agent-activity.js";
 import { createLogger } from "../utils/logger.js";
 
 import type { ActivityEntry, EffortLevel, UiAgentProviderKind } from "shared";
+import type { SendMessageOptions } from "./claude.js";
 
 const log = createLogger("agent-executor");
 
 // ─── Lazy reference to sendMessage ──────────────────────────────────
 // Same pattern as agent-tools.ts: claude.ts registers itself at startup.
 
-type MessageSender = (opts: {
-  prompt: string | AsyncIterable<any>;
-  chatId?: string;
-  folder?: string;
-  systemPrompt?: string;
-  agentAlias?: string;
-  maxTurns?: number;
-  defaultPermissions?: any;
-  triggered?: boolean;
-  triggeredBy?: "cron" | "event" | "trigger" | "tool";
-  provider?: UiAgentProviderKind;
-  /** Which ACP vendor, when `provider` is `"acp"`. Ignored for every other kind. */
-  acpProviderId?: string;
-  model?: string;
-  effort?: EffortLevel;
-  requireExplicitCompletion?: boolean;
-}) => Promise<import("events").EventEmitter>;
+// The real options type, imported type-only: a value import would close the
+// cycle this indirection exists to break (the emitted JS has no import).
+type MessageSender = (opts: SendMessageOptions) => Promise<import("events").EventEmitter>;
 
 let _sendMessage: MessageSender | null = null;
 
