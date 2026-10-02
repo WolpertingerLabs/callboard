@@ -189,6 +189,43 @@ const STOP_RESYNC_DELAY_MS = 2_500;
 // against the API limiter's 300/min.
 const STREAM_END_REREAD_WINDOW_MS = 1_000;
 
+// Backoff for the auto-connect loop. While the registry says a chat's session
+// is active, every `/stream` that ends sends the page straight back to it; a
+// stream that fails fast (refused, rejected, closed empty, `message_error`)
+// would otherwise spin with no delay, and a `message_error` spin also spends a
+// rate-limited `getMessages`. See reconnectBackoffRef.
+//
+// - First retry 500ms after the failed connect started: long enough to stop a
+//   spin cold (2/s instead of hundreds), short enough that one blip, or the
+//   ~1s the registry can lag a run that just ended, costs no visible wait.
+// - Doubling to a 30s cap: the 7th consecutive failure reaches it, ~30s in. At
+//   the cap a stuck chat costs 2 connects and at most 2 `getMessages` a minute
+//   (<1% of the API limiter's 300/min), and a daemon restart is re-attached
+//   within 30s of coming back.
+// - Up to 25% jitter, downward only so the cap is a cap: tabs that lost the
+//   same daemon don't come back in lockstep.
+const RECONNECT_BACKOFF_BASE_MS = 500;
+const RECONNECT_BACKOFF_CAP_MS = 30_000;
+const RECONNECT_BACKOFF_JITTER = 0.25;
+// A stream that stays open this long without a frame still counts as having
+// worked (the server heartbeats every 15s, as comments the reader skips). A
+// loop of these is ~6 unmetered connects a minute, nothing to back off from.
+const STREAM_HEALTHY_AFTER_MS = 10_000;
+// Consecutive `message_error`s, each the first frame on its connect, before the
+// page stops reconnecting on its own. That shape is `/stream` refusing — no
+// session it can follow (stream.ts: no session id, the provider can't be
+// resolved, the log is missing) — not a run failing mid-way, which arrives
+// after the run's frames. 4 attempts span ~3.5s, past the registry's 1s poll,
+// so a run that just ended is noticed as ended (the safety net) rather than
+// given up on.
+const STREAM_REFUSALS_BEFORE_GIVING_UP = 4;
+
+/** Delay before reconnect attempt `attempt + 1`, after `attempt` fast failures. */
+function reconnectDelayMs(attempt: number): number {
+  const ceiling = Math.min(RECONNECT_BACKOFF_CAP_MS, RECONNECT_BACKOFF_BASE_MS * 2 ** (attempt - 1));
+  return Math.round(ceiling * (1 - RECONNECT_BACKOFF_JITTER * Math.random()));
+}
+
 /**
  * Optimistic user bubbles, styled like a sent message but dimmed and without
  * the copy/fork affordances a persisted message gets. Rendered in both the
@@ -457,11 +494,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   /**
    * `refreshActivity` for a stream that just ended or failed to connect. These
-   * ride the auto-connect loop, which reconnects with no backoff for as long
-   * as the registry still says the session is active, and `/activity` is
-   * rate-limited where `/stream` is not. So at most one read per window per
-   * chat: the first goes out at once, later ones collapse into a single
-   * trailing read, so the last stream end is still always re-read.
+   * ride the auto-connect loop, which keeps reconnecting (its first retry
+   * within 500ms) for as long as the registry still says the session is
+   * active, and `/activity` is rate-limited where `/stream` is not. So at
+   * most one read per window per chat: the first goes out at once, later ones
+   * collapse into a single trailing read, so the last stream end is still
+   * always re-read.
    */
   const refreshActivityAfterStreamEnd = useCallback(
     (chatId: string) => {
@@ -588,6 +626,58 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // like it bounced. Cleared as soon as the registry reports the chat
   // inactive (or the user sends again), so real sessions still auto-connect.
   const suppressReconnectAfterStopRef = useRef(false);
+  // The auto-connect loop's backoff, for the chat on screen only: the per-chat
+  // reset starts it over on every switch. Each auto-connect is counted as a
+  // failure when it starts and forgiven when the stream proves itself (a run
+  // frame, or STREAM_HEALTHY_AFTER_MS open) or when the page aborts it, so no
+  // ordering between a stream's teardown and the effect re-running can let a
+  // failure through undelayed. Only a connect that ends on its own counts.
+  //   attempts:  connects since the last stream that worked
+  //   nextAt:    earliest Date.now() the effect may connect again
+  //   refusals:  of those, how many /stream answered with only a message_error
+  //   startedAt: the registry session these attempts were for
+  //   gaveUp:    STREAM_REFUSALS_BEFORE_GIVING_UP reached; only the user, a new
+  //              session or the session ending moves the page on from here
+  //   wake:      timer that re-runs the effect when nextAt arrives
+  const reconnectBackoffRef = useRef<{
+    attempts: number;
+    nextAt: number;
+    refusals: number;
+    startedAt: number | undefined;
+    gaveUp: boolean;
+    wake: ReturnType<typeof setTimeout> | null;
+  }>({ attempts: 0, nextAt: 0, refusals: 0, startedAt: undefined, gaveUp: false, wake: null });
+  // The error the transcript is showing from the last message_error frame, so
+  // a refusal that follows can't paper over it. Cleared by any run frame, a
+  // send and a chat switch.
+  const shownStreamErrorRef = useRef<{ chatId: string; content: string | undefined } | null>(null);
+  // Bumped by the backoff's wake timer to re-run the auto-connect effect.
+  const [reconnectWake, setReconnectWake] = useState(0);
+  // The `/stream` refusal the page gave up on, shown with a Reconnect button.
+  const [streamUnavailable, setStreamUnavailable] = useState<string | null>(null);
+  /**
+   * Forget every failure so far. For a stream that worked, and for whatever
+   * starts over: a chat switch, the session ending or being replaced, an
+   * explicit Reconnect, a send.
+   */
+  const resetReconnectBackoff = useCallback(() => {
+    const backoff = reconnectBackoffRef.current;
+    if (backoff.wake) clearTimeout(backoff.wake);
+    reconnectBackoffRef.current = { attempts: 0, nextAt: 0, refusals: 0, startedAt: backoff.startedAt, gaveUp: false, wake: null };
+    setStreamUnavailable(null);
+  }, []);
+  /** Re-run the auto-connect effect once the backoff allows a connect. */
+  const scheduleReconnectWake = useCallback(() => {
+    const backoff = reconnectBackoffRef.current;
+    if (backoff.wake) return;
+    backoff.wake = setTimeout(
+      () => {
+        backoff.wake = null;
+        setReconnectWake((n) => n + 1);
+      },
+      Math.max(0, backoff.nextAt - Date.now()),
+    );
+  }, []);
   // Debounce timer for coalescing rapid message_update refetches
   const messageRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1026,7 +1116,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Shared SSE reader that processes notifications and refetches chat data
   const readSSE = useCallback(
-    async (body: ReadableStream<Uint8Array>, signal?: AbortSignal) => {
+    async (body: ReadableStream<Uint8Array>, signal?: AbortSignal, onFrame?: (event: { type?: string }) => "refusal" | void) => {
       const reader = body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -1059,6 +1149,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             if (!line.startsWith("data: ")) continue;
             try {
               const event = JSON.parse(line.slice(6));
+              const refusal = onFrame?.(event) === "refusal";
+              // A run frame means whatever error was on screen is history.
+              if (event.type !== "server_info" && event.type !== "message_error") shownStreamErrorRef.current = null;
 
               // Reset the safety timeout on every SSE event received
               resetStreamingTimeout();
@@ -1249,10 +1342,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 // record (transcript session_end → session_error system
                 // message), so the refetch may already include it — only
                 // append when it doesn't, to avoid a double error bubble.
+                // A refusal straight after a run's own error (the retry beat the
+                // registry to the run ending) says less than that error did:
+                // keep showing the run's error, not "No active session found".
+                const shown = shownStreamErrorRef.current;
+                const errorContent = refusal && shown && shown.chatId === streamChatId ? shown.content : event.content;
+                shownStreamErrorRef.current = { chatId: streamChatId!, content: errorContent };
                 getMessages(streamChatId!).then((msgs) => {
                   if (currentIdRef.current !== streamChatId) return;
                   const msgArray = Array.isArray(msgs) ? msgs : [];
-                  const alreadyPersisted = msgArray.slice(-3).some((m) => m.subtype === "session_error" && m.content === event.content);
+                  const alreadyPersisted = msgArray.slice(-3).some((m) => m.subtype === "session_error" && m.content === errorContent);
                   // Same trailer the clean ending builds, for the same reason —
                   // an error kills the subprocess and every shell it owned, and
                   // this path ends the run without a `message_complete`, so it
@@ -1260,7 +1359,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   const trailing: ParsedMessage[] = [];
                   const killed = abandonedTaskMarker(Array.isArray(event.abandonedBackgroundTaskIds) ? event.abandonedBackgroundTaskIds : [], msgArray);
                   if (killed) trailing.push(killed);
-                  if (!alreadyPersisted) trailing.push({ role: "system", type: "system", subtype: "session_error", content: event.content ?? "" });
+                  if (!alreadyPersisted) trailing.push({ role: "system", type: "system", subtype: "session_error", content: errorContent ?? "" });
                   setMessages(trailing.length > 0 ? [...msgArray, ...trailing] : msgArray);
                 });
                 return;
@@ -1386,6 +1485,47 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // Once readSSE has the body, its finally re-reads the dock on a dropped
     // stream; before that, a failed connect has to do it here.
     let reading = false;
+    // Presume this connect fails until it shows otherwise: the next one waits
+    // out the backoff unless a run frame or a long-lived stream forgives it.
+    const backoff = reconnectBackoffRef.current;
+    const connectedAt = Date.now();
+    const nextAtBefore = backoff.nextAt;
+    backoff.attempts += 1;
+    backoff.nextAt = connectedAt + reconnectDelayMs(backoff.attempts);
+    const chatId = id;
+    const ours = () => currentIdRef.current === chatId && reconnectBackoffRef.current === backoff;
+    let worked = false;
+    const forgive = () => {
+      if (worked || !ours()) return;
+      worked = true;
+      resetReconnectBackoff();
+      // Still never two auto-connects within the base delay of each other, so
+      // a stream that sends one frame and closes can't spin either. A stream
+      // that lived longer than that reconnects at once.
+      reconnectBackoffRef.current.nextAt = connectedAt + RECONNECT_BACKOFF_BASE_MS;
+    };
+    const healthyTimer = setTimeout(() => {
+      if (abortRef.current === controller) forgive();
+    }, STREAM_HEALTHY_AFTER_MS);
+    const onFrame = (event: { type?: string; content?: string }): "refusal" | void => {
+      if (event.type === "server_info") return; // every connect gets one, refusals included
+      if (event.type !== "message_error") {
+        forgive();
+        return;
+      }
+      // After the run's frames, a message_error is the run failing: this
+      // stream already worked. With nothing before it, it is /stream refusing:
+      // no session to follow, and retrying can't change that until the
+      // registry does.
+      if (worked) return;
+      if (!ours()) return "refusal";
+      backoff.refusals += 1;
+      if (backoff.refusals >= STREAM_REFUSALS_BEFORE_GIVING_UP) {
+        backoff.gaveUp = true;
+        setStreamUnavailable(event.content || "No active session found");
+      }
+      return "refusal";
+    };
     try {
       const res = await fetch(`/api/chats/${id}/stream`, {
         // Advertise what this bundle understands; the server answers with a
@@ -1400,7 +1540,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         return;
       }
       reading = true;
-      await readSSE(res.body, controller.signal);
+      await readSSE(res.body, controller.signal, onFrame);
     } catch (err: any) {
       if (err.name !== "AbortError") {
         setNetworkError("network error");
@@ -1408,12 +1548,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         if (!reading && id) refreshActivityAfterStreamEnd(id);
       }
     } finally {
+      clearTimeout(healthyTimer);
+      // A connect the page aborted itself (tab return, stop, the safety net, a
+      // switch) didn't fail: take back the attempt it was charged on starting.
+      // Otherwise every tab return on a quiet run, one that sends no frames
+      // for a while (a long tool call, a pending prompt), pushes the
+      // re-attach further out.
+      if (controller.signal.aborted && !worked && ours()) {
+        backoff.attempts -= 1;
+        backoff.nextAt = nextAtBefore;
+      }
+      // Come back when the backoff allows, rather than relying on `streaming`
+      // flipping: a connect that fails before React renders its
+      // setStreaming(true) batches to no change and would leave the effect idle.
+      if (!controller.signal.aborted && currentIdRef.current === chatId) scheduleReconnectWake();
       // Only if it is still ours. An aborted connect unwinds asynchronously,
       // after a chat switch may already have attached the next chat's stream;
       // nulling that one lets the next registry tick open a second stream.
       if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [id, readSSE, refreshActivityAfterStreamEnd]);
+  }, [id, readSSE, refreshActivityAfterStreamEnd, resetReconnectBackoff, scheduleReconnectWake]);
 
   // Reset run state when the chat changes. Must be declared before the
   // auto-connect effect below: effects run in declaration order, and switching
@@ -1440,6 +1594,17 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     sessionWasActiveRef.current = false;
     streamCompletedRef.current = false;
     suppressReconnectAfterStopRef.current = false;
+    // Backoff is per chat: the one just left may have been failing for minutes.
+    const backoff = reconnectBackoffRef.current;
+    if (backoff.wake) clearTimeout(backoff.wake);
+    reconnectBackoffRef.current = { attempts: 0, nextAt: 0, refusals: 0, startedAt: undefined, gaveUp: false, wake: null };
+    shownStreamErrorRef.current = null;
+    return () => {
+      // Leaving (or unmounting): no reconnect may fire for this chat afterwards.
+      const wake = reconnectBackoffRef.current.wake;
+      if (wake) clearTimeout(wake);
+      reconnectBackoffRef.current.wake = null;
+    };
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-connect to active sessions when the global session registry reports activity.
@@ -1472,11 +1637,26 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       });
     }
 
+    // Back off from a stream that keeps failing fast (see reconnectBackoffRef).
+    // A different session is a different run: whatever failed before is moot.
+    if (reconnectBackoffRef.current.startedAt !== globalSessionActive.startedAt) {
+      resetReconnectBackoff();
+      reconnectBackoffRef.current.startedAt = globalSessionActive.startedAt;
+      // Nor is the last run's error this one's. (A first attach has none.)
+      shownStreamErrorRef.current = null;
+    }
+    const backoff = reconnectBackoffRef.current;
+    if (backoff.gaveUp) return;
+    if (backoff.nextAt > Date.now()) {
+      scheduleReconnectWake();
+      return;
+    }
+
     connectedSessionStartedAtRef.current = globalSessionActive.startedAt;
     setNetworkError(null);
     setStreaming(true);
     connectToStream();
-  }, [id, globalSessionActive, streaming, connectToStream]);
+  }, [id, globalSessionActive, streaming, connectToStream, reconnectWake, resetReconnectBackoff, scheduleReconnectWake]);
 
   // Safety net: if the session registry reports the session *transitioned* from
   // active → inactive, always clean up streaming state.
@@ -1498,6 +1678,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // The registry has caught up with the stop — stop suppressing
       // auto-connect, so the next session on this chat is followed normally.
       suppressReconnectAfterStopRef.current = false;
+      // Nothing left to reconnect to, and nothing left to have given up on.
+      resetReconnectBackoff();
       // Abort any hanging SSE connection — the session is over
       if (abortRef.current) {
         abortRef.current.abort();
@@ -1619,6 +1801,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     setPendingAction(null);
     setActivity({ activities: [], conditionWatch: null, awaitingChildren: 0 });
     setNetworkError(null);
+    setStreamUnavailable(null);
     setChat(null);
     setMessages([]);
     /**
@@ -1714,6 +1897,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // wrong session.
     setActivity({ activities: [], conditionWatch: null, awaitingChildren: 0 });
     setNetworkError(null);
+    setStreamUnavailable(null); // the backoff it reported was reset with the run state
     setInfo(null); // Clear new-chat info when transitioning to existing mode
     setViewMode("chat"); // Reset to chat view when switching chats
     latchNow(); // Opening a chat always starts latched to the latest messages
@@ -2236,6 +2420,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       setNetworkError(null); // Clear any previous network errors
       streamCompletedRef.current = false; // Reset so new message can stream
       suppressReconnectAfterStopRef.current = false; // A new run supersedes any stop we're still settling
+      resetReconnectBackoff(); // ...and any failures to attach to the old one
+      shownStreamErrorRef.current = null; // ...and the old run's error
 
       // If there's already a streaming connection, stop it first
       if (abortRef.current) {
@@ -2488,6 +2674,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       pendingEffort,
       chatProvider,
       readSSE,
+      resetReconnectBackoff,
       activePluginIds,
       chat,
       branchConfig,
@@ -2716,6 +2903,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   const handleReconnect = useCallback(async () => {
     setNetworkError(null);
+    // The user asked: connect now, whatever the backoff was waiting out or had
+    // given up on, and start counting failures over.
+    resetReconnectBackoff();
     // Refetch chat data and messages to capture any missing content
     getChat(id!).then((data) => {
       if (currentIdRef.current === id) setChat(data);
@@ -2744,7 +2934,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       setStreaming(true);
       connectToStream();
     }
-  }, [globalSessionActive, streaming, connectToStream, id]);
+  }, [globalSessionActive, streaming, connectToStream, id, resetReconnectBackoff]);
 
   // Compute indices of user text messages for navigation
   const userMessageIndices = useMemo(() => {
@@ -3327,7 +3517,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               <Shield size={16} />
             </button>
 
-            {networkError && (
+            {(networkError || streamUnavailable) && (
               <button
                 onClick={handleReconnect}
                 style={{
@@ -3579,7 +3769,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             <Shield size={16} />
           </button>
 
-          {networkError && (
+          {(networkError || streamUnavailable) && (
             <button
               onClick={handleReconnect}
               style={{
@@ -3809,7 +3999,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   );
                 })}
                 <InFlightBubbles messages={visibleInFlightMessages} />
-                {networkError && (
+                {(networkError || streamUnavailable) && (
                   <div
                     style={{
                       color: "var(--danger)",
@@ -3823,7 +4013,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                       margin: "8px 0",
                     }}
                   >
-                    <div>Network error occurred</div>
+                    {/* A refusal is only shown once the page has stopped retrying it. */}
+                    <div>{networkError ? "Network error occurred" : `Can't follow this run (${streamUnavailable}). Stopped retrying.`}</div>
                     <button
                       onClick={handleReconnect}
                       style={{

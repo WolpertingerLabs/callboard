@@ -369,7 +369,11 @@ async function pollUntil(check: () => boolean, timeoutMs: number, what: string) 
   }
 }
 
-const SPINS = 40;
+/** Let a connect that just failed finish unwinding, on the frozen clock. */
+async function unwind() {
+  let ticks = 0;
+  await pollUntil(() => ticks++ === 5, 10_000, "five real ticks");
+}
 
 it.each([
   ["the connect is rejected (daemon down)", (c: { reject: (err: unknown) => void }) => c.reject(new TypeError("Failed to fetch"))],
@@ -378,21 +382,25 @@ it.each([
     (c: { resolve: (res: unknown) => void }) => c.resolve({ ok: false, status: 502, body: null, json: async () => ({}) }),
   ],
 ])("keeps /activity reads to one per second when the run switched to drops into the reconnect loop: %s", async (_label, fail) => {
-  // Following the run means following it into the pre-existing no-backoff
-  // loop too, the same as a run started from the page. The end-of-stream
-  // re-reads on that loop stay capped. Capped at SPINS, then left pending.
-  connectPlan = (i, c) => {
-    if (i < SPINS) fail(c);
-  };
+  // Following the run means following it into the reconnect loop too, the
+  // same as a run started from the page. The loop backs off, and the
+  // end-of-stream re-reads on it stay capped: the first retry (at most 500ms
+  // on) still falls in the window the first failure's read opened.
+  connectPlan = (_i, c) => fail(c);
   await mountOnIdleB();
-  // Freeze the throttle's clock so all SPINS stream ends fall in one window.
+  // Freeze the page's clock: the throttle's windows and the backoff move only when the test says.
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
   server.activity.a = TORN_DOWN;
   await act(async () => fireEvent.click(screen.getByText("open a")));
-  await pollUntil(() => connects.length === SPINS + 1, 10_000, `${SPINS} reconnects`);
   // The switch's own read, plus one for the first stream end…
+  await pollUntil(() => connects.length === 1 && readsOf("a") === 2, 10_000, "the first stream end's read");
+  await unwind();
+  await act(() => vi.advanceTimersByTimeAsync(500));
+  await pollUntil(() => connects.length === 2, 10_000, "the first retry");
+  await unwind();
   expect(readsOf("a")).toBe(2);
-  // …and the rest collapse into one trailing read when the window closes.
-  await act(() => vi.advanceTimersByTimeAsync(1_000));
+  // …and the retry's collapses into one trailing read when the window closes.
+  await act(() => vi.advanceTimersByTimeAsync(500));
   expect(readsOf("a")).toBe(3);
+  expect(connects).toHaveLength(2);
 });
