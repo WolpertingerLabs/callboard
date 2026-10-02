@@ -512,7 +512,8 @@ export default function ChatList({
 
   // While any session is active, periodically refetch the chat list to pick up
   // title changes, timestamp updates, and reordering.
-  usePolling(load, 15_000, { enabled: activeSessions.size > 0 });
+  // No visibility catch-up: SessionContext's resume already triggers loads.
+  usePolling(load, 15_000, { enabled: activeSessions.size > 0, catchUp: false });
 
   const handleDelete = (chat: Chat) => {
     let chatPreview: string | undefined;

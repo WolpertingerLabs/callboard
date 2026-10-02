@@ -678,7 +678,10 @@ function buildFormattedPrompt(
 
   // Images only ever arrive with a text prompt (the composer path); an
   // already-structured iterable prompt has nothing to merge them into.
-  if (typeof prompt === "string" && prompt.trim()) {
+  if (typeof prompt !== "string") {
+    throw new Error("buildFormattedPrompt: images cannot be attached to an AsyncIterable prompt");
+  }
+  if (prompt.trim()) {
     content.push({ type: "text", text: prompt.trim() });
   }
 

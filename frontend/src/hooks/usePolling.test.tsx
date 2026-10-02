@@ -48,6 +48,19 @@ describe("usePolling", () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
+  it("does not catch up on return with catchUp: false, but keeps polling", () => {
+    const fn = vi.fn();
+    renderHook(() => usePolling(fn, 1000, { catchUp: false }));
+
+    setVisibility("hidden");
+    vi.advanceTimersByTime(3000);
+    setVisibility("visible");
+    expect(fn).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1000);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it("does nothing while disabled, and starts when enabled", () => {
     const fn = vi.fn();
     const { rerender } = renderHook(({ enabled }) => usePolling(fn, 1000, { enabled }), { initialProps: { enabled: false } });
