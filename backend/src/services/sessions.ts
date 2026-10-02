@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from "fs";
+import { mkdirSync } from "fs";
 import { join } from "path";
 import { DATA_DIR } from "../utils/paths.js";
+import { createJsonFileStore } from "../utils/json-file-store.js";
 
 const sessionsFilePath = join(DATA_DIR, "sessions.json");
 
@@ -21,38 +22,20 @@ interface SessionsFile {
 // Ensure data directory exists
 mkdirSync(DATA_DIR, { recursive: true });
 
-let sessionsCache: SessionsFile | null = null;
-let lastModified = 0;
+const store = createJsonFileStore<SessionsFile>(sessionsFilePath, () => ({
+  sessions: {},
+  metadata: {
+    last_cleanup: Date.now(),
+    version: 1,
+  },
+}));
 
 function loadSessions(): SessionsFile {
-  if (!existsSync(sessionsFilePath)) {
-    const initialData: SessionsFile = {
-      sessions: {},
-      metadata: {
-        last_cleanup: Date.now(),
-        version: 1,
-      },
-    };
-    saveSessions(initialData);
-    return initialData;
-  }
-
-  const stats = statSync(sessionsFilePath);
-  const currentModified = stats.mtime.getTime();
-
-  if (!sessionsCache || currentModified !== lastModified) {
-    const data = readFileSync(sessionsFilePath, "utf8");
-    sessionsCache = JSON.parse(data);
-    lastModified = currentModified;
-  }
-
-  return sessionsCache!;
+  return store.load();
 }
 
 function saveSessions(data: SessionsFile): void {
-  writeFileSync(sessionsFilePath, JSON.stringify(data, null, 2));
-  sessionsCache = data;
-  lastModified = Date.now();
+  store.save(data);
 }
 
 export function getSession(token: string): SessionData | undefined {

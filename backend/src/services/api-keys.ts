@@ -1,7 +1,8 @@
 import { randomBytes, createHash } from "crypto";
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from "fs";
+import { mkdirSync } from "fs";
 import { join } from "path";
 import { DATA_DIR } from "../utils/paths.js";
+import { createJsonFileStore } from "../utils/json-file-store.js";
 
 const apiKeysFilePath = join(DATA_DIR, "api-keys.json");
 
@@ -35,32 +36,14 @@ interface ApiKeysFile {
 // Ensure data directory exists
 mkdirSync(DATA_DIR, { recursive: true });
 
-let keysCache: ApiKeysFile | null = null;
-let lastModified = 0;
+const store = createJsonFileStore<ApiKeysFile>(apiKeysFilePath, () => ({ keys: [], metadata: { version: 1 } }));
 
 function loadKeys(): ApiKeysFile {
-  if (!existsSync(apiKeysFilePath)) {
-    const initialData: ApiKeysFile = { keys: [], metadata: { version: 1 } };
-    saveKeys(initialData);
-    return initialData;
-  }
-
-  const stats = statSync(apiKeysFilePath);
-  const currentModified = stats.mtime.getTime();
-
-  if (!keysCache || currentModified !== lastModified) {
-    const data = readFileSync(apiKeysFilePath, "utf8");
-    keysCache = JSON.parse(data);
-    lastModified = currentModified;
-  }
-
-  return keysCache!;
+  return store.load();
 }
 
 function saveKeys(data: ApiKeysFile): void {
-  writeFileSync(apiKeysFilePath, JSON.stringify(data, null, 2));
-  keysCache = data;
-  lastModified = Date.now();
+  store.save(data);
 }
 
 function hashToken(token: string): string {

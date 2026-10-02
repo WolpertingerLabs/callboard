@@ -1,7 +1,7 @@
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { agentExists, getAgentWorkspacePath } from "../services/agent-file-service.js";
+import { getAgentWorkspacePath } from "../services/agent-file-service.js";
 import { listCronJobs, getCronJob, createCronJob, updateCronJob, deleteCronJob } from "../services/agent-cron-jobs.js";
 import { scheduleJob, cancelJob } from "../services/cron-scheduler.js";
 import { executeAgent } from "../services/agent-executor.js";
@@ -29,11 +29,6 @@ function validateQuietHours(qh: QuietHours | undefined): string | null {
 agentCronJobsRouter.get("/", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
 
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
-
   const jobs = listCronJobs(alias);
   res.json({ jobs });
 });
@@ -42,11 +37,6 @@ agentCronJobsRouter.get("/", (req: Request, res: Response): void => {
 agentCronJobsRouter.get("/:jobId", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
   const jobId = req.params.jobId as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const job = getCronJob(alias, jobId);
   if (!job) {
@@ -60,11 +50,6 @@ agentCronJobsRouter.get("/:jobId", (req: Request, res: Response): void => {
 /** POST /api/agents/:alias/cron-jobs — create a new cron job */
 agentCronJobsRouter.post("/", async (req: Request, res: Response): Promise<void> => {
   const alias = req.params.alias as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   const { name, schedule, type, description, action, status, quietHours, skipIfRunning } = req.body as Partial<CronJob>;
 
@@ -117,11 +102,6 @@ agentCronJobsRouter.put("/:jobId", async (req: Request, res: Response): Promise<
   const alias = req.params.alias as string;
   const jobId = req.params.jobId as string;
 
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
-
   // Strip protected fields — isDefault and id cannot be changed via API
   const { id: _id, isDefault: _isDefault, ...safeUpdates } = req.body as Partial<CronJob>;
 
@@ -161,11 +141,6 @@ agentCronJobsRouter.post("/:jobId/run", async (req: Request, res: Response): Pro
   const alias = req.params.alias as string;
   const jobId = req.params.jobId as string;
 
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
-
   const job = getCronJob(alias, jobId);
   if (!job) {
     res.status(404).json({ error: "Cron job not found" });
@@ -201,11 +176,6 @@ agentCronJobsRouter.post("/:jobId/run", async (req: Request, res: Response): Pro
 agentCronJobsRouter.delete("/:jobId", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
   const jobId = req.params.jobId as string;
-
-  if (!agentExists(alias)) {
-    res.status(404).json({ error: "Agent not found" });
-    return;
-  }
 
   // Prevent deletion of system-defined cron jobs
   const existing = getCronJob(alias, jobId);

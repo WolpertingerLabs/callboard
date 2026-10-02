@@ -1625,12 +1625,22 @@ const TITLE_WRITE_FAILED = "Could not update this chat's record, so its title is
  * exists to serve.
  */
 function writeChatTitle(chat: any, title: string | null): "ok" | "unwritten" {
+  return writeQuietMetadata(chat, { title });
+}
+
+/**
+ * The write behind {@link writeChatTitle}, for any metadata field that is a
+ * label or view state rather than activity — `lastReadAt` too, which a bumped
+ * `updated_at` would immediately contradict (rollup's `updated_at >
+ * lastReadAt` would read "unread" right after marking read).
+ */
+function writeQuietMetadata(chat: any, fields: Record<string, unknown>): "ok" | "unwritten" {
   if (!chat._from_filesystem) {
-    return chatFileService.updateChatMetadata(chat.id, { title }, { touch: false }) ? "ok" : "unwritten";
+    return chatFileService.updateChatMetadata(chat.id, fields, { touch: false }) ? "ok" : "unwritten";
   }
 
   chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, {
-    metadata: JSON.stringify({ ...parseChatMetadata(chat.metadata), title }),
+    metadata: JSON.stringify({ ...parseChatMetadata(chat.metadata), ...fields }),
     created_at: chat.created_at,
     updated_at: chat.updated_at,
   });
@@ -1934,20 +1944,17 @@ chatsRouter.patch("/:id/read", (req, res) => {
     const chat = findChat(req.params.id, false) as any;
     if (!chat) return res.status(404).json({ error: "Chat not found" });
 
-    // Parse existing metadata and set lastReadAt
-    let meta: Record<string, any> = {};
-    try {
-      meta = parseChatMetadata(chat.metadata);
-    } catch {}
-
-    meta.lastReadAt = new Date().toISOString();
-    const updatedMetadata = JSON.stringify(meta);
-
-    // Upsert: creates file storage record if it only existed on filesystem
-    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+    // Must not bump updated_at (or the card reads unread again) and must not
+    // replace a record it cannot read — see writeChatTitle. The whole blob
+    // findChat resolved is merged, not just lastReadAt: it carries the native
+    // Codex lineage overlay, and a read is one of the points that persists it.
+    const fields = { ...parseChatMetadata(chat.metadata), lastReadAt: new Date().toISOString() };
+    if (writeQuietMetadata(chat, fields) === "unwritten") {
+      return res.status(500).json({ error: "Failed to mark chat as read" });
+    }
 
     clearListCaches();
-    res.json(findChat(updatedChat.id, false) ?? updatedChat);
+    res.json(findChat(chat.id, false) ?? chat);
   } catch (err: any) {
     log.error(`Error marking chat as read: ${err}`);
     res.status(500).json({ error: "Failed to mark chat as read", details: err.message });

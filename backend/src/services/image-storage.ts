@@ -59,6 +59,7 @@ export class ImageStorageService {
 
       // Write file to disk
       writeFileSync(storagePath, buffer);
+      indexImage(sha256, storedAs);
 
       const image: StoredImage = {
         id,
@@ -144,6 +145,7 @@ export class ImageStorageService {
       const imagePath = join(IMAGES_DIR, imageFile);
       if (existsSync(imagePath)) {
         unlinkSync(imagePath);
+        unindexImage(imageFile);
         return true;
       }
       return false;
@@ -205,6 +207,53 @@ export class ImageStorageService {
   }
 }
 
+// sha256 → files in IMAGES_DIR with those bytes, in readdir order (then write
+// order). Built on the first storeBase64Image call — one read+hash of every
+// file — and kept current by every write and delete in this module, so later
+// lookups are O(1) instead of a rescan of the whole directory.
+let hashIndex: Map<string, string[]> | null = null;
+const fileHashes = new Map<string, string>();
+
+function indexImage(sha256: string, file: string): void {
+  if (!hashIndex) return; // Picked up by the build, whenever it happens.
+  const files = hashIndex.get(sha256) ?? [];
+  if (!files.includes(file)) files.push(file);
+  hashIndex.set(sha256, files);
+  fileHashes.set(file, sha256);
+}
+
+function unindexImage(file: string): void {
+  const sha256 = fileHashes.get(file);
+  if (!hashIndex || sha256 === undefined) return;
+  fileHashes.delete(file);
+  const files = hashIndex.get(sha256)?.filter((f) => f !== file) ?? [];
+  if (files.length) hashIndex.set(sha256, files);
+  else hashIndex.delete(sha256);
+}
+
+function buildHashIndex(): Map<string, string[]> {
+  hashIndex = new Map();
+  fileHashes.clear();
+  if (existsSync(IMAGES_DIR)) {
+    for (const file of readdirSync(IMAGES_DIR)) {
+      try {
+        indexImage(crypto.createHash("sha256").update(readFileSync(join(IMAGES_DIR, file))).digest("hex"), file);
+      } catch {}
+    }
+  }
+  return hashIndex;
+}
+
+/** The first indexed file with these bytes that is still on disk. */
+function findImageByHash(sha256: string): string | undefined {
+  const files = (hashIndex ?? buildHashIndex()).get(sha256) ?? [];
+  for (const file of [...files]) {
+    if (existsSync(join(IMAGES_DIR, file))) return file;
+    unindexImage(file); // Removed behind our back.
+  }
+  return undefined;
+}
+
 /**
  * Store an image from base64 data (e.g. extracted from session log).
  * Uses SHA256 dedup: if an image with the same hash already exists on disk,
@@ -215,25 +264,8 @@ export function storeBase64Image(base64Data: string, mimeType: string): string |
     const buffer = Buffer.from(base64Data, "base64");
     const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
 
-    // Check if already stored by scanning existing files for matching hash
-    const cached = base64ImageCache.get(sha256);
-    if (cached) return cached;
-
-    // Scan disk for existing file with same hash
-    if (existsSync(IMAGES_DIR)) {
-      for (const file of readdirSync(IMAGES_DIR)) {
-        const filePath = join(IMAGES_DIR, file);
-        try {
-          const existing = readFileSync(filePath);
-          const existingHash = crypto.createHash("sha256").update(existing).digest("hex");
-          if (existingHash === sha256) {
-            const existingId = file.split(".")[0];
-            base64ImageCache.set(sha256, existingId);
-            return existingId;
-          }
-        } catch {}
-      }
-    }
+    const existing = findImageByHash(sha256);
+    if (existing) return existing.split(".")[0];
 
     // Not found — store it
     const id = randomUUID();
@@ -241,15 +273,12 @@ export function storeBase64Image(base64Data: string, mimeType: string): string |
     const storedAs = `${id}${ext}`;
     mkdirSync(IMAGES_DIR, { recursive: true });
     writeFileSync(join(IMAGES_DIR, storedAs), buffer);
-    base64ImageCache.set(sha256, id);
+    indexImage(sha256, storedAs);
     return id;
   } catch {
     return null;
   }
 }
-
-// In-memory SHA256 → imageId cache to avoid repeated disk scans
-const base64ImageCache = new Map<string, string>();
 
 /** Convenience re-export of ImageStorageService.loadImageBuffers for direct import. */
 export const loadImageBuffers = ImageStorageService.loadImageBuffers.bind(ImageStorageService);
