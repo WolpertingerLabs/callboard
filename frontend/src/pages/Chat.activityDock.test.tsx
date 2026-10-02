@@ -165,9 +165,21 @@ beforeEach(() => {
   );
 });
 
+// The frozen-clock waits below poll in real time with 3s deadlines, well
+// inside this, so a broken page fails a test on an assertion rather than on
+// vitest's timeout, which would leave that test's loop running into the next.
+vi.setConfig({ testTimeout: 20_000 });
+
+/** Bumped as each test ends; a wait from an earlier test sees it and stops. */
+let generation = 0;
+
 afterEach(() => {
-  vi.useRealTimers();
+  generation += 1;
+  // Unmount first (it aborts the page's connects), then drop whatever the page
+  // left on a frozen clock, so nothing fires into the next test.
   cleanup();
+  if (vi.isFakeTimers()) vi.clearAllTimers();
+  vi.useRealTimers();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
@@ -349,8 +361,10 @@ const realTick = () =>
 
 /** Poll on the real `setInterval` with a real deadline. */
 async function pollUntil(check: () => boolean, timeoutMs: number, what: string) {
+  const startedIn = generation;
   const deadline = performance.now() + timeoutMs;
   while (!check()) {
+    if (generation !== startedIn) throw new Error(`abandoned waiting for ${what}: its test is over`);
     if (performance.now() > deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
     await realTick();
   }
@@ -373,11 +387,11 @@ it.each(LOOP_MODES)("keeps /activity reads to one per second across the reconnec
     before = reads();
     server.activity = TORN_DOWN;
   });
-  await pollUntil(() => connects.length === 1 && reads() - before === 1, 10_000, "the first stream end's read");
+  await pollUntil(() => connects.length === 1 && reads() - before === 1, 3_000, "the first stream end's read");
   await unwind();
   // The backoff's first retry fails too, inside the same window…
   await act(() => vi.advanceTimersByTimeAsync(500));
-  await pollUntil(() => connects.length === 2, 10_000, "the first retry");
+  await pollUntil(() => connects.length === 2, 3_000, "the first retry");
   await unwind();
   expect(reads() - before).toBe(1);
   // …so its read is the trailing one, when the window closes.
@@ -385,6 +399,37 @@ it.each(LOOP_MODES)("keeps /activity reads to one per second across the reconnec
   expect(reads() - before).toBe(2);
   expect(connects).toHaveLength(2);
   // Bounded without losing the read that matters.
+  expect(screen.queryByText(CHECKING)).toBeNull();
+});
+
+it("collapses every stream end in a window, however many, into one trailing read", async () => {
+  // The backoff spaces auto-connects, but a new session (a fresh startedAt),
+  // Reconnect, send and a switch back all connect at once, so any number of
+  // stream ends can still land in one window.
+  connectPlan = (_i, c) => c.reject(new TypeError("Failed to fetch"));
+  let before = 0;
+  await mountThenGoLive(() => {
+    freezeClock();
+    before = reads();
+    server.activity = TORN_DOWN;
+  });
+  await pollUntil(() => connects.length === 1 && reads() - before === 1, 3_000, "the first stream end's read");
+  await unwind();
+  for (const startedAt of [2, 3, 4]) {
+    await act(async () => registry.set({ type: "web", startedAt }));
+    await pollUntil(() => connects.length === startedAt, 3_000, `the connect for session ${startedAt}`);
+    await unwind();
+  }
+  // And the backoff's first retry, still inside the window.
+  await act(() => vi.advanceTimersByTimeAsync(500));
+  await pollUntil(() => connects.length === 5, 3_000, "the first retry");
+  await unwind();
+  // Five stream ends: one read at once, nothing more inside the window…
+  expect(reads() - before).toBe(1);
+  // …and exactly one trailing read when it closes, not one per end.
+  await act(() => vi.advanceTimersByTimeAsync(500));
+  await unwind();
+  expect(reads() - before).toBe(2);
   expect(screen.queryByText(CHECKING)).toBeNull();
 });
 
@@ -405,15 +450,15 @@ it("drops a trailing read still queued for the chat being left", async () => {
   // Two stream ends for c1 inside one window, the second from the backoff's
   // first retry: one read now, one queued.
   await act(async () => registry.set({ type: "web", startedAt: 1 }));
-  await pollUntil(() => connects.length === 1, 10_000, "c1's first connect");
+  await pollUntil(() => connects.length === 1, 3_000, "c1's first connect");
   await unwind();
   await act(() => vi.advanceTimersByTimeAsync(500));
-  await pollUntil(() => connects.length === 2, 10_000, "c1's retry");
+  await pollUntil(() => connects.length === 2, 3_000, "c1's retry");
   await unwind();
   const readsOf = (chatId: string) => vi.mocked(getActivity).mock.calls.filter(([arg]) => arg === chatId).length;
   const c1Before = readsOf("c1");
   fireEvent.click(screen.getByText("open c2"));
-  await pollUntil(() => readsOf("c2") > 0, 10_000, "c2's own read");
+  await pollUntil(() => readsOf("c2") > 0, 3_000, "c2's own read");
   await act(() => vi.advanceTimersByTimeAsync(2_000));
   expect(readsOf("c1")).toBe(c1Before);
 });

@@ -128,6 +128,18 @@ const REFUSAL = (c: Connect) => {
   live.close();
 };
 
+// Every wait below is a real-time poll with its own 3s deadline, well inside
+// this. A broken page then fails a test on an assertion, not on vitest's
+// timeout — which leaves that test's loop running into the next one.
+vi.setConfig({ testTimeout: 20_000 });
+
+/**
+ * Bumped as each test ends. A wait started by an earlier test sees it and
+ * stops, so a test that failed mid-wait can't drive the page (or the frozen
+ * clock) of the one after it.
+ */
+let generation = 0;
+
 beforeEach(() => {
   registry.reset();
   registry.set("a", { type: "web", startedAt: 1 });
@@ -170,8 +182,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.useRealTimers();
+  generation += 1;
+  // Unmount first (it aborts the page's connects), then drop whatever the page
+  // left on the frozen clock: a backoff wake must not fire into the next test.
   cleanup();
+  if (vi.isFakeTimers()) vi.clearAllTimers();
+  vi.useRealTimers();
+  registry.reset();
   random.mockRestore();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
@@ -192,9 +209,11 @@ function Nav() {
 }
 
 /** Poll on the real `setInterval` with a real deadline. */
-async function pollUntil(check: () => boolean, what: string, timeoutMs = 10_000) {
+async function pollUntil(check: () => boolean, what: string, timeoutMs = 3_000) {
+  const startedIn = generation;
   const deadline = performance.now() + timeoutMs;
   while (!check()) {
+    if (generation !== startedIn) throw new Error(`abandoned waiting for ${what}: its test is over`);
     if (performance.now() > deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
     await act(
       () =>
@@ -216,6 +235,7 @@ async function unwind() {
 
 /** Move the frozen clock on, then let the page catch up. */
 async function advance(ms: number) {
+  if (!vi.isFakeTimers()) throw new Error("advance() after the test's clock was reset");
   await act(() => vi.advanceTimersByTimeAsync(ms));
   await unwind();
 }
@@ -319,6 +339,58 @@ it("stops after four refusals in a row (/stream and getMessages both bounded) an
   expect(screen.getAllByText("No active session found")).toHaveLength(1);
 });
 
+it("keeps a run's own error on screen when the retry after it is refused", async () => {
+  // The run fails on its very first frame. The 500ms retry beats the registry
+  // to the run ending, and /stream, with no session left, refuses it.
+  connectPlan = (i, c) => {
+    if (i > 0) return REFUSAL(c);
+    const live = open(c);
+    live.send({ type: "message_error", content: "Invalid API key" });
+    live.close();
+  };
+  await openA();
+  await pollUntil(() => !!screen.queryByText("Invalid API key"), "the run's error");
+  await expectRetryAfter("a", 500);
+  // The refusal's transcript refetch has landed, and the run's error is still what it shows.
+  await unwind();
+  expect(screen.getByText("Invalid API key")).toBeTruthy();
+  expect(screen.queryByText("No active session found")).toBeNull();
+  // The registry catches up; nothing replaces it after that either.
+  await act(async () => registry.set("a", null));
+  await advance(60_000);
+  expect(connectsTo("a")).toBe(2);
+  expect(screen.getByText("Invalid API key")).toBeTruthy();
+  // A new session is a new run: its refusal is its own, and it shows.
+  await act(async () => registry.set("a", { type: "web", startedAt: 2 }));
+  await unwind();
+  expect(connectsTo("a")).toBe(3);
+  await pollUntil(() => !!screen.queryByText("No active session found"), "the new session's refusal");
+});
+
+it("shows a later refusal once a run has been heard from since the error", async () => {
+  // The run's error, then a stream with run frames (something is running
+  // again), then a refusal: the error is history by then, and the refusal is
+  // what the transcript should say.
+  connectPlan = (i, c) => {
+    if (i === 0) {
+      const live = open(c);
+      live.send({ type: "message_error", content: "Invalid API key" });
+      live.close();
+    } else if (i === 1) {
+      const live = open(c);
+      live.send({ type: "message_update" });
+      live.close();
+    } else REFUSAL(c);
+  };
+  await openA();
+  await pollUntil(() => !!screen.queryByText("Invalid API key"), "the run's error");
+  await expectRetryAfter("a", 500);
+  // The stream that worked: the 500ms floor from its start.
+  await expectRetryAfter("a", 500);
+  await pollUntil(() => !!screen.queryByText("No active session found"), "the refusal");
+  expect(screen.queryByText("Invalid API key")).toBeNull();
+});
+
 it("starts over after giving up: on Reconnect, on a new session, and clears when the session ends", async () => {
   connectPlan = (_i, c) => REFUSAL(c);
   await openA();
@@ -403,6 +475,26 @@ it.each([
   // The next failure is a first failure again.
   await expectRetryAfter("a", 500);
   await expectRetryAfter("a", 1_000);
+});
+
+it("a tab return re-attaches to a quiet live run at once, every time", async () => {
+  // A live run that sends nothing for a while: a long tool call, a pending
+  // prompt, a subagent wait. Each tab return aborts the stream and attaches
+  // again. Those aborts are the page's own, not failures, so none of them
+  // may push the next attach out.
+  connectPlan = (_i, c) => {
+    open(c);
+  };
+  await openA();
+  expect(connectsTo("a")).toBe(1);
+  for (let ret = 1; ret <= 8; ret++) {
+    await advance(3_000);
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    await unwind();
+    expect(connects[ret - 1].signal.aborted, `return ${ret} drops the old stream`).toBe(true);
+    expect(connectsTo("a"), `return ${ret} re-attaches without waiting`).toBe(ret + 1);
+  }
+  expect(connects.filter((c) => !c.signal.aborted)).toHaveLength(1);
 });
 
 it("switching chats starts the backoff over, and the chat left never retries", async () => {
