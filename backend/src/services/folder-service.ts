@@ -33,6 +33,7 @@ function formatTimeAgo(date: Date): string {
 
 class FolderService {
   private cache = new Map<string, { data: BrowseResult; timestamp: number }>();
+  private recentCache = new Map<number, { data: RecentFolder[]; timestamp: number }>();
   private readonly CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 
   /**
@@ -164,23 +165,33 @@ class FolderService {
    */
   getRecentFolders(limit: number = 10): RecentFolder[] {
     // Check cache
-    const cacheKey = `recent:${limit}`;
-    const cached = this.cache.get(cacheKey);
+    const cached = this.recentCache.get(limit);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      return cached.data as unknown as RecentFolder[];
+      return cached.data;
     }
 
     try {
       // Aggregate sessions from all providers into folder stats
       const folderMap = new Map<string, { lastUsed: Date; chatCount: number }>();
+      // One existsSync per distinct folder, not one per session.
+      const folderExists = new Map<string, boolean>();
 
       for (const provider of getSessionProviders()) {
-        const { sessions } = provider.discoverSessions({ limit: 9999, offset: 0 });
+        // Every session, not a capped page: chatCount is an all-time count, so
+        // a cap (this was 9999) undercounts every folder once a provider
+        // passes it. The scan is the one GET /api/chats already drains on
+        // each sidebar load, and this result is cached for CACHE_TTL.
+        const { sessions } = provider.discoverSessions({ limit: Number.MAX_SAFE_INTEGER, offset: 0 });
         for (const s of sessions) {
           const folder = s.displayFolder;
 
           // Skip directories that no longer exist
-          if (!existsSync(folder)) continue;
+          let exists = folderExists.get(folder);
+          if (exists === undefined) {
+            exists = existsSync(folder);
+            folderExists.set(folder, exists);
+          }
+          if (!exists) continue;
 
           // Skip agent workspace directories
           if (folder.startsWith(WORKSPACES_DIR + "/") || folder === WORKSPACES_DIR) continue;
@@ -213,7 +224,7 @@ class FolderService {
       });
 
       // Cache the results
-      this.cache.set(cacheKey, { data: results as unknown as BrowseResult, timestamp: Date.now() });
+      this.recentCache.set(limit, { data: results, timestamp: Date.now() });
 
       return results;
     } catch (err) {
@@ -289,6 +300,7 @@ class FolderService {
    */
   clearCache(): void {
     this.cache.clear();
+    this.recentCache.clear();
   }
 }
 

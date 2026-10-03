@@ -232,6 +232,64 @@ describe("getAllChats record cache", () => {
   });
 });
 
+describe("getChat miss path shares the record cache", () => {
+  // A chat whose `id` is not its filename — the shape only the scan can find.
+  const renamed = () => writeRecord("sess-new", "2026-01-01T00:00:00.000Z", { id: "old-id" });
+
+  it("finds a record by chat.id without re-reading unchanged files", () => {
+    renamed();
+    writeRecord("b", "2026-01-02T00:00:00.000Z");
+    settle("sess-new");
+    settle("b");
+    chatFileService.getAllChats();
+
+    probe.reads = [];
+    expect(chatFileService.getChat("old-id")?.session_id).toBe("sess-new");
+    expect(chatFileService.getChat("absent")).toBeNull();
+    // Only the two direct `<id>.json` probes — no record body was re-read.
+    expect(probe.reads).toEqual([]);
+  });
+
+  it("populates the cache itself, so a cold miss is paid once", () => {
+    renamed();
+    settle("sess-new");
+
+    expect(chatFileService.getChat("old-id")?.session_id).toBe("sess-new");
+    expect(probe.reads).toHaveLength(1);
+    probe.reads = [];
+    expect(chatFileService.getChat("old-id")?.session_id).toBe("sess-new");
+    expect(chatFileService.getAllChats()).toHaveLength(1);
+    expect(probe.reads).toEqual([]);
+  });
+
+  it("picks up a foreign write, and getAllChats sees it too", () => {
+    renamed();
+    writeRecord("b", "2026-01-02T00:00:00.000Z");
+    settle("sess-new");
+    settle("b");
+    expect(chatFileService.getAllChats().map((c) => c.id)).toEqual(["b", "old-id"]);
+
+    // Moves it to the top of the order: a getChat-driven re-read must not let
+    // getAllChats reuse its memoised (now stale) order.
+    writeRecord("sess-new", "2026-01-03T00:00:00.000Z", { id: "old-id", folder: "/tmp/moved!!" });
+    settle("sess-new", SETTLED_AT + 60_000);
+
+    expect(chatFileService.getChat("old-id")?.folder).toBe("/tmp/moved!!");
+    expect(chatFileService.getAllChats().map((c) => c.id)).toEqual(["old-id", "b"]);
+    expect(chatFileService.getAllChats()[0].folder).toBe("/tmp/moved!!");
+  });
+
+  it("returns a copy, so a mutating caller cannot corrupt the cache", () => {
+    renamed();
+    settle("sess-new");
+
+    const first = chatFileService.getChat("old-id")!;
+    first.metadata = '{"clobbered":true}';
+    expect(chatFileService.getChat("old-id")!.metadata).toBe("{}");
+    expect(chatFileService.getAllChats()[0].metadata).toBe("{}");
+  });
+});
+
 describe("getAllChats ordering", () => {
   it("sorts by updated_at descending", () => {
     writeRecord("older", "2026-01-01T00:00:00.000Z");

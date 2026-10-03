@@ -15,6 +15,7 @@ import type { Request, Response } from "express";
 import { getProxy, isProxyConfigured, fetchProxyRoutes } from "../services/proxy-singleton.js";
 import { getAllEvents, getEvents, listEventSources } from "../services/event-log.js";
 import { createLogger } from "../utils/logger.js";
+import { parseIntParam } from "../utils/query-params.js";
 
 const log = createLogger("proxy-routes");
 
@@ -79,8 +80,8 @@ proxyRouter.get("/events", (req: Request, res: Response): void => {
     res.status(400).json({ error: "Missing required query parameter: caller" });
     return;
   }
-  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
-  const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+  const limit = parseIntParam(req.query.limit, { default: 100, min: 0 });
+  const offset = parseIntParam(req.query.offset, { default: 0, min: 0 });
 
   const events = getAllEvents(caller, { limit, offset });
   const sources = listEventSources(caller);
@@ -95,8 +96,8 @@ proxyRouter.get("/events/:source", (req: Request, res: Response): void => {
     return;
   }
   const source = req.params.source as string;
-  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
-  const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+  const limit = parseIntParam(req.query.limit, { default: 100, min: 0 });
+  const offset = parseIntParam(req.query.offset, { default: 0, min: 0 });
   const instanceId = req.query.instance_id as string | undefined;
 
   const events = getEvents(caller, source, { limit, offset, instanceId });

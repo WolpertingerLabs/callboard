@@ -1,14 +1,12 @@
 /**
- * Wire coverage for `POST /api/chats/new/message` — the one SSE route that does
- * *not* go through `createSSEHandler`. It duplicates that handler inline so it
- * can intercept `chat_created`, which makes it the only place where the
- * handshake's leading frame lands ahead of a frame the client must act on
+ * Wire coverage for `POST /api/chats/new/message` — the one SSE route that sets
+ * `createSSEHandler`'s `onChatCreated` hook, which makes it the only place where
+ * the handshake's leading frame lands ahead of a frame the client must act on
  * immediately.
  *
  * `backend/src/utils/sse.test.ts` pins the shared handler's bytes; this file
- * pins this route's, against the same kind of hand-written literals. Two
- * handlers emitting the same wire is a duplication the tests have to hold
- * together, since the compiler doesn't.
+ * pins this route's, against the same kind of hand-written literals
+ * (`stream.new-message.wire.test.ts` covers every branch).
  *
  * The handler is pulled off the router stack and driven with a fake req/res,
  * matching the no-supertest style in cards.delete.test.ts. `sendMessage` is
