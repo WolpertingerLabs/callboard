@@ -7,6 +7,7 @@ import { useSystemInfo } from "../hooks/useSystemInfo";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
 import ProviderConfigPicker from "./ProviderConfigPicker";
+import type { ChatRouteState } from "../types/chatRouteState";
 import {
   getDefaultPermissions,
   saveDefaultPermissions,
@@ -315,7 +316,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         ...(["codex", "cline", "pi"].includes(effectiveProvider) && effort && { effort }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
-      },
+      } satisfies ChatRouteState,
     });
   };
 
@@ -366,7 +367,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         ...(effectiveProvider === "acp" && { acpProviderId }),
         ...(trimmedModel && { model: trimmedModel }),
         ...(requireCompletion && { requireExplicitCompletion: true }),
-      },
+      } satisfies ChatRouteState,
     });
   };
 

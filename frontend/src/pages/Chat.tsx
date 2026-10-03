@@ -39,13 +39,10 @@ import {
   getActivity,
   releaseActivity,
   respondToChat,
-  stopChat,
   uploadImages,
   uploadImagesOnly,
-  getSlashCommandsAndPlugins,
   getNewChatInfo,
   markAsRead,
-  getMcpTools,
   deleteDraft,
   fetchDraftImages,
   forkChat,
@@ -56,16 +53,18 @@ import {
   type Chat as ChatType,
   type ForkProvider,
   type ParsedMessage,
-  type Plugin,
   type NewChatInfo,
   type DefaultPermissions,
   type QueueItemImage,
-  listKeywords,
   type BranchConfig,
-  type AppPluginsData,
-  type McpToolsResponse,
   type Keyword,
 } from "../api";
+import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
+import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
+import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
+import { useMessageNavigation } from "../hooks/useMessageNavigation";
+import { useChatCommands } from "../hooks/useChatCommands";
+import ThinkingIndicator from "../components/ThinkingIndicator";
 import { useIsSessionActive, useMetadataVersion } from "../contexts/SessionContext";
 import { newChatTrackingId } from "../utils/ids";
 import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightList, visibleInFlight, type InFlightMessage } from "../utils/inFlightMessages";
@@ -96,8 +95,6 @@ import {
   type EffortLevel,
 } from "../utils/localStorage";
 import ProviderConfigPicker from "../components/ProviderConfigPicker";
-import { getActivePlugins } from "../utils/plugins";
-import { findLatestTaskListIndex } from "../utils/taskListNav";
 import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
 import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
 import { sameActivityPayload } from "../utils/activitySnapshot";
@@ -169,21 +166,6 @@ const AUTO_SCROLL_LATCH_PX = 100;
 // Past-max scrollTop target for the auto-scroll pin loop; the browser clamps
 // it to the actual bottom.
 const PIN_SCROLL_MAX = 1e9;
-
-// Transcript marker for a run the user stopped. Shown both when the run's own
-// terminal event reports the abort and when we settle the stop locally.
-const INTERRUPTED_MESSAGE = "Session was interrupted.";
-
-// How long to wait for the stopped run's terminal event before settling the UI
-// anyway. Generous: the server has already aborted the run and killed the
-// provider process, and a run parked in a slow tool call can take a moment to
-// unwind — this is a backstop against waiting forever, not a normal path.
-const STOP_CONFIRM_TIMEOUT_MS = 10_000;
-
-// Delay before the post-stop transcript resync. The harness flushes the killed
-// turn's partial output and interrupt marker as it unwinds (~1s in practice),
-// which lands after the terminal event the settle path refetches on.
-const STOP_RESYNC_DELAY_MS = 2_500;
 
 // At most one `/activity` re-read per window per chat from a stream ending or
 // failing to connect — see refreshActivityAfterStreamEnd. 60/min worst case,
@@ -280,40 +262,41 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Mode detection: no id means we're on /chat/new (new chat mode)
   const folder = searchParams.get("folder") || "";
-  const defaultPermissions = (location.state as any)?.defaultPermissions as DefaultPermissions | undefined;
-  const agentSystemPrompt = (location.state as any)?.systemPrompt as string | undefined;
-  const agentAlias = (location.state as any)?.agentAlias as string | undefined;
+  const routeState = readChatRouteState(location.state);
+  const defaultPermissions = routeState.defaultPermissions;
+  const agentSystemPrompt = routeState.systemPrompt;
+  const agentAlias = routeState.agentAlias;
   // Provider kind for NEW chats, set by NewChatPanel. Existing chats route
   // by chat metadata server-side; this value is only honored on creation.
-  const newChatProvider = (location.state as any)?.provider as AgentProviderKind | undefined;
-  const newChatAcpProviderId = (location.state as any)?.acpProviderId as string | undefined;
+  const newChatProvider = routeState.provider;
+  const newChatAcpProviderId = routeState.acpProviderId;
   // Reasoning effort for NEW chats, set by NewChatPanel. Like the provider,
   // only honored on creation and persisted into chat metadata; the
   // existing-chat path recovers it from metadata server-side.
-  const newChatEffort = (location.state as any)?.effort as EffortLevel | undefined;
+  const newChatEffort = routeState.effort;
   // Model for NEW chats, set by NewChatPanel — the harness's own model id. Like
   // the provider/effort, only honored on creation and persisted into metadata.
-  const newChatModel = (location.state as any)?.model as string | undefined;
+  const newChatModel = routeState.model;
   // Explicit-completion requirement for NEW chats, set by NewChatPanel. Only
   // honored on creation — persisted into chat metadata, so follow-up messages
   // inherit it server-side without re-threading.
-  const newChatRequireCompletion = (location.state as any)?.requireExplicitCompletion as boolean | undefined;
+  const newChatRequireCompletion = routeState.requireExplicitCompletion;
   // Parentage-tree linkage for new chats spawned from an existing chat
   // (e.g. the "New linked chat" action in ChatTreeIndicator). Forwarded to
   // the new-chat request so the backend stamps parentChatId/rootChatId.
-  const newChatParentId = (location.state as any)?.parentChatId as string | undefined;
-  const newChatRole = (location.state as any)?.chatRole as string | undefined;
+  const newChatParentId = routeState.parentChatId;
+  const newChatRole = routeState.chatRole;
 
   // When navigating from /chat/new → /chat/:id, the in-flight messages are
   // passed via router state so they survive the component remount.
   // Read once and store in a ref so they're consumed exactly once per mount and
   // don't become stale if the effect re-runs on id changes. A history entry
   // written before this was a list still holds a bare string.
-  const transitionInFlightMessagesRef = useRef(toInFlightList((location.state as any)?.inFlightMessage));
+  const transitionInFlightMessagesRef = useRef(toInFlightList(routeState.inFlightMessage));
   const transitionInFlightMessages = transitionInFlightMessagesRef.current;
 
   // Draft loaded from staging in chat list
-  const routerDraftRef = useRef((location.state as any)?.draft as { id: string; user_message: string; images?: QueueItemImage[] } | undefined);
+  const routerDraftRef = useRef(routeState.draft);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(routerDraftRef.current?.id ?? null);
   /**
    * The opened draft's images on their way back into the composer. `restored`
@@ -343,13 +326,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const draftRestoreGenerationRef = useRef(0);
 
   const [chat, setChat] = useState<ChatType | null>(null);
+  // The chat's metadata, parsed once per change. Everything below that reads
+  // the provider, model, effort, permissions or native-child state derives
+  // from this.
+  const chatMeta = useChatMeta(chat?.metadata);
   const [info, setInfo] = useState<NewChatInfo | null>(null);
   const [messages, setMessages] = useState<ParsedMessage[]>([]);
   const [streaming, setStreaming] = useState(transitionInFlightMessages.length > 0);
-  // Stop requested, waiting for the run to actually unwind server-side. The
-  // button stays in this state until the run's terminal event arrives (or the
-  // confirmation deadline passes), so it never claims a cancel it hasn't got.
-  const [stopping, setStopping] = useState(false);
   const [responseError, setResponseError] = useState("");
   const [controlNotice, setControlNotice] = useState("");
   const { pendingAction, pendingKey, responding, setPendingAction, capturePending, isCurrentPending, isUnchangedPending, beginResponse, finishResponse } =
@@ -368,20 +351,31 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // supersedes the running turn), and each message must stay on screen until
   // the refetched transcript accounts for it.
   const [inFlightMessages, setInFlightMessages] = useState<InFlightMessage[]>(transitionInFlightMessages);
-  const [slashCommands, setSlashCommands] = useState<string[]>([]);
-  const [plugins, setPlugins] = useState<Plugin[]>([]);
-  const [activePluginIds, setActivePluginIds] = useState<string[]>([]);
-  const [appPluginsData, setAppPluginsData] = useState<AppPluginsData | null>(null);
+  // Which MCP tool set this chat runs with: an agent's, or the ordinary one.
+  // A new chat knows from the route; an existing one only once its own record
+  // has loaded (null until then — see useChatCommands), or failed to load, which
+  // falls back to the ordinary set.
+  const [chatLoadFailedFor, setChatLoadFailedFor] = useState<string | null>(null);
+  const agentChat = !id ? !!agentAlias : chat?.id === id ? !!chatMeta.agentAlias : chatLoadFailedFor === id ? false : null;
+  const {
+    slashCommands,
+    setSlashCommands,
+    plugins,
+    setPlugins,
+    activePluginIds,
+    setActivePluginIds,
+    appPluginsData,
+    setAppPluginsData,
+    loadSlashCommands,
+    allSlashCommands,
+    pluginCommandDescriptions,
+    keywords,
+    handleKeywordCreated,
+    mcpTools,
+    mcpToolsLoading,
+  } = useChatCommands(id, agentChat);
   const [showSlashCommandsModal, setShowSlashCommandsModal] = useState(false);
   const [slashCommandsModalTab, setSlashCommandsModalTab] = useState<"commands" | "tools" | "keywords">("commands");
-  // Injectable keywords, fetched once per mount and handed to the composer.
-  // Install-global (not per-chat, not per-folder), so nothing re-fetches them
-  // when the chat or directory changes — only a save from the composer or a
-  // pick from Settings can change the list, and the former pushes back through
-  // `onKeywordCreated`.
-  const [keywords, setKeywords] = useState<Keyword[]>([]);
-  const [mcpTools, setMcpTools] = useState<McpToolsResponse | null>(null);
-  const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
   // Owned here rather than inside the launchpad because SessionInfoNav has to
   // know which shape the launchpad took: with nothing starred the launchpad
   // falls back to the commands grid, and the nav's Commands pill would then be
@@ -554,27 +548,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const planApprovedRef = useRef(false);
   const tempChatIdRef = useRef<string | null>(null);
   const streamingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const stopConfirmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearStopConfirmTimeout = useCallback(() => {
-    if (stopConfirmTimeoutRef.current) {
-      clearTimeout(stopConfirmTimeoutRef.current);
-      stopConfirmTimeoutRef.current = null;
-    }
-  }, []);
-  const stopResyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearStopResyncTimeout = useCallback(() => {
-    if (stopResyncTimeoutRef.current) {
-      clearTimeout(stopResyncTimeoutRef.current);
-      stopResyncTimeoutRef.current = null;
-    }
-  }, []);
-  useEffect(
-    () => () => {
-      clearStopConfirmTimeout();
-      clearStopResyncTimeout();
-    },
-    [clearStopConfirmTimeout, clearStopResyncTimeout],
-  );
   const inFlightMessagesRef = useRef<InFlightMessage[]>(inFlightMessages);
   inFlightMessagesRef.current = inFlightMessages;
   /**
@@ -696,15 +669,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // pull it off their stored metadata. Defaults to "claude-code" (no badge).
   // When this chat is a job-run step session, the run id from metadata —
   // enables the "Job" view-mode tab showing the run's progress.
-  const chatJobRunId = useMemo((): string | undefined => {
-    if (!id || !chat?.metadata) return undefined;
-    try {
-      const meta = JSON.parse(chat.metadata);
-      return typeof meta.jobRunId === "string" ? meta.jobRunId : undefined;
-    } catch {
-      return undefined;
-    }
-  }, [id, chat?.metadata]);
+  const chatJobRunId = id ? chatMeta.jobRunId : undefined;
 
   // GET /cards/:id accepts any member chat id and resolves the full lineage
   // server-side. Pass the current id rather than reimplementing that walk from
@@ -744,61 +709,25 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Phase 4 of the pi landing, which meant both fell through to `"claude-code"`
   // and their header rendered a "CC" badge — the one place in the UI that names
   // the harness, naming the wrong one.
-  const chatProvider = useMemo((): AgentProviderKind => {
-    if (!id) return newChatProvider ?? "claude-code";
-    if (chat?.metadata) {
-      try {
-        const meta = JSON.parse(chat.metadata);
-        if (meta.provider === "codex") return "codex";
-        if (meta.provider === "acp") return "acp";
-        if (meta.provider === "cline") return "cline";
-        if (meta.provider === "pi") return "pi";
-      } catch {
-        // ignore — fall through
-      }
-    }
-    return "claude-code";
-  }, [id, newChatProvider, chat?.metadata]);
+  const chatProvider: AgentProviderKind = !id ? (newChatProvider ?? "claude-code") : providerKindOf(chatMeta.provider);
 
   // The raw `metadata.provider`, before `chatProvider` collapses anything it
   // does not recognize to "claude-code". Only the badge wants this: it is the
   // one control that names the harness rather than driving it, so it is the one
   // that must not round a retired harness off to a live one.
-  const rawChatProvider = useMemo((): string | null => {
-    if (!id || !chat?.metadata) return null;
-    try {
-      const value = JSON.parse(chat.metadata).provider;
-      return typeof value === "string" && value ? value : null;
-    } catch {
-      return null;
-    }
-  }, [id, chat?.metadata]);
+  const rawChatProvider = id ? chatMeta.provider : null;
 
   // Harnesses this build removed — see RETIRED_PROVIDER_KINDS on the backend.
   // Such a chat still opens (its record and transcript exist), but nothing can
   // resume it: POST /message answers 410. So the model/effort popover is hidden
   // rather than offering Anthropic models for a chat that never ran on one.
   const isRetiredHarness = rawChatProvider === "openrouter";
-  const nativeAgent = useMemo(() => {
-    try {
-      return JSON.parse(chat?.metadata || "{}").nativeAgent as import("shared/types/chat.js").NativeCodexAgent | undefined;
-    } catch {
-      return undefined;
-    }
-  }, [chat?.metadata]);
+  const nativeAgent = chatMeta.nativeAgent;
   // Where "Open parent thread" goes. The parent's *chat* id is what the router
   // takes; the native thread id only happens to equal it for chats whose id is
   // their session id. Explicit Callboard parentage wins, then the parent the
   // daemon inferred from the rollout, then the raw thread id as a last resort.
-  const nativeParentChatId = (() => {
-    if (!nativeAgent) return undefined;
-    try {
-      const meta = JSON.parse(chat?.metadata || "{}");
-      return (typeof meta.parentChatId === "string" && meta.parentChatId) || nativeAgent.inferredParentChatId || nativeAgent.parentThreadId;
-    } catch {
-      return nativeAgent.parentThreadId;
-    }
-  })();
+  const nativeParentChatId = nativeAgent ? chatMeta.parentChatId || nativeAgent.inferredParentChatId || nativeAgent.parentThreadId : undefined;
 
   // Only a loaded, matching, non-native-child chat gets managed computer controls.
   // Status polls only while it can change: the agent is running, the chat has
@@ -811,15 +740,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Which ACP vendor, for chats on the ACP kind. Read from metadata rather than
   // derived from `chatProvider`, because the kind alone does not name a harness.
-  const acpProviderId = useMemo((): string => {
-    if (!id) return newChatAcpProviderId ?? "";
-    try {
-      const meta = chat?.metadata ? JSON.parse(chat.metadata) : null;
-      return typeof meta?.acpProviderId === "string" ? meta.acpProviderId : "";
-    } catch {
-      return "";
-    }
-  }, [id, newChatAcpProviderId, chat?.metadata]);
+  const acpProviderId = !id ? (newChatAcpProviderId ?? "") : (chatMeta.acpProviderId ?? "");
 
   // Vendor id → display label, for ACP chats. Chat metadata stores the id
   // ("opencode"); only the server knows it is spelled "OpenCode". Title-casing
@@ -913,34 +834,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // chat falls back to the global default in Settings → API. An OR
   // slug/alias for openrouter chats, an Anthropic model alias/ID for
   // claude-code chats.
-  const currentModel = useMemo((): string => {
-    if (!id) return newChatModel ?? "";
-    if (chat?.metadata) {
-      try {
-        const meta = JSON.parse(chat.metadata);
-        if (typeof meta.model === "string") return meta.model;
-      } catch {
-        // ignore
-      }
-    }
-    return "";
-  }, [id, newChatModel, chat?.metadata]);
+  const currentModel = !id ? (newChatModel ?? "") : (chatMeta.model ?? "");
 
   // Current per-chat reasoning effort (from metadata). `undefined` = no
   // override; the chat falls back to each model's default. Only meaningful on a
   // reasoning-capable harness.
-  const currentEffort = useMemo((): EffortLevel | undefined => {
-    if (!id) return (location.state as any)?.effort as EffortLevel | undefined;
-    if (chat?.metadata) {
-      try {
-        const meta = JSON.parse(chat.metadata);
-        if (typeof meta.effort === "string") return meta.effort as EffortLevel;
-      } catch {
-        // ignore
-      }
-    }
-    return undefined;
-  }, [id, location.state, chat?.metadata]);
+  const currentEffort: EffortLevel | undefined = !id ? newChatEffort : chatMeta.effort;
 
   // Pending model/effort selected in the composer toggle that haven't been
   // sent yet. `null` means "no pending change". A non-null value (including
@@ -983,17 +882,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       return normalizePermissions(defaultPermissions || getLocalDefaultPermissions());
     }
 
-    // Existing chat: parse from chat metadata
-    if (chat?.metadata) {
-      try {
-        const meta = JSON.parse(chat.metadata);
-        if (meta.defaultPermissions) return normalizePermissions(meta.defaultPermissions);
-      } catch {}
-    }
+    // Existing chat: from chat metadata
+    if (chatMeta.defaultPermissions) return normalizePermissions(chatMeta.defaultPermissions);
 
     // Existing legacy chats must not inherit a browser grant from UI defaults.
     return normalizePermissions({ ...getLocalDefaultPermissions(), computerControl: "deny" });
-  }, [id, defaultPermissions, chat?.metadata, chatPermissions]);
+  }, [id, defaultPermissions, chatMeta, chatPermissions]);
 
   // Compute team color map - assigns colors to teams in order of appearance
   const teamColorMap = useMemo(() => {
@@ -1202,7 +1096,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   state: {
                     inFlightMessage: inFlightMessagesRef.current.map((m) => m.text),
                     ...(newChatProvider && { provider: newChatProvider }),
-                  },
+                  } satisfies ChatRouteState,
                 });
                 // Refresh chat list to show the new chat
                 onChatListRefreshRef.current?.();
@@ -1751,38 +1645,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return () => clearInterval(timer);
   }, [streaming, id, refreshActivity]);
 
-  // Fetch slash commands and plugins for the chat
-  const loadSlashCommands = useCallback(async () => {
-    if (!id) return;
-    try {
-      const { slashCommands, plugins, appPlugins } = await getSlashCommandsAndPlugins(id);
-      setSlashCommands(slashCommands);
-      setPlugins(plugins);
-      if (appPlugins) setAppPluginsData(appPlugins);
-    } catch (error) {
-      console.warn("Failed to load slash commands and plugins:", error);
-    }
-  }, [id]);
-
-  // Fetch injectable keywords once on mount. Install-global, so no `id` or
-  // `folder` in the deps: navigating between chats does not change the list.
-  useEffect(() => {
-    listKeywords()
-      .then(setKeywords)
-      .catch((err) => console.warn("Failed to load keywords:", err));
-  }, []);
-
-  // Fetch MCP tools once on mount (context-independent, cached for the session)
-  useEffect(() => {
-    if (mcpTools) return; // Already loaded
-    setMcpToolsLoading(true);
-    const context = agentAlias ? "agent" : undefined;
-    getMcpTools(context)
-      .then(setMcpTools)
-      .catch((err) => console.warn("Failed to load MCP tools:", err))
-      .finally(() => setMcpToolsLoading(false));
-  }, [agentAlias]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Load folder info for new chat mode
   useEffect(() => {
     if (id || !folder) return; // Only run in new chat mode with a folder
@@ -1914,14 +1776,18 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       if (chatData?.plugins && chatData.plugins.length > 0) {
         setPlugins(chatData.plugins);
       }
-      if ((chatData as any)?.appPlugins) {
-        setAppPluginsData((chatData as any).appPlugins);
+      if (chatData?.appPlugins) {
+        setAppPluginsData(chatData.appPlugins);
       }
 
       // Fetch fresh data if not available
       if (!chatData?.slash_commands?.length && !chatData?.plugins?.length) {
         loadSlashCommands();
       }
+    }).catch((err) => {
+      console.warn("Failed to load chat:", err);
+      // With no record there is no agentAlias to read: list the ordinary tools.
+      if (currentIdRef.current === id) setChatLoadFailedFor(id);
     });
     // Mark chat as read (fire-and-forget — best-effort background update)
     markAsRead(id!).catch(() => {});
@@ -2209,59 +2075,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       debouncedMarkAsRead.cancel();
     };
   }, [id, debouncedMarkAsRead]);
-
-  // Load active plugins from localStorage and listen for changes
-  useEffect(() => {
-    const loadActive = () => setActivePluginIds(Array.from(getActivePlugins()));
-
-    loadActive();
-
-    // Listen for storage changes (when SlashCommandsModal updates activePlugins)
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === "activePlugins") loadActive();
-    };
-
-    window.addEventListener("storage", handleStorageChange);
-    return () => window.removeEventListener("storage", handleStorageChange);
-  }, []);
-
-  // Combine base slash commands with active plugin commands for autocomplete
-  const { allSlashCommands, pluginCommandDescriptions } = useMemo(() => {
-    const allCmds = [...slashCommands];
-    const descriptions: Record<string, string> = {};
-
-    // Add commands from active per-directory plugins
-    for (const plugin of plugins) {
-      if (activePluginIds.includes(plugin.id)) {
-        for (const cmd of plugin.commands) {
-          const fullName = `${plugin.manifest.name}:${cmd.name}`;
-          allCmds.push(fullName);
-          if (cmd.description) {
-            descriptions[fullName] = cmd.description;
-          }
-        }
-      }
-    }
-
-    // Add commands from enabled app-wide plugins
-    if (appPluginsData) {
-      for (const plugin of appPluginsData.plugins) {
-        if (plugin.enabled) {
-          for (const cmd of plugin.commands) {
-            const fullName = `${plugin.manifest.name}:${cmd.name}`;
-            allCmds.push(fullName);
-            if (cmd.description) {
-              descriptions[fullName] = cmd.description;
-            }
-          }
-        }
-      }
-    }
-
-    // De-duplicate commands that may appear in multiple sources
-    const uniqueCmds = Array.from(new Set(allCmds));
-    return { allSlashCommands: uniqueCmds, pluginCommandDescriptions: descriptions };
-  }, [slashCommands, plugins, activePluginIds, appPluginsData]);
 
   /**
    * Which shape the new-chat launchpad is taking. Asked once, here, because
@@ -2766,133 +2579,28 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     [id, connectToStream, pendingAction, handleSend, beginResponse, finishResponse, isCurrentPending, setPendingAction],
   );
 
-  /**
-   * Refetch the persisted transcript (and the dock) for a stopped run, without
-   * touching run state. Only a chat that exists server-side can be refetched — a
-   * brand-new chat stopped during startup is still keyed by its temp tracking
-   * id, which no record answers to.
-   */
-  const resyncStoppedTranscript = useCallback(
-    (options?: { interrupted?: boolean }) => {
-      const chatId = id || (tempChatIdRef.current?.startsWith("new-") ? null : tempChatIdRef.current);
-      if (!chatId) {
-        clearInFlightMessages();
-        return;
-      }
-      // Refetch rather than keep the partially-streamed view: the server
-      // persisted whatever the run produced before it died, including the
-      // synthetic "interrupted" tool results.
-      getChat(chatId)
-        .then((chatData) => {
-          if (currentIdRef.current !== chatId) return;
-          setChat(chatData);
-        })
-        .catch(() => {});
-      getMessages(chatId)
-        .then((msgs) => {
-          if (currentIdRef.current !== chatId) return;
-          const msgArray = Array.isArray(msgs) ? msgs : [];
-          // Skipped when the harness already wrote its own marker — see
-          // endsWithInterruptMarker.
-          const needsNotice = options?.interrupted && !endsWithInterruptMarker(msgArray);
-          setMessages(needsNotice ? [...msgArray, { role: "system", type: "system", content: INTERRUPTED_MESSAGE }] : msgArray);
-        })
-        .catch(() => {})
-        .finally(() => clearInFlightMessages());
-      refreshActivity(chatId);
-    },
-    [id, refreshActivity],
-  );
-
-  /**
-   * Tear down the local view of a run that is no longer live server-side, and
-   * resync the transcript. Used when there's no stream to carry the run's
-   * terminal event to us: the session had already ended, we're not connected
-   * (page was refreshed), or the confirmation deadline passed.
-   */
-  const finishStopLocally = useCallback(
-    (options?: { interrupted?: boolean }) => {
-      clearStopConfirmTimeout();
-      abortRef.current?.abort();
-      abortRef.current = null;
-      setStopping(false);
-      setStreaming(false);
-      setPendingAction(null);
-      resyncStoppedTranscript(options);
-    },
-    [clearStopConfirmTimeout, resyncStoppedTranscript],
-  );
-
-  const handleStop = useCallback(async () => {
-    // A chat still being created is addressable by the temp tracking id we
-    // generated for it (sent to /new/message as clientTrackingId).
-    const chatId = id || tempChatIdRef.current;
-    if (!chatId) {
-      finishStopLocally();
-      return;
-    }
-
-    setStopping(true);
-    // Hold off auto-reconnect until the registry admits the run is gone —
-    // otherwise the poll's stale "active" (or a CLI-watcher session spawned
-    // from the killed run's log file) drags the UI back into "responding".
-    suppressReconnectAfterStopRef.current = true;
-    let stopped: boolean;
-    try {
-      // Deliberately does NOT close the SSE first: the stream is how the
-      // server tells us the run actually finished unwinding, and it carries
-      // the final transcript state with it. Killing it here is what made the
-      // old stop look instant while the run kept going.
-      ({ stopped } = await stopChat(chatId));
-    } catch {
-      setStopping(false);
-      setNetworkError("Failed to stop the session — it may still be running.");
-      return;
-    }
-
-    // Nothing was running server-side: our view was stale, so just resync.
-    if (!stopped) {
-      finishStopLocally();
-      return;
-    }
-
-    // The harness writes the turn's partial output and its "[Request
-    // interrupted by user]" marker as it dies — about a second after the abort,
-    // i.e. AFTER the terminal event that triggers the settle refetch below. One
-    // delayed resync picks that up, instead of leaving the killed turn's
-    // response blank until the user reloads.
-    clearStopResyncTimeout();
-    stopResyncTimeoutRef.current = setTimeout(() => resyncStoppedTranscript({ interrupted: true }), STOP_RESYNC_DELAY_MS);
-
-    // Cancelled. Without a live stream (page refreshed, inactivity timeout)
-    // no terminal event can reach us, so settle now.
-    if (!abortRef.current) {
-      finishStopLocally({ interrupted: true });
-      return;
-    }
-
-    // Otherwise wait for message_complete (reason: "aborted"), with a deadline
-    // so a run whose unwind never lands can't pin the UI in "Stopping…".
-    clearStopConfirmTimeout();
-    stopConfirmTimeoutRef.current = setTimeout(() => finishStopLocally({ interrupted: true }), STOP_CONFIRM_TIMEOUT_MS);
-  }, [id, finishStopLocally, clearStopConfirmTimeout, clearStopResyncTimeout, resyncStoppedTranscript]);
-
-  // Any end-of-run event (complete, error, abort confirmation) clears the
-  // pending-stop state — it's tied to a run being live.
-  useEffect(() => {
-    if (!streaming) {
-      setStopping(false);
-      clearStopConfirmTimeout();
-    }
-  }, [streaming, clearStopConfirmTimeout]);
-
   // The stop button should be active whenever the frontend is streaming OR the
   // server reports an active web session for this chat.  This covers cases where
   // the SSE connection dropped, the page was refreshed, or the inactivity
   // timeout fired — the server-side session is still running and can be aborted
   // via the /stop API regardless of frontend connection state.
   // CLI sessions are excluded because the server doesn't control their execution.
-  const canStop = !nativeAgent && (streaming || globalSessionActive?.type === "web") && !stopping;
+  const { stopping, canStop, handleStop } = useStopController({
+    id,
+    streaming,
+    stoppable: !nativeAgent && (streaming || globalSessionActive?.type === "web"),
+    abortRef,
+    tempChatIdRef,
+    currentIdRef,
+    suppressReconnectAfterStopRef,
+    setStreaming,
+    setPendingAction,
+    setNetworkError,
+    setChat,
+    setMessages,
+    clearInFlightMessages,
+    refreshActivity,
+  });
 
   const handleReconnect = useCallback(async () => {
     setNetworkError(null);
@@ -2929,108 +2637,16 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     }
   }, [globalSessionActive, streaming, connectToStream, id, resetReconnectBackoff]);
 
-  // Compute indices of user text messages for navigation
-  const userMessageIndices = useMemo(() => {
-    const indices: number[] = [];
-    messages.forEach((msg, i) => {
-      if (msg.role === "user" && msg.type === "text") {
-        indices.push(i);
-      }
-    });
-    return indices;
-  }, [messages]);
-
-  // Track which user message we're currently navigated to
-  const [userMsgNavIndex, setUserMsgNavIndex] = useState<number | null>(null);
-
-  // Reset user message nav when messages change (new messages arrive)
-  useEffect(() => {
-    setUserMsgNavIndex(null);
-  }, [messages.length]);
-
-  // Navigate to previous (older) user message
-  const navigatePrevUserMessage = useCallback(() => {
-    if (userMessageIndices.length === 0) return;
-    suppressRelatchRef.current = true;
-    unlatch();
-    const newNavIndex = userMsgNavIndex === null ? userMessageIndices.length - 1 : Math.max(0, userMsgNavIndex - 1);
-    setUserMsgNavIndex(newNavIndex);
-    const msgIndex = userMessageIndices[newNavIndex];
-    const el = document.querySelector(`[data-message-index="${msgIndex}"]`) as HTMLElement | null;
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.style.outline = "2px solid var(--accent)";
-      el.style.borderRadius = "8px";
-      setTimeout(() => {
-        el.style.outline = "";
-        el.style.borderRadius = "";
-      }, 2000);
-    }
-  }, [userMessageIndices, userMsgNavIndex, unlatch]);
-
-  // Navigate to next (newer) user message
-  const navigateNextUserMessage = useCallback(() => {
-    if (userMessageIndices.length === 0 || userMsgNavIndex === null) return;
-    const newNavIndex = userMsgNavIndex + 1;
-    if (newNavIndex >= userMessageIndices.length) {
-      // Past the last user message — go to bottom and re-latch
-      setUserMsgNavIndex(null);
-      suppressRelatchRef.current = false;
-      latchNow();
-      return;
-    }
-    suppressRelatchRef.current = true;
-    setUserMsgNavIndex(newNavIndex);
-    const msgIndex = userMessageIndices[newNavIndex];
-    const el = document.querySelector(`[data-message-index="${msgIndex}"]`) as HTMLElement | null;
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.style.outline = "2px solid var(--accent)";
-      el.style.borderRadius = "8px";
-      setTimeout(() => {
-        el.style.outline = "";
-        el.style.borderRadius = "";
-      }, 2000);
-    }
-  }, [userMessageIndices, userMsgNavIndex, latchNow]);
-
-  // Scroll to top of chat
-  const scrollToTop = useCallback(() => {
-    suppressRelatchRef.current = true;
-    unlatch();
-    chatContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-  }, [unlatch]);
-
-  // Scroll to bottom of chat — re-latching hands off to the pin loop
-  const scrollToBottom = useCallback(() => {
-    suppressRelatchRef.current = false;
-    latchNow();
-  }, [latchNow]);
-
-  // The newest task list in the conversation, from whichever engine ran it —
-  // one scan answering both "is there a button?" and "where does it go?", so the
-  // two can't disagree.
-  const latestTodoIndex = useMemo(() => findLatestTaskListIndex(messages), [messages]);
-  const hasTodoList = latestTodoIndex >= 0;
-
-  const handleTodoListClick = useCallback(() => {
-    if (latestTodoIndex >= 0) {
-      // Scroll to the todo list — unlatch so auto-scroll doesn't yank the
-      // user back to the bottom while they're looking at it
-      const targetElement = document.querySelector(`[data-message-index="${latestTodoIndex}"]`) as HTMLElement | null;
-      if (targetElement) {
-        suppressRelatchRef.current = true;
-        unlatch();
-        targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
-        targetElement.style.outline = "2px solid var(--accent)";
-        targetElement.style.borderRadius = "8px";
-        setTimeout(() => {
-          targetElement.style.outline = "";
-          targetElement.style.borderRadius = "";
-        }, 2000);
-      }
-    }
-  }, [latestTodoIndex, unlatch]);
+  const {
+    userMessageIndices,
+    userMsgNavIndex,
+    navigatePrevUserMessage,
+    navigateNextUserMessage,
+    scrollToTop,
+    scrollToBottom,
+    hasTodoList,
+    handleTodoListClick,
+  } = useMessageNavigation(messages, chatContainerRef, { latchNow, unlatch, suppressRelatchRef });
 
   const [draftSuccessCallback, setDraftSuccessCallback] = useState<(() => void) | null>(null);
   const [draftImages, setDraftImages] = useState<File[]>([]);
@@ -3104,11 +2720,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     },
     [promptInputInsertAtCaret],
   );
-
-  /** Splice a just-created keyword in so the autocomplete sees it immediately. */
-  const handleKeywordCreated = useCallback((keyword: Keyword) => {
-    setKeywords((prev) => [...prev.filter((k) => k.name !== keyword.name), keyword].sort((a, b) => a.name.localeCompare(b.name)));
-  }, []);
 
   // Early return: no folder specified in new chat mode
   if (!id && !folder) {
@@ -3910,33 +3521,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 <InFlightBubbles messages={visibleInFlightMessages} />
 
                 {streaming && (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "12px 0",
-                      color: "var(--text-muted)",
-                      fontSize: 13,
-                    }}
-                  >
-                    <span style={{ display: "inline-flex", gap: 3 }}>
-                      {[0, 1, 2].map((i) => (
-                        <span
-                          key={i}
-                          style={{
-                            width: 5,
-                            height: 5,
-                            borderRadius: "50%",
-                            background: "var(--accent)",
-                            display: "inline-block",
-                            animation: `thinking-bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
-                          }}
-                        />
-                      ))}
-                    </span>
+                  <ThinkingIndicator>
                     <span>{providerDisplayName} is thinking...</span>
-                  </div>
+                  </ThinkingIndicator>
                 )}
               </>
             ) : (
@@ -4025,36 +3612,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                   </div>
                 )}
                 {streaming && (
-                  <div
-                    style={{
-                      color: "var(--text-muted)",
-                      fontSize: 13,
-                      padding: "12px 0",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                    }}
-                  >
-                    <span style={{ display: "inline-flex", gap: 3 }}>
-                      {[0, 1, 2].map((i) => (
-                        <span
-                          key={i}
-                          style={{
-                            width: 5,
-                            height: 5,
-                            borderRadius: "50%",
-                            background: "var(--accent)",
-                            display: "inline-block",
-                            animation: `thinking-bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
-                          }}
-                        />
-                      ))}
-                    </span>
+                  <ThinkingIndicator>
                     <span>{compacting ? "Compacting conversation..." : `${providerDisplayName} is thinking...`}</span>
                     <span style={{ fontSize: 11, opacity: 0.7 }}>
                       {compacting ? "(Summarizing context to free up space)" : "(You can send another message anytime)"}
                     </span>
-                  </div>
+                  </ThinkingIndicator>
                 )}
                 <div ref={bottomRef} />
               </>

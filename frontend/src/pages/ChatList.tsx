@@ -50,6 +50,7 @@ import {
   type SidebarViewMode,
 } from "../utils/localStorage";
 import { errorMessage } from "../utils/errorMessage";
+import type { ChatRouteState } from "../types/chatRouteState";
 
 interface ChatListProps {
   activeChatId?: string;
@@ -277,14 +278,14 @@ export default function ChatList({
     (draft: QueueItem) => {
       if (draft.chat_id) {
         navigate(`/chat/${draft.chat_id}`, {
-          state: { draft: { id: draft.id, user_message: draft.user_message, images: draft.images } },
+          state: { draft: { id: draft.id, user_message: draft.user_message, images: draft.images } } satisfies ChatRouteState,
         });
       } else if (draft.folder) {
         navigate(`/chat/new?folder=${encodeURIComponent(draft.folder)}`, {
           state: {
             defaultPermissions: draft.defaultPermissions,
             draft: { id: draft.id, user_message: draft.user_message, images: draft.images },
-          },
+          } satisfies ChatRouteState,
         });
       }
     },

@@ -14,6 +14,7 @@ import Connections from "./dashboard/Connections";
 import Events from "./dashboard/Events";
 import AgentActivity from "./dashboard/Activity";
 import Memory from "./dashboard/Memory";
+import type { ChatRouteState } from "../../types/chatRouteState";
 
 const navItems = [
   { key: "", label: "Overview", icon: LayoutDashboard },
@@ -91,7 +92,7 @@ export default function AgentDashboard() {
         defaultPermissions: agentPermissions,
         systemPrompt,
         agentAlias: agent.alias,
-      },
+      } satisfies ChatRouteState,
     });
   };
 

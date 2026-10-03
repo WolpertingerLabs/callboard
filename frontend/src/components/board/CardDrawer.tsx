@@ -8,6 +8,7 @@ import CardPathLabel from "./CardPathLabel";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
+import type { ChatRouteState } from "../../types/chatRouteState";
 import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag, Folder } from "lucide-react";
 
 /** Mirrors the limits in backend/src/services/card-fields.ts. */
@@ -85,11 +86,11 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
       // No known folder anywhere — land on the picker message rather than guessing.
       // parentChatId = the card's root chat: the new chat joins the card by
       // joining the tree (membership is lineage).
-      navigate("/chat/new", { state: { parentChatId: card.id } });
+      navigate("/chat/new", { state: { parentChatId: card.id } satisfies ChatRouteState });
       return;
     }
 
-    let agentState: Record<string, unknown> = {};
+    let agentState: ChatRouteState = {};
     if (recent?.agentAlias) {
       let systemPrompt: string | undefined;
       try {
@@ -104,7 +105,7 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
       };
     }
 
-    navigate(`/chat/new?folder=${encodeURIComponent(folder)}`, { state: { parentChatId: card.id, ...agentState } });
+    navigate(`/chat/new?folder=${encodeURIComponent(folder)}`, { state: { parentChatId: card.id, ...agentState } satisfies ChatRouteState });
   };
 
   return (
