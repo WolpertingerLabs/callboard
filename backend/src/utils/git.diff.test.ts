@@ -281,3 +281,40 @@ describe("filenames git would quote", () => {
     expect(listIgnoredEntries(quoted)).toEqual({ entries: ["ignöred.ign"], truncated: false });
   });
 });
+
+describe("unquoted diff headers whose names contain ` b/`", () => {
+  let odd: string;
+
+  beforeAll(() => {
+    odd = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-odd-header-")));
+    const run = (...args: string[]) => execFileSync("git", args, { cwd: odd, stdio: "pipe" });
+    run("init", "-q", "-b", "main");
+    run("config", "user.email", "t@example.com");
+    run("config", "user.name", "t");
+    mkdirSync(join(odd, "with b"));
+    writeFileSync(join(odd, "with b", "odd.txt"), "one\n");
+    writeFileSync(join(odd, "a b.txt"), "one\n");
+    writeFileSync(join(odd, "old name.txt"), "moved\n");
+    run("add", ".");
+    run("commit", "-q", "-m", "init");
+    writeFileSync(join(odd, "with b", "odd.txt"), "one\ntwo\n");
+    writeFileSync(join(odd, "a b.txt"), "one\ntwo\n");
+    run("mv", "old name.txt", "new name.txt");
+  });
+
+  afterAll(() => {
+    rmSync(odd, { recursive: true, force: true });
+  });
+
+  it("takes the name from a header whose two halves agree, and splits a rename", async () => {
+    const files = await getGitDiffStructured(odd);
+    expect(files.map((f) => [f.filename, f.status]).sort()).toEqual(
+      [
+        ["a b.txt", "modified"],
+        ["new name.txt", "renamed"],
+        ["with b/odd.txt", "modified"],
+      ].sort(),
+    );
+    expect(files.find((f) => f.filename === "with b/odd.txt")).toMatchObject({ size: 8, additions: 1 });
+  });
+});

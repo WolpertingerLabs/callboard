@@ -410,6 +410,29 @@ describe("getGitInfo remembers where a nested directory's repository is", () => 
     expect(gitSpawns).toBe(1);
   });
 
+  it("forgets 'not a repository' after 30 seconds, so git init in a parent shows up", () => {
+    const parent = join(tmpRoot, "init-later");
+    const child = join(parent, "child");
+    mkdirSync(child, { recursive: true });
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    try {
+      tenCalls(child);
+      expect(gitSpawns).toBe(1);
+
+      realExecFileSync("git", ["init", "-q", "-b", "late", parent], { stdio: "pipe" });
+      now.mockReturnValue(start + 29_000);
+      expect(tenCalls(child).every((info) => !info.isGitRepo)).toBe(true);
+      expect(gitSpawns).toBe(0);
+
+      now.mockReturnValue(start + 31_000);
+      expect(tenCalls(child)[0]).toEqual({ isGitRepo: true, branch: "late" });
+      expect(gitSpawns).toBe(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("does not cache a failure that is not git's verdict", () => {
     // The stub throws without an exit status — a timeout or a missing git
     // says nothing about the directory, so it must be asked again.

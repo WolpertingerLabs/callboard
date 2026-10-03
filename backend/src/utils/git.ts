@@ -224,6 +224,8 @@ function branchFromHead(headHome: string): string | null | undefined {
 const gitDirCache = new Map<string, { headHome: string | null; cachedAt: number }>();
 /** Same five minutes as the folder git-info memo and {@link resolveWorktreeToMainRepoCached}. */
 const GIT_DIR_CACHE_TTL = 300000;
+/** Short, so `git init` in a parent shows up within seconds rather than minutes. */
+const NOT_A_REPO_CACHE_TTL = 30000;
 
 /**
  * `rev-parse --git-dir` for a directory with no `.git` of its own, remembered.
@@ -235,17 +237,19 @@ const GIT_DIR_CACHE_TTL = 300000;
  *
  * A cached repository is dropped once its HEAD is gone (the repository was
  * deleted). "Not a repository" is cached only on git's own verdict — exit 128 —
- * never on a timeout or a missing git, which say nothing about the directory.
- * The one staleness this keeps: `git init` in a *parent* of such a directory
- * is noticed when the entry expires. `git init` in the directory itself is
- * seen at once, because a `.git` there never reaches this function.
+ * never on a timeout or a missing git, which say nothing about the directory —
+ * and only for {@link NOT_A_REPO_CACHE_TTL}, because `git init` in a *parent*
+ * of such a directory is noticed only when the entry expires. Thirty seconds
+ * still turns ~240 spawns a streaming minute into 2. `git init` in the
+ * directory itself is seen at once, because a `.git` there never reaches this
+ * function.
  *
  * Throws, like `git()`, when the answer is "not a repository".
  */
 function revParseGitDir(directory: string): string | undefined {
   const now = Date.now();
   const cached = gitDirCache.get(directory);
-  if (cached && now - cached.cachedAt < GIT_DIR_CACHE_TTL) {
+  if (cached && now - cached.cachedAt < (cached.headHome === null ? NOT_A_REPO_CACHE_TTL : GIT_DIR_CACHE_TTL)) {
     if (cached.headHome === null) throw new Error(`not a git repository (cached): ${directory}`);
     if (existsSync(join(cached.headHome, "HEAD"))) return cached.headHome;
   }
@@ -1708,11 +1712,8 @@ function parseDiffIntoFiles(rawDiff: string): Array<{ filename: string; diff: st
   for (const part of parts) {
     if (!part.trim()) continue;
 
-    // Either side may be C-quoted ("b/tab\there") — see unquoteGitPath.
-    const headerMatch = part.match(/^diff --git (?:"a\/(?:[^"\\]|\\.)*"|a\/.+?) ("b\/(?:[^"\\]|\\.)*"|b\/.+)/);
-    if (!headerMatch) continue;
-
-    const filename = unquoteGitPath(headerMatch[1]).slice("b/".length);
+    const filename = diffHeaderFilename(part);
+    if (filename === undefined) continue;
 
     // Check for binary file
     if (part.includes("Binary files") && part.includes("differ")) {
@@ -1724,6 +1725,27 @@ function parseDiffIntoFiles(rawDiff: string): Array<{ filename: string; diff: st
   }
 
   return files;
+}
+
+/**
+ * The post-image name from a `diff --git` header.
+ *
+ * Either side may be C-quoted ("b/tab\there") — see unquoteGitPath. Unquoted,
+ * the header is ambiguous when the name itself contains ` b/`: for
+ * `a/with b/odd.txt b/with b/odd.txt` a lazy split yields `odd.txt b/with b/odd.txt`.
+ * Without a rename both halves are the same name, so a header of exactly the
+ * shape `a/<n> b/<n>` is taken as that; only a rename falls through to the split.
+ */
+function diffHeaderFilename(part: string): string | undefined {
+  const line = part.split("\n", 1)[0];
+  const rest = line.slice("diff --git ".length);
+  if (line.startsWith("diff --git a/") && (rest.length - 5) % 2 === 0) {
+    const len = (rest.length - 5) / 2;
+    const name = rest.slice(2, len + 2);
+    if (rest.slice(len + 2, len + 5) === " b/" && rest.slice(len + 5) === name) return name;
+  }
+  const headerMatch = line.match(/^diff --git (?:"a\/(?:[^"\\]|\\.)*"|a\/.+?) ("b\/(?:[^"\\]|\\.)*"|b\/.+)/);
+  return headerMatch ? unquoteGitPath(headerMatch[1]).slice("b/".length) : undefined;
 }
 
 /** Added/removed line counts of a unified diff — file headers (`+++`/`---`) excluded. */
