@@ -217,6 +217,52 @@ function branchFromHead(headHome: string): string | null | undefined {
 }
 
 /**
+ * `rev-parse --git-dir` answers per directory, keyed on the directory — it is
+ * a fact about the path, not about any workspace on it. A resolved HEAD
+ * home, or `null` for "git says this is not a repository".
+ */
+const gitDirCache = new Map<string, { headHome: string | null; cachedAt: number }>();
+/** Same five minutes as the folder git-info memo and {@link resolveWorktreeToMainRepoCached}. */
+const GIT_DIR_CACHE_TTL = 300000;
+
+/**
+ * `rev-parse --git-dir` for a directory with no `.git` of its own, remembered.
+ *
+ * `findChat` → `getGitInfo` runs about every 250 ms while a chat streams, and a
+ * chat whose folder is a subdirectory of a repository (or not in one at all)
+ * paid a spawn every time. Only *where the repository is* is cached — HEAD is
+ * still read on every call, so a branch switch shows up immediately.
+ *
+ * A cached repository is dropped once its HEAD is gone (the repository was
+ * deleted). "Not a repository" is cached only on git's own verdict — exit 128 —
+ * never on a timeout or a missing git, which say nothing about the directory.
+ * The one staleness this keeps: `git init` in a *parent* of such a directory
+ * is noticed when the entry expires. `git init` in the directory itself is
+ * seen at once, because a `.git` there never reaches this function.
+ *
+ * Throws, like `git()`, when the answer is "not a repository".
+ */
+function revParseGitDir(directory: string): string | undefined {
+  const now = Date.now();
+  const cached = gitDirCache.get(directory);
+  if (cached && now - cached.cachedAt < GIT_DIR_CACHE_TTL) {
+    if (cached.headHome === null) throw new Error(`not a git repository (cached): ${directory}`);
+    if (existsSync(join(cached.headHome, "HEAD"))) return cached.headHome;
+  }
+  gitDirCache.delete(directory);
+  try {
+    const answer = git(directory, ["rev-parse", "--git-dir"], { timeout: 5000 }).trim();
+    // Relative when git feels like it (`.git`, `../.git`), so resolve.
+    const headHome = answer ? resolve(directory, answer) : undefined;
+    if (headHome) gitDirCache.set(directory, { headHome, cachedAt: now });
+    return headHome;
+  } catch (err) {
+    if ((err as { status?: number } | undefined)?.status === 128) gitDirCache.set(directory, { headHome: null, cachedAt: now });
+    throw err;
+  }
+}
+
+/**
  * Check if a directory is a git repository and get the current branch
  *
  * ## Why the branch is read and not asked for
@@ -273,11 +319,9 @@ export function getGitInfo(directory: string): GitInfo {
         // `--git-dir` is the answer to "am I in a repository" *and* the location
         // of the HEAD that answers the next question, so its output is kept
         // rather than discarded. The spawn happens either way; this just stops a
-        // second one following it.
-        const answer = git(directory, ["rev-parse", "--git-dir"], { timeout: 5000 }).trim();
+        // second one following it — and it is cached, see revParseGitDir.
+        headHome = revParseGitDir(directory);
         isGitRepo = true;
-        // Relative when git feels like it (`.git`, `../.git`), so resolve.
-        if (answer) headHome = resolve(directory, answer);
       } catch {
         // Not a git repo or git not available
         return { isGitRepo: false };
@@ -1165,11 +1209,10 @@ export function listIgnoredEntries(directory: string): IgnoredEntries {
     return { entries: [], truncated: false, error: `Directory does not exist: ${directory}` };
   }
   try {
-    const out = git(directory, ["status", "--porcelain", "--ignored=traditional"]);
-    const all = out
-      .split("\n")
-      .filter((line) => line.startsWith("!! "))
-      .map((line) => line.slice(3).replace(/^"(.*)"$/, "$1"));
+    const out = git(directory, ["status", "--porcelain", "-z", "--ignored=traditional"]);
+    const all = parsePorcelainZ(out)
+      .filter((entry) => entry.xy === "!!")
+      .map((entry) => entry.path);
     return { entries: all.slice(0, IGNORED_ENTRY_LIMIT), truncated: all.length > IGNORED_ENTRY_LIMIT };
   } catch (err: any) {
     return { entries: [], truncated: false, error: `git status --ignored failed: ${err?.message ?? err}` };
@@ -1554,7 +1597,54 @@ async function listFilesRecursively(dirPath: string, baseDir: string): Promise<s
 }
 
 /**
- * Get list of untracked files using git status --porcelain.
+ * Parse `git status --porcelain -z`. Without `-z`, git C-quotes any path with a
+ * non-ASCII byte, a quote, a backslash or a control character
+ * (`"\303\274n\303\257.txt"`), so a parser that only strips the surrounding
+ * quotes hands back a name that does not exist on disk. With `-z` every path is
+ * raw and NUL-terminated; the one wrinkle is that a rename or copy is followed
+ * by its *source* path as a record of its own, which must be skipped.
+ */
+function parsePorcelainZ(output: string): Array<{ xy: string; path: string }> {
+  const records = output.split("\0");
+  const entries: Array<{ xy: string; path: string }> = [];
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (record.length < 4) continue; // the empty record after the final NUL
+    const xy = record.slice(0, 2);
+    entries.push({ xy, path: record.slice(3) });
+    if (/[RC]/.test(xy)) i++;
+  }
+  return entries;
+}
+
+const C_QUOTE_ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+
+/**
+ * Undo git's C-style path quoting: `"a/tab\there"` → `a/tab<TAB>here`. Octal
+ * escapes are raw bytes of a UTF-8 name, so they are reassembled as bytes, not
+ * as characters. An unquoted path is returned as is.
+ */
+function unquoteGitPath(path: string): string {
+  if (path.length < 2 || !path.startsWith('"') || !path.endsWith('"')) return path;
+  const bytes: Buffer[] = [];
+  for (const m of path.slice(1, -1).matchAll(/\\([0-7]{3}|[\s\S])|[^\\]+/g)) {
+    const escape = m[1];
+    if (escape === undefined) bytes.push(Buffer.from(m[0], "utf8"));
+    else if (escape.length === 3) bytes.push(Buffer.from([parseInt(escape, 8)]));
+    else bytes.push(Buffer.from([C_QUOTE_ESCAPES[escape] ?? escape.charCodeAt(0)]));
+  }
+  return Buffer.concat(bytes).toString("utf8");
+}
+
+/**
+ * Prefix for `git diff` invocations: print non-ASCII names in diff headers as
+ * themselves rather than as octal escapes. Names with quotes, backslashes or
+ * control characters are still quoted, which {@link unquoteGitPath} undoes.
+ */
+const DIFF_QUOTE_PATH_OFF = ["-c", "core.quotePath=false"];
+
+/**
+ * Get list of untracked files using git status --porcelain -z.
  * When git reports an untracked directory (trailing slash), expands it
  * into all individual files within that directory.
  *
@@ -1568,11 +1658,10 @@ async function listFilesRecursively(dirPath: string, baseDir: string): Promise<s
  */
 async function getUntrackedFiles(directory: string): Promise<string[]> {
   try {
-    const output = await gitAsync(directory, ["--no-optional-locks", "status", "--porcelain"]);
-    const entries = output
-      .split("\n")
-      .filter((line) => line.startsWith("?? "))
-      .map((line) => line.slice(3).replace(/^"(.*)"$/, "$1"));
+    const output = await gitAsync(directory, ["--no-optional-locks", "status", "--porcelain", "-z"]);
+    const entries = parsePorcelainZ(output)
+      .filter((entry) => entry.xy === "??")
+      .map((entry) => entry.path);
 
     const files: string[] = [];
     for (const entry of entries) {
@@ -1596,7 +1685,7 @@ async function getUntrackedFiles(directory: string): Promise<string[]> {
  */
 async function generateUntrackedFileDiff(directory: string, filename: string): Promise<string> {
   try {
-    return await gitAsync(directory, ["diff", "--no-index", "--", "/dev/null", filename]);
+    return await gitAsync(directory, [...DIFF_QUOTE_PATH_OFF, "diff", "--no-index", "--", "/dev/null", filename]);
   } catch (err: unknown) {
     // git diff --no-index exits with code 1 when there are differences (expected)
     const execError = err as { stdout?: string };
@@ -1619,10 +1708,11 @@ function parseDiffIntoFiles(rawDiff: string): Array<{ filename: string; diff: st
   for (const part of parts) {
     if (!part.trim()) continue;
 
-    const headerMatch = part.match(/^diff --git a\/(.+?) b\/(.+)/);
+    // Either side may be C-quoted ("b/tab\there") — see unquoteGitPath.
+    const headerMatch = part.match(/^diff --git (?:"a\/(?:[^"\\]|\\.)*"|a\/.+?) ("b\/(?:[^"\\]|\\.)*"|b\/.+)/);
     if (!headerMatch) continue;
 
-    const filename = headerMatch[2];
+    const filename = unquoteGitPath(headerMatch[1]).slice("b/".length);
 
     // Check for binary file
     if (part.includes("Binary files") && part.includes("differ")) {
@@ -1710,8 +1800,8 @@ export async function getGitDiffStructured(directory: string): Promise<DiffFileE
     // 1. Tracked file diffs (unstaged + staged) and the untracked listing.
     // getUntrackedFiles never rejects; a failed `git diff` (not a repo) means no diff at all.
     [unstaged, staged, untrackedFiles] = await Promise.all([
-      gitAsync(directory, ["diff"]),
-      gitAsync(directory, ["diff", "--cached"]),
+      gitAsync(directory, [...DIFF_QUOTE_PATH_OFF, "diff"]),
+      gitAsync(directory, [...DIFF_QUOTE_PATH_OFF, "diff", "--cached"]),
       getUntrackedFiles(directory),
     ]);
   } catch {
@@ -1802,7 +1892,10 @@ export async function getGitFileDiff(directory: string, filename: string): Promi
 
   // Tracked file: get both staged and unstaged diff for this specific file
   try {
-    const [unstaged, staged] = await Promise.all([gitAsync(directory, ["diff", "--", filename]), gitAsync(directory, ["diff", "--cached", "--", filename])]);
+    const [unstaged, staged] = await Promise.all([
+      gitAsync(directory, [...DIFF_QUOTE_PATH_OFF, "diff", "--", filename]),
+      gitAsync(directory, [...DIFF_QUOTE_PATH_OFF, "diff", "--cached", "--", filename]),
+    ]);
     const diff = (staged + unstaged).trim();
     return { diff, ...countDiffLines(diff) };
   } catch {

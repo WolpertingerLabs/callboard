@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -89,8 +90,10 @@ export function getToolDefinitions(service: ComputerUseService, principal: Princ
     ),
   ];
 }
+// src/ and dist/ both sit one level below the package root, so this resolves from tsx and compiled output alike.
+const { name: PACKAGE_NAME, version: PACKAGE_VERSION } = createRequire(import.meta.url)("../package.json") as { name: string; version: string };
 export function createMcpServer(service: ComputerUseService, principal: Principal): McpServer {
-  const server = new McpServer({ name: "@wolpertingerlabs/computer-use", version: "0.1.0" });
+  const server = new McpServer({ name: PACKAGE_NAME, version: PACKAGE_VERSION });
   // Erase heterogeneous Zod inference only at the SDK boundary; handlers validate canonical schemas.
   const registrar = server as unknown as {
     registerTool(

@@ -13,6 +13,7 @@
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.153.4",
+    "@wolpertingerlabs/computer-use": "*",
     "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.54",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
@@ -37,7 +38,6 @@
     "@types/express": "^4.17.0",
     "@types/multer": "^2.0.0",
     "@types/node-cron": "^3.0.11",
-    "swagger-autogen": "^2.23.7",
-    "vitest": "^4.1.11"
+    "swagger-autogen": "^2.23.7"
   }
 }

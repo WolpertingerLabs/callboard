@@ -2,7 +2,14 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // Nothing references this project or consumes its types (the package has no
+    // "types" entry; tests import src directly), so skip the .d.ts emit the base
+    // config enables for shared. incremental keeps what composite implied.
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "incremental": true
   },
   "include": ["src"],
   "references": [

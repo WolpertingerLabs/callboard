@@ -282,12 +282,9 @@ export interface WorkspaceEntry extends Workspace {
  * workspace at the moment it decides something — the click on Archive — or
  * for the whole list only on an explicit user request (the Workspace manager's
  * "Check all" button, which passes `includeRemovability=true`). `GET
- * /api/workspaces` does still fill this in unless a caller passes
- * `includeRemovability=false`, but that default is a temporary shim for browser
- * tabs running a bundle that predates the split (they read the field
- * unconditionally and crash without it), not an invitation: no caller in this
- * repo relies on it. See the constant in backend/src/routes/workspaces.ts for the
- * condition under which the default flips back.
+ * /api/workspaces` fills this in only when asked; through 1.0.0-alpha.60 it
+ * did so by default, as a shim for browser tabs running a bundle that predates
+ * the split — see backend/src/routes/workspaces.ts.
  *
  * **The verdict is an affordance, never the gate.** `archiveWorkspace`
  * re-evaluates removability server-side on every call and acts only on its own
@@ -301,12 +298,11 @@ export interface WorkspaceWithRemovability extends WorkspaceEntry {
 /**
  * `GET /api/workspaces`.
  *
- * Typed as {@link WorkspaceEntry}: the shape a caller gets when it passes
- * `includeRemovability=false`, which every caller in this repo does. Without
- * that parameter the route still fills `removability` in on every entry (a
- * `WorkspaceWithRemovability[]` is assignable here) for the benefit of bundles
- * that predate the split — but a reader that did not ask for it must not be able
- * to reach for it, so the response type does not promise it.
+ * Typed as {@link WorkspaceEntry}: the shape a caller gets unless it passes
+ * `includeRemovability=true`. Daemons through 1.0.0-alpha.60 fill `removability`
+ * in when the parameter is omitted (a `WorkspaceWithRemovability[]` is
+ * assignable here) — but a reader that did not ask for it must not be able to
+ * reach for it, so the response type does not promise it.
  */
 export interface WorkspaceListResponse {
   workspaces: WorkspaceEntry[];

@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getGitDiffStructured, getGitFileDiff } from "./git.js";
+import { getGitDiffStructured, getGitFileDiff, listIgnoredEntries } from "./git.js";
 
 // The user's git config (diff.noprefix, diff.mnemonicPrefix…) changes the diff text.
 const savedEnv = { nosystem: process.env.GIT_CONFIG_NOSYSTEM, global: process.env.GIT_CONFIG_GLOBAL };
@@ -197,5 +197,87 @@ describe("getGitFileDiff", () => {
 
   it("still rejects a traversing filename", async () => {
     await expect(getGitFileDiff(repo, "../etc/passwd")).rejects.toThrow("Invalid filename");
+  });
+});
+
+/**
+ * `git status --porcelain` and `git diff` C-quote any name with a non-ASCII
+ * byte, a quote, a backslash or a control character. These names used to
+ * vanish from the diff: the untracked listing only stripped the surrounding
+ * quotes (leaving `\303\274…` escapes that name no file), and the tracked
+ * diff header regex never matched a quoted header at all.
+ */
+describe("filenames git would quote", () => {
+  let quoted: string;
+  // Tab and newline are legal in POSIX names; skip them where the FS refuses.
+  const names = ["ünï.txt", "a b.txt", 'quote"name.txt', "tab\tname.txt", "new\nline.txt", "back\\slash.txt"];
+  const supported: string[] = [];
+
+  beforeAll(() => {
+    quoted = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-quoted-")));
+    const run = (...args: string[]) => execFileSync("git", args, { cwd: quoted, stdio: "pipe" });
+    run("init", "-q", "-b", "main");
+    run("config", "user.email", "t@example.com");
+    run("config", "user.name", "t");
+    writeFileSync(join(quoted, ".gitignore"), "*.ign\n");
+    writeFileSync(join(quoted, "tracked-é.txt"), "one\n");
+    writeFileSync(join(quoted, "tracked\ttab.txt"), "one\n");
+    writeFileSync(join(quoted, "old.txt"), "moved\n");
+    run("add", ".");
+    run("commit", "-q", "-m", "init");
+    writeFileSync(join(quoted, "tracked-é.txt"), "one\ntwo\n");
+    writeFileSync(join(quoted, "tracked\ttab.txt"), "one\ntwo\n");
+    // A staged rename is two NUL records under -z; the source must not be read as an entry.
+    run("mv", "old.txt", "renamed-ö.txt");
+    for (const name of names) {
+      try {
+        writeFileSync(join(quoted, name), "x\n");
+        supported.push(name);
+      } catch {
+        // filesystem refuses this name
+      }
+    }
+    writeFileSync(join(quoted, "ignöred.ign"), "x\n");
+  });
+
+  afterAll(() => {
+    rmSync(quoted, { recursive: true, force: true });
+  });
+
+  it("lists every untracked file under its real name", async () => {
+    const files = await getGitDiffStructured(quoted);
+    const untrackedNames = files.filter((f) => f.status === "untracked").map((f) => f.filename);
+    expect(untrackedNames.sort()).toEqual([...supported].sort());
+    for (const f of files.filter((entry) => entry.status === "untracked")) {
+      expect(f.size).toBe(2);
+      expect(f.additions).toBe(1);
+    }
+  });
+
+  it("names tracked changes and renames from quoted diff headers", async () => {
+    const files = await getGitDiffStructured(quoted);
+    const tracked = files.filter((f) => f.status !== "untracked");
+    expect(tracked.map((f) => [f.filename, f.status]).sort()).toEqual(
+      [
+        ["renamed-ö.txt", "renamed"],
+        ["tracked-é.txt", "modified"],
+        ["tracked\ttab.txt", "modified"],
+      ].sort(),
+    );
+    const accented = tracked.find((f) => f.filename === "tracked-é.txt")!;
+    // core.quotePath=false: the header shows the name, not octal escapes.
+    expect(accented.diff).toContain("diff --git a/tracked-é.txt b/tracked-é.txt");
+    expect(accented).toMatchObject({ size: 8, additions: 1, deletions: 0 });
+  });
+
+  it("diffs a quoted untracked or tracked file on demand", async () => {
+    for (const name of supported) {
+      expect(await getGitFileDiff(quoted, name)).toMatchObject({ additions: 1, deletions: 0 });
+    }
+    expect(await getGitFileDiff(quoted, "tracked\ttab.txt")).toMatchObject({ additions: 1, deletions: 0 });
+  });
+
+  it("lists ignored entries under their real names", () => {
+    expect(listIgnoredEntries(quoted)).toEqual({ entries: ["ignöred.ign"], truncated: false });
   });
 });
