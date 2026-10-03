@@ -934,53 +934,52 @@ function notifyParentOfChildEnd(run: JobRun): void {
 // ── Session-spawning steps ──────────────────────────────────────────
 
 async function startAgentAttempt(runId: string, stepId: string, attempt: number): Promise<void> {
+  await startSessionAttempt<AgentJobStep>(runId, stepId, attempt, "Agent", (run, step) => {
+    return (
+      (step.outputs?.length
+        ? `\n\nWhen you are done, you MUST call the complete_job_step tool with an "outputs" object containing: ${step.outputs.join(", ")}.`
+        : `\n\nWhen you are done, call the complete_job_step tool with a short summary (and any useful outputs).`) +
+      (run.title ? "" : ` This run has no title yet — call the set_job_run_title tool early with a short title specific to this run.`)
+    );
+  });
+}
+
+async function startPollAttempt(runId: string, stepId: string, attempt: number): Promise<void> {
+  await startSessionAttempt<PollJobStep>(runId, stepId, attempt, "Poll", (_run, step) => {
+    return (
+      `\n\nThis is check ${attempt} of ${step.maxAttempts}. You MUST finish by calling the complete_job_step tool with verdict "done" ` +
+      `(the condition is met) or "not_yet" (check again later).` +
+      (step.outputs?.length ? ` When done, include an "outputs" object containing: ${step.outputs.join(", ")}.` : "")
+    );
+  });
+}
+
+/**
+ * One attempt of a session-spawning step with a prompt (agent, poll): only the
+ * instructions appended to the interpolated prompt and the failure label differ.
+ */
+async function startSessionAttempt<S extends AgentJobStep | PollJobStep>(
+  runId: string,
+  stepId: string,
+  attempt: number,
+  label: "Agent" | "Poll",
+  instructionsFor: (run: JobRun, step: S) => string,
+): Promise<void> {
   const run = mustGetRun(runId);
-  const step = findStep(run, stepId) as AgentJobStep;
+  const step = findStep(run, stepId) as S;
   let prompt: string;
   try {
     prompt = interpolate(step.prompt, buildRunContext(run));
   } catch (err: any) {
-    failRun(run, `Agent step "${stepId}": ${err.message}`);
+    failRun(run, `${label} step "${stepId}": ${err.message}`);
     return;
   }
 
-  const instructions =
-    (step.outputs?.length
-      ? `\n\nWhen you are done, you MUST call the complete_job_step tool with an "outputs" object containing: ${step.outputs.join(", ")}.`
-      : `\n\nWhen you are done, call the complete_job_step tool with a short summary (and any useful outputs).`) +
-    (run.title ? "" : ` This run has no title yet — call the set_job_run_title tool early with a short title specific to this run.`);
+  const instructions = instructionsFor(run, step);
 
   // Intent before spawn — see the ordering note in startSubJobStep. The key
   // is stamped into the session's chat metadata, so a crash before the chatId
   // lands on the run can still find the session.
-  run.activeStep = { stepId, attempt, startedAt: new Date().toISOString(), executionKey: nextExecutionKey(run, stepId) };
-  run.status = "running";
-  delete run.nextWakeAt;
-  saveRun(run);
-
-  try {
-    await spawnStepSession(runId, stepId, prompt + instructions, { step });
-  } catch (err: any) {
-    handleAttemptSpawnFailure(runId, stepId, attempt, err.message);
-  }
-}
-
-async function startPollAttempt(runId: string, stepId: string, attempt: number): Promise<void> {
-  const run = mustGetRun(runId);
-  const step = findStep(run, stepId) as PollJobStep;
-  let prompt: string;
-  try {
-    prompt = interpolate(step.prompt, buildRunContext(run));
-  } catch (err: any) {
-    failRun(run, `Poll step "${stepId}": ${err.message}`);
-    return;
-  }
-
-  const instructions =
-    `\n\nThis is check ${attempt} of ${step.maxAttempts}. You MUST finish by calling the complete_job_step tool with verdict "done" ` +
-    `(the condition is met) or "not_yet" (check again later).` +
-    (step.outputs?.length ? ` When done, include an "outputs" object containing: ${step.outputs.join(", ")}.` : "");
-
   run.activeStep = { stepId, attempt, startedAt: new Date().toISOString(), executionKey: nextExecutionKey(run, stepId) };
   run.status = "running";
   delete run.nextWakeAt;

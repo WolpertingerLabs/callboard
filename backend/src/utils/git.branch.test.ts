@@ -9,43 +9,44 @@
  *     believed about HEAD files.
  *  2. **It does not spawn.** That is the entire point of the change — 22 spawns
  *     per cold folder listing, and a 295 ms event-loop block every five minutes
- *     when the caller's memo expires — so `execSync` is stubbed to throw. A
- *     revision that quietly goes back to shelling out does not fail slowly here,
- *     it fails: `getGitInfo` catches the throw and reports `"main"`, which is
- *     the wrong branch in every fixture below that is not on `main`.
+ *     when the caller's memo expires — so git.ts's `execFileSync` is stubbed to
+ *     throw. A revision that quietly goes back to shelling out does not fail
+ *     slowly here, it fails: `getGitInfo` catches the throw and reports
+ *     `"main"`, which is the wrong branch in every fixture below that is not on
+ *     `main`.
  *
- * `execFileSync` is deliberately passed through, because that is what builds the
- * fixtures — and because the fallback path this change keeps is `execSync`, so
- * stubbing exactly it is what separates "used the fast path" from "used git".
+ * The fixtures are built with the *actual* `execFileSync` (`vi.importActual`),
+ * so only spawns made by git.ts are counted — that is what separates "used the
+ * fast path" from "used git".
  */
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { execFileSync as realExecFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync, mkdirSync, cpSync, renameSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /** Set by the mock below; asserted to stay at zero on the fast path. */
-let execSyncCalls = 0;
+let gitSpawns = 0;
 /**
  * Let the counted spawns actually run. Off by default so a regression that
  * shells out is loud rather than merely slow; on for the fallback cases, where
  * the spawn is the correct behaviour and the question is how *many*.
  */
-let execSyncPassThrough = false;
+let spawnPassThrough = false;
 
 vi.mock("child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("child_process")>();
   return {
     ...actual,
-    execSync: (...args: Parameters<typeof actual.execSync>) => {
-      execSyncCalls++;
-      if (execSyncPassThrough) return actual.execSync(...args);
-      throw new Error(`execSync called: ${String(args[0])}`);
+    execFileSync: (...args: Parameters<typeof actual.execFileSync>) => {
+      gitSpawns++;
+      if (spawnPassThrough) return actual.execFileSync(...args);
+      throw new Error(`execFileSync called: ${String(args[0])} ${JSON.stringify(args[1])}`);
     },
   };
 });
 
-const { getGitInfo } = await import("./git.js");
+const { execFileSync: realExecFileSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+const { getGitInfo, getGitBranches } = await import("./git.js");
 
 const tmpRoot = realpathSync(mkdtempSync(join(tmpdir(), "callboard-git-branch-")));
 
@@ -74,12 +75,12 @@ describe("getGitInfo reads the branch from HEAD", () => {
     git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
     git(["checkout", "-q", "-b", "some-branch"], repo);
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(repo);
 
     expect(info).toEqual({ isGitRepo: true, branch: "some-branch" });
     expect(info.branch).toBe(gitSaysBranch(repo));
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("keeps the slashes in a branch name", () => {
@@ -89,12 +90,12 @@ describe("getGitInfo reads the branch from HEAD", () => {
     git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
     git(["checkout", "-q", "-b", "feat/deeply/nested"], repo);
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(repo);
 
     expect(info.branch).toBe("feat/deeply/nested");
     expect(info.branch).toBe(gitSaysBranch(repo));
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("reports an unborn branch, where there is a HEAD but no commit", () => {
@@ -102,14 +103,14 @@ describe("getGitInfo reads the branch from HEAD", () => {
     // reports the branch, and so must this.
     const repo = initRepo("unborn", "trunk");
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(repo);
 
     expect(info.branch).toBe("trunk");
     expect(info.branch).toBe(gitSaysBranch(repo));
     // An unborn branch is a branch, not a detachment — the flag stays absent.
     expect(info.isDetached).toBeUndefined();
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("falls back to main on a detached HEAD, and says that is what it did", () => {
@@ -121,7 +122,7 @@ describe("getGitInfo reads the branch from HEAD", () => {
     // Git prints nothing here; the historical contract turns that into "main".
     expect(gitSaysBranch(repo)).toBe("");
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(repo);
 
     // `branch` keeps the fallback — it is read across the sidebar, the chat
@@ -131,7 +132,7 @@ describe("getGitInfo reads the branch from HEAD", () => {
     // the first: without this it compared "main" to "main", never fired, and
     // checked out over uncommitted work.
     expect(info).toEqual({ isGitRepo: true, branch: "main", isDetached: true });
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("reads a linked worktree's own HEAD, not the main checkout's", () => {
@@ -143,7 +144,7 @@ describe("getGitInfo reads the branch from HEAD", () => {
     const wt = join(tmpRoot, "wt-linked");
     git(["worktree", "add", "-q", "-b", "side-branch", wt], repo);
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const linked = getGitInfo(wt);
     const main = getGitInfo(repo);
 
@@ -151,7 +152,7 @@ describe("getGitInfo reads the branch from HEAD", () => {
     expect(linked.branch).toBe(gitSaysBranch(wt));
     expect(main.branch).toBe("main");
     expect(main.branch).toBe(gitSaysBranch(repo));
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("reads a submodule's HEAD through the same pointer", () => {
@@ -168,12 +169,12 @@ describe("getGitInfo reads the branch from HEAD", () => {
     git(["-c", "protocol.file.allow=always", "submodule", "-q", "add", inner, "vendor"], outer);
 
     const subDir = join(outer, "vendor");
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(subDir);
 
     expect(info.isGitRepo).toBe(true);
     expect(info.branch).toBe(gitSaysBranch(subDir));
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("answers a directory inside a repository with one spawn, not two", () => {
@@ -187,18 +188,18 @@ describe("getGitInfo reads the branch from HEAD", () => {
     const nested = join(repo, "a", "b");
     mkdirSync(nested, { recursive: true });
 
-    execSyncCalls = 0;
-    execSyncPassThrough = true;
+    gitSpawns = 0;
+    spawnPassThrough = true;
     let info;
     try {
       info = getGitInfo(nested);
     } finally {
-      execSyncPassThrough = false;
+      spawnPassThrough = false;
     }
 
     expect(info).toEqual({ isGitRepo: true, branch: "outer-branch" });
     expect(info.branch).toBe(gitSaysBranch(nested));
-    expect(execSyncCalls).toBe(1);
+    expect(gitSpawns).toBe(1);
   });
 
   it("falls back to git when the .git file does not parse", () => {
@@ -208,13 +209,13 @@ describe("getGitInfo reads the branch from HEAD", () => {
     mkdirSync(broken, { recursive: true });
     writeFileSync(join(broken, ".git"), "this is not a gitdir pointer\n");
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(broken);
 
     // `.git` exists, so it is treated as a repo — unchanged from before — and
     // the branch lookup goes to the subprocess.
     expect(info.isGitRepo).toBe(true);
-    expect(execSyncCalls).toBeGreaterThan(0);
+    expect(gitSpawns).toBeGreaterThan(0);
   });
 
   it("falls back to git when HEAD is a symref outside refs/heads", () => {
@@ -226,10 +227,10 @@ describe("getGitInfo reads the branch from HEAD", () => {
     cpSync(repo, odd, { recursive: true });
     writeFileSync(join(odd, ".git", "HEAD"), "ref: refs/remotes/origin/main\n");
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     getGitInfo(odd);
 
-    expect(execSyncCalls).toBeGreaterThan(0);
+    expect(gitSpawns).toBeGreaterThan(0);
   });
 
   it("reads a detached HEAD in a sha-256 repository as detached", () => {
@@ -244,12 +245,12 @@ describe("getGitInfo reads the branch from HEAD", () => {
     expect(sha).toHaveLength(64);
     git(["checkout", "-q", sha], repo);
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(repo);
 
     expect(gitSaysBranch(repo)).toBe("");
     expect(info).toEqual({ isGitRepo: true, branch: "main", isDetached: true });
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("resolves rev-parse's relative answer for a bare repository", () => {
@@ -262,19 +263,19 @@ describe("getGitInfo reads the branch from HEAD", () => {
 
     expect(git(["rev-parse", "--git-dir"], bare).trim()).toBe(".");
 
-    execSyncCalls = 0;
-    execSyncPassThrough = true;
+    gitSpawns = 0;
+    spawnPassThrough = true;
     let info;
     try {
       info = getGitInfo(bare);
     } finally {
-      execSyncPassThrough = false;
+      spawnPassThrough = false;
     }
 
     expect(info).toEqual({ isGitRepo: true, branch: "bare-branch" });
     expect(info.branch).toBe(gitSaysBranch(bare));
     // Only the `rev-parse` that decided it is a repository at all.
-    expect(execSyncCalls).toBe(1);
+    expect(gitSpawns).toBe(1);
   });
 
   it("follows a .git symlink onto the fast path", () => {
@@ -289,12 +290,12 @@ describe("getGitInfo reads the branch from HEAD", () => {
     renameSync(join(repo, ".git"), moved);
     symlinkSync(moved, join(repo, ".git"));
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(repo);
 
     expect(info.branch).toBe("linked-branch");
     expect(info.branch).toBe(gitSaysBranch(repo));
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("hands a malformed .git file to git rather than parsing it loosely", () => {
@@ -328,10 +329,10 @@ describe("getGitInfo reads the branch from HEAD", () => {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, ".git"), contents);
 
-      execSyncCalls = 0;
+      gitSpawns = 0;
       getGitInfo(dir);
 
-      expect(execSyncCalls, `shape ${i}: ${JSON.stringify(contents)}`).toBeGreaterThan(0);
+      expect(gitSpawns, `shape ${i}: ${JSON.stringify(contents)}`).toBeGreaterThan(0);
     }
   });
 
@@ -351,21 +352,100 @@ describe("getGitInfo reads the branch from HEAD", () => {
     // Git itself resolves this one, which is what makes it the positive case.
     expect(gitSaysBranch(pointing)).toBe("crlf-branch");
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     const info = getGitInfo(pointing);
 
     expect(info).toEqual({ isGitRepo: true, branch: "crlf-branch" });
-    expect(execSyncCalls).toBe(0);
+    expect(gitSpawns).toBe(0);
   });
 
   it("reports a non-repository as one, without spawning a branch lookup", () => {
     const plain = join(tmpRoot, "not-a-repo");
     mkdirSync(plain, { recursive: true });
 
-    execSyncCalls = 0;
+    gitSpawns = 0;
     expect(getGitInfo(plain)).toEqual({ isGitRepo: false });
     // One spawn: `rev-parse --git-dir`, which is how "not a repo" is decided.
     // The stub throws, which is the same signal a real git failure gives.
-    expect(execSyncCalls).toBe(1);
+    expect(gitSpawns).toBe(1);
+  });
+});
+
+describe("getGitBranches puts the current branch first, read from HEAD", () => {
+  /** The listing itself always spawns; the current branch should not. */
+  function branchesCountingSpawns(dir: string): { branches: string[]; spawns: number } {
+    gitSpawns = 0;
+    spawnPassThrough = true;
+    try {
+      return { branches: getGitBranches(dir), spawns: gitSpawns };
+    } finally {
+      spawnPassThrough = false;
+    }
+  }
+
+  it("moves the checked-out branch to the front with one spawn", () => {
+    const repo = initRepo("branches-plain");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    git(["branch", "aaa"], repo);
+    git(["checkout", "-q", "-b", "zzz"], repo);
+
+    const { branches, spawns } = branchesCountingSpawns(repo);
+
+    expect(branches).toEqual(["zzz", "aaa", "main"]);
+    expect(spawns).toBe(1);
+  });
+
+  it("treats a detached HEAD as no current branch — not as main", () => {
+    // getGitInfo reports a detached HEAD as "main" for historical reasons; that
+    // fallback must not leak here, where it would hoist a branch that is not
+    // checked out.
+    const repo = initRepo("branches-detached");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    git(["branch", "aaa"], repo);
+    git(["checkout", "-q", git(["rev-parse", "HEAD"], repo).trim()], repo);
+
+    const { branches, spawns } = branchesCountingSpawns(repo);
+
+    // `git branch --list` itself lists the detachment as a pseudo-entry (it
+    // always has); it sorts first on its own, and nothing is hoisted over it.
+    expect(branches).toEqual([expect.stringMatching(/^\(HEAD detached at [0-9a-f]+\)$/), "aaa", "main"]);
+    expect(spawns).toBe(1);
+  });
+
+  it("uses a linked worktree's own branch, not the main checkout's", () => {
+    const repo = initRepo("branches-wt-main");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    const wt = join(tmpRoot, "branches-wt-linked");
+    git(["worktree", "add", "-q", "-b", "side", wt], repo);
+
+    const linked = branchesCountingSpawns(wt);
+    const main = branchesCountingSpawns(repo);
+
+    expect(linked.branches).toEqual(["side", "main"]);
+    expect(linked.spawns).toBe(1);
+    expect(main.branches).toEqual(["main", "side"]);
+    expect(main.spawns).toBe(1);
+  });
+
+  it("falls back to git from a subdirectory, which has no HEAD of its own", () => {
+    const repo = initRepo("branches-nested");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    git(["checkout", "-q", "-b", "outer"], repo);
+    const nested = join(repo, "sub");
+    mkdirSync(nested, { recursive: true });
+
+    const { branches, spawns } = branchesCountingSpawns(nested);
+
+    expect(branches).toEqual(["outer", "main"]);
+    expect(spawns).toBe(2);
+  });
+
+  it("lists a branch whose name contains quotes verbatim", () => {
+    // The shell-string form needed a `'` strip that also mangled this name.
+    const repo = initRepo("branches-quotes");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    git(["branch", "'quoted'"], repo);
+
+    expect(branchesCountingSpawns(repo).branches).toEqual(["main", "'quoted'"]);
   });
 });
