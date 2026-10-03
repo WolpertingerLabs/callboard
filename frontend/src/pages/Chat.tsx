@@ -356,10 +356,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // has loaded (null until then — see useChatCommands), or failed to load, which
   // falls back to the ordinary set. "Loaded" is tracked by the route id the
   // record was fetched for, not by `chat.id`: the backend resolves
-  // `/chat/<sessionId>` too, and that record's `id` is not the route's.
+  // `/chat/<sessionId>` too, and that record's `id` is not the route's. A
+  // matching `chat.id` still counts, and outranks a failed load: that is a later
+  // refetch (tab shown again, reconnect) succeeding where the first load didn't.
   const [chatLoadedFor, setChatLoadedFor] = useState<string | null>(null);
   const [chatLoadFailedFor, setChatLoadFailedFor] = useState<string | null>(null);
-  const agentChat = !id ? !!agentAlias : chat && chatLoadedFor === id ? !!chatMeta.agentAlias : chatLoadFailedFor === id ? false : null;
+  const chatIsForRoute = !!chat && (chatLoadedFor === id || chat.id === id);
+  const agentChat = !id ? !!agentAlias : chatIsForRoute ? !!chatMeta.agentAlias : chatLoadFailedFor === id ? false : null;
   const {
     slashCommands,
     setSlashCommands,

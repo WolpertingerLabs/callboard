@@ -235,6 +235,25 @@ describe("MCP tools follow the chat's tool-set context", () => {
     expect(screen.queryByText("No MCP tools available.")).toBeNull();
   });
 
+  it("a refetch that succeeds after a failed first load corrects the tool set", async () => {
+    vi.mocked(getChat).mockRejectedValueOnce(new Error("Failed to get chat"));
+    mount("/chat/agent-1");
+    await waitFor(() => expect(getMcpTools).toHaveBeenCalled());
+    expect(await contexts()).toEqual(["default"]);
+
+    // The tab comes back to the foreground and refetches the record.
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(getChat).toHaveBeenCalledTimes(2));
+    expect(await contexts()).toEqual(["default", "agent"]);
+
+    // And the next chat still waits for its own record rather than inheriting this one's.
+    await go("plain-1");
+    await waitFor(() => expect(getMcpTools).toHaveBeenCalledTimes(3));
+    expect(await contexts()).toEqual(["default", "agent", "default"]);
+  });
+
   it("shows the tools as loading, not empty, while an existing chat's record is still on its way", async () => {
     let resolveChat!: (chat: Awaited<ReturnType<typeof getChat>>) => void;
     vi.mocked(getChat).mockImplementationOnce(() => new Promise((resolve) => (resolveChat = resolve)));
