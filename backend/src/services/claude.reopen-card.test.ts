@@ -32,7 +32,7 @@ vi.mock("./quick-completion.js", () => ({
 }));
 
 /** Job runs by id, for the "archived after the run started" rule. */
-const runs = vi.hoisted(() => new Map<string, { runId: string; createdAt: string }>());
+const runs = vi.hoisted(() => new Map<string, { runId: string; createdAt: string; parentRunId?: string }>());
 vi.mock("./job-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./job-store.js")>();
   return { ...actual, getRun: (runId: string) => (runs.get(runId) as any) ?? actual.getRun(runId) };
@@ -268,6 +268,31 @@ describe("sendMessage — a job step respects an archive made after its run star
     await step(root.id, T1);
     expect(metaOf(root.id).treeArchived).toBe(true);
     expect(metaOf(root.id).treeArchivedAt).toBe(T2);
+  });
+
+  it("measures a nested run from its TOP-LEVEL run, not from when the child was spawned", async () => {
+    // Parent run started at T1, the user archived at T2, and a `job` step then
+    // spawned a child run at T3. The child's own createdAt postdates the
+    // archive; the job the user archived out from under does not.
+    const T3 = "2026-03-04T00:00:00.000Z";
+    runs.set("run-top", { runId: "run-top", createdAt: T1 });
+    runs.set("run-mid", { runId: "run-mid", createdAt: T3, parentRunId: "run-top" });
+    runs.set("run-leaf", { runId: "run-leaf", createdAt: T3, parentRunId: "run-mid" });
+    const card = chatFileService.createChat(workDir, "respect-nested-card", JSON.stringify({ card: { lifecycle: "closed", closedAt: T2 } }));
+    const flag = chatFileService.createChat(workDir, "respect-nested-flag", JSON.stringify({ triggered: true, treeArchived: true, treeArchivedAt: T2 }));
+
+    await runNewChat({ triggered: true, jobContext: { runId: "run-leaf", stepId: "step", rootChatId: card.id } });
+    await runNewChat({ triggered: true, jobContext: { runId: "run-leaf", stepId: "step", rootChatId: flag.id } });
+
+    expect(readCardFields(card.id)!.lifecycle).toBe("closed");
+    expect(metaOf(flag.id).treeArchived).toBe(true);
+  });
+
+  it("stops at the highest run that still exists when an ancestor run is gone", async () => {
+    runs.set("run-orphan", { runId: "run-orphan", createdAt: T1, parentRunId: "run-pruned" });
+    const root = chatFileService.createChat(workDir, "respect-orphan", JSON.stringify({ triggered: true, treeArchived: true, treeArchivedAt: T0 }));
+    await runNewChat({ triggered: true, jobContext: { runId: "run-orphan", stepId: "step", rootChatId: root.id } });
+    expect(metaOf(root.id).treeArchived).toBeUndefined();
   });
 
   it("still lets the user reopen a tree archived mid-run, by messaging it", async () => {

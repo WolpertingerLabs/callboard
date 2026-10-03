@@ -974,6 +974,25 @@ const DEFAULT_MAX_NUDGES = 3;
  * For new chats, creates the chat record when session_id arrives from the SDK
  * and emits a "chat_created" event so the frontend can navigate.
  */
+/**
+ * `createdAt` of the outermost run in `runId`'s ancestry — the moment the
+ * user's job actually started, which a nested child run's own timestamp is
+ * not. Walks `parentRunId` with a depth bound and a visited set (run files
+ * are hand-editable); a missing parent stops the walk at the highest run that
+ * still exists.
+ */
+function topLevelRunCreatedAt(runId: string): string | undefined {
+  let run = getJobRun(runId);
+  const seen = new Set<string>([runId]);
+  for (let depth = 0; run?.parentRunId && depth < 32 && !seen.has(run.parentRunId); depth++) {
+    seen.add(run.parentRunId);
+    const parent = getJobRun(run.parentRunId);
+    if (!parent) break;
+    run = parent;
+  }
+  return run?.createdAt;
+}
+
 export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitter> {
   if (opts.chatId) assertNativeAgentControllable(opts.chatId);
   const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
@@ -1191,7 +1210,14 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // run (a new run started against an archived tree), or one with no stamp,
   // reopens as before. Every other sender — the UI, continue_chat, triggers,
   // a spawned child — reopens unconditionally.
-  const runStartedAt = opts.jobContext?.runId ? getJobRun(opts.jobContext.runId)?.createdAt : undefined;
+  //
+  // "The run" is the TOP-LEVEL run: a `job` step spawns a child run stamped
+  // with its own createdAt but the parent's tree, so measuring from the child
+  // would let a nested run started after the archive reopen it. Retries and
+  // resumes reuse their run's createdAt, so a retried step into a tree
+  // archived mid-run leaves it archived too — intentionally: the retry is the
+  // same unattended run the user archived out from under.
+  const runStartedAt = opts.jobContext?.runId ? topLevelRunCreatedAt(opts.jobContext.runId) : undefined;
   if (reopenRootId) {
     const rootCard = readCardFields(reopenRootId);
     if (rootCard?.lifecycle === "closed" && archivedAfter(rootCard.closedAt, runStartedAt)) {

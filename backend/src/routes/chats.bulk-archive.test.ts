@@ -349,4 +349,36 @@ describe("POST /api/chats/bulk-archive", () => {
     expect(res.body.failed).toEqual([{ id: sessionId, error: expect.stringMatching(/could not be read/) }]);
     expect(readFileSync(path, "utf8")).toBe("{ truncated");
   });
+
+  /**
+   * A session id two records claim: the by-session map names neither, so the
+   * route takes the materialise path and finds a record already filed there.
+   * It must not overwrite it, and must not fail with a "try again" that the
+   * next snapshot would answer identically — it archives that record's root.
+   */
+  it("archives the existing record's root when materialising finds one already filed for an ambiguous session", async () => {
+    const sessionId = `bulk-archive-ambiguous-${seq++}`;
+    const owner = chatFileService.createChat("/tmp/proj", sessionId, JSON.stringify({ triggered: true, title: "keep me" }));
+    const claimant = make({ session_ids: [sessionId] });
+    filesystemOnly.set(sessionId, {
+      id: sessionId,
+      folder: "/tmp/proj",
+      session_id: sessionId,
+      metadata: JSON.stringify({}),
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+      _from_filesystem: true,
+    });
+
+    const res = await bulkArchive({ ids: [sessionId], archived: true });
+
+    expect(res.body.failed).toEqual([]);
+    // Judged from the real record — triggered, so the flag, not a card.
+    expect(res.body.updated).toEqual([{ id: sessionId, rootChatId: owner.id, archived: true, isCard: false }]);
+    const meta = metaOf(owner.id);
+    expect(meta.treeArchived).toBe(true);
+    expect(meta.title).toBe("keep me");
+    expect(meta.card).toBeUndefined();
+    expect(metaOf(claimant).treeArchived).toBeUndefined();
+  });
 });

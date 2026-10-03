@@ -607,7 +607,12 @@ chatsRouter.get("/", (req, res) => {
     const archivedLineage = () => {
       if (!cardMembership) return null;
       archivedRootsMemo ??= {
-        roots: archivedRootIdsOf(fileChats, cardMembership.index.existingRootIdOf, (id) => cardMembership.roots.has(id)),
+        roots: archivedRootIdsOf(
+          fileChats,
+          cardMembership.index.existingRootIdOf,
+          (id) => cardMembership.roots.has(id),
+          (chat) => fileMetaByChat.get(chat),
+        ),
         rootOf: cardMembership.index.existingRootIdOf,
       };
       return archivedRootsMemo;
@@ -2311,14 +2316,13 @@ chatsRouter.post("/bulk-archive", (req, res) => {
           const chat = target.materialize;
           // insertChat, not upsertChat: the snapshot already established there
           // is no record, and upsertChat would rediscover that with a full
-          // directory scan before writing. If a record turns up anyway (the
-          // snapshot skipped an unreadable file, or two records claim the
-          // session), nothing is written: the card-or-flag decision above was
-          // made from the session log, not from that record, and the record
-          // may even belong to another tree. Failing the id is the honest
-          // answer — on a retry the record is in the snapshot and resolves
-          // through the ordinary path.
-          const { created } = chatFileService.insertChat({
+          // directory scan before writing. insertChat never overwrites: if a
+          // record turns up anyway — the snapshot skipped it as unreadable
+          // (insertChat throws, and the id fails), or two records claim the
+          // session so the by-session map named neither — nothing is
+          // written over it. A readable one is the real thing this id meant,
+          // so the decision is remade from it below.
+          const { chat: record, created } = chatFileService.insertChat({
             id: chat.id,
             folder: chat.folder,
             session_id: chat.session_id,
@@ -2327,8 +2331,23 @@ chatsRouter.post("/bulk-archive", (req, res) => {
             updated_at: chat.updated_at,
           });
           if (!created) {
-            failedRoots.set(target.rootChatId, "This chat's record changed while archiving; try again");
-            continue;
+            // The card-or-flag call above was made from the session log, not
+            // from this record, and the record may sit under a parent. Walk
+            // its own lineage (per-step reads — this is the rare path) and
+            // judge the root it reaches by the membership rule. Failing with
+            // "try again" instead would never succeed for an ambiguous session
+            // id: the next snapshot is just as unable to pick a record.
+            const rootId = walkToRootId(record.id);
+            const root = rootId === record.id ? record : chatFileService.getChat(rootId);
+            if (!root) {
+              failedRoots.set(target.rootChatId, "Chat not found");
+              continue;
+            }
+            // Mutated in place: every requested id that resolved to this
+            // target reports the root that was actually archived.
+            target.rootChatId = root.id;
+            target.isCard = isCardEligible(root) && !isNativeRecord(root);
+            target.writeKey = root.session_id || undefined;
           }
         }
         if (!setRootArchived(target.rootChatId, archived, { isCard: target.isCard, pinnedMembers, writeKey: target.writeKey })) {

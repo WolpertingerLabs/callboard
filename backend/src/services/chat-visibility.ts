@@ -62,7 +62,21 @@ export function archivedFlagOf(chat: { metadata?: string | null }): boolean {
  * archive a tree nothing in the UI can unarchive.
  */
 export function rootIsArchived(root: { metadata?: string | null }, isCard: boolean): boolean {
-  return isCard ? cardIsArchived(root) : archivedFlagOf(root);
+  return metaIsArchived(parseChatMetadataRecord(root.metadata), isCard);
+}
+
+/**
+ * {@link rootIsArchived} over metadata the caller has already parsed — the
+ * same two rules, read off the object: a card is archived when `card` is
+ * closed or hidden ({@link cardIsArchived}), a non-card root when it carries
+ * the flag ({@link archivedFlagOf}).
+ */
+export function metaIsArchived(meta: Record<string, unknown>, isCard: boolean): boolean {
+  if (!isCard) return meta.treeArchived === true;
+  const card = meta.card;
+  if (!card || typeof card !== "object" || Array.isArray(card)) return false;
+  const fields = card as { lifecycle?: unknown; hidden?: unknown };
+  return fields.hidden === true || fields.lifecycle === "closed";
 }
 
 /**
@@ -71,15 +85,20 @@ export function rootIsArchived(root: { metadata?: string | null }, isCard: boole
  * — the same promotion rule the card rollup uses, so a descendant orphaned by a
  * deleted root is judged by its own record.
  */
-export function archivedRootIdsOf(
-  stored: Iterable<{ id: string; metadata?: string | null }>,
+export function archivedRootIdsOf<T extends { id: string; metadata?: string | null }>(
+  stored: Iterable<T>,
   existingRootIdOf: (chatId: string) => string,
   isCardRoot: (chatId: string) => boolean,
+  // Metadata the caller already parsed, when it has it — the list route's
+  // first pass does, and reparsing every root on the polled hot path would
+  // be a second parse for an answer already in hand.
+  parsedMetaOf?: (chat: T) => Record<string, unknown> | undefined,
 ): Set<string> {
   const archived = new Set<string>();
   for (const chat of stored) {
     if (existingRootIdOf(chat.id) !== chat.id) continue;
-    if (rootIsArchived(chat, isCardRoot(chat.id))) archived.add(chat.id);
+    const meta = parsedMetaOf?.(chat) ?? parseChatMetadataRecord(chat.metadata);
+    if (metaIsArchived(meta, isCardRoot(chat.id))) archived.add(chat.id);
   }
   return archived;
 }
