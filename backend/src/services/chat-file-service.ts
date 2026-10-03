@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, readdirSync, statSync, unlinkSync, existsSync, mkdirSync, type BigIntStats } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 import type { Chat } from "shared/types/index.js";
@@ -89,6 +89,39 @@ function invalidateRecord(sessionId: string): void {
   sortedCache = null;
 }
 
+/**
+ * The record in `file`, from {@link recordCache} when its `(mtimeNs, size)`
+ * still match `stats`, otherwise read from disk — and remembered only once its
+ * mtime tick has closed (see {@link isMtimeSettled}). `read` reports a disk
+ * read, which invalidates the memoised order: the record that moved may have
+ * moved in `updated_at`. `chat` is null when the file is unreadable or corrupt;
+ * that is not cached either way, so a transient failure is retried next call.
+ *
+ * Returns the cached object itself — callers that hand it out must copy.
+ */
+function loadRecord(file: string, stats: BigIntStats): { chat: Chat | null; read: boolean } {
+  const cached = recordCache.get(file);
+  if (cached && cached.mtimeNs === stats.mtimeNs && cached.size === stats.size) return { chat: cached.chat, read: false };
+
+  // Computed before the read so a slow read cannot talk us into trusting a
+  // timestamp that was fresh when we opened it.
+  const cacheable = isMtimeSettled(stats.mtimeNs);
+  sortedCache = null;
+  try {
+    const chat: Chat = JSON.parse(readFileSync(join(chatsDir, file), "utf8"));
+    // A record still inside its tick is returned but not remembered, so the
+    // next call re-reads it rather than latching a value a same-tick rewrite
+    // could have superseded.
+    if (cacheable) recordCache.set(file, { mtimeNs: stats.mtimeNs, size: stats.size, chat });
+    else recordCache.delete(file);
+    return { chat, read: true };
+  } catch (error) {
+    log.error(`Error reading chat file ${file}: ${error}`);
+    recordCache.delete(file);
+    return { chat: null, read: true };
+  }
+}
+
 class ChatFileService {
   /**
    * Every record, newest first, optionally paginated.
@@ -132,33 +165,9 @@ class ChatFileService {
         }
         present.add(file);
 
-        const cached = recordCache.get(file);
-        if (cached && cached.mtimeNs === stats.mtimeNs && cached.size === stats.size) {
-          records.push(cached.chat);
-          continue;
-        }
-
-        // Only entries whose tick has already closed are worth remembering; see
-        // isMtimeSettled. Computed before the read so a slow read cannot talk us
-        // into trusting a timestamp that was fresh when we opened it.
-        const cacheable = isMtimeSettled(stats.mtimeNs);
-
-        reread = true;
-        try {
-          const chat: Chat = JSON.parse(readFileSync(filepath, "utf8"));
-          // A record still inside its tick is returned but not remembered, so
-          // the next call re-reads it rather than latching a value a same-tick
-          // rewrite could have superseded.
-          if (cacheable) recordCache.set(file, { mtimeNs: stats.mtimeNs, size: stats.size, chat });
-          else recordCache.delete(file);
-          records.push(chat);
-        } catch (error) {
-          // Unreadable or corrupt: not cached either way, so a transient
-          // failure is retried on the next call rather than latched into a
-          // chat that has silently vanished from the list.
-          log.error(`Error reading chat file ${file}: ${error}`);
-          recordCache.delete(file);
-        }
+        const { chat, read } = loadRecord(file, stats);
+        if (read) reread = true;
+        if (chat) records.push(chat);
       }
 
       for (const file of recordCache.keys()) {
@@ -192,9 +201,9 @@ class ChatFileService {
   //
   // Records are filed as `<session_id>.json` (see saveChat), so this is a
   // single stat + read. Use it wherever the caller's id is provably a session
-  // id, because getChat's miss path is a readdir + parse of every record in
-  // the directory — ~88 ms median across 8k records on a real data dir, paid
-  // per lookup.
+  // id, because getChat's miss path is a readdir + stat of every record in
+  // the directory (plus a read of any not in recordCache) — ~16 ms across 8k
+  // warm records, paid per lookup.
   //
   // `chat.id` and `session_id` are NOT separate namespaces: the dominant
   // creation path is `upsertChat(sessionId, folder, sessionId)`
@@ -233,19 +242,23 @@ class ChatFileService {
     const bySession = this.getChatBySessionId(id);
     if (bySession) return bySession;
 
-    // If not found by session_id, search all files for matching chat id
+    // If not found by session_id, search all files for matching chat id.
+    // Stat-only for every record recordCache already holds at its current
+    // (mtimeNs, size) — the same freshness rule getAllChats uses — so a miss
+    // costs a readdir + stat per file rather than a read + parse per file.
     try {
       const files = readdirSync(chatsDir).filter((file) => file.endsWith(".json"));
       for (const file of files) {
+        let stats;
         try {
-          const content = readFileSync(join(chatsDir, file), "utf8");
-          const chat: Chat = JSON.parse(content);
-          if (chat.id === id) {
-            return chat;
-          }
+          stats = statSync(join(chatsDir, file), { bigint: true });
         } catch (error) {
           log.error(`Error reading chat file ${file}: ${error}`);
+          continue;
         }
+        const { chat } = loadRecord(file, stats);
+        // A copy, as getAllChats hands out: callers mutate what they get back.
+        if (chat?.id === id) return { ...chat };
       }
     } catch (error) {
       log.error(`Error searching for chat: ${error}`);

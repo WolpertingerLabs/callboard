@@ -5,8 +5,11 @@ import { cardLifecycleOf, rawCardFields } from "./card-fields.js";
 export function createTriggeredPredicate(isParkedRow?: (chat: { id: string }, meta: ReturnType<typeof parseChatMetadata>) => boolean) {
   const parked = hasParkedApprovals();
   const cache = new Map<string, ReturnType<typeof getRun>>();
-  return (chat: { id: string; metadata?: string | null }) => {
-    const meta = parseChatMetadata(chat.metadata);
+  // `meta`, when given, must be the parse of `chat.metadata` — a caller that
+  // built the string from an object passes that object instead of having it
+  // parsed back. Never pass this predicate straight to Array#filter with it:
+  // the index would arrive as `meta`.
+  return (chat: { id: string; metadata?: string | null }, meta: ReturnType<typeof parseChatMetadata> = parseChatMetadata(chat.metadata)) => {
     if (meta.nativeAgent) return false;
     if (meta.triggered !== true) return true;
     if (!parked || typeof meta.jobRunId !== "string") return false;

@@ -9,7 +9,7 @@ import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { createLogger } from "./logger.js";
 
 const log = createLogger("chat-lookup");
-export { withSessionProvider } from "./session-provenance.js";
+export { withSessionProvider, withSessionProviderMeta } from "./session-provenance.js";
 import { withSessionProvider, resolveSessionAcrossProviders, resolveSessionContext } from "./session-provenance.js";
 
 /** Consume a findChat result without re-discovering (and overriding) its owner. */

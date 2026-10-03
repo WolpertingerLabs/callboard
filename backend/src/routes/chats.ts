@@ -19,7 +19,7 @@ import { getAllAppPluginsData } from "../services/app-plugins.js";
 import { getGitInfo, resolveWorktreeToMainRepoCached, type GitInfo } from "../utils/git.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
-import { readChatSessionMessages, withSessionProvider, findChat } from "../utils/chat-lookup.js";
+import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
 import { buildChatTree, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
@@ -42,6 +42,7 @@ import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatL
 import { folderListCache, folderListGeneration, folderListInFlight, FOLDER_LIST_CACHE_TTL, clearFolderListCache } from "../services/folder-list-cache.js";
 import { workspaceRegistryVersion } from "../services/workspace-store.js";
 import { clearListCaches } from "../services/list-caches.js";
+import { parseIntParam } from "../utils/query-params.js";
 export { clearChatListCache, clearFolderListCache, clearListCaches };
 
 const log = createLogger("chats");
@@ -179,9 +180,20 @@ type DiscoveredSession = {
 };
 
 /**
- * Discover session JSONL files using filesystem-level sorting for optimal performance.
- * Only processes the files needed for the current page.
+ * A folder's slash commands and plugins, or empty lists when there is no
+ * folder or the scan fails — for responses that carry them as an extra, where
+ * a broken plugin dir must not fail the request.
  */
+function commandsAndPluginsOrEmpty(folder: string | undefined | null): { slashCommands: any[]; plugins: any[] } {
+  try {
+    if (folder) {
+      const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(folder);
+      return { slashCommands, plugins };
+    }
+  } catch {}
+  return { slashCommands: [], plugins: [] };
+}
+
 /**
  * Discover sessions across all registered providers.
  * Merges results, sorts globally by mtime DESC, and paginates.
@@ -317,7 +329,14 @@ chatsRouter.get("/folders", async (req, res) => {
       // measurements that `settle()` writes into, below.
       const budget = newAsyncDiskUsageBudget();
 
-      // Fetch all sessions (large limit to get everything within range)
+      // The 9999 most recently updated sessions. Lossless for this listing:
+      // discovery is sorted by updatedAt descending, and only sessions
+      // *created* since `cutoff` count — each of which was updated since
+      // then too — so a row can only be lost if more than 9999 sessions were
+      // touched inside the age window (the UI's widest is 30 days). Kept
+      // rather than lifted because, on a single-provider install, the cap is
+      // what keeps this on the provider's paged fast path instead of the
+      // whole-corpus drain (see discoverSessionsPaginated).
       const { sessions } = discoverSessionsPaginated(9999, 0);
 
       // One registry read for the whole listing, not one per row.
@@ -438,6 +457,14 @@ chatsRouter.get("/", (req, res) => {
      * answer the discarded `isPinned` helper's catch gave.
      */
     const pinnedFileChats: any[] = [];
+    /**
+     * Each record's parsed metadata, from the one parse this loop already
+     * does. augmentSession runs per discovered session — every session, on
+     * the sidebar's over-fetching default — and reuses it rather than
+     * parsing the record again. Read-only: augmentSession copies before it
+     * changes anything.
+     */
+    const fileMetaByChat = new Map<any, Record<string, any>>();
 
     for (const chat of fileChats) {
       // Index by session_id
@@ -453,11 +480,13 @@ chatsRouter.get("/", (req, res) => {
         }
       }
       if (meta.pinned === true && chat?.id) pinnedFileChats.push(chat);
+      fileMetaByChat.set(chat, meta);
     }
 
     // Handle pagination
-    const limit = parseInt(req.query.limit as string) || 20;
-    const offset = parseInt(req.query.offset as string) || 0;
+    // A negative limit or offset used to reach the slices below as-is.
+    const limit = parseIntParam(req.query.limit, { default: 20, min: 1 });
+    const offset = parseIntParam(req.query.offset, { default: 0, min: 0 });
     const bookmarkedFilter = req.query.bookmarked === "true";
     const excludeTriggered = req.query.excludeTriggered === "true";
     const includeLineage = req.query.includeLineage === "true";
@@ -630,6 +659,15 @@ chatsRouter.get("/", (req, res) => {
     for (const s of discoveredSessions) providerKindByLogPath.set(s.filePath, s.providerKind);
 
     /**
+     * The parsed object each row's `metadata` string was serialized from, so
+     * the triggered filter reads it instead of parsing the string back. The
+     * lineage append's bare-record fallback, and augmentSession's own catch
+     * fallback, have no entry; the filter parses those as before.
+     */
+    const rowMeta = new WeakMap<object, Record<string, any>>();
+    const survivesTriggered = (chat: any): boolean => survivesTriggeredFilter(chat, rowMeta.get(chat));
+
+    /**
      * Build a response row for a discovered session.
      *
      * Deliberately does no lifecycle/transcript replay (only bounded cached
@@ -648,8 +686,26 @@ chatsRouter.get("/", (req, res) => {
       const gitInfo = getCachedGitInfo(s.folder);
 
       if (fileChat) {
+        // Merge session_ids in metadata (the preview is folded in later, by
+        // attachPreview, for the rows this request actually returns). Built
+        // on the parsed object end to end; JSON.stringify happens once.
+        let metadata: string;
+        let parsed: Record<string, any> | undefined;
+        try {
+          const meta = fileMetaByChat.get(fileChat) ?? parseChatMetadata(fileChat.metadata);
+          // A copy: `meta` is shared with every other session of this record.
+          const sessionIds = Array.isArray(meta.session_ids) ? [...meta.session_ids] : [];
+          if (!sessionIds.includes(s.sessionId)) {
+            sessionIds.push(s.sessionId);
+          }
+          const built = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ ...meta, session_ids: sessionIds }, s.providerKind, s.acpProviderId), false);
+          metadata = JSON.stringify(built);
+          parsed = built;
+        } catch {
+          metadata = withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
+        }
         // Augment with file storage data while keeping filesystem as source of truth for timestamps
-        return {
+        const row = {
           ...fileChat,
           // Keep original folder (may be a worktree) — logs are stored under this path
           folder: s.folder,
@@ -664,32 +720,15 @@ chatsRouter.get("/", (req, res) => {
           // Add git information
           is_git_repo: gitInfo.isGitRepo,
           git_branch: gitInfo.branch,
-          // Merge session_ids in metadata (the preview is folded in later, by
-          // attachPreview, for the rows this request actually returns)
-          metadata: (() => {
-            try {
-              const meta = parseChatMetadata(fileChat.metadata);
-              const sessionIds = Array.isArray(meta.session_ids) ? meta.session_ids : [];
-              if (!sessionIds.includes(s.sessionId)) {
-                sessionIds.push(s.sessionId);
-              }
-              return JSON.stringify(
-                nativeMetadata(
-                  s.filePath,
-                  s.sessionId,
-                  parseChatMetadata(withSessionProvider(JSON.stringify({ ...meta, session_ids: sessionIds }), s.providerKind, s.acpProviderId)),
-                  false,
-                ),
-              );
-            } catch {
-              return withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId);
-            }
-          })(),
+          metadata,
           _augmented_from_file: true,
         };
+        if (parsed) rowMeta.set(row, parsed);
+        return row;
       } else {
         // No file record found, create from filesystem only - this is normal
-        return {
+        const parsed = nativeMetadata(s.filePath, s.sessionId, withSessionProviderMeta({ session_ids: [s.sessionId] }, s.providerKind, s.acpProviderId), false);
+        const row = {
           id: s.sessionId,
           // Keep original folder (may be a worktree)
           folder: s.folder,
@@ -697,14 +736,7 @@ chatsRouter.get("/", (req, res) => {
           displayFolder: s.displayFolder,
           session_id: s.sessionId,
           session_log_path: s.filePath,
-          metadata: JSON.stringify(
-            nativeMetadata(
-              s.filePath,
-              s.sessionId,
-              parseChatMetadata(withSessionProvider(JSON.stringify({ session_ids: [s.sessionId] }), s.providerKind, s.acpProviderId)),
-              false,
-            ),
-          ),
+          metadata: JSON.stringify(parsed),
           created_at: s.createdAt.toISOString(),
           updated_at: s.updatedAt.toISOString(),
           // Add git information
@@ -712,6 +744,8 @@ chatsRouter.get("/", (req, res) => {
           git_branch: gitInfo.branch,
           _from_filesystem: true,
         };
+        rowMeta.set(row, parsed);
+        return row;
       }
     };
 
@@ -795,7 +829,8 @@ chatsRouter.get("/", (req, res) => {
      * distinct `jobRunId` among the rows examined, never one per row and never
      * bounded by the size of the run store. How many rows get examined depends
      * on the path, and the wide one is the *default*: `fetchLimit` above jumps
-     * to 9999 whenever `needsPostFilter` is set, and `excludeTriggered` alone
+     * to Number.MAX_SAFE_INTEGER (every discovered session) whenever
+     * `needsPostFilter` is set, and `excludeTriggered` alone
      * sets it — so the sidebar's ordinary request examines the whole discovered
      * list, not a page. Only the unfiltered path examines just the page.
      */
@@ -842,7 +877,7 @@ chatsRouter.get("/", (req, res) => {
      */
     const survivesTriggeredFilter = createTriggeredPredicate(isParkedApprovalRow);
 
-    const dropTriggered = (chats: any[]): any[] => chats.filter(survivesTriggeredFilter);
+    const dropTriggered = (chats: any[]): any[] => chats.filter(survivesTriggered);
 
     /**
      * Flag the one row a job run is waiting on — the sidebar's only signal that
@@ -923,7 +958,7 @@ chatsRouter.get("/", (req, res) => {
       // session for a chat outside the window) — paginate manually, by row for
       // the tree view, augmenting only the windowed sessions. Every reason
       // `needsPostFilter` over-fetches has to be named here too, or the branch
-      // below hands back all 9999 sessions as a "page".
+      // below hands back every discovered session as a "page".
       const window = paginateWindow(paginatedSessions, (s) => fileChatsBySessionId.get(s.sessionId)?.id ?? s.sessionId);
       chatsFromLogs = window.page.map(augmentSession);
       ({ total, windowRows } = window);
@@ -991,7 +1026,7 @@ chatsRouter.get("/", (req, res) => {
       if (isRetiredProvider(readProvider(fc))) return null;
       const session = sessionByChatId.get(fc.id);
       const augmented = session ? augmentSession(session) : { ...fc, displayFolder: fc.folder };
-      if (excludeTriggered && !survivesTriggeredFilter(augmented)) return null;
+      if (excludeTriggered && !survivesTriggered(augmented)) return null;
       return augmented;
     };
 
@@ -1114,13 +1149,7 @@ chatsRouter.get("/new/info", (req, res) => {
   const mainRepoPath = view.repoPath ?? folder;
 
   // Get slash commands and plugins for the folder
-  let slashCommands: any[] = [];
-  let plugins: any[] = [];
-  try {
-    const result = getCommandsAndPluginsForDirectory(folder);
-    slashCommands = result.slashCommands;
-    plugins = result.plugins;
-  } catch {}
+  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(folder);
 
   // Get app-wide plugins
   let appPluginsData;
@@ -1186,13 +1215,7 @@ chatsRouter.post("/", (req, res) => {
   const gitInfo = getCachedGitInfo(folder);
 
   // Get slash commands and plugins for the folder
-  let slashCommands: any[] = [];
-  let plugins: any[] = [];
-  try {
-    const result = getCommandsAndPluginsForDirectory(folder);
-    slashCommands = result.slashCommands;
-    plugins = result.plugins;
-  } catch {}
+  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(folder);
 
   try {
     const chat = chatFileService.createChat(folder, sessionId, JSON.stringify(metadata));
@@ -2205,15 +2228,7 @@ chatsRouter.get("/:id", (req, res) => {
   if (!chat) return res.status(404).json({ error: "Not found" });
 
   // Include slash commands and plugins for the chat's folder
-  let slashCommands: any[] = [];
-  let plugins: any[] = [];
-  try {
-    if (chat.folder) {
-      const result = getCommandsAndPluginsForDirectory(chat.folder);
-      slashCommands = result.slashCommands;
-      plugins = result.plugins;
-    }
-  } catch {}
+  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(chat.folder);
 
   // Get app-wide plugins
   let appPluginsData;

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import {
   getGitBranches,
   getGitDiffStructured,
@@ -11,6 +11,27 @@ import {
 import { generateBranchName } from "../services/quick-completion.js";
 
 export const gitRouter = Router();
+
+/** The resolved folder, or null after answering 400 for an invalid one. */
+function validatedFolder(rawFolder: string, res: Response): string | null {
+  try {
+    return validateFolderPath(rawFolder);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+    return null;
+  }
+}
+
+/** False after answering 400 for a filename that is absolute or traverses. */
+function validFilename(filename: string, res: Response): boolean {
+  try {
+    validateFilename(filename);
+    return true;
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+    return false;
+  }
+}
 
 /**
  * List local branches for a git repository.
@@ -32,12 +53,8 @@ gitRouter.get("/branches", (req, res) => {
   const rawFolder = req.query.folder as string;
   if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
 
-  let folder: string;
-  try {
-    folder = validateFolderPath(rawFolder);
-  } catch (err: any) {
-    return res.status(400).json({ error: err.message });
-  }
+  const folder = validatedFolder(rawFolder, res);
+  if (folder === null) return;
 
   try {
     const branches = getGitBranches(folder);
@@ -65,12 +82,8 @@ gitRouter.get("/diff", (req, res) => {
   const rawFolder = req.query.folder as string;
   if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
 
-  let folder: string;
-  try {
-    folder = validateFolderPath(rawFolder);
-  } catch (err: any) {
-    return res.status(400).json({ error: err.message });
-  }
+  const folder = validatedFolder(rawFolder, res);
+  if (folder === null) return;
 
   try {
     const files = getGitDiffStructured(folder);
@@ -95,15 +108,13 @@ gitRouter.get("/diff/file", (req, res) => {
   if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
   if (!filename) return res.status(400).json({ error: "filename query param is required" });
 
-  let folder: string;
-  try {
-    folder = validateFolderPath(rawFolder);
-  } catch (err: any) {
-    return res.status(400).json({ error: err.message });
-  }
+  const folder = validatedFolder(rawFolder, res);
+  if (folder === null) return;
+
+  // A rejected filename is the client's error, not a failed diff.
+  if (!validFilename(filename, res)) return;
 
   try {
-    validateFilename(filename);
     const result = getGitFileDiff(folder, filename);
     res.json(result);
   } catch (err: any) {
@@ -126,15 +137,12 @@ gitRouter.get("/diff/file/raw", (req, res) => {
   if (!rawFolder) return res.status(400).json({ error: "folder query param is required" });
   if (!filename) return res.status(400).json({ error: "filename query param is required" });
 
-  let folder: string;
-  try {
-    folder = validateFolderPath(rawFolder);
-  } catch (err: any) {
-    return res.status(400).json({ error: err.message });
-  }
+  const folder = validatedFolder(rawFolder, res);
+  if (folder === null) return;
+
+  if (!validFilename(filename, res)) return;
 
   try {
-    validateFilename(filename);
     const { buffer, contentType } = readRepoFile(folder, filename);
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Length", buffer.length);

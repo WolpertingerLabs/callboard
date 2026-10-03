@@ -3,7 +3,7 @@ import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
-import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest, type StreamEvent } from "../services/claude.js";
+import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest } from "../services/claude.js";
 import { pendingRequestRequiresHuman } from "../services/pending-requests.js";
 import { controlOriginError } from "../auth.js";
 import { noteComputerControlAtCreation } from "../services/computer-use-policy.js";
@@ -328,57 +328,13 @@ streamRouter.post("/new/message", async (req, res) => {
     // event below still emits unconditionally (see stream-session.ts).
     beginSSE(req, res);
 
-    // Custom handler for new chat — needs to intercept chat_created event
-    const onEvent = (event: StreamEvent) => {
-      if (event.type === "chat_created") {
+    // The shared forwarder, plus the one frame only this route emits.
+    const onEvent = createSSEHandler(res, emitter, {
+      onChatCreated: (event) => {
         log.debug(`SSE chat_created — chatId=${event.chatId}`);
         sendSSE(res, { type: "chat_created", chatId: event.chatId, chat: event.chat });
-        return;
-      }
-
-      if (event.type === "done") {
-        log.debug(`SSE done — reason=${event.reason || "normal"}, costUsd=${event.costUsd ?? "n/a"}`);
-        sendSSE(res, {
-          type: "message_complete",
-          ...(event.reason && { reason: event.reason }),
-          ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
-          ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
-          ...(typeof event.objectiveComplete === "boolean" && { objectiveComplete: event.objectiveComplete }),
-          // Mirrors createSSEHandler in utils/sse.ts — background tasks that
-          // died with the subprocess, so a killed one can be drawn as killed.
-          ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
-        });
-        emitter.removeListener("event", onEvent);
-        res.end();
-      } else if (event.type === "error") {
-        log.error(`SSE error — ${event.content}`);
-        sendSSE(res, {
-          type: "message_error",
-          content: event.content,
-          // Mirrors createSSEHandler — an error ends the run without a `done`,
-          // so this is its only chance to name the shells that died with it.
-          ...(event.abandonedBackgroundTaskIds?.length && { abandonedBackgroundTaskIds: event.abandonedBackgroundTaskIds }),
-        });
-        emitter.removeListener("event", onEvent);
-        res.end();
-      } else if (event.type === "permission_request" || event.type === "user_question" || event.type === "plan_review") {
-        sendSSE(res, event as unknown as Record<string, unknown>);
-      } else if (event.type === "compacting") {
-        sendSSE(res, { type: "compacting" });
-      } else if (event.type === "cleared") {
-        sendSSE(res, { type: "cleared" });
-      } else if (event.type === "budget") {
-        // Mid-run spend beacon (OpenRouter per-turn cost) — forwarded with
-        // its payload, mirroring createSSEHandler in utils/sse.ts.
-        sendSSE(res, {
-          type: "budget",
-          ...(typeof event.costUsd === "number" && { costUsd: event.costUsd }),
-          ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
-        });
-      } else {
-        sendSSE(res, { type: "message_update", ...(event.controlRequestResult && { controlRequestResult: event.controlRequestResult }) });
-      }
-    };
+      },
+    });
 
     emitter.on("event", onEvent);
 
@@ -495,34 +451,36 @@ streamRouter.post("/:id/message", async (req, res) => {
       });
     }
 
-    // Adopt/repair only after preflight succeeds. In particular, malformed
-    // legacy JSON must not cause updateChatMetadata to silently drop the
-    // validated effort/model. Merge fresh fields and preserve explicit routing.
-    if (!fresh) {
-      // The original discovery snapshot is only valid for a still-absent record.
-      chatFileService.upsertChat(chatRecord.id, chatRecord.folder, chatRecord.session_id, { metadata: JSON.stringify(meta) });
-    } else if (needsProvenance) {
-      const routing = parseChatMetadata(withSessionProvider("{}", meta.provider, meta.acpProviderId));
-      chatFileService.updateChatMetadata(fresh.id, routing, { normalizeLegacy: true });
-    }
-
-    // Update lastBranch to current (after check passes)
-    if (currentBranch) {
-      chatFileService.updateChatMetadata(req.params.id, { lastBranch: currentBranch });
-    }
-
-    // Persist a per-chat model override before sendMessage re-reads
-    // initialMetadata from disk. Honored for every harness — each stores the
-    // identifier its own engine accepts. An empty string clears the override so
-    // the chat falls back to the provider's global default (JSON.stringify
-    // drops undefined keys).
+    // Settings this message persists, before sendMessage re-reads
+    // initialMetadata from disk:
+    //  - lastBranch → the current branch (the drift check above has passed);
+    //  - model → a per-chat override, honored for every harness (each stores
+    //    the identifier its own engine accepts);
+    //  - effort → a per-chat reasoning-effort override.
+    // An empty model/effort clears the override so the chat falls back to the
+    // provider's global default: the key is set to undefined, and
+    // JSON.stringify drops undefined keys.
+    const fields: Record<string, unknown> = {};
+    if (currentBranch) fields.lastBranch = currentBranch;
     if (typeof model === "string") {
       const trimmed = model.trim();
-      chatFileService.updateChatMetadata(req.params.id, { model: trimmed.length > 0 ? trimmed : undefined });
+      fields.model = trimmed.length > 0 ? trimmed : undefined;
     }
+    if (typeof effort === "string") fields.effort = effort.trim() || undefined;
 
-    if (typeof effort === "string") {
-      chatFileService.updateChatMetadata(req.params.id, { effort: effort.trim() || undefined });
+    // One write, not up to four read-modify-writes of the same file. Adopt /
+    // repair only after preflight succeeds. In particular, malformed legacy
+    // JSON must not cause updateChatMetadata to silently drop the validated
+    // effort/model — so the settings ride along with the normalizing write.
+    // Merge fresh fields and preserve explicit routing.
+    if (!fresh) {
+      // The original discovery snapshot is only valid for a still-absent record.
+      chatFileService.upsertChat(chatRecord.id, chatRecord.folder, chatRecord.session_id, { metadata: JSON.stringify({ ...meta, ...fields }) });
+    } else if (needsProvenance) {
+      const routing = parseChatMetadata(withSessionProvider("{}", meta.provider, meta.acpProviderId));
+      chatFileService.updateChatMetadata(fresh.id, { ...routing, ...fields }, { normalizeLegacy: true });
+    } else if (Object.keys(fields).length > 0) {
+      chatFileService.updateChatMetadata(req.params.id, fields);
     }
     // ── End branch drift guard ──────────────────────────────────
 

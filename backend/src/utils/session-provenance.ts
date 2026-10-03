@@ -5,14 +5,22 @@ import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 
 /** Enrich response metadata without mutating storage or overriding explicit routing. */
 export function withSessionProvider(metadata: string | null | undefined, provider: string, acpProviderId?: string): string {
-  const meta = parseChatMetadata(metadata);
+  return JSON.stringify(withSessionProviderMeta(parseChatMetadata(metadata), provider, acpProviderId));
+}
+
+/**
+ * {@link withSessionProvider} on an already-parsed object, for hot paths that
+ * would otherwise stringify only to have it parsed straight back. Returns a new
+ * object; `meta` is not mutated.
+ */
+export function withSessionProviderMeta(meta: Record<string, any>, provider: string, acpProviderId?: string): Record<string, any> {
   // Explicit routing (including unknown/retired values) is authoritative.
   const owner = meta.provider ?? provider;
-  return JSON.stringify({
+  return {
     ...meta,
     provider: owner,
     ...(owner === "acp" && provider === "acp" && acpProviderId && !meta.acpProviderId && { acpProviderId }),
-  });
+  };
 }
 
 /** Resolve only within the explicit owner, rejecting conflicting resolver evidence. */

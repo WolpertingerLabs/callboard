@@ -140,7 +140,8 @@ describe("POST /:id/message on a removed harness", () => {
     setChat({ provider: "codex", lastBranch: "main" });
     await post({ effort: "high" });
 
-    expect(metadataWrites).toContainEqual({ effort: "high" });
+    // One merged write per message, not one per field.
+    expect(metadataWrites).toEqual([{ lastBranch: "main", effort: "high" }]);
   });
 
   it("leaves an ordinary failure as a 500", async () => {
@@ -169,12 +170,15 @@ describe("model-aware effort validation before writes", () => {
   it.each(["max", "ultra"])("persists validated %s verbatim", async (effort) => {
     setChat({ provider: "codex", model: "astra" });
     await post({ effort });
-    expect(metadataWrites).toContainEqual({ effort });
+    expect(metadataWrites).toEqual([{ lastBranch: "main", effort }]);
   });
   it("clears stale efforts explicitly while changing models", async () => {
     setChat({ provider: "codex", model: "astra", effort: "ultra" });
     await post({ model: "luna", effort: "" });
     expect(validateEffort).toHaveBeenCalledWith({ cwd: chatRecord!.folder, provider: "codex", model: "luna", effort: "" });
-    expect(metadataWrites).toContainEqual({ effort: undefined });
+    // `effort: undefined` must be present (it is what clears the stored value
+    // once JSON.stringify drops it), hence toStrictEqual.
+    expect(metadataWrites).toHaveLength(1);
+    expect(metadataWrites[0]).toStrictEqual({ lastBranch: "main", model: "luna", effort: undefined });
   });
 });

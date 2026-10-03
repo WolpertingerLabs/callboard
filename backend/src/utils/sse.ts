@@ -87,18 +87,31 @@ export function startSSEHeartbeat(res: Response, intervalMs = 15_000): () => voi
   return () => clearInterval(timer);
 }
 
+export interface SSEHandlerOptions {
+  /**
+   * Called for `chat_created` instead of collapsing it into a bare
+   * `message_update`. Only `/new/message` sets it: that route is the one that
+   * owns a chat's creation and must hand the client its new id.
+   */
+  onChatCreated?: (event: StreamEvent) => void;
+}
+
 /**
  * Create a standard SSE event handler that forwards StreamEvents to the client.
  *
  * Handles: done → message_complete, error → message_error,
  * permission_request/user_question/plan_review/budget → forwarded as-is,
+ * chat_created → `options.onChatCreated` when given,
  * everything else → message_update notification.
  *
  * Returns the handler function so the caller can attach/detach it from an emitter.
  */
-export function createSSEHandler(res: Response, emitter: EventEmitter): (event: StreamEvent) => void {
+export function createSSEHandler(res: Response, emitter: EventEmitter, options: SSEHandlerOptions = {}): (event: StreamEvent) => void {
   const onEvent = (event: StreamEvent) => {
-    if (event.type === "done") {
+    if (event.type === "chat_created" && options.onChatCreated) {
+      options.onChatCreated(event);
+    } else if (event.type === "done") {
+      log.debug(`SSE done — reason=${event.reason || "normal"}, costUsd=${event.costUsd ?? "n/a"}`);
       sendSSE(res, {
         type: "message_complete",
         ...(event.reason && { reason: event.reason }),
@@ -113,6 +126,9 @@ export function createSSEHandler(res: Response, emitter: EventEmitter): (event: 
       emitter.removeListener("event", onEvent);
       res.end();
     } else if (event.type === "error") {
+      // Debug, not error: this runs once per attached tab, and the session
+      // itself already logs the underlying failure at the right level.
+      log.debug(`SSE error — ${event.content}`);
       sendSSE(res, {
         type: "message_error",
         content: event.content,

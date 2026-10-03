@@ -5,6 +5,7 @@ import { getActivity, appendActivity } from "../services/agent-activity.js";
 import { getAllEvents } from "../services/event-log.js";
 import { resolveAgentKeyAlias } from "../services/agent-settings.js";
 import type { ActivityEntry } from "shared";
+import { parseIntParam } from "../utils/query-params.js";
 
 export const agentActivityRouter = Router({ mergeParams: true });
 
@@ -14,8 +15,8 @@ agentActivityRouter.get("/", (req: Request, res: Response): void => {
   const alias = req.params.alias as string;
 
   const type = req.query.type as ActivityEntry["type"] | undefined;
-  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
-  const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
+  const limit = parseIntParam(req.query.limit, { default: 100, min: 0 });
+  const offset = parseIntParam(req.query.offset, { default: 0, min: 0 });
 
   const validTypes = ["chat", "event", "cron", "connection", "system", "trigger"];
   if (type && !validTypes.includes(type)) {

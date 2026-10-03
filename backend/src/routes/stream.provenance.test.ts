@@ -166,6 +166,62 @@ describe("actual POST /:id/message provenance preflight", () => {
   });
 });
 
+/**
+ * lastBranch, model, effort and any routing repair used to be up to four
+ * sequential read-modify-writes of one record; they are now one. The stored
+ * bytes (key order included) are pinned per branch — these literals are what
+ * the sequential writes produced — and so is the write count.
+ */
+describe("POST /:id/message persists its settings in one write", () => {
+  function countWrites() {
+    const update = vi.spyOn(chatFileService, "updateChatMetadata");
+    const upsert = vi.spyOn(chatFileService, "upsertChat");
+    return () => update.mock.calls.length + upsert.mock.calls.length;
+  }
+
+  it("stored record with explicit routing: sets lastBranch, clears model and effort", async () => {
+    const id = "one-write-" + ++counter;
+    setSessionProvidersForTesting([provider("codex", id)]);
+    chatFileService.upsertChat(id, dir, id, { metadata: '{"provider":"codex","model":"old","effort":"low","title":"t"}' });
+    const writes = countWrites();
+    expect((await post(id, { model: "  ", effort: "" })).status).toBe(200);
+    expect(chatFileService.getChat(id)!.metadata).toBe('{"provider":"codex","title":"t","lastBranch":"main"}');
+    expect(writes()).toBe(1);
+  });
+
+  it("stored record with no settings in the body still records lastBranch", async () => {
+    const id = "one-write-" + ++counter;
+    setSessionProvidersForTesting([provider("codex", id)]);
+    chatFileService.upsertChat(id, dir, id, { metadata: '{"provider":"codex","lastBranch":"main","model":"m"}' });
+    const writes = countWrites();
+    expect((await post(id)).status).toBe(200);
+    expect(chatFileService.getChat(id)!.metadata).toBe('{"provider":"codex","lastBranch":"main","model":"m"}');
+    expect(writes()).toBe(1);
+  });
+
+  it("malformed legacy record: routing repair and settings land together", async () => {
+    const id = "one-write-" + ++counter;
+    setSessionProvidersForTesting([provider("codex", id)]);
+    chatFileService.upsertChat(id, dir, id, { metadata: "{broken" });
+    const writes = countWrites();
+    expect((await post(id, { model: " gpt-5.5 ", effort: " high " })).status).toBe(200);
+    expect(chatFileService.getChat(id)!.metadata).toBe('{"provider":"codex","lastBranch":"main","model":"gpt-5.5","effort":"high"}');
+    expect(writes()).toBe(1);
+  });
+
+  it("filesystem-only session: adopted with its settings in one upsert", async () => {
+    const id = "one-write-" + ++counter;
+    setSessionProvidersForTesting([provider("codex", id)]);
+    const writes = countWrites();
+    expect((await post(id, { effort: "high", model: "" })).status).toBe(200);
+    expect(parseChatMetadata(chatFileService.getChat(id)!.metadata)).toStrictEqual({ ...executionMetadata });
+    expect(Object.keys(executionMetadata).slice(-2)).toEqual(["lastBranch", "effort"]);
+    expect(executionMetadata).toMatchObject({ provider: "codex", session_ids: [id], lastBranch: "main", effort: "high" });
+    expect(executionMetadata).not.toHaveProperty("model");
+    expect(writes()).toBe(1);
+  });
+});
+
 describe("POST preflight concurrent context changes", () => {
   it.each(["session", "folder", "provider", "acpProviderId", "model", "effort", "session_ids", "lastBranch", "deletion"])(
     "rejects concurrent %s changes without stale writes",
