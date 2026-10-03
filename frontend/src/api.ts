@@ -637,7 +637,10 @@ export async function bulkArchiveChats(ids: string[], archived: boolean): Promis
   });
 }
 
-export async function getChat(id: string): Promise<Chat> {
+/** `GET /chats/:id`: the record, plus the install's app-wide plugins for the composer's command list. */
+export type ChatWithAppPlugins = Chat & { appPlugins?: AppPluginsData };
+
+export async function getChat(id: string): Promise<ChatWithAppPlugins> {
   return request(`/chats/${seg(id)}`, { error: "Failed to get chat" });
 }
 

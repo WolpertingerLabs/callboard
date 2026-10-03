@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { CornerLeftUp, ListTree, Plus } from "lucide-react";
 import { getChatTree, type ChatTreeNode, type ChatTreeResponse } from "../api";
 import ProviderBadge from "./ProviderBadge";
+import type { ChatRouteState } from "../types/chatRouteState";
 
 /**
  * Chat-header indicator for the chat parentage tree.
@@ -199,7 +200,7 @@ export default function ChatTreeIndicator({ chatId, folder, compact }: Props) {
               onClick={() => {
                 setOpen(false);
                 navigate(`/chat/new?folder=${encodeURIComponent(folder)}`, {
-                  state: { parentChatId: chatId, chatRole: "linked" },
+                  state: { parentChatId: chatId, chatRole: "linked" } satisfies ChatRouteState,
                 });
               }}
               style={{

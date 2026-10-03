@@ -9,6 +9,7 @@ import FolderListItem from "../components/FolderListItem";
 import NewChatPanel from "../components/NewChatPanel";
 import ConfirmModal from "../components/ConfirmModal";
 import WorkspaceManagerModal from "../components/WorkspaceManagerModal";
+import type { ChatRouteState } from "../types/chatRouteState";
 import {
   getFolderMaxAgeDays,
   saveFolderMaxAgeDays,
@@ -340,7 +341,7 @@ export default function FolderList({
         setConfirmModal({ isOpen: true, folder: folder.folder });
       } else {
         navigate(`/chat/new?folder=${encodeURIComponent(folder.folder)}`, {
-          state: { defaultPermissions: getDefaultPermissions() },
+          state: { defaultPermissions: getDefaultPermissions() } satisfies ChatRouteState,
         });
       }
     },
@@ -510,7 +511,7 @@ export default function FolderList({
         onClose={() => setConfirmModal({ isOpen: false, folder: "" })}
         onConfirm={() =>
           navigate(`/chat/new?folder=${encodeURIComponent(confirmModal.folder)}`, {
-            state: { defaultPermissions: getDefaultPermissions() },
+            state: { defaultPermissions: getDefaultPermissions() } satisfies ChatRouteState,
           })
         }
         title="Chat waiting for input"
