@@ -3,28 +3,20 @@ import { mkdirSync } from "fs";
 import { join } from "path";
 import { DATA_DIR } from "../utils/paths.js";
 import { createJsonFileStore } from "../utils/json-file-store.js";
+import type { ApiKeyInfo } from "shared/types/apiKeys.js";
 
 const apiKeysFilePath = join(DATA_DIR, "api-keys.json");
 
 /** Tokens look like `cbk_<40 hex chars>`. The prefix makes leaked keys greppable. */
 const TOKEN_PREFIX = "cbk_";
 
-export interface ApiKeyRecord {
-  id: string;
-  name: string;
-  description: string;
+/** Shape returned to the UI — everything except the hash. */
+export type { ApiKeyInfo };
+
+export interface ApiKeyRecord extends ApiKeyInfo {
   /** SHA-256 hex of the full token. The plaintext token is never stored. */
   tokenHash: string;
-  /** First characters of the token (e.g. "cbk_a1b2c3") kept for display only. */
-  tokenPreview: string;
-  created_at: number;
-  /** Epoch ms; null means the key never expires. */
-  expires_at: number | null;
-  last_used_at: number | null;
 }
-
-/** Shape returned to the UI — everything except the hash. */
-export type ApiKeyInfo = Omit<ApiKeyRecord, "tokenHash">;
 
 interface ApiKeysFile {
   keys: ApiKeyRecord[];

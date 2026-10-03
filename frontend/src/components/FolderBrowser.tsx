@@ -2,7 +2,12 @@ import { useState, useEffect } from "react";
 import { X, Home, Folder, GitBranch, Eye, EyeOff, ChevronRight, ArrowUp, RefreshCw } from "lucide-react";
 import { browseDirectory, getFolderSuggestions, clearFolderCache, type BrowseResult, type FolderItem, type FolderSuggestion } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { readStorageItem, writeStorageItem } from "../utils/localStorage";
+import { errorMessage } from "../utils/errorMessage";
 import ModalOverlay from "./ModalOverlay";
+
+/** Its own key rather than a field in the settings blob — kept as-is so existing preferences survive. */
+const SHOW_HIDDEN_KEY = "folderBrowser.showHidden";
 
 interface FolderBrowserProps {
   isOpen: boolean;
@@ -18,7 +23,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showHidden, setShowHidden] = useState(() => {
-    return localStorage.getItem("folderBrowser.showHidden") === "true";
+    return readStorageItem(SHOW_HIDDEN_KEY) === "true";
   });
   const [suggestions, setSuggestions] = useState<FolderSuggestion[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -51,8 +56,8 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
         const result = await browseDirectory(currentPath, showHidden);
         setBrowseResult(result);
         setCurrentPath(result.currentPath); // Update with resolved path
-      } catch (err: any) {
-        setError(err.message || "Failed to browse directory");
+      } catch (err) {
+        setError(errorMessage(err, "Failed to browse directory"));
         setBrowseResult(null);
       } finally {
         setIsLoading(false);
@@ -73,7 +78,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
   const handleToggleHidden = () => {
     const newValue = !showHidden;
     setShowHidden(newValue);
-    localStorage.setItem("folderBrowser.showHidden", newValue.toString());
+    writeStorageItem(SHOW_HIDDEN_KEY, newValue.toString());
   };
 
   const handleRefresh = async () => {
@@ -84,8 +89,8 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, initialPath =
       const result = await browseDirectory(currentPath, showHidden);
       setBrowseResult(result);
       setCurrentPath(result.currentPath);
-    } catch (err: any) {
-      setError(err.message || "Failed to refresh directory");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to refresh directory"));
     } finally {
       setIsRefreshing(false);
     }

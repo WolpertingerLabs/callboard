@@ -80,6 +80,7 @@ import {
 } from "../api";
 import type { ArtifactBridgeInit, ArtifactBridgeOp, ArtifactBridgeReply, ArtifactStorageAccess, StorageItem } from "../api";
 import { RATE_LIMITED, RateLimitedError, tabBudget, type BudgetAccount, type RequestBudget } from "./artifactBudget";
+import { errorMessage } from "../utils/errorMessage";
 
 export { RATE_LIMITED };
 
@@ -443,7 +444,7 @@ export function createArtifactBridge(opts: ArtifactBridgeOptions): ArtifactBridg
       const result = await perform(msg);
       reply = { __callboard: BRIDGE_REPLY, id, ok: true, result };
     } catch (err) {
-      reply = { __callboard: BRIDGE_REPLY, id, ok: false, error: err instanceof Error ? err.message : "Storage request failed" };
+      reply = { __callboard: BRIDGE_REPLY, id, ok: false, error: errorMessage(err, "Storage request failed") };
       if (err instanceof BridgeRefusal && err.retryAfterMs) reply.retryAfterMs = err.retryAfterMs;
     }
     // Re-check after the await: a frame that navigated (or unmounted) while

@@ -7,6 +7,7 @@ import CodexModelSelector from "../../components/CodexModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
 import PiModelSelector from "../../components/PiModelSelector";
 import { emptyRow, toRows, toAliases, hasEditableTarget, onlyOpenRouterTarget, type AliasRow } from "./modelAliasRows";
+import { errorMessage } from "../../utils/errorMessage";
 
 /**
  * Settings → Model Aliases.
@@ -66,8 +67,8 @@ export default function ModelAliasesSettings() {
     try {
       const s = await getAgentSettings();
       setRows(toRows(s.modelAliases));
-    } catch (err: any) {
-      setError(err.message || "Failed to load settings");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to load settings"));
     } finally {
       setLoading(false);
     }
@@ -113,8 +114,8 @@ export default function ModelAliasesSettings() {
       setRows(toRows(updated.modelAliases));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-    } catch (err: any) {
-      setError(err.message || "Failed to save aliases");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to save aliases"));
     } finally {
       setSaving(false);
     }

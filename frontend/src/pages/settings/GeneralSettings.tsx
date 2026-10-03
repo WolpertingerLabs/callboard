@@ -27,6 +27,7 @@ import type { ThemeListItem, UserContactInfo, UserContactAvailability } from "..
 import ThemeAuditPanel from "./ThemeAuditPanel";
 import { CONTACT_FIELDS, contactFieldState, emptyContact } from "./contactFields";
 import type { ContactKey } from "./contactFields";
+import { errorMessage } from "../../utils/errorMessage";
 
 export default function GeneralSettings() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => getThemeMode());
@@ -142,9 +143,9 @@ export default function GeneralSettings() {
       setUnpinOnArchive(updated.unpinChatsOnArchive !== false);
       setUnpinSaved(true);
       setTimeout(() => setUnpinSaved(false), 2000);
-    } catch (err: any) {
+    } catch (err) {
       setUnpinOnArchive(previous);
-      setUnpinError(err.message || "Failed to save");
+      setUnpinError(errorMessage(err, "Failed to save"));
     } finally {
       setUnpinSaving(false);
     }
@@ -161,8 +162,8 @@ export default function GeneralSettings() {
       setMaxPending(updated.maxPendingCallbacks ?? DEFAULT_MAX_PENDING_CALLBACKS);
       setCallbackSaved(true);
       setTimeout(() => setCallbackSaved(false), 2000);
-    } catch (err: any) {
-      setCallbackError(err.message || "Failed to save callback limits");
+    } catch (err) {
+      setCallbackError(errorMessage(err, "Failed to save callback limits"));
     } finally {
       setCallbackSaving(false);
     }
@@ -176,11 +177,11 @@ export default function GeneralSettings() {
     setAvailabilityError(null);
     try {
       setContactAvailability(await fetchUserContactAvailability({ refresh: true }));
-    } catch (err: any) {
+    } catch (err) {
       // Keep the answer we already had. Clearing it would silently convert a
       // known "nothing is connected" into "everything's fine" — the failure
       // this whole section is built to avoid — so report and hold instead.
-      setAvailabilityError(err.message || "Couldn't re-check your connections");
+      setAvailabilityError(errorMessage(err, "Couldn't re-check your connections"));
     } finally {
       setAvailabilityRefreshing(false);
     }
@@ -202,8 +203,8 @@ export default function GeneralSettings() {
       setContact(saved);
       setContactSaved(true);
       setTimeout(() => setContactSaved(false), 2000);
-    } catch (err: any) {
-      setContactError(err.message || "Failed to save contact info");
+    } catch (err) {
+      setContactError(errorMessage(err, "Failed to save contact info"));
     } finally {
       setContactSaving(false);
     }
@@ -217,8 +218,8 @@ export default function GeneralSettings() {
       setIgnoredPrefixes(data.prefixes);
       setIgnoredSaved(true);
       setTimeout(() => setIgnoredSaved(false), 1500);
-    } catch (err: any) {
-      setIgnoredError(err.message || "Failed to save");
+    } catch (err) {
+      setIgnoredError(errorMessage(err, "Failed to save"));
     } finally {
       setIgnoredSaving(false);
     }
@@ -275,8 +276,8 @@ export default function GeneralSettings() {
       setNewThemeDesc("");
       // Auto-select the new theme
       handleSelectTheme(theme.name);
-    } catch (err: any) {
-      setThemeError(err.message || "Failed to generate theme");
+    } catch (err) {
+      setThemeError(errorMessage(err, "Failed to generate theme"));
     } finally {
       setGenerating(false);
     }
@@ -300,8 +301,8 @@ export default function GeneralSettings() {
       if (selectedTheme === name) {
         reloadCustomTheme();
       }
-    } catch (err: any) {
-      setThemeError(err.message || "Failed to regenerate theme");
+    } catch (err) {
+      setThemeError(errorMessage(err, "Failed to regenerate theme"));
     } finally {
       setGenerating(false);
     }

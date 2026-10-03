@@ -21,6 +21,7 @@ import CardDrawer from "../components/board/CardDrawer";
 import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { usePolling } from "../hooks/usePolling";
+import { errorMessage } from "../utils/errorMessage";
 
 /** A category's cards inside one status section. `label: null` is uncategorized. */
 type Group = { key: string; label: string | null; cards: CardSummary[] };
@@ -204,8 +205,8 @@ export default function Board() {
       const res = await listCards();
       setCards(res.cards);
       setError(null);
-    } catch (err: any) {
-      setError(err.message || "Failed to load board");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to load board"));
     } finally {
       setLoaded(true);
     }
@@ -387,8 +388,8 @@ export default function Board() {
         setError(null);
         exitSelection();
       }
-    } catch (err: any) {
-      setError(err.message || "Failed to update cards");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to update cards"));
     } finally {
       setBulkBusy(false);
     }
@@ -400,8 +401,8 @@ export default function Board() {
       const res = await updateCard(cardId, patch);
       setCards((prev) => prev.map((c) => (c.id === cardId ? res.card : c)));
       return true;
-    } catch (err: any) {
-      setError(err.message || "Failed to update card");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to update card"));
       return false;
     }
   };

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import Chat from "./Chat";
 import { computerUseClient as client } from "../api/computerUse";
-import { stopChat, getPending, respondToChat } from "../api";
+import { stopChat, getPending, respondToChat, type PendingAction } from "../api";
 
 const fixture = vi.hoisted(() => ({ native: false, active: { type: "web" } }));
 vi.mock("../api/computerUse", async (importOriginal) => ({
@@ -250,7 +250,7 @@ it.each([390, 1200])("keeps pending unused Stop visible after switching to Chat 
 });
 
 const enablePrompt = {
-  type: "permission_request",
+  type: "permission_request" as const,
   toolName: "mcp__computer_use__cu_request_control",
   requestId: "enable-server-id",
   humanOnly: true,
@@ -370,7 +370,7 @@ it("review: replacing an answered question before its HTTP response must not inh
 
 it("review: a pending enablement HTTP response must not block another chat's answers", async () => {
   const prompt = (id: string) => ({
-    type: "permission_request",
+    type: "permission_request" as const,
     toolName: "mcp__computer_use__cu_request_control",
     requestId: id,
     humanOnly: true,
@@ -401,7 +401,7 @@ it("review: a pending enablement HTTP response must not block another chat's ans
 
 it("review: pending refresh from previous chat must not replace current chat's card", async () => {
   const prompt = (id: string) => ({
-    type: "permission_request",
+    type: "permission_request" as const,
     toolName: "mcp__computer_use__cu_request_control",
     requestId: id,
     humanOnly: true,
@@ -502,7 +502,7 @@ it.each(["success", "failure"])("late pending refresh %s cannot overwrite newer 
   await stream.ready();
   fireEvent.click(await screen.findByRole("button", { name: "Enable browser control" }));
   await screen.findByText(/Refresh required/);
-  let resolve!: (value: unknown) => void;
+  let resolve!: (value: PendingAction | null) => void;
   let reject!: (error: Error) => void;
   vi.mocked(getPending).mockReturnValueOnce(
     new Promise((yes, no) => {

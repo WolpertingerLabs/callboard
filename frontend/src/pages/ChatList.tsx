@@ -48,6 +48,7 @@ import {
   saveChatsShowArchived,
   type SidebarViewMode,
 } from "../utils/localStorage";
+import { errorMessage } from "../utils/errorMessage";
 
 interface ChatListProps {
   activeChatId?: string;
@@ -1096,8 +1097,8 @@ export default function ChatList({
       // rather than filter locally — the merge above has already paid for the
       // instant feedback.
       load();
-    } catch (err: any) {
-      setBulkError(err.message || "Failed to update cards");
+    } catch (err) {
+      setBulkError(errorMessage(err, "Failed to update cards"));
     } finally {
       setBulkBusy(false);
     }
@@ -1132,8 +1133,8 @@ export default function ChatList({
       // pagination window, at the price of the rows flickering back if the
       // response beat the cache invalidation.
       loadCards();
-    } catch (err: any) {
-      setBulkError(err.message || "Failed to delete chats");
+    } catch (err) {
+      setBulkError(errorMessage(err, "Failed to delete chats"));
     } finally {
       setBulkBusy(false);
     }

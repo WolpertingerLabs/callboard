@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { createAgent, listAgents } from "../../api";
 import type { AgentConfig } from "shared";
+import { errorMessage } from "../../utils/errorMessage";
 
 export default function CreateAgent() {
   const navigate = useNavigate();
@@ -88,7 +89,7 @@ export default function CreateAgent() {
       });
       navigate("/agents");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create agent");
+      setError(errorMessage(err, "Failed to create agent"));
       setLoading(false);
     }
   };

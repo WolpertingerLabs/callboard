@@ -1,7 +1,6 @@
 import { normalizePermissions } from "shared/types/permissions.js";
-import type { DefaultPermissions } from "../api";
-import type { EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
-import { ARTIFACT_ID_PATTERN, isValidStorageKey } from "shared/types/index.js";
+import type { DefaultPermissions, EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
+import { ARTIFACT_ID_PATTERN, isValidStorageKey, UI_AGENT_PROVIDER_KINDS } from "shared/types/index.js";
 
 export type { EffortLevel };
 export type AgentProviderKind = UiAgentProviderKind;
@@ -203,36 +202,73 @@ function setStorageData(data: LocalStorageData): void {
   }
 }
 
+/**
+ * Read-modify-write of the settings blob: a patch of fields to set, or a
+ * mutator for anything that deletes or merges. Every other key round-trips
+ * untouched — see {@link LocalStorageData.chatsDimCardless} for why that matters.
+ */
+function updateStorage(update: Partial<LocalStorageData> | ((data: LocalStorageData) => void)): void {
+  const data = getStorageData();
+  if (typeof update === "function") update(data);
+  else Object.assign(data, update);
+  setStorageData(data);
+}
+
+/**
+ * A stored value checked against the values this bundle knows, else `fallback`.
+ * The store is JSON shared with bundles this one has never met, so an unknown
+ * value is a fallback, never a cast.
+ */
+function readEnum<T extends string, F>(value: unknown, allowed: readonly T[], fallback: F): T | F {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+}
+
+/**
+ * `localStorage.getItem` for the few preferences kept under their own key rather
+ * than in the settings blob — `null` where storage is unavailable (disabled,
+ * sandboxed, or full), instead of a throw.
+ */
+export function readStorageItem(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** `localStorage.setItem`, ignoring an unavailable or full store like every save here does. */
+export function writeStorageItem(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore localStorage errors (e.g., quota exceeded)
+  }
+}
+
 export function getDefaultPermissions(): DefaultPermissions {
   const data = getStorageData();
   return normalizePermissions(data.defaultPermissions);
 }
 
 export function saveDefaultPermissions(permissions: DefaultPermissions): void {
-  const data = getStorageData();
-  data.defaultPermissions = normalizePermissions(permissions);
-  setStorageData(data);
+  updateStorage({ defaultPermissions: normalizePermissions(permissions) });
 }
 
-const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(["claude-code", "codex", "acp", "cline", "pi"]);
+const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(UI_AGENT_PROVIDER_KINDS);
 
 export function getDefaultProvider(): AgentProviderKind {
-  const data = getStorageData();
-  const stored = data.defaultProvider;
   // Validate against the known set on read — protects against stale or
   // forward-compat values (e.g. an experimental "codex" written by a
   // future build then opened in an older one). Unknown → claude-code.
   // This is also what retires a saved `"openrouter"` default: the harness is
   // gone from the set, so the stored preference lapses to claude-code on the
   // next read rather than needing a migration.
-  return stored && KNOWN_PROVIDERS.has(stored) ? stored : "claude-code";
+  return readEnum(getStorageData().defaultProvider, UI_AGENT_PROVIDER_KINDS, "claude-code");
 }
 
 export function saveDefaultProvider(provider: AgentProviderKind): void {
   if (!KNOWN_PROVIDERS.has(provider)) return;
-  const data = getStorageData();
-  data.defaultProvider = provider;
-  setStorageData(data);
+  updateStorage({ defaultProvider: provider });
 }
 
 /**
@@ -251,9 +287,7 @@ export function getDefaultAcpProviderId(): string {
 }
 
 export function saveDefaultAcpProviderId(providerId: string): void {
-  const data = getStorageData();
-  data.defaultAcpProviderId = providerId;
-  setStorageData(data);
+  updateStorage({ defaultAcpProviderId: providerId });
 }
 
 /**
@@ -272,9 +306,7 @@ export function getDefaultAcpModel(): string {
 }
 
 export function saveDefaultAcpModel(model: string): void {
-  const data = getStorageData();
-  data.defaultAcpModel = model;
-  setStorageData(data);
+  updateStorage({ defaultAcpModel: model });
 }
 
 /**
@@ -292,9 +324,7 @@ export function getDefaultClineModel(): string {
 }
 
 export function saveDefaultClineModel(model: string): void {
-  const data = getStorageData();
-  data.defaultClineModel = model;
-  setStorageData(data);
+  updateStorage({ defaultClineModel: model });
 }
 
 /**
@@ -307,9 +337,7 @@ export function getDefaultPiModel(): string {
 }
 
 export function saveDefaultPiModel(model: string): void {
-  const data = getStorageData();
-  data.defaultPiModel = model;
-  setStorageData(data);
+  updateStorage({ defaultPiModel: model });
 }
 
 /** Preserve stored strings, including stale/future levels, so the picker can
@@ -321,13 +349,13 @@ export function getDefaultOpenRouterEffort(): EffortLevel | undefined {
 }
 
 export function saveDefaultOpenRouterEffort(effort: EffortLevel | undefined): void {
-  const data = getStorageData();
-  if (effort === undefined) {
-    delete data.defaultOpenRouterEffort;
-  } else {
-    data.defaultOpenRouterEffort = effort;
-  }
-  setStorageData(data);
+  updateStorage((data) => {
+    if (effort === undefined) {
+      delete data.defaultOpenRouterEffort;
+    } else {
+      data.defaultOpenRouterEffort = effort;
+    }
+  });
 }
 
 /**
@@ -341,14 +369,14 @@ export function getDefaultClaudeModel(): string {
 }
 
 export function saveDefaultClaudeModel(model: string): void {
-  const data = getStorageData();
   const trimmed = model.trim();
-  if (trimmed.length === 0) {
-    delete data.defaultClaudeModel;
-  } else {
-    data.defaultClaudeModel = trimmed;
-  }
-  setStorageData(data);
+  updateStorage((data) => {
+    if (trimmed.length === 0) {
+      delete data.defaultClaudeModel;
+    } else {
+      data.defaultClaudeModel = trimmed;
+    }
+  });
 }
 
 /**
@@ -362,14 +390,14 @@ export function getDefaultCodexModel(): string {
 }
 
 export function saveDefaultCodexModel(model: string): void {
-  const data = getStorageData();
   const trimmed = model.trim();
-  if (trimmed.length === 0) {
-    delete data.defaultCodexModel;
-  } else {
-    data.defaultCodexModel = trimmed;
-  }
-  setStorageData(data);
+  updateStorage((data) => {
+    if (trimmed.length === 0) {
+      delete data.defaultCodexModel;
+    } else {
+      data.defaultCodexModel = trimmed;
+    }
+  });
 }
 
 const DEFAULT_MAX_TURNS = 200;
@@ -380,9 +408,7 @@ export function getMaxTurns(): number {
 }
 
 export function saveMaxTurns(value: number): void {
-  const data = getStorageData();
-  data.maxTurns = value;
-  setStorageData(data);
+  updateStorage({ maxTurns: value });
 }
 
 export function getRecentDirectories(): RecentDirectory[] {
@@ -391,25 +417,21 @@ export function getRecentDirectories(): RecentDirectory[] {
 }
 
 export function addRecentDirectory(path: string): void {
-  const data = getStorageData();
-  const existing = data.recentDirectories || [];
+  updateStorage((data) => {
+    const existing = data.recentDirectories || [];
 
-  // Remove existing entry for this path
-  const filtered = existing.filter((dir) => dir.path !== path);
+    // Remove existing entry for this path
+    const filtered = existing.filter((dir) => dir.path !== path);
 
-  // Add to front with current timestamp
-  const updated = [{ path, lastUsed: new Date().toISOString() }, ...filtered].slice(0, 5); // Keep only top 5
-
-  data.recentDirectories = updated;
-  setStorageData(data);
+    // Add to front with current timestamp
+    data.recentDirectories = [{ path, lastUsed: new Date().toISOString() }, ...filtered].slice(0, 5); // Keep only top 5
+  });
 }
 
 export function removeRecentDirectory(path: string): void {
-  const data = getStorageData();
-  const existing = data.recentDirectories || [];
-
-  data.recentDirectories = existing.filter((dir) => dir.path !== path);
-  setStorageData(data);
+  updateStorage((data) => {
+    data.recentDirectories = (data.recentDirectories || []).filter((dir) => dir.path !== path);
+  });
 }
 
 export function getWorktreeByDefault(): boolean {
@@ -422,9 +444,7 @@ export function getWorktreeByDefault(): boolean {
 }
 
 export function saveWorktreeByDefault(value: boolean): void {
-  const data = getStorageData();
-  data.worktreeByDefault = value;
-  setStorageData(data);
+  updateStorage({ worktreeByDefault: value });
 }
 
 export function getShowTriggeredChats(): boolean {
@@ -433,9 +453,7 @@ export function getShowTriggeredChats(): boolean {
 }
 
 export function saveShowTriggeredChats(value: boolean): void {
-  const data = getStorageData();
-  data.showTriggeredChats = value;
-  setStorageData(data);
+  updateStorage({ showTriggeredChats: value });
 }
 
 /**
@@ -474,9 +492,7 @@ export function getChatsShowArchived(): boolean {
 }
 
 export function saveChatsShowArchived(value: boolean): void {
-  const data = getStorageData();
-  data.chatsShowArchived = value;
-  setStorageData(data);
+  updateStorage({ chatsShowArchived: value });
 }
 
 /**
@@ -499,9 +515,9 @@ export function getChatSectionExpanded(key: ChatSectionKey): boolean {
  * sidebar on the first click in this one.
  */
 export function saveChatSectionExpanded(key: ChatSectionKey, expanded: boolean): void {
-  const data = getStorageData();
-  data.chatSectionsExpanded = { ...data.chatSectionsExpanded, [key]: expanded };
-  setStorageData(data);
+  updateStorage((data) => {
+    data.chatSectionsExpanded = { ...data.chatSectionsExpanded, [key]: expanded };
+  });
 }
 
 /**
@@ -519,26 +535,20 @@ export function getDismissedStaleBuildId(): string | null {
 }
 
 export function saveDismissedStaleBuildId(buildId: string): void {
-  const data = getStorageData();
-  data.dismissedStaleBuildId = buildId;
-  setStorageData(data);
+  updateStorage({ dismissedStaleBuildId: buildId });
 }
+
+const JSON_VIEW_MODES: readonly JsonViewMode[] = ["tree", "pretty", "raw"];
 
 export function getJsonViewMode(): JsonViewMode {
   const data = getStorageData();
-  if (data.jsonViewMode === "tree" || data.jsonViewMode === "pretty" || data.jsonViewMode === "raw") {
-    return data.jsonViewMode;
-  }
   // Migrate the pre-tree boolean preference: an explicit "raw" choice is
   // preserved; pretty-printing (or no preference) upgrades to the tree view.
-  if (data.jsonPrettyPrint === false) return "raw";
-  return "tree";
+  return readEnum(data.jsonViewMode, JSON_VIEW_MODES, data.jsonPrettyPrint === false ? "raw" : "tree");
 }
 
 export function saveJsonViewMode(mode: JsonViewMode): void {
-  const data = getStorageData();
-  data.jsonViewMode = mode;
-  setStorageData(data);
+  updateStorage({ jsonViewMode: mode });
 }
 
 function artifactWriteGrantKey(artifactId: string, storageKey: string): string | null {
@@ -562,12 +572,12 @@ export function getArtifactWriteGrant(artifactId: string, created: string, stora
 export function saveArtifactWriteGrant(artifactId: string, created: string, storageKey: string, allowed: boolean): void {
   const k = artifactWriteGrantKey(artifactId, storageKey);
   if (k === null || (allowed && !created)) return;
-  const data = getStorageData();
-  const grants = { ...data.artifactWriteGrants };
-  if (allowed) grants[k] = created;
-  else delete grants[k];
-  data.artifactWriteGrants = grants;
-  setStorageData(data);
+  updateStorage((data) => {
+    const grants = { ...data.artifactWriteGrants };
+    if (allowed) grants[k] = created;
+    else delete grants[k];
+    data.artifactWriteGrants = grants;
+  });
   window.dispatchEvent(new Event(ARTIFACT_WRITE_GRANT_CHANGE_EVENT));
 }
 
@@ -601,9 +611,7 @@ export function getThemeMode(): ThemeMode {
 }
 
 export function saveThemeMode(mode: ThemeMode): void {
-  const data = getStorageData();
-  data.themeMode = mode;
-  setStorageData(data);
+  updateStorage({ themeMode: mode });
 }
 
 export function getCustomThemeName(): string | null {
@@ -612,9 +620,7 @@ export function getCustomThemeName(): string | null {
 }
 
 export function saveCustomThemeName(name: string | null): void {
-  const data = getStorageData();
-  data.customThemeName = name;
-  setStorageData(data);
+  updateStorage({ customThemeName: name });
 }
 
 export function getSidebarCollapsed(): boolean {
@@ -623,9 +629,7 @@ export function getSidebarCollapsed(): boolean {
 }
 
 export function saveSidebarCollapsed(value: boolean): void {
-  const data = getStorageData();
-  data.sidebarCollapsed = value;
-  setStorageData(data);
+  updateStorage({ sidebarCollapsed: value });
 }
 
 /** Minimum width (px) of the expanded desktop sidebar — enforced on drag and on read. */
@@ -639,27 +643,21 @@ export function getSidebarWidth(): number {
 }
 
 export function saveSidebarWidth(value: number): void {
-  const data = getStorageData();
-  data.sidebarWidth = Math.max(SIDEBAR_MIN_WIDTH, Math.round(value));
-  setStorageData(data);
+  updateStorage({ sidebarWidth: Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)) });
 }
 
 export type SidebarViewMode = "folders" | "chats";
 
-const SIDEBAR_VIEW_MODES: readonly string[] = ["folders", "chats"];
+const SIDEBAR_VIEW_MODES: readonly SidebarViewMode[] = ["folders", "chats"];
 
 export function getSidebarViewMode(): SidebarViewMode {
-  const data = getStorageData();
   // Anyone who last used the removed "jobs" view still has it persisted, and a
   // mode with no branch left to render would leave them on a blank sidebar.
-  const stored = data.sidebarViewMode as string | undefined;
-  return stored && SIDEBAR_VIEW_MODES.includes(stored) ? (stored as SidebarViewMode) : "chats";
+  return readEnum(getStorageData().sidebarViewMode, SIDEBAR_VIEW_MODES, "chats");
 }
 
 export function saveSidebarViewMode(mode: SidebarViewMode): void {
-  const data = getStorageData();
-  data.sidebarViewMode = mode;
-  setStorageData(data);
+  updateStorage({ sidebarViewMode: mode });
 }
 
 export function getBoardClosedExpanded(): boolean {
@@ -668,28 +666,22 @@ export function getBoardClosedExpanded(): boolean {
 }
 
 export function saveBoardClosedExpanded(expanded: boolean): void {
-  const data = getStorageData();
-  data.boardClosedExpanded = expanded;
-  setStorageData(data);
+  updateStorage({ boardClosedExpanded: expanded });
 }
 
 export type BoardViewMode = "cards" | "list";
 
-const BOARD_VIEW_MODES: readonly string[] = ["cards", "list"];
+const BOARD_VIEW_MODES: readonly BoardViewMode[] = ["cards", "list"];
 
 export function getBoardViewMode(): BoardViewMode {
-  const data = getStorageData();
   // Matched against the known values rather than cast: the store is shared
   // with bundles this one has never met, so an unrecognised mode has to fall
   // back to the default rather than render a container that doesn't exist.
-  const stored = data.boardViewMode as string | undefined;
-  return stored && BOARD_VIEW_MODES.includes(stored) ? (stored as BoardViewMode) : "cards";
+  return readEnum(getStorageData().boardViewMode, BOARD_VIEW_MODES, "cards");
 }
 
 export function saveBoardViewMode(mode: BoardViewMode): void {
-  const data = getStorageData();
-  data.boardViewMode = mode;
-  setStorageData(data);
+  updateStorage({ boardViewMode: mode });
 }
 
 export function getBoardShowPaths(): boolean {
@@ -698,9 +690,7 @@ export function getBoardShowPaths(): boolean {
 }
 
 export function saveBoardShowPaths(show: boolean): void {
-  const data = getStorageData();
-  data.boardShowPaths = show;
-  setStorageData(data);
+  updateStorage({ boardShowPaths: show });
 }
 
 /**
@@ -715,9 +705,7 @@ export function getBoardRowsExpanded(): boolean {
 }
 
 export function saveBoardRowsExpanded(expanded: boolean): void {
-  const data = getStorageData();
-  data.boardRowsExpanded = expanded;
-  setStorageData(data);
+  updateStorage({ boardRowsExpanded: expanded });
 }
 
 export function getFolderMaxAgeDays(): number {
@@ -726,9 +714,7 @@ export function getFolderMaxAgeDays(): number {
 }
 
 export function saveFolderMaxAgeDays(days: number): void {
-  const data = getStorageData();
-  data.folderMaxAgeDays = days;
-  setStorageData(data);
+  updateStorage({ folderMaxAgeDays: days });
 }
 
 /**
@@ -745,9 +731,7 @@ export function getFolderShowSizes(): boolean {
 }
 
 export function saveFolderShowSizes(value: boolean): void {
-  const data = getStorageData();
-  data.folderShowSizes = value;
-  setStorageData(data);
+  updateStorage({ folderShowSizes: value });
 }
 
 export function initializeSuggestedDirectories(chatDirectories: string[]): void {
@@ -755,8 +739,6 @@ export function initializeSuggestedDirectories(chatDirectories: string[]): void 
 
   // Only initialize if there are no existing suggested directories
   if (existing.length === 0 && chatDirectories.length > 0) {
-    const data = getStorageData();
-
     // Take first three unique directories, excluding Callboard workspace paths
     const uniqueDirs = [...new Set(chatDirectories)].filter((dir) => !isCallboardWorkspacePath(dir));
     const suggestedDirs = uniqueDirs.slice(0, 3).map((path) => ({
@@ -764,7 +746,6 @@ export function initializeSuggestedDirectories(chatDirectories: string[]): void 
       lastUsed: new Date().toISOString(),
     }));
 
-    data.recentDirectories = suggestedDirs;
-    setStorageData(data);
+    updateStorage({ recentDirectories: suggestedDirs });
   }
 }

@@ -5,6 +5,7 @@ import ModalOverlay from "./ModalOverlay";
 import PermissionSettings from "./PermissionSettings";
 import type { DefaultPermissions } from "../api";
 import { updateChatPermissions } from "../api";
+import { errorMessage } from "../utils/errorMessage";
 
 interface ChatPermissionsModalProps {
   isOpen: boolean;
@@ -42,7 +43,7 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
         onPermissionsChange(localPermissions);
         onClose();
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to save permissions");
+        setError(errorMessage(err, "Failed to save permissions"));
       } finally {
         setSaving(false);
       }

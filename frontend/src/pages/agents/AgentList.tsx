@@ -4,6 +4,7 @@ import { Plus, Trash2, Bot, ChevronRight, ChevronLeft, Download, Upload } from "
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { listAgents, deleteAgent, toggleAgent, getAgentExportUrl, importAgent } from "../../api";
 import type { AgentConfig } from "shared";
+import { errorMessage } from "../../utils/errorMessage";
 
 export default function AgentList() {
   const navigate = useNavigate();
@@ -69,7 +70,7 @@ export default function AgentList() {
       const agent = await importAgent(file);
       navigate(`/agents/${agent.alias}`);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : "Failed to import agent");
+      setImportError(errorMessage(err, "Failed to import agent"));
     } finally {
       setImporting(false);
       // Reset file input so the same file can be selected again

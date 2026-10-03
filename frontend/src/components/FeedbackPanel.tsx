@@ -2,20 +2,9 @@ import { useState } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
 import { CU_ACTION_TOOL_NAME, CU_REQUEST_CONTROL_TOOL_NAME } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
+import type { PendingAction } from "../api";
 
-export interface PendingAction {
-  type: "permission_request" | "user_question" | "plan_review";
-  requestId?: string;
-  humanOnly?: boolean;
-  controlRequest?: boolean;
-  toolName?: string;
-  input?: Record<string, unknown>;
-  questions?: any[];
-  suggestions?: any[];
-  content?: string;
-  /** True when reconstructed from message history (no live backend session) */
-  stale?: boolean;
-}
+export type { PendingAction };
 
 interface Props {
   responding?: boolean;

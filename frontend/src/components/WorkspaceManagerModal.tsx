@@ -61,6 +61,7 @@ import AdoptWorktreesConfirm from "./AdoptWorktreesConfirm";
 import ArchiveWorkspaceConfirm from "./ArchiveWorkspaceConfirm";
 import ConfirmModal from "./ConfirmModal";
 import ModalOverlay from "./ModalOverlay";
+import { errorMessage } from "../utils/errorMessage";
 
 type Tab = "managed" | "unmanaged" | "trash";
 
@@ -242,8 +243,8 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
       // The listing's `du` budget ran out. Saying so is the difference between
       // "these are small" and "these were never measured".
       setWorkspacesNote(listing.diskUsageNote);
-    } catch (err: any) {
-      setError(err.message || "Failed to load workspaces");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to load workspaces"));
     }
   }, []);
 
@@ -282,9 +283,9 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
         at: new Date().toLocaleTimeString(),
         stale: false,
       });
-    } catch (err: any) {
+    } catch (err) {
       // The list is untouched and still usable — only the decoration failed.
-      setError(err.message || "Could not check the workspaces. The list is unchanged; try again.");
+      setError(errorMessage(err, "Could not check the workspaces. The list is unchanged; try again."));
     } finally {
       setCheckingAll(false);
     }
@@ -306,8 +307,8 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
     setSelected(new Set());
     try {
       setUnmanaged(await listUnmanagedWorktrees(repo));
-    } catch (err: any) {
-      setError(err.message || "Failed to scan for unmanaged worktrees");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to scan for unmanaged worktrees"));
     } finally {
       setScanning(false);
     }
@@ -326,8 +327,8 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
       setTrash(listing.entries);
       setRetentionDays(listing.retentionDays);
       setTrashNote(listing.diskUsageNote);
-    } catch (err: any) {
-      setError(err.message || "Failed to load the trash");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to load the trash"));
     }
   }, []);
 
@@ -380,11 +381,11 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
       // Set as a pair: one confirmation opens, the other is explicitly closed.
       setArchiveTarget(target.removability.removable ? target : null);
       setRecordOnlyTarget(target.removability.removable ? null : target);
-    } catch (err: any) {
+    } catch (err) {
       // A verdict that could not be fetched is not a verdict, so nothing opens.
       // The row stays exactly as it was and the banner says why — the one thing
       // that must not happen is a confirmation built on a guess.
-      setError(err.message || `Could not work out what archiving “${entry.name}” would do. Nothing was changed — try again.`);
+      setError(errorMessage(err, `Could not work out what archiving “${entry.name}” would do. Nothing was changed — try again.`));
     } finally {
       setEvaluating(null);
     }
@@ -433,8 +434,8 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
       // that directory removable. Marked, never silently re-checked.
       markVerdictsStale();
       onChanged?.();
-    } catch (err: any) {
-      setError(err.message || "Failed to archive workspace");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to archive workspace"));
     } finally {
       setBusy(false);
       setArchiveTarget(null);
@@ -466,8 +467,8 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
       markVerdictsStale();
       await loadUnmanaged(repoPath);
       onChanged?.();
-    } catch (err: any) {
-      setError(err.message || "Failed to adopt worktrees");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to adopt worktrees"));
     } finally {
       setBusy(false);
       setConfirmingAdoption(false);
@@ -495,8 +496,8 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
       setNotice(`Renamed to “${renamed.name}”. Nothing on disk moved — ${renamed.cwd} is exactly where it was.`);
       onChanged?.();
       return true;
-    } catch (err: any) {
-      setError(err.message || "Failed to rename workspace");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to rename workspace"));
       return false;
     } finally {
       setBusy(false);
@@ -521,8 +522,8 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
       // that record off `cwd-missing`.
       markVerdictsStale();
       onChanged?.();
-    } catch (err: any) {
-      setError(err.message || "Failed to restore");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to restore"));
     } finally {
       setBusy(false);
       setRestoreTarget(null);

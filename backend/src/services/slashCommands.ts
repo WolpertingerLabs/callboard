@@ -4,6 +4,7 @@ import { getPluginsForDirectory, Plugin, pluginToSlashCommands, readPluginComman
 import { getEnabledAppPlugins, readAppPluginCommandContent } from "./app-plugins.js";
 import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "./custom-skills-service.js";
 import { DATA_DIR, ensureDataDir } from "../utils/paths.js";
+import type { SlashCommandContent } from "shared/types/slashCommand.js";
 
 const SLASH_COMMANDS_FILE = join(DATA_DIR, "slash-commands.json");
 
@@ -90,12 +91,7 @@ export function getCommandsAndPluginsForDirectory(directory: string): DirectoryC
   };
 }
 
-export interface SlashCommandContent {
-  name: string;
-  source: "custom-skill" | "plugin" | "builtin";
-  description: string | null;
-  content: string | null;
-}
+export type { SlashCommandContent };
 
 /**
  * Resolve one command name to the markdown body behind it.

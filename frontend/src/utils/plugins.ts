@@ -5,14 +5,16 @@
  * activation state consistent.
  */
 
+import { readStorageItem, writeStorageItem } from "./localStorage";
+
 const STORAGE_KEY = "activePlugins";
 
 /**
  * Load active plugin IDs from localStorage.
  */
 export function getActivePlugins(): Set<string> {
+  const active = readStorageItem(STORAGE_KEY);
   try {
-    const active = localStorage.getItem(STORAGE_KEY);
     return new Set(active ? JSON.parse(active) : []);
   } catch {
     return new Set();
@@ -23,9 +25,5 @@ export function getActivePlugins(): Set<string> {
  * Persist active plugin IDs to localStorage.
  */
 export function setActivePlugins(activeIds: Set<string>): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(activeIds)));
-  } catch {
-    // Handle localStorage errors gracefully
-  }
+  writeStorageItem(STORAGE_KEY, JSON.stringify(Array.from(activeIds)));
 }

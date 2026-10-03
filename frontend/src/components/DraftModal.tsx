@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { createDraft, updateDraft, uploadDraftImages, type DefaultPermissions, type QueueItemImage } from "../api";
 import ModalOverlay from "./ModalOverlay";
+import { errorMessage } from "../utils/errorMessage";
 
 interface DraftModalProps {
   isOpen: boolean;
@@ -65,8 +66,8 @@ export default function DraftModal({
       }
       onSuccess?.();
       onClose();
-    } catch (err: any) {
-      setError(err.message || "Failed to save draft");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to save draft"));
     } finally {
       setIsSubmitting(false);
     }

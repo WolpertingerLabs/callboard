@@ -6,6 +6,7 @@ import ProviderConfigPicker from "../../../components/ProviderConfigPicker";
 import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob, runAgentCronJob, getSystemInfo } from "../../../api";
 import type { CronJob, AgentConfig } from "../../../api";
 import type { AgentProviderKind, EffortLevel } from "../../../utils/localStorage";
+import { errorMessage } from "../../../utils/errorMessage";
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -362,7 +363,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setFormPiModel("");
       setFormEffort(undefined);
     } catch (error) {
-      setConfigError(error instanceof Error ? error.message : "Could not save cron configuration");
+      setConfigError(errorMessage(error, "Could not save cron configuration"));
     } finally {
       setFormSaving(false);
     }
@@ -440,7 +441,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
       setJobs((prev) => prev.map((j) => (j.id === editingJobId ? updated : j)));
       setEditingJobId(null);
     } catch (error) {
-      setConfigError(error instanceof Error ? error.message : "Could not save cron configuration");
+      setConfigError(errorMessage(error, "Could not save cron configuration"));
     } finally {
       setEditSaving(false);
     }
