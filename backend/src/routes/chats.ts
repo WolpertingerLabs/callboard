@@ -25,7 +25,7 @@ import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
 import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
-import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
+import { buildChatTree, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -414,10 +414,10 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Native Codex children (subagents a parent Codex thread spawned; read-only in Callboard) are excluded too. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
   /* #swagger.parameters['includePinned'] = { in: 'query', type: 'string', description: "When true, chats whose metadata carries pinned:true are appended even when they fall outside the pagination window, flagged with _pinned_appended; like lineage relatives they do not count toward pagination or hasMore. Purely additive — every other filter on the request still applies, so a pinned chat the cardLifecycle scope, excludeTriggered or bookmarked drops stays dropped. A pinned chat already on the page is not appended a second time." } */
-  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), unarchived (everything EXCEPT archived trees — those of closed or hidden cards, and those whose non-card root (triggered, job-step) carries metadata.archived; chats on no card are otherwise included, and a job step parked on an approval is admitted even from an archived tree; this is the scope the sidebar asks for when its Archived toggle is off), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement of active: chats on the tree of a CLOSED or hidden card, plus chats that are on no card at all). active/inactive are retained for client bundles older than the unarchived scope. Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record; a discovered session with no stored record is admitted by unarchived and by neither active nor inactive." } */
+  /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), unarchived (everything EXCEPT archived trees — those of closed or hidden cards, and those whose non-card root (triggered, job-step) carries metadata.treeArchived; chats on no card are otherwise included, and a job step parked on an approval is admitted even from an archived tree; this is the scope the sidebar asks for when its Archived toggle is off), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement of active: chats on the tree of a CLOSED or hidden card, plus chats that are on no card at all). active/inactive are retained for client bundles older than the unarchived scope. Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record; a discovered session with no stored record is admitted by unarchived and by neither active nor inactive." } */
   /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'Back-compatible alias for cardLifecycle=active, kept for persisted prefs and older client bundles. Ignored when cardLifecycle is given.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
-  /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields. Each chat whose lineage root is archived (by card state or the chat-level metadata.archived flag) carries archived: true, computed per response." } */
+  /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields. Each chat whose lineage root is archived (by card state or the chat-level metadata.treeArchived flag) carries archived: true, computed per response — only when the request also asked for includeLineage or a cardLifecycle scope, which is what builds the lineage the verdict needs." } */
   try {
     // Check cache (stale-while-revalidate)
     const bypassCache = req.query.cached === "false";
@@ -469,6 +469,13 @@ chatsRouter.get("/", (req, res) => {
      * changes anything.
      */
     const fileMetaByChat = new Map<any, Record<string, any>>();
+    /**
+     * Job-step records as `[chatId, runId]`, collected in the same pass and for
+     * the same reason as {@link pinnedFileChats}: the `unarchived` scope's
+     * parked-approval carve-out needs them, and a second loop would be a
+     * second parse of every record's metadata.
+     */
+    const jobStepChats: [string, string][] = [];
 
     for (const chat of fileChats) {
       // Index by session_id
@@ -485,6 +492,7 @@ chatsRouter.get("/", (req, res) => {
       }
       if (meta.pinned === true && chat?.id) pinnedFileChats.push(chat);
       fileMetaByChat.set(chat, meta);
+      if (typeof meta.jobRunId === "string" && meta.jobRunId && chat?.id) jobStepChats.push([chat.id, meta.jobRunId]);
     }
 
     // Handle pagination
@@ -588,28 +596,22 @@ chatsRouter.get("/", (req, res) => {
      * `archived` annotation, so the two cannot disagree about a tree; memoized
      * so a request that needs both pays for one pass.
      *
-     * Uses the card membership when the request built one (the sidebar always
-     * does — it sends includeLineage). A request that did not is answered from
-     * a plain lineage index over the stored records, with "is a card" read as
-     * `isCardEligible` minus native Codex records: the same verdict
-     * `createCardMembership` reaches, without its native-discovery pass, which
-     * only adds roots that have no stored record and so carry no flag.
+     * Null when the request built no card membership — it asked for neither
+     * `includeLineage` nor a lifecycle scope. Answering "archived" needs the
+     * whole corpus's lineage, and building it only for an annotation would put
+     * a full-corpus pass on every request from a caller that never asked for
+     * trees (older bundles, plain API clients). The sidebar always sends
+     * includeLineage, so it always gets the annotation.
      */
     let archivedRootsMemo: { roots: Set<string>; rootOf: (chatId: string) => string } | null = null;
     const archivedLineage = () => {
-      if (!archivedRootsMemo) {
-        const index = lineageIndex ?? buildLineageIndex(fileChats);
-        const isCardRoot = cardMembership
-          ? (id: string) => cardMembership.roots.has(id)
-          : (id: string) => {
-              const record = index.byId.get(id);
-              return !!record && isCardEligible(record) && !parseChatMetadata(record.metadata).nativeAgent;
-            };
-        archivedRootsMemo = { roots: archivedRootIdsOf(fileChats, index.existingRootIdOf, isCardRoot), rootOf: index.existingRootIdOf };
-      }
+      if (!cardMembership) return null;
+      archivedRootsMemo ??= {
+        roots: archivedRootIdsOf(fileChats, cardMembership.index.existingRootIdOf, (id) => cardMembership.roots.has(id)),
+        rootOf: cardMembership.index.existingRootIdOf,
+      };
       return archivedRootsMemo;
     };
-    const archivedRootIds = () => archivedLineage().roots;
 
     /**
      * The chats job runs are parked on for approval — one per run, the run's
@@ -619,11 +621,9 @@ chatsRouter.get("/", (req, res) => {
     const parkedApprovalRowIds = (): Set<string> => {
       const ids = new Set<string>();
       if (!hasParkedApprovals()) return ids;
-      for (const chat of fileChats) {
-        const runId = parseChatMetadata(chat.metadata).jobRunId;
-        if (typeof runId !== "string" || !runId) continue;
+      for (const [chatId, runId] of jobStepChats) {
         const run = resolveRun(runId);
-        if (run && run.status === "waiting_approval" && run.latestChatId === chat.id) ids.add(chat.id);
+        if (run && run.status === "waiting_approval" && run.latestChatId === chatId) ids.add(chatId);
       }
       return ids;
     };
@@ -648,7 +648,7 @@ chatsRouter.get("/", (req, res) => {
      * chat's root ARCHIVED" — and asks it of every root, card or not. A card
      * root is archived when its card is closed or hidden; any other root
      * (`isCardEligible` refuses triggered and job-step roots) when it carries
-     * the chat-level `metadata.archived` flag. Both are read through
+     * the chat-level `metadata.treeArchived` flag. Both are read through
      * `rootIsArchived`, so the sidebar's dim and this scope cannot pick
      * different representations. A card-less tree nobody archived is admitted,
      * which is the reason the scope exists: under `active` those chats were
@@ -678,7 +678,7 @@ chatsRouter.get("/", (req, res) => {
     let cardScopeAdmits: ((chatId: string) => boolean) | null = null;
     if (scopedByCardLifecycle && lineageIndex) {
       if (cardLifecycleFilter === "unarchived") {
-        const archivedRoots = archivedRootIds();
+        const archivedRoots = archivedLineage()!.roots;
         const parkedRowIds = parkedApprovalRowIds();
         const archivedChatIds = new Set<string>();
         for (const chat of lineageIndex.byId.values()) {
@@ -986,8 +986,8 @@ chatsRouter.get("/", (req, res) => {
      * the two between polls.
      */
     const attachArchived = (chat: any) => {
-      const { roots, rootOf } = archivedLineage();
-      if (roots.size === 0 || !roots.has(rootOf(chat.id))) return chat;
+      const lineage = archivedLineage();
+      if (!lineage || lineage.roots.size === 0 || !lineage.roots.has(lineage.rootOf(chat.id))) return chat;
       return { ...chat, archived: true };
     };
 
@@ -2187,7 +2187,7 @@ const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resol
  * Archived is a property of the lineage ROOT (see services/chat-archive.ts):
  * a card root is closed/reopened through `patchCardFields`, exactly as
  * `POST /api/cards/bulk-lifecycle` does, and any other root — a triggered
- * chat, a job step — carries the chat-level `metadata.archived` flag instead.
+ * chat, a job step — carries the chat-level `metadata.treeArchived` flag instead.
  * The caller sends the chat ids it selected and never has to know which kind
  * each tree is, or where its root is; that resolution is the server's.
  *
@@ -2196,16 +2196,17 @@ const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resol
  * once, and every requested id is reported exactly once in `updated` or
  * `failed`. Partial success is a 200 with a populated `failed[]`.
  *
- * A chat with no stored record at all — a session discovered on disk that
- * Callboard never wrote down — is its own root. Archiving one materialises its
- * record first (as pinning does), which makes it a card root like any other
- * top-level chat, so it is closed as a card. Unarchiving one is a no-op: there
- * is nothing it could be archived by.
+ * A root with no stored record — a session discovered on disk that Callboard
+ * never wrote down, or a discovery-only native Codex root — is archived by
+ * writing its record first, as pinning does. A plain session then IS a card
+ * root like any other top-level chat, so archiving it closes the card it has
+ * just become; a native Codex root is not a card and takes the flag.
+ * Unarchiving one is a no-op: there is nothing it could be archived by.
  */
 chatsRouter.post("/bulk-archive", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Archive or unarchive the lineage trees of many chats; per-id failures are reported, not fatal'
-  // #swagger.description = 'Each id (chat id or session id, any member of a tree) resolves to its lineage root, and the whole tree is archived or unarchived. A root that is a card is closed/reopened (metadata.card.lifecycle; unarchiving also clears metadata.card.hidden); any other root (triggered, job-step) gets metadata.archived + archivedAt set or cleared. View-only writes: updated_at is not bumped. Archiving clears metadata.pinned on the tree\'s chats unless agent settings set unpinChatsOnArchive to false; unarchiving never restores a pin. Ids sharing a root flip it once and are all reported.'
+  // #swagger.description = 'Each id (chat id or session id, any member of a tree) resolves to its lineage root, and the whole tree is archived or unarchived. A root that is a card is closed/reopened (metadata.card.lifecycle; unarchiving also clears metadata.card.hidden); any other root (triggered, job-step) gets metadata.treeArchived + treeArchivedAt set or cleared. View-only writes: updated_at is not bumped. Archiving clears metadata.pinned on the tree\'s chats unless agent settings set unpinChatsOnArchive to false; unarchiving never restores a pin. Ids sharing a root flip it once and are all reported.'
   /* #swagger.requestBody = {
     required: true,
     content: {
@@ -2238,22 +2239,57 @@ chatsRouter.post("/bulk-archive", (req, res) => {
     const rootByRequestedId = new Map<string, Target>();
     const seenRoots = new Set<string>();
     const failed: { id: string; error: string }[] = [];
-    // One snapshot for lineage and for the pins, as bulk-lifecycle does.
+    // One snapshot for lineage, for session-id resolution and for the pins, as
+    // bulk-lifecycle does.
     const stored = listChatsSnapshot();
     const context = createCardContext(stored);
+    /**
+     * Stored records by every session id they own — a record's own
+     * `session_id` and each of `metadata.session_ids` — so a requested session
+     * id resolves from the snapshot in hand instead of `getChat`'s miss path,
+     * which reads every record in the directory per lookup. An id two records
+     * claim is left out rather than guessed, as card-membership does.
+     */
+    const storedBySession = new Map<string, any>();
+    const claimed = new Set<string>();
+    for (const chat of stored) {
+      const sessionIds = parseChatMetadata(chat.metadata).session_ids;
+      for (const sid of new Set([chat.session_id, ...(Array.isArray(sessionIds) ? sessionIds : [])])) {
+        if (typeof sid !== "string" || !sid) continue;
+        if (claimed.has(sid)) storedBySession.delete(sid);
+        else storedBySession.set(sid, chat);
+        claimed.add(sid);
+      }
+    }
+    /**
+     * A target for a root that has no stored record: a session found on disk
+     * that Callboard never wrote down, or a discovery-only native Codex root.
+     * Archiving it means writing its record first, as pinning does; the
+     * lookup is handed `null` — "the snapshot says there is no record, do not
+     * go looking" — so it reads the session's own log, never the store.
+     *
+     * Which representation it then takes is decided from the record it will
+     * become, by the same rule card-membership applies to stored roots:
+     * card-eligible and not a native Codex child → a card (so a plain
+     * record-less session is archived by closing the card it becomes); else the
+     * chat-level flag.
+     */
+    const materialized = (rootId: string): Target | null => {
+      const found = findChat(rootId, false, null) as any;
+      if (!found?._from_filesystem) return null;
+      const isCard = isCardEligible(found) && !parseChatMetadata(found.metadata).nativeAgent;
+      return { rootChatId: found.id, isCard, writeKey: found.session_id, materialize: found };
+    };
     for (const id of ids as string[]) {
       if (rootByRequestedId.has(id)) continue;
       let target: Target | null = null;
-      let root = context.resolveLineageRoot(id);
-      if (!root) {
-        // Not in the lineage index, which is keyed by chat id: a session id
-        // for a stored chat, a session with no stored record, or no such chat.
-        // The lookup is per-id, but only for these misses.
-        const found = findChat(id, false) as any;
-        if (found?._from_filesystem) target = { rootChatId: found.id, isCard: true, materialize: found };
-        else if (found) root = context.resolveLineageRoot(found.id);
-      }
+      // Not in the lineage index (keyed by chat id) → maybe a session id of a
+      // stored chat whose two ids differ.
+      const bySession = storedBySession.get(id);
+      const root = context.resolveLineageRoot(id) ?? (bySession ? context.resolveLineageRoot(bySession.id) : null);
       if (root?.stored) target = { rootChatId: root.rootChatId, isCard: root.isCard, writeKey: root.stored.session_id || undefined };
+      // A root discovery knows of but nothing stored, or an id nothing indexed.
+      else target = materialized(root ? root.rootChatId : id);
       if (!target) {
         failed.push({ id, error: "Chat not found" });
         continue;
@@ -2272,7 +2308,13 @@ chatsRouter.post("/bulk-archive", (req, res) => {
           // Nothing to unarchive on a chat that has never had a record.
           if (!archived) continue;
           const chat = target.materialize;
-          chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, {
+          // insertChat, not upsertChat: the snapshot already established there
+          // is no record, and upsertChat would rediscover that with a full
+          // directory scan before writing.
+          chatFileService.insertChat({
+            id: chat.id,
+            folder: chat.folder,
+            session_id: chat.session_id,
             metadata: chat.metadata,
             created_at: chat.created_at,
             updated_at: chat.updated_at,

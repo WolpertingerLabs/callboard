@@ -30,12 +30,20 @@ export function cardIsArchived(chat: { metadata?: string | null }) {
  * roots, and a stored native Codex root is never promoted — has no
  * `metadata.card` to close, and must not grow one: card-migration and the
  * stranded-card-field cleanup in routes/cards.ts both read `metadata.card` on a
- * non-card record as debris. So such a root carries `metadata.archived: true`
- * (plus `archivedAt`) instead. Read only through {@link rootIsArchived}, which
- * is what decides which representation a given root uses.
+ * non-card record as debris. So such a root carries `metadata.treeArchived:
+ * true` (plus `treeArchivedAt`) instead. Read only through
+ * {@link rootIsArchived}, which is what decides which representation a given
+ * root uses.
+ *
+ * Deliberately NOT `archived`/`archivedAt`: both names were already taken on
+ * chat metadata. `metadata.archived === true` makes computer-use refuse the
+ * chat ("Chat is unavailable", computer-use.ts), so reusing it would revoke
+ * computer control mid-session on any chat in an archived tree; and
+ * `archivedAt` is the marker workspace-service writes on every chat of an
+ * archived WORKSPACE, which an unarchive here would delete.
  */
 export function archivedFlagOf(chat: { metadata?: string | null }): boolean {
-  return parseChatMetadataRecord(chat.metadata).archived === true;
+  return parseChatMetadataRecord(chat.metadata).treeArchived === true;
 }
 
 /**

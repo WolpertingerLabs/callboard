@@ -170,7 +170,7 @@ describe("sendMessage — reopen closed card on new message", () => {
 
 /**
  * The same rule for a tree whose root is not a card. A triggered or job-step
- * root carries its archive as `metadata.archived` on the root record (see
+ * root carries its archive as `metadata.treeArchived` on the root record (see
  * chat-archive.ts), and a new message anywhere in that tree must clear it —
  * otherwise a continued Discord thread or a re-run step delivers its turn into
  * a chat the sidebar is withholding.
@@ -182,31 +182,41 @@ describe("sendMessage — unarchive a card-less tree on new message", () => {
     const root = chatFileService.createChat(
       workDir,
       "flag-1",
-      JSON.stringify({ triggered: true, archived: true, archivedAt: "2026-01-01T00:00:00.000Z" }),
+      JSON.stringify({ triggered: true, treeArchived: true, treeArchivedAt: "2026-01-01T00:00:00.000Z" }),
     );
 
     await messageChat(root.id);
 
-    expect(metaOf(root.id).archived).toBeUndefined();
-    expect(metaOf(root.id).archivedAt).toBeUndefined();
+    expect(metaOf(root.id).treeArchived).toBeUndefined();
+    expect(metaOf(root.id).treeArchivedAt).toBeUndefined();
     // A flag root never grows a card object on the way.
     expect(metaOf(root.id).card).toBeUndefined();
   });
 
   it("clears the ROOT's flag when a descendant of the archived tree receives a message", async () => {
-    const root = chatFileService.createChat(workDir, "flag-2", JSON.stringify({ triggered: true, archived: true }));
+    const root = chatFileService.createChat(workDir, "flag-2", JSON.stringify({ triggered: true, treeArchived: true }));
     const child = chatFileService.createChat(workDir, "flag-2-child", JSON.stringify({ parentChatId: root.id, rootChatId: root.id, triggered: true }));
 
     await messageChat(child.id);
 
-    expect(metaOf(root.id).archived).toBeUndefined();
+    expect(metaOf(root.id).treeArchived).toBeUndefined();
+  });
+
+  it("clears it when a job step is spawned into the archived tree through jobContext alone", async () => {
+    // The runner's shape: no parentChatId, only the run's root on jobContext
+    // (job-runner.ts spawns every step and retry this way).
+    const root = chatFileService.createChat(workDir, "flag-job", JSON.stringify({ triggered: true, treeArchived: true }));
+
+    await runNewChat({ triggered: true, jobContext: { runId: "run-flag", stepId: "step-1", rootChatId: root.id } });
+
+    expect(metaOf(root.id).treeArchived).toBeUndefined();
   });
 
   it("clears it when a new child is spawned under the archived tree", async () => {
-    const parent = chatFileService.createChat(workDir, "flag-3", JSON.stringify({ triggered: true, archived: true }));
+    const parent = chatFileService.createChat(workDir, "flag-3", JSON.stringify({ triggered: true, treeArchived: true }));
 
     await runNewChat({ parentChatId: parent.id });
 
-    expect(metaOf(parent.id).archived).toBeUndefined();
+    expect(metaOf(parent.id).treeArchived).toBeUndefined();
   });
 });

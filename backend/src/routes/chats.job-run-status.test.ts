@@ -419,7 +419,7 @@ describe("GET /api/chats?cardLifecycle=unarchived — parked approval in an arch
   it("keeps the parked representative and withholds the rest of the archived tree", async () => {
     sessions = ["root", "step-1", "step-2"];
     fileChats = [
-      chat("root", { triggered: true, archived: true }),
+      chat("root", { triggered: true, treeArchived: true }),
       { ...stepChat("step-1", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) },
       { ...stepChat("step-2", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) },
     ];
@@ -432,9 +432,27 @@ describe("GET /api/chats?cardLifecycle=unarchived — parked approval in an arch
     expect(runReads).toEqual(["run-1"]);
   });
 
+  it("keeps the parked row on the sidebar's own path, includeLineage, and appends no archived relative", async () => {
+    sessions = ["root", "step-1", "step-2"];
+    fileChats = [
+      chat("root", { triggered: true, treeArchived: true }),
+      { ...stepChat("step-1", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) },
+      { ...stepChat("step-2", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) },
+    ];
+    runs = { "run-1": parkedRun("run-1", ["step-1", "step-2"]) };
+
+    const body = await listChats({ cardLifecycle: "unarchived", includeLineage: "true", includePinned: "true", limit: "10", offset: "0" });
+    // The lineage-append pass reaches the root and step-1 through the tree,
+    // and re-applies the scope to them — so only the parked row ships.
+    expect(ids(body)).toEqual(["step-2"]);
+    expect(needsYou(body)).toEqual(["step-2"]);
+    // It is still on an archived tree, and says so.
+    expect(body.chats[0].archived).toBe(true);
+  });
+
   it("withholds the whole archived tree once the run is no longer parked", async () => {
     sessions = ["root", "step-1"];
-    fileChats = [chat("root", { triggered: true, archived: true }), { ...stepChat("step-1", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) }];
+    fileChats = [chat("root", { triggered: true, treeArchived: true }), { ...stepChat("step-1", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) }];
     runs = { "run-1": runningRun("run-1", "step-1") };
 
     expect(ids(await listChats({ cardLifecycle: "unarchived", limit: "10", offset: "0" }))).toEqual([]);

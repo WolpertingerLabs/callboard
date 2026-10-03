@@ -164,6 +164,29 @@ describe("real query corpus and sidebar parity", () => {
           expect(tool.chats.map((c) => c.chatId).sort()).toEqual(eligible.map((c) => c.id).sort());
         }
   });
+  it("withholds a card-less tree archived by the treeArchived flag, exactly as the sidebar does", async () => {
+    stored(ids[0], { triggered: true, treeArchived: true });
+    rollout(ids[0]);
+    stored(ids[1]);
+    rollout(ids[1]);
+    let revision = 100;
+    for (const showArchived of [false, true]) {
+      const binding = chatViews.publish("browser", {
+        viewId: "00000000-0000-4000-8000-000000000004",
+        revision: ++revision,
+        filters: DEFAULT_CHAT_FILTERS,
+        options: { bookmarked: false, showTriggered: true, showArchived },
+        submittedSearch: "",
+      });
+      const tool = (await searchChats({ scope: "visible", limit: 100 }, binding)).chats.map((c) => c.chatId).sort();
+      const sidebar = list({ excludeTriggered: "false", cardLifecycle: showArchived ? "all" : "unarchived" })
+        .chats.map((c: any) => c.id)
+        .sort();
+      expect(tool).toEqual(sidebar);
+      expect(tool.includes(ids[0])).toBe(showArchived);
+      expect(tool).toContain(ids[1]);
+    }
+  });
   it("captures one revision across async filtering, then sees live changes on the next invocation", async () => {
     stored(ids[0]);
     rollout(ids[0]);

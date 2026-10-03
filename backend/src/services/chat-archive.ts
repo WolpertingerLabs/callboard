@@ -8,7 +8,7 @@
  *  - the root is a card → `metadata.card.lifecycle` (and `hidden`), written by
  *    `patchCardFields` exactly as the board does;
  *  - the root is not a card (a triggered chat, a job step, a stored native
- *    Codex root) → `metadata.archived: true` plus `archivedAt`, on the root's
+ *    Codex root) → `metadata.treeArchived: true` plus `treeArchivedAt`, on the root's
  *    own record. Never `metadata.card.*`: card-migration and the
  *    stranded-card-field cleanup both treat a card object on a non-card record
  *    as debris to repair.
@@ -66,11 +66,11 @@ export function setRootArchived(rootChatId: string, archived: boolean, opts: Set
   const chat = chatFileService.getChat(key);
   if (!chat) return false;
   // Transition-only, like `closedAt` on a card: re-archiving an archived tree
-  // writes nothing, so `archivedAt` keeps describing when it was put away.
+  // writes nothing, so `treeArchivedAt` keeps describing when it was put away.
   if (archivedFlagOf(chat) === archived) return true;
   // `undefined` drops the key from the stringified record — absent means "not
   // archived", the same absent-means-default rule card fields follow.
-  const fields = archived ? { archived: true, archivedAt: new Date().toISOString() } : { archived: undefined, archivedAt: undefined };
+  const fields = archived ? { treeArchived: true, treeArchivedAt: new Date().toISOString() } : { treeArchived: undefined, treeArchivedAt: undefined };
   if (!chatFileService.updateChatMetadata(key, fields, { touch: false })) {
     throw new ChatArchiveWriteError(`Failed to persist the archived flag on chat "${rootChatId}"`);
   }

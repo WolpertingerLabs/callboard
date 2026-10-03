@@ -8,7 +8,7 @@
  * `active` iff its lineage root is an OPEN, visible card — a non-triggered,
  * non-job-step top-level chat — and by `inactive` iff it is not. `unarchived`
  * asks the narrower question, "is the root ARCHIVED" (a closed or hidden card,
- * or a card-less root's `metadata.archived` flag), so a chat on no card is
+ * or a card-less root's `metadata.treeArchived` flag), so a chat on no card is
  * admitted unless someone archived its tree. Membership is derived from the
  * tree (parent pointers and job-step chats' stamped rootChatId), so descendants
  * follow their root's lifecycle and hidden flag.
@@ -491,7 +491,7 @@ describe("GET /api/chats?cardLifecycle=unarchived", () => {
 /**
  * Per-chat archive for trees whose root is not a card. `isCardEligible` refuses
  * triggered and job-step roots, so they carry their archive as a chat-level
- * `metadata.archived` flag on the root instead (services/chat-archive.ts), and
+ * `metadata.treeArchived` flag on the root instead (services/chat-archive.ts), and
  * `unarchived` reads it through the same `rootIsArchived` helper that picks the
  * card state for card roots.
  */
@@ -500,7 +500,7 @@ describe("GET /api/chats — archived card-less trees", () => {
     fileChats.push(chat("triggered-child", { parentChatId: "triggered-root", rootChatId: "triggered-root", triggered: true }));
     sessionIds.push("triggered-child");
     const root = fileChats.find((c) => c.id === "triggered-root");
-    root.metadata = JSON.stringify({ triggered: true, archived: true });
+    root.metadata = JSON.stringify({ triggered: true, treeArchived: true });
 
     const ids = idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }));
     expect(ids).not.toContain("triggered-root");
@@ -511,21 +511,22 @@ describe("GET /api/chats — archived card-less trees", () => {
 
   it("ignores the flag on a card root — a card is archived by its card state alone", async () => {
     const root = fileChats.find((c) => c.id === "plain-root");
-    root.metadata = JSON.stringify({ archived: true });
+    root.metadata = JSON.stringify({ treeArchived: true });
     expect(idsOf(await listChats({ cardLifecycle: "unarchived", limit: "50" }))).toContain("plain-root");
   });
 
   it("leaves active and inactive as card questions: the flag moves nothing between them", async () => {
     const before = { active: idsOf(await listChats({ cardLifecycle: "active", limit: "50" })), inactive: idsOf(await listChats({ cardLifecycle: "inactive", limit: "50" })) };
-    fileChats.find((c) => c.id === "job-root").metadata = JSON.stringify({ jobRunId: "run-1", archived: true });
+    fileChats.find((c) => c.id === "job-root").metadata = JSON.stringify({ jobRunId: "run-1", treeArchived: true });
     expect(idsOf(await listChats({ cardLifecycle: "active", limit: "50" }))).toEqual(before.active);
     expect(idsOf(await listChats({ cardLifecycle: "inactive", limit: "50" }))).toEqual(before.inactive);
   });
 
   it("annotates every row on an archived tree with archived: true, by either representation", async () => {
-    fileChats.find((c) => c.id === "triggered-root").metadata = JSON.stringify({ triggered: true, archived: true });
+    fileChats.find((c) => c.id === "triggered-root").metadata = JSON.stringify({ triggered: true, treeArchived: true });
 
-    const body = await listChats({ limit: "50" });
+    // includeLineage, as the sidebar always sends — see the test below.
+    const body = await listChats({ includeLineage: "true", limit: "50" });
     const archivedOf = (id: string) => body.chats.find((c: any) => c.id === id).archived;
     expect(archivedOf("triggered-root")).toBe(true);
     expect(archivedOf("closed-root")).toBe(true);
@@ -539,10 +540,21 @@ describe("GET /api/chats — archived card-less trees", () => {
     expect(JSON.parse(body.chats.find((c: any) => c.id === "closed-child").metadata).archived).toBeUndefined();
   });
 
-  it("annotates the same way when the request built a card membership", async () => {
-    fileChats.find((c) => c.id === "job-root").metadata = JSON.stringify({ jobRunId: "run-1", archived: true });
-    const body = await listChats({ includeLineage: "true", limit: "50" });
-    expect(body.chats.find((c: any) => c.id === "job-root").archived).toBe(true);
-    expect(body.chats.find((c: any) => c.id === "plain-root").archived).toBeUndefined();
+  it("annotates under a lifecycle scope too, which builds the same lineage", async () => {
+    fileChats.find((c) => c.id === "job-root").metadata = JSON.stringify({ jobRunId: "run-1", treeArchived: true });
+    const scoped = await listChats({ cardLifecycle: "inactive", limit: "50" });
+    expect(scoped.chats.find((c: any) => c.id === "job-root").archived).toBe(true);
+    expect(scoped.chats.find((c: any) => c.id === "closed-root").archived).toBe(true);
+  });
+
+  /**
+   * The annotation needs the whole corpus's lineage, so it rides on the
+   * membership `includeLineage` or a scope already builds rather than paying
+   * a corpus pass for callers that asked for neither.
+   */
+  it("does not compute the annotation for a request that built no lineage", async () => {
+    fileChats.find((c) => c.id === "triggered-root").metadata = JSON.stringify({ triggered: true, treeArchived: true });
+    const body = await listChats({ limit: "50" });
+    expect(body.chats.every((c: any) => c.archived === undefined)).toBe(true);
   });
 });

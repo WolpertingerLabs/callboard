@@ -1173,7 +1173,15 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // board. The card lives on the lineage root's metadata.card: resolve the
   // root, read the lifecycle, flip it open. A brand-new top-level chat is its
   // own root and has no card yet — nothing to reopen.
-  const reopenRootId = opts.chatId ? walkToRootId(opts.chatId) : newChatRootId;
+  //
+  // A new job-step chat (and every retry of one) has no parent pointer: the
+  // runner ties it to its run's tree only through `jobContext.rootChatId`,
+  // which is stamped as the step's `rootChatId`. Resolve that too, through
+  // walkToRootId so a stamp naming a deleted root degrades as it does
+  // everywhere else — otherwise a step spawned into an archived tree would run
+  // in a chat the sidebar withholds.
+  const jobRootId = !opts.chatId && !newChatRootId && opts.jobContext?.rootChatId ? walkToRootId(opts.jobContext.rootChatId) : undefined;
+  const reopenRootId = opts.chatId ? walkToRootId(opts.chatId) : (newChatRootId ?? jobRootId);
   if (reopenRootId) {
     const rootCard = readCardFields(reopenRootId);
     if (rootCard?.lifecycle === "closed") {
@@ -1182,6 +1190,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
       log.info(`Reopened card ${reopenRootId} ("${rootCard.title}") because chat ${opts.chatId || "(new)"} received a new message`);
     }
+    // `hidden` is deliberately left alone above: on a card it is the board
+    // opt-out — "keep this off the board" — which the user set on purpose and
+    // which new activity says nothing about, so a reply must not undo it (the
+    // sidebar keeps treating the tree as archived until the user unhides it
+    // or unarchives it there). A card-less tree has no such
+    // second switch: its flag is the archive itself, so it is cleared below.
+    //
     // The same rule for a tree whose root is not a card (triggered, job step):
     // its archive is a flag on the root record rather than a card lifecycle,
     // and leaving it set would deliver the new turn into a chat the sidebar

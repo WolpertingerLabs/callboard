@@ -37,8 +37,10 @@ export interface Chat {
   /**
    * True when the chat's lineage root is archived — a closed or hidden card,
    * or, for a tree whose root is not a card (triggered, job step), the root's
-   * `metadata.archived` flag. Computed per `GET /api/chats` response, never
-   * stored on this record; absent means not archived.
+   * `metadata.treeArchived` flag. Computed per `GET /api/chats` response, never
+   * stored on this record, and only on requests that also ask for
+   * `includeLineage` or a `cardLifecycle` scope (the sidebar always does).
+   * Absent means not archived — or not computed.
    */
   archived?: boolean;
 }

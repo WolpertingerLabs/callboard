@@ -445,7 +445,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     if (!view.options.showTriggered && !survivesTriggered(chat)) return false;
     const rootId = membership.index.existingRootIdOf(chat.id);
     // Either representation of archived — a card root's card state, any other
-    // root's `metadata.archived` flag — exactly as the sidebar's scope reads it.
+    // root's `metadata.treeArchived` flag — exactly as the sidebar's scope reads it.
     const root = membership.storedById.get(rootId);
     return !(
       cardLifecycleFor({ showArchived: view.options.showArchived, searching: !!view.submittedSearch }) !== "all" &&
