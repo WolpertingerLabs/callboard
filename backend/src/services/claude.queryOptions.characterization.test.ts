@@ -15,15 +15,19 @@
  * It is a snapshot of current behaviour, not a spec: when a deliberate change
  * moves it, regenerate the snapshot and review the diff as the change.
  *
- * Normalization keeps it deterministic and machine-independent: functions and
- * live objects become markers, built tool servers become `[ToolServer <name>]`,
- * temp dirs and per-run ids are replaced, and `env` is reduced to the keys this
- * code adds or changes relative to the daemon's own environment.
+ * Hermetic by controlling inputs, not by scrubbing outputs: each test runs
+ * under a fixed `process.env` (see HERMETIC_ENV — the host's vars are removed,
+ * so nothing like CODEX_HOME or the real HOME/PATH can reach the options), and
+ * the claude binary resolver is mocked. So `options.env` is pinned in full. The
+ * only output normalization left is for things that are not host state at all:
+ * functions and live objects become markers, built tool servers become
+ * `[ToolServer <name>: N tools]`, the per-run temp dirs and chat ids are
+ * replaced, and the vitest runner's own VITEST_* vars are left out of `env`.
  *
  * Harness: the recording provider from `claude.binaryOverrides.test.ts`.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,7 +41,35 @@ process.env.CALLBOARD_DATA_DIR = dataDir;
 const workDir = mkdtempSync(join(tmpdir(), "callboard-queryopts-work-"));
 const pluginDir = join(dataDir, "fake-plugin");
 mkdirSync(pluginDir, { recursive: true });
-process.env.CB_QUERYOPTS_TEST_TOKEN = "resolved-token";
+// The only directory on the hermetic PATH, holding one launchable MCP server
+// command — so the plugin MCP builder's PATH lookup has a fixed answer.
+const binDir = join(dataDir, "bin");
+mkdirSync(binDir, { recursive: true });
+writeFileSync(join(binDir, "fake-mcp-server"), "#!/bin/sh\nexit 0\n");
+chmodSync(join(binDir, "fake-mcp-server"), 0o755);
+
+/**
+ * The whole `process.env` for the duration of each test. HOME is fixed (it
+ * decides the default CODEX_HOME and where codexAuth looks for config.toml);
+ * PORT and CALLBOARD_DATA_DIR are server-internal vars the inherited-env
+ * sanitizer must drop; INHERITED_PLAIN is an ordinary var it must keep.
+ */
+const HERMETIC_ENV: Record<string, string> = {
+  PATH: binDir,
+  HOME: "/nonexistent/queryopts-home",
+  NODE_ENV: "test",
+  PORT: "4321",
+  CALLBOARD_DATA_DIR: dataDir,
+  INHERITED_PLAIN: "kept",
+  CB_QUERYOPTS_TEST_TOKEN: "resolved-token",
+};
+/** Vars the test runner itself needs; kept, and left out of the snapshot. */
+const isRunnerVar = (key: string): boolean => key.startsWith("VITEST");
+
+function replaceProcessEnv(next: Record<string, string | undefined>): void {
+  for (const key of Object.keys(process.env)) if (!isRunnerVar(key)) delete process.env[key];
+  for (const [key, value] of Object.entries(next)) if (value !== undefined && !isRunnerVar(key)) process.env[key] = value;
+}
 
 // ── Log capture ──────────────────────────────────────────────────────────────
 const logs: { module: string; level: string; message: string }[] = [];
@@ -71,6 +103,13 @@ vi.mock("./codex-execution-route.js", async (importOriginal) => ({
     codexRouteState.calls++;
     return structuredClone(codexRouteState.next);
   },
+}));
+
+// The real resolver runs `which claude` and probes well-known dirs — host state.
+const claudeBinState: { path: string | undefined } = { path: undefined };
+vi.mock("./claude-binary.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./claude-binary.js")>()),
+  getClaudeCodeExecutablePath: async () => claudeBinState.path,
 }));
 
 // Effort validation consults model catalogs; it runs before the code under test.
@@ -119,9 +158,17 @@ vi.mock("./app-plugins.js", async (importOriginal) => ({
             sourcePluginId: "plugin-1",
             enabled: true,
             type: "stdio",
-            command: "node",
+            command: "fake-mcp-server",
             args: ["${CLAUDE_PLUGIN_ROOT}/server.js", "-y"],
             env: { MCP_KEY_ALIAS: "plugin-default", TOKEN: "${CB_QUERYOPTS_TEST_TOKEN}" },
+          },
+          {
+            id: "srv-3",
+            name: "fake-missing",
+            sourcePluginId: "plugin-1",
+            enabled: true,
+            type: "stdio",
+            command: "no-such-mcp-server",
           },
           {
             id: "srv-2",
@@ -168,8 +215,6 @@ function normalize(value: unknown, path: string[] = []): unknown {
   for (const [k, v] of Object.entries(obj)) {
     if (path.length === 1 && path[0] === "options" && k === "env") {
       out.env = normalizeEnv(v as Record<string, string | undefined>);
-    } else if (path.length === 1 && path[0] === "options" && k === "pathToClaudeCodeExecutable") {
-      out[k] = "<claude-bin>";
     } else {
       out[k] = normalize(v, [...path, k]);
     }
@@ -185,17 +230,17 @@ function rescrub(value: unknown): unknown {
   return value;
 }
 
-/** Only what this code adds or changes relative to the daemon env. */
+/** The whole subprocess env, minus the test runner's own vars. Keys with an `undefined` value (CLAUDECODE) are kept. */
 function normalizeEnv(env: Record<string, string | undefined>): Record<string, unknown> {
-  const out: Record<string, unknown> = { "has CLAUDECODE key": "CLAUDECODE" in env, "CLAUDECODE value": env.CLAUDECODE };
+  const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(env)) {
-    if (v !== undefined && process.env[k] !== v) out[k] = scrub(v);
+    if (!isRunnerVar(k)) out[k] = typeof v === "string" ? scrub(v) : v;
   }
   return out;
 }
 
 const RELEVANT_LOG =
-  /^(Injected|Failed to build|buildAgentToolsSpec|MCP servers for session|Codex chat config|ACP chat config|Cline chat config|pi chat config|Set MCP_KEY_ALIAS|Agent ".*" has no caller|Caller enrollment|A configured MCP server|Computer-control|Built \d+ hook|MCP server ".*" has an unlaunchable|pi chat .* references session|SDK query options|Codex chat selected)/;
+  /^(Injected|Failed to build|buildAgentToolsSpec|MCP servers for session|Codex chat config|ACP chat config|Cline chat config|pi chat config|Set MCP_KEY_ALIAS|Agent ".*" has no caller|Caller enrollment|A configured MCP server|Computer-control|Built \d+ hook|MCP server ".*" \(plugin .*\) has an unlaunchable|pi chat .* references session|SDK query options|Codex chat selected)/;
 
 // ── Harness ──────────────────────────────────────────────────────────────────
 function recordingProvider(sessionId: string, toolServers: "ok" | "throw" | "null" = "ok") {
@@ -325,7 +370,12 @@ const SETTINGS_RESET = {
 
 const PERMS = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "allow" };
 
+let hostEnv: Record<string, string | undefined> = {};
+
 beforeEach(() => {
+  hostEnv = { ...process.env };
+  replaceProcessEnv(HERMETIC_ENV);
+  claudeBinState.path = "/opt/fake/bin/claude";
   // Per-test, so tracking ids in the snapshot do not shift when a test is added.
   counter = 0;
   updateAgentSettings(SETTINGS_RESET as never);
@@ -337,6 +387,7 @@ beforeEach(() => {
 afterEach(() => {
   setAgentProviderForTesting(null);
   setSessionProvidersForTesting(null);
+  replaceProcessEnv(hostEnv);
 });
 
 afterAll(() => {
@@ -346,6 +397,12 @@ afterAll(() => {
 
 describe("sendMessage queryOpts characterization", () => {
   it("claude-code: plain new chat", async () => {
+    expect(await turn({})).toMatchSnapshot();
+  });
+
+  it("claude-code: no claude binary resolved", async () => {
+    // pathToClaudeCodeExecutable is omitted, not set to undefined/empty.
+    claudeBinState.path = undefined;
     expect(await turn({})).toMatchSnapshot();
   });
 
