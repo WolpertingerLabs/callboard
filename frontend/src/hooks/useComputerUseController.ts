@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ComputerUseSession, ComputerUseStatus } from "shared/types/computerUse.js";
 import { computerUseClient as client, controlErrorCode } from "../api/computerUse";
+import { errorMessage } from "../utils/errorMessage";
 
 export const isTerminal = (session: ComputerUseSession) => ["stopped", "revoked", "closed", "failed", "expired"].includes(session.state);
 export const isPending = (session: ComputerUseSession) => ["pending", "awaiting_approval", "approval_required", "pending_approval"].includes(session.state);
@@ -318,7 +319,7 @@ export function useComputerUseController(
           }
           return;
         }
-        report(`${session.kind} ${session.id}: ${error instanceof Error ? error.message : "stop failed"}`, isPendingRequest(session) ? session.id : undefined);
+        report(`${session.kind} ${session.id}: ${errorMessage(error, "stop failed")}`, isPendingRequest(session) ? session.id : undefined);
       }
     };
     // Dispatch known emergency stops immediately, even if discovery is slow.

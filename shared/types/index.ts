@@ -99,7 +99,7 @@ export {
   handshakeHeaders,
 } from "./protocol.js";
 
-export type { SlashCommand } from "./slashCommand.js";
+export type { SlashCommand, SlashCommandContent } from "./slashCommand.js";
 
 export type { BranchConfig, DiffFileType, DiffFileEntry, GitDiffResponse } from "./git.js";
 export { worktreeDirName } from "./git.js";
@@ -135,7 +135,12 @@ export type { OpenRouterModelInfo, OpenRouterModelAliasInfo } from "./openrouter
 
 export type { CodexModelInfo } from "./codex.js";
 
+export type { StoredEvent, ConnectionTestResult } from "./proxy.js";
+
+export type { ApiKeyInfo } from "./apiKeys.js";
+
 export type { UiAgentProviderKind, EffortLevel, ProviderRunConfig } from "./providers.js";
+export { UI_AGENT_PROVIDER_KINDS } from "./providers.js";
 
 export type {
   EngineRuntime,

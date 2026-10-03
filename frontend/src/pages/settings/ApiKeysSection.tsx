@@ -3,6 +3,7 @@ import { KeyRound, Plus, Trash2, Copy, Check } from "lucide-react";
 import ConfirmModal from "../../components/ConfirmModal";
 import { listApiKeys, createApiKey, deleteApiKey } from "../../api";
 import type { ApiKeyInfo } from "../../api";
+import { errorMessage } from "../../utils/errorMessage";
 
 function formatDate(ms: number | null): string {
   if (!ms) return "—";
@@ -31,7 +32,7 @@ export default function ApiKeysSection() {
     try {
       setKeys(await listApiKeys());
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load API keys.");
+      setError(errorMessage(err, "Failed to load API keys."));
     } finally {
       setLoading(false);
     }
@@ -57,7 +58,7 @@ export default function ApiKeysSection() {
       setFormOpen(false);
       await refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create API key.");
+      setError(errorMessage(err, "Failed to create API key."));
     } finally {
       setCreating(false);
     }
@@ -70,7 +71,7 @@ export default function ApiKeysSection() {
       await deleteApiKey(revokeTarget.id);
       await refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to revoke API key.");
+      setError(errorMessage(err, "Failed to revoke API key."));
     } finally {
       setRevokeTarget(null);
     }

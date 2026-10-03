@@ -16,6 +16,7 @@ import {
   getProxyIngestors,
 } from "../../../api";
 import type { Trigger, FilterCondition, TriggerFilter, AgentConfig, BacktestResult, StoredEvent } from "../../../api";
+import { errorMessage } from "../../../utils/errorMessage";
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -182,7 +183,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
       setShowForm(false);
       resetForm();
     } catch (error) {
-      setConfigError(error instanceof Error ? error.message : "Could not save trigger configuration");
+      setConfigError(errorMessage(error, "Could not save trigger configuration"));
     } finally {
       setFormSaving(false);
     }
@@ -245,7 +246,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
       setShowForm(false);
       resetForm();
     } catch (error) {
-      setConfigError(error instanceof Error ? error.message : "Could not save trigger configuration");
+      setConfigError(errorMessage(error, "Could not save trigger configuration"));
     } finally {
       setFormSaving(false);
     }

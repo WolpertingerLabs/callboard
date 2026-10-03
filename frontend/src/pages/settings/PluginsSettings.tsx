@@ -13,6 +13,7 @@ import {
   type AppPlugin,
   type McpServerConfig,
 } from "../../api";
+import { errorMessage } from "../../utils/errorMessage";
 
 export default function PluginsSettings() {
   // App-wide plugins state
@@ -51,8 +52,8 @@ export default function PluginsSettings() {
     try {
       await scanForPlugins(directory);
       await loadPluginsData();
-    } catch (err: any) {
-      setScanError(err.message || "Scan failed");
+    } catch (err) {
+      setScanError(errorMessage(err, "Scan failed"));
     } finally {
       setIsScanning(false);
     }
@@ -76,8 +77,8 @@ export default function PluginsSettings() {
     try {
       await rescanPlugins(directory);
       await loadPluginsData();
-    } catch (err: any) {
-      setScanError(err.message || "Rescan failed");
+    } catch (err) {
+      setScanError(errorMessage(err, "Rescan failed"));
     } finally {
       setIsScanning(false);
     }

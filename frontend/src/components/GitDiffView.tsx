@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { ChevronDown, ChevronRight, RotateCw, FileText, FileDiff, ImageIcon, VideoIcon, FileIcon } from "lucide-react";
 import { getGitDiff, getGitFileDiff, getGitFileRawUrl } from "../api";
 import type { DiffFileType } from "shared/types/index.js";
+import { errorMessage } from "../utils/errorMessage";
 
 // --- Diff parsing types ---
 
@@ -123,8 +124,8 @@ export default function GitDiffView({ folder }: GitDiffViewProps) {
       setFiles(parsed);
       // Expand all files by default
       setExpandedFiles(new Set(parsed.map((f) => f.filename)));
-    } catch (err: any) {
-      setError(err.message || "Failed to fetch diff");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to fetch diff"));
     } finally {
       setLoading(false);
     }

@@ -34,6 +34,7 @@ import ClineModelSelector from "../../components/ClineModelSelector";
 import CodexModelSelector from "../../components/CodexModelSelector";
 import { getDefaultProvider, getDefaultAcpProviderId } from "../../utils/localStorage";
 import type { AgentProviderKind } from "../../utils/localStorage";
+import { errorMessage } from "../../utils/errorMessage";
 
 const sectionStyle: React.CSSProperties = {
   border: "1px solid var(--border)",
@@ -1188,8 +1189,8 @@ export default function ApiSettings() {
       getOpenRouterCatalog()
         .then(({ models }) => setOrModels(models))
         .catch(() => {});
-    } catch (err: any) {
-      setError(err.message || "Failed to load settings");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to load settings"));
     } finally {
       setLoading(false);
     }
@@ -1365,8 +1366,8 @@ export default function ApiSettings() {
           })
           .catch(() => {});
       }, 800);
-    } catch (err: any) {
-      setError(err.message || "Failed to save settings");
+    } catch (err) {
+      setError(errorMessage(err, "Failed to save settings"));
     } finally {
       setSaving(false);
     }
@@ -1429,11 +1430,11 @@ export default function ApiSettings() {
           // The write landed; a stale badge is a smaller lie than an error on a
           // control that actually saved.
         });
-    } catch (e: any) {
+    } catch (e) {
       // Put the control back rather than leaving it showing a credential the
       // daemon will not use.
       revert();
-      setCredentialErrors((prev) => ({ ...prev, [control]: e?.message || "Failed to save" }));
+      setCredentialErrors((prev) => ({ ...prev, [control]: errorMessage(e, "Failed to save") }));
     } finally {
       setCredentialSavingControl(null);
     }

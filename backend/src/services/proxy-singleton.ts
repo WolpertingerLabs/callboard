@@ -19,6 +19,7 @@ import { ProxyClient } from "./proxy-client.js";
 import { getAgentSettings, discoverKeyAliases, getActiveMcpConfigDir, getRemoteMcpConfigDir } from "./agent-settings.js";
 import { getLocalDaemonUrl, startLocalDaemon, stopLocalDaemon } from "./local-daemon.js";
 import { createLogger } from "../utils/logger.js";
+import type { ConnectionTestResult } from "shared/types/proxy.js";
 
 const log = createLogger("proxy-manager");
 
@@ -322,14 +323,7 @@ export async function switchProxyMode(newMode: string | undefined): Promise<void
 
 // ── Connection testing ──────────────────────────────────────────────
 
-export interface ConnectionTestResult {
-  /** "unreachable" | "handshake_failed" | "connected" */
-  status: "unreachable" | "handshake_failed" | "connected";
-  /** Human-readable detail */
-  message: string;
-  /** Number of routes discovered (only when connected) */
-  routeCount?: number;
-}
+export type { ConnectionTestResult };
 
 /**
  * Test connectivity to a drawlatch server.

@@ -6,6 +6,7 @@ import { computerUseClient as client, controlErrorCode } from "../api/computerUs
 import "./ComputerUsePanel.css";
 import ComputerUseExpandedView from "./ComputerUseExpandedView";
 import type { ComputerUseController } from "../hooks/useComputerUseController";
+import { errorMessage } from "../utils/errorMessage";
 
 // Bound presentation, not server execution. Keep a little headroom over the
 // service's default 30 s driver timeout; a lost response or image load/decode must not
@@ -268,7 +269,7 @@ export default function ComputerUsePanel({
         // the controller owns the unavailable state when that read fails too.
         await readStatus(controller.signal).catch(() => {});
         if (ticket !== sequence.current) return;
-        setError(err instanceof Error ? err.message : "Computer control failed. Retry status or check server configuration.");
+        setError(errorMessage(err, "Computer control failed. Retry status or check server configuration."));
       } finally {
         if (ticket === sequence.current) {
           operationActive.current = false;

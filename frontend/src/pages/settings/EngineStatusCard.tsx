@@ -11,6 +11,7 @@ import type {
   EngineOneClickOffer,
   EngineStatus,
 } from "../../api";
+import { errorMessage } from "../../utils/errorMessage";
 
 /**
  * The engine status card at the top of every engine tab in Settings → API.
@@ -912,7 +913,7 @@ function useInstallRunner(
                   // The message is the server's `refusal` where there was one:
                   // `assertOk` surfaces the `error` field, and the endpoint puts
                   // the same sentence in both.
-                  verdict: { tone: "error", text: err instanceof Error ? err.message : "The install could not be started." },
+                  verdict: { tone: "error", text: errorMessage(err, "The install could not be started.") },
                 }
               : prev,
           );

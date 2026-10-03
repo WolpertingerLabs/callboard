@@ -5,6 +5,7 @@ import ApiKeysSection from "./ApiKeysSection";
 import PasswordStrengthMeter from "../../components/PasswordStrengthMeter";
 import { MIN_PASSWORD_LENGTH } from "../../utils/passwordStrength";
 import { changePassword } from "../../api";
+import { errorMessage } from "../../utils/errorMessage";
 
 interface AccountSettingsProps {
   onLogout: () => void;
@@ -49,7 +50,7 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
       setNewPassword("");
       setConfirmPassword("");
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Failed to change password.";
+      const message = errorMessage(err, "Failed to change password.");
       setError(message);
     } finally {
       setSaving(false);

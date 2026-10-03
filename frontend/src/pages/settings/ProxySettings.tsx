@@ -12,6 +12,7 @@ import {
   setDefaultCaller,
 } from "../../api";
 import type { AgentSettings, KeyAliasInfo, ConnectionTestResult, DaemonStatus, ParsedCallerBundle, EnrolledCaller } from "../../api";
+import { errorMessage } from "../../utils/errorMessage";
 
 function formatUptime(seconds?: number): string | null {
   if (seconds === undefined || seconds === null) return null;
@@ -147,8 +148,8 @@ export default function ProxySettings() {
       getDaemonStatus()
         .then(setDaemonStatus)
         .catch(() => {});
-    } catch (err: any) {
-      setCallersError(err.message || "Failed to delete caller");
+    } catch (err) {
+      setCallersError(errorMessage(err, "Failed to delete caller"));
     } finally {
       setDeletingAlias(null);
     }
@@ -162,8 +163,8 @@ export default function ProxySettings() {
     try {
       await setDefaultCaller(isCurrentlyDefault ? null : alias, proxyMode);
       loadCallers();
-    } catch (err: any) {
-      setCallersError(err.message || "Failed to set default caller");
+    } catch (err) {
+      setCallersError(errorMessage(err, "Failed to set default caller"));
     } finally {
       setSettingDefaultAlias(null);
     }
@@ -216,9 +217,9 @@ export default function ProxySettings() {
     setImportPassphrase("");
     try {
       setImportParsed(parseBundle(text));
-    } catch (err: any) {
+    } catch (err) {
       setImportParsed(null);
-      setImportError(`Could not read bundle: ${err.message || "invalid JSON"}`);
+      setImportError(`Could not read bundle: ${errorMessage(err, "invalid JSON")}`);
     }
   };
 
@@ -257,8 +258,8 @@ export default function ProxySettings() {
       setImportPassphrase("");
       setPasteText("");
       if (fileInputRef.current) fileInputRef.current.value = "";
-    } catch (err: any) {
-      setImportError(err.message || "Failed to import bundle");
+    } catch (err) {
+      setImportError(errorMessage(err, "Failed to import bundle"));
     } finally {
       setImportLoading(false);
     }

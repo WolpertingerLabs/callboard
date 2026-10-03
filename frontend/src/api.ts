@@ -2,65 +2,40 @@ import { handshakeHeaders } from "shared/types/index.js";
 import type { ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type {
-  NotifiableChannel,
-  ContactChannelAvailability,
+  UiAgentProviderKind,
   UserContactAvailability,
-  ActivityKind,
-  ActivityCondition,
-  ChatActivity,
-  ConditionWatch,
   ChatActivityResponse,
   SlashCommand,
-  PluginCommand,
-  PluginManifest,
   Plugin,
   Chat,
   ParsedMessage,
   ChatListResponse,
-  ChatTreeAncestor,
-  ChatTreeNode,
   ChatTreeResponse,
-  FolderSummary,
   FolderListResponse,
-  PermissionLevel,
   DefaultPermissions,
-  StoredImage,
   ImageUploadResult,
   QueueItem,
   QueueItemImage,
-  BranchConfig,
-  FolderItem,
   BrowseResult,
   ValidateResult,
   FolderSuggestion,
   GitDiffResponse,
-  AppPlugin,
-  McpServerConfig,
-  PluginScanRoot,
   AppPluginsData,
   ScanResult,
   AgentConfig,
-  SystemPromptSection,
   SystemMessagePreview,
   CronJob,
   ActivityEntry,
   Trigger,
   TriggerFilter,
-  FilterCondition,
-  QuietHours,
   AgentSettings,
   KeyAliasInfo,
   EnrolledCaller,
   CustomTheme,
   ThemeListItem,
-  ThemeContrastReport,
-  ThemeContrastFailure,
   CustomSkill,
   CustomSkillListItem,
   Keyword,
-  McpToolDefinition,
-  McpToolParameter,
-  McpToolServerInfo,
   McpToolsResponse,
   OpenRouterModelInfo,
   OpenRouterModelAliasInfo,
@@ -70,53 +45,30 @@ import type {
   JobRun,
   JobRunListItem,
   JobRunStatus,
-  JobRunHistoryEntry,
-  Card,
   CardPatch,
   CardSummary,
-  CardRollupState,
-  CardPendingKind,
-  CardMemberChat,
-  CardMemberRun,
   CardListResponse,
   CardResponse,
   Workspace,
-  WorkspaceEntry,
   WorkspaceWithRemovability,
   WorkspaceListResponse,
   WorkspaceVerdictListResponse,
   WorkspaceRemovabilityResponse,
-  WorkspaceRemovalBlocker,
-  WorkspaceCleanliness,
-  WorkspaceRefusalReason,
-  WorktreeNamingGuess,
-  WorkspaceRemovability,
-  WorkspaceRemovalReason,
-  WorkspaceIgnoredPreview,
-  WorkspaceDirectory,
-  FolderWorkspaceRecord,
-  UnmanagedWorktree,
   UnmanagedWorktreeListing,
   AdoptWorktreesResult,
   ArchiveWorkspaceResult,
-  WorktreeDiskUsage,
-  TrashEntryView,
   TrashListing,
   TrashRestoreResult,
   EngineStatus,
   EngineStatusResponse,
   EngineRefreshResponse,
   EngineBinaryCheckResponse,
-  EngineBinaryOverride,
-  EngineOverrideState,
-  EngineVersionDrift,
-  EngineInstallGuidance,
-  EngineInstallRecipe,
-  EngineOneClickOffer,
   EngineInstallStartResponse,
   EngineInstallEvent,
-  EngineInstallExitEvent,
-  EngineInstallVerifiedEvent,
+  SlashCommandContent,
+  StoredEvent,
+  ConnectionTestResult,
+  ApiKeyInfo,
 } from "shared/types/index.js";
 
 export type {
@@ -235,7 +187,11 @@ export type {
   EngineInstallEvent,
   EngineInstallExitEvent,
   EngineInstallVerifiedEvent,
-};
+  SlashCommandContent,
+  StoredEvent,
+  ConnectionTestResult,
+  ApiKeyInfo,
+} from "shared/types/index.js";
 
 export { CARD_CATEGORY_MAX, WORKSPACE_NAME_MAX } from "shared/types/index.js";
 
@@ -261,12 +217,122 @@ export { handshakeHeaders } from "shared/types/index.js";
 
 const BASE = "/api";
 
+/**
+ * The sentence to show for a failed response body: `message` first (the 409s
+ * that carry a machine code in `error` put the prose there), then `error`, then
+ * a validation `errors[]` list, then `fallback`.
+ */
+function errorBodyMessage(body: unknown, fallback: string): string {
+  const b = (body && typeof body === "object" ? body : {}) as { message?: unknown; error?: unknown; errors?: unknown };
+  if (typeof b.message === "string" && b.message) return b.message;
+  if (typeof b.error === "string" && b.error) return b.error;
+  if (Array.isArray(b.errors) && b.errors.length > 0) return b.errors.join("; ");
+  return fallback;
+}
+
 /** Shared error handler: throws with the server's error message or a fallback. */
 async function assertOk(res: Response, fallback: string): Promise<void> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || fallback);
+    throw new Error(errorBodyMessage(body, fallback));
   }
+}
+
+/** One path segment, encoded — ids are opaque and never meant to add a `/`. */
+const seg = (value: string | number): string => encodeURIComponent(String(value));
+
+/** `?a=b…`, or nothing for an empty set — so a parameterless request keeps its bare URL. */
+const query = (params: URLSearchParams): string => {
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+};
+
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+interface RequestOptions {
+  method?: HttpMethod;
+  /** Sent as the JSON body, with a JSON Content-Type. Omit for no body. */
+  json?: unknown;
+  /** A non-JSON body (multipart `FormData`); the browser sets its Content-Type. */
+  body?: FormData;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+  /** The error when the server's response names none. */
+  error: string;
+}
+
+/**
+ * The one fetch every JSON wrapper below goes through: `${BASE}${path}`, the
+ * one credentials policy, a Content-Type only when there is a JSON body, and
+ * {@link assertOk}.
+ *
+ * `credentials: "include"` everywhere. Every request here is a relative `/api`
+ * URL — same-origin in production and through the Vite dev proxy alike — and
+ * for a same-origin request `include` and the default `same-origin` send the
+ * same cookie, so this is one spelling rather than a behaviour change.
+ */
+async function send(path: string, opts: RequestOptions): Promise<Response> {
+  const init: RequestInit = { credentials: "include" };
+  if (opts.method) init.method = opts.method;
+  if (opts.json !== undefined) {
+    init.headers = { ...opts.headers, "Content-Type": "application/json" };
+    init.body = JSON.stringify(opts.json);
+  } else {
+    if (opts.headers) init.headers = opts.headers;
+    if (opts.body !== undefined) init.body = opts.body;
+  }
+  if (opts.signal) init.signal = opts.signal;
+  const res = await fetch(`${BASE}${path}`, init);
+  await assertOk(res, opts.error);
+  return res;
+}
+
+/** {@link send}, parsing the JSON response. */
+async function request<T>(path: string, opts: RequestOptions): Promise<T> {
+  const res = await send(path, opts);
+  return res.json() as Promise<T>;
+}
+
+/** {@link request} for the `{ [field]: value }` envelope most list/detail routes answer with. */
+async function requestField<T>(path: string, field: string, opts: RequestOptions): Promise<T> {
+  const data = await request<Record<string, T>>(path, opts);
+  return data[field];
+}
+
+/** {@link send} for calls whose response body nobody reads. */
+async function requestVoid(path: string, opts: RequestOptions): Promise<void> {
+  await send(path, opts);
+}
+
+// ── Session poll ─────────────────────────────────────────────────────
+
+export type SessionType = "web" | "cli";
+
+export interface ActiveSessionInfo {
+  type: SessionType;
+  startedAt?: number;
+}
+
+export interface SummonInfo {
+  message: string;
+  urgency: "normal" | "urgent";
+  createdAt: string;
+}
+
+/**
+ * `GET /sessions/poll`. The counters always come back; each payload only when
+ * it differs from what the client echoed in `v` / `mv` / `b` — see the route.
+ */
+export interface SessionPollResponse {
+  version: number;
+  metadataVersion: number;
+  build?: string;
+  sessions?: Record<string, ActiveSessionInfo>;
+  activeSummons?: Record<string, SummonInfo>;
+}
+
+export async function pollSessions(params: URLSearchParams): Promise<SessionPollResponse> {
+  return request(`/sessions/poll?${params}`, { error: "Failed to poll sessions" });
 }
 
 export async function listChats(
@@ -317,9 +383,7 @@ export async function listChats(
   if (cardLifecycle && cardLifecycle !== "all") params.append("cardLifecycle", cardLifecycle);
   if (includePinned) params.append("includePinned", "true");
 
-  const res = await fetch(`${BASE}/chats${params.toString() ? `?${params}` : ""}`);
-  await assertOk(res, "Failed to list chats");
-  return res.json();
+  return request(`/chats${query(params)}`, { error: "Failed to list chats" });
 }
 
 /**
@@ -340,32 +404,20 @@ export async function listFolders(maxAgeDays?: number, includeDiskUsage?: boolea
   if (maxAgeDays !== undefined) params.append("maxAgeDays", maxAgeDays.toString());
   // Off unless asked: `du` is the slow part and this endpoint is polled.
   if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  const res = await fetch(`${BASE}/chats/folders${params.toString() ? `?${params}` : ""}`, { signal });
-  await assertOk(res, "Failed to list folders");
-  return res.json();
+  return request(`/chats/folders${query(params)}`, { signal, error: "Failed to list folders" });
 }
 
 export async function getChatTree(id: string): Promise<ChatTreeResponse> {
-  const res = await fetch(`${BASE}/chats/${id}/tree`);
-  await assertOk(res, "Failed to get chat tree");
-  return res.json();
+  return request(`/chats/${seg(id)}/tree`, { error: "Failed to get chat tree" });
 }
 
 export async function searchChatContents(query: string): Promise<{ chatIds: string[] }> {
   const params = new URLSearchParams({ q: query });
-  const res = await fetch(`${BASE}/chats/search?${params}`);
-  await assertOk(res, "Failed to search chats");
-  return res.json();
+  return request(`/chats/search?${params}`, { error: "Failed to search chats" });
 }
 
 export async function toggleBookmark(id: string, bookmarked: boolean): Promise<Chat> {
-  const res = await fetch(`${BASE}/chats/${id}/bookmark`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ bookmarked }),
-  });
-  await assertOk(res, "Failed to toggle bookmark");
-  return res.json();
+  return request(`/chats/${seg(id)}/bookmark`, { method: "PATCH", json: { bookmarked }, error: "Failed to toggle bookmark" });
 }
 
 /**
@@ -376,13 +428,7 @@ export async function toggleBookmark(id: string, bookmarked: boolean): Promise<C
  * a filter you go looking through, a pin is a position you put something in.
  */
 export async function togglePin(id: string, pinned: boolean): Promise<Chat> {
-  const res = await fetch(`${BASE}/chats/${id}/pin`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pinned }),
-  });
-  await assertOk(res, "Failed to toggle pin");
-  return res.json();
+  return request(`/chats/${seg(id)}/pin`, { method: "PATCH", json: { pinned }, error: "Failed to toggle pin" });
 }
 
 /**
@@ -391,13 +437,7 @@ export async function togglePin(id: string, pinned: boolean): Promise<Chat> {
  * which is `null` in that case.
  */
 export async function setChatTitle(id: string, title: string): Promise<{ title: string | null }> {
-  const res = await fetch(`${BASE}/chats/${id}/title`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
-  });
-  await assertOk(res, "Failed to save chat title");
-  return res.json();
+  return request(`/chats/${seg(id)}/title`, { method: "PATCH", json: { title }, error: "Failed to save chat title" });
 }
 
 /**
@@ -406,35 +446,23 @@ export async function setChatTitle(id: string, title: string): Promise<{ title: 
  * a lock while it is in flight rather than let it be fired twice.
  */
 export async function regenerateChatTitle(id: string): Promise<{ title: string }> {
-  const res = await fetch(`${BASE}/chats/${id}/regenerate-title`, { method: "POST" });
-  await assertOk(res, "Failed to regenerate chat title");
-  return res.json();
+  return request(`/chats/${seg(id)}/regenerate-title`, { method: "POST", error: "Failed to regenerate chat title" });
 }
 
 export async function updateChatPermissions(id: string, permissions: DefaultPermissions): Promise<Chat> {
-  const res = await fetch(`${BASE}/chats/${id}/permissions`, {
+  return request(`/chats/${seg(id)}/permissions`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ defaultPermissions: normalizePermissions(permissions) }),
+    json: { defaultPermissions: normalizePermissions(permissions) },
+    error: "Failed to update chat permissions",
   });
-  await assertOk(res, "Failed to update chat permissions");
-  return res.json();
 }
 
 export async function markAsRead(id: string): Promise<Chat> {
-  const res = await fetch(`${BASE}/chats/${id}/read`, { method: "PATCH" });
-  await assertOk(res, "Failed to mark chat as read");
-  return res.json();
+  return request(`/chats/${seg(id)}/read`, { method: "PATCH", error: "Failed to mark chat as read" });
 }
 
 export async function dismissSummon(id: string): Promise<Chat> {
-  const res = await fetch(`${BASE}/chats/${id}/summon`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dismiss: true }),
-  });
-  await assertOk(res, "Failed to dismiss summon");
-  return res.json();
+  return request(`/chats/${seg(id)}/summon`, { method: "PATCH", json: { dismiss: true }, error: "Failed to dismiss summon" });
 }
 
 // ── Cards (board view) ──────────────────────────────────────────────
@@ -450,25 +478,15 @@ export async function dismissSummon(id: string): Promise<Chat> {
  * archived — the two halves out of step in the one way #440 set out to prevent.
  */
 export async function listCards(includeHidden?: boolean): Promise<CardListResponse> {
-  const res = await fetch(`${BASE}/cards${includeHidden ? "?includeHidden=true" : ""}`);
-  await assertOk(res, "Failed to list cards");
-  return res.json();
+  return request(`/cards${includeHidden ? "?includeHidden=true" : ""}`, { error: "Failed to list cards" });
 }
 
 export async function getCard(id: string): Promise<CardResponse> {
-  const res = await fetch(`${BASE}/cards/${id}`);
-  await assertOk(res, "Failed to get card");
-  return res.json();
+  return request(`/cards/${seg(id)}`, { error: "Failed to get card" });
 }
 
 export async function updateCard(id: string, patch: CardPatch): Promise<CardResponse> {
-  const res = await fetch(`${BASE}/cards/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  await assertOk(res, "Failed to update card");
-  return res.json();
+  return request(`/cards/${seg(id)}`, { method: "PATCH", json: patch, error: "Failed to update card" });
 }
 
 /**
@@ -488,13 +506,7 @@ export interface BulkLifecycleResponse {
 
 /** Open or close many cards at once; see BulkLifecycleResponse on partial failure. */
 export async function bulkSetCardLifecycle(ids: string[], lifecycle: "open" | "closed"): Promise<BulkLifecycleResponse> {
-  const res = await fetch(`${BASE}/cards/bulk-lifecycle`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids, lifecycle }),
-  });
-  await assertOk(res, "Failed to update cards");
-  return res.json();
+  return request("/cards/bulk-lifecycle", { method: "POST", json: { ids, lifecycle }, error: "Failed to update cards" });
 }
 
 // No createCard / deleteCard / assignChatToCard: a card IS a lineage root
@@ -525,9 +537,7 @@ export interface NewChatInfo {
 }
 
 export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
-  const res = await fetch(`${BASE}/chats/new/info?folder=${encodeURIComponent(folder)}`);
-  await assertOk(res, "Failed to get chat info");
-  return res.json();
+  return request(`/chats/new/info?folder=${encodeURIComponent(folder)}`, { error: "Failed to get chat info" });
 }
 
 /**
@@ -543,7 +553,7 @@ export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
  * real handoff — Callboard had built the capability into two harnesses and
  * offered it into neither.
  */
-export type ForkProvider = "claude-code" | "codex" | "cline" | "pi";
+export type ForkProvider = Exclude<UiAgentProviderKind, "acp">;
 
 /**
  * Fork a chat at a message: creates a new chat whose history is a copy of
@@ -556,23 +566,17 @@ export type ForkProvider = "claude-code" | "codex" | "cline" | "pi";
  * harness, which preserves the session log verbatim.
  */
 export async function forkChat(id: string, timestamp: string, opts?: { provider?: ForkProvider; model?: string }): Promise<Chat> {
-  const res = await fetch(`${BASE}/chats/${id}/fork`, {
+  return request(`/chats/${seg(id)}/fork`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ timestamp, ...(opts?.provider && { provider: opts.provider }), ...(opts?.model && { model: opts.model }) }),
+    json: { timestamp, ...(opts?.provider && { provider: opts.provider }), ...(opts?.model && { model: opts.model }) },
+    error: "Failed to fork chat",
   });
-  await assertOk(res, "Failed to fork chat");
-  return res.json();
 }
 
 export async function deleteChat(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/chats/${id}`, { method: "DELETE" });
-  if (!res.ok) {
-    // The 409 for a native Codex child carries a code in `error` and the
-    // explanation in `message`; the sidebar shows this, so prefer the words.
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.message || body.error || "Failed to delete chat");
-  }
+  // The 409 for a native Codex child carries a code in `error` and the
+  // explanation in `message`; the sidebar shows this, and `assertOk` prefers the words.
+  await requestVoid(`/chats/${seg(id)}`, { method: "DELETE", error: "Failed to delete chat" });
 }
 
 /**
@@ -600,32 +604,37 @@ export interface BulkDeleteResponse {
  * from it, and the bulk path deliberately does not invent a different rule.
  */
 export async function bulkDeleteChats(ids: string[]): Promise<BulkDeleteResponse> {
-  const res = await fetch(`${BASE}/chats/bulk-delete`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids }),
-  });
-  await assertOk(res, "Failed to delete chats");
-  return res.json();
+  return request("/chats/bulk-delete", { method: "POST", json: { ids }, error: "Failed to delete chats" });
 }
 
 export async function getChat(id: string): Promise<Chat> {
-  const res = await fetch(`${BASE}/chats/${id}`);
-  await assertOk(res, "Failed to get chat");
-  return res.json();
+  return request(`/chats/${seg(id)}`, { error: "Failed to get chat" });
 }
 
 export async function getMessages(id: string): Promise<ParsedMessage[]> {
-  const res = await fetch(`${BASE}/chats/${id}/messages`);
-  await assertOk(res, "Failed to get messages");
-  return res.json();
+  return request(`/chats/${seg(id)}/messages`, { error: "Failed to get messages" });
 }
 
-export async function getPending(id: string): Promise<any | null> {
-  const res = await fetch(`${BASE}/chats/${id}/pending`, { headers: handshakeHeaders() });
-  await assertOk(res, "Failed to get pending action");
-  const data = await res.json();
-  return data.pending;
+/**
+ * The prompt a chat is blocked on — a permission request, a question, or a plan
+ * to review — as `GET /chats/:id/pending` replays it and `FeedbackPanel` renders it.
+ */
+export interface PendingAction {
+  type: "permission_request" | "user_question" | "plan_review";
+  requestId?: string;
+  humanOnly?: boolean;
+  controlRequest?: boolean;
+  toolName?: string;
+  input?: Record<string, unknown>;
+  questions?: any[];
+  suggestions?: any[];
+  content?: string;
+  /** True when reconstructed from message history (no live backend session) */
+  stale?: boolean;
+}
+
+export async function getPending(id: string): Promise<PendingAction | null> {
+  return requestField(`/chats/${seg(id)}/pending`, "pending", { headers: handshakeHeaders(), error: "Failed to get pending action" });
 }
 
 /**
@@ -637,9 +646,7 @@ export async function getPending(id: string): Promise<any | null> {
  * See the route handler for why this isn't an SSE frame.
  */
 export async function getActivity(id: string): Promise<ChatActivityResponse> {
-  const res = await fetch(`${BASE}/chats/${id}/activity`);
-  await assertOk(res, "Failed to get chat activity");
-  return res.json();
+  return request(`/chats/${seg(id)}/activity`, { error: "Failed to get chat activity" });
 }
 
 /**
@@ -649,12 +656,7 @@ export async function getActivity(id: string): Promise<ChatActivityResponse> {
  * the activity represents delegated work that cannot be cut short.
  */
 export async function releaseActivity(id: string, activityId: string): Promise<{ ok: boolean; kind: string }> {
-  const res = await fetch(`${BASE}/chats/${encodeURIComponent(id)}/activity/${encodeURIComponent(activityId)}/release`, {
-    method: "POST",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to end the wait");
-  return res.json();
+  return request(`/chats/${seg(id)}/activity/${seg(activityId)}/release`, { method: "POST", error: "Failed to end the wait" });
 }
 
 /**
@@ -671,8 +673,8 @@ export async function releaseActivity(id: string, activityId: string): Promise<{
  * rather than silently pretending the stop landed.
  */
 export async function stopChat(id: string): Promise<{ stopped: boolean }> {
-  const res = await fetch(`${BASE}/chats/${encodeURIComponent(id)}/stop`, { method: "POST", credentials: "include" });
-  if (!res.ok) throw new Error(`Stop failed (${res.status})`);
+  const res = await fetch(`${BASE}/chats/${seg(id)}/stop`, { method: "POST", credentials: "include" });
+  await assertOk(res, `Stop failed (${res.status})`);
   return res.json();
 }
 
@@ -683,9 +685,10 @@ export async function respondToChat(
   updatedPermissions?: unknown[],
   requestId?: string,
 ): Promise<{ ok: boolean; toolName?: string; error?: string }> {
-  const res = await fetch(`${BASE}/chats/${id}/respond`, {
+  const res = await fetch(`${BASE}/chats/${seg(id)}/respond`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ allow, updatedInput, updatedPermissions, requestId }),
   });
   if (!res.ok) {
@@ -701,12 +704,7 @@ export async function uploadImages(chatId: string, images: File[]): Promise<Imag
     formData.append("images", image);
   });
 
-  const res = await fetch(`${BASE}/chats/${chatId}/images`, {
-    method: "POST",
-    body: formData,
-  });
-  await assertOk(res, "Failed to upload images");
-  return res.json();
+  return request(`/chats/${seg(chatId)}/images`, { method: "POST", body: formData, error: "Failed to upload images" });
 }
 
 /** Upload images without a chat ID (for new chat creation). */
@@ -716,12 +714,7 @@ export async function uploadImagesOnly(images: File[]): Promise<ImageUploadResul
     formData.append("images", image);
   });
 
-  const res = await fetch(`${BASE}/images/upload`, {
-    method: "POST",
-    body: formData,
-  });
-  await assertOk(res, "Failed to upload images");
-  return res.json();
+  return request("/images/upload", { method: "POST", body: formData, error: "Failed to upload images" });
 }
 
 // Draft API functions
@@ -729,9 +722,7 @@ export async function getDrafts(chatId?: string): Promise<QueueItem[]> {
   const params = new URLSearchParams();
   if (chatId) params.append("chat_id", chatId);
 
-  const res = await fetch(`${BASE}/queue?${params}`);
-  await assertOk(res, "Failed to load drafts");
-  return res.json();
+  return request(`/queue?${params}`, { error: "Failed to load drafts" });
 }
 
 export async function createDraft(
@@ -741,30 +732,22 @@ export async function createDraft(
   defaultPermissions?: DefaultPermissions,
   images?: QueueItemImage[],
 ): Promise<QueueItem> {
-  const res = await fetch(`${BASE}/queue`, {
+  return request("/queue", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    json: {
       chat_id: chatId,
       user_message: message,
       ...(folder && { folder }),
       ...(defaultPermissions && { defaultPermissions: normalizePermissions(defaultPermissions) }),
       ...(images?.length && { images }),
-    }),
+    },
+    error: "Failed to save draft",
   });
-  await assertOk(res, "Failed to save draft");
-  return res.json();
 }
 
 /** `images` replaces the draft's images, `[]` included; omit it to leave them alone. */
 export async function updateDraft(id: string, message: string, images?: QueueItemImage[]): Promise<QueueItem> {
-  const res = await fetch(`${BASE}/queue/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_message: message, ...(images && { images }) }),
-  });
-  await assertOk(res, "Failed to update draft");
-  return res.json();
+  return request(`/queue/${seg(id)}`, { method: "PUT", json: { user_message: message, ...(images && { images }) }, error: "Failed to update draft" });
 }
 
 /** Upload a draft's attachments through the regular upload route. */
@@ -785,8 +768,7 @@ export async function uploadDraftImages(images: File[]): Promise<QueueItemImage[
 export async function fetchDraftImages(images: QueueItemImage[], signal?: AbortSignal): Promise<PromiseSettledResult<File>[]> {
   return Promise.allSettled(
     images.map(async (image) => {
-      const res = await fetch(`${BASE}/images/${encodeURIComponent(image.id)}`, { signal });
-      await assertOk(res, "Failed to load draft image");
+      const res = await send(`/images/${seg(image.id)}`, { signal, error: "Failed to load draft image" });
       const blob = await res.blob();
       return new File([blob], image.originalName, { type: blob.type });
     }),
@@ -794,26 +776,18 @@ export async function fetchDraftImages(images: QueueItemImage[], signal?: AbortS
 }
 
 export async function deleteDraft(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/queue/${encodeURIComponent(id)}`, { method: "DELETE" });
-  await assertOk(res, "Failed to delete draft");
+  await requestVoid(`/queue/${seg(id)}`, { method: "DELETE", error: "Failed to delete draft" });
 }
 
 export async function getSlashCommandsAndPlugins(chatId: string): Promise<{ slashCommands: string[]; plugins: Plugin[]; appPlugins?: AppPluginsData }> {
-  const res = await fetch(`${BASE}/chats/${chatId}/slash-commands`);
-  await assertOk(res, "Failed to get slash commands");
-  const data = await res.json();
+  const data = await request<{ slashCommands?: string[]; plugins?: Plugin[]; appPlugins?: AppPluginsData }>(`/chats/${seg(chatId)}/slash-commands`, {
+    error: "Failed to get slash commands",
+  });
   return {
     slashCommands: data.slashCommands || [],
     plugins: data.plugins || [],
     appPlugins: data.appPlugins,
   };
-}
-
-export interface SlashCommandContent {
-  name: string;
-  source: "custom-skill" | "plugin" | "builtin";
-  description: string | null;
-  content: string | null;
 }
 
 /**
@@ -855,15 +829,13 @@ export async function getSlashCommandContent(name: string, scope: SlashCommandSc
   for (const id of activePlugins) params.append("activePlugins", id);
   let path: string;
   if (chatId) {
-    path = `/chats/${encodeURIComponent(chatId)}/slash-commands/content`;
+    path = `/chats/${seg(chatId)}/slash-commands/content`;
   } else {
     path = "/chats/new/slash-commands/content";
     params.set("folder", folder!);
   }
 
-  const res = await fetch(`${BASE}${path}?${params.toString()}`);
-  await assertOk(res, "Failed to get command content");
-  const data = (await res.json()) as SlashCommandContent;
+  const data = await request<SlashCommandContent>(`${path}?${params.toString()}`, { error: "Failed to get command content" });
   slashCommandContentCache.set(key, data);
   return data;
 }
@@ -888,22 +860,16 @@ export interface CheckedOutBranch {
  * attention on the daemon's version rather than on their own choice.
  */
 export async function getGitBranches(folder: string): Promise<{ branches: string[]; checkedOut?: CheckedOutBranch[] }> {
-  const res = await fetch(`${BASE}/git/branches?folder=${encodeURIComponent(folder)}`);
-  await assertOk(res, "Failed to list branches");
-  return res.json();
+  return request(`/git/branches?folder=${encodeURIComponent(folder)}`, { error: "Failed to list branches" });
 }
 
 export async function getGitDiff(folder: string): Promise<GitDiffResponse> {
-  const res = await fetch(`${BASE}/git/diff?folder=${encodeURIComponent(folder)}`);
-  await assertOk(res, "Failed to get diff");
-  return res.json();
+  return request(`/git/diff?folder=${encodeURIComponent(folder)}`, { error: "Failed to get diff" });
 }
 
 export async function getGitFileDiff(folder: string, filename: string): Promise<{ diff: string; additions: number; deletions: number }> {
   const params = new URLSearchParams({ folder, filename });
-  const res = await fetch(`${BASE}/git/diff/file?${params}`);
-  await assertOk(res, "Failed to get file diff");
-  return res.json();
+  return request(`/git/diff/file?${params}`, { error: "Failed to get file diff" });
 }
 
 export function getGitFileRawUrl(folder: string, filename: string): string {
@@ -924,108 +890,61 @@ export async function browseDirectory(path: string, showHidden: boolean = false,
     limit: limit.toString(),
   });
 
-  const res = await fetch(`${BASE}/folders/browse?${params}`);
-  await assertOk(res, "Failed to browse directory");
-  return res.json();
+  return request(`/folders/browse?${params}`, { error: "Failed to browse directory" });
 }
 
 export async function validatePath(path: string): Promise<ValidateResult> {
   const params = new URLSearchParams({ path });
 
-  const res = await fetch(`${BASE}/folders/validate?${params}`);
-  await assertOk(res, "Failed to validate path");
-  return res.json();
+  return request(`/folders/validate?${params}`, { error: "Failed to validate path" });
 }
 
 export async function getFolderSuggestions(): Promise<SuggestionsResponse> {
-  const res = await fetch(`${BASE}/folders/suggestions`);
-  await assertOk(res, "Failed to get folder suggestions");
-  return res.json();
+  return request("/folders/suggestions", { error: "Failed to get folder suggestions" });
 }
 
 export async function clearFolderCache(): Promise<void> {
-  const res = await fetch(`${BASE}/folders/clear-cache`, { method: "POST" });
-  await assertOk(res, "Failed to clear folder cache");
+  await requestVoid("/folders/clear-cache", { method: "POST", error: "Failed to clear folder cache" });
 }
 
 // App-wide Plugins & MCP Servers API functions
 
 export async function getAppPlugins(): Promise<AppPluginsData> {
-  const res = await fetch(`${BASE}/app-plugins`);
-  await assertOk(res, "Failed to get app plugins");
-  return res.json();
+  return request("/app-plugins", { error: "Failed to get app plugins" });
 }
 
 export async function scanForPlugins(directory: string): Promise<ScanResult> {
-  const res = await fetch(`${BASE}/app-plugins/scan`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ directory }),
-  });
-  await assertOk(res, "Failed to scan for plugins");
-  return res.json();
+  return request("/app-plugins/scan", { method: "POST", json: { directory }, error: "Failed to scan for plugins" });
 }
 
 export async function rescanPlugins(directory?: string): Promise<AppPluginsData> {
-  const res = await fetch(`${BASE}/app-plugins/rescan`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ directory }),
-  });
-  await assertOk(res, "Failed to rescan plugins");
-  return res.json();
+  return request("/app-plugins/rescan", { method: "POST", json: { directory }, error: "Failed to rescan plugins" });
 }
 
 export async function removeScanRoot(directory: string): Promise<void> {
-  const res = await fetch(`${BASE}/app-plugins/scan-root`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ directory }),
-  });
-  await assertOk(res, "Failed to remove scan root");
+  await requestVoid("/app-plugins/scan-root", { method: "DELETE", json: { directory }, error: "Failed to remove scan root" });
 }
 
 export async function toggleAppPlugin(pluginId: string, enabled: boolean): Promise<void> {
-  const res = await fetch(`${BASE}/app-plugins/plugins/${encodeURIComponent(pluginId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
-  });
-  await assertOk(res, "Failed to toggle plugin");
+  await requestVoid(`/app-plugins/plugins/${seg(pluginId)}`, { method: "PATCH", json: { enabled }, error: "Failed to toggle plugin" });
 }
 
 export async function toggleMcpServer(serverId: string, enabled: boolean): Promise<void> {
-  const res = await fetch(`${BASE}/app-plugins/mcp-servers/${encodeURIComponent(serverId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
-  });
-  await assertOk(res, "Failed to toggle MCP server");
+  await requestVoid(`/app-plugins/mcp-servers/${seg(serverId)}`, { method: "PATCH", json: { enabled }, error: "Failed to toggle MCP server" });
 }
 
 export async function updateMcpServerEnv(serverId: string, env: Record<string, string>): Promise<void> {
-  const res = await fetch(`${BASE}/app-plugins/mcp-servers/${encodeURIComponent(serverId)}/env`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ env }),
-  });
-  await assertOk(res, "Failed to update MCP server env");
+  await requestVoid(`/app-plugins/mcp-servers/${seg(serverId)}/env`, { method: "PATCH", json: { env }, error: "Failed to update MCP server env" });
 }
 
 // Agent API functions
 
 export async function listAgents(): Promise<AgentConfig[]> {
-  const res = await fetch(`${BASE}/agents`, { credentials: "include" });
-  await assertOk(res, "Failed to list agents");
-  const data = await res.json();
-  return data.agents;
+  return requestField("/agents", "agents", { error: "Failed to list agents" });
 }
 
 export async function getAgent(alias: string): Promise<AgentConfig> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get agent");
-  const data = await res.json();
-  return data.agent;
+  return requestField(`/agents/${seg(alias)}`, "agent", { error: "Failed to get agent" });
 }
 
 export async function createAgent(agent: {
@@ -1038,172 +957,86 @@ export async function createAgent(agent: {
   role?: string;
   tone?: string;
 }): Promise<AgentConfig> {
-  const res = await fetch(`${BASE}/agents`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(agent),
-  });
-  await assertOk(res, "Failed to create agent");
-  const data = await res.json();
-  return data.agent;
+  return requestField("/agents", "agent", { method: "POST", json: agent, error: "Failed to create agent" });
 }
 
 export async function updateAgent(alias: string, updates: Partial<AgentConfig>): Promise<AgentConfig> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(updates),
-  });
-  await assertOk(res, "Failed to update agent");
-  const data = await res.json();
-  return data.agent;
+  return requestField(`/agents/${seg(alias)}`, "agent", { method: "PUT", json: updates, error: "Failed to update agent" });
 }
 
 export async function toggleAgent(alias: string, enabled: boolean): Promise<AgentConfig> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/toggle`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ enabled }),
-  });
-  await assertOk(res, "Failed to toggle agent");
-  const data = await res.json();
-  return data.agent;
+  return requestField(`/agents/${seg(alias)}/toggle`, "agent", { method: "PATCH", json: { enabled }, error: "Failed to toggle agent" });
 }
 
 export async function deleteAgent(alias: string): Promise<void> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete agent");
+  await requestVoid(`/agents/${seg(alias)}`, { method: "DELETE", error: "Failed to delete agent" });
 }
 
 export async function getAgentIdentityPrompt(alias: string): Promise<string> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/identity-prompt`, { credentials: "include" });
-  await assertOk(res, "Failed to get agent identity prompt");
-  const data = await res.json();
-  return data.prompt;
+  return requestField(`/agents/${seg(alias)}/identity-prompt`, "prompt", { error: "Failed to get agent identity prompt" });
 }
 
 export async function getAgentSystemMessagePreview(alias: string): Promise<SystemMessagePreview> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/system-message-preview`, { credentials: "include" });
-  await assertOk(res, "Failed to get system message preview");
-  return res.json();
+  return request(`/agents/${seg(alias)}/system-message-preview`, { error: "Failed to get system message preview" });
 }
 
 // Agent export/import API functions
 
 export function getAgentExportUrl(alias: string): string {
-  return `${BASE}/agents/${encodeURIComponent(alias)}/export`;
+  return `${BASE}/agents/${seg(alias)}/export`;
 }
 
 export async function importAgent(file: File): Promise<AgentConfig> {
   const formData = new FormData();
   formData.append("file", file);
 
-  const res = await fetch(`${BASE}/agents/import`, {
-    method: "POST",
-    credentials: "include",
-    body: formData,
-  });
-  await assertOk(res, "Failed to import agent");
-  const data = await res.json();
-  return data.agent;
+  return requestField("/agents/import", "agent", { method: "POST", body: formData, error: "Failed to import agent" });
 }
 
 // Agent workspace file API functions
 
 export async function getWorkspaceFiles(alias: string): Promise<string[]> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/workspace`, { credentials: "include" });
-  await assertOk(res, "Failed to list workspace files");
-  const data = await res.json();
-  return data.files;
+  return requestField(`/agents/${seg(alias)}/workspace`, "files", { error: "Failed to list workspace files" });
 }
 
 export async function getWorkspaceFile(alias: string, filename: string): Promise<string> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/workspace/${encodeURIComponent(filename)}`, { credentials: "include" });
-  await assertOk(res, "Failed to read workspace file");
-  const data = await res.json();
-  return data.content;
+  return requestField(`/agents/${seg(alias)}/workspace/${seg(filename)}`, "content", { error: "Failed to read workspace file" });
 }
 
 export async function updateWorkspaceFile(alias: string, filename: string, content: string): Promise<void> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/workspace/${encodeURIComponent(filename)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ content }),
-  });
-  await assertOk(res, "Failed to update workspace file");
+  await requestVoid(`/agents/${seg(alias)}/workspace/${seg(filename)}`, { method: "PUT", json: { content }, error: "Failed to update workspace file" });
 }
 
 // Agent memory API functions
 
 export async function getAgentMemory(alias: string): Promise<{ curatedMemory: string; dailyFiles: string[] }> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/memory`, { credentials: "include" });
-  await assertOk(res, "Failed to get agent memory");
-  return res.json();
+  return request(`/agents/${seg(alias)}/memory`, { error: "Failed to get agent memory" });
 }
 
 export async function getAgentDailyMemory(alias: string, date: string): Promise<string> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/memory/${encodeURIComponent(date)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get daily memory");
-  const data = await res.json();
-  return data.content;
+  return requestField(`/agents/${seg(alias)}/memory/${seg(date)}`, "content", { error: "Failed to get daily memory" });
 }
 
 // Agent cron jobs API functions
 
 export async function getAgentCronJobs(alias: string): Promise<CronJob[]> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs`, { credentials: "include" });
-  await assertOk(res, "Failed to list cron jobs");
-  const data = await res.json();
-  return data.jobs;
+  return requestField(`/agents/${seg(alias)}/cron-jobs`, "jobs", { error: "Failed to list cron jobs" });
 }
 
 export async function createAgentCronJob(alias: string, job: Omit<CronJob, "id">): Promise<CronJob> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(job),
-  });
-  await assertOk(res, "Failed to create cron job");
-  const data = await res.json();
-  return data.job;
+  return requestField(`/agents/${seg(alias)}/cron-jobs`, "job", { method: "POST", json: job, error: "Failed to create cron job" });
 }
 
 export async function updateAgentCronJob(alias: string, jobId: string, updates: Partial<CronJob>): Promise<CronJob> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs/${encodeURIComponent(jobId)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(updates),
-  });
-  await assertOk(res, "Failed to update cron job");
-  const data = await res.json();
-  return data.job;
+  return requestField(`/agents/${seg(alias)}/cron-jobs/${seg(jobId)}`, "job", { method: "PUT", json: updates, error: "Failed to update cron job" });
 }
 
 export async function deleteAgentCronJob(alias: string, jobId: string): Promise<void> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs/${encodeURIComponent(jobId)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete cron job");
+  await requestVoid(`/agents/${seg(alias)}/cron-jobs/${seg(jobId)}`, { method: "DELETE", error: "Failed to delete cron job" });
 }
 
 export async function runAgentCronJob(alias: string, jobId: string): Promise<CronJob> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/cron-jobs/${encodeURIComponent(jobId)}/run`, {
-    method: "POST",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to run cron job");
-  const data = await res.json();
-  return data.job;
+  return requestField(`/agents/${seg(alias)}/cron-jobs/${seg(jobId)}/run`, "job", { method: "POST", error: "Failed to run cron job" });
 }
 
 // Agent trigger API functions
@@ -1215,53 +1048,23 @@ export interface BacktestResult {
 }
 
 export async function getAgentTriggers(alias: string): Promise<Trigger[]> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers`, { credentials: "include" });
-  await assertOk(res, "Failed to list triggers");
-  const data = await res.json();
-  return data.triggers;
+  return requestField(`/agents/${seg(alias)}/triggers`, "triggers", { error: "Failed to list triggers" });
 }
 
 export async function createAgentTrigger(alias: string, trigger: Omit<Trigger, "id">): Promise<Trigger> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(trigger),
-  });
-  await assertOk(res, "Failed to create trigger");
-  const data = await res.json();
-  return data.trigger;
+  return requestField(`/agents/${seg(alias)}/triggers`, "trigger", { method: "POST", json: trigger, error: "Failed to create trigger" });
 }
 
 export async function updateAgentTrigger(alias: string, triggerId: string, updates: Partial<Trigger>): Promise<Trigger> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/${encodeURIComponent(triggerId)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(updates),
-  });
-  await assertOk(res, "Failed to update trigger");
-  const data = await res.json();
-  return data.trigger;
+  return requestField(`/agents/${seg(alias)}/triggers/${seg(triggerId)}`, "trigger", { method: "PUT", json: updates, error: "Failed to update trigger" });
 }
 
 export async function deleteAgentTrigger(alias: string, triggerId: string): Promise<void> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/${encodeURIComponent(triggerId)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete trigger");
+  await requestVoid(`/agents/${seg(alias)}/triggers/${seg(triggerId)}`, { method: "DELETE", error: "Failed to delete trigger" });
 }
 
 export async function backtestTriggerFilter(alias: string, filter: TriggerFilter, limit?: number): Promise<BacktestResult> {
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/triggers/backtest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ filter, limit }),
-  });
-  await assertOk(res, "Failed to backtest filter");
-  return res.json();
+  return request(`/agents/${seg(alias)}/triggers/backtest`, { method: "POST", json: { filter, limit }, error: "Failed to backtest filter" });
 }
 
 // Proxy API functions (read-only)
@@ -1290,32 +1093,12 @@ export interface IngestorStatus {
 
 export async function getProxyRoutes(alias?: string): Promise<{ routes: ProxyRoute[]; configured: boolean }> {
   const params = alias ? `?alias=${encodeURIComponent(alias)}` : "";
-  const res = await fetch(`${BASE}/proxy/routes${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get proxy routes");
-  return res.json();
+  return request(`/proxy/routes${params}`, { error: "Failed to get proxy routes" });
 }
 
 export async function getProxyIngestors(alias?: string): Promise<{ ingestors: IngestorStatus[]; configured: boolean }> {
   const params = alias ? `?alias=${encodeURIComponent(alias)}` : "";
-  const res = await fetch(`${BASE}/proxy/ingestors${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get ingestor status");
-  return res.json();
-}
-
-// Stored event log types
-
-export interface StoredEvent {
-  id: number;
-  idempotencyKey?: string;
-  receivedAt: string;
-  receivedAtMs?: number;
-  callerAlias: string;
-  source: string;
-  /** Instance ID for multi-instance listeners (e.g. "project-board") */
-  instanceId?: string;
-  eventType: string;
-  data: unknown;
-  storedAt: number;
+  return request(`/proxy/ingestors${params}`, { error: "Failed to get ingestor status" });
 }
 
 export async function getProxyEvents(caller: string, limit?: number, offset?: number): Promise<{ events: StoredEvent[]; sources: string[] }> {
@@ -1324,28 +1107,17 @@ export async function getProxyEvents(caller: string, limit?: number, offset?: nu
   if (limit !== undefined) params.append("limit", limit.toString());
   if (offset !== undefined) params.append("offset", offset.toString());
 
-  const res = await fetch(`${BASE}/proxy/events?${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get proxy events");
-  return res.json();
+  return request(`/proxy/events?${params}`, { error: "Failed to get proxy events" });
 }
 
 // Agent settings API functions
 
 export async function getAgentSettings(): Promise<AgentSettings> {
-  const res = await fetch(`${BASE}/agent-settings`, { credentials: "include" });
-  await assertOk(res, "Failed to get agent settings");
-  return res.json();
+  return request("/agent-settings", { error: "Failed to get agent settings" });
 }
 
 export async function updateAgentSettings(settings: Partial<AgentSettings>): Promise<AgentSettings> {
-  const res = await fetch(`${BASE}/agent-settings`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(settings),
-  });
-  await assertOk(res, "Failed to update agent settings");
-  return res.json();
+  return request("/agent-settings", { method: "PUT", json: settings, error: "Failed to update agent settings" });
 }
 
 /**
@@ -1361,9 +1133,7 @@ export interface FavoriteLists {
 }
 
 export async function getFavorites(): Promise<FavoriteLists> {
-  const res = await fetch(`${BASE}/agent-settings/favorites`, { credentials: "include" });
-  await assertOk(res, "Failed to get favorites");
-  return res.json();
+  return request("/agent-settings/favorites", { error: "Failed to get favorites" });
 }
 
 /**
@@ -1375,14 +1145,7 @@ export async function getFavorites(): Promise<FavoriteLists> {
  * {@link patchFavorites}.
  */
 export async function updateFavorites(lists: Partial<FavoriteLists>): Promise<FavoriteLists> {
-  const res = await fetch(`${BASE}/agent-settings/favorites`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(lists),
-  });
-  await assertOk(res, "Failed to update favorites");
-  return res.json();
+  return request("/agent-settings/favorites", { method: "PUT", json: lists, error: "Failed to update favorites" });
 }
 
 /** Ids to add to / remove from one favorites list. */
@@ -1407,14 +1170,7 @@ export interface FavoritesDelta {
  * the authoritative post-write pair.
  */
 export async function patchFavorites(delta: FavoritesDelta): Promise<FavoriteLists> {
-  const res = await fetch(`${BASE}/agent-settings/favorites`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(delta),
-  });
-  await assertOk(res, "Failed to update favorites");
-  return res.json();
+  return request("/agent-settings/favorites", { method: "PATCH", json: delta, error: "Failed to update favorites" });
 }
 
 export interface RemoteAccessStatus {
@@ -1430,34 +1186,16 @@ export interface RemoteAccessStatus {
 
 /** Current status of the remote-access (public cloudflared) tunnel. */
 export async function getRemoteAccessStatus(): Promise<RemoteAccessStatus> {
-  const res = await fetch(`${BASE}/agent-settings/remote-access-status`, { credentials: "include" });
-  await assertOk(res, "Failed to get remote-access status");
-  return res.json();
+  return request("/agent-settings/remote-access-status", { error: "Failed to get remote-access status" });
 }
 
 export async function getKeyAliases(proxyMode?: "local" | "remote"): Promise<KeyAliasInfo[]> {
   const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
-  const res = await fetch(`${BASE}/agent-settings/key-aliases${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get key aliases");
-  const data = await res.json();
-  return data.aliases;
-}
-
-export interface ConnectionTestResult {
-  status: "unreachable" | "handshake_failed" | "connected";
-  message: string;
-  routeCount?: number;
+  return requestField(`/agent-settings/key-aliases${params}`, "aliases", { error: "Failed to get key aliases" });
 }
 
 export async function testProxyConnection(url: string, alias?: string): Promise<ConnectionTestResult> {
-  const res = await fetch(`${BASE}/agent-settings/test-connection`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ url, alias }),
-  });
-  await assertOk(res, "Failed to test connection");
-  return res.json();
+  return request("/agent-settings/test-connection", { method: "POST", json: { url, alias }, error: "Failed to test connection" });
 }
 
 // Drawlatch daemon status
@@ -1479,19 +1217,14 @@ export interface DaemonStatus {
 }
 
 export async function getDaemonStatus(): Promise<DaemonStatus> {
-  const res = await fetch(`${BASE}/agent-settings/daemon-status`, { credentials: "include" });
-  await assertOk(res, "Failed to get daemon status");
-  return res.json();
+  return request("/agent-settings/daemon-status", { error: "Failed to get daemon status" });
 }
 
 // Enrolled caller management (Proxy Settings panel)
 
 export async function getEnrolledCallers(proxyMode?: "local" | "remote"): Promise<EnrolledCaller[]> {
   const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
-  const res = await fetch(`${BASE}/agent-settings/callers${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to list enrolled callers");
-  const data = await res.json();
-  return data.callers;
+  return requestField(`/agent-settings/callers${params}`, "callers", { error: "Failed to list enrolled callers" });
 }
 
 /**
@@ -1501,13 +1234,7 @@ export async function getEnrolledCallers(proxyMode?: "local" | "remote"): Promis
  */
 export async function setDefaultCaller(alias: string | null, proxyMode?: "local" | "remote"): Promise<void> {
   const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
-  const res = await fetch(`${BASE}/agent-settings/default-caller${params}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ alias }),
-  });
-  await assertOk(res, "Failed to set default caller");
+  await requestVoid(`/agent-settings/default-caller${params}`, { method: "PUT", json: { alias }, error: "Failed to set default caller" });
 }
 
 /**
@@ -1516,11 +1243,7 @@ export async function setDefaultCaller(alias: string | null, proxyMode?: "local"
  */
 export async function deleteEnrolledCaller(alias: string, proxyMode?: "local" | "remote"): Promise<void> {
   const params = proxyMode ? `?proxyMode=${proxyMode}` : "";
-  const res = await fetch(`${BASE}/agent-settings/callers/${encodeURIComponent(alias)}${params}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete enrolled caller");
+  await requestVoid(`/agent-settings/callers/${seg(alias)}${params}`, { method: "DELETE", error: "Failed to delete enrolled caller" });
 }
 
 // Caller credential bundle import (remote mode)
@@ -1552,14 +1275,11 @@ export interface ImportBundleResult {
 }
 
 export async function importCallerBundle(bundle: unknown, passphrase?: string): Promise<ImportBundleResult> {
-  const res = await fetch(`${BASE}/agent-settings/import-bundle`, {
+  return request("/agent-settings/import-bundle", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ bundle, ...(passphrase ? { passphrase } : {}) }),
+    json: { bundle, ...(passphrase ? { passphrase } : {}) },
+    error: "Failed to import caller bundle",
   });
-  await assertOk(res, "Failed to import caller bundle");
-  return res.json();
 }
 
 // Agent activity API functions
@@ -1570,60 +1290,27 @@ export async function getAgentActivity(alias: string, type?: string, limit?: num
   if (limit !== undefined) params.append("limit", limit.toString());
   if (offset !== undefined) params.append("offset", offset.toString());
 
-  const res = await fetch(`${BASE}/agents/${encodeURIComponent(alias)}/activity${params.toString() ? `?${params}` : ""}`, { credentials: "include" });
-  await assertOk(res, "Failed to get agent activity");
-  const data = await res.json();
-  return data.entries;
+  return requestField(`/agents/${seg(alias)}/activity${query(params)}`, "entries", { error: "Failed to get agent activity" });
 }
 
 // Password change API
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const res = await fetch(`${BASE}/auth/change-password`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ currentPassword, newPassword }),
-  });
-  await assertOk(res, "Failed to change password");
+  await requestVoid("/auth/change-password", { method: "POST", json: { currentPassword, newPassword }, error: "Failed to change password" });
 }
 
 // API keys (bearer tokens for external integrations)
 
-export interface ApiKeyInfo {
-  id: string;
-  name: string;
-  description: string;
-  tokenPreview: string;
-  created_at: number;
-  expires_at: number | null;
-  last_used_at: number | null;
-}
-
 export async function listApiKeys(): Promise<ApiKeyInfo[]> {
-  const res = await fetch(`${BASE}/api-keys`, { credentials: "include" });
-  await assertOk(res, "Failed to load API keys");
-  const data = await res.json();
-  return data.keys;
+  return requestField("/api-keys", "keys", { error: "Failed to load API keys" });
 }
 
 export async function createApiKey(name: string, description: string, expiresAt: number | null): Promise<{ key: ApiKeyInfo; token: string }> {
-  const res = await fetch(`${BASE}/api-keys`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ name, description, expiresAt }),
-  });
-  await assertOk(res, "Failed to create API key");
-  return res.json();
+  return request("/api-keys", { method: "POST", json: { name, description, expiresAt }, error: "Failed to create API key" });
 }
 
 export async function deleteApiKey(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/api-keys/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to revoke API key");
+  await requestVoid(`/api-keys/${seg(id)}`, { method: "DELETE", error: "Failed to revoke API key" });
 }
 
 // Claude Code auth status API
@@ -1659,9 +1346,7 @@ export interface ClaudeAuthStatus {
 }
 
 export async function checkClaudeStatus(): Promise<ClaudeAuthStatus> {
-  const res = await fetch(`${BASE}/auth/claude-status`, { credentials: "include" });
-  await assertOk(res, "Failed to check Claude status");
-  return res.json();
+  return request("/auth/claude-status", { error: "Failed to check Claude status" });
 }
 
 // System info API
@@ -1763,9 +1448,7 @@ export interface SystemInfo {
  * omitted, so a failure here means the request itself failed.
  */
 export async function getEngines(refresh = false): Promise<EngineStatus[]> {
-  const res = await fetch(`${BASE}/engines${refresh ? "?refresh=1" : ""}`, { credentials: "include" });
-  await assertOk(res, "Failed to get engine status");
-  const data = (await res.json()) as EngineStatusResponse;
+  const data = await request<EngineStatusResponse>(`/engines${refresh ? "?refresh=1" : ""}`, { error: "Failed to get engine status" });
   return Array.isArray(data.engines) ? data.engines : [];
 }
 
@@ -1783,9 +1466,7 @@ export async function getEngines(refresh = false): Promise<EngineStatus[]> {
  */
 export async function checkEngineBinary(path: string, engineId: string, signal?: AbortSignal): Promise<EngineBinaryCheckResponse> {
   const query = new URLSearchParams({ path, engineId });
-  const res = await fetch(`${BASE}/engines/binary-check?${query.toString()}`, { credentials: "include", signal });
-  await assertOk(res, "Failed to check the binary path");
-  const data = (await res.json()) as EngineBinaryCheckResponse;
+  const data = await request<EngineBinaryCheckResponse>(`/engines/binary-check?${query.toString()}`, { signal, error: "Failed to check the binary path" });
   return { path: String(data.path ?? ""), state: data.state ?? null, detail: String(data.detail ?? "") };
 }
 
@@ -1803,9 +1484,7 @@ export async function checkEngineBinary(path: string, engineId: string, signal?:
  * false` result as a fresh check.
  */
 export async function refreshEngines(): Promise<EngineRefreshResponse> {
-  const res = await fetch(`${BASE}/engines/refresh`, { method: "POST", credentials: "include" });
-  await assertOk(res, "Failed to re-check engine status");
-  const data = (await res.json()) as EngineRefreshResponse;
+  const data = await request<EngineRefreshResponse>("/engines/refresh", { method: "POST", error: "Failed to re-check engine status" });
   return { engines: Array.isArray(data.engines) ? data.engines : [], probed: data.probed !== false, retryAfterMs: data.retryAfterMs };
 }
 
@@ -1824,9 +1503,7 @@ export async function refreshEngines(): Promise<EngineRefreshResponse> {
  * contract is that a non-2xx is an error; the message is that sentence.
  */
 export async function startEngineInstall(engineId: string): Promise<EngineInstallStartResponse> {
-  const res = await fetch(`${BASE}/engines/${encodeURIComponent(engineId)}/install`, { method: "POST", credentials: "include" });
-  await assertOk(res, "Failed to start the install");
-  return (await res.json()) as EngineInstallStartResponse;
+  return request(`/engines/${seg(engineId)}/install`, { method: "POST", error: "Failed to start the install" });
 }
 
 /**
@@ -1845,7 +1522,7 @@ export async function startEngineInstall(engineId: string): Promise<EngineInstal
  * `install_verified` with `visible: false`. Both are data, not errors.
  */
 export async function readEngineInstallStream(installId: string, onEvent: (event: EngineInstallEvent) => void, signal?: AbortSignal): Promise<void> {
-  const res = await fetch(`${BASE}/engines/installs/${encodeURIComponent(installId)}/stream`, { credentials: "include", signal });
+  const res = await fetch(`${BASE}/engines/installs/${seg(installId)}/stream`, { credentials: "include", signal });
   if (res.status === 404) {
     // Tagged, because the caller has to tell "this install no longer exists"
     // (forget it) from "the connection broke" (it may still be running, keep
@@ -1900,9 +1577,7 @@ export interface AcpModelCatalogInfo {
  * empty list. That is not an error, and the model field takes free text anyway.
  */
 export async function getAcpModels(providerId: string): Promise<AcpModelCatalogInfo> {
-  const res = await fetch(`${BASE}/acp/models?providerId=${encodeURIComponent(providerId)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get ACP models");
-  return res.json();
+  return request(`/acp/models?providerId=${encodeURIComponent(providerId)}`, { error: "Failed to get ACP models" });
 }
 
 /** One model the configured Cline provider will route to. */
@@ -1919,9 +1594,7 @@ export interface ClineModelInfo {
  * correct across SDK bumps without a frontend change.
  */
 export async function getClineProviders(): Promise<{ providers: string[] }> {
-  const res = await fetch(`${BASE}/cline/providers`, { credentials: "include" });
-  await assertOk(res, "Failed to get Cline providers");
-  return res.json();
+  return request("/cline/providers", { error: "Failed to get Cline providers" });
 }
 
 /**
@@ -1932,9 +1605,7 @@ export async function getClineProviders(): Promise<{ providers: string[] }> {
  * input rather than blocking.
  */
 export async function getClineModels(providerId: string): Promise<{ providerId: string; models: ClineModelInfo[] }> {
-  const res = await fetch(`${BASE}/cline/models?providerId=${encodeURIComponent(providerId)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get Cline models");
-  return res.json();
+  return request(`/cline/models?providerId=${encodeURIComponent(providerId)}`, { error: "Failed to get Cline models" });
 }
 
 /** One model the configured pi provider will route to. */
@@ -1952,9 +1623,7 @@ export interface PiModelInfo {
  * need the network for some providers.
  */
 export async function getPiProviders(): Promise<{ providers: string[] }> {
-  const res = await fetch(`${BASE}/pi/providers`, { credentials: "include" });
-  await assertOk(res, "Failed to get pi providers");
-  return res.json();
+  return request("/pi/providers", { error: "Failed to get pi providers" });
 }
 
 /**
@@ -1967,9 +1636,7 @@ export async function getPiProviders(): Promise<{ providers: string[] }> {
  * blocking.
  */
 export async function getPiModels(providerId: string): Promise<{ providerId: string; models: PiModelInfo[] }> {
-  const res = await fetch(`${BASE}/pi/models?providerId=${encodeURIComponent(providerId)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get pi models");
-  return res.json();
+  return request(`/pi/models?providerId=${encodeURIComponent(providerId)}`, { error: "Failed to get pi models" });
 }
 
 export interface AcpProviderInfo {
@@ -2096,20 +1763,18 @@ let systemInfoLatestWritten = 0;
 
 function fetchSystemInfo(): Promise<SystemInfo> {
   const seq = ++systemInfoRequestSeq;
-  const request = (async () => {
-    const res = await fetch(`${BASE}/system-info`, { credentials: "include" });
-    await assertOk(res, "Failed to get system info");
-    const info = (await res.json()) as SystemInfo;
+  const inFlight = (async () => {
+    const info = await request<SystemInfo>("/system-info", { error: "Failed to get system info" });
     if (seq > systemInfoLatestWritten) {
       systemInfoLatestWritten = seq;
       systemInfoCache = info;
     }
     return info;
   })().finally(() => {
-    if (systemInfoInFlight === request) systemInfoInFlight = null;
+    if (systemInfoInFlight === inFlight) systemInfoInFlight = null;
   });
-  systemInfoInFlight = request;
-  return request;
+  systemInfoInFlight = inFlight;
+  return inFlight;
 }
 
 /**
@@ -2127,9 +1792,7 @@ export function resetSystemInfoCache(): void {
 }
 
 export async function getCodexModels(): Promise<CodexModelInfo[]> {
-  const res = await fetch(`${BASE}/codex/models`, { credentials: "include" });
-  await assertOk(res, "Failed to get Codex models");
-  const data = await res.json();
+  const data = await request<{ models?: CodexModelInfo[] }>("/codex/models", { error: "Failed to get Codex models" });
   return Array.isArray(data.models) ? data.models : [];
 }
 
@@ -2139,9 +1802,9 @@ export async function getCodexModels(): Promise<CodexModelInfo[]> {
  * target resolves nowhere. It is read here only so the type stays honest.
  */
 export async function getOpenRouterCatalog(): Promise<{ models: OpenRouterModelInfo[]; aliases: OpenRouterModelAliasInfo[] }> {
-  const res = await fetch(`${BASE}/openrouter/models`, { credentials: "include" });
-  await assertOk(res, "Failed to get OpenRouter models");
-  const data = await res.json();
+  const data = await request<{ models?: OpenRouterModelInfo[]; aliases?: OpenRouterModelAliasInfo[] }>("/openrouter/models", {
+    error: "Failed to get OpenRouter models",
+  });
   return {
     models: Array.isArray(data.models) ? data.models : [],
     aliases: Array.isArray(data.aliases) ? data.aliases : [],
@@ -2151,32 +1814,15 @@ export async function getOpenRouterCatalog(): Promise<{ models: OpenRouterModelI
 // Instance name API
 
 export async function fetchInstanceName(): Promise<string> {
-  const res = await fetch(`${BASE}/instance-name`, { credentials: "include" });
-  await assertOk(res, "Failed to fetch instance name");
-  const data = await res.json();
-  return data.name;
+  return requestField("/instance-name", "name", { error: "Failed to fetch instance name" });
 }
 
 export async function updateInstanceName(name: string): Promise<string> {
-  const res = await fetch(`${BASE}/instance-name`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ name }),
-  });
-  await assertOk(res, "Failed to update instance name");
-  const data = await res.json();
-  return data.name;
+  return requestField("/instance-name", "name", { method: "PUT", json: { name }, error: "Failed to update instance name" });
 }
 
 export async function randomizeInstanceName(): Promise<string> {
-  const res = await fetch(`${BASE}/instance-name/randomize`, {
-    method: "POST",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to randomize instance name");
-  const data = await res.json();
-  return data.name;
+  return requestField("/instance-name/randomize", "name", { method: "POST", error: "Failed to randomize instance name" });
 }
 
 // Ignored project directories API
@@ -2187,20 +1833,11 @@ export interface IgnoredProjectDirsResponse {
 }
 
 export async function fetchIgnoredProjectDirs(): Promise<IgnoredProjectDirsResponse> {
-  const res = await fetch(`${BASE}/ignored-project-dirs`, { credentials: "include" });
-  await assertOk(res, "Failed to fetch ignored project directories");
-  return res.json();
+  return request("/ignored-project-dirs", { error: "Failed to fetch ignored project directories" });
 }
 
 export async function updateIgnoredProjectDirs(prefixes: string[]): Promise<IgnoredProjectDirsResponse> {
-  const res = await fetch(`${BASE}/ignored-project-dirs`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ prefixes }),
-  });
-  await assertOk(res, "Failed to update ignored project directories");
-  return res.json();
+  return request("/ignored-project-dirs", { method: "PUT", json: { prefixes }, error: "Failed to update ignored project directories" });
 }
 
 // User contact info API
@@ -2218,9 +1855,7 @@ export interface UserContactInfo {
 }
 
 export async function fetchUserContact(): Promise<UserContactInfo> {
-  const res = await fetch(`${BASE}/user-contact`, { credentials: "include" });
-  await assertOk(res, "Failed to fetch contact info");
-  return res.json();
+  return request("/user-contact", { error: "Failed to fetch contact info" });
 }
 
 /**
@@ -2228,163 +1863,82 @@ export async function fetchUserContact(): Promise<UserContactInfo> {
  * route listing (a live daemon call) — for an explicit user gesture only.
  */
 export async function fetchUserContactAvailability(opts?: { refresh?: boolean }): Promise<UserContactAvailability> {
-  const res = await fetch(`${BASE}/user-contact/availability${opts?.refresh ? "?refresh=1" : ""}`, { credentials: "include" });
-  await assertOk(res, "Failed to fetch contact channel availability");
-  return res.json();
+  return request(`/user-contact/availability${opts?.refresh ? "?refresh=1" : ""}`, { error: "Failed to fetch contact channel availability" });
 }
 
 export async function updateUserContact(info: UserContactInfo): Promise<UserContactInfo> {
-  const res = await fetch(`${BASE}/user-contact`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(info),
-  });
-  await assertOk(res, "Failed to update contact info");
-  return res.json();
+  return request("/user-contact", { method: "PUT", json: info, error: "Failed to update contact info" });
 }
 
 // ── Themes ──────────────────────────────────────────────────────────
 
 export async function listThemes(): Promise<ThemeListItem[]> {
-  const res = await fetch(`${BASE}/themes`, { credentials: "include" });
-  await assertOk(res, "Failed to list themes");
-  const data = await res.json();
-  return data.themes;
+  return requestField("/themes", "themes", { error: "Failed to list themes" });
 }
 
 export async function getTheme(name: string): Promise<CustomTheme> {
-  const res = await fetch(`${BASE}/themes/${encodeURIComponent(name)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get theme");
-  const data = await res.json();
-  return data.theme;
+  return requestField(`/themes/${seg(name)}`, "theme", { error: "Failed to get theme" });
 }
 
 export async function generateTheme(name: string, description: string): Promise<CustomTheme> {
-  const res = await fetch(`${BASE}/themes/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ name, description }),
-  });
-  await assertOk(res, "Failed to generate theme");
-  const data = await res.json();
-  return data.theme;
+  return requestField("/themes/generate", "theme", { method: "POST", json: { name, description }, error: "Failed to generate theme" });
 }
 
 export async function deleteTheme(name: string): Promise<void> {
-  const res = await fetch(`${BASE}/themes/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete theme");
+  await requestVoid(`/themes/${seg(name)}`, { method: "DELETE", error: "Failed to delete theme" });
 }
 
 // ── Custom Skills ───────────────────────────────────────────────────
 
 export async function listCustomSkills(): Promise<CustomSkillListItem[]> {
-  const res = await fetch(`${BASE}/custom-skills`, { credentials: "include" });
-  await assertOk(res, "Failed to list skills");
-  const data = await res.json();
-  return data.skills;
+  return requestField("/custom-skills", "skills", { error: "Failed to list skills" });
 }
 
 export async function getCustomSkill(name: string): Promise<CustomSkill> {
-  const res = await fetch(`${BASE}/custom-skills/${encodeURIComponent(name)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get skill");
-  const data = await res.json();
-  return data.skill;
+  return requestField(`/custom-skills/${seg(name)}`, "skill", { error: "Failed to get skill" });
 }
 
 export async function createCustomSkill(skill: { name: string; description: string; content: string }): Promise<CustomSkill> {
-  const res = await fetch(`${BASE}/custom-skills`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(skill),
-  });
-  await assertOk(res, "Failed to create skill");
-  const data = await res.json();
-  return data.skill;
+  return requestField("/custom-skills", "skill", { method: "POST", json: skill, error: "Failed to create skill" });
 }
 
 export async function updateCustomSkill(originalName: string, updates: { name?: string; description?: string; content?: string }): Promise<CustomSkill> {
-  const res = await fetch(`${BASE}/custom-skills/${encodeURIComponent(originalName)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(updates),
-  });
-  await assertOk(res, "Failed to update skill");
-  const data = await res.json();
-  return data.skill;
+  return requestField(`/custom-skills/${seg(originalName)}`, "skill", { method: "PUT", json: updates, error: "Failed to update skill" });
 }
 
 export async function deleteCustomSkill(name: string): Promise<void> {
-  const res = await fetch(`${BASE}/custom-skills/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete skill");
+  await requestVoid(`/custom-skills/${seg(name)}`, { method: "DELETE", error: "Failed to delete skill" });
 }
 
 // ── Keywords ─────────────────────────────────────────────────────────
 
 export async function listKeywords(): Promise<Keyword[]> {
-  const res = await fetch(`${BASE}/keywords`, { credentials: "include" });
-  await assertOk(res, "Failed to list keywords");
-  const data = await res.json();
-  return data.keywords;
+  return requestField("/keywords", "keywords", { error: "Failed to list keywords" });
 }
 
 export async function createKeyword(keyword: { name: string; description?: string; body: string }): Promise<Keyword> {
-  const res = await fetch(`${BASE}/keywords`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(keyword),
-  });
-  await assertOk(res, "Failed to create keyword");
-  const data = await res.json();
-  return data.keyword;
+  return requestField("/keywords", "keyword", { method: "POST", json: keyword, error: "Failed to create keyword" });
 }
 
 export async function updateKeyword(originalName: string, updates: { name?: string; description?: string; body?: string }): Promise<Keyword> {
-  const res = await fetch(`${BASE}/keywords/${encodeURIComponent(originalName)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(updates),
-  });
-  await assertOk(res, "Failed to update keyword");
-  const data = await res.json();
-  return data.keyword;
+  return requestField(`/keywords/${seg(originalName)}`, "keyword", { method: "PUT", json: updates, error: "Failed to update keyword" });
 }
 
 export async function deleteKeyword(name: string): Promise<void> {
-  const res = await fetch(`${BASE}/keywords/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete keyword");
+  await requestVoid(`/keywords/${seg(name)}`, { method: "DELETE", error: "Failed to delete keyword" });
 }
 
 // ── MCP Tools ────────────────────────────────────────────────────────
 
 export async function getMcpTools(context?: "chat" | "agent"): Promise<McpToolsResponse> {
   const params = context ? `?context=${context}` : "";
-  const res = await fetch(`${BASE}/mcp-tools${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get MCP tools");
-  return res.json();
+  return request(`/mcp-tools${params}`, { error: "Failed to get MCP tools" });
 }
 
 // ── Jobs ─────────────────────────────────────────────────────────────
 
 export async function listJobs(): Promise<JobDefinition[]> {
-  const res = await fetch(`${BASE}/jobs`, { credentials: "include" });
-  await assertOk(res, "Failed to list jobs");
-  const data = await res.json();
-  return data.jobs;
+  return requestField("/jobs", "jobs", { error: "Failed to list jobs" });
 }
 
 export interface JobDefinitionPayload {
@@ -2398,41 +1952,21 @@ export interface JobDefinitionPayload {
 }
 
 export async function createJob(payload: JobDefinitionPayload): Promise<JobDefinition> {
-  const res = await fetch(`${BASE}/jobs`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(payload),
-  });
-  await assertOk(res, "Failed to create job");
-  const data = await res.json();
-  return data.job;
+  return requestField("/jobs", "job", { method: "POST", json: payload, error: "Failed to create job" });
 }
 
 export async function updateJob(id: string, payload: JobDefinitionPayload): Promise<JobDefinition> {
-  const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(payload),
-  });
-  await assertOk(res, "Failed to update job");
-  const data = await res.json();
-  return data.job;
+  return requestField(`/jobs/${seg(id)}`, "job", { method: "PUT", json: payload, error: "Failed to update job" });
 }
 
 export async function deleteJob(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  await assertOk(res, "Failed to delete job");
+  await requestVoid(`/jobs/${seg(id)}`, { method: "DELETE", error: "Failed to delete job" });
 }
 
 // Job export/import API functions
 
 export function getJobExportUrl(id: string): string {
-  return `${BASE}/jobs/${encodeURIComponent(id)}/export`;
+  return `${BASE}/jobs/${seg(id)}/export`;
 }
 
 /**
@@ -2470,15 +2004,7 @@ export async function importJob(payload: unknown, mode?: "copy" | "overwrite"): 
 }
 
 export async function spawnJob(id: string, inputs: Record<string, string>): Promise<JobRun> {
-  const res = await fetch(`${BASE}/jobs/${encodeURIComponent(id)}/spawn`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ inputs }),
-  });
-  await assertOk(res, "Failed to spawn job");
-  const data = await res.json();
-  return data.run;
+  return requestField(`/jobs/${seg(id)}/spawn`, "run", { method: "POST", json: { inputs }, error: "Failed to spawn job" });
 }
 
 export async function listJobRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number }): Promise<JobRunListItem[]> {
@@ -2486,30 +2012,15 @@ export async function listJobRuns(filter?: { jobId?: string; status?: JobRunStat
   if (filter?.jobId) params.set("jobId", filter.jobId);
   if (filter?.status) params.set("status", filter.status);
   if (filter?.limit) params.set("limit", String(filter.limit));
-  const qs = params.toString();
-  const res = await fetch(`${BASE}/jobs/runs${qs ? `?${qs}` : ""}`, { credentials: "include" });
-  await assertOk(res, "Failed to list job runs");
-  const data = await res.json();
-  return data.runs;
+  return requestField(`/jobs/runs${query(params)}`, "runs", { error: "Failed to list job runs" });
 }
 
 export async function getJobRun(runId: string): Promise<JobRun> {
-  const res = await fetch(`${BASE}/jobs/runs/${encodeURIComponent(runId)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get job run");
-  const data = await res.json();
-  return data.run;
+  return requestField(`/jobs/runs/${seg(runId)}`, "run", { error: "Failed to get job run" });
 }
 
 async function postJobRunAction(runId: string, action: string, body?: unknown): Promise<JobRun> {
-  const res = await fetch(`${BASE}/jobs/runs/${encodeURIComponent(runId)}/${action}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    ...(body !== undefined && { body: JSON.stringify(body) }),
-  });
-  await assertOk(res, `Failed to ${action} job run`);
-  const data = await res.json();
-  return data.run;
+  return requestField(`/jobs/runs/${seg(runId)}/${action}`, "run", { method: "POST", json: body, error: `Failed to ${action} job run` });
 }
 
 export function respondJobApproval(runId: string, decision: "approve" | "reject", comment?: string): Promise<JobRun> {
@@ -2591,9 +2102,7 @@ async function workspaceListing(
   const params = new URLSearchParams({ includeRemovability: String(includeRemovability) });
   if (status) params.append("status", status);
   if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  const res = await fetch(`${BASE}/workspaces?${params}`);
-  await assertOk(res, "Failed to list workspaces");
-  return res.json();
+  return request(`/workspaces?${params}`, { error: "Failed to list workspaces" });
 }
 
 /**
@@ -2606,9 +2115,7 @@ async function workspaceListing(
  * would travel into the trash.
  */
 export async function fetchWorkspaceRemovability(id: string): Promise<WorkspaceWithRemovability> {
-  const res = await fetch(`${BASE}/workspaces/${id}/removability`);
-  await assertOk(res, "Failed to evaluate the workspace");
-  const body: WorkspaceRemovabilityResponse = await res.json();
+  const body = await request<WorkspaceRemovabilityResponse>(`/workspaces/${seg(id)}/removability`, { error: "Failed to evaluate the workspace" });
   return body.workspace;
 }
 
@@ -2616,9 +2123,7 @@ export async function fetchWorkspaceRemovability(id: string): Promise<WorkspaceW
 export async function listUnmanagedWorktrees(repoPath: string, includeDiskUsage = true): Promise<UnmanagedWorktreeListing> {
   const params = new URLSearchParams({ repoPath });
   if (!includeDiskUsage) params.append("includeDiskUsage", "false");
-  const res = await fetch(`${BASE}/workspaces/unmanaged?${params}`);
-  await assertOk(res, "Failed to list unmanaged worktrees");
-  return res.json();
+  return request(`/workspaces/unmanaged?${params}`, { error: "Failed to list unmanaged worktrees" });
 }
 
 /**
@@ -2629,13 +2134,7 @@ export async function listUnmanagedWorktrees(repoPath: string, includeDiskUsage 
  * this call is where that gap is closed, so nothing may call it without one.
  */
 export async function adoptWorktrees(paths: string[]): Promise<AdoptWorktreesResult> {
-  const res = await fetch(`${BASE}/workspaces/adopt`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paths }),
-  });
-  await assertOk(res, "Failed to adopt worktrees");
-  return res.json();
+  return request("/workspaces/adopt", { method: "POST", json: { paths }, error: "Failed to adopt worktrees" });
 }
 
 /**
@@ -2647,29 +2146,18 @@ export async function adoptWorktrees(paths: string[]): Promise<AdoptWorktreesRes
  * sentence to show — `assertOk` surfaces it.
  */
 export async function renameWorkspace(id: string, name: string): Promise<Workspace> {
-  const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(id)}/rename`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
-  });
-  await assertOk(res, "Failed to rename workspace");
-  const data = await res.json();
-  return data.workspace;
+  return requestField(`/workspaces/${seg(id)}/rename`, "workspace", { method: "POST", json: { name }, error: "Failed to rename workspace" });
 }
 
 /** Archive one workspace, quarantining its worktree only if every gate passes. */
 export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResult> {
-  const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(id)}/archive`, { method: "POST" });
-  await assertOk(res, "Failed to archive workspace");
-  return res.json();
+  return request(`/workspaces/${seg(id)}/archive`, { method: "POST", error: "Failed to archive workspace" });
 }
 
 export async function listTrash(includeDiskUsage = true): Promise<TrashListing> {
   const params = new URLSearchParams();
   if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  const res = await fetch(`${BASE}/workspaces/trash${params.toString() ? `?${params}` : ""}`);
-  await assertOk(res, "Failed to list trash");
-  return res.json();
+  return request(`/workspaces/trash${query(params)}`, { error: "Failed to list trash" });
 }
 
 /**
@@ -2680,7 +2168,7 @@ export async function listTrash(includeDiskUsage = true): Promise<TrashListing> 
  * refusal leaves the trash entry intact.
  */
 export async function restoreTrashEntry(entry: string): Promise<TrashRestoreResult> {
-  const res = await fetch(`${BASE}/workspaces/trash/${encodeURIComponent(entry)}/restore`, { method: "POST" });
+  const res = await fetch(`${BASE}/workspaces/trash/${seg(entry)}/restore`, { method: "POST", credentials: "include" });
   if (res.status === 409) return res.json();
   await assertOk(res, "Failed to restore trash entry");
   return res.json();
@@ -2690,9 +2178,7 @@ export async function restoreTrashEntry(entry: string): Promise<TrashRestoreResu
 export async function getReasoningCapability(provider: string, model: string, cwd?: string): Promise<ReasoningCapability> {
   const params = new URLSearchParams({ provider, model });
   if (cwd) params.set("cwd", cwd);
-  const res = await fetch(`${BASE}/codex/reasoning?${params}`, { credentials: "include" });
-  await assertOk(res, "Failed to get reasoning capabilities");
-  const data = await res.json();
+  const data = await request<ReasoningCapability | null>(`/codex/reasoning?${params}`, { error: "Failed to get reasoning capabilities" });
   if (
     !data ||
     !Array.isArray(data.efforts) ||
@@ -2742,57 +2228,36 @@ export {
 
 /** Same-origin URL of one stored item's raw bytes (inline only for raster images and text/plain). */
 export function storageItemUrl(key: string, name: string): string {
-  return `${BASE}/storage/${encodeURIComponent(key)}/items/${encodeURIComponent(name)}`;
+  return `${BASE}${storageItemPath(key, name)}`;
+}
+
+function storageItemPath(key: string, name: string): string {
+  return `/storage/${seg(key)}/items/${seg(name)}`;
 }
 
 export async function listStorageKeys(): Promise<StorageKeySummary[]> {
-  const res = await fetch(`${BASE}/storage`, { credentials: "include" });
-  await assertOk(res, "Failed to list storage keys");
-  const data = await res.json();
-  return data.keys;
+  return requestField("/storage", "keys", { error: "Failed to list storage keys" });
 }
 
 export async function createStorageKey(key: string, description?: string): Promise<StorageKeyDetail> {
-  const res = await fetch(`${BASE}/storage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ key, description }),
-  });
-  await assertOk(res, "Failed to create storage key");
-  const data = await res.json();
-  return data.key;
+  return requestField("/storage", "key", { method: "POST", json: { key, description }, error: "Failed to create storage key" });
 }
 
 export async function getStorageKey(key: string): Promise<StorageKeyDetail> {
-  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get storage key");
-  const data = await res.json();
-  return data.key;
+  return requestField(`/storage/${seg(key)}`, "key", { error: "Failed to get storage key" });
 }
 
 export async function updateStorageKey(key: string, description: string): Promise<StorageKeyDetail> {
-  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ description }),
-  });
-  await assertOk(res, "Failed to update storage key");
-  const data = await res.json();
-  return data.key;
+  return requestField(`/storage/${seg(key)}`, "key", { method: "PATCH", json: { description }, error: "Failed to update storage key" });
 }
 
 export async function deleteStorageKey(key: string): Promise<void> {
-  const res = await fetch(`${BASE}/storage/${encodeURIComponent(key)}`, { method: "DELETE", credentials: "include" });
-  await assertOk(res, "Failed to delete storage key");
+  await requestVoid(`/storage/${seg(key)}`, { method: "DELETE", error: "Failed to delete storage key" });
 }
 
 /** The raw response for one item; callers pick `.text()` or `.blob()`. */
 export async function fetchStorageItem(key: string, name: string): Promise<Response> {
-  const res = await fetch(storageItemUrl(key, name), { credentials: "include" });
-  await assertOk(res, "Failed to read storage item");
-  return res;
+  return send(storageItemPath(key, name), { error: "Failed to read storage item" });
 }
 
 /**
@@ -2800,28 +2265,20 @@ export async function fetchStorageItem(key: string, name: string): Promise<Respo
  * `content_base64` travels as JSON; a `File`/`Blob` goes up as multipart `file`.
  * Resolves to the saved item's meta (`{ item }`).
  */
-export async function putStorageItem(
-  key: string,
-  name: string,
-  body: PutStorageItemJsonBody | { file: Blob },
-): Promise<StorageItem> {
-  let init: RequestInit;
+export async function putStorageItem(key: string, name: string, body: PutStorageItemJsonBody | { file: Blob }): Promise<StorageItem> {
+  let payload: Pick<RequestOptions, "json" | "body">;
   if ("file" in body) {
     const form = new FormData();
     form.append("file", body.file, name);
-    init = { method: "PUT", credentials: "include", body: form };
+    payload = { body: form };
   } else {
-    init = { method: "PUT", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(body) };
+    payload = { json: body };
   }
-  const res = await fetch(storageItemUrl(key, name), init);
-  await assertOk(res, "Failed to save storage item");
-  const data = await res.json();
-  return data.item;
+  return requestField(storageItemPath(key, name), "item", { method: "PUT", ...payload, error: "Failed to save storage item" });
 }
 
 export async function deleteStorageItem(key: string, name: string): Promise<void> {
-  const res = await fetch(storageItemUrl(key, name), { method: "DELETE", credentials: "include" });
-  await assertOk(res, "Failed to delete storage item");
+  await requestVoid(storageItemPath(key, name), { method: "DELETE", error: "Failed to delete storage item" });
 }
 
 // ── Artifacts ───────────────────────────────────────────────────────
@@ -2839,7 +2296,7 @@ export async function deleteStorageItem(key: string, name: string): Promise<void
  * no longer hash to it (and requires it alongside a token).
  */
 export function artifactRenderUrl(id: string, version: number, pin?: { bridgeToken?: string; sha256: string }): string {
-  const url = `${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}/render`;
+  const url = `${BASE}/artifacts/${seg(id)}/versions/${seg(version)}/render`;
   if (!pin) return url;
   const bridge = pin.bridgeToken === undefined ? "" : `bridge=${encodeURIComponent(pin.bridgeToken)}&`;
   return `${url}?${bridge}sha256=${encodeURIComponent(pin.sha256)}`;
@@ -2847,65 +2304,33 @@ export function artifactRenderUrl(id: string, version: number, pin?: { bridgeTok
 
 /** Summaries only — no version list; `getArtifact` for that. */
 export async function listArtifacts(): Promise<ArtifactSummary[]> {
-  const res = await fetch(`${BASE}/artifacts`, { credentials: "include" });
-  await assertOk(res, "Failed to list artifacts");
-  const data = await res.json();
-  return data.artifacts;
+  return requestField("/artifacts", "artifacts", { error: "Failed to list artifacts" });
 }
 
 export async function getArtifact(id: string): Promise<Artifact> {
-  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, { credentials: "include" });
-  await assertOk(res, "Failed to get artifact");
-  const data = await res.json();
-  return data.artifact;
+  return requestField(`/artifacts/${seg(id)}`, "artifact", { error: "Failed to get artifact" });
 }
 
 export async function createArtifact(input: CreateArtifactInput): Promise<Artifact> {
-  const res = await fetch(`${BASE}/artifacts`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(input),
-  });
-  await assertOk(res, "Failed to create artifact");
-  const data = await res.json();
-  return data.artifact;
+  return requestField("/artifacts", "artifact", { method: "POST", json: input, error: "Failed to create artifact" });
 }
 
 export async function updateArtifact(id: string, updates: UpdateArtifactInput): Promise<Artifact> {
-  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(updates),
-  });
-  await assertOk(res, "Failed to update artifact");
-  const data = await res.json();
-  return data.artifact;
+  return requestField(`/artifacts/${seg(id)}`, "artifact", { method: "PATCH", json: updates, error: "Failed to update artifact" });
 }
 
 export async function deleteArtifact(id: string): Promise<void> {
-  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
-  await assertOk(res, "Failed to delete artifact");
+  await requestVoid(`/artifacts/${seg(id)}`, { method: "DELETE", error: "Failed to delete artifact" });
 }
 
 export async function saveArtifactVersion(id: string, content: string, note?: string): Promise<Artifact> {
-  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/versions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ content, note }),
-  });
-  await assertOk(res, "Failed to save artifact version");
-  const data = await res.json();
-  return data.artifact;
+  return requestField(`/artifacts/${seg(id)}/versions`, "artifact", { method: "POST", json: { content, note }, error: "Failed to save artifact version" });
 }
 
 /** One version's source as text — never executed, only shown or fed to MarkdownRenderer. */
 /** `sha256` pins the bytes: the server answers 409 if the version no longer hashes to it. */
 export async function getArtifactVersionSource(id: string, version: number, sha256?: string): Promise<string> {
   const pin = sha256 === undefined ? "" : `?sha256=${encodeURIComponent(sha256)}`;
-  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(String(version))}${pin}`, { credentials: "include" });
-  await assertOk(res, "Failed to read artifact version");
+  const res = await send(`/artifacts/${seg(id)}/versions/${seg(version)}${pin}`, { error: "Failed to read artifact version" });
   return res.text();
 }

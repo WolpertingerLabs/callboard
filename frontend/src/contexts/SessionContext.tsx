@@ -1,18 +1,8 @@
 import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from "react";
 import { observeServerBuild, INITIAL_BUILD_WATCH, MY_BUILD_ID, type BuildWatchState } from "../utils/buildIdentity";
+import { pollSessions, type ActiveSessionInfo } from "../api";
 
-export type SessionType = "web" | "cli";
-
-export interface ActiveSessionInfo {
-  type: SessionType;
-  startedAt?: number;
-}
-
-export interface SummonInfo {
-  message: string;
-  urgency: "normal" | "urgent";
-  createdAt: string;
-}
+export type { SessionType, ActiveSessionInfo, SummonInfo } from "../api";
 
 interface SessionContextValue {
   /** Map of chatId → session info for all currently active sessions */
@@ -105,6 +95,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [metadataVersion, setMetadataVersion] = useState(0);
   const [summonedChatIds, setSummonedChatIds] = useState<Set<string>>(new Set());
+  // What `summonedChatIds` holds, readable from the poll without a state updater.
+  const summonedRef = useRef<Set<string>>(summonedChatIds);
   const [staleBuildId, setStaleBuildId] = useState<string | null>(null);
 
   // Track server versions and connection state in refs to avoid triggering re-renders on every poll
@@ -129,11 +121,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         // agree and the steady-state response keeps its ~40 bytes.
         if (buildWatchRef.current.baseline !== undefined) params.set("b", buildWatchRef.current.baseline);
 
-        const res = await fetch(`/api/sessions/poll?${params}`, { credentials: "include" });
-        if (!mounted) return;
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-        const data = await res.json();
+        const data = await pollSessions(params);
         if (!mounted) return;
 
         consecutiveFailuresRef.current = 0;
@@ -153,11 +141,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
         // Sessions changed — rebuild the map
         if (data.sessions !== undefined && data.version !== lastVersionRef.current) {
-          const map = new Map<string, ActiveSessionInfo>();
-          for (const [chatId, info] of Object.entries(data.sessions)) {
-            map.set(chatId, info as ActiveSessionInfo);
-          }
-          setSessions(map);
+          setSessions(new Map<string, ActiveSessionInfo>(Object.entries(data.sessions)));
         }
         lastVersionRef.current = data.version;
 
@@ -167,24 +151,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           setMetadataVersion((v) => v + 1);
 
           if (data.activeSummons) {
-            const serverSummons = data.activeSummons as Record<string, SummonInfo>;
-            const newSet = new Set(Object.keys(serverSummons));
+            const serverSummons = data.activeSummons;
+            const prev = summonedRef.current;
+            const ids = Object.keys(serverSummons);
 
-            setSummonedChatIds((prev) => {
-              // Fire browser notifications for newly-appeared summons
-              for (const chatId of newSet) {
-                if (!prev.has(chatId)) {
-                  const summon = serverSummons[chatId];
-                  if (summon?.urgency === "urgent" && typeof Notification !== "undefined" && Notification.permission === "granted") {
-                    new Notification("Agent needs your attention", {
-                      body: summon.message,
-                      tag: `summon-${chatId}`,
-                    });
-                  }
+            // Fire browser notifications for newly-appeared summons — here, not
+            // inside a state updater, which React may run twice.
+            for (const chatId of ids) {
+              if (!prev.has(chatId)) {
+                const summon = serverSummons[chatId];
+                if (summon?.urgency === "urgent" && typeof Notification !== "undefined" && Notification.permission === "granted") {
+                  new Notification("Agent needs your attention", {
+                    body: summon.message,
+                    tag: `summon-${chatId}`,
+                  });
                 }
               }
-              return newSet;
-            });
+            }
+
+            // A new Set only when membership changed, so consumers don't re-render for nothing.
+            if (ids.length !== prev.size || ids.some((chatId) => !prev.has(chatId))) {
+              const next = new Set(ids);
+              summonedRef.current = next;
+              setSummonedChatIds(next);
+            }
           }
         }
       } catch {

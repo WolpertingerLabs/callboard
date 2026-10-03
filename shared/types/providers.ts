@@ -11,10 +11,13 @@
 /**
  * Provider kinds the UI is allowed to surface. The full backend
  * `AgentProviderKind` union (in `backend/src/agents/ports/AgentProvider.ts`)
- * also includes adapters not exposed to end users (`mock`). Mirrors
- * `ROUTABLE_PROVIDER_KINDS`.
+ * also includes adapters not exposed to end users (`mock`). The backend's
+ * `ROUTABLE_PROVIDER_KINDS` is this list, and the frontend's stored-preference
+ * validation reads it — so a new harness is added here, once.
  */
-export type UiAgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "pi";
+export const UI_AGENT_PROVIDER_KINDS = ["claude-code", "codex", "acp", "cline", "pi"] as const;
+
+export type UiAgentProviderKind = (typeof UI_AGENT_PROVIDER_KINDS)[number];
 
 /**
  * Reasoning-effort levels. Named for OpenRouter's `reasoning.effort` field,

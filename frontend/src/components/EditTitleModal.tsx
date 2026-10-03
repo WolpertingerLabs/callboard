@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 import { regenerateChatTitle, setChatTitle } from "../api";
 import ModalOverlay from "./ModalOverlay";
+import { errorMessage } from "../utils/errorMessage";
 
 /** Matches the route's cap, which in turn matches the `set_chat_title` tool's. */
 const MAX_TITLE_LENGTH = 240;
@@ -108,7 +109,7 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
       // has been dismissed, which would leave some failures with no trace at
       // all. See `handleRegenerate` below, where that is the likely case.
       console.error("Failed to save chat title:", err);
-      setError(err instanceof Error ? err.message : "Failed to save chat title");
+      setError(errorMessage(err, "Failed to save chat title"));
       setBusy(null);
     }
   };
@@ -131,7 +132,7 @@ export default function EditTitleModal({ chatId, currentTitle, fallbackName, onC
       // keeps that distinguishable. Not an alert: the user dismissed this
       // dialog, and interrupting them seconds later is not the answer.
       console.error("Failed to regenerate chat title:", err);
-      setError(err instanceof Error ? err.message : "Failed to regenerate chat title");
+      setError(errorMessage(err, "Failed to regenerate chat title"));
     } finally {
       setBusy(null);
     }

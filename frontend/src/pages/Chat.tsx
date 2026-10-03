@@ -101,6 +101,7 @@ import { findLatestTaskListIndex } from "../utils/taskListNav";
 import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
 import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
 import { sameActivityPayload } from "../utils/activitySnapshot";
+import { errorMessage } from "../utils/errorMessage";
 
 /**
  * How long an opened draft's images get to come back before the composer stops
@@ -743,7 +744,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Phase 4 of the pi landing, which meant both fell through to `"claude-code"`
   // and their header rendered a "CC" badge — the one place in the UI that names
   // the harness, naming the wrong one.
-  const chatProvider = useMemo((): "claude-code" | "codex" | "acp" | "cline" | "pi" => {
+  const chatProvider = useMemo((): AgentProviderKind => {
     if (!id) return newChatProvider ?? "claude-code";
     if (chat?.metadata) {
       try {
@@ -877,7 +878,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         navigate(`/chat/${newChat.id}`);
       } catch (err) {
         console.error("Failed to fork chat:", err);
-        window.alert(err instanceof Error ? err.message : "Failed to fork chat");
+        window.alert(errorMessage(err, "Failed to fork chat"));
       } finally {
         forkingRef.current = false;
       }
@@ -2752,7 +2753,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         setPendingAction(null);
       } catch (error) {
         if (!isCurrentPending(ticket)) return;
-        setResponseError(error instanceof Error ? error.message : "Could not submit the answer. Retry.");
+        setResponseError(errorMessage(error, "Could not submit the answer. Retry."));
         return;
       } finally {
         finishResponse(ticket);

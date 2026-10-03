@@ -12,6 +12,7 @@
  */
 import type { AgentEvent } from "./events.js";
 import type { ToolServerSpec } from "./tools.js";
+import { UI_AGENT_PROVIDER_KINDS } from "shared/types/providers.js";
 
 /**
  * Request shape passed to {@link AgentProvider.query}.
@@ -103,7 +104,7 @@ export type AgentProviderKind = "claude-code" | "codex" | "acp" | "cline" | "pi"
  * The frontend mirror of this is `ForkProvider` in `frontend/src/api.ts`; the
  * enforcing guard is in `routes/chats.ts`.
  */
-export const ROUTABLE_PROVIDER_KINDS = ["claude-code", "codex", "acp", "cline", "pi"] as const;
+export const ROUTABLE_PROVIDER_KINDS = UI_AGENT_PROVIDER_KINDS;
 
 /** A provider kind a request may ask for (i.e. not test-only, and fully specifiable). */
 export type RoutableProviderKind = (typeof ROUTABLE_PROVIDER_KINDS)[number];

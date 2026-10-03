@@ -3,6 +3,7 @@ import { usePolling } from "../../hooks/usePolling";
 import { Globe, ShieldAlert, Loader2, Check, Copy, ExternalLink, AlertTriangle, X } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getRemoteAccessStatus } from "../../api";
 import type { RemoteAccessStatus } from "../../api";
+import { errorMessage } from "../../utils/errorMessage";
 
 const CLOUDFLARED_INSTALL_URL = "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
 
@@ -76,8 +77,8 @@ export default function RemoteAccessSettings() {
       setTimeout(() => setSaved(false), 2000);
       // Give the backend a beat to spawn/kill cloudflared, then refresh.
       setTimeout(refreshStatus, 600);
-    } catch (e: any) {
-      const msg = e?.message || "Failed to save settings";
+    } catch (e) {
+      const msg = errorMessage(e, "Failed to save settings");
       setError(msg);
       // The backend blocks enabling without a password — surface that distinctly.
       if (/password/i.test(msg)) setNeedsPassword(true);
@@ -110,11 +111,11 @@ export default function RemoteAccessSettings() {
     setAllowEngineInstalls(next);
     try {
       await updateAgentSettings({ allowEngineInstalls: next });
-    } catch (e: any) {
+    } catch (e) {
       // Put the switch back rather than leaving the UI showing a state the
       // daemon does not have — this one decides whether a command can run.
       setAllowEngineInstalls(previous);
-      setInstallsError(e?.message || "Failed to save");
+      setInstallsError(errorMessage(e, "Failed to save"));
     } finally {
       setInstallsSaving(false);
     }
