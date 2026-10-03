@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ChevronDown, ChevronRight, Bot } from "lucide-react";
-import { listAgents, getAgentIdentityPrompt, getSystemInfo, cachedSystemInfo, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
+import { listAgents, getAgentIdentityPrompt, cachedSystemInfo, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
 import PermissionSettings from "./PermissionSettings";
+import { useSystemInfo } from "../hooks/useSystemInfo";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
 import ProviderConfigPicker from "./ProviderConfigPicker";
@@ -116,6 +117,57 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // from Settings → API". Stored separately from the Claude model so
   // toggling providers restores each one's prior selection.
   const [codexModel, setCodexModel] = useState<string>(getDefaultCodexModel);
+  // Fetch system info once to learn which harnesses are configured. Until the
+  // fetch resolves, codexConfigured stays `null` and the UI treats Codex as
+  // available — the actual gate is in the button's disabled prop. If Codex was
+  // selected from localStorage but turns out to be unconfigured, we silently
+  // flip the in-memory state to claude-code without touching localStorage (the
+  // user's saved preference survives for the next time they reconfigure it).
+  //
+  // ## Why `refresh` here, when the seed above is what fixes the pop-in
+  //
+  // The two are separate jobs and only one of them is about speed. The
+  // synchronous `cachedSystemInfo()` seed is the entire reason the OpenCode
+  // button paints on frame one; nothing about that requires *this* call to be
+  // cached as well.
+  //
+  // And it must not be. `getSystemInfo()`'s default resolves with the cached
+  // payload and hands the revalidation to the module cache rather than to the
+  // caller — so a panel that took the default was pinned to whatever this tab
+  // last saw, for its whole lifetime, with no correction until the next open.
+  // That is not a slower version of the truth, it is a different answer:
+  // uninstall the OpenCode CLI and reopen, and the button rendered enabled,
+  // `downgradeProvider` read the same stale list and agreed, and the chat failed
+  // at start instead of quietly falling back. `main` always had fresh data one
+  // frame in, so serving stale here was a regression rather than a trade.
+  //
+  // `refresh` restores that and keeps the instant paint — and it is still
+  // exactly one payload per mount, so the flip-flop hazard the seed-plus-stale
+  // arrangement was reaching for does not come back. The seed decides what is
+  // *drawn* first; this decides what is *believed*. Do not drop the `refresh` to
+  // save a round trip: the round trip is the point.
+  //
+  // The payload lands through `onLoad`, in the same tick as the downgrade it
+  // drives, so the provider row never renders the fresh list against the
+  // stale selection.
+  const { info: systemInfo, failed: systemInfoFailed } = useSystemInfo({
+    refresh: true,
+    onLoad: (info) => {
+      if (!info.codexConfigured && providerRef.current === "codex") {
+        setProvider("claude-code");
+      }
+      // The stored ACP vendor is validated here rather than in localStorage,
+      // because this is the only place that knows the live list — vendors are
+      // server-side data and can appear or disappear without a frontend build.
+      const vendors = info.acpProviders ?? [];
+      const selectedAcpId = acpProviderIdRef.current;
+      const usable = vendors.find((v) => v.id === selectedAcpId && v.available) ?? vendors.find((v) => v.available);
+      if (usable && usable.id !== selectedAcpId) setAcpProviderId(usable.id);
+      // Nothing installed (or the saved vendor was uninstalled) — fall back
+      // rather than leaving a selected provider that cannot start a chat.
+      if (!usable && providerRef.current === "acp") setProvider("claude-code");
+    },
+  });
   // `null` until /system-info returns — Codex treated as available until an
   // explicit false.
   //
@@ -126,7 +178,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // live), while a cached `false` would disable a button that may well be fine —
   // turning "still loading, trust the user's choice" into a claim the tab has no
   // current evidence for.
-  const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
+  // An unreachable /system-info reads as an explicit false: surface the toggle
+  // as disabled rather than silently allowing a request that will 500 on submit.
+  const codexConfigured: boolean | null = systemInfo ? Boolean(systemInfo.codexConfigured) : systemInfoFailed ? false : null;
   // ACP vendors from /system-info. Empty until it returns, and empty is the
   // honest default — unlike the two tri-states above, an unknown ACP list means
   // there are no buttons to render at all, so there is no optimistic case.
@@ -145,7 +199,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // since the cache warmed from staying clickable. The window in which this list
   // is both stale and interactive is that one round trip — the price of drawing
   // anything at all before the daemon has answered.
-  const [acpProviders, setAcpProviders] = useState<AcpProviderInfo[]>(() => seed?.acpProviders ?? []);
+  const acpProviders = useMemo<AcpProviderInfo[]>(() => (systemInfo ?? seed)?.acpProviders ?? [], [systemInfo, seed]);
   const [acpProviderId, setAcpProviderId] = useState<string>(getDefaultAcpProviderId);
   // Per-chat ACP model, as the vendor names it. Empty falls back to this
   // vendor's entry in `AgentSettings.acpProviderModels` (Settings → API), and
@@ -160,13 +214,16 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   // Cline's config schema).
   const [clineModel, setClineModel] = useState<string>(getDefaultClineModel);
   // Which Cline provider scopes the model catalog. Surfaced by /system-info so
-  // selecting `openrouter` there offers OpenRouter's models here.
-  const [clineProviderId, setClineProviderId] = useState<string>(() => seed?.clineProviderId ?? "");
+  // selecting `openrouter` there offers OpenRouter's models here. No
+  // availability check to match the ACP list: Cline is embedded and falls back
+  // to the backend's own environment credentials, so there is no unavailable
+  // state to fall back FROM.
+  const clineProviderId = (systemInfo ?? seed)?.clineProviderId ?? "";
   const [piModel, setPiModel] = useState<string>(getDefaultPiModel);
   // Whether each native harness is routed through OpenRouter — flips the model
   // pickers to OpenRouter's catalog. Sourced from /system-info.
-  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(() => Boolean(seed?.claudeCodeUseOpenRouter));
-  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(() => Boolean(seed?.codexUseOpenRouter));
+  const claudeCodeUseOpenRouter = Boolean((systemInfo ?? seed)?.claudeCodeUseOpenRouter);
+  const codexUseOpenRouter = Boolean((systemInfo ?? seed)?.codexUseOpenRouter);
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
   const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
@@ -351,11 +408,12 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     </div>
   );
 
-  // The provider the user has selected *right now*, for the effect below.
+  // The provider the user has selected *right now*, for the system-info
+  // `onLoad` near the top of this component.
   //
-  // That effect can downgrade the selection, and it must judge the selection as
-  // it stands when the answer arrives rather than as it stood at mount: it has
-  // `[]` deps, so its closure is frozen at the first render, and a user who
+  // That callback can downgrade the selection, and it must judge the selection as
+  // it stands when the answer arrives rather than as it stood at mount: the
+  // fetch is mount-only, so it must not lean on a render's closure, and a user who
   // picks a provider while the request is in flight would otherwise have that
   // click overruled by a decision made about a provider they had already moved
   // off. The window is short and — now that a cached payload resolves in a
@@ -371,80 +429,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     providerRef.current = provider;
     acpProviderIdRef.current = acpProviderId;
   }, [provider, acpProviderId]);
-
-  // Fetch system info once to learn which harnesses are configured. Until the
-  // fetch resolves, codexConfigured stays `null` and the UI treats Codex as
-  // available — the actual gate is in the button's disabled prop. If Codex was
-  // selected from localStorage but turns out to be unconfigured, we silently
-  // flip the in-memory state to claude-code without touching localStorage (the
-  // user's saved preference survives for the next time they reconfigure it).
-  //
-  // ## Why `refresh` here, when the seed above is what fixes the pop-in
-  //
-  // The two are separate jobs and only one of them is about speed. The
-  // synchronous `cachedSystemInfo()` seed is the entire reason the OpenCode
-  // button paints on frame one; nothing about that requires *this* call to be
-  // cached as well.
-  //
-  // And it must not be. `getSystemInfo()`'s default resolves with the cached
-  // payload and hands the revalidation to the module cache rather than to the
-  // caller — so a panel that took the default was pinned to whatever this tab
-  // last saw, for its whole lifetime, with no correction until the next open.
-  // That is not a slower version of the truth, it is a different answer:
-  // uninstall the OpenCode CLI and reopen, and the button rendered enabled,
-  // `downgradeProvider` read the same stale list and agreed, and the chat failed
-  // at start instead of quietly falling back. `main` always had fresh data one
-  // frame in, so serving stale here was a regression rather than a trade.
-  //
-  // `refresh` restores that and keeps the instant paint — and it is still
-  // exactly one payload per mount, so the flip-flop hazard the seed-plus-stale
-  // arrangement was reaching for does not come back. The seed decides what is
-  // *drawn* first; this decides what is *believed*. Do not drop the `refresh` to
-  // save a round trip: the round trip is the point.
-  useEffect(() => {
-    let cancelled = false;
-    getSystemInfo({ refresh: true })
-      .then((info) => {
-        if (cancelled) return;
-        const codexOk = Boolean(info.codexConfigured);
-        setCodexConfigured(codexOk);
-        if (!codexOk && providerRef.current === "codex") {
-          setProvider("claude-code");
-        }
-        setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
-        setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
-        // Scopes the Cline model catalog. No availability check to match the
-        // ACP block below: Cline is embedded and falls back to the backend's
-        // own environment credentials, so there is no unavailable state to
-        // fall back FROM.
-        setClineProviderId(info.clineProviderId ?? "");
-
-        // The stored ACP vendor is validated here rather than in localStorage,
-        // because this is the only place that knows the live list — vendors are
-        // server-side data and can appear or disappear without a frontend build.
-        const vendors = info.acpProviders ?? [];
-        setAcpProviders(vendors);
-        const selectedAcpId = acpProviderIdRef.current;
-        const usable = vendors.find((v) => v.id === selectedAcpId && v.available) ?? vendors.find((v) => v.available);
-        if (usable && usable.id !== selectedAcpId) setAcpProviderId(usable.id);
-        // Nothing installed (or the saved vendor was uninstalled) — fall back
-        // rather than leaving a selected provider that cannot start a chat.
-        if (!usable && providerRef.current === "acp") setProvider("claude-code");
-      })
-      .catch(() => {
-        // /system-info unreachable — assume unavailable and surface the
-        // toggle as disabled rather than silently allowing a request that
-        // will 500 on submit.
-        if (!cancelled) setCodexConfigured(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // No suppression needed any more: reading the two mutable selections through
-    // refs is what took `provider` and `acpProviderId` out of this closure, so
-    // the empty dependency list is now honest rather than asserted over a lint
-    // rule that disagreed with it.
-  }, []);
 
   // Lazy fetch agents when agent mode is first selected
   useEffect(() => {

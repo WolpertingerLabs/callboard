@@ -1,42 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
 import { Sparkles, Plus, Pencil, Trash2 } from "lucide-react";
 import { listCustomSkills, getCustomSkill, createCustomSkill, updateCustomSkill, deleteCustomSkill } from "../../api";
 import type { CustomSkillListItem } from "../../api";
 import FavoriteStar from "../../components/FavoriteStar";
 import { useFavorites } from "../../utils/favorites";
-
-const sectionStyle: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: 20,
-  background: "var(--bg)",
-  marginBottom: 16,
-};
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 13,
-  fontWeight: 600,
-  marginBottom: 6,
-  color: "var(--text)",
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--surface)",
-  color: "var(--text)",
-  fontSize: 13,
-  boxSizing: "border-box",
-};
-
-const helpStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--text-muted)",
-  marginTop: 4,
-};
+import { sectionStyle, labelStyle, inputStyle, helpStyle } from "./styles";
+import { useCrudList } from "./useCrudList";
 
 const errorBoxStyle: React.CSSProperties = {
   padding: "8px 12px",
@@ -57,29 +25,37 @@ interface EditorState {
 }
 
 export default function SkillsSettings() {
-  const [skills, setSkills] = useState<CustomSkillListItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [editor, setEditor] = useState<EditorState | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    items: skills,
+    loading,
+    editor,
+    setEditor,
+    saving,
+    error,
+    setError,
+    openEditor,
+    closeEditor,
+    handleSave,
+    handleDelete,
+  } = useCrudList<CustomSkillListItem, EditorState>({
+    list: listCustomSkills,
+    nameOf: (skill) => skill.name,
+    save: (editor) =>
+      editor.originalName === null
+        ? createCustomSkill({ name: editor.name, description: editor.description, content: editor.content })
+        : updateCustomSkill(editor.originalName, {
+            name: editor.name,
+            description: editor.description,
+            content: editor.content,
+          }),
+    remove: deleteCustomSkill,
+    confirmDeleteMessage: (name) => `Delete the skill "${name}"? This cannot be undone.`,
+  });
   const favoriteSkills = useFavorites("skills");
 
-  const refresh = useCallback(() => {
-    return listCustomSkills()
-      .then(setSkills)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
+  const openCreate = () => openEditor({ originalName: null, name: "", description: "", content: "" });
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  const openCreate = () => {
-    setError(null);
-    setEditor({ originalName: null, name: "", description: "", content: "" });
-  };
-
+  // Unlike Keywords, the list row lacks the skill body, so editing costs a GET.
   const openEdit = async (name: string) => {
     setError(null);
     try {
@@ -87,41 +63,6 @@ export default function SkillsSettings() {
       setEditor({ originalName: name, name: skill.name, description: skill.description, content: skill.content });
     } catch (err: any) {
       setError(err.message);
-    }
-  };
-
-  const handleSave = async () => {
-    if (!editor) return;
-    setSaving(true);
-    setError(null);
-    try {
-      if (editor.originalName === null) {
-        await createCustomSkill({ name: editor.name, description: editor.description, content: editor.content });
-      } else {
-        await updateCustomSkill(editor.originalName, {
-          name: editor.name,
-          description: editor.description,
-          content: editor.content,
-        });
-      }
-      setEditor(null);
-      await refresh();
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDelete = async (name: string) => {
-    if (!window.confirm(`Delete the skill "${name}"? This cannot be undone.`)) return;
-    setError(null);
-    try {
-      await deleteCustomSkill(name);
-      setSkills((prev) => prev.filter((s) => s.name !== name));
-    } catch (err: any) {
-      setError(err.message);
-      refresh();
     }
   };
 
@@ -204,10 +145,7 @@ export default function SkillsSettings() {
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button
-                onClick={() => {
-                  setEditor(null);
-                  setError(null);
-                }}
+                onClick={closeEditor}
                 disabled={saving}
                 style={{
                   padding: "8px 16px",

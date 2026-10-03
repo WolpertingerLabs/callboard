@@ -1,40 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
 import { Braces, Plus, Pencil, Trash2 } from "lucide-react";
 import { listKeywords, createKeyword, updateKeyword, deleteKeyword } from "../../api";
 import type { Keyword } from "../../api";
-
-const sectionStyle: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: 20,
-  background: "var(--bg)",
-  marginBottom: 16,
-};
-
-const labelStyle: React.CSSProperties = {
-  display: "block",
-  fontSize: 13,
-  fontWeight: 600,
-  marginBottom: 6,
-  color: "var(--text)",
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--surface)",
-  color: "var(--text)",
-  fontSize: 13,
-  boxSizing: "border-box",
-};
-
-const helpStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--text-muted)",
-  marginTop: 4,
-};
+import { sectionStyle, labelStyle, inputStyle, helpStyle } from "./styles";
+import { useCrudList } from "./useCrudList";
 
 interface EditorState {
   /** Name of the keyword being edited, or null when creating a new one. */
@@ -53,63 +21,31 @@ interface EditorState {
  * field the editor needs.
  */
 export default function KeywordsSettings() {
-  const [keywords, setKeywords] = useState<Keyword[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [editor, setEditor] = useState<EditorState | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    items: keywords,
+    loading,
+    editor,
+    setEditor,
+    saving,
+    error,
+    openEditor,
+    closeEditor,
+    handleSave,
+    handleDelete,
+  } = useCrudList<Keyword, EditorState>({
+    list: listKeywords,
+    nameOf: (keyword) => keyword.name,
+    save: (editor) =>
+      editor.originalName === null
+        ? createKeyword({ name: editor.name, description: editor.description, body: editor.body })
+        : updateKeyword(editor.originalName, { name: editor.name, description: editor.description, body: editor.body }),
+    remove: deleteKeyword,
+    confirmDeleteMessage: (name) => `Delete the keyword "$${name}"? This cannot be undone.`,
+  });
 
-  const refresh = useCallback(() => {
-    return listKeywords()
-      .then(setKeywords)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
+  const openCreate = () => openEditor({ originalName: null, name: "", description: "", body: "" });
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  const openCreate = () => {
-    setError(null);
-    setEditor({ originalName: null, name: "", description: "", body: "" });
-  };
-
-  const openEdit = (keyword: Keyword) => {
-    setError(null);
-    setEditor({ originalName: keyword.name, name: keyword.name, description: keyword.description, body: keyword.body });
-  };
-
-  const handleSave = async () => {
-    if (!editor) return;
-    setSaving(true);
-    setError(null);
-    try {
-      if (editor.originalName === null) {
-        await createKeyword({ name: editor.name, description: editor.description, body: editor.body });
-      } else {
-        await updateKeyword(editor.originalName, { name: editor.name, description: editor.description, body: editor.body });
-      }
-      setEditor(null);
-      await refresh();
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDelete = async (name: string) => {
-    if (!window.confirm(`Delete the keyword "$${name}"? This cannot be undone.`)) return;
-    setError(null);
-    try {
-      await deleteKeyword(name);
-      setKeywords((prev) => prev.filter((k) => k.name !== name));
-    } catch (err: any) {
-      setError(err.message);
-      refresh();
-    }
-  };
+  const openEdit = (keyword: Keyword) => openEditor({ originalName: keyword.name, name: keyword.name, description: keyword.description, body: keyword.body });
 
   return (
     <div style={{ maxWidth: 720 }}>
@@ -208,10 +144,7 @@ export default function KeywordsSettings() {
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button
-                onClick={() => {
-                  setEditor(null);
-                  setError(null);
-                }}
+                onClick={closeEditor}
                 disabled={saving}
                 style={{
                   padding: "8px 16px",

@@ -1,12 +1,16 @@
 import { useState, useEffect } from "react";
-import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil, Zap, Loader2, Moon, SkipForward } from "lucide-react";
+import { Plus, Play, Pause, CheckCircle, Clock, RotateCcw, Calendar, Trash2, X, Pencil, Zap, Loader2, SkipForward } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
+import { useSystemInfo } from "../../../hooks/useSystemInfo";
 import ConfirmModal from "../../../components/ConfirmModal";
 import ProviderConfigPicker from "../../../components/ProviderConfigPicker";
-import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob, runAgentCronJob, getSystemInfo } from "../../../api";
+import { getAgentCronJobs, createAgentCronJob, updateAgentCronJob, deleteAgentCronJob, runAgentCronJob } from "../../../api";
 import type { CronJob, AgentConfig } from "../../../api";
-import type { AgentProviderKind, EffortLevel } from "../../../utils/localStorage";
+import type { AgentProviderKind } from "../../../utils/localStorage";
 import { errorMessage } from "../../../utils/errorMessage";
+import { QuietHoursBadge, QuietHoursFields } from "./QuietHours";
+import { deleteButtonStyle } from "./dashboardStyles";
+import { EMPTY_CRON_JOB_FORM, cronJobCreatePayload, cronJobFormFromJob, cronJobUpdatePayload, isCronJobFormComplete, type CronJobForm } from "./cronJobForm";
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -182,6 +186,127 @@ const typeConfig: Record<string, { color: string; icon: typeof Clock }> = {
   indefinite: { color: "var(--warning)", icon: Clock },
 };
 
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: "10px 12px",
+  fontSize: 14,
+};
+
+const checkboxRowStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, cursor: "pointer" };
+
+/** What the provider picker needs from system-info, identical for the create and edit forms. */
+interface CronPickerContext {
+  cwd: string | undefined;
+  clineProviderId: string;
+  codexConfigured: boolean | null;
+  claudeCodeUseOpenRouter: boolean;
+  codexUseOpenRouter: boolean;
+}
+
+/**
+ * The fields of the cron job editor, used by both the New Job form and the
+ * inline edit form. Submit/cancel buttons stay with the caller — they are
+ * what actually differs between the two.
+ */
+function CronJobFormFields({
+  form,
+  setForm,
+  schedulePlaceholder,
+  configError,
+  picker,
+}: {
+  form: CronJobForm;
+  setForm: React.Dispatch<React.SetStateAction<CronJobForm>>;
+  schedulePlaceholder: string;
+  configError: string | null;
+  picker: CronPickerContext;
+}) {
+  const set = (patch: Partial<CronJobForm>) => setForm((prev) => ({ ...prev, ...patch }));
+  const setModel = (provider: AgentProviderKind, model: string) => setForm((prev) => ({ ...prev, models: { ...prev.models, [provider]: model } }));
+  return (
+    <>
+      <input type="text" value={form.name} onChange={(e) => set({ name: e.target.value })} placeholder="Job name" style={inputStyle} />
+      <input type="text" value={form.schedule} onChange={(e) => set({ schedule: e.target.value })} placeholder={schedulePlaceholder} style={inputStyle} />
+      <select value={form.type} onChange={(e) => set({ type: e.target.value as CronJob["type"] })} style={{ ...inputStyle, cursor: "pointer" }}>
+        <option value="recurring">Recurring</option>
+        <option value="one-off">One-off</option>
+        <option value="indefinite">Indefinite</option>
+      </select>
+      <input type="text" value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="Description" style={inputStyle} />
+      <textarea
+        value={form.prompt}
+        onChange={(e) => set({ prompt: e.target.value })}
+        placeholder="Prompt for the agent (optional)"
+        rows={3}
+        style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
+      />
+      <div
+        style={{
+          padding: 12,
+          borderRadius: 8,
+          border: "1px solid var(--border)",
+          background: "var(--bg)",
+        }}
+      >
+        {configError && <div role="alert">{configError}</div>}
+        <ProviderConfigPicker
+          cwd={picker.cwd}
+          provider={form.provider}
+          onProviderChange={(provider) => set({ provider })}
+          effort={form.effort}
+          onEffortChange={(effort) => set({ effort })}
+          claudeModel={form.models["claude-code"] ?? ""}
+          onClaudeModelChange={(model) => setModel("claude-code", model)}
+          codexModel={form.models.codex ?? ""}
+          onCodexModelChange={(model) => setModel("codex", model)}
+          clineProviderId={picker.clineProviderId}
+          clineModel={form.models.cline ?? ""}
+          onClineModelChange={(model) => setModel("cline", model)}
+          piModel={form.models.pi ?? ""}
+          onPiModelChange={(model) => setModel("pi", model)}
+          codexConfigured={picker.codexConfigured}
+          claudeCodeUseOpenRouter={picker.claudeCodeUseOpenRouter}
+          codexUseOpenRouter={picker.codexUseOpenRouter}
+          onOpenApiSettings={() => {
+            window.location.href = "/settings/api";
+          }}
+        />
+      </div>
+      <QuietHoursFields
+        enabled={form.qhEnabled}
+        start={form.qhStart}
+        end={form.qhEnd}
+        onEnabledChange={(qhEnabled) => set({ qhEnabled })}
+        onStartChange={(qhStart) => set({ qhStart })}
+        onEndChange={(qhEnd) => set({ qhEnd })}
+        inputStyle={inputStyle}
+      />
+      <div>
+        <label style={checkboxRowStyle}>
+          <input type="checkbox" checked={form.skipIfRunning} onChange={(e) => set({ skipIfRunning: e.target.checked })} style={{ width: 16, height: 16 }} />
+          <span style={{ fontSize: 13, fontWeight: 500 }}>Skip if running</span>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— skip execution if previous run is still active</span>
+        </label>
+      </div>
+      <div>
+        <label style={checkboxRowStyle}>
+          <input
+            type="checkbox"
+            checked={form.requireCompletion}
+            onChange={(e) => set({ requireCompletion: e.target.checked })}
+            style={{ width: 16, height: 16 }}
+          />
+          <span style={{ fontSize: 13, fontWeight: 500 }}>Require explicit completion</span>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— session must call objective_complete; re-prompted if it stops early</span>
+        </label>
+      </div>
+    </>
+  );
+}
+
 export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const isMobile = useIsMobile();
   const [jobs, setJobs] = useState<CronJob[]>([]);
@@ -189,53 +314,25 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
   const [showForm, setShowForm] = useState(false);
 
   // Create form state
-  const [formName, setFormName] = useState("");
-  const [formSchedule, setFormSchedule] = useState("");
-  const [formType, setFormType] = useState<CronJob["type"]>("recurring");
-  const [formDescription, setFormDescription] = useState("");
-  const [formPrompt, setFormPrompt] = useState("");
-  const [formQHEnabled, setFormQHEnabled] = useState(false);
-  const [formQHStart, setFormQHStart] = useState("22:00");
-  const [formQHEnd, setFormQHEnd] = useState("07:00");
-  const [formSkipIfRunning, setFormSkipIfRunning] = useState(false);
-  const [formRequireCompletion, setFormRequireCompletion] = useState(false);
+  const [createForm, setCreateForm] = useState<CronJobForm>(EMPTY_CRON_JOB_FORM);
   const [formSaving, setFormSaving] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
-  // Provider config — defaults to "claude-code" so existing behavior is
-  // preserved for crons created without picking. Empty model = use the
-  // global default; undefined effort = use the model default.
-  const [formProvider, setFormProvider] = useState<AgentProviderKind>("claude-code");
-  const [formClaudeModel, setFormClaudeModel] = useState<string>("");
-  const [formCodexModel, setFormCodexModel] = useState<string>("");
-  const [formClineModel, setFormClineModel] = useState("");
-  const [formPiModel, setFormPiModel] = useState("");
-  const [formEffort, setFormEffort] = useState<EffortLevel | undefined>(undefined);
 
   // System-info fetch — drives whether the Codex option is enabled in
   // ProviderConfigPicker (`null` while in flight so the toggle stays clickable
   // optimistically) and whether the model pickers show OpenRouter slugs.
-  const [codexConfigured, setCodexConfigured] = useState<boolean | null>(null);
-  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
-  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
-  const [clineProviderId, setClineProviderId] = useState("");
-  useEffect(() => {
-    // `refresh` rather than the cached default, because what this gates is not a
-    // chat the user is about to watch start. A stale `codexConfigured: true`
-    // lets someone save a cron job against a Codex that is not configured, and
-    // that does not fail here — it fails on a schedule, hours later, with nobody
-    // watching. Deferred unattended failure is worse than the immediate kind,
-    // not a lesser version of it, so this one pays the round trip.
-    getSystemInfo({ refresh: true })
-      .then((info) => {
-        setCodexConfigured(info.codexConfigured ?? false);
-        setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
-        setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
-        setClineProviderId(info.clineProviderId ?? "");
-      })
-      .catch(() => {
-        setCodexConfigured(false);
-      });
-  }, []);
+  //
+  // `refresh` rather than the cached default, because what this gates is not a
+  // chat the user is about to watch start. A stale `codexConfigured: true`
+  // lets someone save a cron job against a Codex that is not configured, and
+  // that does not fail here — it fails on a schedule, hours later, with nobody
+  // watching. Deferred unattended failure is worse than the immediate kind,
+  // not a lesser version of it, so this one pays the round trip.
+  const { info: systemInfo, failed: systemInfoFailed } = useSystemInfo({ refresh: true });
+  const codexConfigured = systemInfo ? (systemInfo.codexConfigured ?? false) : systemInfoFailed ? false : null;
+  const claudeCodeUseOpenRouter = Boolean(systemInfo?.claudeCodeUseOpenRouter);
+  const codexUseOpenRouter = Boolean(systemInfo?.codexUseOpenRouter);
+  const clineProviderId = systemInfo?.clineProviderId ?? "";
 
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<CronJob | null>(null);
@@ -246,23 +343,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
 
   // Edit form state
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editSchedule, setEditSchedule] = useState("");
-  const [editType, setEditType] = useState<CronJob["type"]>("recurring");
-  const [editDescription, setEditDescription] = useState("");
-  const [editPrompt, setEditPrompt] = useState("");
-  const [editQHEnabled, setEditQHEnabled] = useState(false);
-  const [editQHStart, setEditQHStart] = useState("22:00");
-  const [editQHEnd, setEditQHEnd] = useState("07:00");
-  const [editSkipIfRunning, setEditSkipIfRunning] = useState(false);
-  const [editRequireCompletion, setEditRequireCompletion] = useState(false);
+  const [editForm, setEditForm] = useState<CronJobForm>(EMPTY_CRON_JOB_FORM);
   const [editSaving, setEditSaving] = useState(false);
-  const [editProvider, setEditProvider] = useState<AgentProviderKind>("claude-code");
-  const [editClaudeModel, setEditClaudeModel] = useState<string>("");
-  const [editCodexModel, setEditCodexModel] = useState<string>("");
-  const [editClineModel, setEditClineModel] = useState("");
-  const [editPiModel, setEditPiModel] = useState("");
-  const [editEffort, setEditEffort] = useState<EffortLevel | undefined>(undefined);
 
   const loadJobs = () => {
     setLoading(true);
@@ -313,55 +395,15 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formName.trim() || !formSchedule.trim() || !formDescription.trim()) return;
+    if (!isCronJobFormComplete(createForm)) return;
 
     setConfigError(null);
     setFormSaving(true);
     try {
-      const job = await createAgentCronJob(agent.alias, {
-        name: formName.trim(),
-        schedule: formSchedule.trim(),
-        type: formType,
-        status: "active",
-        description: formDescription.trim(),
-        action: {
-          type: "start_session",
-          prompt: formPrompt.trim() || undefined,
-          // Only persist provider/model/effort when they diverge from
-          // "agent default" — `provider: "claude-code"` with empty model and
-          // undefined effort is the same as omitting the fields, and
-          // omitting keeps stored JSON tidy. The model field holds whichever
-          // provider's selection applies: a Codex slug or an Anthropic
-          // alias/ID for claude-code.
-          ...(formProvider !== "claude-code" && { provider: formProvider }),
-          ...(formProvider === "claude-code" && formClaudeModel.trim() && { model: formClaudeModel.trim() }),
-          ...(formProvider === "codex" && formCodexModel.trim() && { model: formCodexModel.trim() }),
-          ...(formProvider === "cline" && formClineModel.trim() && { model: formClineModel.trim() }),
-          ...(formProvider === "pi" && formPiModel.trim() && { model: formPiModel.trim() }),
-          ...(["codex", "cline", "pi"].includes(formProvider) && formEffort && { effort: formEffort }),
-          ...(formRequireCompletion && { requireExplicitCompletion: true }),
-        },
-        ...(formQHEnabled && { quietHours: { enabled: true, start: formQHStart, end: formQHEnd } }),
-        ...(formSkipIfRunning && { skipIfRunning: true }),
-      });
+      const job = await createAgentCronJob(agent.alias, cronJobCreatePayload(createForm));
       setJobs((prev) => [...prev, job]);
       setShowForm(false);
-      setFormName("");
-      setFormSchedule("");
-      setFormType("recurring");
-      setFormDescription("");
-      setFormPrompt("");
-      setFormQHEnabled(false);
-      setFormQHStart("22:00");
-      setFormQHEnd("07:00");
-      setFormSkipIfRunning(false);
-      setFormRequireCompletion(false);
-      setFormProvider("claude-code");
-      setFormClaudeModel("");
-      setFormCodexModel("");
-      setFormClineModel("");
-      setFormPiModel("");
-      setFormEffort(undefined);
+      setCreateForm(EMPTY_CRON_JOB_FORM);
     } catch (error) {
       setConfigError(errorMessage(error, "Could not save cron configuration"));
     } finally {
@@ -371,32 +413,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
 
   const startEditing = (job: CronJob) => {
     setEditingJobId(job.id);
-    setEditName(job.name);
-    setEditSchedule(job.schedule);
-    setEditType(job.type);
-    setEditDescription(job.description);
-    setEditPrompt(job.action?.prompt || "");
-    setEditQHEnabled(job.quietHours?.enabled || false);
-    setEditQHStart(job.quietHours?.start || "22:00");
-    setEditQHEnd(job.quietHours?.end || "07:00");
-    setEditSkipIfRunning(job.skipIfRunning || false);
-    setEditRequireCompletion(job.action?.requireExplicitCompletion || false);
-    // The stored model belongs to whichever provider the action targets —
-    // hydrate the matching per-provider field so the picker shows it under
-    // the right toggle (and the other field starts clean).
-    //
-    // A cron stored on the removed OpenRouter harness has no toggle to land on,
-    // so editing one re-targets it to Claude Code and drops its model — an OR
-    // slug means nothing there. Until someone saves it, firing the cron fails
-    // with a named error; saving is what converts it.
-    const stored = job.action?.provider ?? "claude-code";
-    const jobProvider: AgentProviderKind = (stored as string) === "openrouter" ? "claude-code" : stored;
-    setEditProvider(jobProvider);
-    setEditClaudeModel(jobProvider === "claude-code" && (stored as string) !== "openrouter" ? (job.action?.model ?? "") : "");
-    setEditCodexModel(jobProvider === "codex" ? (job.action?.model ?? "") : "");
-    setEditClineModel(jobProvider === "cline" ? (job.action?.model ?? "") : "");
-    setEditPiModel(jobProvider === "pi" ? (job.action?.model ?? "") : "");
-    setEditEffort(job.action?.effort);
+    setEditForm(cronJobFormFromJob(job));
   };
 
   const cancelEditing = () => {
@@ -405,39 +422,13 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
 
   const handleEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingJobId || !editName.trim() || !editSchedule.trim() || !editDescription.trim()) return;
+    if (!editingJobId || !isCronJobFormComplete(editForm)) return;
 
     setConfigError(null);
     setEditSaving(true);
     try {
-      // This editor owns model/provider/effort, prompt and completion only.
-      // Preserve execution folder, maxTurns, action type and future fields.
-      const preservedAction = { ...jobs.find((job) => job.id === editingJobId)?.action };
-      delete preservedAction.provider;
-      delete preservedAction.model;
-      delete preservedAction.effort;
-      delete preservedAction.prompt;
-      delete preservedAction.requireExplicitCompletion;
-      const updated = await updateAgentCronJob(agent.alias, editingJobId, {
-        name: editName.trim(),
-        schedule: editSchedule.trim(),
-        type: editType,
-        description: editDescription.trim(),
-        action: {
-          ...preservedAction,
-          type: preservedAction.type ?? "start_session",
-          prompt: editPrompt.trim() || undefined,
-          ...(editProvider !== "claude-code" && { provider: editProvider }),
-          ...(editProvider === "claude-code" && editClaudeModel.trim() && { model: editClaudeModel.trim() }),
-          ...(editProvider === "codex" && editCodexModel.trim() && { model: editCodexModel.trim() }),
-          ...(editProvider === "cline" && editClineModel.trim() && { model: editClineModel.trim() }),
-          ...(editProvider === "pi" && editPiModel.trim() && { model: editPiModel.trim() }),
-          ...(["codex", "cline", "pi"].includes(editProvider) && editEffort && { effort: editEffort }),
-          ...(editRequireCompletion && { requireExplicitCompletion: true }),
-        },
-        quietHours: editQHEnabled ? { enabled: true, start: editQHStart, end: editQHEnd } : { enabled: false, start: editQHStart, end: editQHEnd },
-        skipIfRunning: editSkipIfRunning,
-      });
+      const existingAction = jobs.find((job) => job.id === editingJobId)?.action;
+      const updated = await updateAgentCronJob(agent.alias, editingJobId, cronJobUpdatePayload(editForm, existingAction));
       setJobs((prev) => prev.map((j) => (j.id === editingJobId ? updated : j)));
       setEditingJobId(null);
     } catch (error) {
@@ -447,14 +438,8 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
     }
   };
 
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    background: "var(--bg)",
-    border: "1px solid var(--border)",
-    borderRadius: 8,
-    padding: "10px 12px",
-    fontSize: 14,
-  };
+  // Shared by the create and edit forms' provider pickers.
+  const pickerContext: CronPickerContext = { cwd: agent.workspacePath, clineProviderId, codexConfigured, claudeCodeUseOpenRouter, codexUseOpenRouter };
 
   const scheduleTz = agent.userTimezone || agent.serverTimezone || "UTC";
 
@@ -481,97 +466,13 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             gap: 14,
           }}
         >
-          <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Job name" style={inputStyle} />
-          <input
-            type="text"
-            value={editSchedule}
-            onChange={(e) => setEditSchedule(e.target.value)}
-            placeholder="Schedule (cron expression)"
-            style={inputStyle}
+          <CronJobFormFields
+            form={editForm}
+            setForm={setEditForm}
+            schedulePlaceholder="Schedule (cron expression)"
+            configError={configError}
+            picker={pickerContext}
           />
-          <select value={editType} onChange={(e) => setEditType(e.target.value as CronJob["type"])} style={{ ...inputStyle, cursor: "pointer" }}>
-            <option value="recurring">Recurring</option>
-            <option value="one-off">One-off</option>
-            <option value="indefinite">Indefinite</option>
-          </select>
-          <input type="text" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} placeholder="Description" style={inputStyle} />
-          <textarea
-            value={editPrompt}
-            onChange={(e) => setEditPrompt(e.target.value)}
-            placeholder="Prompt for the agent (optional)"
-            rows={3}
-            style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
-          />
-          <div
-            style={{
-              padding: 12,
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
-            }}
-          >
-            {configError && <div role="alert">{configError}</div>}
-            <ProviderConfigPicker
-              cwd={agent.workspacePath}
-              provider={editProvider}
-              onProviderChange={setEditProvider}
-              effort={editEffort}
-              onEffortChange={setEditEffort}
-              claudeModel={editClaudeModel}
-              onClaudeModelChange={setEditClaudeModel}
-              codexModel={editCodexModel}
-              onCodexModelChange={setEditCodexModel}
-              clineProviderId={clineProviderId}
-              clineModel={editClineModel}
-              onClineModelChange={setEditClineModel}
-              piModel={editPiModel}
-              onPiModelChange={setEditPiModel}
-              codexConfigured={codexConfigured}
-              claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
-              codexUseOpenRouter={codexUseOpenRouter}
-              onOpenApiSettings={() => {
-                window.location.href = "/settings/api";
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={editQHEnabled} onChange={(e) => setEditQHEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
-              <span style={{ fontSize: 13, fontWeight: 500 }}>Quiet hours</span>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— suppress during a time window</span>
-            </label>
-            {editQHEnabled && (
-              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>Start</label>
-                  <input type="time" value={editQHStart} onChange={(e) => setEditQHStart(e.target.value)} style={inputStyle} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>End</label>
-                  <input type="time" value={editQHEnd} onChange={(e) => setEditQHEnd(e.target.value)} style={inputStyle} />
-                </div>
-              </div>
-            )}
-          </div>
-          <div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={editSkipIfRunning} onChange={(e) => setEditSkipIfRunning(e.target.checked)} style={{ width: 16, height: 16 }} />
-              <span style={{ fontSize: 13, fontWeight: 500 }}>Skip if running</span>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— skip execution if previous run is still active</span>
-            </label>
-          </div>
-          <div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={editRequireCompletion}
-                onChange={(e) => setEditRequireCompletion(e.target.checked)}
-                style={{ width: 16, height: 16 }}
-              />
-              <span style={{ fontSize: 13, fontWeight: 500 }}>Require explicit completion</span>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— session must call objective_complete; re-prompted if it stops early</span>
-            </label>
-          </div>
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
             <button
               type="button"
@@ -591,7 +492,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             </button>
             <button
               type="submit"
-              disabled={!editName.trim() || !editSchedule.trim() || !editDescription.trim() || editSaving}
+              disabled={!isCronJobFormComplete(editForm) || editSaving}
               style={{
                 padding: "8px 14px",
                 borderRadius: 6,
@@ -815,23 +716,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
         )}
 
         {/* Quiet hours indicator */}
-        {job.quietHours?.enabled && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
-              fontSize: 12,
-              color: "var(--text-muted)",
-              marginBottom: 6,
-            }}
-          >
-            <Moon size={12} />
-            <span>
-              Quiet {job.quietHours.start} – {job.quietHours.end}
-            </span>
-          </div>
-        )}
+        <QuietHoursBadge quietHours={job.quietHours} />
 
         {/* Description */}
         <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 10 }}>{job.description}</p>
@@ -937,22 +822,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
               <Pencil size={12} />
             </button>
             {!job.isDefault && (
-              <button
-                onClick={() => setDeleteTarget(job)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  padding: "6px 10px",
-                  borderRadius: 6,
-                  fontSize: 12,
-                  fontWeight: 500,
-                  background: "transparent",
-                  color: "var(--danger, #f85149)",
-                  border: "1px solid color-mix(in srgb, var(--danger, #f85149) 30%, transparent)",
-                  cursor: "pointer",
-                }}
-              >
+              <button onClick={() => setDeleteTarget(job)} style={deleteButtonStyle}>
                 <Trash2 size={12} />
               </button>
             )}
@@ -1016,100 +886,16 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
             gap: 14,
           }}
         >
-          <input type="text" value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="Job name" style={inputStyle} />
-          <input
-            type="text"
-            value={formSchedule}
-            onChange={(e) => setFormSchedule(e.target.value)}
-            placeholder="Schedule (e.g. Every weekday at 9:00 AM)"
-            style={inputStyle}
+          <CronJobFormFields
+            form={createForm}
+            setForm={setCreateForm}
+            schedulePlaceholder="Schedule (e.g. Every weekday at 9:00 AM)"
+            configError={configError}
+            picker={pickerContext}
           />
-          <select value={formType} onChange={(e) => setFormType(e.target.value as CronJob["type"])} style={{ ...inputStyle, cursor: "pointer" }}>
-            <option value="recurring">Recurring</option>
-            <option value="one-off">One-off</option>
-            <option value="indefinite">Indefinite</option>
-          </select>
-          <input type="text" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} placeholder="Description" style={inputStyle} />
-          <textarea
-            value={formPrompt}
-            onChange={(e) => setFormPrompt(e.target.value)}
-            placeholder="Prompt for the agent (optional)"
-            rows={3}
-            style={{ ...inputStyle, resize: "vertical", minHeight: 60 }}
-          />
-          <div
-            style={{
-              padding: 12,
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              background: "var(--bg)",
-            }}
-          >
-            {configError && <div role="alert">{configError}</div>}
-            <ProviderConfigPicker
-              cwd={agent.workspacePath}
-              provider={formProvider}
-              onProviderChange={setFormProvider}
-              effort={formEffort}
-              onEffortChange={setFormEffort}
-              claudeModel={formClaudeModel}
-              onClaudeModelChange={setFormClaudeModel}
-              codexModel={formCodexModel}
-              onCodexModelChange={setFormCodexModel}
-              clineProviderId={clineProviderId}
-              clineModel={formClineModel}
-              onClineModelChange={setFormClineModel}
-              piModel={formPiModel}
-              onPiModelChange={setFormPiModel}
-              codexConfigured={codexConfigured}
-              claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
-              codexUseOpenRouter={codexUseOpenRouter}
-              onOpenApiSettings={() => {
-                window.location.href = "/settings/api";
-              }}
-            />
-          </div>
-          <div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={formQHEnabled} onChange={(e) => setFormQHEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
-              <span style={{ fontSize: 13, fontWeight: 500 }}>Quiet hours</span>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— suppress during a time window</span>
-            </label>
-            {formQHEnabled && (
-              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>Start</label>
-                  <input type="time" value={formQHStart} onChange={(e) => setFormQHStart(e.target.value)} style={inputStyle} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>End</label>
-                  <input type="time" value={formQHEnd} onChange={(e) => setFormQHEnd(e.target.value)} style={inputStyle} />
-                </div>
-              </div>
-            )}
-          </div>
-          <div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={formSkipIfRunning} onChange={(e) => setFormSkipIfRunning(e.target.checked)} style={{ width: 16, height: 16 }} />
-              <span style={{ fontSize: 13, fontWeight: 500 }}>Skip if running</span>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— skip execution if previous run is still active</span>
-            </label>
-          </div>
-          <div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={formRequireCompletion}
-                onChange={(e) => setFormRequireCompletion(e.target.checked)}
-                style={{ width: 16, height: 16 }}
-              />
-              <span style={{ fontSize: 13, fontWeight: 500 }}>Require explicit completion</span>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— session must call objective_complete; re-prompted if it stops early</span>
-            </label>
-          </div>
           <button
             type="submit"
-            disabled={!formName.trim() || !formSchedule.trim() || !formDescription.trim() || formSaving}
+            disabled={!isCronJobFormComplete(createForm) || formSaving}
             style={{
               background: "var(--accent)",
               color: "var(--text-on-accent)",

@@ -31,13 +31,13 @@ import {
 } from "lucide-react";
 import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useSystemInfo } from "../hooks/useSystemInfo";
 import {
   getChat,
   getMessages,
   getPending,
   getActivity,
   releaseActivity,
-  getSystemInfo,
   respondToChat,
   stopChat,
   uploadImages,
@@ -827,7 +827,14 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // picked in the panel. Declared here rather than beside the other
   // /system-info state below because `providerDisplayName` reads it during
   // render, and a `const` declared further down would be in the TDZ.
-  const [acpLabels, setAcpLabels] = useState<Record<string, string>>({});
+  //
+  // The cached default, not `refresh`: every field read off it here only
+  // shapes what the composer displays.
+  const { info: systemInfo } = useSystemInfo();
+  const acpLabels = useMemo(
+    (): Record<string, string> => Object.fromEntries((systemInfo?.acpProviders ?? []).map((v) => [v.id, v.label])),
+    [systemInfo],
+  );
 
   // Forking is meaningless for an ACP chat, so the source is null there rather
   // than a stand-in value. ACP session state lives inside the vendor's process
@@ -942,27 +949,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   // Whether the pinned native harness is routed through OpenRouter — flips the
   // composer's model picker to OpenRouter's catalog. Sourced from /system-info.
-  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
-  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
+  const claudeCodeUseOpenRouter = Boolean(systemInfo?.claudeCodeUseOpenRouter);
+  const codexUseOpenRouter = Boolean(systemInfo?.codexUseOpenRouter);
   // Which Cline provider scopes the composer's model catalog. Unlike the ACP
   // vendor below this is NOT per-chat: Cline's provider is a global setting, so
   // there is nothing pinned in chat metadata to read it from.
-  const [clineProviderId, setClineProviderId] = useState("");
-  useEffect(() => {
-    let cancelled = false;
-    getSystemInfo()
-      .then((info) => {
-        if (cancelled) return;
-        setClaudeCodeUseOpenRouter(Boolean(info.claudeCodeUseOpenRouter));
-        setCodexUseOpenRouter(Boolean(info.codexUseOpenRouter));
-        setClineProviderId(info.clineProviderId ?? "");
-        setAcpLabels(Object.fromEntries((info.acpProviders ?? []).map((v) => [v.id, v.label])));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const clineProviderId = systemInfo?.clineProviderId ?? "";
   // For effort we need a tri-state: `null` = no change pending,
   // `undefined` = user explicitly cleared (revert to model default),
   // an EffortLevel = user picked a new level.

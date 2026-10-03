@@ -3,6 +3,7 @@ import { Info, Server, Cpu, Shield, ExternalLink, Layers, ArrowUpCircle } from "
 import { getSystemInfo, getAgentSettings } from "../../api";
 import type { SystemInfo } from "../../api";
 import type { AgentSettings } from "shared/types/index.js";
+import { sectionStyle, headerStyle, subtitleStyle } from "./styles";
 
 /** Compare two semver strings. Returns > 0 if a > b, < 0 if a < b, 0 if equal.
  *  Handles pre-release segments: 1.0.0 > 1.0.0-alpha.1, alpha.10 > alpha.9. */
@@ -59,27 +60,6 @@ function isNewerVersion(local: string, remote: string): boolean {
   if (!local || !remote || local === remote) return false;
   return compareVersions(remote, local) > 0;
 }
-
-const sectionStyle: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: 20,
-  background: "var(--bg)",
-  marginBottom: 16,
-};
-
-const headerStyle: React.CSSProperties = {
-  marginBottom: 6,
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-};
-
-const subtitleStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--text-muted)",
-  marginBottom: 12,
-};
 
 const rowStyle: React.CSSProperties = {
   display: "flex",
