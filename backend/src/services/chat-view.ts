@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { CHAT_FILTER_VALUE_LIMIT, CHAT_SEARCH_VALUE_LIMIT, type ChatViewSnapshot } from "shared/types/chat-filters.js";
 import { getSession } from "./sessions.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("chat-view");
 const viewIdSchema = z
   .string()
   .min(8)
@@ -120,5 +123,14 @@ export function bindChatView(owner: string | undefined, input: unknown) {
   return input === undefined ? undefined : chatViews.publish(owner, input);
 }
 
-const cleanupTimer = setInterval(() => chatViews.cleanup(), 30_000);
+// The session store can throw (sessions.json caught mid-write by an outside
+// writer). Thrown from a timer that is an uncaughtException, which exits the
+// daemon — skip this pass instead; the next one reads the file again.
+const cleanupTimer = setInterval(() => {
+  try {
+    chatViews.cleanup();
+  } catch (err) {
+    log.warn(`Skipping chat-view cleanup: ${(err as Error).message}`);
+  }
+}, 30_000);
 cleanupTimer.unref();
