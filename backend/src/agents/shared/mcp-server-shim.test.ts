@@ -67,6 +67,20 @@ describe("mcp-server-shim connect retry", () => {
     expect(result.stdout).toBe('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n');
   }, 30_000);
 
+  it("stops retrying and exits promptly once stdin ends with no socket to reach", async () => {
+    // The turn's tool server is already gone and so is the client: waiting out
+    // the ~10s retry budget would keep a dead child around for nobody.
+    const started = Date.now();
+    const { child, exited } = startShim(scratchSocketPath());
+    child.stdin!.end('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n');
+
+    const result = await exited;
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("shim-test: cannot connect to");
+    // Includes tsx's startup; the full budget would put this past 10s.
+    expect(Date.now() - started).toBeLessThan(7000);
+  }, 30_000);
+
   it("exits non-zero once retries are exhausted on a socket that never comes up", async () => {
     // ~100 attempts × 100ms: this one waits out the whole retry budget.
     const { exited } = startShim(scratchSocketPath());
