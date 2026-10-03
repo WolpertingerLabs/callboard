@@ -217,6 +217,24 @@ describe("MCP tools follow the chat's tool-set context", () => {
     expect(screen.queryByText("No MCP tools available.")).toBeNull();
   });
 
+  it("a chat opened under an id that is not its record's id (a session id) still gets its tools", async () => {
+    // The backend resolves /chat/<sessionId> too, and answers with the chat's own id.
+    vi.mocked(getChat).mockResolvedValueOnce({
+      id: "chat-uuid",
+      session_id: "session-1",
+      folder: "/tmp",
+      is_git_repo: false,
+      metadata: JSON.stringify({ agentAlias: "forge" }),
+    } as unknown as Awaited<ReturnType<typeof getChat>>);
+    mount("/chat/session-1");
+    await waitFor(() => expect(getMcpTools).toHaveBeenCalled());
+    expect(await contexts()).toEqual(["agent"]);
+
+    fireEvent.click(screen.getByTitle("View available MCP tools"));
+    await waitFor(() => expect(screen.queryByText("Loading tools...")).toBeNull());
+    expect(screen.queryByText("No MCP tools available.")).toBeNull();
+  });
+
   it("shows the tools as loading, not empty, while an existing chat's record is still on its way", async () => {
     let resolveChat!: (chat: Awaited<ReturnType<typeof getChat>>) => void;
     vi.mocked(getChat).mockImplementationOnce(() => new Promise((resolve) => (resolveChat = resolve)));
