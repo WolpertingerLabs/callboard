@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
-import { ShieldAlert, Maximize2 } from "lucide-react";
-import ModalOverlay from "./ModalOverlay";
+import { useState } from "react";
+import { ShieldAlert } from "lucide-react";
+import FullscreenFrame, { FullscreenButton } from "./FullscreenFrame";
+import { formatBytes } from "../utils/formatBytes";
 
 export interface RenderFileData {
   type: "render_file";
@@ -17,12 +18,6 @@ export interface RenderFileData {
 
 interface MediaRendererProps {
   data: RenderFileData;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function getFileName(filePath: string): string {
@@ -45,22 +40,6 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
 
   const contentUrl = data.url ? `/api/files/serve?url=${encodeURIComponent(data.url)}` : `/api/files/serve?path=${encodeURIComponent(data.file_path!)}`;
   const fileName = data.url ? getFileNameFromUrl(data.url) : getFileName(data.file_path!);
-
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === "Escape" && expanded) {
-        setExpanded(false);
-      }
-    },
-    [expanded],
-  );
-
-  useEffect(() => {
-    if (expanded) {
-      document.addEventListener("keydown", handleKeyDown);
-      return () => document.removeEventListener("keydown", handleKeyDown);
-    }
-  }, [expanded, handleKeyDown]);
 
   const onLoad = () => setLoading(false);
   const onError = () => {
@@ -176,14 +155,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
 
       case "audio":
         return (
-          <audio
-            controls
-            preload="metadata"
-            {...({ referrerPolicy: "no-referrer" } as any)}
-            onLoadedMetadata={onLoad}
-            onError={onError}
-            style={{ width: "100%", maxWidth: isModal ? "600px" : "100%" }}
-          >
+          <audio controls preload="metadata" onLoadedMetadata={onLoad} onError={onError} style={{ width: "100%", maxWidth: isModal ? "600px" : "100%" }}>
             <source src={contentUrl} type={data.mime_type} />
           </audio>
         );
@@ -193,7 +165,6 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
           <video
             controls
             preload="metadata"
-            {...({ referrerPolicy: "no-referrer" } as any)}
             onLoadedMetadata={onLoad}
             onError={onError}
             style={{
@@ -268,33 +239,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
             )}
             {renderMedia(false)}
             {/* Fullscreen button */}
-            {!loading && (
-              <button
-                onClick={() => setExpanded(true)}
-                title="Fullscreen"
-                style={{
-                  position: "absolute",
-                  top: 8,
-                  right: 8,
-                  background: "rgba(0, 0, 0, 0.5)",
-                  border: "none",
-                  borderRadius: 6,
-                  width: 28,
-                  height: 28,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "#fff",
-                  cursor: "pointer",
-                  opacity: 0.7,
-                  transition: "opacity 0.15s",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
-                onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
-              >
-                <Maximize2 size={14} />
-              </button>
-            )}
+            {!loading && <FullscreenButton onClick={() => setExpanded(true)} />}
           </div>
 
           {/* Footer: filename, size, caption */}
@@ -321,7 +266,7 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
               >
                 {fileName}
               </span>
-              <span style={{ flexShrink: 0, marginLeft: 8 }}>{data.file_size > 0 ? formatFileSize(data.file_size) : data.url ? "URL" : ""}</span>
+              <span style={{ flexShrink: 0, marginLeft: 8 }}>{data.file_size > 0 ? formatBytes(data.file_size) : data.url ? "URL" : ""}</span>
             </div>
             {data.caption && <div style={{ fontStyle: "italic" }}>{data.caption}</div>}
           </div>
@@ -330,70 +275,9 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
 
       {/* Fullscreen modal */}
       {expanded && (
-        <ModalOverlay onClose={() => setExpanded(false)}>
-          <div
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setExpanded(false);
-            }}
-            style={{
-              width: "100%",
-              height: "100%",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-            }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                position: "relative",
-                cursor: "default",
-                maxWidth: "90vw",
-                maxHeight: "90vh",
-              }}
-            >
-              {/* Close button */}
-              <button
-                onClick={() => setExpanded(false)}
-                style={{
-                  position: "absolute",
-                  top: 8,
-                  right: 8,
-                  zIndex: 1,
-                  background: "rgba(0, 0, 0, 0.6)",
-                  border: "none",
-                  borderRadius: "50%",
-                  width: 32,
-                  height: 32,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "#fff",
-                  fontSize: 18,
-                  cursor: "pointer",
-                  lineHeight: 1,
-                }}
-              >
-                &times;
-              </button>
-              {renderMedia(true)}
-              {data.caption && (
-                <div
-                  style={{
-                    textAlign: "center",
-                    color: "var(--text-muted)",
-                    fontSize: 13,
-                    marginTop: 8,
-                  }}
-                >
-                  {data.caption}
-                </div>
-              )}
-            </div>
-          </div>
-        </ModalOverlay>
+        <FullscreenFrame onClose={() => setExpanded(false)} caption={data.caption}>
+          {renderMedia(true)}
+        </FullscreenFrame>
       )}
     </>
   );

@@ -2777,7 +2777,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             onClick={() => setViewMode(b.mode)}
             style={{
               background: viewMode === b.mode ? "var(--accent)" : "var(--bg-secondary, var(--surface))",
-              color: viewMode === b.mode ? "var(--text-on-accent, #fff)" : "var(--text)",
+              color: viewMode === b.mode ? "var(--text-on-accent)" : "var(--text)",
               padding: "8px",
               border: "none",
               borderRight: i < viewModeButtons.length - 1 ? "1px solid var(--border)" : "none",

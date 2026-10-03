@@ -5,6 +5,7 @@ import { useIsMobile } from "../../hooks/useIsMobile";
 import { listAgents, deleteAgent, toggleAgent, getAgentExportUrl, importAgent } from "../../api";
 import type { AgentConfig } from "shared";
 import { errorMessage } from "../../utils/errorMessage";
+import ModalOverlay from "../../components/ModalOverlay";
 
 export default function AgentList() {
   const navigate = useNavigate();
@@ -433,19 +434,7 @@ export default function AgentList() {
 
       {/* Confirm delete modal */}
       {deleteTarget && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "var(--overlay-bg)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-            padding: 20,
-          }}
-          onClick={() => setDeleteTarget(null)}
-        >
+        <ModalOverlay style={{ padding: 20 }} onClose={() => setDeleteTarget(null)} onBackdropClick={() => setDeleteTarget(null)}>
           <div
             style={{
               background: "var(--surface)",
@@ -489,7 +478,7 @@ export default function AgentList() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );

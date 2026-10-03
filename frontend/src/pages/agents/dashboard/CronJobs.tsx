@@ -11,17 +11,7 @@ import { errorMessage } from "../../../utils/errorMessage";
 import { QuietHoursBadge, QuietHoursFields } from "./QuietHours";
 import { deleteButtonStyle } from "./dashboardStyles";
 import { EMPTY_CRON_JOB_FORM, cronJobCreatePayload, cronJobFormFromJob, cronJobUpdatePayload, isCronJobFormComplete, type CronJobForm } from "./cronJobForm";
-
-function timeAgo(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
+import { formatShortAgo } from "../../../utils/dateFormat";
 
 function timeUntil(ts: number): string {
   const diff = ts - Date.now();
@@ -734,7 +724,7 @@ export default function CronJobs({ agent }: { agent: AgentConfig }) {
           }}
         >
           <div style={{ display: "flex", gap: 16, fontSize: 12, color: "var(--text-muted)" }}>
-            {job.lastRun && <span>Last run: {timeAgo(job.lastRun)}</span>}
+            {job.lastRun && <span>Last run: {formatShortAgo(job.lastRun)}</span>}
             {job.nextRun && <span style={{ color: "var(--text)" }}>Next run: {timeUntil(job.nextRun)}</span>}
           </div>
           <div style={{ display: "flex", gap: 8 }}>

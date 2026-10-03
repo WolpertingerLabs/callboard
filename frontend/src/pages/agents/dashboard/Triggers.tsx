@@ -19,17 +19,7 @@ import type { Trigger, FilterCondition, TriggerFilter, AgentConfig, BacktestResu
 import { errorMessage } from "../../../utils/errorMessage";
 import { QuietHoursBadge, QuietHoursFields } from "./QuietHours";
 import { dangerOutlineStyle, deleteButtonStyle } from "./dashboardStyles";
-
-function timeAgo(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
+import { formatShortAgo } from "../../../utils/dateFormat";
 
 const statusConfig: Record<string, { color: string; icon: typeof Play; label: string }> = {
   active: { color: "var(--success)", icon: Play, label: "Active" },
@@ -770,7 +760,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                         >
                           {JSON.stringify(event.data).slice(0, 80)}
                         </span>
-                        <span style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: 11 }}>{timeAgo(event.storedAt)}</span>
+                        <span style={{ color: "var(--text-muted)", flexShrink: 0, fontSize: 11 }}>{formatShortAgo(event.storedAt)}</span>
                       </div>
 
                       {expandedBacktestEvent === event.id && (
@@ -913,7 +903,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                     <span>
                       Fired: {trigger.triggerCount} time{trigger.triggerCount !== 1 ? "s" : ""}
                     </span>
-                    {trigger.lastTriggered && <span>Last: {timeAgo(trigger.lastTriggered)}</span>}
+                    {trigger.lastTriggered && <span>Last: {formatShortAgo(trigger.lastTriggered)}</span>}
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <button

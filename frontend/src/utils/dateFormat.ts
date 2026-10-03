@@ -39,3 +39,31 @@ export function shouldAutoRefresh(timestamp: string): boolean {
   const hours = Math.floor(diff / 3_600_000);
   return hours < 1;
 }
+
+/**
+ * Compact age — `Just now`, `5m ago`, `3h ago`, `2d ago` — for dense rows.
+ *
+ * `now` defaults to the clock; pass it when a parent ticks one `now` for a whole
+ * list. `seconds` adds a `12s ago` tier from 10 seconds up (below that it is
+ * still "just now"). `justNow` is the label for anything under the first tier.
+ * Future timestamps read as "just now".
+ */
+export function formatShortAgo(
+  ms: number,
+  now: number = Date.now(),
+  { seconds = false, justNow = "Just now" }: { seconds?: boolean; justNow?: string } = {},
+): string {
+  const diff = now - ms;
+  if (seconds) {
+    const secs = Math.floor(diff / 1000);
+    if (secs < 10) return justNow;
+    if (secs < 60) return `${secs}s ago`;
+  }
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return justNow;
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}

@@ -54,11 +54,11 @@ export default function FolderSelector({
     if (isValidating) return <div className="spinner" style={{ width: 16, height: 16 }} />;
 
     if (validation?.valid && validation?.isDirectory) {
-      return <CheckCircle size={16} style={{ color: "var(--success, #10b981)" }} />;
+      return <CheckCircle size={16} style={{ color: "var(--success)" }} />;
     } else if (validation?.exists && !validation?.isDirectory) {
-      return <AlertCircle size={16} style={{ color: "var(--warning, #f59e0b)" }} />;
+      return <AlertCircle size={16} style={{ color: "var(--warning)" }} />;
     } else if (!validation?.exists) {
-      return <AlertCircle size={16} style={{ color: "var(--danger, #ef4444)" }} />;
+      return <AlertCircle size={16} style={{ color: "var(--danger)" }} />;
     }
 
     return <AlertCircle size={16} style={{ color: "var(--text-muted)" }} />;
@@ -69,16 +69,16 @@ export default function FolderSelector({
 
     if (validation?.valid && validation?.isDirectory) {
       return validation.isGit ? (
-        <span style={{ color: "var(--success, #10b981)", fontSize: 12 }}>✓ Valid git repository</span>
+        <span style={{ color: "var(--success)", fontSize: 12 }}>✓ Valid git repository</span>
       ) : (
-        <span style={{ color: "var(--success, #10b981)", fontSize: 12 }}>✓ Valid directory</span>
+        <span style={{ color: "var(--success)", fontSize: 12 }}>✓ Valid directory</span>
       );
     } else if (validation?.exists && !validation?.isDirectory) {
-      return <span style={{ color: "var(--warning, #f59e0b)", fontSize: 12 }}>⚠ Path exists but is not a directory</span>;
+      return <span style={{ color: "var(--warning)", fontSize: 12 }}>⚠ Path exists but is not a directory</span>;
     } else if (!validation?.exists) {
-      return <span style={{ color: "var(--danger, #ef4444)", fontSize: 12 }}>✗ Directory does not exist</span>;
+      return <span style={{ color: "var(--danger)", fontSize: 12 }}>✗ Directory does not exist</span>;
     } else if (!validation?.readable) {
-      return <span style={{ color: "var(--danger, #ef4444)", fontSize: 12 }}>✗ Directory is not accessible</span>;
+      return <span style={{ color: "var(--danger)", fontSize: 12 }}>✗ Directory is not accessible</span>;
     }
 
     return null;
@@ -125,11 +125,11 @@ export default function FolderSelector({
               transition: "border-color 0.2s ease",
               ...(validation?.valid && validation?.isDirectory
                 ? {
-                    borderColor: "var(--success, #10b981)",
+                    borderColor: "var(--success)",
                   }
                 : validation && !validation.valid
                   ? {
-                      borderColor: "var(--danger, #ef4444)",
+                      borderColor: "var(--danger)",
                     }
                   : {}),
             }}

@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Maximize2 } from "lucide-react";
-import ModalOverlay from "./ModalOverlay";
+import { useState, useRef } from "react";
+import FullscreenFrame, { FullscreenButton } from "./FullscreenFrame";
 import { useFrameSizing } from "./useFrameSizing";
 
 export interface RenderCanvasData {
@@ -25,22 +24,6 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const contentUrl = `/api/canvas/${encodeURIComponent(data.canvas_id)}/${data.version}`;
-
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      if (e.key === "Escape" && expanded) {
-        setExpanded(false);
-      }
-    },
-    [expanded],
-  );
-
-  useEffect(() => {
-    if (expanded) {
-      document.addEventListener("keydown", handleKeyDown);
-      return () => document.removeEventListener("keydown", handleKeyDown);
-    }
-  }, [expanded, handleKeyDown]);
 
   const { contentHeight, contentWidth, needsScale, scale, displayHeight } = useFrameSizing(iframeRef, containerRef, data.content_type === "html");
 
@@ -87,7 +70,7 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
                 height: "85vh",
                 maxWidth,
                 border: "none",
-                background: "#fff",
+                background: "var(--canvas-bg)",
               }}
             />
           );
@@ -116,7 +99,7 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
                 width: needsScale ? contentWidth : "100%",
                 height: contentHeight,
                 border: "none",
-                background: "#fff",
+                background: "var(--canvas-bg)",
                 transformOrigin: "top left",
                 transform: needsScale ? `scale(${scale})` : undefined,
               }}
@@ -224,33 +207,7 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
             )}
             {renderContent(false)}
             {/* Fullscreen button */}
-            {!loading && (
-              <button
-                onClick={() => setExpanded(true)}
-                title="Fullscreen"
-                style={{
-                  position: "absolute",
-                  top: 8,
-                  right: 8,
-                  background: "rgba(0, 0, 0, 0.5)",
-                  border: "none",
-                  borderRadius: 6,
-                  width: 28,
-                  height: 28,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "#fff",
-                  cursor: "pointer",
-                  opacity: 0.7,
-                  transition: "opacity 0.15s",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
-                onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.7")}
-              >
-                <Maximize2 size={14} />
-              </button>
-            )}
+            {!loading && <FullscreenButton onClick={() => setExpanded(true)} />}
           </div>
 
           {/* Footer: description + caption */}
@@ -275,72 +232,13 @@ export default function CanvasRenderer({ data }: CanvasRendererProps) {
 
       {/* Fullscreen modal */}
       {expanded && (
-        <ModalOverlay onClose={() => setExpanded(false)}>
-          <div
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setExpanded(false);
-            }}
-            style={{
-              width: "100%",
-              height: "100%",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-            }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                position: "relative",
-                cursor: "default",
-                maxWidth: "90vw",
-                maxHeight: "90vh",
-                width: data.content_type === "html" ? "90vw" : undefined,
-                height: data.content_type === "html" ? "90vh" : undefined,
-              }}
-            >
-              {/* Close button */}
-              <button
-                onClick={() => setExpanded(false)}
-                style={{
-                  position: "absolute",
-                  top: 8,
-                  right: 8,
-                  zIndex: 1,
-                  background: "rgba(0, 0, 0, 0.6)",
-                  border: "none",
-                  borderRadius: "50%",
-                  width: 32,
-                  height: 32,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "#fff",
-                  fontSize: 18,
-                  cursor: "pointer",
-                  lineHeight: 1,
-                }}
-              >
-                &times;
-              </button>
-              {renderContent(true)}
-              {data.caption && (
-                <div
-                  style={{
-                    textAlign: "center",
-                    color: "var(--text-muted)",
-                    fontSize: 13,
-                    marginTop: 8,
-                  }}
-                >
-                  {data.caption}
-                </div>
-              )}
-            </div>
-          </div>
-        </ModalOverlay>
+        <FullscreenFrame
+          onClose={() => setExpanded(false)}
+          caption={data.caption}
+          frameStyle={data.content_type === "html" ? { width: "90vw", height: "90vh" } : undefined}
+        >
+          {renderContent(true)}
+        </FullscreenFrame>
       )}
     </>
   );

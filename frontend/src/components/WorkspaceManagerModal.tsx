@@ -319,12 +319,15 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
   const [retentionDays, setRetentionDays] = useState(30);
   const [trashNote, setTrashNote] = useState<string | undefined>(undefined);
   const [restoreTarget, setRestoreTarget] = useState<TrashEntryView | null>(null);
-  const now = useMemo(() => Date.now(), [trash]);
+  // The clock the rows' "N days left" is read against: the moment the listing
+  // arrived, so every row agrees and none ticks on its own.
+  const [trashLoadedAt, setTrashLoadedAt] = useState(() => Date.now());
 
   const loadTrash = useCallback(async () => {
     try {
       const listing = await listTrash();
       setTrash(listing.entries);
+      setTrashLoadedAt(Date.now());
       setRetentionDays(listing.retentionDays);
       setTrashNote(listing.diskUsageNote);
     } catch (err) {
@@ -833,7 +836,7 @@ export default function WorkspaceManagerModal({ onClose, repoCandidates, onChang
               ) : trash.length === 0 ? (
                 <Empty text="The trash is empty." />
               ) : (
-                trash.map((entry) => <TrashRow key={entry.entry} entry={entry} now={now} busy={busy} onRestore={setRestoreTarget} />)
+                trash.map((entry) => <TrashRow key={entry.entry} entry={entry} now={trashLoadedAt} busy={busy} onRestore={setRestoreTarget} />)
               )}
             </>
           )}

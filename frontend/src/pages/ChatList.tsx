@@ -50,6 +50,7 @@ import {
   type SidebarViewMode,
 } from "../utils/localStorage";
 import { errorMessage } from "../utils/errorMessage";
+import { chatMeta, withChatMeta } from "../utils/chatMeta";
 import type { ChatRouteState } from "../types/chatRouteState";
 
 interface ChatListProps {
@@ -341,13 +342,9 @@ export default function ChatList({
     if (fresh.size === 0) return incoming;
     return incoming.map((chat) => {
       if (!fresh.has(chat.id)) return chat;
-      try {
-        const meta = JSON.parse(chat.metadata || "{}");
+      return withChatMeta(chat, (meta) => {
         meta.pinned = fresh.get(chat.id);
-        return { ...chat, metadata: JSON.stringify(meta) };
-      } catch {
-        return chat;
-      }
+      });
     });
   };
 
@@ -519,11 +516,7 @@ export default function ChatList({
   usePolling(load, 15_000, { enabled: activeSessions.size > 0, catchUp: false });
 
   const handleDelete = (chat: Chat) => {
-    let chatPreview: string | undefined;
-    try {
-      const meta = JSON.parse(chat.metadata || "{}");
-      chatPreview = meta.preview;
-    } catch {}
+    const chatPreview = chatMeta(chat).preview;
 
     const displayName = chatPreview
       ? chatPreview.length > 60
@@ -552,13 +545,9 @@ export default function ChatList({
 
   /** Open the editor. Nothing is written until the dialog asks for it. */
   const handleEditTitle = (chat: Chat) => {
-    let currentTitle = "";
-    let preview: string | undefined;
-    try {
-      const meta = JSON.parse(chat.metadata || "{}");
-      currentTitle = typeof meta.title === "string" ? meta.title : "";
-      preview = meta.preview;
-    } catch {}
+    const meta = chatMeta(chat);
+    const currentTitle = typeof meta.title === "string" ? meta.title : "";
+    const preview = meta.preview;
     // What the row would say with no stored title, by the same rule
     // ChatListItem labels it — the dialog shows it as the field's placeholder,
     // so an emptied field previews what clearing the title actually gets you.
@@ -577,14 +566,10 @@ export default function ChatList({
     setChats((prev) =>
       prev.map((c) => {
         if (c.id !== chatId) return c;
-        try {
-          const meta = JSON.parse(c.metadata || "{}");
+        return withChatMeta(c, (meta) => {
           if (title === null) delete meta.title;
           else meta.title = title;
-          return { ...c, metadata: JSON.stringify(meta) };
-        } catch {
-          return c;
-        }
+        });
       }),
     );
   };
@@ -594,13 +579,9 @@ export default function ChatList({
     setChats((prev) =>
       prev.map((c) => {
         if (c.id !== chat.id) return c;
-        try {
-          const meta = JSON.parse(c.metadata || "{}");
+        return withChatMeta(c, (meta) => {
           meta.lastReadAt = new Date().toISOString();
-          return { ...c, metadata: JSON.stringify(meta) };
-        } catch {
-          return c;
-        }
+        });
       }),
     );
     navigate(`/chat/${chat.id}`);
@@ -617,13 +598,9 @@ export default function ChatList({
         setChats((prev) =>
           prev.map((c) => {
             if (c.id !== chat.id) return c;
-            try {
-              const meta = JSON.parse(c.metadata || "{}");
+            return withChatMeta(c, (meta) => {
               meta.bookmarked = bookmarked;
-              return { ...c, metadata: JSON.stringify(meta) };
-            } catch {
-              return c;
-            }
+            });
           }),
         );
       }
@@ -683,13 +660,9 @@ export default function ChatList({
     setChats((prev) =>
       prev.map((c) => {
         if (!written.has(c.id)) return c;
-        try {
-          const meta = JSON.parse(c.metadata || "{}");
+        return withChatMeta(c, (meta) => {
           meta.pinned = pinned;
-          return { ...c, metadata: JSON.stringify(meta) };
-        } catch {
-          return c;
-        }
+        });
       }),
     );
   };
@@ -1259,12 +1232,8 @@ export default function ChatList({
   const triggeredCount = useMemo(() => {
     if (!viewOptions.showTriggered) return 0;
     return chats.filter((c) => {
-      try {
-        const meta = JSON.parse(c.metadata || "{}");
-        return meta.triggered || !!meta.nativeAgent;
-      } catch {
-        return false;
-      }
+      const meta = chatMeta(c);
+      return meta.triggered || !!meta.nativeAgent;
     }).length;
   }, [chats, viewOptions.showTriggered]);
 

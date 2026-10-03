@@ -17,6 +17,7 @@ import type { StorageKeySummary, StorageKeyDetail, StorageItem } from "../../api
 import ConfirmModal from "../../components/ConfirmModal";
 import MarkdownRenderer from "../../components/MarkdownRenderer";
 import { sectionStyle, inputStyle, helpStyle } from "./styles";
+import { BYTES_UP_TO_GB, formatBytes as formatByteSize } from "../../utils/formatBytes";
 
 const errorBoxStyle: React.CSSProperties = {
   padding: "8px 12px",
@@ -63,10 +64,7 @@ export const TEXT_PREVIEW_BYTES = 256 * 1024;
 const RASTER_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  return formatByteSize(n, BYTES_UP_TO_GB);
 }
 
 /**

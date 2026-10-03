@@ -3,6 +3,7 @@ import { GitBranch, Plus, Zap, Clock, Bell, Workflow, GitFork, HardDrive, AlertT
 import type { FolderSummary } from "../api";
 import { formatDiskUsage } from "../utils/workspaceFormat";
 import ProviderBadge from "./ProviderBadge";
+import { formatShortAgo } from "../utils/dateFormat";
 
 const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
 
@@ -83,17 +84,6 @@ function cleanupNote(folder: FolderSummary): { text: string; title: string; tone
     };
   }
   return null;
-}
-
-function formatRelativeTime(isoDate: string, now: number): string {
-  const diff = now - new Date(isoDate).getTime();
-  const minutes = Math.floor(diff / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
 }
 
 function FolderListItem({ folder, isActive, onClick, onNewChat, now, onManageWorkspaces }: Props) {
@@ -300,10 +290,12 @@ function FolderListItem({ folder, isActive, onClick, onNewChat, now, onManageWor
         {/* Row 3: Timestamps + branch + chat count */}
         <div style={{ fontSize: 11, color: "var(--chatlist-item-time-text)", marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           <span title={`Created: ${new Date(folder.mostRecentChatCreatedAt).toLocaleString()}`}>
-            Created {formatRelativeTime(folder.mostRecentChatCreatedAt, now)}
+            Created {formatShortAgo(new Date(folder.mostRecentChatCreatedAt).getTime(), now, { justNow: "just now" })}
           </span>
           <span style={{ opacity: 0.5 }}>&middot;</span>
-          <span title={`Updated: ${new Date(folder.lastUpdatedAt).toLocaleString()}`}>Updated {formatRelativeTime(folder.lastUpdatedAt, now)}</span>
+          <span title={`Updated: ${new Date(folder.lastUpdatedAt).toLocaleString()}`}>
+            Updated {formatShortAgo(new Date(folder.lastUpdatedAt).getTime(), now, { justNow: "just now" })}
+          </span>
           {folder.isGitRepo && folder.gitBranch && (
             <span
               title={`Branch: ${folder.gitBranch}`}

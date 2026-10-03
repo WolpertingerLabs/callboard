@@ -92,6 +92,17 @@
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
   --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  /* Controls painted over arbitrary media (the fullscreen button and close
+     button on rendered images, video and canvases). They sit on the content,
+     not on the theme's surfaces, so they are the same in both modes: a dark
+     scrim with white ink reads on whatever the picture happens to be. */
+  --media-control-bg: rgba(0, 0, 0, 0.5);
+  --media-control-bg-strong: rgba(0, 0, 0, 0.6);
+  --media-control-text: #ffffff;
+  /* Backdrop of an HTML canvas iframe. White in both modes: canvas documents
+     are authored against the browser default page colour, and most set no
+     background of their own. */
+  --canvas-bg: #ffffff;
 
   /* Diff view */
   --diff-added-bg: rgba(46, 160, 67, 0.15);
@@ -324,6 +335,11 @@
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.03);
+  /* Same in both modes — see :root. */
+  --media-control-bg: rgba(0, 0, 0, 0.5);
+  --media-control-bg-strong: rgba(0, 0, 0, 0.6);
+  --media-control-text: #ffffff;
+  --canvas-bg: #ffffff;
 
   /* Diff view */
   --diff-added-bg: rgba(46, 160, 67, 0.12);

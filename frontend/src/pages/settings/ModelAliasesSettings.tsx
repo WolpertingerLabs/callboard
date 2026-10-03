@@ -325,7 +325,7 @@ export default function ModelAliasesSettings() {
           borderRadius: 8,
           border: "none",
           background: "var(--accent)",
-          color: "#fff",
+          color: "var(--text-on-accent)",
           fontSize: 14,
           fontWeight: 600,
           cursor: saving || validationErrors.length > 0 ? "not-allowed" : "pointer",

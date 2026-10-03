@@ -147,8 +147,8 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
             </div>
           </div>
 
-          {error && <div style={{ color: "var(--danger, #dc3545)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
-          {success && <div style={{ color: "var(--success, #28a745)", fontSize: 13, marginBottom: 10 }}>{success}</div>}
+          {error && <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+          {success && <div style={{ color: "var(--success)", fontSize: 13, marginBottom: 10 }}>{success}</div>}
 
           <button
             type="submit"
@@ -202,7 +202,7 @@ export default function AccountSettings({ onLogout }: AccountSettingsProps) {
         <button
           onClick={() => setLogoutConfirmOpen(true)}
           style={{
-            background: "var(--danger, #dc3545)",
+            background: "var(--danger)",
             color: "var(--text-on-accent)",
             padding: "10px 20px",
             borderRadius: 8,

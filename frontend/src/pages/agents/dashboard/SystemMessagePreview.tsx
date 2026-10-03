@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, Copy, Check, Info } from "lucide-react";
+import { useCopy } from "../../../hooks/useCopy";
 import type { SystemMessagePreview as SystemMessagePreviewData, SystemPromptSection } from "../../../api";
 
 export function formatTokenCount(tokens: number): string {
@@ -116,7 +117,7 @@ function SectionRow({ section, isLast }: { section: SystemPromptSection; isLast:
 
 export default function SystemMessagePreview({ preview }: { preview: SystemMessagePreviewData | null }) {
   const [showFull, setShowFull] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, copy] = useCopy(2000);
 
   if (!preview) {
     return <div style={{ textAlign: "center", padding: "48px 20px", color: "var(--text-muted)", fontSize: 14 }}>Loading system message preview…</div>;
@@ -124,15 +125,7 @@ export default function SystemMessagePreview({ preview }: { preview: SystemMessa
 
   const includedCount = preview.sections.filter((s) => s.included).length;
 
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(preview.fullPrompt);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // ignore
-    }
-  };
+  const handleCopy = () => void copy(preview.fullPrompt);
 
   return (
     <div>
@@ -253,8 +246,8 @@ export default function SystemMessagePreview({ preview }: { preview: SystemMessa
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            {copied ? <Check size={13} /> : <Copy size={13} />}
-            {copied ? "Copied" : "Copy"}
+            {copied !== null ? <Check size={13} /> : <Copy size={13} />}
+            {copied !== null ? "Copied" : "Copy"}
           </button>
         </div>
         {showFull && <ContentBlock content={preview.fullPrompt || "Nothing is currently appended — the agent has no identity fields or workspace content."} />}

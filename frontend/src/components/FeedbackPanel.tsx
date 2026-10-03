@@ -6,6 +6,17 @@ import type { PendingAction } from "../api";
 
 export type { PendingAction };
 
+/**
+ * One AskUserQuestion question, as far as this panel reads it. The wire type
+ * (`PendingAction.questions`) is `unknown[]` — the tool input passes through
+ * unvalidated — so this is the shape trusted here, not one checked anywhere.
+ */
+interface Question {
+  question: string;
+  multiSelect?: boolean;
+  options?: { label: string; description?: string }[];
+}
+
 interface Props {
   responding?: boolean;
   action: PendingAction;
@@ -91,15 +102,15 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
   }
 
   if (action.type === "user_question") {
-    const questions = action.questions || [];
+    const questions = (action.questions || []) as Question[];
     return (
       <div style={questionPanelStyle}>
         <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8, flexShrink: 0 }}>{agentName} is asking</div>
         <div style={questionScrollArea}>
-          {questions.map((q: any, qi: number) => (
+          {questions.map((q, qi) => (
             <div key={qi} style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{q.question}</div>
-              {(q.options || []).map((opt: any, oi: number) => {
+              {(q.options || []).map((opt, oi) => {
                 const selected = q.multiSelect ? ((answers[qi] as string[]) || []).includes(opt.label) : answers[qi] === opt.label;
                 return (
                   <button
@@ -145,7 +156,7 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
             // The SDK schema expects answers as Record<questionText, string>,
             // with multi-select answers joined into a comma-separated string.
             const formatted: Record<string, string> = {};
-            questions.forEach((q: any, qi: number) => {
+            questions.forEach((q, qi) => {
               const val = answers[qi];
               if (Array.isArray(val)) {
                 if (val.length > 0) formatted[q.question] = val.join(", ");
