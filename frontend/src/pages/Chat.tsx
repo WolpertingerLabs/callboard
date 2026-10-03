@@ -354,9 +354,15 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Which MCP tool set this chat runs with: an agent's, or the ordinary one.
   // A new chat knows from the route; an existing one only once its own record
   // has loaded (null until then — see useChatCommands), or failed to load, which
-  // falls back to the ordinary set.
+  // falls back to the ordinary set. "Loaded" is tracked by the route id the
+  // record was fetched for, not by `chat.id`: the backend resolves
+  // `/chat/<sessionId>` too, and that record's `id` is not the route's. A
+  // matching `chat.id` still counts, and outranks a failed load: that is a later
+  // refetch (tab shown again, reconnect) succeeding where the first load didn't.
+  const [chatLoadedFor, setChatLoadedFor] = useState<string | null>(null);
   const [chatLoadFailedFor, setChatLoadFailedFor] = useState<string | null>(null);
-  const agentChat = !id ? !!agentAlias : chat?.id === id ? !!chatMeta.agentAlias : chatLoadFailedFor === id ? false : null;
+  const chatIsForRoute = !!chat && (chatLoadedFor === id || chat.id === id);
+  const agentChat = !id ? !!agentAlias : chatIsForRoute ? !!chatMeta.agentAlias : chatLoadFailedFor === id ? false : null;
   const {
     slashCommands,
     setSlashCommands,
@@ -1769,6 +1775,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // Guard: only apply if still on this chat
       if (currentIdRef.current !== id) return;
       setChat(chatData);
+      setChatLoadedFor(id!);
       // Use slash commands and plugins from chat data if available for faster display
       if (chatData?.slash_commands && chatData.slash_commands.length > 0) {
         setSlashCommands(chatData.slash_commands.map((cmd: any) => (typeof cmd === "string" ? cmd : cmd.name)));

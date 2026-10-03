@@ -72,8 +72,16 @@ function rollSession(token: string, res: Response): void {
   });
 }
 
-// Session cleanup on startup
-cleanupExpiredSessions();
+// Session cleanup on startup. Best-effort: the session store can throw (a
+// sessions.json caught mid-write by an outside writer), and at module top level
+// that would abort boot. Expired sessions are refused on use regardless.
+try {
+  cleanupExpiredSessions();
+} catch (err) {
+  log.warn(`Skipping startup session cleanup: ${(err as Error).message}`);
+}
+
+const SESSION_STORE_UNAVAILABLE = "The session store is temporarily unavailable. Try again in a moment.";
 
 // ── Bearer token helpers ────────────────────────────────────────────
 
@@ -108,7 +116,14 @@ export async function loginHandler(req: Request, res: Response) {
   }
 
   const token = randomBytes(32).toString("hex");
-  createSession(token, Date.now() + SESSION_TTL_MS, ip);
+  // An async handler on Express 4: a throw here would be an unhandled
+  // rejection and a request that never gets an answer.
+  try {
+    createSession(token, Date.now() + SESSION_TTL_MS, ip);
+  } catch (err) {
+    log.warn(`Login could not create a session: ${(err as Error).message}`);
+    return res.status(503).json({ error: SESSION_STORE_UNAVAILABLE });
+  }
 
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
@@ -170,6 +185,17 @@ export async function changePasswordHandler(req: Request, res: Response) {
     return res.status(401).json({ error: "Current password is incorrect." });
   }
 
+  // Read the session store before committing anything: if it cannot be read
+  // now, the other sessions could not be invalidated afterwards either, and
+  // refusing here leaves the password unchanged rather than half-applied.
+  const currentToken = req.cookies?.[SESSION_COOKIE_NAME];
+  try {
+    getSession(currentToken ?? "");
+  } catch (err) {
+    log.warn(`Password change refused, session store unreadable: ${(err as Error).message}`);
+    return res.status(503).json({ error: `${SESSION_STORE_UNAVAILABLE} Your password was not changed.` });
+  }
+
   // Hash the new password
   const salt = generateSalt();
   const hash = await hashPassword(newPassword, salt);
@@ -184,9 +210,18 @@ export async function changePasswordHandler(req: Request, res: Response) {
   process.env.AUTH_PASSWORD_HASH = hash;
   process.env.AUTH_PASSWORD_SALT = salt;
 
-  // Invalidate all sessions except the current one
-  const currentToken = req.cookies?.[SESSION_COOKIE_NAME];
-  deleteAllSessionsExcept(currentToken);
+  // Invalidate all sessions except the current one. The store was readable a
+  // moment ago; if it fails now the password is already changed, so say exactly
+  // that instead of leaving the request unanswered.
+  try {
+    deleteAllSessionsExcept(currentToken);
+  } catch (err) {
+    log.error(`Password changed, but other sessions were not invalidated: ${(err as Error).message}`);
+    return res.status(500).json({
+      error: "Your password was changed, but other sessions could not be signed out. Change it again to sign them out.",
+      passwordChanged: true,
+    });
+  }
 
   res.json({ ok: true });
 }

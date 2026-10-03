@@ -27,6 +27,12 @@ vi.mock("../services/job-runner.js", async (importOriginal) => {
   };
 });
 
+// Codex routed through OpenRouter, so an OpenRouter-unsupported effort is refused.
+vi.mock("../services/agent-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/agent-settings.js")>()),
+  getAgentSettings: () => ({ codexUseOpenRouter: true, codexOpenRouterApiKey: "fake" }),
+}));
+
 const { createJob, createRun, getJob, saveRun } = await import("../services/job-store.js");
 const { jobsRouter } = await import("./jobs.js");
 
@@ -104,6 +110,15 @@ describe("jobs route error statuses", () => {
     const res = await post(`/runs/${run.runId}/retry-step`);
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe(`Run ${run.runId} has no current step to retry`);
+  });
+
+  it("400, as a validation error, for a reasoning effort the routed endpoint does not support", async () => {
+    // The message says "is not supported", but it never reaches the route
+    // untyped: assertJobReasoningEfforts wraps it in a JobValidationError.
+    const step = { id: "one", type: "agent", prompt: "go", provider: "codex", folder: "{{inputs.repo}}", effort: "ultra" };
+    const res = await post("/", { id: "effort-flow", name: "Effort Flow", steps: [step] });
+    expect(res.status).toBe(400);
+    expect((await res.json()).errors).toEqual(['Step "one": Reasoning effort "ultra" is not supported by OpenRouter.']);
   });
 
   it("500 for an untyped error whose message merely contains 'is not' or 'not found'", async () => {

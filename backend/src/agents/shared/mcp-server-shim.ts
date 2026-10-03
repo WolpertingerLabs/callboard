@@ -35,8 +35,10 @@
  *
  * The backend socket may not be listening at the instant the agent spawns the
  * shim, so the initial connect is retried briefly. The agent's first stdin bytes
- * (the MCP `initialize` request) buffer harmlessly on the paused stdin stream
- * until the pipe is wired, so nothing is lost during the retry window.
+ * (the MCP `initialize` request) are held here until the pipe is wired, so
+ * nothing is lost during the retry window. If stdin *ends* during that window
+ * the agent is gone and nobody is waiting on the socket: the shim stops
+ * retrying and exits instead of sitting out the rest of the budget.
  *
  * @see plans/codex-adapter-job.md (Step 6 tool-bridge — "Codex is an MCP client")
  * @see ./socketToolServer.ts (the in-process host this shim relays to)
@@ -55,14 +57,24 @@ function fail(message: string, code: number): never {
   process.exit(code);
 }
 
+// Stdin is read (not left paused) while connecting, because a paused stream
+// never reports EOF: the bytes are held here and replayed on connect.
+const pendingStdin: Buffer[] = [];
+const holdStdin = (chunk: Buffer): void => void pendingStdin.push(chunk);
+let stdinEnded = false;
+let retryTimer: NodeJS.Timeout | null = null;
+
 function connectWithRetry(socketPath: string, attempt: number): void {
   const sock = net.connect(socketPath);
   let connected = false;
 
   sock.once("connect", () => {
     connected = true;
-    // Bidirectional byte relay: agent stdio ⇄ backend socket. `.pipe` resumes
-    // the (paused) stdin stream, flushing any MCP bytes buffered during retries.
+    // Bidirectional byte relay: agent stdio ⇄ backend socket. Replay the MCP
+    // bytes held during retries first, then hand stdin over to `.pipe` (which
+    // also ends the socket if stdin has already ended).
+    process.stdin.off("data", holdStdin);
+    for (const chunk of pendingStdin.splice(0)) sock.write(chunk);
     process.stdin.pipe(sock);
     sock.pipe(process.stdout);
     // When the backend closes the socket (turn finished / server torn down) the
@@ -77,8 +89,11 @@ function connectWithRetry(socketPath: string, attempt: number): void {
     // ENOENT/ECONNREFUSED before the backend is listening → retry; anything else
     // (or exhausted retries, or any error on an established connection) is fatal.
     const retriable = !connected && (err.code === "ENOENT" || err.code === "ECONNREFUSED");
-    if (retriable && attempt < CONNECT_MAX_ATTEMPTS) {
-      setTimeout(() => connectWithRetry(socketPath, attempt + 1), CONNECT_RETRY_DELAY_MS);
+    if (retriable && attempt < CONNECT_MAX_ATTEMPTS && !stdinEnded) {
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        connectWithRetry(socketPath, attempt + 1);
+      }, CONNECT_RETRY_DELAY_MS);
       return;
     }
     fail(`cannot connect to ${socketPath}: ${err.message}`, 1);
@@ -88,6 +103,16 @@ function connectWithRetry(socketPath: string, attempt: number): void {
 function main(): void {
   const socketPath = process.argv.slice(2).find((a) => !a.startsWith(LABEL_FLAG));
   if (!socketPath) fail("missing required <socketPath> argument", 2);
+  process.stdin.on("data", holdStdin);
+  process.stdin.once("end", () => {
+    stdinEnded = true;
+    // Between attempts: the client hung up, so there is nothing to retry for.
+    // An attempt already in flight is left to settle (its error is then fatal).
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      fail(`cannot connect to ${socketPath}: stdin closed before the socket came up`, 1);
+    }
+  });
   connectWithRetry(socketPath, 0);
 }
 

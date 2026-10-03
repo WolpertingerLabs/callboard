@@ -32,8 +32,9 @@ export function useIsMobile() {
     update();
     // The query fires only when the answer flips, rather than on every pixel of
     // a resize. `innerWidth` has no such event, so the fallback keeps listening
-    // to `resize`.
-    if (query) {
+    // to `resize` — as does a MediaQueryList too old to have `addEventListener`
+    // (it only has the deprecated `addListener`).
+    if (query && typeof query.addEventListener === "function") {
       query.addEventListener("change", update);
       return () => query.removeEventListener("change", update);
     }

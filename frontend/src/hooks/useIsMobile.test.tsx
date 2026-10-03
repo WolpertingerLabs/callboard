@@ -91,6 +91,34 @@ describe("with matchMedia", () => {
   });
 });
 
+describe("with a MediaQueryList that has no addEventListener (older Safari)", () => {
+  const original = window.innerWidth;
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: original, configurable: true });
+  });
+
+  it("does not throw, and follows resize instead", () => {
+    const query = { matches: false, media: "", addListener: vi.fn(), removeListener: vi.fn() };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => query as unknown as MediaQueryList),
+    );
+    const removeSpy = vi.spyOn(window, "removeEventListener");
+    const { seen, view } = renderRecorder();
+    expect(seen[0]).toBe(false);
+
+    act(() => {
+      query.matches = true;
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(seen.at(-1)).toBe(true);
+
+    expect(() => view.unmount()).not.toThrow();
+    expect(removeSpy).toHaveBeenCalledWith("resize", expect.any(Function));
+    removeSpy.mockRestore();
+  });
+});
+
 describe("without matchMedia (jsdom)", () => {
   const original = window.innerWidth;
   afterEach(() => {

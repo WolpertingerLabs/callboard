@@ -15,6 +15,23 @@
  *   the alternative: every auth check throwing until someone fixes the file by
  *   hand. The next load finds no file and recreates it empty; the corrupt
  *   copy is never touched again.
+ * - ...unless the file is merely mid-write. Something outside the daemon may
+ *   rewrite it in place, and a read that lands inside that write sees half a
+ *   file (or none of it: `cmd > sessions.json` truncates first). So a parse
+ *   failure is re-read 3 times, 20ms apart — at most ~60ms of synchronous
+ *   wait, `load()` being synchronous — and then:
+ *     - any re-read that parses wins;
+ *     - a file whose (ino, mtimeNs, size) moved at any point in that window,
+ *       up to and including a stat taken after the last failed read, is still
+ *       being written: this one load throws, the file is left exactly where
+ *       it is, and the next load reads it again;
+ *     - a file that held still but is empty (or only whitespace) is never
+ *       moved aside — there is nothing in it to preserve, and it is what a
+ *       truncate-then-write looks like from here. The load answers with the
+ *       empty value, cached against that empty file's stat only, so the
+ *       writer's content is read as soon as it lands;
+ *     - only a non-empty file that failed every read and held still across
+ *       every interval is corrupt, and is moved aside.
  */
 import { renameSync, readFileSync, statSync, type BigIntStats } from "fs";
 import { atomicWriteFileSync } from "./atomic-write.js";
@@ -24,6 +41,15 @@ const log = createLogger("json-file-store");
 
 /** Auth files hold secrets: owner read/write only. */
 const SECRET_FILE_MODE = 0o600;
+
+/** Re-reads of a file that failed to parse: 3 × 20ms, so at most ~60ms on the event loop. */
+const TORN_READ_RETRIES = 3;
+const TORN_READ_RETRY_DELAY_MS = 20;
+
+/** `load()` is synchronous, so the wait between re-reads has to be too. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 export interface JsonFileStore<T> {
   /** Current contents. Creates the file (with `empty()`) when absent. */
@@ -79,7 +105,41 @@ export function createJsonFileStore<T>(filePath: string, empty: () => T): JsonFi
       const parsed = JSON.parse(raw) as T;
       remember(parsed, st);
       return parsed;
-    } catch (err) {
+    } catch (firstErr) {
+      // Mid-write or corrupt? See the header: only a non-empty file that fails
+      // every re-read and never changes across the whole window is corrupt.
+      let err = firstErr;
+      let lastRaw = raw;
+      let key: BigIntStats = st;
+      let heldStill = true;
+      for (let attempt = 1; attempt <= TORN_READ_RETRIES; attempt++) {
+        sleepSync(TORN_READ_RETRY_DELAY_MS);
+        const now = statOrNull(filePath);
+        // Replaced by rename and momentarily absent, or deleted: start over.
+        if (!now) return load();
+        if (!sameKey(key, now)) heldStill = false;
+        key = now;
+        lastRaw = readFileSync(filePath, "utf8");
+        try {
+          const parsed = JSON.parse(lastRaw) as T;
+          remember(parsed, now);
+          return parsed;
+        } catch (retryErr) {
+          err = retryErr;
+        }
+      }
+      // The stat that vouches for the last read has to come after it.
+      const settled = statOrNull(filePath);
+      if (!settled) return load();
+      if (!heldStill || !sameKey(key, settled)) throw err;
+
+      if (lastRaw.trim() === "") {
+        log.warn(`${filePath} is empty; leaving it in place and continuing with an empty store until it has content`);
+        const blank = empty();
+        remember(blank, settled);
+        return blank;
+      }
+
       const fallback = empty();
       const aside = `${filePath}.corrupt-${Date.now()}`;
       try {
@@ -92,7 +152,7 @@ export function createJsonFileStore<T>(filePath: string, empty: () => T): JsonFi
           `${filePath} is not valid JSON (${(err as Error).message}) and could not be moved aside (${(renameErr as Error).message}); continuing with an empty store`,
         );
         // Cached against the corrupt file's stat so every request doesn't re-read and re-log it.
-        remember(fallback, st);
+        remember(fallback, settled);
       }
       return fallback;
     }
