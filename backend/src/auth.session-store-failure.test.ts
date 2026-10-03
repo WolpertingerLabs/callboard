@@ -64,7 +64,7 @@ function makeRes() {
       return this;
     },
     json(payload: unknown) {
-      this.body = payload;
+      this.body = payload as typeof this.body;
       return this;
     },
     cookie: vi.fn(),
