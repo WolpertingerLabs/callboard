@@ -126,7 +126,9 @@ export function createSSEHandler(res: Response, emitter: EventEmitter, options: 
       emitter.removeListener("event", onEvent);
       res.end();
     } else if (event.type === "error") {
-      log.error(`SSE error — ${event.content}`);
+      // Debug, not error: this runs once per attached tab, and the session
+      // itself already logs the underlying failure at the right level.
+      log.debug(`SSE error — ${event.content}`);
       sendSSE(res, {
         type: "message_error",
         content: event.content,
