@@ -56,11 +56,6 @@ vi.mock("../services/image-storage.js", () => ({
     return [];
   },
 }));
-vi.mock("../services/image-metadata.js", () => ({
-  storeMessageImages: () => {
-    state.writes.push("image-association");
-  },
-}));
 const { streamRouter } = await import("./stream.js");
 const { chatViews } = await import("../services/chat-view.js");
 const view = (last: string) => ({

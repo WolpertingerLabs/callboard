@@ -125,11 +125,7 @@ function getCachedGitInfo(folder: string): { isGitRepo: boolean; branch?: string
 
 /** The `provider` a chat record names, or undefined when absent/unparseable. */
 function readProvider(chat: { metadata?: string | null }): unknown {
-  try {
-    return parseChatMetadata(chat.metadata).provider;
-  } catch {
-    return undefined;
-  }
+  return parseChatMetadata(chat.metadata).provider;
 }
 
 /**
@@ -450,15 +446,13 @@ chatsRouter.get("/", (req, res) => {
       }
 
       // Also index by session_ids in metadata
-      try {
-        const meta = parseChatMetadata(chat?.metadata);
-        if (Array.isArray(meta.session_ids)) {
-          for (const sid of meta.session_ids) {
-            fileChatsBySessionId.set(sid, chat);
-          }
+      const meta = parseChatMetadata(chat?.metadata);
+      if (Array.isArray(meta.session_ids)) {
+        for (const sid of meta.session_ids) {
+          fileChatsBySessionId.set(sid, chat);
         }
-        if (meta.pinned === true && chat?.id) pinnedFileChats.push(chat);
-      } catch {}
+      }
+      if (meta.pinned === true && chat?.id) pinnedFileChats.push(chat);
     }
 
     // Handle pagination
@@ -595,13 +589,7 @@ chatsRouter.get("/", (req, res) => {
      * and the lineage-append guard further down) so a chat cannot be starred
      * for one and unstarred for the other.
      */
-    const isBookmarked = (chat: { metadata?: string | null } | undefined): boolean => {
-      try {
-        return parseChatMetadata(chat?.metadata).bookmarked === true;
-      } catch {
-        return false;
-      }
-    };
+    const isBookmarked = (chat: { metadata?: string | null } | undefined): boolean => parseChatMetadata(chat?.metadata).bookmarked === true;
 
     // Build set of bookmarked session IDs when filtering
     let bookmarkedSessionIds: Set<string> | null = null;
@@ -774,12 +762,7 @@ chatsRouter.get("/", (req, res) => {
       }
       const logPath = chat.session_log_path;
       if (typeof logPath !== "string" || !logPath) return chat;
-      let meta: any;
-      try {
-        meta = parseChatMetadata(chat.metadata);
-      } catch {
-        meta = {};
-      }
+      const meta = parseChatMetadata(chat.metadata);
       const preview = getFirstUserMessage(logPath, 200, typeof meta.provider === "string" ? meta.provider : providerKindByLogPath.get(logPath));
       if (!preview) return chat;
       return { ...chat, metadata: JSON.stringify({ ...meta, preview }) };
@@ -877,16 +860,11 @@ chatsRouter.get("/", (req, res) => {
      */
     const attachJobNeedsYou = (chat: any) => {
       if (!anyApprovalParked) return chat;
-      let meta: any;
-      try {
-        // Reachable: the lineage-append pass emits `{...fileChat}` for a
-        // relative with no session in the window, and that bypasses the
-        // normalisation augmentSession would otherwise have done. Without this
-        // catch a single corrupt record 500s the whole chat list.
-        meta = parseChatMetadata(chat.metadata);
-      } catch {
-        return chat;
-      }
+      // The lineage-append pass emits `{...fileChat}` for a relative with no
+      // session in the window, bypassing augmentSession's normalisation, so a
+      // corrupt record does reach here — parseChatMetadata answers `{}` for it,
+      // which names no run, and the row passes through unflagged.
+      const meta = parseChatMetadata(chat.metadata);
       if (!isParkedApprovalRow(chat, meta)) return chat;
       return { ...chat, metadata: JSON.stringify({ ...meta, jobRunNeedsYou: true }) };
     };
@@ -1266,10 +1244,7 @@ chatsRouter.post("/:id/fork", async (req, res) => {
   if (!chat) return res.status(404).json({ error: "Chat not found" });
   if (chat._provider_resolution_error) return res.status(409).json({ error: chat._provider_resolution_error });
 
-  let meta: Record<string, any> = {};
-  try {
-    meta = parseChatMetadata(chat.metadata);
-  } catch {}
+  const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 
   // Chats stamped with a removed harness are refused by name before the guard
   // below can silently call them claude-code chats — 155 records name the
@@ -1483,20 +1458,14 @@ chatsRouter.patch("/:id/bookmark", (req, res) => {
     const chat = findChat(req.params.id, false) as any;
     if (!chat) return res.status(404).json({ error: "Chat not found" });
 
-    // Parse existing metadata and update bookmarked flag
-    let meta: Record<string, any> = {};
-    try {
-      meta = parseChatMetadata(chat.metadata);
-    } catch {}
-
-    meta.bookmarked = bookmarked;
-    const updatedMetadata = JSON.stringify(meta);
-
-    // Upsert: creates file storage record if it only existed on filesystem
-    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+    // A bookmark is a UI flag, not activity — written the way /read writes
+    // lastReadAt, and for the same reasons (see there).
+    if (writeQuietMetadata(chat, { ...parseChatMetadata(chat.metadata), bookmarked }) === "unwritten") {
+      return res.status(500).json({ error: "Failed to toggle bookmark" });
+    }
 
     clearListCaches();
-    res.json(findChat(updatedChat.id, false) ?? updatedChat);
+    res.json(findChat(chat.id, false) ?? chat);
   } catch (err: any) {
     log.error(`Error toggling bookmark: ${err}`);
     res.status(500).json({ error: "Failed to toggle bookmark", details: err.message });
@@ -1546,22 +1515,16 @@ chatsRouter.patch("/:id/pin", (req, res) => {
     const chat = findChat(req.params.id, false) as any;
     if (!chat) return res.status(404).json({ error: "Chat not found" });
 
-    let meta: Record<string, any> = {};
-    try {
-      meta = parseChatMetadata(chat.metadata);
-    } catch {}
-
-    meta.pinned = pinned;
-    const updatedMetadata = JSON.stringify(meta);
-
-    // Upsert: creates file storage record if it only existed on filesystem
-    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+    // A position, not activity: quiet, like the bookmark above.
+    if (writeQuietMetadata(chat, { ...parseChatMetadata(chat.metadata), pinned }) === "unwritten") {
+      return res.status(500).json({ error: "Failed to toggle pin" });
+    }
 
     // The pin decides which rows a list response carries, not just how one
     // renders, so a cached page built before this call is now wrong in the same
     // way a bookmark toggle makes one wrong.
     clearListCaches();
-    res.json(findChat(updatedChat.id, false) ?? updatedChat);
+    res.json(findChat(chat.id, false) ?? chat);
   } catch (err: any) {
     log.error(`Error toggling pin: ${err}`);
     res.status(500).json({ error: "Failed to toggle pin", details: err.message });
@@ -1603,9 +1566,9 @@ const TITLE_WRITE_FAILED = "Could not update this chat's record, so its title is
  *
  * **It must not be able to destroy what it cannot read.** `updateChatMetadata`
  * read-merge-writes and fails closed on a record whose metadata does not
- * parse; a bare upsert replaces the blob wholesale, so a truncated record —
- * `saveChat` is a plain `writeFileSync`, so a crash mid-write leaves one —
- * would have `session_ids`, `card`, `parentChatId` and the rest silently
+ * parse; a bare upsert replaces the blob wholesale, so an unreadable record —
+ * a hand edit, or one truncated by a crash mid-write before `saveChat` moved to
+ * tmp + rename — would have `session_ids`, `card`, `parentChatId` and the rest silently
  * replaced by `{"title":"..."}`. `parseChatMetadata` cannot report that: it
  * answers `{}` for unreadable and for empty alike.
  *
@@ -1632,7 +1595,9 @@ function writeChatTitle(chat: any, title: string | null): "ok" | "unwritten" {
  * The write behind {@link writeChatTitle}, for any metadata field that is a
  * label or view state rather than activity — `lastReadAt` too, which a bumped
  * `updated_at` would immediately contradict (rollup's `updated_at >
- * lastReadAt` would read "unread" right after marking read).
+ * lastReadAt` would read "unread" right after marking read). Bookmark, pin,
+ * permissions and summon-dismiss write through here for the same reason: none
+ * of them is something happening in the chat, so none may resurface its card.
  */
 function writeQuietMetadata(chat: any, fields: Record<string, unknown>): "ok" | "unwritten" {
   if (!chat._from_filesystem) {
@@ -1771,10 +1736,7 @@ chatsRouter.post("/:id/regenerate-title", async (req, res) => {
   if (!chat) return res.status(404).json({ error: "Chat not found" });
 
   try {
-    let meta: Record<string, any> = {};
-    try {
-      meta = parseChatMetadata(chat.metadata);
-    } catch {}
+    const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 
     // Refused by name, exactly as the fork route above does it: the provider
     // lookup below falls back to claude-code, which would go looking for these
@@ -1879,11 +1841,7 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     const chat = findChat(req.params.id, false) as any;
     if (!chat) return res.status(404).json({ error: "Chat not found" });
 
-    // Parse existing metadata and update permissions
-    let meta: Record<string, any> = {};
-    try {
-      meta = parseChatMetadata(chat.metadata);
-    } catch {}
+    const meta: Record<string, any> = parseChatMetadata(chat.metadata);
 
     /**
      * The fifth axis is not like the other four: it is the one an agent could
@@ -1918,14 +1876,17 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
       if (originError) return res.status(403).json({ error: originError, code: "denied" });
     }
 
-    meta.defaultPermissions = { ...normalizePermissions(defaultPermissions), computerControl: requestedControl };
-    const updatedMetadata = JSON.stringify(meta);
-
-    // Upsert: creates file storage record if it only existed on filesystem
-    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+    // Configuration, not activity, so quiet like /read. Nothing keys on this
+    // record's updated_at to notice the change: the permission check re-reads
+    // the record from disk on every tool call (getDefaultPermissions in
+    // services/claude.ts), and the list caches are cleared below.
+    const fields = { ...meta, defaultPermissions: { ...normalizePermissions(defaultPermissions), computerControl: requestedControl } };
+    if (writeQuietMetadata(chat, fields) === "unwritten") {
+      return res.status(500).json({ error: "Failed to update permissions" });
+    }
 
     clearListCaches();
-    res.json(findChat(updatedChat.id, false) ?? updatedChat);
+    res.json(findChat(chat.id, false) ?? chat);
   } catch (err: any) {
     log.error(`Error updating permissions: ${err}`);
     res.status(500).json({ error: "Failed to update permissions", details: err.message });
@@ -1978,16 +1939,10 @@ chatsRouter.patch("/:id/summon", (req, res) => {
     const chat = findChat(req.params.id, false) as any;
     if (!chat) return res.status(404).json({ error: "Chat not found" });
 
-    // Parse existing metadata and clear summon
-    let meta: Record<string, any> = {};
-    try {
-      meta = parseChatMetadata(chat.metadata);
-    } catch {}
-
-    meta.summon = null;
-    const updatedMetadata = JSON.stringify(meta);
-
-    const updatedChat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: updatedMetadata });
+    // Dismissing is view state: quiet, like /read.
+    if (writeQuietMetadata(chat, { ...parseChatMetadata(chat.metadata), summon: null }) === "unwritten") {
+      return res.status(500).json({ error: "Failed to dismiss summon" });
+    }
 
     clearListCaches();
 
@@ -1995,7 +1950,7 @@ chatsRouter.patch("/:id/summon", (req, res) => {
     sessionRegistry.clearSummon(chat.id);
     sessionRegistry.notifyMetadata(chat.id, { summon: null });
 
-    res.json(findChat(updatedChat.id, false) ?? updatedChat);
+    res.json(findChat(chat.id, false) ?? chat);
   } catch (err: any) {
     log.error(`Error dismissing summon: ${err}`);
     res.status(500).json({ error: "Failed to dismiss summon", details: err.message });

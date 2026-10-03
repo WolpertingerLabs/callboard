@@ -27,7 +27,7 @@ import { cardFieldsFromChat, isCardEligible } from "./card-fields.js";
 import { sessionRegistry } from "./session-registry.js";
 import { getPendingRequest } from "./claude.js";
 import { resolveSessionLog } from "../utils/session-log.js";
-import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { parseChatMetadata, parseChatMetadataRecord } from "../utils/chat-metadata.js";
 import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { listActivities } from "./chat-activity.js";
 import { listPendingForParent } from "./session-callbacks.js";
@@ -233,12 +233,7 @@ const RUN_ACTIVE_STATUSES: ReadonlySet<string> = new Set(["running", "sleeping",
 type ChatMeta = Record<string, unknown>;
 
 function parseMeta(chat: Chat): ChatMeta {
-  try {
-    const parsed: unknown = JSON.parse(chat.metadata || "{}");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ChatMeta) : {};
-  } catch {
-    return {};
-  }
+  return parseChatMetadataRecord(chat.metadata);
 }
 
 function toMemberChat(chat: Chat, meta: ChatMeta, deps: RollupDeps): CardMemberChat {

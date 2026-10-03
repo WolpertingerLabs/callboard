@@ -34,12 +34,10 @@ const DATA_DIR = mkdtempSync(join(tmpdir(), "callboard-queue-images-"));
 process.env.CALLBOARD_DATA_DIR = DATA_DIR;
 
 vi.mock("../services/claude.js", () => ({ sendMessage: vi.fn(), RetiredProviderError: class RetiredProviderError extends Error {} }));
-vi.mock("../services/image-metadata.js", () => ({ storeMessageImages: vi.fn(async () => {}) }));
 
 const { queueRouter } = await import("./queue.js");
 const { ImageStorageService, storeBase64Image } = await import("../services/image-storage.js");
 const { sendMessage } = await import("../services/claude.js");
-const { storeMessageImages } = await import("../services/image-metadata.js");
 
 type Method = "get" | "post" | "put" | "delete";
 
@@ -216,7 +214,6 @@ describe("POST /:id/execute-now", () => {
     expect(opts).toMatchObject({ chatId: "chat-1", prompt: "m" });
     expect(opts.imageMetadata).toHaveLength(1);
     expect(opts.imageMetadata![0].buffer.toString()).toBe("png-bytes-exec.png");
-    expect(storeMessageImages).toHaveBeenCalledWith("chat-1", [id]);
     expect(exists(id)).toBe(true);
     // Sent, so retired.
     expect((await call("get", "/:id", { params: { id: created.body.id } })).code).toBe(404);
@@ -256,18 +253,6 @@ describe("POST /:id/execute-now", () => {
     started(new EventEmitter());
     expect((await first).code).toBe(200);
     expect(sendMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it("records a new chat's images once the chat exists", async () => {
-    const emitter = new EventEmitter();
-    vi.mocked(sendMessage).mockResolvedValueOnce(emitter as any);
-    const id = await storeImage("exec-new.png");
-    const created = await call("post", "/", { body: { folder: "/tmp/p", user_message: "m", images: [{ id, originalName: "exec-new.png" }] } });
-
-    await call("post", "/:id/execute-now", { params: { id: created.body.id } });
-    expect(vi.mocked(sendMessage).mock.calls.at(-1)![0].imageMetadata).toHaveLength(1);
-    emitter.emit("event", { type: "chat_created", chatId: "chat-new" });
-    expect(storeMessageImages).toHaveBeenCalledWith("chat-new", [id]);
   });
 
   it("refuses, and keeps the draft, when one of its images is gone", async () => {

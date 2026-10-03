@@ -1,41 +1,14 @@
 import { chatFileService } from "./chat-file-service.js";
 import type { StoredImage } from "shared/types/index.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("image-metadata");
 
 /**
  * Generate a unique message ID for storing image metadata.
  */
 function generateMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-}
-
-/**
- * Store image IDs associated with a user message in chat metadata.
- * Used when sending a message with attached images (stream routes).
- */
-export async function storeMessageImages(chatId: string, imageIds: string[]): Promise<void> {
-  const chat = chatFileService.getChat(chatId);
-
-  if (!chat) {
-    console.warn(`Chat ${chatId} not found in database, skipping image metadata storage`);
-    return;
-  }
-
-  const metadata = JSON.parse(chat.metadata || "{}");
-  const messageId = generateMessageId();
-
-  if (!metadata.messageImages) {
-    metadata.messageImages = {};
-  }
-
-  metadata.messageImages[messageId] = {
-    imageIds,
-    timestamp: new Date().toISOString(),
-    messageType: "user",
-  };
-
-  chatFileService.updateChat(chatId, {
-    metadata: JSON.stringify(metadata),
-  });
 }
 
 /**
@@ -46,10 +19,12 @@ export async function updateChatWithImages(chatId: string, images: StoredImage[]
   const chat = chatFileService.getChat(chatId);
 
   if (!chat) {
-    console.warn(`Chat ${chatId} not found in database, skipping metadata update`);
+    log.warn(`Chat ${chatId} not found in database, skipping metadata update`);
     return;
   }
 
+  // A bare JSON.parse on purpose: this writes the whole blob back, so metadata
+  // that will not parse must throw here rather than read as `{}` and be replaced.
   const metadata = JSON.parse(chat.metadata || "{}");
   const messageId = generateMessageId();
 

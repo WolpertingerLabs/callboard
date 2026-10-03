@@ -76,6 +76,7 @@ import { buildLineageIndex } from "./chat-lineage.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { clearListCaches } from "./list-caches.js";
 import { createLogger } from "../utils/logger.js";
+import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 
 const log = createLogger("card-archive-unpin");
 
@@ -93,14 +94,9 @@ export function unpinOnArchiveEnabled(): boolean {
 
 /** Whether a chat record carries the sidebar pin. */
 function isPinned(chat: { metadata?: string | null }): boolean {
-  try {
-    const parsed: unknown = JSON.parse(chat.metadata || "{}");
-    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed) && (parsed as Record<string, unknown>).pinned === true;
-  } catch {
-    // A record whose metadata will not parse is not pinned, matching the
-    // sidebar's own pinned-append pass in routes/chats.ts.
-    return false;
-  }
+  // A record whose metadata will not parse is not pinned, matching the
+  // sidebar's own pinned-append pass in routes/chats.ts.
+  return parseChatMetadataRecord(chat.metadata).pinned === true;
 }
 
 /**

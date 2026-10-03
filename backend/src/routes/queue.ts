@@ -3,11 +3,7 @@ import { queueFileService, isValidQueueItemId } from "../services/queue-file-ser
 import { sendMessage } from "../services/claude.js";
 import { sendRetiredProviderError } from "../utils/route-errors.js";
 import { isValidImageId, loadImageBuffers } from "../services/image-storage.js";
-import { storeMessageImages } from "../services/image-metadata.js";
-import { createLogger } from "../utils/logger.js";
 import type { QueueItemImage } from "shared/types/index.js";
-
-const log = createLogger("queue");
 
 export const queueRouter = Router();
 
@@ -254,8 +250,7 @@ queueRouter.post("/:id/execute-now", async (req, res) => {
     // Kick off the message but don't wait for completion — the user can
     // navigate to the chat and connect to the active session via /stream.
     const images = imageMetadata.length > 0 ? { imageMetadata } : {};
-    if (queueItem.chat_id && imageIds.length) await storeMessageImages(queueItem.chat_id, imageIds);
-    const emitter = await sendMessage(
+    await sendMessage(
       queueItem.chat_id
         ? { chatId: queueItem.chat_id, prompt: queueItem.user_message, ...images }
         : {
@@ -265,17 +260,6 @@ queueRouter.post("/:id/execute-now", async (req, res) => {
             ...images,
           },
     );
-    // A new chat has no id to record the images against until it is created —
-    // the same wait POST /api/chats/new/message does.
-    if (!queueItem.chat_id && imageIds.length) {
-      const onEvent = (event: { type: string; chatId?: string }) => {
-        if (event.type !== "chat_created") return;
-        emitter.removeListener("event", onEvent);
-        if (event.chatId) storeMessageImages(event.chatId, imageIds).catch((err) => log.warn(`Failed to store draft message images: ${err.message}`));
-      };
-      emitter.on("event", onEvent);
-    }
-
     // Only now that the send has started: a send that throws keeps the draft.
     queueFileService.deleteQueueItem(queueItem.id);
     res.json({ success: true, message: "Message execution started" });

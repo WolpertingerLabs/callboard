@@ -23,7 +23,7 @@
  * before the service is imported.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, readdirSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, writeFileSync, utimesSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -145,6 +145,22 @@ describe("getAllChats record cache", () => {
     // One file, so both writes landed on the record the assertion reads.
     expect(all).toHaveLength(1);
     expect(JSON.parse(all[0].metadata!).n).toBe(2);
+  });
+
+  it("rewrites a record by tmp + rename, which the cache sees and which leaves no tmp behind", () => {
+    // saveChat replaces the file rather than truncating it in place, so a crash
+    // mid-write cannot leave a half-written record. The replacement is a new
+    // inode with a fresh mtime — the cache must treat it as the change it is.
+    chatFileService.createChat("/tmp/project", "a");
+    settle("a");
+    expect(JSON.parse(chatFileService.getAllChats()[0].metadata!)).toEqual({});
+    const before = statSync(join(chatsDir, "a.json")).ino;
+
+    chatFileService.updateChat("a", { metadata: JSON.stringify({ n: 1 }) });
+
+    expect(statSync(join(chatsDir, "a.json")).ino).not.toBe(before);
+    expect(readdirSync(chatsDir)).toEqual(["a.json"]);
+    expect(JSON.parse(chatFileService.getAllChats()[0].metadata!).n).toBe(1);
   });
 
   it("returns a record still inside its own mtime tick, and does not cache it", () => {

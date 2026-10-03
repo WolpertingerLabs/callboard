@@ -21,13 +21,14 @@
  *     exact fingerprint algorithm, keeping the two sides in lock-step.
  */
 import crypto from "node:crypto";
-import { writeFileSync, mkdirSync, renameSync } from "fs";
+import { mkdirSync } from "fs";
 import { join } from "path";
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { fingerprint, deserializePublicKeys } from "@wolpertingerlabs/drawlatch/shared/crypto";
 import type { CallerBundleV1, BundleEncryption } from "@wolpertingerlabs/drawlatch/remote/admin-types";
 import { getRemoteMcpConfigDir } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
+import { atomicWriteFileSync } from "../utils/atomic-write.js";
 
 const log = createLogger("bundle-import");
 
@@ -151,13 +152,6 @@ export function inspectBundle(raw: unknown): ParsedBundle {
   };
 }
 
-// ── Atomic file write ───────────────────────────────────────────────
-
-function atomicWrite(filePath: string, data: string, mode: number): void {
-  const tmp = `${filePath}.tmp-${crypto.randomBytes(6).toString("hex")}`;
-  writeFileSync(tmp, data, { mode });
-  renameSync(tmp, filePath);
-}
 
 export interface ImportResult {
   alias: string;
@@ -220,12 +214,12 @@ export function importBundle(raw: unknown, passphrase?: string): ImportResult {
   mkdirSync(callerDir, { recursive: true, mode: 0o700 });
   mkdirSync(serverDir, { recursive: true, mode: 0o700 });
 
-  atomicWrite(join(callerDir, "signing.pub.pem"), bundle.caller.signing.pub, 0o644);
-  atomicWrite(join(callerDir, "exchange.pub.pem"), bundle.caller.exchange.pub, 0o644);
-  atomicWrite(join(callerDir, "signing.key.pem"), signingPriv, 0o600);
-  atomicWrite(join(callerDir, "exchange.key.pem"), exchangePriv, 0o600);
-  atomicWrite(join(serverDir, "signing.pub.pem"), bundle.server.signing.pub, 0o644);
-  atomicWrite(join(serverDir, "exchange.pub.pem"), bundle.server.exchange.pub, 0o644);
+  atomicWriteFileSync(join(callerDir, "signing.pub.pem"), bundle.caller.signing.pub, { mode: 0o644, fsync: false });
+  atomicWriteFileSync(join(callerDir, "exchange.pub.pem"), bundle.caller.exchange.pub, { mode: 0o644, fsync: false });
+  atomicWriteFileSync(join(callerDir, "signing.key.pem"), signingPriv, { mode: 0o600, fsync: false });
+  atomicWriteFileSync(join(callerDir, "exchange.key.pem"), exchangePriv, { mode: 0o600, fsync: false });
+  atomicWriteFileSync(join(serverDir, "signing.pub.pem"), bundle.server.signing.pub, { mode: 0o644, fsync: false });
+  atomicWriteFileSync(join(serverDir, "exchange.pub.pem"), bundle.server.exchange.pub, { mode: 0o644, fsync: false });
 
   log.info(
     `Imported caller bundle "${meta.alias}" (fingerprint ${meta.fingerprint}, ` +

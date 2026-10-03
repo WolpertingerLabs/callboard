@@ -4,6 +4,7 @@ import { sessionRegistry } from "./session-registry.js";
 import { hasPendingRequest } from "./claude.js";
 import type { ChatTreeAncestor, ChatTreeNode, ChatTreeResponse } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
+import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 
 const log = createLogger("chat-lineage");
 
@@ -34,12 +35,7 @@ interface LineageMeta {
 type ChatMeta = Record<string, unknown>;
 
 function parseMeta(chat: Chat): ChatMeta {
-  try {
-    const parsed: unknown = JSON.parse(chat.metadata || "{}");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ChatMeta) : {};
-  } catch {
-    return {};
-  }
+  return parseChatMetadataRecord(chat.metadata);
 }
 
 /** Parent pointer for a chat's metadata, aliasing legacy `forkedFrom`. */
@@ -182,11 +178,7 @@ export function buildLineageIndex<T extends { id: string; metadata?: string | nu
 
   for (const chat of chats) {
     byId.set(chat.id, chat);
-    let meta: ChatMeta = {};
-    try {
-      const parsed: unknown = JSON.parse(chat.metadata || "{}");
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) meta = parsed as ChatMeta;
-    } catch {}
+    const meta = parseChatMetadataRecord(chat.metadata);
     const rawParentId = getParentChatId(meta);
     const parentId = rawParentId !== chat.id ? rawParentId : undefined;
     const rootChatId = typeof meta.rootChatId === "string" && meta.rootChatId ? meta.rootChatId : undefined;

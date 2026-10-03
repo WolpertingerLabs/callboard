@@ -27,7 +27,7 @@ vi.mock("../services/job-runner.js", async (importOriginal) => {
   };
 });
 
-const { createJob } = await import("../services/job-store.js");
+const { createJob, createRun, getJob, saveRun } = await import("../services/job-store.js");
 const { jobsRouter } = await import("./jobs.js");
 
 let server: Server;
@@ -88,6 +88,22 @@ describe("jobs route error statuses", () => {
     const cancel = await post("/runs/nope/cancel");
     expect(cancel.status).toBe(404);
     expect((await cancel.json()).error).toBe('Job run "nope" not found');
+  });
+
+  it("409 when cancelling a run that already ended", async () => {
+    const run = createRun(getJob("err-flow") ?? createJob(payload as never), {});
+    saveRun({ ...run, status: "succeeded" });
+    const res = await post(`/runs/${run.runId}/cancel`);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe(`Run ${run.runId} already ended (status: succeeded)`);
+  });
+
+  it("409 when retrying a failed run that has no current step", async () => {
+    const run = createRun(getJob("err-flow") ?? createJob(payload as never), {});
+    saveRun({ ...run, status: "failed", currentStepId: null });
+    const res = await post(`/runs/${run.runId}/retry-step`);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe(`Run ${run.runId} has no current step to retry`);
   });
 
   it("500 for an untyped error whose message merely contains 'is not' or 'not found'", async () => {

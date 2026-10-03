@@ -18,7 +18,7 @@
  * (see {@link recordWorktreeWorkspace}). Nothing is immortal — records the
  * filesystem has outgrown are archived rather than handed forward.
  */
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, renameSync, rmSync, realpathSync } from "fs";
+import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync, realpathSync } from "fs";
 import { join, basename, resolve } from "path";
 import { randomUUID } from "node:crypto";
 import type { Workspace, WorkspacePayload, WorktreeMode } from "shared";
@@ -28,6 +28,7 @@ import { resolveWorktreeToMainRepo } from "../utils/git.js";
 import { verifyWorktreeToken, writeWorktreeToken } from "../utils/worktree-token.js";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
+import { atomicWriteFileSync } from "../utils/atomic-write.js";
 
 const log = createLogger("workspace-store");
 
@@ -123,12 +124,6 @@ function workspaceFilePath(id: string): string | null {
   return join(workspacesDir, `${id}.json`);
 }
 
-function atomicWrite(filepath: string, content: string): void {
-  const tmp = `${filepath}.tmp`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, filepath);
-}
-
 /**
  * Bumped on every write to the registry — see {@link workspaceRegistryVersion}.
  *
@@ -161,7 +156,7 @@ export function workspaceRegistryVersion(): number {
 function saveWorkspace(workspace: Workspace): void {
   const filepath = workspaceFilePath(workspace.id);
   if (!filepath) throw new Error(`Invalid workspace id: ${workspace.id}`);
-  atomicWrite(filepath, JSON.stringify(workspace, null, 2));
+  atomicWriteFileSync(filepath, JSON.stringify(workspace, null, 2), { fsync: false });
   _workspaceRegistryVersion++;
 }
 
@@ -247,7 +242,7 @@ export function listWorkspaces(filter?: { status?: Workspace["status"] }): Works
   let files: string[];
   try {
     // Only fully-written records are named `*.json` — an interrupted
-    // atomicWrite leaves `*.json.tmp`, which this never picks up.
+    // atomicWriteFileSync leaves a `*.tmp`, which this never picks up.
     files = readdirSync(workspacesDir).filter((f) => f.endsWith(".json"));
   } catch (err: any) {
     // The directory could not be created at import (see above) or vanished

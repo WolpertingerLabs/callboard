@@ -32,7 +32,7 @@
  * a chat that is not a lineage root, where nothing reads them, and the marker
  * means the migration itself will never revisit those installs.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync } from "fs";
 import { join } from "path";
 import type { Chat } from "shared";
 import { DATA_DIR } from "../utils/paths.js";
@@ -40,6 +40,8 @@ import { createLogger } from "../utils/logger.js";
 import { chatFileService } from "./chat-file-service.js";
 import { buildLineageIndex } from "./chat-lineage.js";
 import { isCardEligible } from "./card-fields.js";
+import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
+import { atomicWriteFileSync } from "../utils/atomic-write.js";
 
 const log = createLogger("card-migration");
 
@@ -55,18 +57,7 @@ const legacyMarkerFile = join(cardsDir, ".migrated");
 const mapFile = join(archiveDir, "migration-map.json");
 
 function parseMeta(chat: Chat): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(chat.metadata || "{}");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-}
-
-function atomicWrite(filepath: string, content: string): void {
-  const tmp = `${filepath}.tmp`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, filepath);
+  return parseChatMetadataRecord(chat.metadata);
 }
 
 /** Load the persisted cardId→rootChatId map (empty when no prior pass ran). */
@@ -82,7 +73,7 @@ function loadMap(): Record<string, string> {
 
 function saveMap(map: Record<string, string>): void {
   mkdirSync(archiveDir, { recursive: true });
-  atomicWrite(mapFile, JSON.stringify(map, null, 2));
+  atomicWriteFileSync(mapFile, JSON.stringify(map, null, 2), { fsync: false });
 }
 
 function archiveCardFile(file: string): void {
@@ -377,12 +368,12 @@ export function migrateCardsToMetadata(): { skipped: boolean; migrated: number; 
       // Plain file write, NOT job-store saveRun: the migration must not bump
       // updatedAt (it would reorder every run listing) nor touch the
       // execution-key index (not yet built at startup).
-      atomicWrite(filepath, JSON.stringify(run, null, 2));
+      atomicWriteFileSync(filepath, JSON.stringify(run, null, 2), { fsync: false });
       result.runsRewritten++;
     }
   }
 
-  atomicWrite(markerFile, new Date().toISOString());
+  atomicWriteFileSync(markerFile, new Date().toISOString(), { fsync: false });
   log.info(
     `Card migration complete: ${result.migrated} card(s) migrated onto root chats, ` +
       `${result.archivedMemberless} memberless card(s) archived, ${result.chatsStripped} chat(s) unlinked, ${result.runsRewritten} run(s) rewritten`,
