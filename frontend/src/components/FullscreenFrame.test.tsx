@@ -34,6 +34,30 @@ describe("FullscreenFrame", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("attaches the Escape listener once per open, and calls the latest onClose", () => {
+    const add = vi.spyOn(document, "addEventListener");
+    try {
+      const first = vi.fn();
+      const latest = vi.fn();
+      const { rerender } = render(
+        <FullscreenFrame onClose={first}>
+          <img alt="content" />
+        </FullscreenFrame>,
+      );
+      rerender(
+        <FullscreenFrame onClose={latest}>
+          <img alt="content" />
+        </FullscreenFrame>,
+      );
+      expect(add.mock.calls.filter(([type]) => type === "keydown")).toHaveLength(1);
+      fireEvent.keyDown(document, { key: "Escape" });
+      expect(first).not.toHaveBeenCalled();
+      expect(latest).toHaveBeenCalledTimes(1);
+    } finally {
+      add.mockRestore();
+    }
+  });
+
   it("closes on the × button", () => {
     const { onClose } = renderFrame();
     fireEvent.click(screen.getByRole("button", { name: "×" }));

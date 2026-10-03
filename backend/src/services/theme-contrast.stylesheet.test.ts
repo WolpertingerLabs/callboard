@@ -14,7 +14,7 @@ import { readFileSync, readdirSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { BUILTIN_PALETTE } from "./theme-contrast-palette.js";
-import { THEME_VARIABLE_NAMES } from "./theme-variables.js";
+import { THEME_INVARIANT_VARIABLES, THEME_VARIABLE_NAMES } from "./theme-variables.js";
 import { composite, contrastRatio, effectiveVars, resolveColor } from "./theme-contrast.js";
 
 const INDEX_CSS = join(dirname(fileURLToPath(import.meta.url)), "../../../frontend/src/index.css");
@@ -183,13 +183,15 @@ describe("BUILTIN_PALETTE", () => {
 describe("THEME_VARIABLE_NAMES", () => {
   /**
    * The rule, stated once: a theme may define exactly the variables index.css
-   * defines with a literal value, minus the ones with no colour to choose and
-   * the non-visual tokens.
+   * defines with a literal value, minus the ones with no colour to choose, the
+   * non-visual tokens, and the theme-invariant ones (FIXED).
    */
   const COLOURLESS = ["chatlist-header-bg", "chatlist-item-bg"]; // literal `transparent`
+  // Painted over user content, not UI surfaces — see THEME_INVARIANT_VARIABLES.
+  const FIXED: readonly string[] = THEME_INVARIANT_VARIABLES;
 
   const expected = Object.keys(DARK).filter(
-    (name) => !isDerived(DARK[name]) && !isDerived(LIGHT[name]) && DARK[name] !== "transparent" && !NON_VISUAL.includes(name),
+    (name) => !isDerived(DARK[name]) && !isDerived(LIGHT[name]) && DARK[name] !== "transparent" && !NON_VISUAL.includes(name) && !FIXED.includes(name),
   );
 
   it("is exactly the stylesheet's literal-valued visual tokens", () => {
@@ -211,11 +213,19 @@ describe("THEME_VARIABLE_NAMES", () => {
   });
 
   it("excludes the tokens with nothing to choose, and says which they are", () => {
-    for (const name of [...COLOURLESS, ...NON_VISUAL]) {
+    for (const name of [...COLOURLESS, ...NON_VISUAL, ...FIXED]) {
       expect(THEME_VARIABLE_NAMES, name).not.toContain(name);
     }
     // COLOURLESS is a claim about the stylesheet, not a wish — check it holds.
     for (const name of COLOURLESS) expect(DARK[name]).toBe("transparent");
+  });
+
+  it("excludes only FIXED variables that really are theme-invariant: literal, and the same in both modes", () => {
+    for (const name of FIXED) {
+      expect(DARK[name], name).toBeDefined();
+      expect(isDerived(DARK[name]), name).toBe(false);
+      expect(LIGHT[name], name).toBe(DARK[name]);
+    }
   });
 
   it("has no duplicates", () => {

@@ -62,10 +62,6 @@ export const THEME_VARIABLE_NAMES = [
   "success-bg",
   "info-bg",
   "overlay-bg",
-  "media-control-bg",
-  "media-control-bg-strong",
-  "media-control-text",
-  "canvas-bg",
   "shadow-sm",
   "shadow-md",
   "shadow-lg",
@@ -101,3 +97,20 @@ export const THEME_VARIABLE_NAMES = [
   "builtin-assistant-border",
   "builtin-text",
 ];
+
+/**
+ * Literal-valued variables a theme may NOT define, because they are not the
+ * theme's to choose: they paint over user content rather than over the UI's
+ * surfaces, so each holds one value in both modes of the stylesheet.
+ *
+ * - `--media-control-*` — the scrim and ink of the fullscreen/close buttons laid
+ *   over rendered images, video and canvases. They must read on any picture.
+ * - `--canvas-bg` — the page behind an HTML canvas iframe, which documents are
+ *   authored against (white, the browser default).
+ *
+ * Left out of THEME_VARIABLE_NAMES so a stored theme's write drops them, the
+ * audit does not report them missing, and the generator is never asked for
+ * them. `theme-contrast.stylesheet.test.ts` checks each is literal and
+ * identical in both modes — the property that justifies the exclusion.
+ */
+export const THEME_INVARIANT_VARIABLES = ["media-control-bg", "media-control-bg-strong", "media-control-text", "canvas-bg"] as const;
