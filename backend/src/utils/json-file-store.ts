@@ -17,11 +17,21 @@
  *   copy is never touched again.
  * - ...unless the file is merely mid-write. Something outside the daemon may
  *   rewrite it in place, and a read that lands inside that write sees half a
- *   file. So a parse failure is re-read a couple of times, a few ms apart, and
- *   the file is only moved aside when it still fails AND its (mtimeNs, size)
- *   held still across the wait — stably corrupt. A file still changing after
- *   the last attempt throws for this one load and is left exactly where it is;
- *   the next load reads it again.
+ *   file (or none of it: `cmd > sessions.json` truncates first). So a parse
+ *   failure is re-read 3 times, 20ms apart — at most ~60ms of synchronous
+ *   wait, `load()` being synchronous — and then:
+ *     - any re-read that parses wins;
+ *     - a file whose (ino, mtimeNs, size) moved at any point in that window,
+ *       up to and including a stat taken after the last failed read, is still
+ *       being written: this one load throws, the file is left exactly where
+ *       it is, and the next load reads it again;
+ *     - a file that held still but is empty (or only whitespace) is never
+ *       moved aside — there is nothing in it to preserve, and it is what a
+ *       truncate-then-write looks like from here. The load answers with the
+ *       empty value, cached against that empty file's stat only, so the
+ *       writer's content is read as soon as it lands;
+ *     - only a non-empty file that failed every read and held still across
+ *       every interval is corrupt, and is moved aside.
  */
 import { renameSync, readFileSync, statSync, type BigIntStats } from "fs";
 import { atomicWriteFileSync } from "./atomic-write.js";
@@ -96,25 +106,38 @@ export function createJsonFileStore<T>(filePath: string, empty: () => T): JsonFi
       remember(parsed, st);
       return parsed;
     } catch (firstErr) {
-      // Mid-write or corrupt? Wait, look again, and only call it corrupt once
-      // the file has stopped changing and still does not parse.
+      // Mid-write or corrupt? See the header: only a non-empty file that fails
+      // every re-read and never changes across the whole window is corrupt.
       let err = firstErr;
-      let before: BigIntStats = st;
-      for (let attempt = 1; ; attempt++) {
+      let lastRaw = raw;
+      let key: BigIntStats = st;
+      let heldStill = true;
+      for (let attempt = 1; attempt <= TORN_READ_RETRIES; attempt++) {
         sleepSync(TORN_READ_RETRY_DELAY_MS);
-        const after = statOrNull(filePath);
+        const now = statOrNull(filePath);
         // Replaced by rename and momentarily absent, or deleted: start over.
-        if (!after) return load();
+        if (!now) return load();
+        if (!sameKey(key, now)) heldStill = false;
+        key = now;
+        lastRaw = readFileSync(filePath, "utf8");
         try {
-          const parsed = JSON.parse(readFileSync(filePath, "utf8")) as T;
-          remember(parsed, after);
+          const parsed = JSON.parse(lastRaw) as T;
+          remember(parsed, now);
           return parsed;
         } catch (retryErr) {
           err = retryErr;
         }
-        if (sameKey(before, after)) break;
-        if (attempt >= TORN_READ_RETRIES) throw err;
-        before = after;
+      }
+      // The stat that vouches for the last read has to come after it.
+      const settled = statOrNull(filePath);
+      if (!settled) return load();
+      if (!heldStill || !sameKey(key, settled)) throw err;
+
+      if (lastRaw.trim() === "") {
+        log.warn(`${filePath} is empty; leaving it in place and continuing with an empty store until it has content`);
+        const blank = empty();
+        remember(blank, settled);
+        return blank;
       }
 
       const fallback = empty();
@@ -129,7 +152,7 @@ export function createJsonFileStore<T>(filePath: string, empty: () => T): JsonFi
           `${filePath} is not valid JSON (${(err as Error).message}) and could not be moved aside (${(renameErr as Error).message}); continuing with an empty store`,
         );
         // Cached against the corrupt file's stat so every request doesn't re-read and re-log it.
-        remember(fallback, st);
+        remember(fallback, settled);
       }
       return fallback;
     }

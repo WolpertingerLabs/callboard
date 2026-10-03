@@ -36,7 +36,20 @@ beforeEach(() => {
   file = join(dir, "store.json");
 });
 
+/**
+ * Play the external writer during the store's waits: `during[n]` runs in place
+ * of the nth sleep between re-reads, so the sequence is exact rather than timed.
+ */
+function duringSleeps(...during: Array<(() => void) | undefined>) {
+  let n = 0;
+  return vi.spyOn(Atomics, "wait").mockImplementation(() => {
+    during[n++]?.();
+    return "timed-out";
+  });
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   storeRead.after = null;
   rmSync(dir, { recursive: true, force: true });
 });
@@ -118,5 +131,66 @@ describe("createJsonFileStore", () => {
     storeRead.after = null;
     appendFileSync(file, "]}");
     expect(store.load().items[0]).toBe("a");
+  });
+
+  it("reads what a truncate-then-write writer lands during the re-read window", () => {
+    // `some-cmd > store.json`: opened with "w" (now empty), then a pause, then the content.
+    writeFileSync(file, "");
+    const sleeps = duringSleeps(undefined, undefined, () => writeFileSync(file, JSON.stringify({ items: ["written"] })));
+    const store = createJsonFileStore(file, empty);
+
+    expect(store.load()).toEqual({ items: ["written"] });
+    expect(sleeps).toHaveBeenCalledTimes(3);
+    expect(readdirSync(dir)).toEqual(["store.json"]);
+  });
+
+  it("never moves an empty file aside, and reads the writer's content once it lands", () => {
+    // The same writer, but slower than the whole re-read window.
+    writeFileSync(file, "");
+    const sleeps = duringSleeps();
+    const store = createJsonFileStore(file, empty);
+
+    expect(store.load()).toEqual({ items: [] });
+    expect(readdirSync(dir)).toEqual(["store.json"]);
+    expect(readFileSync(file, "utf8")).toBe("");
+    // Still empty: answered from the cache, not by waiting the window out again.
+    sleeps.mockClear();
+    expect(store.load()).toEqual({ items: [] });
+    expect(sleeps).not.toHaveBeenCalled();
+
+    writeFileSync(file, JSON.stringify({ items: ["written"] }));
+    expect(store.load()).toEqual({ items: ["written"] });
+    expect(readdirSync(dir)).toEqual(["store.json"]);
+  });
+
+  it("treats a whitespace-only file like an empty one", () => {
+    writeFileSync(file, "\n");
+    duringSleeps();
+    const store = createJsonFileStore(file, empty);
+    expect(store.load()).toEqual({ items: [] });
+    expect(readdirSync(dir)).toEqual(["store.json"]);
+  });
+
+  it("does not take one quiet interval for corruption: a write finishing in the last interval is read", () => {
+    writeFileSync(file, '{"items": ["a", ');
+    duringSleeps(undefined, undefined, () => appendFileSync(file, '"b"]}'));
+    const store = createJsonFileStore(file, empty);
+
+    expect(store.load()).toEqual({ items: ["a", "b"] });
+    expect(readdirSync(dir)).toEqual(["store.json"]);
+  });
+
+  it("does not move aside a file that changed after the last failed read", () => {
+    writeFileSync(file, '{"items": ["a"');
+    duringSleeps();
+    // Quiet through every interval; the writer resumes right after the final read.
+    let reads = 0;
+    storeRead.after = () => {
+      if (++reads === 4) appendFileSync(file, ', "b"');
+    };
+    const store = createJsonFileStore(file, empty);
+
+    expect(() => store.load()).toThrow(SyntaxError);
+    expect(readdirSync(dir)).toEqual(["store.json"]);
   });
 });
