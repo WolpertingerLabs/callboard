@@ -15,6 +15,11 @@ interface ModalOverlayProps {
    * not changed, React bails out, and the button appears to do nothing at all.
    */
   onClose?: () => void;
+  /**
+   * Runs on a click on the backdrop itself — not on anything inside it. Opt-in:
+   * most dialogs here deliberately do not close on a stray click.
+   */
+  onBackdropClick?: () => void;
 }
 
 const overlayStyle: CSSProperties = {
@@ -48,10 +53,20 @@ const overlayStyle: CSSProperties = {
  * What it covers is **descendant components** — see `ErrorBoundary`'s note on
  * the seam, which is narrower than "everything a modal does".
  */
-export default function ModalOverlay({ children, style, onClose }: ModalOverlayProps) {
+export default function ModalOverlay({ children, style, onClose, onBackdropClick }: ModalOverlayProps) {
   return (
     <ErrorBoundary region="This dialog" variant="modal" onDismiss={onClose}>
-      <div style={{ ...overlayStyle, ...style }}>{children}</div>
+      <div
+        style={{ ...overlayStyle, ...style }}
+        onClick={
+          onBackdropClick &&
+          ((e) => {
+            if (e.target === e.currentTarget) onBackdropClick();
+          })
+        }
+      >
+        {children}
+      </div>
     </ErrorBoundary>
   );
 }

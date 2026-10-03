@@ -7,25 +7,13 @@
  * actionable, and they belong somewhere a test can read them.
  */
 import type { WorkspaceRemovalBlocker, WorktreeDiskUsage } from "../api";
+import { BYTES_ROUNDED_TO_TB, formatBytes } from "./formatBytes";
 
-/** `9.4 GB`. Sizes here run to tens of gigabytes, so the ladder goes that far. */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
-  }
-  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
-}
-
-/** A size, or the reason there isn't one. Never a silent blank. */
+/** A size, or the reason there isn't one. Never a silent blank. Sizes here run to tens of gigabytes (`9.4 GB`), so the ladder goes to TB. */
 export function formatDiskUsage(usage?: WorktreeDiskUsage): string | undefined {
   if (!usage) return undefined;
   if (usage.bytes === undefined) return "size unknown";
-  return formatBytes(usage.bytes);
+  return formatBytes(usage.bytes, BYTES_ROUNDED_TO_TB);
 }
 
 /**

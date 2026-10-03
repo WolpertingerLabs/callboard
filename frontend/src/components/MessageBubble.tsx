@@ -6,6 +6,7 @@ import MarkdownRenderer from "./MarkdownRenderer";
 import CopyButton from "./CopyButton";
 import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
+import { copyToClipboard } from "../utils/clipboard";
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
 
 /**
@@ -532,7 +533,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
               style={{ cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted" as const }}
               onClick={(e) => {
                 e.stopPropagation();
-                navigator.clipboard.writeText(message.requestId!);
+                void copyToClipboard(message.requestId!);
               }}
               title="Click to copy request ID"
             >

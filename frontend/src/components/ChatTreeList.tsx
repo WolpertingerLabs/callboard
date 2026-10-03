@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useNavigate } from "react-router-dom";
 import { ChevronDown, ChevronRight, ListTree, Loader2 } from "lucide-react";
 import { getChatTree, type Chat, type ChatTreeNode, type ChatTreeResponse } from "../api";
+import { chatMeta } from "../utils/chatMeta";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
@@ -253,14 +254,6 @@ const NO_PINNED_MEMBERS: Chat[] = [];
 /** Defense cap against corrupt parent-pointer chains (mirrors the server). */
 const MAX_LINEAGE_DEPTH = 50;
 
-function parseMeta(chat: Chat): Record<string, any> {
-  try {
-    return JSON.parse(chat.metadata || "{}");
-  } catch {
-    return {};
-  }
-}
-
 /**
  * Resolve a chat's lineage group key by walking parent pointers through the
  * loaded chats (the API loads a tree's full membership via includeLineage),
@@ -270,12 +263,12 @@ function parseMeta(chat: Chat): Record<string, any> {
  * consistent for every loaded member reaching that same ancestor.
  */
 function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
-  const meta = parseMeta(chat);
+  const meta = chatMeta(chat);
   const hasLineage = !!(meta.rootChatId || meta.parentChatId || meta.forkedFrom);
   let current = chat;
   const visited = new Set<string>([chat.id]);
   for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
-    const m = current === chat ? meta : parseMeta(current);
+    const m = current === chat ? meta : chatMeta(current);
     const parentId = m.parentChatId || m.forkedFrom;
     if (!parentId || visited.has(parentId)) {
       return { rootKey: m.rootChatId || current.id, hasLineage };
@@ -421,7 +414,7 @@ function rollUpActivity(members: Chat[]): RowActivity {
   let chatStatusAt = -Infinity;
 
   for (const member of members) {
-    const meta = parseMeta(member);
+    const meta = chatMeta(member);
     const memberAt = at(member.updated_at);
     if (memberAt > at(updatedAt)) updatedAt = member.updated_at;
     // Each member against its OWN read mark: one member you have read does not

@@ -4,6 +4,7 @@ import ConfirmModal from "../../components/ConfirmModal";
 import { listApiKeys, createApiKey, deleteApiKey } from "../../api";
 import type { ApiKeyInfo } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
+import { useCopy } from "../../hooks/useCopy";
 
 function formatDate(ms: number | null): string {
   if (!ms) return "—";
@@ -24,7 +25,7 @@ export default function ApiKeysSection() {
 
   // One-time token reveal after creation
   const [newToken, setNewToken] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, copy, resetCopied] = useCopy(null);
 
   const [revokeTarget, setRevokeTarget] = useState<ApiKeyInfo | null>(null);
 
@@ -51,7 +52,7 @@ export default function ApiKeysSection() {
       const expiresAt = expiryDate ? new Date(`${expiryDate}T23:59:59`).getTime() : null;
       const { token } = await createApiKey(name.trim(), description.trim(), expiresAt);
       setNewToken(token);
-      setCopied(false);
+      resetCopied();
       setName("");
       setDescription("");
       setExpiryDate("");
@@ -79,8 +80,7 @@ export default function ApiKeysSection() {
 
   const handleCopy = async () => {
     if (!newToken) return;
-    await navigator.clipboard.writeText(newToken);
-    setCopied(true);
+    await copy(newToken);
   };
 
   const inputStyle: React.CSSProperties = {
@@ -165,8 +165,8 @@ export default function ApiKeysSection() {
                 fontSize: 12,
               }}
             >
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-              {copied ? "Copied" : "Copy"}
+              {copied !== null ? <Check size={14} /> : <Copy size={14} />}
+              {copied !== null ? "Copied" : "Copy"}
             </button>
           </div>
           <button
@@ -217,8 +217,8 @@ export default function ApiKeysSection() {
                       <span
                         style={{
                           fontSize: 11,
-                          color: "var(--danger, #dc3545)",
-                          border: "1px solid var(--danger, #dc3545)",
+                          color: "var(--danger)",
+                          border: "1px solid var(--danger)",
                           borderRadius: 4,
                           padding: "1px 6px",
                         }}
@@ -246,7 +246,7 @@ export default function ApiKeysSection() {
                   style={{
                     background: "none",
                     border: "none",
-                    color: "var(--danger, #dc3545)",
+                    color: "var(--danger)",
                     cursor: "pointer",
                     padding: 6,
                     display: "flex",
@@ -261,7 +261,7 @@ export default function ApiKeysSection() {
         </div>
       )}
 
-      {error && <div style={{ color: "var(--danger, #dc3545)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+      {error && <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
 
       {/* Create form */}
       {formOpen ? (

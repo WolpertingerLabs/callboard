@@ -483,6 +483,10 @@ async function generateThemeAttempt(name: string, description: string, feedback:
         `- shadow-sm/md/lg are full box-shadow values (e.g. "0 1px 3px rgba(0,0,0,0.2)")\n` +
         `- overlay-bg should be semi-transparent (e.g. "rgba(0,0,0,0.5)")\n` +
         `- *-bg variables (accent-bg, danger-bg, etc.) should be very subtle tints\n` +
+        `- Exceptions to that: media-control-bg and media-control-bg-strong are dark scrims painted over ` +
+        `images and video (e.g. "rgba(0,0,0,0.5)" and "rgba(0,0,0,0.6)") with media-control-text ` +
+        `(near-white) on top, and canvas-bg is the page colour behind user HTML canvases, which are ` +
+        `authored for a white page — keep it "#ffffff" in both modes\n` +
         `- diff-added-* should be green-ish, diff-removed-* should be red-ish\n` +
         `- Make the theme cohesive and visually appealing\n\n` +
         `Return ONLY valid JSON in this exact format (no markdown, no code fences):\n` +

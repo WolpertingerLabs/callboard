@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, RotateCw, FileText, FileDiff, ImageIcon, Vid
 import { getGitDiff, getGitFileDiff, getGitFileRawUrl } from "../api";
 import type { DiffFileType } from "shared/types/index.js";
 import { errorMessage } from "../utils/errorMessage";
+import { formatBytes } from "../utils/formatBytes";
 
 // --- Diff parsing types ---
 
@@ -31,12 +32,6 @@ interface DiffFile {
 }
 
 // --- Helpers ---
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 // --- Diff parser (single file) ---
 

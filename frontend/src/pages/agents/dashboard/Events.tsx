@@ -5,21 +5,9 @@ import { useIsMobile } from "../../../hooks/useIsMobile";
 import { usePolling } from "../../../hooks/usePolling";
 import { getProxyEvents, getProxyIngestors } from "../../../api";
 import type { StoredEvent, IngestorStatus, AgentConfig } from "../../../api";
+import { formatShortAgo } from "../../../utils/dateFormat";
 
 const POLL_INTERVAL = 5_000; // refresh event list every 5s
-
-function timeAgo(ts: number): string {
-  const diff = Date.now() - ts;
-  const secs = Math.floor(diff / 1000);
-  if (secs < 10) return "Just now";
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
 
 /** Color for an ingestor state badge */
 function stateColor(state: string): string {
@@ -201,7 +189,7 @@ export default function Events({ agent }: { agent: AgentConfig }) {
                   </span>
                   <span>{ing.type}</span>
                   <span>{ing.totalEventsReceived} events</span>
-                  {ing.lastEventAt && <span>last: {timeAgo(new Date(ing.lastEventAt).getTime())}</span>}
+                  {ing.lastEventAt && <span>last: {formatShortAgo(new Date(ing.lastEventAt).getTime(), undefined, { seconds: true })}</span>}
                 </div>
                 {ing.error && <div style={{ fontSize: 11, color: "var(--error)", marginTop: 4 }}>{ing.error}</div>}
               </div>
@@ -385,7 +373,9 @@ export default function Events({ agent }: { agent: AgentConfig }) {
                   </span>
 
                   {/* Timestamp */}
-                  <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>{timeAgo(event.storedAt)}</span>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>
+                    {formatShortAgo(event.storedAt, undefined, { seconds: true })}
+                  </span>
                 </div>
 
                 {/* Expanded detail */}

@@ -343,7 +343,7 @@ export default function PluginsSettings() {
                     borderRadius: 4,
                     padding: "4px 6px",
                     cursor: removingRoot === root.path ? "default" : "pointer",
-                    color: "var(--danger, #dc3545)",
+                    color: "var(--danger)",
                     display: "flex",
                     alignItems: "center",
                     opacity: removingRoot === root.path ? 0.5 : 1,
@@ -527,7 +527,7 @@ export default function PluginsSettings() {
                   key={server.id}
                   style={{
                     borderRadius: 6,
-                    border: hasMissingEnv ? "1px solid var(--danger, #dc3545)" : "1px solid var(--border)",
+                    border: hasMissingEnv ? "1px solid var(--danger)" : "1px solid var(--border)",
                     marginBottom: 4,
                     background: "var(--surface)",
                     opacity: server.enabled ? 1 : 0.6,
@@ -630,7 +630,7 @@ export default function PluginsSettings() {
                             padding: "4px 8px",
                             borderRadius: 4,
                             background: "var(--danger-bg)",
-                            color: "var(--danger, #dc3545)",
+                            color: "var(--danger)",
                             fontSize: 11,
                             fontWeight: 600,
                           }}
@@ -648,11 +648,11 @@ export default function PluginsSettings() {
                         className={hasMissingEnv && !isExpanded ? "env-pulse" : ""}
                         style={{
                           background: hasMissingEnv && !isExpanded ? "var(--danger-bg)" : "none",
-                          border: hasMissingEnv && !isExpanded ? "1px solid var(--danger, #dc3545)" : "none",
+                          border: hasMissingEnv && !isExpanded ? "1px solid var(--danger)" : "none",
                           borderRadius: 6,
                           padding: "4px 6px",
                           cursor: "pointer",
-                          color: hasMissingEnv && !isExpanded ? "var(--danger, #dc3545)" : "var(--text-muted)",
+                          color: hasMissingEnv && !isExpanded ? "var(--danger)" : "var(--text-muted)",
                           display: "flex",
                           alignItems: "center",
                           flexShrink: 0,
@@ -675,7 +675,7 @@ export default function PluginsSettings() {
                   {isExpanded && editingEnv && (
                     <div
                       style={{
-                        borderTop: hasMissingEnv ? "1px solid var(--danger, #dc3545)" : "1px solid var(--border)",
+                        borderTop: hasMissingEnv ? "1px solid var(--danger)" : "1px solid var(--border)",
                         padding: "12px",
                         background: "var(--bg)",
                         borderRadius: "0 0 6px 6px",
@@ -704,7 +704,7 @@ export default function PluginsSettings() {
                             borderRadius: 4,
                             background: "var(--danger-bg)",
                             border: "1px solid var(--danger-border)",
-                            color: "var(--danger, #dc3545)",
+                            color: "var(--danger)",
                             fontSize: 11,
                             fontWeight: 600,
                             marginBottom: 10,
@@ -731,7 +731,7 @@ export default function PluginsSettings() {
                                   fontSize: 12,
                                   fontFamily: "monospace",
                                   fontWeight: 500,
-                                  color: isMissing ? "var(--danger, #dc3545)" : "var(--text)",
+                                  color: isMissing ? "var(--danger)" : "var(--text)",
                                 }}
                               >
                                 {key}
@@ -740,7 +740,7 @@ export default function PluginsSettings() {
                                 <span
                                   style={{
                                     fontSize: 10,
-                                    color: hint === "required" ? "var(--danger, #dc3545)" : "var(--text-muted)",
+                                    color: hint === "required" ? "var(--danger)" : "var(--text-muted)",
                                     fontStyle: "italic",
                                     fontWeight: isMissing ? 600 : 400,
                                   }}
@@ -776,7 +776,7 @@ export default function PluginsSettings() {
                                   flex: 1,
                                   padding: "6px 8px",
                                   borderRadius: 4,
-                                  border: isMissing ? "1px solid var(--danger, #dc3545)" : "1px solid var(--border)",
+                                  border: isMissing ? "1px solid var(--danger)" : "1px solid var(--border)",
                                   background: isMissing ? "var(--danger-bg)" : "var(--surface)",
                                   color: "var(--text)",
                                   fontSize: 12,

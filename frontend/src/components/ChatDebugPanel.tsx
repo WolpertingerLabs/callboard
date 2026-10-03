@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { Copy, Check } from "lucide-react";
+import { useCopy } from "../hooks/useCopy";
 import type { ParsedMessage } from "../api";
 
 /** Format ms delta as human-readable duration */
@@ -56,7 +57,7 @@ function stopReasonColor(reason: string): string {
   switch (reason) {
     case "end_turn":
     case "loop:completed":
-      return "var(--success, #22c55e)";
+      return "var(--success)";
     case "tool_use":
       return "var(--accent)";
     case "max_tokens":
@@ -65,7 +66,7 @@ function stopReasonColor(reason: string): string {
     case "loop:max_iterations":
     case "loop:mistake_limit":
     case "loop:error":
-      return "var(--danger, #ef4444)";
+      return "var(--danger)";
     default:
       // `aborted`, `loop:aborted`, `cancelled`, `pending`, and anything an
       // engine adds later: not a failure, not a clean finish, no claim made.
@@ -111,7 +112,7 @@ interface Props {
 export default function ChatDebugPanel({ messages }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("index");
   const [sortAsc, setSortAsc] = useState(true);
-  const [copiedReqId, setCopiedReqId] = useState<string | null>(null);
+  const [copiedReqId, copyRequestId] = useCopy();
   const [filterModel, setFilterModel] = useState<string | null>(null);
   const [filterStop, setFilterStop] = useState<string | null>(null);
 
@@ -349,12 +350,6 @@ export default function ChatDebugPanel({ messages }: Props) {
   function sortIndicator(key: SortKey) {
     if (sortKey !== key) return "";
     return sortAsc ? " \u25B2" : " \u25BC";
-  }
-
-  function copyRequestId(reqId: string) {
-    navigator.clipboard.writeText(reqId);
-    setCopiedReqId(reqId);
-    setTimeout(() => setCopiedReqId(null), 1500);
   }
 
   const thStyle: React.CSSProperties = {

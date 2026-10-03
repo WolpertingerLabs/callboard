@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { usePolling } from "../../hooks/usePolling";
+import { useCopy } from "../../hooks/useCopy";
 import { Globe, ShieldAlert, Loader2, Check, Copy, ExternalLink, AlertTriangle, X } from "lucide-react";
 import { getAgentSettings, updateAgentSettings, getRemoteAccessStatus } from "../../api";
 import type { RemoteAccessStatus } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
+import ModalOverlay from "../../components/ModalOverlay";
 
 const CLOUDFLARED_INSTALL_URL = "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
 
@@ -26,7 +28,7 @@ export default function RemoteAccessSettings() {
   const [error, setError] = useState<string | null>(null);
   const [needsPassword, setNeedsPassword] = useState(false);
   const [showWarning, setShowWarning] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, copy] = useCopy();
 
   const [status, setStatus] = useState<RemoteAccessStatus | null>(null);
 
@@ -143,13 +145,6 @@ export default function RemoteAccessSettings() {
     if (!lines.includes(ip)) {
       setIpAllowlist([...lines, ip].join("\n"));
     }
-  };
-
-  const handleCopy = (url: string) => {
-    navigator.clipboard?.writeText(url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
   };
 
   if (loading) {
@@ -460,11 +455,11 @@ export default function RemoteAccessSettings() {
               {status.url} <ExternalLink size={13} />
             </a>
             <button
-              onClick={() => handleCopy(status.url!)}
+              onClick={() => void copy(status.url!)}
               title="Copy URL"
               style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text-muted)", fontSize: 12, cursor: "pointer" }}
             >
-              {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? "Copied" : "Copy"}
+              {copied !== null ? <Check size={12} /> : <Copy size={12} />} {copied !== null ? "Copied" : "Copy"}
             </button>
           </div>
         )}
@@ -486,10 +481,7 @@ export default function RemoteAccessSettings() {
 
       {/* Enable confirmation modal */}
       {showWarning && (
-        <div
-          onClick={() => setShowWarning(false)}
-          style={{ position: "fixed", inset: 0, background: "var(--overlay-bg)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }}
-        >
+        <ModalOverlay style={{ padding: 16 }} onClose={() => setShowWarning(false)} onBackdropClick={() => setShowWarning(false)}>
           <div
             onClick={(e) => e.stopPropagation()}
             style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20, maxWidth: 440, width: "100%", display: "flex", flexDirection: "column", gap: 14 }}
@@ -522,7 +514,7 @@ export default function RemoteAccessSettings() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalOverlay>
       )}
     </div>
   );

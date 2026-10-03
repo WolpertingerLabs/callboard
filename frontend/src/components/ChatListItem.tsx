@@ -19,6 +19,7 @@ import {
   PinOff,
 } from "lucide-react";
 import type { Chat } from "../api";
+import { chatMeta } from "../utils/chatMeta";
 import { dismissSummon } from "../api";
 // Type-only, so this is not a runtime cycle with the list that renders us.
 import type { RowActivity } from "./ChatTreeList";
@@ -267,41 +268,24 @@ export default function ChatListItem({
     minute: "2-digit",
   });
 
-  let title: string | undefined;
-  let preview: string | undefined;
-  let isBookmarked = false;
-  let ownPinned = false;
-  let agentAlias: string | undefined;
-  let isTriggered = false;
-  let lastReadAt: string | undefined;
-  let ownChatStatus: string | undefined;
-  let ownChatStatusEmoji: string | undefined;
-  let ownSummon: { message: string; urgency: string; createdAt: string } | undefined;
-  let provider: string | undefined;
-  let acpProviderId: string | undefined;
-  let ownJobRunId: string | undefined;
-  let ownJobStepId: string | undefined;
-  let jobNeedsYou = false;
-  try {
-    const meta = JSON.parse(chat.metadata || "{}");
-    title = meta.title;
-    preview = meta.preview;
-    isBookmarked = meta.bookmarked === true;
-    ownPinned = meta.pinned === true;
-    agentAlias = meta.agentAlias;
-    isTriggered = meta.triggered === true;
-    lastReadAt = meta.lastReadAt;
-    ownChatStatus = meta.chatStatus || undefined;
-    ownChatStatusEmoji = meta.chatStatusEmoji || undefined;
-    ownSummon = meta.summon || undefined;
-    provider = meta.provider || undefined;
-    acpProviderId = meta.acpProviderId || undefined;
-    ownJobRunId = meta.jobRunId || undefined;
-    ownJobStepId = meta.jobStepId || undefined;
-    // Set by the list route on the run's representative row only — a run owns
-    // every chat it ever opened, so the status alone would flag all of them.
-    jobNeedsYou = meta.jobRunNeedsYou === true;
-  } catch {}
+  const meta = chatMeta(chat);
+  const title = meta.title;
+  const preview = meta.preview;
+  const isBookmarked = meta.bookmarked === true;
+  const ownPinned = meta.pinned === true;
+  const agentAlias = meta.agentAlias;
+  const isTriggered = meta.triggered === true;
+  const lastReadAt = meta.lastReadAt;
+  const ownChatStatus = meta.chatStatus || undefined;
+  const ownChatStatusEmoji = meta.chatStatusEmoji || undefined;
+  const ownSummon = meta.summon || undefined;
+  const provider = meta.provider || undefined;
+  const acpProviderId = meta.acpProviderId || undefined;
+  const ownJobRunId = meta.jobRunId || undefined;
+  const ownJobStepId = meta.jobStepId || undefined;
+  // Set by the list route on the run's representative row only — a run owns
+  // every chat it ever opened, so the status alone would flag all of them.
+  const jobNeedsYou = meta.jobRunNeedsYou === true;
 
   /** The list's verdict where it has one; this chat's own flag otherwise. */
   const isPinned = pinned ?? ownPinned;

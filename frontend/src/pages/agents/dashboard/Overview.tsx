@@ -4,17 +4,7 @@ import { Clock, Radio, ChevronRight, Bot, Save, Check } from "lucide-react";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { updateAgent, getAgentCronJobs, getAgentActivity, getProxyIngestors, getKeyAliases } from "../../../api";
 import type { AgentConfig, ActivityEntry, KeyAliasInfo } from "../../../api";
-
-function timeAgo(ts: number): string {
-  const diff = Date.now() - ts;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
+import { formatShortAgo } from "../../../utils/dateFormat";
 
 const typeColors: Record<string, string> = {
   chat: "var(--accent)",
@@ -439,7 +429,7 @@ export default function Overview({ agent, onAgentUpdate }: { agent: AgentConfig;
                     {entry.message}
                   </p>
                 </div>
-                <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{timeAgo(entry.timestamp)}</span>
+                <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{formatShortAgo(entry.timestamp)}</span>
               </div>
             ))}
           </div>

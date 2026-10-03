@@ -1,6 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { Check, Copy } from "lucide-react";
-import { copyToClipboard } from "../utils/clipboard";
+import { useCopy } from "../hooks/useCopy";
 
 interface Props {
   /** Text placed on the clipboard when the button is pressed. */
@@ -26,19 +26,16 @@ interface Props {
  * for non-secure contexts in utils/clipboard.
  */
 export default function CopyButton({ text, title, className, style, size = 14 }: Props) {
-  const [copied, setCopied] = useState(false);
+  const [copied, copy] = useCopy();
 
   const handleCopy = useCallback(
     async (e: React.MouseEvent) => {
       // A code block sits inside a message bubble that has its own click
       // handlers; copying must not also select or fork the message.
       e.stopPropagation();
-      if (await copyToClipboard(text)) {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }
+      await copy(text);
     },
-    [text],
+    [text, copy],
   );
 
   return (
@@ -60,7 +57,7 @@ export default function CopyButton({ text, title, className, style, size = 14 }:
         ...style,
       }}
     >
-      {copied ? <Check size={size} style={{ color: "var(--success)" }} /> : <Copy size={size} style={{ color: "var(--text-muted)" }} />}
+      {copied !== null ? <Check size={size} style={{ color: "var(--success)" }} /> : <Copy size={size} style={{ color: "var(--text-muted)" }} />}
     </button>
   );
 }
