@@ -630,13 +630,11 @@ export interface BulkArchiveResponse {
  * it once. Partial success, same shape as {@link BulkDeleteResponse}.
  */
 export async function bulkArchiveChats(ids: string[], archived: boolean): Promise<BulkArchiveResponse> {
-  const res = await fetch(`${BASE}/chats/bulk-archive`, {
+  return request("/chats/bulk-archive", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids, archived }),
+    json: { ids, archived },
+    error: archived ? "Failed to archive chats" : "Failed to unarchive chats",
   });
-  await assertOk(res, archived ? "Failed to archive chats" : "Failed to unarchive chats");
-  return res.json();
 }
 
 export async function getChat(id: string): Promise<Chat> {
