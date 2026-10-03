@@ -5,6 +5,13 @@ import { homedir } from "os";
 export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 
 /**
+ * Absolute path to the Callboard data directory.
+ * Defaults to ~/.callboard; override with CALLBOARD_DATA_DIR env var
+ * (e.g. ~/.callboard-dev for development).
+ */
+export const DATA_DIR = process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard");
+
+/**
  * Default ignored project-dir prefixes.
  *
  * Project dirs under ~/.claude/projects/ are slugified absolute paths
@@ -26,7 +33,7 @@ export const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 export const DEFAULT_IGNORED_PROJECT_DIR_PREFIXES: readonly string[] = ["-tmp", "-private-"];
 
 /** JSON file persisting the user's configured ignored prefixes. */
-const IGNORED_DIRS_CONFIG_FILE = join(process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard"), "ignored-project-dirs.json");
+const IGNORED_DIRS_CONFIG_FILE = join(DATA_DIR, "ignored-project-dirs.json");
 
 let _ignoredPrefixesCache: string[] | null = null;
 
@@ -103,9 +110,8 @@ export function saveIgnoredProjectDirPrefixes(prefixes: string[]): string[] {
   }
 
   // Ensure data dir exists before writing
-  const dataDir = process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard");
-  if (!existsSync(dataDir)) {
-    mkdirSync(dataDir, { recursive: true });
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
   }
   writeFileSync(IGNORED_DIRS_CONFIG_FILE, JSON.stringify({ prefixes: cleaned }, null, 2));
   _ignoredPrefixesCache = cleaned;
@@ -217,7 +223,7 @@ export function isIgnoredProjectDir(dirName: string): boolean {
  */
 export function isIgnoredProjectFolder(folderPath: string): boolean {
   if (typeof folderPath !== "string" || folderPath.length === 0) return false;
-  return isIgnoredProjectDir(folderPath.replace(/[^a-zA-Z0-9]/g, "-"));
+  return isIgnoredProjectDir(folderToProjectDir(folderPath));
 }
 
 /**
@@ -243,13 +249,6 @@ export function listClaudeProjectDirs(): string[] {
  * importing settings from here is a cycle. The resolution moved *down* the
  * graph instead — see `services/claude-binary.ts` for the whole argument.
  */
-
-/**
- * Absolute path to the Callboard data directory.
- * Defaults to ~/.callboard; override with CALLBOARD_DATA_DIR env var
- * (e.g. ~/.callboard-dev for development).
- */
-export const DATA_DIR = process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard");
 
 /** Path to the primary .env file inside the data directory. */
 export const ENV_FILE = join(DATA_DIR, ".env");
@@ -727,14 +726,6 @@ function pathExists(p: string): boolean {
 }
 
 /**
- * Encode a string the same way the Claude SDK does (for comparison purposes).
- * Replaces all non-alphanumeric characters with dashes.
- */
-function encodeSegment(s: string): string {
-  return s.replace(/[^a-zA-Z0-9]/g, "-");
-}
-
-/**
  * Try to recover the original path by scanning the filesystem for real directory
  * entries whose encoded form matches the merged segments.
  *
@@ -829,7 +820,7 @@ function scanDescend(parentPath: string, encodedSuffix: string, depth: number): 
   // A whole-suffix match is the answer: there is no encoding left to spend, so
   // nothing deeper can match either.
   for (const entry of entries) {
-    if (encodeSegment(entry) === encodedSuffix) {
+    if (folderToProjectDir(entry) === encodedSuffix) {
       const candidate = childOf(entry);
       if (pathExists(candidate)) return candidate;
     }
@@ -838,7 +829,7 @@ function scanDescend(parentPath: string, encodedSuffix: string, depth: number): 
   if (depth <= 0) return null;
 
   const prefixes = entries
-    .map((entry) => ({ entry, encoded: encodeSegment(entry) }))
+    .map((entry) => ({ entry, encoded: folderToProjectDir(entry) }))
     .filter(({ encoded }) => encodedSuffix.startsWith(encoded + "-"))
     .sort((a, b) => b.encoded.length - a.encoded.length || (a.entry < b.entry ? -1 : 1));
 

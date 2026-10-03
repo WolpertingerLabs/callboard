@@ -195,10 +195,12 @@ export function exportJobEnvelope(id: string): JobExportEnvelope | null {
 /** Slugify `base`, then append -2, -3, … until the id does not collide with an existing job. */
 export function uniqueJobId(base: string): string {
   const slug = slugifyJobId(base);
-  if (!getJob(slug)) return slug;
+  // Existence only — no need to parse the definition just to see a collision.
+  const taken = (id: string) => existsSync(join(definitionsDir, `${id}.json`));
+  if (!taken(slug)) return slug;
   for (let n = 2; ; n++) {
     const candidate = `${slug}-${n}`;
-    if (!getJob(candidate)) return candidate;
+    if (!taken(candidate)) return candidate;
   }
 }
 
@@ -272,18 +274,42 @@ export function importJobDefinition(raw: unknown, opts?: { mode?: "copy" | "over
  * That is this function's entire job; do not re-derive it inline.
  */
 export function latestRunChatId(run: JobRun): string | undefined {
-  return (
-    run.activeStep?.chatId ??
-    Object.values(run.activeStep?.parallel?.branches ?? {}).find((b) => b.chatId)?.chatId ??
-    [...run.history].reverse().find((h) => h.chatId)?.chatId
-  );
+  const active = run.activeStep?.chatId ?? Object.values(run.activeStep?.parallel?.branches ?? {}).find((b) => b.chatId)?.chatId;
+  if (active != null) return active;
+  // Newest first without copying the history (Array#findLast is ES2023; the lib target is ES2022).
+  for (let i = run.history.length - 1; i >= 0; i--) {
+    if (run.history[i].chatId) return run.history[i].chatId;
+  }
+  return undefined;
+}
+
+/**
+ * Every run file in the runs directory, parsed. An unreadable or non-object
+ * file is logged and skipped. Deliberately uncached — every caller (the card
+ * rollup included) needs what is on disk now, and the execution-key index is
+ * the one in-memory structure, built by its own callers.
+ */
+function* readAllRunFiles(): Generator<{ file: string; run: JobRun }> {
+  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
+    let run: JobRun;
+    try {
+      run = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
+    } catch (err: any) {
+      log.error(`Failed to read job run ${file}: ${err.message}`);
+      continue;
+    }
+    if (!run || typeof run !== "object") {
+      log.error(`Failed to read job run ${file}: not a JSON object`);
+      continue;
+    }
+    yield { file, run };
+  }
 }
 
 export function listRuns(filter?: { jobId?: string; status?: JobRunStatus; limit?: number; withRoot?: boolean }): JobRunListItem[] {
   const items: JobRunListItem[] = [];
-  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
+  for (const { file, run } of readAllRunFiles()) {
     try {
-      const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
       if (filter?.jobId && run.jobId !== filter.jobId) continue;
       if (filter?.status && run.status !== filter.status) continue;
       // Card rollups need every run that belongs to a lineage root, so they
@@ -434,13 +460,7 @@ function indexRunKey(index: Map<ExecutionKey, string>, run: JobRun): void {
 function ensureExecutionKeyIndex(): Map<ExecutionKey, string> {
   if (executionKeyIndex) return executionKeyIndex;
   const index = new Map<ExecutionKey, string>();
-  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
-    try {
-      indexRunKey(index, JSON.parse(readFileSync(join(runsDir, file), "utf8")));
-    } catch (err: any) {
-      log.error(`Failed to read job run ${file}: ${err.message}`);
-    }
-  }
+  for (const { run } of readAllRunFiles()) indexRunKey(index, run);
   executionKeyIndex = index;
   return index;
 }
@@ -487,14 +507,9 @@ export function findRunByExecutionKey(key: ExecutionKey): JobRun | null {
  */
 export function findChildRun(parentRunId: string, parentStepId: string, exclude: ReadonlySet<string>): JobRun | null {
   let newest: JobRun | null = null;
-  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
-    try {
-      const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
-      if (run.parentRunId !== parentRunId || run.parentStepId !== parentStepId || exclude.has(run.runId)) continue;
-      if (!newest || run.createdAt > newest.createdAt) newest = run;
-    } catch (err: any) {
-      log.error(`Failed to read job run ${file}: ${err.message}`);
-    }
+  for (const { run } of readAllRunFiles()) {
+    if (run.parentRunId !== parentRunId || run.parentStepId !== parentStepId || exclude.has(run.runId)) continue;
+    if (!newest || run.createdAt > newest.createdAt) newest = run;
   }
   return newest;
 }
@@ -508,14 +523,9 @@ export function findChildRun(parentRunId: string, parentStepId: string, exclude:
 export function listResumableRuns(): JobRun[] {
   const runs: JobRun[] = [];
   const index = new Map<ExecutionKey, string>();
-  for (const file of readdirSync(runsDir).filter((f) => f.endsWith(".json"))) {
-    try {
-      const run: JobRun = JSON.parse(readFileSync(join(runsDir, file), "utf8"));
-      indexRunKey(index, run);
-      if (!TERMINAL_JOB_RUN_STATUSES.has(run.status)) runs.push(run);
-    } catch (err: any) {
-      log.error(`Failed to read job run ${file}: ${err.message}`);
-    }
+  for (const { run } of readAllRunFiles()) {
+    indexRunKey(index, run);
+    if (!TERMINAL_JOB_RUN_STATUSES.has(run.status)) runs.push(run);
   }
   executionKeyIndex = index;
   return runs;

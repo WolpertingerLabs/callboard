@@ -10,13 +10,13 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
 import type { ContactChannel, UserContactInfo } from "shared";
 import { createLogger } from "../utils/logger.js";
+import { DATA_DIR } from "../utils/paths.js";
 
 const log = createLogger("user-contact");
 
-const CONTACT_CONFIG_FILE = join(process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard"), "user-contact.json");
+const CONTACT_CONFIG_FILE = join(DATA_DIR, "user-contact.json");
 
 const CHANNEL_KEYS: (keyof UserContactInfo)[] = ["discord", "telegram", "phone", "email"];
 
@@ -71,9 +71,8 @@ export function saveUserContact(info: Partial<UserContactInfo>): UserContactInfo
     next[key] = coerceChannel(info[key]);
   }
 
-  const dataDir = process.env.CALLBOARD_DATA_DIR || join(homedir(), ".callboard");
-  if (!existsSync(dataDir)) {
-    mkdirSync(dataDir, { recursive: true });
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
   }
   writeFileSync(CONTACT_CONFIG_FILE, JSON.stringify(next, null, 2), { mode: 0o600 });
   _cache = next;

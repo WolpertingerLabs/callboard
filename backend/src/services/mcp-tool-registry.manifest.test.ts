@@ -9,11 +9,14 @@
  * `targetAgent` while both schemas have always called it `targetAlias`. A user
  * reading the manifest to hand-write a call got a name the tool would reject.
  *
- * This is deliberately not an exhaustiveness check. The manifest is allowed to
- * describe a subset — it is a UI listing, not a generated schema. What it is not
- * allowed to do is name a parameter that does not exist, or disagree about
- * whether one is required. Both of those are checkable, and both are the kind of
- * wrong that only ever gets noticed by someone whose call already failed.
+ * The tool *set* is checked exhaustively: every tool a server really registers
+ * must be listed, because the UI's toolCount is read straight off this list and
+ * once silently understated it by fourteen tools. Parameters are deliberately
+ * not — the manifest may describe a subset of a tool's params, since it is a
+ * UI listing, not a generated schema. What it is not allowed to do is name a
+ * parameter that does not exist, or disagree about whether one is required.
+ * Both of those are checkable, and both are the kind of wrong that only ever
+ * gets noticed by someone whose call already failed.
  */
 import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
@@ -83,6 +86,36 @@ describe("the MCP tool manifest matches the schemas it describes", () => {
     expect(checkable.length).toBeGreaterThan(20);
     const missing = checkable.filter((t) => !tools.has(t.name)).map((t) => `${t.serverName}/${t.name}`);
     expect(missing).toEqual([]);
+  });
+
+  it("lists every tool each server really registers, in each context", () => {
+    // Built the way claude.ts builds them: a regular chat gets the job tools on
+    // callboard-tools; an agent session gets them on "callboard" instead.
+    const names = (tools: AnyToolDefinition[]) => tools.map((t) => t.name).sort();
+    const listed = (context: "chat" | "agent", server: string) =>
+      getMcpToolsManifest(context)
+        .tools.filter((t) => t.serverName === server)
+        .map((t) => t.name)
+        .sort();
+    const toolCount = (context: "chat" | "agent", server: string) => getMcpToolsManifest(context).servers.find((s) => s.name === server)?.toolCount;
+
+    const chatTools = names(buildCallboardToolsSpec(() => "chat-1").tools);
+    expect(listed("chat", "callboard-tools")).toEqual(chatTools);
+    expect(toolCount("chat", "callboard-tools")).toBe(chatTools.length);
+
+    const agentPlatformTools = names(
+      buildCallboardToolsSpec(
+        () => "chat-1",
+        () => "agent",
+        { includeJobTools: false },
+      ).tools,
+    );
+    expect(listed("agent", "callboard-tools")).toEqual(agentPlatformTools);
+    expect(toolCount("agent", "callboard-tools")).toBe(agentPlatformTools.length);
+
+    const agentTools = names(buildAgentToolsSpec("agent", () => "chat-1").tools);
+    expect(listed("agent", "callboard")).toEqual(agentTools);
+    expect(toolCount("agent", "callboard")).toBe(agentTools.length);
   });
 
   it("names no parameter the schema does not have", () => {

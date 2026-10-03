@@ -57,28 +57,32 @@ function fail(message: string, code: number): never {
 
 function connectWithRetry(socketPath: string, attempt: number): void {
   const sock = net.connect(socketPath);
+  let connected = false;
 
   sock.once("connect", () => {
+    connected = true;
     // Bidirectional byte relay: agent stdio ⇄ backend socket. `.pipe` resumes
     // the (paused) stdin stream, flushing any MCP bytes buffered during retries.
     process.stdin.pipe(sock);
     sock.pipe(process.stdout);
+    // When the backend closes the socket (turn finished / server torn down) the
+    // shim's job is done — exit cleanly so the agent reaps the child. Only
+    // armed once connected: a failed connect also emits 'close' (right after
+    // 'error'), and exiting 0 there is what used to kill the retry loop on its
+    // first attempt.
+    sock.once("close", () => process.exit(0));
   });
 
   sock.on("error", (err: NodeJS.ErrnoException) => {
     // ENOENT/ECONNREFUSED before the backend is listening → retry; anything else
-    // (or exhausted retries) is fatal.
-    const retriable = err.code === "ENOENT" || err.code === "ECONNREFUSED";
+    // (or exhausted retries, or any error on an established connection) is fatal.
+    const retriable = !connected && (err.code === "ENOENT" || err.code === "ECONNREFUSED");
     if (retriable && attempt < CONNECT_MAX_ATTEMPTS) {
       setTimeout(() => connectWithRetry(socketPath, attempt + 1), CONNECT_RETRY_DELAY_MS);
       return;
     }
     fail(`cannot connect to ${socketPath}: ${err.message}`, 1);
   });
-
-  // When the backend closes the socket (turn finished / server torn down) the
-  // shim's job is done — exit cleanly so the agent reaps the child.
-  sock.once("close", () => process.exit(0));
 }
 
 function main(): void {

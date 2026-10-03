@@ -7,7 +7,10 @@
  * agent-tools.ts, and job-management-tools.ts.
  *
  * IMPORTANT: When adding/removing/modifying tools in the *-tools.ts files,
- * update the corresponding definitions here as well.
+ * update the corresponding definitions here as well. The tool set is enforced
+ * by mcp-tool-registry.manifest.test.ts (per server, per context); parameters
+ * and descriptions are not — those stay compact UI copy, deliberately shorter
+ * than the model-facing `.describe()` text (some of which runs to 4k chars).
  */
 
 import type { McpToolDefinition, McpToolServerInfo, McpToolsResponse } from "shared/types/index.js";
@@ -285,6 +288,15 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     category: "platform",
   },
   {
+    name: "list_anthropic_models",
+    qualifiedName: "mcp__callboard-tools__list_anthropic_models",
+    description: "List the Anthropic models available to this Claude Code installation (reflects the configured auth/subscription).",
+    parameters: [],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
     name: "list_codex_models",
     qualifiedName: "mcp__callboard-tools__list_codex_models",
     description: "List Codex models from the cached live Codex CLI model catalog, optionally filtered by a subsequence search query.",
@@ -455,6 +467,37 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     category: "platform",
   },
   {
+    name: "list_custom_skills",
+    qualifiedName: "mcp__callboard-tools__list_custom_skills",
+    description: "List Callboard custom skills (managed in Settings → Skills, invocable as callboard:<name>).",
+    parameters: [],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "read_custom_skill",
+    qualifiedName: "mcp__callboard-tools__read_custom_skill",
+    description: "Read a Callboard custom skill's full definition — its description and markdown instructions.",
+    parameters: [{ name: "name", type: "string", description: "Skill name (kebab-case, as returned by list_custom_skills)", required: true }],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "write_custom_skill",
+    qualifiedName: "mcp__callboard-tools__write_custom_skill",
+    description: "Create or update a Callboard custom skill. Deletion is only available in Settings → Skills.",
+    parameters: [
+      { name: "name", type: "string", description: "Skill name — kebab-cased automatically", required: true },
+      { name: "description", type: "string", description: "One-line description (required when creating)", required: false },
+      { name: "content", type: "string", description: "Markdown instructions, the body of SKILL.md (required when creating)", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
     name: "wait",
     qualifiedName: "mcp__callboard-tools__wait",
     description: "Pause execution for a specified number of seconds (1-300). Shown to the user as a live countdown they can end early.",
@@ -480,6 +523,109 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     parameters: [
       { name: "satisfied", type: "boolean", description: "true when the condition is now met; false to abandon the watch", required: true },
       { name: "evidence", type: "string", description: "Brief note on how you verified it, recorded for the user", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  // ── Model aliases (model-alias-tools.ts) ──
+  {
+    name: "list_model_aliases",
+    qualifiedName: "mcp__callboard-tools__list_model_aliases",
+    description: "View the global cross-harness model alias registry — each alias resolves to a different concrete model per provider.",
+    parameters: [],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "set_model_alias",
+    qualifiedName: "mcp__callboard-tools__set_model_alias",
+    description: "Create or update one cross-harness model alias. Omitted targets are left unchanged; an empty string clears one.",
+    parameters: [
+      { name: "name", type: "string", description: "Alias name, matched case-insensitively", required: true },
+      { name: "description", type: "string", description: 'Optional human note. "" clears.', required: false },
+      { name: "claude-code", type: "string", description: "Anthropic alias or full model id", required: false },
+      { name: "codex", type: "string", description: "Codex model slug", required: false },
+      { name: "acp", type: "string", description: "Model id as the ACP vendor names it", required: false },
+      { name: "cline", type: "string", description: "Model id within the configured Cline provider", required: false },
+      { name: "pi", type: "string", description: "Model id within the configured pi provider", required: false },
+      { name: "openrouter", type: "string", description: 'Retired — only "" (clear) is accepted', required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "delete_model_alias",
+    qualifiedName: "mcp__callboard-tools__delete_model_alias",
+    description: "Remove one cross-harness model alias by name (case-insensitive).",
+    parameters: [{ name: "name", type: "string", description: "Name of the alias to delete", required: true }],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  // ── Workspaces (workspace-tools.ts) ──
+  {
+    name: "list_workspaces",
+    qualifiedName: "mcp__callboard-tools__list_workspaces",
+    description: "List Callboard workspaces — the persisted record of where work happens (a directory, and for a worktree its branch).",
+    parameters: [
+      { name: "status", type: "enum", description: 'Filter by status (default "active")', required: false, enumValues: ["active", "archived", "all"] },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "archive_workspace",
+    qualifiedName: "mcp__callboard-tools__archive_workspace",
+    description: "Archive a workspace and its chats, and quarantine its git worktree — only when Callboard created it and it is clean.",
+    parameters: [{ name: "workspaceId", type: "string", description: "Workspace id (opaque — from list_workspaces)", required: true }],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "list_unmanaged_worktrees",
+    qualifiedName: "mcp__callboard-tools__list_unmanaged_worktrees",
+    description: "List a repository's git worktrees that have no Callboard workspace record — the candidates for adopt_worktrees.",
+    parameters: [
+      { name: "repoPath", type: "string", description: "The repository's main checkout, or any worktree of it", required: true },
+      { name: "includeDiskUsage", type: "boolean", description: "Measure disk usage per worktree (default true)", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "adopt_worktrees",
+    qualifiedName: "mcp__callboard-tools__adopt_worktrees",
+    description: "Bring the worktrees at the given paths under Callboard management, so they can later be archived.",
+    parameters: [{ name: "paths", type: "array", description: "Absolute paths of the worktrees to adopt", required: true }],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "create_workspace",
+    qualifiedName: "mcp__callboard-tools__create_workspace",
+    description: "Create a workspace record for an existing directory. Creates nothing on disk; git worktrees are refused (use adopt_worktrees).",
+    parameters: [
+      { name: "cwd", type: "string", description: "Absolute path of an existing directory that is not a git worktree", required: true },
+      { name: "name", type: "string", description: "Label for the workspace (default: the directory's last path segment)", required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "rename_workspace",
+    qualifiedName: "mcp__callboard-tools__rename_workspace",
+    description: "Rename a workspace record — its label only. Nothing on disk moves.",
+    parameters: [
+      { name: "workspaceId", type: "string", description: "Workspace id (opaque — from list_workspaces)", required: true },
+      { name: "name", type: "string", description: "The new label (1–200 characters)", required: true },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -677,6 +823,11 @@ function jobToolDefs(serverName: string, serverLabel: string, category: McpToolD
       name: "get_job",
       description: "Read a job definition in full (steps, inputs, defaults).",
       parameters: [{ name: "jobId", type: "string", description: "The job id (slug)", required: true }],
+    },
+    {
+      name: "describe_job_schema",
+      description: "Return the full job definition schema (every step type and its fields) — the reference for create_job/update_job.",
+      parameters: [],
     },
     {
       name: "create_job",

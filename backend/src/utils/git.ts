@@ -1,9 +1,25 @@
-import { execSync, execFileSync } from "child_process";
+import { execFileSync } from "child_process";
 import { randomBytes } from "crypto";
 import { existsSync, statSync, lstatSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, basename, resolve, extname, relative } from "path";
 import { worktreeDirName } from "shared/types/index.js";
 import type { DiffFileEntry, DiffFileType, WorkspaceCleanliness } from "shared/types/index.js";
+
+/**
+ * Run git in `directory` and return stdout; throws on a non-zero exit (with
+ * stdout/stderr on the error). Always argv form — no shell, so branch names and
+ * paths reach git exactly as given. Whether a failure is swallowed into a
+ * default or surfaced is each caller's decision, not this helper's.
+ */
+function git(directory: string, args: string[], opts: { timeout?: number; input?: string } = {}): string {
+  return execFileSync("git", args, {
+    cwd: directory,
+    encoding: "utf8",
+    stdio: "pipe",
+    timeout: opts.timeout ?? 10000,
+    ...(opts.input !== undefined && { input: opts.input }),
+  });
+}
 
 /**
  * Validate a string as a safe git ref name.
@@ -233,12 +249,7 @@ export function getGitInfo(directory: string): GitInfo {
         // of the HEAD that answers the next question, so its output is kept
         // rather than discarded. The spawn happens either way; this just stops a
         // second one following it.
-        const answer = execSync("git rev-parse --git-dir", {
-          cwd: directory,
-          encoding: "utf8",
-          stdio: "pipe",
-          timeout: 5000, // 5 second timeout
-        }).trim();
+        const answer = git(directory, ["rev-parse", "--git-dir"], { timeout: 5000 }).trim();
         isGitRepo = true;
         // Relative when git feels like it (`.git`, `../.git`), so resolve.
         if (answer) headHome = resolve(directory, answer);
@@ -262,12 +273,7 @@ export function getGitInfo(directory: string): GitInfo {
 
       try {
         // Get current branch name
-        const branch = execSync("git branch --show-current", {
-          cwd: directory,
-          encoding: "utf8",
-          stdio: "pipe",
-          timeout: 5000, // 5 second timeout
-        }).trim();
+        const branch = git(directory, ["branch", "--show-current"], { timeout: 5000 }).trim();
 
         return {
           isGitRepo: true,
@@ -413,12 +419,7 @@ export function resolveRepoCommonRoot(dir: string): string | null {
 
   const ask = (args: string[]): string | null => {
     try {
-      const out = execFileSync("git", ["rev-parse", ...args, "--git-common-dir"], {
-        cwd: dir,
-        encoding: "utf8",
-        stdio: "pipe",
-        timeout: 5000,
-      }).trim();
+      const out = git(dir, ["rev-parse", ...args, "--git-common-dir"], { timeout: 5000 }).trim();
       return out || null;
     } catch {
       return null;
@@ -482,28 +483,27 @@ export function getGitBranches(directory: string): string[] {
   }
 
   try {
-    const output = execSync("git branch --list --format='%(refname:short)'", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 5000,
-    }).trim();
+    // argv, not a shell string: the format reaches git verbatim, so no quote
+    // characters come back to strip. (The shell-string form needed a strip of
+    // surrounding `'` — for shells that pass them through — which also mangled
+    // a branch legitimately named with quotes; git allows `'` in ref names.)
+    const output = git(directory, ["branch", "--list", "--format=%(refname:short)"], { timeout: 5000 }).trim();
 
     if (!output) return [];
 
     const branches = output
       .split("\n")
-      .map((b) => b.trim().replace(/^'|'$/g, ""))
+      .map((b) => b.trim())
       .filter(Boolean)
       .sort();
 
-    // Move current branch to front
-    const currentBranch = execSync("git branch --show-current", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 5000,
-    }).trim();
+    // Move current branch to front. Read from HEAD where possible (see
+    // getGitInfo); `null` is a detached HEAD — no current branch, so nothing
+    // moves. Only an undecodable HEAD (or a subdirectory, with no .git of its
+    // own) spawns.
+    const headHome = resolveHeadHome(directory);
+    const fromHead = headHome ? branchFromHead(headHome) : undefined;
+    const currentBranch = fromHead !== undefined ? (fromHead ?? "") : git(directory, ["branch", "--show-current"], { timeout: 5000 }).trim();
 
     if (currentBranch) {
       const idx = branches.indexOf(currentBranch);
@@ -536,12 +536,7 @@ export function getGitWorktrees(directory: string): WorktreeInfo[] {
   }
 
   try {
-    const output = execSync("git worktree list --porcelain", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 5000,
-    }).trim();
+    const output = git(directory, ["worktree", "list", "--porcelain"], { timeout: 5000 }).trim();
 
     if (!output) return [];
 
@@ -658,12 +653,7 @@ export function fallbackBranchName(): string {
 function listRemoteBranchNames(repoDir: string): Set<string> {
   const names = new Set<string>();
   try {
-    const output = execFileSync("git", ["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"], {
-      cwd: repoDir,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 5000,
-    }).trim();
+    const output = git(repoDir, ["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"], { timeout: 5000 }).trim();
     for (const line of output.split("\n")) {
       const name = line.trim();
       if (name && name !== "HEAD") names.add(name);
@@ -917,18 +907,10 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
   if (branchCreated) {
     // Create a new branch and worktree in one command
     const base = baseBranch || "HEAD";
-    execFileSync("git", ["worktree", "add", "-b", branch, worktreePath, base], {
-      cwd: repoDir,
-      stdio: "pipe",
-      timeout: 10000,
-    });
+    git(repoDir, ["worktree", "add", "-b", branch, worktreePath, base]);
   } else {
     // Use an existing branch
-    execFileSync("git", ["worktree", "add", worktreePath, branch], {
-      cwd: repoDir,
-      stdio: "pipe",
-      timeout: 10000,
-    });
+    git(repoDir, ["worktree", "add", worktreePath, branch]);
   }
 
   // We just ran `git worktree add`, so this is a linked worktree by construction.
@@ -938,11 +920,7 @@ export function ensureWorktreeDetailed(repoDir: string, branch: string, createBr
 /** Does `refs/heads/<branch>` exist in this repository? */
 function localBranchExists(repoDir: string, branch: string): boolean {
   try {
-    execFileSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
-      cwd: repoDir,
-      stdio: "pipe",
-      timeout: 5000,
-    });
+    git(repoDir, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { timeout: 5000 });
     return true;
   } catch {
     return false;
@@ -994,17 +972,9 @@ export function switchBranch(directory: string, branch: string, createNew: boole
   // branched off anything.
   if (createNew && !localBranchExists(directory, branch)) {
     const base = baseBranch || "HEAD";
-    execFileSync("git", ["checkout", "-b", branch, base], {
-      cwd: directory,
-      stdio: "pipe",
-      timeout: 5000,
-    });
+    git(directory, ["checkout", "-b", branch, base], { timeout: 5000 });
   } else {
-    execFileSync("git", ["checkout", branch], {
-      cwd: directory,
-      stdio: "pipe",
-      timeout: 5000,
-    });
+    git(directory, ["checkout", branch], { timeout: 5000 });
   }
   return null;
 }
@@ -1024,12 +994,7 @@ export function hasUncommittedChanges(directory: string): boolean {
   }
 
   try {
-    const output = execSync("git status --porcelain", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 5000,
-    });
+    const output = git(directory, ["status", "--porcelain"], { timeout: 5000 });
     return output.trim().length > 0;
   } catch {
     return false; // If git status fails, don't block the user
@@ -1044,16 +1009,6 @@ export function hasUncommittedChanges(directory: string): boolean {
 // default. `hasUncommittedChanges` above returns false when git fails because
 // it only gates a branch switch; here that would mean deleting work.
 
-/** Run git and return stdout, or throw with a useful message. */
-function gitOutput(directory: string, args: string[], input?: string): string {
-  return execFileSync("git", args, {
-    cwd: directory,
-    encoding: "utf8",
-    stdio: "pipe",
-    timeout: 10000,
-    ...(input !== undefined && { input }),
-  });
-}
 
 /**
  * The verdict {@link checkWorktreeClean} returns.
@@ -1109,7 +1064,7 @@ export function checkWorktreeClean(directory: string): WorktreeCleanliness {
 
   let statusOut: string;
   try {
-    statusOut = gitOutput(directory, ["status", "--porcelain"]);
+    statusOut = git(directory, ["status", "--porcelain"]);
   } catch (err: any) {
     return failed(`git status failed: ${err?.message ?? err}`);
   }
@@ -1119,7 +1074,7 @@ export function checkWorktreeClean(directory: string): WorktreeCleanliness {
 
   let refs: string[];
   try {
-    refs = gitOutput(directory, ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"])
+    refs = git(directory, ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"])
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean);
@@ -1132,7 +1087,7 @@ export function checkWorktreeClean(directory: string): WorktreeCleanliness {
   // exclude — the stricter reading, which is the right one here.
   let headRef = "";
   try {
-    headRef = gitOutput(directory, ["symbolic-ref", "-q", "HEAD"]).trim();
+    headRef = git(directory, ["symbolic-ref", "-q", "HEAD"]).trim();
   } catch {
     headRef = "";
   }
@@ -1141,7 +1096,7 @@ export function checkWorktreeClean(directory: string): WorktreeCleanliness {
   let unpushedCommits: boolean;
   try {
     const revs = ["HEAD", ...elsewhere.map((ref) => `^${ref}`)].join("\n") + "\n";
-    const count = Number.parseInt(gitOutput(directory, ["rev-list", "--count", "--stdin"], revs).trim(), 10);
+    const count = Number.parseInt(git(directory, ["rev-list", "--count", "--stdin"], { input: revs }).trim(), 10);
     if (!Number.isFinite(count)) return failed(`git rev-list returned an unparseable count`);
     unpushedCommits = count > 0;
   } catch (err: any) {
@@ -1186,7 +1141,7 @@ export function listIgnoredEntries(directory: string): IgnoredEntries {
     return { entries: [], truncated: false, error: `Directory does not exist: ${directory}` };
   }
   try {
-    const out = gitOutput(directory, ["status", "--porcelain", "--ignored=traditional"]);
+    const out = git(directory, ["status", "--porcelain", "--ignored=traditional"]);
     const all = out
       .split("\n")
       .filter((line) => line.startsWith("!! "))
@@ -1235,7 +1190,7 @@ export type PruneWorktreesResult = { ok: true } | { ok: false; error: string };
 export function pruneWorktrees(mainRepoPath: string): PruneWorktreesResult {
   if (!existsSync(mainRepoPath)) return { ok: false, error: `Main repo does not exist: ${mainRepoPath}` };
   try {
-    execFileSync("git", ["worktree", "prune"], { cwd: mainRepoPath, stdio: "pipe", timeout: 30000 });
+    git(mainRepoPath, ["worktree", "prune"], { timeout: 30000 });
     return { ok: true };
   } catch (err: any) {
     const stderr = typeof err?.stderr === "string" ? err.stderr : (err?.stderr?.toString?.() ?? "");
@@ -1260,12 +1215,7 @@ export function pruneWorktrees(mainRepoPath: string): PruneWorktreesResult {
 export function resolveCommit(directory: string, rev: string): string | undefined {
   if (!existsSync(directory)) return undefined;
   try {
-    const out = execFileSync("git", ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
+    const out = git(directory, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
     const sha = out.trim();
     return /^[0-9a-f]{40}$/.test(sha) ? sha : undefined;
   } catch {
@@ -1584,12 +1534,7 @@ function listFilesRecursively(dirPath: string, baseDir: string): string[] {
  */
 function getUntrackedFiles(directory: string): string[] {
   try {
-    const output = execSync("git status --porcelain", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
+    const output = git(directory, ["status", "--porcelain"]);
     const entries = output
       .split("\n")
       .filter((line) => line.startsWith("?? "))
@@ -1617,13 +1562,7 @@ function getUntrackedFiles(directory: string): string[] {
  */
 function generateUntrackedFileDiff(directory: string, filename: string): string {
   try {
-    const result = execFileSync("git", ["diff", "--no-index", "--", "/dev/null", filename], {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
-    return result;
+    return git(directory, ["diff", "--no-index", "--", "/dev/null", filename]);
   } catch (err: unknown) {
     // git diff --no-index exits with code 1 when there are differences (expected)
     const execError = err as { stdout?: string };
@@ -1657,18 +1596,21 @@ function parseDiffIntoFiles(rawDiff: string): Array<{ filename: string; diff: st
       continue;
     }
 
-    let additions = 0;
-    let deletions = 0;
-
-    for (const line of part.split("\n")) {
-      if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-      if (line.startsWith("-") && !line.startsWith("---")) deletions++;
-    }
-
-    files.push({ filename, diff: part, additions, deletions, isBinary: false });
+    files.push({ filename, diff: part, ...countDiffLines(part), isBinary: false });
   }
 
   return files;
+}
+
+/** Added/removed line counts of a unified diff — file headers (`+++`/`---`) excluded. */
+function countDiffLines(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+    if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+  }
+  return { additions, deletions };
 }
 
 /**
@@ -1693,19 +1635,9 @@ export function getGitDiffStructured(directory: string): DiffFileEntry[] {
 
   try {
     // 1. Get tracked file diffs (unstaged + staged)
-    const unstaged = execSync("git diff", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
+    const unstaged = git(directory, ["diff"]);
 
-    const staged = execSync("git diff --cached", {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
+    const staged = git(directory, ["diff", "--cached"]);
 
     const trackedFiles = parseDiffIntoFiles((staged + unstaged).trim());
 
@@ -1763,9 +1695,7 @@ export function getGitDiffStructured(directory: string): DiffFileEntry[] {
         if (changeSize > LARGE_FILE_THRESHOLD) {
           diff = null;
         } else {
-          for (const line of diff.split("\n")) {
-            if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-          }
+          additions = countDiffLines(diff).additions;
         }
       }
 
@@ -1801,35 +1731,15 @@ export function getGitFileDiff(directory: string, filename: string): { diff: str
 
   if (untrackedFiles.includes(filename)) {
     const diff = generateUntrackedFileDiff(directory, filename);
-    let additions = 0;
-    for (const line of diff.split("\n")) {
-      if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-    }
-    return { diff, additions, deletions: 0 };
+    return { diff, additions: countDiffLines(diff).additions, deletions: 0 };
   }
 
   // Tracked file: get both staged and unstaged diff for this specific file
   try {
-    const unstaged = execFileSync("git", ["diff", "--", filename], {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
-    const staged = execFileSync("git", ["diff", "--cached", "--", filename], {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: "pipe",
-      timeout: 10000,
-    });
+    const unstaged = git(directory, ["diff", "--", filename]);
+    const staged = git(directory, ["diff", "--cached", "--", filename]);
     const diff = (staged + unstaged).trim();
-    let additions = 0;
-    let deletions = 0;
-    for (const line of diff.split("\n")) {
-      if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-      if (line.startsWith("-") && !line.startsWith("---")) deletions++;
-    }
-    return { diff, additions, deletions };
+    return { diff, ...countDiffLines(diff) };
   } catch {
     return { diff: "", additions: 0, deletions: 0 };
   }
