@@ -498,10 +498,9 @@ export function listWorkspaceEntries(filter?: { status?: Workspace["status"] }, 
  * {@link WorkspaceWithRemovability}. Two callers, both deliberate: the
  * agent-facing `list_workspaces` tool, because a verdict per record is the
  * entire content of what it reports; and `GET /api/workspaces` for a client that
- * has not sent `includeRemovability=false` — the Workspace manager's explicit
- * "Check all" click, or a browser tab running a bundle from before
- * {@link getWorkspaceWithRemovability} existed. Every other frontend listing
- * passes `false` and takes the path above.
+ * sends `includeRemovability=true` — the Workspace manager's explicit "Check
+ * all" click. Every other frontend listing passes `false` and takes the path
+ * above.
  */
 export function listWorkspacesWithRemovability(filter?: { status?: Workspace["status"] }, opts?: ListingOptions): WorkspaceWithRemovability[] {
   const ctx = newRemovalContext();

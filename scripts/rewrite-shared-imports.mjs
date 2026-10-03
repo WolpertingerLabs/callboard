@@ -17,8 +17,10 @@
 //   "."            -> ./dist/index.js
 //   "./types/*.js" -> ./dist/*.js
 //
-// Run automatically as the root `postbuild` step. Idempotent: once a specifier
-// is relative it no longer matches, so re-running is a no-op.
+// Run as the last step of the root `build` script — explicitly, not as a
+// `postbuild` hook, so it still runs when lifecycle scripts are skipped
+// (`--ignore-scripts`). Idempotent: once a specifier is relative it no longer
+// matches, so re-running is a no-op.
 
 import { readdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { join, dirname, relative, resolve } from "node:path";

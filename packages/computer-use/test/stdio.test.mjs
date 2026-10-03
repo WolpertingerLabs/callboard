@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +24,9 @@ async function withClient(args, fn) {
 const code = (result) => JSON.parse(result.content[0].text).error;
 
 test("standalone stdio discovery: no config means no targets", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   await withClient([], async (client) => {
+    assert.deepEqual(client.getServerVersion(), { name: pkg.name, version: pkg.version });
     const { tools } = await client.listTools();
     assert.equal(tools.length, 7);
     const result = await client.callTool({ name: "computer_open", arguments: { targetId: "personal-desktop" } });

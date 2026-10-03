@@ -371,6 +371,100 @@ describe("getGitInfo reads the branch from HEAD", () => {
   });
 });
 
+describe("getGitInfo remembers where a nested directory's repository is", () => {
+  /** Ten calls with real git underneath, counting git.ts's spawns. */
+  function tenCalls(dir: string) {
+    gitSpawns = 0;
+    spawnPassThrough = true;
+    try {
+      return Array.from({ length: 10 }, () => getGitInfo(dir));
+    } finally {
+      spawnPassThrough = false;
+    }
+  }
+
+  it("spawns rev-parse once per directory, not once per call, and still sees a branch switch", () => {
+    // findChat calls this about every 250 ms while a chat streams. Measured
+    // before the cache: 10 spawns for these 10 calls.
+    const repo = initRepo("rev-parse-cache");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    const nested = join(repo, "pkg", "src");
+    mkdirSync(nested, { recursive: true });
+
+    const infos = tenCalls(nested);
+    expect(infos.every((info) => info.isGitRepo && info.branch === "main")).toBe(true);
+    expect(gitSpawns).toBe(1);
+
+    // HEAD is still read every call: the switch shows up at once, unspawned.
+    git(["checkout", "-q", "-b", "switched"], repo);
+    gitSpawns = 0;
+    expect(getGitInfo(nested)).toEqual({ isGitRepo: true, branch: "switched" });
+    expect(gitSpawns).toBe(0);
+  });
+
+  it("caches git's 'not a repository' verdict per directory", () => {
+    const plain = join(tmpRoot, "not-a-repo-cached");
+    mkdirSync(plain, { recursive: true });
+
+    expect(tenCalls(plain).every((info) => !info.isGitRepo)).toBe(true);
+    expect(gitSpawns).toBe(1);
+  });
+
+  it("forgets 'not a repository' after 30 seconds, so git init in a parent shows up", () => {
+    const parent = join(tmpRoot, "init-later");
+    const child = join(parent, "child");
+    mkdirSync(child, { recursive: true });
+    const start = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(start);
+    try {
+      tenCalls(child);
+      expect(gitSpawns).toBe(1);
+
+      realExecFileSync("git", ["init", "-q", "-b", "late", parent], { stdio: "pipe" });
+      now.mockReturnValue(start + 29_000);
+      expect(tenCalls(child).every((info) => !info.isGitRepo)).toBe(true);
+      expect(gitSpawns).toBe(0);
+
+      now.mockReturnValue(start + 31_000);
+      expect(tenCalls(child)[0]).toEqual({ isGitRepo: true, branch: "late" });
+      expect(gitSpawns).toBe(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("does not cache a failure that is not git's verdict", () => {
+    // The stub throws without an exit status — a timeout or a missing git
+    // says nothing about the directory, so it must be asked again.
+    const plain = join(tmpRoot, "not-a-repo-uncached");
+    mkdirSync(plain, { recursive: true });
+
+    gitSpawns = 0;
+    getGitInfo(plain);
+    getGitInfo(plain);
+    expect(gitSpawns).toBe(2);
+  });
+
+  it("asks again once the cached repository is gone", () => {
+    const repo = initRepo("rev-parse-gone");
+    git(["commit", "-q", "--allow-empty", "-m", "init"], repo);
+    const nested = join(repo, "inner");
+    mkdirSync(nested, { recursive: true });
+    tenCalls(nested);
+
+    rmSync(join(repo, ".git"), { recursive: true, force: true });
+    gitSpawns = 0;
+    spawnPassThrough = true;
+    try {
+      // tmpRoot is under the OS temp dir, which is not itself a repository.
+      expect(getGitInfo(nested)).toEqual({ isGitRepo: false });
+    } finally {
+      spawnPassThrough = false;
+    }
+    expect(gitSpawns).toBe(1);
+  });
+});
+
 describe("getGitBranches puts the current branch first, read from HEAD", () => {
   /** The listing itself always spawns; the current branch should not. */
   function branchesCountingSpawns(dir: string): { branches: string[]; spawns: number } {

@@ -54,55 +54,32 @@ export const workspacesRouter = Router();
 const ADOPT_PATH_LIMIT = 100;
 
 /**
- * `includeRemovability` **defaults to true, and that default is a dated
- * compatibility shim rather than the intended shape.**
+ * `includeRemovability` is **opt-in**, read exactly like `includeDiskUsage`.
  *
- * The verdict is expensive (see the route description) and default-off is the
- * right long-term design: the frontend passes the param explicitly either way —
- * `false` for every routine listing, `true` only from the Workspace manager's
- * deliberate "Check all" click — so none of its calls rely on the default. It
- * shipped default-off and had to be inverted, because of the upgrade window
- * rather than anything about the API:
+ * It defaulted to true from #364 (1.0.0-alpha.50) through alpha.60 as a
+ * compatibility shim: a browser tab running a pre-#364 bundle reads
+ * `record.removability` unconditionally, and at the time an absent field took
+ * the whole React root down. The flip condition written here then — #364 at
+ * least two releases back — has long been met, and every bundle since #364
+ * sends the parameter explicitly in both directions (frontend/src/api.ts
+ * `workspaceListing`), so only a tab left open, unreloaded, since before
+ * alpha.50 sees the difference. #367 has since added error boundaries and #371
+ * tells a tab its daemon moved, though neither is in a bundle that old.
  *
- * > A browser tab open across `callboard restart` keeps its old bundle
- * > indefinitely — SSE reconnects, nothing reloads the page. A pre-#364 bundle
- * > destructures `record.removability` unconditionally. Against a default-off
- * > daemon that throws inside render, React retries, throws again and unmounts
- * > the **entire root**: not a broken modal, a white page with no sidebar, no
- * > chat list and no composer. There is no error boundary anywhere in
- * > `frontend/src` and no version-mismatch prompt, so nothing catches it and
- * > nothing tells the user to refresh.
- *
- * Defaulting on makes that tab *exactly correct* rather than merely alive — the
- * response is byte-for-byte the pre-#364 shape. The cost is that an un-updated
- * caller silently gets the slow path, which is a regression in the direction
- * that was already the status quo, against a crash in the other.
- *
- * A stub verdict in the cheap listing was considered and rejected: an old tab
- * would render "the directory is not moved" from a fabricated blocker while the
- * backend quarantined it anyway. Wrong is worse than slow.
- *
- * **Flip it back to false** once no pre-#364 bundle can plausibly still be in a
- * browser — concretely, one release after this one has been out long enough
- * that every long-lived tab has been through a restart *and* a reload. The
- * mechanical condition: this repo's minimum supported client is a build that
- * contains `fetchWorkspaceRemovability` (frontend/src/api.ts), so once #364 is
- * two releases back, delete this constant and read the query param the same way
- * `includeDiskUsage` is read. The tests in workspaces.removability.test.ts pin
- * both directions and will tell you what to update.
+ * The agent-facing `list_workspaces` tool is unaffected: it calls
+ * `listWorkspacesWithRemovability` directly, not this route.
  */
-const REMOVABILITY_DEFAULT_ON_FOR_OLD_CLIENTS = true;
 
-// List workspaces and the observed state of each one's directory, plus — for
-// now, and only for now — the removal verdict for each. See the constant above.
+// List workspaces and the observed state of each one's directory, plus the
+// removal verdict for each only when asked. See the comment above.
 workspacesRouter.get("/", async (req, res) => {
   // #swagger.tags = ['Workspaces']
   // #swagger.summary = 'List workspaces'
-  // #swagger.description = 'List workspaces with `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Removability — whether each worktree can be removed and every reason it cannot — is controlled by includeRemovability. PASS includeRemovability=false. It costs roughly five synchronous git subprocesses per record, which at 65 records held the whole daemon for 1.6s with SSE and chat input queued behind it; ask GET /:id/removability for the one workspace that is about to be acted on instead. It is on by default only as a compatibility shim for browser tabs still running a bundle from before that split existed, which crash on a listing without it, and the default will flip to false in a later release. Read-only either way: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
+  // #swagger.description = 'List workspaces with `directory`, the freshly observed state of the path: present, missing, or not-a-worktree. Removability — whether each worktree can be removed and every reason it cannot — is only included when includeRemovability=true. It costs roughly five synchronous git subprocesses per record, which at 65 records held the whole daemon for 1.6s with SSE and chat input queued behind it; ask GET /:id/removability for the one workspace that is about to be acted on instead. Through 1.0.0-alpha.60 it was on by default. Read-only either way: a record pointing at a directory that no longer exists is reported, never archived (an absent directory is evidence, not proof — an unmounted volume looks the same).'
   /* #swagger.parameters['status'] = { in: 'query', type: 'string', description: 'Filter by status - active or archived. Omit for both.' } */
-  /* #swagger.parameters['includeRemovability'] = { in: 'query', type: 'string', description: 'Pass the string false to skip the removability verdict, which is ~5 sequential synchronous git subprocesses PER RECORD and the reason this route was ever slow. New callers should pass false and use GET /api/workspaces/{id}/removability for the single record they are acting on. Defaults to true only so that pre-existing browser tabs, which read the verdict unconditionally, do not crash against an upgraded daemon; that default is temporary.' } */
+  /* #swagger.parameters['includeRemovability'] = { in: 'query', type: 'string', description: 'Pass the string true to attach the removability verdict to every entry. Off by default: it is ~5 sequential synchronous git subprocesses PER RECORD and the reason this route was ever slow. Prefer GET /api/workspaces/{id}/removability for the single record being acted on. Defaulted to true through 1.0.0-alpha.60.' } */
   /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each workspace with du -sk. Off by default: it is the slow part. Measurements are memoised for five minutes, a workspace whose directory is missing is not measured, and the whole listing shares one wall-clock budget — entries past it carry an error saying so and the response carries a diskUsageNote.' } */
-  /* #swagger.responses[200] = { description: "Workspaces, with removability unless it was explicitly declined" } */
+  /* #swagger.responses[200] = { description: "Workspaces, with removability only when it was asked for" } */
   /* #swagger.responses[400] = { description: "Invalid status filter" } */
   try {
     const status = req.query.status as "active" | "archived" | undefined;
@@ -110,11 +87,7 @@ workspacesRouter.get("/", async (req, res) => {
       return res.status(400).json({ error: 'status must be "active" or "archived"' });
     }
     const includeDiskUsage = req.query.includeDiskUsage === "true";
-    // Opt-*out*, and deliberately spelled as the mirror image of the opt-in
-    // above so the asymmetry is visible: only the exact string "false" declines
-    // the verdict. An old client sends no parameter at all and must get one.
-    const includeRemovability =
-      req.query.includeRemovability === undefined ? REMOVABILITY_DEFAULT_ON_FOR_OLD_CLIENTS : req.query.includeRemovability !== "false";
+    const includeRemovability = req.query.includeRemovability === "true";
     // One budget for the whole listing, spent off the event loop. The rows below
     // are built synchronously and come back holding unfilled measurements;
     // `settle()` runs the `du`s in parallel and writes the answers into them. It

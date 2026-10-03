@@ -2127,11 +2127,10 @@ async function workspaceListing(
   includeDiskUsage: boolean | undefined,
   includeRemovability: boolean,
 ): Promise<WorkspaceListResponse> {
-  // Sent explicitly in both directions, never omitted. The route defaults it to
-  // *true* for browser tabs running a bundle from before the verdict was
-  // splittable — they read the field unconditionally and take the whole app down
-  // without it — and that default is a temporary shim which will flip. A caller
-  // that relied on it would silently change behaviour on the day it does.
+  // Sent explicitly in both directions, never omitted: daemons through
+  // 1.0.0-alpha.60 default it to *true* (a shim for bundles from before the
+  // verdict was splittable), later ones to false, and this bundle may be
+  // talking to either.
   const params = new URLSearchParams({ includeRemovability: String(includeRemovability) });
   if (status) params.append("status", status);
   if (includeDiskUsage) params.append("includeDiskUsage", "true");

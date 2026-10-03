@@ -67,9 +67,8 @@
     "dev:frontend": "CALLBOARD_DATA_DIR=$HOME/.callboard-dev npm -w callboard-frontend run dev",
     "swagger": "node --import tsx backend/src/swagger.ts",
     "prebuild": "npm run swagger",
-    "clean": "rm -rf shared/dist backend/dist frontend/dist shared/tsconfig.tsbuildinfo backend/tsconfig.tsbuildinfo frontend/tsconfig.tsbuildinfo",
+    "clean": "rm -rf shared/dist backend/dist frontend/dist packages/computer-use/dist shared/tsconfig.tsbuildinfo backend/tsconfig.tsbuildinfo frontend/tsconfig.tsbuildinfo",
     "build": "npm run build:shared && npm run build:computer-use && npm run build:backend && npm run build:frontend && node scripts/rewrite-shared-imports.mjs",
-    "postbuild": "node scripts/rewrite-shared-imports.mjs",
     "build:shared": "npm -w shared run build",
     "build:backend": "npm -w callboard-backend run build",
     "build:frontend": "npm -w callboard-frontend run build",
@@ -123,6 +122,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@types/node": "~22.19.0",
     "@vitest/coverage-v8": "^4.1.11",
     "concurrently": "^9.0.0",
     "eslint": "^9.39.2",

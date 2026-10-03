@@ -10,10 +10,9 @@
  *
  *  1. `includeRemovability=false` — what every caller in this repo sends —
  *     carries no verdict at all.
- *  2. Omitting the parameter still produces one, byte for byte as before. That
- *     is a *compatibility shim* for browser tabs running a pre-split bundle,
- *     which read the field unconditionally and take the whole app down without
- *     it; it is temporary and the test that pins it says so.
+ *  2. Omitting the parameter carries none either. It used to produce one, as a
+ *     compatibility shim for pre-split browser bundles; that shim was retired
+ *     after 1.0.0-alpha.60 (see the comment in workspaces.ts).
  *  3. `GET /:id/removability` produces one for a single record.
  *  4. **The archive does not read any of it.** The verdict is a UI affordance;
  *     the gate is re-evaluated server-side from the record on every archive, and
@@ -125,31 +124,16 @@ describe("GET /api/workspaces", () => {
   });
 
   /**
-   * **The compatibility shim, and the reason it exists.**
-   *
-   * A browser tab open across `callboard restart` keeps its old bundle
-   * indefinitely — SSE reconnects, nothing reloads the page. A bundle from
-   * before this split reads `record.removability` unconditionally while
-   * rendering, so an absent field throws inside render, React retries, throws
-   * again, and unmounts the entire root: a white page with no sidebar, no chat
-   * list and no composer. There is no error boundary anywhere in the frontend
-   * and no version-mismatch prompt, so nothing catches it and nothing tells the
-   * user to refresh.
-   *
-   * An old client sends no `includeRemovability` at all. It must therefore get
-   * the pre-split response, byte for byte — not a stub verdict, which would have
-   * that tab promising "the directory is not moved" while the backend
-   * quarantined it anyway.
-   *
-   * Delete this test when the default flips; see the constant in workspaces.ts
-   * for the condition.
+   * The default flipped to off after 1.0.0-alpha.60: every bundle since #364
+   * sends the parameter, and the shim that answered pre-#364 tabs with a full
+   * verdict has outlived its flip condition — see the comment in workspaces.ts.
    */
-  it("still answers a client that never heard of the parameter with a full verdict", async () => {
-    const { cwd } = ownedWorktree("route/old-client");
+  it("carries no verdict when the parameter is omitted", async () => {
+    const { cwd } = ownedWorktree("route/omitted");
 
     const res = await list({ status: "active" });
-    expect(res.body.workspaces[0].removability.removable).toBe(true);
-    expect(res.body.workspaces[0].removability.ignored).toBeDefined();
+    expect(res.body.workspaces).toHaveLength(1);
+    expect(res.body.workspaces[0].removability).toBeUndefined();
 
     git(["worktree", "remove", cwd], repoDir);
   });
@@ -163,19 +147,13 @@ describe("GET /api/workspaces", () => {
     git(["worktree", "remove", cwd], repoDir);
   });
 
-  /**
-   * The mirror image of how `includeDiskUsage` is read, and deliberately so:
-   * that one is opt-in on the exact string "true", this one is opt-*out* on the
-   * exact string "false". A typo therefore costs a slow listing rather than a
-   * crashed tab, which is the right direction for it to fail in while the shim
-   * is in place.
-   */
-  it("treats anything but the string false as on", async () => {
+  /** Read exactly like `includeDiskUsage`: only the string "true" opts in. */
+  it("treats anything but the string true as off", async () => {
     const { cwd } = ownedWorktree("route/typo");
 
-    for (const value of ["1", "yes", "true", "False", ""]) {
+    for (const value of ["1", "yes", "false", "True", ""]) {
       const res = await list({ status: "active", includeRemovability: value });
-      expect(res.body.workspaces[0].removability).toBeDefined();
+      expect(res.body.workspaces[0].removability).toBeUndefined();
     }
 
     git(["worktree", "remove", cwd], repoDir);
