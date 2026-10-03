@@ -39,6 +39,7 @@ import type { Card, CardLifecycle, CardPatch } from "shared";
 import { CARD_CATEGORY_MAX } from "shared";
 import { unpinArchivedCardChats, type PinnedMemberLookup } from "./card-archive-unpin.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
+import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 
 export const CARD_TITLE_MAX = 200;
 export const CARD_STATUS_MAX = 160;
@@ -72,12 +73,7 @@ export interface CardFields {
 export type ChatLike = Pick<Chat, "id" | "created_at" | "metadata">;
 
 function parseMeta(chat: { metadata?: string | null }): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(chat.metadata || "{}");
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
+  return parseChatMetadataRecord(chat.metadata);
 }
 
 /** The raw nested `card` object off a chat's metadata, defaults NOT applied. */

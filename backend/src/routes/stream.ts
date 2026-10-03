@@ -13,7 +13,6 @@ import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp
 import type { EffortLevel } from "shared/types/index.js";
 import { sessionRegistry } from "../services/session-registry.js";
 import { loadImageBuffers } from "../services/image-storage.js";
-import { storeMessageImages } from "../services/image-metadata.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
 import { fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "../utils/git.js";
@@ -333,10 +332,6 @@ streamRouter.post("/new/message", async (req, res) => {
     const onEvent = (event: StreamEvent) => {
       if (event.type === "chat_created") {
         log.debug(`SSE chat_created — chatId=${event.chatId}`);
-        // Store image metadata now that we have the chatId
-        if (imageIds?.length && event.chatId) {
-          storeMessageImages(event.chatId, imageIds).catch((err) => log.warn(`Failed to store message images: ${err.message}`));
-        }
         sendSSE(res, { type: "chat_created", chatId: event.chatId, chat: event.chat });
         return;
       }
@@ -532,10 +527,6 @@ streamRouter.post("/:id/message", async (req, res) => {
     // ── End branch drift guard ──────────────────────────────────
 
     const imageMetadata = imageIds?.length ? loadImageBuffers(imageIds) : [];
-
-    if (imageIds?.length) {
-      await storeMessageImages(req.params.id, imageIds);
-    }
 
     const emitter = await sendMessage({
       chatView,

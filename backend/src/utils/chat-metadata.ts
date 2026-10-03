@@ -8,3 +8,12 @@ export function parseChatMetadata(metadata?: string | null): Record<string, any>
     return {};
   }
 }
+
+/**
+ * {@link parseChatMetadata} with `unknown` values, for callers that narrow each
+ * field they read. Same parse, same `{}` for empty, malformed, null, array or
+ * scalar JSON — only the type differs.
+ */
+export function parseChatMetadataRecord(metadata?: string | null): Record<string, unknown> {
+  return parseChatMetadata(metadata);
+}

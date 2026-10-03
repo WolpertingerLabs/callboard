@@ -406,7 +406,7 @@ export function respondToApproval(runId: string, decision: "approve" | "reject",
 
 export function cancelRun(runId: string): JobRun {
   const run = mustGetRun(runId);
-  if (TERMINAL_JOB_RUN_STATUSES.has(run.status)) throw new Error(`Run ${runId} already ended (status: ${run.status})`);
+  if (TERMINAL_JOB_RUN_STATUSES.has(run.status)) throw new JobConflictError(`Run ${runId} already ended (status: ${run.status})`);
 
   const chatIds = activeChatIds(run);
   for (const chatId of chatIds) chatToStep.delete(chatId); // prevent stop events from advancing the run
@@ -470,7 +470,7 @@ export function resumeRun(runId: string): JobRun {
 export function retryRunStep(runId: string): JobRun {
   const run = mustGetRun(runId);
   if (run.status !== "failed") throw new JobConflictError(`Run ${runId} is not failed (status: ${run.status})`);
-  if (!run.currentStepId) throw new Error(`Run ${runId} has no current step to retry`);
+  if (!run.currentStepId) throw new JobConflictError(`Run ${runId} has no current step to retry`);
   run.status = "running";
   delete run.error;
   delete run.endedAt;

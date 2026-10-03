@@ -39,13 +39,13 @@ vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: {
     getAllChats: () => fileChats,
     getChat: (id: string) => fileChats.find((c) => c.id === id) ?? null,
-    // The pin route's writer. Mutates the in-memory record the way the
+    // The pin route's writer. Merges into the in-memory record the way the
     // file-backed service would, so a round-trip really is a round-trip.
-    upsertChat: (id: string, _folder: string, _sessionId: string, fields: Record<string, unknown>) => {
+    updateChatMetadata: (id: string, fields: Record<string, unknown>) => {
       const chat = fileChats.find((c) => c.id === id);
-      if (!chat) throw new Error(`no such chat: ${id}`);
-      Object.assign(chat, fields);
-      return chat;
+      if (!chat) return false;
+      chat.metadata = JSON.stringify({ ...JSON.parse(chat.metadata || "{}"), ...fields });
+      return true;
     },
   },
 }));

@@ -7,19 +7,13 @@ import { CodexSessionProvider } from "../agents/adapters/codex/CodexSessionProvi
 import { readCodexSessionMeta, extractThreadIdFromFilename } from "../agents/adapters/codex/sessionParser.js";
 import { sessionRegistry } from "./session-registry.js";
 import { chatFileService, type Chat } from "./chat-file-service.js";
+import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 
 export type NativeLifecycle = "active" | "complete" | "unknown" | "error" | "interrupted";
 export const NATIVE_CONTROL_NOTE =
   "Native Codex child: read-only in Callboard. Ask its parent Codex thread to send instructions, interrupt, or close it. The exec transport cannot independently control this child; direct resume could race its owner. Inherited Callboard MCP tools are bound to the owning root, not this child; do not use them to set child-local title, status, or completion.";
 
-function parseMetadata(raw?: string | null): Record<string, unknown> {
-  try {
-    const value = JSON.parse(raw || "{}");
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch {
-    return {};
-  }
-}
+const parseMetadata = parseChatMetadataRecord;
 
 export interface NativeOwnershipExpectation {
   sessionId: string;

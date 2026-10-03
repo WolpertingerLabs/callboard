@@ -33,19 +33,15 @@ import type { DefaultPermissions } from "shared/types/index.js";
 process.env.CALLBOARD_DATA_DIR = mkdtempSync(join(tmpdir(), "callboard-perm-auth-"));
 
 let chat: any;
-const upsertChat = vi.fn((id: string, folder: string, sessionId: string, updates: Record<string, unknown>) => ({
-  id,
-  folder,
-  session_id: sessionId,
-  ...updates,
-}));
+/** The route's writer: a quiet read-merge-write over the stored record. */
+const updateChatMetadata = vi.fn((_id: string, _fields: Record<string, unknown>, _opts?: { touch?: boolean }) => true);
 
 vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../utils/chat-lookup.js")>()),
   findChat: () => chat,
 }));
 vi.mock("../services/chat-file-service.js", () => ({
-  chatFileService: { upsertChat: (...args: any[]) => (upsertChat as any)(...args), getChat: () => chat },
+  chatFileService: { updateChatMetadata: (...args: any[]) => (updateChatMetadata as any)(...args), getChat: () => chat },
 }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: () => {} } }));
 vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false, pendingRequestFingerprint: () => "" }));
@@ -90,8 +86,8 @@ function patch(
 
 /** The permissions blob the route wrote, or undefined if it wrote nothing. */
 const written = (): DefaultPermissions | undefined => {
-  const call = upsertChat.mock.calls.at(-1);
-  return call && JSON.parse((call[3] as any).metadata).defaultPermissions;
+  const call = updateChatMetadata.mock.calls.at(-1);
+  return call && (call[1] as any).defaultPermissions;
 };
 
 function setStored(computerControl?: string) {
@@ -104,7 +100,7 @@ function setStored(computerControl?: string) {
 }
 
 beforeEach(() => {
-  upsertChat.mockClear();
+  updateChatMetadata.mockClear();
   setStored("ask");
 });
 
@@ -114,7 +110,7 @@ describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => 
 
     expect(result.code).toBe(403);
     expect(result.body).toMatchObject({ code: "denied", error: expect.stringContaining("logged-in session") });
-    expect(upsertChat).not.toHaveBeenCalled();
+    expect(updateChatMetadata).not.toHaveBeenCalled();
   });
 
   it("refuses a bearer key that lowers it too: an agent does not get to set the level that governs it", async () => {
@@ -122,7 +118,7 @@ describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => 
     const result = await patch({ ...FOUR, computerControl: "deny" }, { authMethod: "bearer" });
 
     expect(result.code).toBe(403);
-    expect(upsertChat).not.toHaveBeenCalled();
+    expect(updateChatMetadata).not.toHaveBeenCalled();
   });
 
   it("refuses a cross-origin session, the same rule the computer-control plane applies", async () => {
@@ -131,10 +127,10 @@ describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => 
       { authMethod: "session" as const, origin: null },
       { authMethod: "session" as const, secFetchSite: "cross-site" },
     ]) {
-      upsertChat.mockClear();
+      updateChatMetadata.mockClear();
       const result = await patch({ ...FOUR, computerControl: "allow" }, actor);
       expect(result.code, JSON.stringify(actor)).toBe(403);
-      expect(upsertChat).not.toHaveBeenCalled();
+      expect(updateChatMetadata).not.toHaveBeenCalled();
     }
   });
 
@@ -172,9 +168,14 @@ describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => 
     expect(written()).toMatchObject({ computerControl: "deny" });
   });
 
+  it("writes quietly: configuration is not activity, so updated_at is left alone", async () => {
+    await patch({ ...FOUR });
+    expect(updateChatMetadata.mock.calls.at(-1)?.[2]).toEqual({ touch: false });
+  });
+
   it("still validates the axis before anything else", async () => {
     const result = await patch({ ...FOUR, computerControl: "sometimes" }, { authMethod: "bearer" });
     expect(result.code).toBe(400);
-    expect(upsertChat).not.toHaveBeenCalled();
+    expect(updateChatMetadata).not.toHaveBeenCalled();
   });
 });

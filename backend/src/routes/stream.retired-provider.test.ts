@@ -33,6 +33,7 @@ vi.mock("../services/claude.js", () => ({
   sendMessage: async (opts: Record<string, unknown>) => {
     const chat = chatRecord;
     if (chat && JSON.parse(chat.metadata).provider === "openrouter") throw new FakeRetiredProviderError(RETIRED_MESSAGE);
+    if (chat && JSON.parse(chat.metadata).failSend) throw new Error("agent unavailable");
     void opts;
     return new EventEmitter();
   },
@@ -145,9 +146,9 @@ describe("POST /:id/message on a removed harness", () => {
   it("leaves an ordinary failure as a 500", async () => {
     // 410 is reserved for the retired-harness refusal — a genuine server fault
     // must not be relabelled as a permanent client-state condition.
-    setChat({ provider: "codex", lastBranch: "main" });
+    setChat({ provider: "codex", lastBranch: "main", failSend: true });
     const f = fakeResponse();
-    const req = { headers: {}, params: { id: "chat-1" }, body: { prompt: "hi", imageIds: ["nope"] }, on: () => {} } as unknown as Request;
+    const req = { headers: {}, params: { id: "chat-1" }, body: { prompt: "hi" }, on: () => {} } as unknown as Request;
     await messageHandler(req, f.res);
 
     expect(f.status).toBe(500);

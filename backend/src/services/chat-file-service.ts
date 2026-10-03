@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, readdirSync, statSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 import type { Chat } from "shared/types/index.js";
@@ -6,6 +6,7 @@ import { DATA_DIR } from "../utils/paths.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
 import { isMtimeSettled } from "../utils/mtime-freshness.js";
+import { atomicWriteFileSync } from "../utils/atomic-write.js";
 
 const log = createLogger("chat-file");
 
@@ -437,7 +438,13 @@ class ChatFileService {
       /* Preserve legacy malformed metadata unchanged. */
     }
     const filepath = join(chatsDir, `${chat.session_id}.json`);
-    writeFileSync(filepath, JSON.stringify(chat, null, 2));
+    // tmp + rename so a crash mid-write cannot leave a truncated record (which
+    // every metadata reader would then see as `{}`). No fsync: this runs on
+    // every upsert, and the old in-place write was not durable across a power
+    // loss either. The rename gives the file a fresh mtime, so the
+    // (mtimeNs, size) record caches see it exactly as they saw in-place writes;
+    // the tmp name ends in `.tmp`, so the `.json` directory scans skip it.
+    atomicWriteFileSync(filepath, JSON.stringify(chat, null, 2), { fsync: false });
     invalidateRecord(chat.session_id);
   }
 }

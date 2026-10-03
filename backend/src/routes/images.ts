@@ -4,6 +4,10 @@ import { MULTIPART_FIELD_LIMITS, withUploadErrors } from "../utils/multipart-lim
 import { ImageStorageService, type StoredImage } from "../services/image-storage.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { updateChatWithImages } from "../services/image-metadata.js";
+import { parseChatMetadata } from "../utils/chat-metadata.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("images");
 
 export const imagesRouter = Router();
 
@@ -87,7 +91,7 @@ imagesRouter.post("/:chatId/images", uploadImages, async (req, res) => {
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
-    console.error("Image upload error:", error);
+    log.error(`Image upload error: ${error}`);
     res.status(500).json({
       error: "Failed to upload images",
       details: error instanceof Error ? error.message : "Unknown error",
@@ -144,7 +148,7 @@ imagesRouter.post("/upload", uploadImages, async (req, res) => {
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
-    console.error("Image upload error:", error);
+    log.error(`Image upload error: ${error}`);
     res.status(500).json({
       error: "Failed to upload images",
       details: error instanceof Error ? error.message : "Unknown error",
@@ -189,7 +193,7 @@ imagesRouter.get("/:imageId", (req, res) => {
 
     res.end(buffer);
   } catch (error) {
-    console.error("Image retrieval error:", error);
+    log.error(`Image retrieval error: ${error}`);
     res.status(500).json({ error: "Failed to retrieve image" });
   }
 });
@@ -221,7 +225,7 @@ imagesRouter.delete("/:imageId", async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error("Image deletion error:", error);
+    log.error(`Image deletion error: ${error}`);
     res.status(500).json({ error: "Failed to delete image" });
   }
 });
@@ -259,7 +263,7 @@ imagesRouter.get("/:chatId/images", (req, res) => {
 
     res.json({ images: allImages });
   } catch (error) {
-    console.error("Get chat images error:", error);
+    log.error(`Get chat images error: ${error}`);
     res.status(500).json({ error: "Failed to retrieve chat images" });
   }
 });
@@ -271,7 +275,10 @@ async function removeImageFromAllChats(imageId: string): Promise<void> {
   const chats = chatFileService.getAllChats();
 
   for (const chat of chats) {
-    const metadata = JSON.parse(chat.metadata || "{}");
+    // Never throws: one unreadable record reads as `{}` (no images, so nothing
+    // to remove and nothing written) instead of aborting the loop and leaving
+    // every later chat still referencing the deleted image.
+    const metadata = parseChatMetadata(chat.metadata);
 
     if (metadata.images) {
       let updated = false;
