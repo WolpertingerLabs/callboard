@@ -1009,7 +1009,6 @@ export function hasUncommittedChanges(directory: string): boolean {
 // default. `hasUncommittedChanges` above returns false when git fails because
 // it only gates a branch switch; here that would mean deleting work.
 
-
 /**
  * The verdict {@link checkWorktreeClean} returns.
  *
