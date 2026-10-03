@@ -1,0 +1,1579 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`sendMessage queryOpts characterization > acp: resume 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: ACP chat config — trackingId=<chat>, providerId=opencode, model=(agent default), openRouter=off",
+    "debug: SDK query options — provider=acp, cwd=<work>, maxTurns=200, model=(default), resume=<chat>",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "acp": {
+        "getPermissions": "[Function]",
+        "providerId": "opencode",
+      },
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "resume": "<chat>",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > acp: vendor default model + OpenRouter key > per-chat model 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: ACP chat config — trackingId=track-2, providerId=opencode, model=opencode/chosen, openRouter=on",
+    "debug: SDK query options — provider=acp, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "acp": {
+        "getPermissions": "[Function]",
+        "model": "opencode/chosen",
+        "openRouterApiKey": "acct-key",
+        "providerId": "opencode",
+      },
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > acp: vendor default model + OpenRouter key > vendor default 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: ACP chat config — trackingId=track-1, providerId=opencode, model=opencode/vendor-default, openRouter=on",
+    "debug: SDK query options — provider=acp, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "acp": {
+        "getPermissions": "[Function]",
+        "model": "opencode/vendor-default",
+        "openRouterApiKey": "acct-key",
+        "providerId": "opencode",
+      },
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: agent session with a caller alias (proxy + MCP_KEY_ALIAS rewrite) 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "warn: MCP server "fake-missing" (plugin plugin-1) has an unlaunchable command "no-such-mcp-server" — it will fail to start and its mcp__fake-missing__* tools will be absent from the session",
+    "info: Built 1 hook callback(s) from enabled plugins",
+    "info: Injected callboard-tools MCP server",
+    "info: Injected proxy tools (mode=local, alias=agent-caller)",
+    "debug: Set MCP_KEY_ALIAS="agent-caller" for agent=keyed-agent",
+    "info: Injected Callboard agent tools for agent="keyed-agent" (spec.name=callboard, 35 tools)",
+    "info: MCP servers for session: [fake-stdio(stdio), fake-missing(stdio), fake-http(http), computer_use(stdio), callboard-tools(stdio), mcp-proxy(stdio), callboard(stdio)], allowedTools: [mcp__fake-stdio__*, mcp__fake-missing__*, mcp__fake-http__*, mcp__callboard-tools__*, mcp__mcp-proxy__*, mcp__callboard__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__fake-stdio__*",
+        "mcp__fake-missing__*",
+        "mcp__fake-http__*",
+        "mcp__callboard-tools__*",
+        "mcp__mcp-proxy__*",
+        "mcp__callboard__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "MCP_KEY_ALIAS": "agent-caller",
+        "PATH": "<data>/bin",
+        "TOKEN": "resolved-token",
+      },
+      "hooks": {
+        "PreToolUse": [
+          {
+            "hooks": [
+              "[Function]",
+            ],
+            "matcher": "Bash",
+            "timeout": 5,
+          },
+        ],
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "fake-stdio",
+        "fake-missing",
+        "fake-http",
+        "computer_use",
+        "callboard-tools",
+        "mcp-proxy",
+        "callboard",
+      ],
+      "mcpServers": {
+        "callboard": "[ToolServer callboard: 35 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 48 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+        "fake-http": {
+          "headers": {
+            "x-test": "1",
+          },
+          "type": "http",
+          "url": "http://localhost:1/mcp",
+        },
+        "fake-missing": {
+          "args": [],
+          "command": "no-such-mcp-server",
+        },
+        "fake-stdio": {
+          "args": [
+            "<data>/fake-plugin/server.js",
+            "-y",
+          ],
+          "command": "fake-mcp-server",
+          "env": {
+            "MCP_KEY_ALIAS": "agent-caller",
+            "TOKEN": "resolved-token",
+          },
+        },
+        "mcp-proxy": "[ToolServer mcp-proxy: 13 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "plugins": [
+        {
+          "name": "fake-plugin",
+          "path": "<data>/fake-plugin",
+          "type": "local",
+        },
+      ],
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: agent session without a caller alias 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: Agent "bare-agent" has no caller alias assigned — proxy tools not injected",
+    "info: Injected Callboard agent tools for agent="bare-agent" (spec.name=callboard, 35 tools)",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio), callboard(stdio)], allowedTools: [mcp__callboard-tools__*, mcp__callboard__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+        "mcp__callboard__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+        "callboard",
+      ],
+      "mcpServers": {
+        "callboard": "[ToolServer callboard: 35 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 48 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: explicit completion + job step tools > advisory job step 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: explicit completion + job step tools > job step 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: Injected job-tools MCP server (run=run-x, step=step-y)",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio), job-tools(stdio)], allowedTools: [mcp__callboard-tools__*, mcp__job-tools__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+        "mcp__job-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+        "job-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+        "job-tools": "[ToolServer job-tools: 2 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+      "systemPrompt": {
+        "append": "This session requires explicit completion. When the objective is fully achieved, you MUST call the complete_job_step tool as the last thing you do. If your turn ends without that call, you will be re-prompted to continue working.",
+        "preset": "claude_code",
+        "type": "preset",
+      },
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: explicit completion + job step tools > objective 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: Injected objective-tools MCP server (explicit completion required)",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio), objective-tools(stdio)], allowedTools: [mcp__callboard-tools__*, mcp__objective-tools__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+        "mcp__objective-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+        "objective-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+        "objective-tools": "[ToolServer objective-tools: 1 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+      "systemPrompt": {
+        "append": "This session requires explicit completion. When the objective is fully achieved, you MUST call the objective_complete tool (optionally with a summary message and structured result data) as the last thing you do. If your turn ends without that call, you will be re-prompted to continue working.",
+        "preset": "claude_code",
+        "type": "preset",
+      },
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: no claude binary resolved 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: plain new chat 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: plugins + MCP + hooks, model, system prompt, maxTurns, permissions, default proxy caller 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "warn: MCP server "fake-missing" (plugin plugin-1) has an unlaunchable command "no-such-mcp-server" — it will fail to start and its mcp__fake-missing__* tools will be absent from the session",
+    "info: Built 1 hook callback(s) from enabled plugins",
+    "info: Injected callboard-tools MCP server",
+    "info: Injected proxy tools (mode=local, alias=default-caller)",
+    "info: MCP servers for session: [fake-stdio(stdio), fake-missing(stdio), fake-http(http), computer_use(stdio), callboard-tools(stdio), mcp-proxy(stdio)], allowedTools: [mcp__fake-stdio__*, mcp__fake-missing__*, mcp__fake-http__*, mcp__callboard-tools__*, mcp__mcp-proxy__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=7, model=opus, resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__fake-stdio__*",
+        "mcp__fake-missing__*",
+        "mcp__fake-http__*",
+        "mcp__callboard-tools__*",
+        "mcp__mcp-proxy__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "MCP_KEY_ALIAS": "plugin-default",
+        "PATH": "<data>/bin",
+        "TOKEN": "resolved-token",
+      },
+      "hooks": {
+        "PreToolUse": [
+          {
+            "hooks": [
+              "[Function]",
+            ],
+            "matcher": "Bash",
+            "timeout": 5,
+          },
+        ],
+      },
+      "maxTurns": 7,
+      "mcpServerOrder": [
+        "fake-stdio",
+        "fake-missing",
+        "fake-http",
+        "computer_use",
+        "callboard-tools",
+        "mcp-proxy",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+        "fake-http": {
+          "headers": {
+            "x-test": "1",
+          },
+          "type": "http",
+          "url": "http://localhost:1/mcp",
+        },
+        "fake-missing": {
+          "args": [],
+          "command": "no-such-mcp-server",
+        },
+        "fake-stdio": {
+          "args": [
+            "<data>/fake-plugin/server.js",
+            "-y",
+          ],
+          "command": "fake-mcp-server",
+          "env": {
+            "MCP_KEY_ALIAS": "plugin-default",
+            "TOKEN": "resolved-token",
+          },
+        },
+        "mcp-proxy": "[ToolServer mcp-proxy: 13 tools]",
+      },
+      "model": "opus",
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "plugins": [
+        {
+          "name": "fake-plugin",
+          "path": "<data>/fake-plugin",
+          "type": "local",
+        },
+      ],
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+      "systemPrompt": {
+        "append": "You are a test.",
+        "preset": "claude_code",
+        "type": "preset",
+      },
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > claude-code: resume recovers agentAlias and passes resume 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: Injected proxy tools (mode=local, alias=agent-caller)",
+    "debug: Set MCP_KEY_ALIAS="agent-caller" for agent=keyed-agent",
+    "info: Injected Callboard agent tools for agent="keyed-agent" (spec.name=callboard, 35 tools)",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio), mcp-proxy(stdio), callboard(stdio)], allowedTools: [mcp__callboard-tools__*, mcp__mcp-proxy__*, mcp__callboard__*]",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=sonnet, resume=<chat>",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+        "mcp__mcp-proxy__*",
+        "mcp__callboard__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "MCP_KEY_ALIAS": "agent-caller",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+        "mcp-proxy",
+        "callboard",
+      ],
+      "mcpServers": {
+        "callboard": "[ToolServer callboard: 35 tools]",
+        "callboard-tools": "[ToolServer callboard-tools: 48 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+        "mcp-proxy": "[ToolServer mcp-proxy: 13 tools]",
+      },
+      "model": "sonnet",
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "resume": "<chat>",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > cline: bare settings + resume > new 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Cline chat config — trackingId=track-1, provider=(anthropic), model=(provider default), effort=(default), baseUrl=(default), apiKey=(from environment)",
+    "debug: SDK query options — provider=cline, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cline": {
+        "getPermissions": "[Function]",
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > cline: bare settings + resume > resume 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Cline chat config — trackingId=<chat>, provider=(anthropic), model=(provider default), effort=(default), baseUrl=(default), apiKey=(from environment)",
+    "debug: SDK query options — provider=cline, cwd=<work>, maxTurns=200, model=(default), resume=<chat>",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cline": {
+        "getPermissions": "[Function]",
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "resume": "<chat>",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > cline: configured provider, effort > configured 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Cline chat config — trackingId=track-1, provider=openrouter, model=cline-default, effort=medium, baseUrl=https://cline.example, apiKey=…5555",
+    "debug: SDK query options — provider=cline, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cline": {
+        "apiKey": "cl-key-5555",
+        "baseUrl": "https://cline.example",
+        "effort": "medium",
+        "getPermissions": "[Function]",
+        "maxIterations": 12,
+        "model": "cline-default",
+        "providerId": "openrouter",
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > cline: configured provider, effort > per-chat model 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Cline chat config — trackingId=track-2, provider=openrouter, model=cline-chosen, effort=(default), baseUrl=https://cline.example, apiKey=…5555",
+    "debug: SDK query options — provider=cline, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cline": {
+        "apiKey": "cl-key-5555",
+        "baseUrl": "https://cline.example",
+        "getPermissions": "[Function]",
+        "maxIterations": 12,
+        "model": "cline-chosen",
+        "providerId": "openrouter",
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > codex: OpenRouter-injected route 1`] = `
+{
+  "codexRouteCalls": 1,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Codex chat config — trackingId=track-1, authMode=openrouter, model=openai/gpt-5, effort=(default), binary=(bundled), sandbox=(permission-derived), codexHome=~/.codex, orBaseUrl=https://or.example/api, orKeyTail=…9876",
+    "debug: SDK query options — provider=codex, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "codex": {
+        "authMode": "subscription",
+        "model": "openai/gpt-5",
+        "openRouterBaseUrl": "https://or.example/api",
+        "reasoningRoute": "openrouter",
+        "uiAliasPresence": undefined,
+        "useOpenRouter": true,
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "OPENROUTER_API_KEY": "or-key-9876",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > codex: api-key mode without a key refuses 1`] = `[Error: Codex chat selected in api-key mode but OPENAI_API_KEY is not configured in Settings → API.]`;
+
+exports[`sendMessage queryOpts characterization > codex: api-key mode, direct-UI route, model, effort, sandbox 1`] = `
+{
+  "codexRouteCalls": 1,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Codex chat config — trackingId=track-1, authMode=api-key, model=gpt-5.5, effort=high, binary=(bundled), sandbox=workspace-write, codexHome=~/.codex, apiKeyTail=…1234",
+    "debug: SDK query options — provider=codex, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "codex": {
+        "apiKey": "sk-test-1234",
+        "authMode": "api-key",
+        "baseUrl": "https://api.example/v1",
+        "directUiCodeModeEnabled": true,
+        "directUiNamespaces": [
+          "callboard-ui",
+        ],
+        "directUiPolicy": "unconfigured",
+        "model": "gpt-5.5",
+        "reasoningEffort": "high",
+        "reasoningRoute": "native",
+        "sandboxMode": "workspace-write",
+        "uiAliasPresence": {
+          "callboard-ui": true,
+          "callboard_ui": true,
+        },
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "OPENAI_API_KEY": " sk-test-1234 ",
+        "OPENAI_BASE_URL": " https://api.example/v1 ",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > codex: subscription, default route 1`] = `
+{
+  "codexRouteCalls": 1,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Codex chat config — trackingId=track-1, authMode=subscription, model=(default), effort=(default), binary=(bundled), sandbox=(permission-derived), codexHome=~/.codex",
+    "debug: SDK query options — provider=codex, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "codex": {
+        "authMode": "subscription",
+        "permissions": {
+          "codeExecution": "ask",
+          "computerControl": "deny",
+          "fileRead": "allow",
+          "fileWrite": "ask",
+          "webAccess": "allow",
+        },
+        "reasoningRoute": "native",
+        "uiAliasPresence": {
+          "callboard-ui": true,
+          "callboard_ui": false,
+        },
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > codex: unknown route and resume > new 1`] = `
+{
+  "codexRouteCalls": 1,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Codex chat config — trackingId=track-1, authMode=subscription, model=(default), effort=low, binary=(bundled), sandbox=(permission-derived), codexHome=~/.codex",
+    "debug: SDK query options — provider=codex, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "codex": {
+        "authMode": "subscription",
+        "reasoningEffort": "low",
+        "reasoningRoute": "unknown",
+        "uiAliasPresence": undefined,
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > codex: unknown route and resume > resume 1`] = `
+{
+  "codexRouteCalls": 1,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: Codex chat config — trackingId=<chat>, authMode=subscription, model=(default), effort=low, binary=(bundled), sandbox=(permission-derived), codexHome=~/.codex",
+    "debug: SDK query options — provider=codex, cwd=<work>, maxTurns=200, model=(default), resume=<chat>",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "codex": {
+        "authMode": "subscription",
+        "reasoningEffort": "low",
+        "reasoningRoute": "unknown",
+        "uiAliasPresence": undefined,
+      },
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "resume": "<chat>",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > pi: configured, new 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: pi chat config — trackingId=track-1, provider=anthropic, model=pi-default, effort=high, resume=new, apiKey=…7777",
+    "debug: SDK query options — provider=pi, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "pi": {
+        "apiKey": "pi-key-7777",
+        "baseUrl": "https://pi.example",
+        "effort": "high",
+        "getPermissions": "[Function]",
+        "model": "pi-default",
+        "providerId": "anthropic",
+      },
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > pi: resume whose session file is gone 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "warn: pi chat <chat> references session <chat> but no session file exists — starting a fresh session",
+    "info: pi chat config — trackingId=<chat>, provider=(openrouter), model=(provider default), effort=(default), resume=UNRESOLVED — fresh session, apiKey=(from environment)",
+    "debug: SDK query options — provider=pi, cwd=<work>, maxTurns=200, model=(default), resume=<chat>",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "pi": {
+        "getPermissions": "[Function]",
+      },
+      "resume": "<chat>",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > pi: resume with a resolvable session file 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "info: Injected callboard-tools MCP server",
+    "info: MCP servers for session: [computer_use(stdio), callboard-tools(stdio)], allowedTools: [mcp__callboard-tools__*]",
+    "info: pi chat config — trackingId=<chat>, provider=(openrouter), model=(provider default), effort=(default), resume=path resolved, apiKey=(from environment)",
+    "debug: SDK query options — provider=pi, cwd=<work>, maxTurns=200, model=(default), resume=<chat>",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [
+        "mcp__callboard-tools__*",
+      ],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+        "callboard-tools",
+      ],
+      "mcpServers": {
+        "callboard-tools": "[ToolServer callboard-tools: 62 tools]",
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "pi": {
+        "getPermissions": "[Function]",
+        "resumeSessionPath": "/sessions/<chat>.jsonl",
+      },
+      "resume": "<chat>",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > tool servers that throw or come back empty are skipped, each with its own log line > agent, null 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "debug: Set MCP_KEY_ALIAS="agent-caller" for agent=keyed-agent",
+    "error: buildAgentToolsSpec produced no server for agent="keyed-agent"",
+    "info: MCP servers for session: [computer_use(stdio)], allowedTools: []",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "MCP_KEY_ALIAS": "agent-caller",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+      ],
+      "mcpServers": {
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+      "systemPrompt": {
+        "append": "This session requires explicit completion. When the objective is fully achieved, you MUST call the objective_complete tool (optionally with a summary message and structured result data) as the last thing you do. If your turn ends without that call, you will be re-prompted to continue working.",
+        "preset": "claude_code",
+        "type": "preset",
+      },
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > tool servers that throw or come back empty are skipped, each with its own log line > agent, throw 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "error: Failed to build callboard-tools server: no server for callboard-tools",
+    "error: Failed to build objective-tools server: no server for objective-tools",
+    "error: Failed to build proxy tools server: no server for mcp-proxy",
+    "debug: Set MCP_KEY_ALIAS="agent-caller" for agent=keyed-agent",
+    "error: Failed to build Callboard agent tools for agent="keyed-agent": no server for callboard",
+    "info: MCP servers for session: [computer_use(stdio)], allowedTools: []",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "MCP_KEY_ALIAS": "agent-caller",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+      ],
+      "mcpServers": {
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+      "systemPrompt": {
+        "append": "This session requires explicit completion. When the objective is fully achieved, you MUST call the objective_complete tool (optionally with a summary message and structured result data) as the last thing you do. If your turn ends without that call, you will be re-prompted to continue working.",
+        "preset": "claude_code",
+        "type": "preset",
+      },
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > tool servers that throw or come back empty are skipped, each with its own log line > job step, throw 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "error: Failed to build callboard-tools server: no server for callboard-tools",
+    "error: Failed to build job-tools server: no server for job-tools",
+    "error: Failed to build proxy tools server: no server for mcp-proxy",
+    "info: MCP servers for session: [computer_use(stdio)], allowedTools: []",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+      ],
+      "mcpServers": {
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
+
+exports[`sendMessage queryOpts characterization > tool servers that throw or come back empty are skipped, each with its own log line > plain with default caller, throw 1`] = `
+{
+  "codexRouteCalls": 0,
+  "logs": [
+    "error: Failed to build callboard-tools server: no server for callboard-tools",
+    "error: Failed to build proxy tools server: no server for mcp-proxy",
+    "info: MCP servers for session: [computer_use(stdio)], allowedTools: []",
+    "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
+  ],
+  "request": {
+    "options": {
+      "abortController": "[AbortController]",
+      "allowedTools": [],
+      "canUseTool": "[Function]",
+      "cwd": "<work>",
+      "env": {
+        "CB_QUERYOPTS_TEST_TOKEN": "resolved-token",
+        "CLAUDECODE": undefined,
+        "CODEX_HOME": "/nonexistent/queryopts-home/.codex",
+        "HOME": "/nonexistent/queryopts-home",
+        "INHERITED_PLAIN": "kept",
+        "PATH": "<data>/bin",
+      },
+      "maxTurns": 200,
+      "mcpServerOrder": [
+        "computer_use",
+      ],
+      "mcpServers": {
+        "computer_use": "[ToolServer computer_use: 6 tools]",
+      },
+      "pathToClaudeCodeExecutable": "/opt/fake/bin/claude",
+      "settingSources": [
+        "user",
+        "project",
+        "local",
+      ],
+      "stderr": "[Function]",
+    },
+    "prompt": "[AsyncIterable]",
+  },
+}
+`;
