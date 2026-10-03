@@ -1562,6 +1562,9 @@ async function listFilesRecursively(dirPath: string, baseDir: string): Promise<s
  * to write back refreshed stat data. The diff view runs this while an agent
  * may be running `git add`/`commit` in the same checkout, and losing that race
  * fails the agent's command. Nothing here reads the refreshed index back.
+ * This removes one of the view's two lock-takers, not both: the plain
+ * `git diff` alongside it still refreshes the index, and that is deliberate —
+ * without it, touched-but-unchanged files would be re-hashed on every poll.
  */
 async function getUntrackedFiles(directory: string): Promise<string[]> {
   try {
