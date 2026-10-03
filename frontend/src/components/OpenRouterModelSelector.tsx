@@ -175,7 +175,7 @@ export default function OpenRouterModelSelector({ id, value, onChange, placehold
             background: "var(--surface)",
             border: "1px solid var(--border)",
             borderRadius: 8,
-            boxShadow: "var(--shadow-lg)",
+            boxShadow: "var(--shadow-md)",
           }}
         >
           {matches.map((entry, i) => {
