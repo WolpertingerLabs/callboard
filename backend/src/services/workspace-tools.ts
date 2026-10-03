@@ -28,7 +28,7 @@
  * @see plans/workspace-object.md — Phases 2, 2b and 4
  */
 import { z } from "zod";
-import { defineTool } from "../agents/ports/tools.js";
+import { defineTool, jsonError, jsonResult } from "../agents/ports/tools.js";
 import type { AnyToolDefinition } from "../agents/ports/tools.js";
 import { adoptWorktrees } from "./workspace-adoption.js";
 import { createLocalWorkspace } from "./workspace-create.js";
@@ -38,13 +38,6 @@ import { renameWorkspace } from "./workspace-store.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("workspace-tools");
-
-function ok(payload: Record<string, unknown>) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
-}
-function err(message: string) {
-  return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
-}
 
 export function buildWorkspaceTools(): AnyToolDefinition[] {
   return [
@@ -68,10 +61,10 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
         try {
           const status = args.status ?? "active";
           const workspaces = listWorkspacesWithRemovability(status === "all" ? undefined : { status });
-          return ok({ workspaces });
+          return jsonResult({ workspaces });
         } catch (e: any) {
           log.error(`list_workspaces failed: ${e.message}`);
-          return err(`Failed to list workspaces: ${e.message}`);
+          return jsonError(`Failed to list workspaces: ${e.message}`);
         }
       },
     ),
@@ -95,11 +88,11 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
       async (args) => {
         try {
           const result = await archiveWorkspace(args.workspaceId);
-          if (!result) return err(`Workspace "${args.workspaceId}" not found — use list_workspaces to see available ids`);
-          return ok({ ...result });
+          if (!result) return jsonError(`Workspace "${args.workspaceId}" not found — use list_workspaces to see available ids`);
+          return jsonResult({ ...result });
         } catch (e: any) {
           log.error(`archive_workspace failed: ${e.message}`);
-          return err(`Failed to archive workspace: ${e.message}`);
+          return jsonError(`Failed to archive workspace: ${e.message}`);
         }
       },
     ),
@@ -127,10 +120,10 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
       },
       async (args) => {
         try {
-          return ok({ ...(await listUnmanagedWorktrees(args.repoPath, { includeDiskUsage: args.includeDiskUsage !== false })) });
+          return jsonResult({ ...(await listUnmanagedWorktrees(args.repoPath, { includeDiskUsage: args.includeDiskUsage !== false })) });
         } catch (e: any) {
           log.error(`list_unmanaged_worktrees failed: ${e.message}`);
-          return err(`Failed to list unmanaged worktrees: ${e.message}`);
+          return jsonError(`Failed to list unmanaged worktrees: ${e.message}`);
         }
       },
     ),
@@ -156,10 +149,10 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
       },
       async (args) => {
         try {
-          return ok({ ...adoptWorktrees(args.paths) });
+          return jsonResult({ ...adoptWorktrees(args.paths) });
         } catch (e: any) {
           log.error(`adopt_worktrees failed: ${e.message}`);
-          return err(`Failed to adopt worktrees: ${e.message}`);
+          return jsonError(`Failed to adopt worktrees: ${e.message}`);
         }
       },
     ),
@@ -191,11 +184,11 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
       async (args) => {
         try {
           const result = createLocalWorkspace({ cwd: args.cwd, ...(args.name !== undefined && { name: args.name }) });
-          if (!result.created) return err(result.refusal?.detail ?? `Could not create a workspace for ${args.cwd}`);
-          return ok({ ...result });
+          if (!result.created) return jsonError(result.refusal?.detail ?? `Could not create a workspace for ${args.cwd}`);
+          return jsonResult({ ...result });
         } catch (e: any) {
           log.error(`create_workspace failed: ${e.message}`);
-          return err(`Failed to create workspace: ${e.message}`);
+          return jsonError(`Failed to create workspace: ${e.message}`);
         }
       },
     ),
@@ -217,13 +210,13 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
       async (args) => {
         try {
           const workspace = renameWorkspace(args.workspaceId, args.name);
-          if (!workspace) return err(`Workspace "${args.workspaceId}" not found — use list_workspaces to see available ids`);
-          return ok({ workspace });
+          if (!workspace) return jsonError(`Workspace "${args.workspaceId}" not found — use list_workspaces to see available ids`);
+          return jsonResult({ workspace });
         } catch (e: any) {
           // The store throws only on an unusable name; that sentence is the
           // answer the caller needs, so it is returned rather than logged as a
           // failure of the tool.
-          return err(e.message);
+          return jsonError(e.message);
         }
       },
     ),

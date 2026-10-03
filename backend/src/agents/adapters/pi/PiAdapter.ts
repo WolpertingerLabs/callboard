@@ -16,7 +16,7 @@
  *
  * `customTools` is an in-process array, so callboard's tools keep the per-chat
  * SSE emitter and live backend state by being closures — no MCP stdio shim and
- * private socket, the way `acp/mcp-server-shim.ts` and its Codex twin are forced
+ * private socket, the way Codex and ACP (`agents/shared/mcp-server-shim.ts`) are forced
  * to work. pi has no MCP client of its own, so the user's configured third-party
  * MCP servers do not apply to pi chats in v1 (the plan's Decision 5); callboard's
  * own tools are unaffected.

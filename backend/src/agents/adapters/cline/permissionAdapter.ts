@@ -59,30 +59,15 @@
  * @see ../acp/permissionAdapter.ts (the reference implementation of the rule)
  * @see ../openrouter/permissionAdapter.ts (the closed-tool-set precedent)
  */
-import { isComputerControlToolName } from "../../permissions/computerControl.js";
 import { ALL_DEFAULT_TOOL_NAMES, TEAM_TOOL_NAMES, type ToolApprovalRequest, type ToolApprovalResult, type ToolPolicy } from "@cline/sdk";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { decidePermission, type PermissionCategory } from "../../permissions/ToolPermissionPolicy.js";
+import { isToolIdentifier, makeNameCategorizer, MOST_RESTRICTIVE_CATEGORY } from "../../permissions/nameCategorizer.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("cline-permissions");
 
-/**
- * The category anything unrecognizable resolves to.
- *
- * `codeExecution` is the top of the restrictiveness order: a tool that can run
- * code can do everything the other three axes describe, so it is the only safe
- * answer when we do not know what a tool is.
- *
- * Note what this is NOT: `null`. `decidePermission(null, …)` returns "ask"
- * *unconditionally* — it does not consult the user's settings at all — so a
- * `null` default would prompt even under an all-"allow" policy. Callboard's
- * unattended runners (job steps, deployed agents, `start_chat_session`) all
- * hardcode every axis to `"allow"` precisely so they need no human, and an agent
- * job step has no timeout: a prompt nobody answers hangs the run until it is
- * aborted.
- */
-export const MOST_RESTRICTIVE_CATEGORY: PermissionCategory = "codeExecution";
+export { MOST_RESTRICTIVE_CATEGORY };
 
 /**
  * The subagent-spawning tool, built by `createSpawnAgentTool` when
@@ -187,102 +172,34 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
 ]);
 
 /**
- * Token families for names not in {@link EXACT_CATEGORIES}, **most restrictive
- * first**. A name matching more than one family resolves to the first listed.
- *
- * The order is by what a tool in that family can do, not by alphabet:
- * `codeExecution` subsumes the rest, `fileWrite` mutates local state,
- * `webAccess` moves data in and out of the machine, `fileRead` only observes.
- * Resolving `search_and_run` to `fileRead` would treat a run-capable tool as
- * read-only — the widening this ordering exists to prevent.
- *
- * In the Cline adapter this fallback serves callboard's own `extraTools`, which
- * surface under their bare names (`spawn_job`, `set_chat_title`), and any MCP
- * tools a future session enables. None are knowable in advance.
- *
- * Deliberately mirrors the ACP and OpenRouter tables rather than importing one:
- * each adapter owning its own categorizer is the property the registry in
- * `permissions/categorizers.ts` is built to protect. Consolidating all three
- * into one shared tokenizer is a reasonable follow-up, but it should be a
- * deliberate refactor rather than a side effect of adding a provider.
- */
-const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly string[]]> = [
-  ["codeExecution", ["bash", "sh", "shell", "exec", "execute", "run", "terminal", "command", "spawn", "eval", "script", "process", "kill"]],
-  [
-    "fileWrite",
-    [
-      "write",
-      "edit",
-      "create",
-      "delete",
-      "remove",
-      "move",
-      "rename",
-      "patch",
-      "apply",
-      "mkdir",
-      "replace",
-      "insert",
-      "append",
-      "update",
-      "modify",
-      "save",
-      "touch",
-    ],
-  ],
-  ["webAccess", ["fetch", "http", "https", "web", "browse", "url", "download", "upload", "curl", "request"]],
-  ["fileRead", ["read", "glob", "grep", "search", "find", "list", "cat", "view", "stat"]],
-];
-
-/**
- * Does this string look like a *tool name* rather than a sentence?
- *
- * Rule 3 of the two-pass ruling. `ToolPermissionPolicy` is a
- * `(toolName: string, …)` bridge and nothing structurally guarantees the caller
- * passes an identifier, so prose is never parsed for a gate: anything that is
- * not a single identifier-shaped token goes straight to
- * {@link MOST_RESTRICTIVE_CATEGORY} and its words are never read.
+ * Does this string look like a *tool name* rather than a sentence? Prose is
+ * never parsed for a gate — see `isToolIdentifier` in
+ * `permissions/nameCategorizer.ts`.
  */
 export function isClineToolIdentifier(value: string): boolean {
-  return /^[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,63}$/.test(value);
+  return isToolIdentifier(value);
 }
+
+const categorizeByName = makeNameCategorizer(EXACT_CATEGORIES);
 
 /**
  * Category for a Cline tool, from its name and nothing else.
  *
- * Resolution order:
+ * Resolution order (see {@link makeNameCategorizer}):
  *  1. exact match in {@link EXACT_CATEGORIES}
- *  2. token match in {@link CATEGORY_TOKENS}, most restrictive family first
+ *  2. token match in the shared token table, most restrictive family first
  *  3. {@link MOST_RESTRICTIVE_CATEGORY}
+ *
+ * In the Cline adapter the token fallback serves callboard's own `extraTools`,
+ * which surface under their bare names (`spawn_job`, `set_chat_title`), and any
+ * MCP tools a future session enables. None are knowable in advance.
  *
  * Never returns `null` — see {@link MOST_RESTRICTIVE_CATEGORY} for why "ask" is
  * not a safe default on a path unattended runs depend on. The return type keeps
  * `| null` only to satisfy the shared `ToolCategorizer` signature.
  */
 export function categorizeClineToolName(toolName: string): PermissionCategory | null {
-  if (isComputerControlToolName(toolName)) return "computerControl";
-  const trimmed = toolName.trim();
-  if (!isClineToolIdentifier(trimmed)) return MOST_RESTRICTIVE_CATEGORY;
-
-  const exact = EXACT_CATEGORIES.get(trimmed);
-  if (exact) return exact;
-
-  // Tokenize rather than using `\b` word boundaries: these names are
-  // overwhelmingly snake_case and `_` is a word character, so `/\bread\b/` does
-  // NOT match `read_files`. Splitting on non-alphanumerics handles snake_case,
-  // camelCase and kebab-case for free.
-  const tokens = new Set(
-    trimmed
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean),
-  );
-
-  for (const [category, words] of CATEGORY_TOKENS) {
-    if (words.some((w) => tokens.has(w))) return category;
-  }
-  return MOST_RESTRICTIVE_CATEGORY;
+  return categorizeByName(toolName);
 }
 
 /**

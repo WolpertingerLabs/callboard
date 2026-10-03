@@ -21,7 +21,7 @@
  * on the next load).
  */
 import { z } from "zod";
-import { defineTool } from "../agents/ports/tools.js";
+import { defineTool, jsonError, jsonResult } from "../agents/ports/tools.js";
 import type { AnyToolDefinition } from "../agents/ports/tools.js";
 import { validateModelAliases, HARNESS_PROVIDERS } from "shared/types/index.js";
 import type { ModelAlias, HarnessProvider } from "shared/types/index.js";
@@ -29,13 +29,6 @@ import { getAgentSettings, updateAgentSettings } from "./agent-settings.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("model-alias-tools");
-
-function ok(payload: Record<string, unknown>) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
-}
-function err(message: string) {
-  return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
-}
 
 /** Current registry, with the deprecated OR-only map already folded in. */
 function currentAliases(): ModelAlias[] {
@@ -45,13 +38,13 @@ function currentAliases(): ModelAlias[] {
 /** Persist a validated registry and retire the legacy OR-only alias map. */
 function saveAliases(candidate: ModelAlias[]) {
   const { value, errors } = validateModelAliases(candidate);
-  if (errors.length > 0) return err(`Invalid model aliases: ${errors.join("; ")}`);
+  if (errors.length > 0) return jsonError(`Invalid model aliases: ${errors.join("; ")}`);
   const updated = updateAgentSettings({
     modelAliases: value.length > 0 ? value : undefined,
     openRouterModelAliases: undefined,
   });
   log.info(`Model aliases updated via tool — count=${updated.modelAliases?.length ?? 0}`);
-  return ok({ success: true, modelAliases: updated.modelAliases ?? [] });
+  return jsonResult({ success: true, modelAliases: updated.modelAliases ?? [] });
 }
 
 export function buildModelAliasTools(): AnyToolDefinition[] {
@@ -64,7 +57,7 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
         "Aliases predating the removal of the OpenRouter harness may also carry an `openrouter` target: it is retired and never resolves, " +
         "so ignore it when picking a model for a session.",
       {},
-      async () => ok({ modelAliases: currentAliases() }),
+      async () => jsonResult({ modelAliases: currentAliases() }),
     ),
 
     defineTool(
@@ -119,7 +112,7 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
       },
       async (args) => {
         const name = args.name.trim();
-        if (!name) return err("name is required");
+        if (!name) return jsonError("name is required");
         const key = name.toLowerCase();
         const existing = currentAliases().find((a) => a.name.trim().toLowerCase() === key);
         const others = currentAliases().filter((a) => a.name.trim().toLowerCase() !== key);
@@ -133,7 +126,7 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
           else delete targets[provider]; // "" clears
         }
         if (Object.keys(targets).length === 0) {
-          return err(`Alias "${name}" must have at least one provider target`);
+          return jsonError(`Alias "${name}" must have at least one provider target`);
         }
 
         const description = args.description !== undefined ? args.description.trim() || undefined : existing?.description;
@@ -152,7 +145,7 @@ export function buildModelAliasTools(): AnyToolDefinition[] {
         const key = args.name.trim().toLowerCase();
         const before = currentAliases();
         const next = before.filter((a) => a.name.trim().toLowerCase() !== key);
-        if (next.length === before.length) return err(`No model alias named "${args.name}"`);
+        if (next.length === before.length) return jsonError(`No model alias named "${args.name}"`);
         return saveAliases(next);
       },
     ),

@@ -75,3 +75,18 @@ export function defineTool<TShape extends z.ZodRawShape>(
 ): ToolDefinition<TShape> {
   return { name, description, inputSchema, handler };
 }
+
+/** A single plain-text result block. */
+export function textResult(text: string): ToolCallResult {
+  return { content: [{ type: "text", text }] };
+}
+
+/** A result whose text is `JSON.stringify(payload)` — compact, no indentation. */
+export function jsonResult(payload: unknown): ToolCallResult {
+  return textResult(JSON.stringify(payload));
+}
+
+/** The `{ "error": message }` JSON result the newer tool families return on failure. */
+export function jsonError(message: string): ToolCallResult {
+  return jsonResult({ error: message });
+}

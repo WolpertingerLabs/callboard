@@ -65,6 +65,7 @@ import { pendingRequests, type PendingRequest } from "./pending-requests.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
+import { toPromptIterable } from "./session-spawn.js";
 
 const log = createLogger("claude");
 
@@ -1561,12 +1562,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // Wrap string/non-iterable prompts in an async generator.
   let effectivePrompt = formattedPrompt;
   if (hasMcpServers && typeof formattedPrompt === "string") {
-    effectivePrompt = (async function* () {
-      yield {
-        type: "user" as const,
-        message: { role: "user" as const, content: formattedPrompt },
-      };
-    })();
+    effectivePrompt = toPromptIterable(formattedPrompt);
   }
 
   // Log MCP server configuration for debugging
@@ -2482,14 +2478,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
               reason: `stream_recovery_${recoveriesUsed}_of_${MAX_STREAM_RECOVERIES}`,
             } as StreamEvent);
             queryOpts.options.resume = resumeTarget;
-            setQueryPrompt(
-              (async function* () {
-                yield {
-                  type: "user" as const,
-                  message: { role: "user" as const, content: recoveryText },
-                };
-              })(),
-            );
+            setQueryPrompt(toPromptIterable(recoveryText));
             sessionId = null;
             continue;
           }
@@ -2545,14 +2534,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // captured from this iteration's session_started; reset it so the
         // resumed query's new session id is appended to the chat record.
         queryOpts.options.resume = sessionId ?? resumeSessionId;
-        setQueryPrompt(
-          (async function* () {
-            yield {
-              type: "user" as const,
-              message: { role: "user" as const, content: nudgeText },
-            };
-          })(),
-        );
+        setQueryPrompt(toPromptIterable(nudgeText));
         sessionId = null;
       }
 

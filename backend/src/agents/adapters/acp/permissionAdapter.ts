@@ -63,8 +63,8 @@
  *     own `getDefaultPermissions` there — so a policy tightened mid-turn binds
  *     on the very next tool call rather than after the turn ends.
  *  2. **Ambiguity resolves to the most restrictive matching category** — see
- *     {@link CATEGORY_TOKENS}.
- *  3. **Never categorize from prose** — see {@link isToolIdentifier}.
+ *     `CATEGORY_TOKENS` in `permissions/nameCategorizer.ts`.
+ *  3. **Never categorize from prose** — see `isToolIdentifier` there.
  *
  * @see plans/acp-adapter.md (Permissions — "The two-pass rule")
  * @see ../codex/permissionAdapter.ts (the other foreign-vocabulary bridge)
@@ -73,6 +73,7 @@ import { isComputerControlToolName } from "../../permissions/computerControl.js"
 import type { PermissionOption, PermissionOptionKind, RequestPermissionRequest, RequestPermissionResponse, ToolKind } from "@agentclientprotocol/sdk";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { decidePermission, type PermissionCategory, type PermissionDecision } from "../../permissions/ToolPermissionPolicy.js";
+import { isToolIdentifier, makeNameCategorizer, MOST_RESTRICTIVE_CATEGORY } from "../../permissions/nameCategorizer.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("acp-permissions");
@@ -119,75 +120,10 @@ export function categorizeAcpToolKind(kind: ToolKind | null | undefined): Permis
   }
 }
 
-/**
- * The category anything unrecognizable resolves to.
- *
- * `codeExecution` is the top of the restrictiveness order below: a tool that can
- * run code can do everything the other three axes describe, so it is the only
- * safe answer when we do not know what a tool is.
- */
-export const MOST_RESTRICTIVE_CATEGORY: PermissionCategory = "codeExecution";
+export { MOST_RESTRICTIVE_CATEGORY };
 
-/**
- * Token families, **most restrictive first**.
- *
- * A name matching more than one family resolves to the first listed. The order
- * is the polarity that matters (rule 2): the original ran least-privileged first
- * on the reasoning that an ambiguous name should "never silently widen its own
- * gate", which is exactly backwards. Resolving `search_and_run` to `fileRead`
- * treats a run-capable tool as read-only — *that* is the widening, and `fileRead`
- * is the axis users most often set to `allow`.
- *
- * The order is by what a tool in that family can do, not by alphabet:
- * `codeExecution` subsumes the rest, `fileWrite` mutates local state,
- * `webAccess` moves data in and out of the machine, `fileRead` only observes.
- */
-const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly string[]]> = [
-  ["codeExecution", ["bash", "sh", "shell", "exec", "execute", "run", "terminal", "command", "spawn", "eval", "script", "process", "kill"]],
-  [
-    "fileWrite",
-    // `replace` earns its place the hard way: Cursor's `search_replace` is a
-    // real editing tool, and without this token it fell through to `fileRead`.
-    [
-      "write",
-      "edit",
-      "create",
-      "delete",
-      "remove",
-      "move",
-      "rename",
-      "patch",
-      "apply",
-      "mkdir",
-      "replace",
-      "insert",
-      "append",
-      "update",
-      "modify",
-      "save",
-      "touch",
-    ],
-  ],
-  ["webAccess", ["fetch", "http", "https", "web", "browse", "url", "download", "upload", "curl", "request"]],
-  ["fileRead", ["read", "glob", "grep", "search", "find", "list", "cat", "view", "stat"]],
-];
-
-/**
- * Does this string look like a *tool name*, as opposed to a sentence?
- *
- * Rule 3. `name` is optional on ACP's `ToolCallUpdate`, and {@link acpToolLabel}
- * falls back to `title` — which is a human-readable description, not an
- * identifier. `` Run `rm -rf` to clear the search index `` tokenizes to `search`
- * and would categorize as `fileRead`. Prose must never be parsed for a gate, so
- * anything that is not a single identifier-shaped token is categorized to
- * {@link MOST_RESTRICTIVE_CATEGORY} and the words in it are never consulted.
- *
- * Deliberately strict — no spaces, no quotes, no punctuation beyond what real
- * tool names use (`read_file`, `mcp__server__tool`, `fs.read`, `web-search`).
- */
-function isToolIdentifier(value: string): boolean {
-  return /^[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,63}$/.test(value);
-}
+/** ACP has no exact-name table: every vendor's vocabulary goes through the token families. */
+const categorizeByName = makeNameCategorizer();
 
 /**
  * Category for an ACP tool, from its name and nothing else.
@@ -210,27 +146,7 @@ function isToolIdentifier(value: string): boolean {
  * also easier to keep true than two.
  */
 export function categorizeAcpToolName(name: string): PermissionCategory | null {
-  if (isComputerControlToolName(name)) return "computerControl";
-  const label = name.trim();
-  if (!isToolIdentifier(label)) return MOST_RESTRICTIVE_CATEGORY;
-
-  // Tokenize rather than using `\b` word boundaries. Tool names in this
-  // ecosystem are overwhelmingly snake_case (`read_file`, `run_command`), and
-  // `_` is a word character — so `/\bread\b/` does NOT match `read_file`, which
-  // would send every read tool to the conservative default. Splitting on
-  // non-alphanumerics also handles camelCase and kebab-case for free.
-  const tokens = new Set(
-    label
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean),
-  );
-
-  for (const [category, words] of CATEGORY_TOKENS) {
-    if (words.some((w) => tokens.has(w))) return category;
-  }
-  return MOST_RESTRICTIVE_CATEGORY;
+  return categorizeByName(name);
 }
 
 /**

@@ -34,6 +34,7 @@ import {
 } from "./session-callbacks.js";
 import { createLogger } from "../utils/logger.js";
 import type { SendMessageOptions } from "./claude.js";
+import { toPromptIterable } from "./session-spawn.js";
 
 const log = createLogger("session-completion");
 
@@ -166,10 +167,4 @@ function buildNotification(childChatIds: string[], kinds: CallbackKind[]): strin
     "Use the read_session_messages tool with each chatId above to review the results, and get_session_status to confirm how each session finished. " +
       "Then continue with whatever work depends on these results. If nothing further is needed, you can stop.",
   ].join("\n");
-}
-
-function toPromptIterable(content: string): AsyncIterable<unknown> {
-  return (async function* () {
-    yield { type: "user" as const, message: { role: "user" as const, content } };
-  })();
 }

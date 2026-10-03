@@ -1,7 +1,7 @@
 import { CALLBOARD_UI_SERVER, isCallboardUiTool } from "shared/types/callboard-ui-tools.js";
 /**
  * Tool adapter: callboard {@link ToolServerSpec} → a live, in-process MCP server
- * that Codex reaches over stdio via the {@link file://./mcp-server-shim.ts shim}.
+ * that Codex reaches over stdio via the {@link file://../../shared/mcp-server-shim.ts shim}.
  *
  * ## The mechanism (why this is the highest-risk slice)
  *
@@ -30,18 +30,11 @@ import { CALLBOARD_UI_SERVER, isCallboardUiTool } from "shared/types/callboard-u
  * instructions file.
  *
  * @see plans/codex-adapter-job.md (Step 6 tool-bridge — "Codex is an MCP client")
- * @see ./mcp-server-shim.ts (the stdio frontend Codex actually spawns)
+ * @see ../../shared/mcp-server-shim.ts (the stdio frontend Codex actually spawns)
+ * @see ../../shared/socketToolServer.ts (the socket host shared with ACP)
  */
-import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
-import net from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { AnyToolDefinition, ToolServerSpec } from "../../ports/tools.js";
+import { buildSocketToolServer, shimSpawnCommand } from "../../shared/socketToolServer.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("codex-adapter");
@@ -126,35 +119,6 @@ export function isCodexToolServerHandle(value: unknown): value is CodexToolServe
 }
 
 /**
- * Register one neutral {@link AnyToolDefinition} on a high-level MCP server.
- *
- * callboard's `inputSchema` is already a Zod raw shape, which `registerTool`
- * accepts directly (it validates incoming args against it). The handler's
- * {@link ToolCallResult} content blocks (`text` / `image`) are structurally the
- * MCP content-block union, so the result passes through unchanged — only
- * `isError` needs forwarding.
- */
-function registerSpecTool(server: McpServer, def: AnyToolDefinition, uiTool = false): void {
-  server.registerTool(
-    def.name,
-    {
-      description: def.description,
-      inputSchema: def.inputSchema,
-    },
-    async (args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
-      const result = await def.handler(args as never, { signal: extra.signal, toolCallId: String(extra.requestId) });
-      return {
-        // Native 0.153.4 drops MCP isError from the durable response_item
-        // envelope (even while SDK status is "failed"). Keep that failure
-        // visible in text so refresh cannot promote a success-shaped error.
-        content: result.isError && uiTool ? [{ type: "text" as const, text: "Callboard UI tool failed." }, ...result.content] : result.content,
-        ...(result.isError ? { isError: true } : {}),
-      };
-    },
-  );
-}
-
-/**
  * Exec's MCP requests do not carry a verified caller thread id, and a native
  * subagent inherits its parent's `mcp_servers` config — so a child reaching
  * this socket is indistinguishable from the root it belongs to. The tools must
@@ -173,115 +137,42 @@ export const CODEX_TOOL_IDENTITY_NOTE =
   "Codex exec identity: the Callboard tool servers in this session are bound to the owning root chat. " +
   "Native subagents inherit them but must not use implicit-current-chat operations (title, status, completion, summon) as child-local operations.";
 
-/** Build a fresh MCP server instance wired to the spec's live handlers. One per
- *  socket connection — MCP servers own their transport 1:1. */
-function createServerForSpec(spec: ToolServerSpec): McpServer {
-  const server = new McpServer({ name: spec.name, version: spec.version }, { instructions: CODEX_TOOL_IDENTITY_NOTE });
-  for (const def of spec.tools)
-    registerSpecTool(server, def, (spec.name === "callboard-tools" || spec.name === CALLBOARD_UI_SERVER) && isCallboardUiTool(def.name));
-  return server;
-}
-
-/** Allocate a listen address: a Unix socket under a private temp dir (POSIX) or
- *  a named pipe (win32, which has no filesystem socket). */
-function allocateSocketPath(): { dir: string; socketPath: string } {
-  const dir = mkdtempSync(join(tmpdir(), "cb-codex-mcp-"));
-  if (process.platform === "win32") {
-    // Named pipes are not files; the temp dir only anchors a unique name.
-    return { dir, socketPath: `\\\\.\\pipe\\${basename(dir)}` };
-  }
-  return { dir, socketPath: join(dir, "s.sock") };
+/**
+ * Native 0.153.4 drops MCP isError from the durable response_item envelope
+ * (even while SDK status is "failed"). Keep a UI tool's failure visible in text
+ * so refresh cannot promote a success-shaped error.
+ */
+function uiToolErrorPreamble(spec: ToolServerSpec, def: AnyToolDefinition): string | undefined {
+  return (spec.name === "callboard-tools" || spec.name === CALLBOARD_UI_SERVER) && isCallboardUiTool(def.name) ? "Callboard UI tool failed." : undefined;
 }
 
 /**
  * Stand up an in-process MCP server for `spec`, listening on a private socket,
- * and return a {@link CodexToolServerHandle}.
- *
- * Each inbound connection (one per shim Codex spawns for this server) gets its
- * own {@link McpServer} bound to a {@link StdioServerTransport} reading/writing
- * the socket — `net.Socket` is a duplex stream, so it satisfies the transport's
- * `(Readable, Writable)` shape. Connection-scoped errors are logged, never
- * thrown, so a flaky client can't crash the backend.
+ * and return a {@link CodexToolServerHandle}. See `agents/shared/socketToolServer.ts`.
  */
 export function buildCodexToolServer(spec: ToolServerSpec): CodexToolServerHandle {
-  const { dir, socketPath } = allocateSocketPath();
-
-  let closed = false;
-  let closing: Promise<void> | undefined;
-  const sockets = new Set<net.Socket>();
-  const netServer = net.createServer((socket) => {
-    if (closed) {
-      socket.destroy();
-      return;
-    }
-    sockets.add(socket);
-    socket.on("error", (err) => {
-      log.warn(`codex tool socket error (${spec.name}): ${err.message}`);
-    });
-    const server = createServerForSpec(spec);
-    const transport = new StdioServerTransport(socket, socket);
-    server.connect(transport).catch((err) => {
-      log.error(`codex tool server connect failed (${spec.name}): ${err instanceof Error ? err.message : String(err)}`);
-      socket.destroy();
-    });
-    socket.once("close", () => {
-      sockets.delete(socket);
-      void server.close().catch(() => {
-        /* best-effort: the transport is already gone */
-      });
-    });
+  const server = buildSocketToolServer(spec, {
+    label: "codex",
+    log,
+    instructions: CODEX_TOOL_IDENTITY_NOTE,
+    errorPreamble: uiToolErrorPreamble,
   });
-
-  netServer.on("error", (err) => {
-    log.error(`codex tool net server error (${spec.name}): ${err.message}`);
-  });
-
-  // listen() is async, but Codex spawns the shim only once the turn starts (well
-  // after this synchronous call), and the shim retries its connect — so the
-  // listen race is covered without awaiting here.
-  netServer.listen(socketPath, () => {
-    log.debug(`codex tool server listening for ${spec.name} (${spec.tools.length} tools) at ${socketPath}`);
-  });
-
   return {
-    name: spec.name,
-    version: spec.version,
-    socketPath,
-    toMcpServerConfig: () => shimSpawnConfig(socketPath),
-    close: () =>
-      (closing ??= new Promise<void>((resolve) => {
-        if (closed) return resolve();
-        closed = true;
-        // Only turn-local relays are owned here, never the persistent MCP service.
-        // net.Server.close alone waits indefinitely for clients/pending calls.
-        for (const socket of sockets) socket.destroy();
-        netServer.close(() => {
-          try {
-            rmSync(dir, { recursive: true, force: true });
-          } catch (err) {
-            log.warn(`failed to remove codex tool socket dir ${dir}: ${err instanceof Error ? err.message : String(err)}`);
-          }
-          log.debug(`codex tool server closed for ${spec.name}`);
-          resolve();
-        });
-      })),
+    name: server.name,
+    version: server.version,
+    socketPath: server.socketPath,
+    toMcpServerConfig: () => shimSpawnConfig(server.socketPath),
+    close: () => server.close(),
   };
 }
 
 /**
- * Build the `{ command, args }` Codex uses to spawn the shim for `socketPath`.
- *
- * Resolves the shim next to this module so it follows the build: `toolAdapter.js`
- * → `mcp-server-shim.js` in `dist`, `toolAdapter.ts` → `mcp-server-shim.ts` under
- * tsx (dev / vitest). A `.ts` shim can't be run by bare `node`, so dev spawns it
- * through tsx's loader (`node --import tsx`); the compiled `.js` runs directly.
+ * Build the `{ command, args }` Codex uses to spawn the shim for `socketPath`,
+ * plus callboard's tool timeout. The shim follows the build (`.js` in `dist`,
+ * `.ts` via tsx in dev / vitest) — see {@link shimSpawnCommand}.
  *
  * Exported for unit-test access.
  */
 export function shimSpawnConfig(socketPath: string): CodexStdioServerConfig {
-  const here = fileURLToPath(import.meta.url);
-  const isTs = here.endsWith(".ts");
-  const shimPath = join(dirname(here), `mcp-server-shim${isTs ? ".ts" : ".js"}`);
-  const args = isTs ? ["--import", "tsx", shimPath, socketPath] : [shimPath, socketPath];
-  return { command: process.execPath, args, tool_timeout_sec: CALLBOARD_TOOL_TIMEOUT_SEC };
+  return { ...shimSpawnCommand(socketPath, "mcp-server-shim"), tool_timeout_sec: CALLBOARD_TOOL_TIMEOUT_SEC };
 }

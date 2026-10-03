@@ -1,6 +1,6 @@
 /**
  * Tool adapter: callboard {@link ToolServerSpec} → a live in-process MCP server
- * an ACP agent reaches over stdio via the {@link file://./mcp-server-shim.ts shim}.
+ * an ACP agent reaches over stdio via the {@link file://../../shared/mcp-server-shim.ts shim}.
  *
  * ACP registers tools by handing the agent an `McpServer[]` on `session/new`.
  * The agent is the MCP *client*: for the stdio variant it spawns each server
@@ -26,20 +26,13 @@
  * schema validation step to choke. `toolAdapter.test.ts` pins this with a tool
  * whose schema does produce `anyOf`.
  *
- * @see ./mcp-server-shim.ts (the stdio frontend the agent spawns)
+ * @see ../../shared/mcp-server-shim.ts (the stdio frontend the agent spawns)
+ * @see ../../shared/socketToolServer.ts (the socket host shared with Codex)
  * @see ../codex/toolAdapter.ts (same mechanism, different consumer)
  */
-import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sdk/types.js";
-import net from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
-import type { AnyToolDefinition, ToolServerSpec } from "../../ports/tools.js";
+import type { ToolServerSpec } from "../../ports/tools.js";
+import { buildSocketToolServer, shimSpawnCommand } from "../../shared/socketToolServer.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("acp-tools");
@@ -69,110 +62,19 @@ export function isAcpToolServerHandle(value: unknown): value is AcpToolServerHan
 }
 
 /**
- * Register one neutral tool on a high-level MCP server. callboard's
- * `inputSchema` is already a Zod raw shape, which `registerTool` accepts and
- * validates against; the handler's content blocks are structurally MCP's own
- * union, so only `isError` needs forwarding.
- */
-function registerSpecTool(server: McpServer, def: AnyToolDefinition): void {
-  server.registerTool(
-    def.name,
-    { description: def.description, inputSchema: def.inputSchema },
-    async (args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
-      const result = await def.handler(args as never, { signal: extra.signal, toolCallId: String(extra.requestId) });
-      return { content: result.content, ...(result.isError ? { isError: true } : {}) };
-    },
-  );
-}
-
-/** One MCP server per socket connection — servers own their transport 1:1. */
-function createServerForSpec(spec: ToolServerSpec): McpServer {
-  const server = new McpServer({ name: spec.name, version: spec.version });
-  for (const def of spec.tools) registerSpecTool(server, def);
-  return server;
-}
-
-/** A Unix socket under a private temp dir (POSIX), or a named pipe (win32). */
-function allocateSocketPath(): { dir: string; socketPath: string } {
-  const dir = mkdtempSync(join(tmpdir(), "cb-acp-mcp-"));
-  if (process.platform === "win32") {
-    // Named pipes are not files; the temp dir only anchors a unique name.
-    return { dir, socketPath: `\\\\.\\pipe\\${basename(dir)}` };
-  }
-  return { dir, socketPath: join(dir, "s.sock") };
-}
-
-/**
- * Stand up an in-process MCP server for `spec` on a private socket.
- *
- * Each inbound connection (one per shim the agent spawns) gets its own
- * {@link McpServer} on a {@link StdioServerTransport} over the socket —
- * `net.Socket` is a duplex stream, satisfying the transport's `(Readable,
- * Writable)` shape. Connection-scoped errors are logged, never thrown: a flaky
- * agent must not be able to crash the backend.
+ * Stand up an in-process MCP server for `spec` on a private socket. See
+ * `agents/shared/socketToolServer.ts` — each inbound connection (one per shim
+ * the agent spawns) gets its own MCP server, and connection-scoped errors are
+ * logged, never thrown: a flaky agent must not be able to crash the backend.
  */
 export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
-  const { dir, socketPath } = allocateSocketPath();
-
-  let closed = false;
-  let closing: Promise<void> | undefined;
-  const sockets = new Set<net.Socket>();
-  const netServer = net.createServer((socket) => {
-    if (closed) {
-      socket.destroy();
-      return;
-    }
-    sockets.add(socket);
-    socket.on("error", (err) => {
-      log.warn(`acp tool socket error (${spec.name}): ${err.message}`);
-    });
-    const server = createServerForSpec(spec);
-    const transport = new StdioServerTransport(socket, socket);
-    server.connect(transport).catch((err) => {
-      log.error(`acp tool server connect failed (${spec.name}): ${err instanceof Error ? err.message : String(err)}`);
-      socket.destroy();
-    });
-    socket.once("close", () => {
-      sockets.delete(socket);
-      void server.close().catch(() => {
-        /* best-effort: the transport is already gone */
-      });
-    });
-  });
-
-  netServer.on("error", (err) => {
-    log.error(`acp tool net server error (${spec.name}): ${err.message}`);
-  });
-
-  // listen() is async, but the agent only spawns the shim once the session
-  // starts (well after this synchronous call) and the shim retries its connect —
-  // so the listen race is covered without awaiting.
-  netServer.listen(socketPath, () => {
-    log.debug(`acp tool server listening for ${spec.name} (${spec.tools.length} tools) at ${socketPath}`);
-  });
-
+  const server = buildSocketToolServer(spec, { label: "acp", log });
   return {
-    name: spec.name,
-    version: spec.version,
-    socketPath,
-    toAcpMcpServer: () => acpStdioServer(spec.name, socketPath),
-    close: () =>
-      (closing ??= new Promise<void>((resolve) => {
-        if (closed) return resolve();
-        closed = true;
-        // Only turn-local relays are owned here, never the persistent MCP service.
-        // net.Server.close alone waits indefinitely for clients/pending calls.
-        for (const socket of sockets) socket.destroy();
-        netServer.close(() => {
-          try {
-            rmSync(dir, { recursive: true, force: true });
-          } catch (err) {
-            log.warn(`failed to remove acp tool socket dir ${dir}: ${err instanceof Error ? err.message : String(err)}`);
-          }
-          log.debug(`acp tool server closed for ${spec.name}`);
-          resolve();
-        });
-      })),
+    name: server.name,
+    version: server.version,
+    socketPath: server.socketPath,
+    toAcpMcpServer: () => acpStdioServer(spec.name, server.socketPath),
+    close: () => server.close(),
   };
 }
 
@@ -180,10 +82,8 @@ export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
  * Build the ACP `McpServerStdio` entry that points an agent at the shim for
  * `socketPath`.
  *
- * The shim is resolved next to this module so it follows the build:
- * `toolAdapter.js` → `mcp-server-shim.js` in `dist`, `toolAdapter.ts` →
- * `mcp-server-shim.ts` under tsx (dev / vitest). Bare `node` cannot run a `.ts`
- * file, so the dev form goes through tsx's loader.
+ * The shim follows the build (`.js` in `dist`, `.ts` via tsx's loader under dev
+ * / vitest) — see `shimSpawnCommand` in `agents/shared/socketToolServer.ts`.
  *
  * `env: []` — not omitted. ACP types the field as required, and an empty list
  * means "inherit"; the agent process already carries the sanitized environment
@@ -192,11 +92,7 @@ export function buildAcpToolServer(spec: ToolServerSpec): AcpToolServerHandle {
  * Exported for unit-test access.
  */
 export function acpStdioServer(name: string, socketPath: string): McpServerStdio {
-  const here = fileURLToPath(import.meta.url);
-  const isTs = here.endsWith(".ts");
-  const shimPath = join(dirname(here), `mcp-server-shim${isTs ? ".ts" : ".js"}`);
-  const args = isTs ? ["--import", "tsx", shimPath, socketPath] : [shimPath, socketPath];
-  return { name, command: process.execPath, args, env: [] };
+  return { name, ...shimSpawnCommand(socketPath, "acp-mcp-server-shim"), env: [] };
 }
 
 /**
