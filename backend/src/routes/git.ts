@@ -72,7 +72,7 @@ gitRouter.get("/branches", (req, res) => {
 /**
  * Get structured git diff with file metadata, untracked files, and large file gating.
  */
-gitRouter.get("/diff", (req, res) => {
+gitRouter.get("/diff", async (req, res) => {
   // #swagger.tags = ['Git']
   // #swagger.summary = 'Get structured git diff'
   // #swagger.description = 'Returns per-file diff data including untracked files, with large file gating.'
@@ -86,7 +86,7 @@ gitRouter.get("/diff", (req, res) => {
   if (folder === null) return;
 
   try {
-    const files = getGitDiffStructured(folder);
+    const files = await getGitDiffStructured(folder);
     res.json({ files });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to get diff", details: err.message });
@@ -96,7 +96,7 @@ gitRouter.get("/diff", (req, res) => {
 /**
  * Get the diff for a single file on demand (for large files).
  */
-gitRouter.get("/diff/file", (req, res) => {
+gitRouter.get("/diff/file", async (req, res) => {
   // #swagger.tags = ['Git']
   // #swagger.summary = 'Get single file diff'
   // #swagger.description = 'Returns the diff for a single file, used for on-demand loading of large files.'
@@ -115,7 +115,7 @@ gitRouter.get("/diff/file", (req, res) => {
   if (!validFilename(filename, res)) return;
 
   try {
-    const result = getGitFileDiff(folder, filename);
+    const result = await getGitFileDiff(folder, filename);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: "Failed to get file diff", details: err.message });
