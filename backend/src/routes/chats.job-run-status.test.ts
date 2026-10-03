@@ -408,3 +408,35 @@ describe("GET /api/chats job run reads", () => {
     expect(parent.metadata).toBe("{not json");
   });
 });
+
+/**
+ * Archiving a tree withholds it from `cardLifecycle=unarchived` — except the
+ * one row a run is parked on for approval, which is the sidebar's only signal
+ * that the run is waiting on the user. Same reasoning as the triggered-filter
+ * carve-out above.
+ */
+describe("GET /api/chats?cardLifecycle=unarchived — parked approval in an archived tree", () => {
+  it("keeps the parked representative and withholds the rest of the archived tree", async () => {
+    sessions = ["root", "step-1", "step-2"];
+    fileChats = [
+      chat("root", { triggered: true, archived: true }),
+      { ...stepChat("step-1", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) },
+      { ...stepChat("step-2", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) },
+    ];
+    runs = { "run-1": parkedRun("run-1", ["step-1", "step-2"]) };
+
+    const body = await listChats({ cardLifecycle: "unarchived", limit: "10", offset: "0" });
+    expect(ids(body)).toEqual(["step-2"]);
+    expect(needsYou(body)).toEqual(["step-2"]);
+    // One read for the run, shared by the scope and the stamp.
+    expect(runReads).toEqual(["run-1"]);
+  });
+
+  it("withholds the whole archived tree once the run is no longer parked", async () => {
+    sessions = ["root", "step-1"];
+    fileChats = [chat("root", { triggered: true, archived: true }), { ...stepChat("step-1", "run-1"), metadata: JSON.stringify({ jobRunId: "run-1", triggered: true, rootChatId: "root" }) }];
+    runs = { "run-1": runningRun("run-1", "step-1") };
+
+    expect(ids(await listChats({ cardLifecycle: "unarchived", limit: "10", offset: "0" }))).toEqual([]);
+  });
+});

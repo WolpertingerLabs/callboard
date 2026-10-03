@@ -59,6 +59,7 @@ import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
 import { patchCardFields, readCardFields } from "./card-fields.js";
+import { reopenArchivedRoot } from "./chat-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
@@ -1180,6 +1181,19 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       clearListCaches();
       sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
       log.info(`Reopened card ${reopenRootId} ("${rootCard.title}") because chat ${opts.chatId || "(new)"} received a new message`);
+    }
+    // The same rule for a tree whose root is not a card (triggered, job step):
+    // its archive is a flag on the root record rather than a card lifecycle,
+    // and leaving it set would deliver the new turn into a chat the sidebar
+    // withholds. Best-effort — a failed clear must not refuse the message.
+    try {
+      if (reopenArchivedRoot(reopenRootId)) {
+        clearListCaches();
+        sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
+        log.info(`Unarchived chat tree ${reopenRootId} because chat ${opts.chatId || "(new)"} received a new message`);
+      }
+    } catch (err: any) {
+      log.error(`Could not unarchive chat tree ${reopenRootId} on a new message: ${err?.message ?? err}`);
     }
   }
   // ── End reopen logic ──────────────────────────────────────

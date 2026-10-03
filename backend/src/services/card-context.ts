@@ -9,7 +9,7 @@ import { buildCardSummaries, ROLLUP_DEPS } from "./card-rollup.js";
 import { createLifecycleBudget, readNativeLifecycle } from "./codex-native-agents.js";
 
 export function createCardContext(stored = listChatsSnapshot()) {
-  const { corpus, index, roots, chats, nativeAliases, isNative, nativeDiscoveryIncomplete } = createCardMembership(stored);
+  const { corpus, index, roots, chats, nativeAliases, isNative, nativeDiscoveryIncomplete, storedById } = createCardMembership(stored);
   return {
     /**
      * True when the native discovery pass behind this context ran out of
@@ -23,6 +23,20 @@ export function createCardContext(stored = listChatsSnapshot()) {
       if (!index.byId.has(id)) return null;
       const rootChatId = index.existingRootIdOf(id);
       return roots.has(rootChatId) ? { rootChatId } : null;
+    },
+    /**
+     * Like {@link resolve}, but for ANY lineage tree rather than card trees
+     * only: the root a chat id belongs to, and whether that root is a card.
+     * What the chat-level archive needs, since a triggered or job-step tree
+     * can be archived without being a card. `stored` is the root's own record,
+     * absent for a root discovery inferred but nothing ever persisted.
+     */
+    resolveLineageRoot(id: string): { rootChatId: string; isCard: boolean; stored?: Chat } | null {
+      if (!id || /[/\\\0]/.test(id) || id === "." || id === "..") return null;
+      id = nativeAliases.get(id) ?? id;
+      if (!index.byId.has(id)) return null;
+      const rootChatId = index.existingRootIdOf(id);
+      return { rootChatId, isCard: roots.has(rootChatId), stored: storedById.get(rootChatId) };
     },
     isNativeTarget(id: string): boolean {
       const chat = corpus.get(nativeAliases.get(id) ?? id);
