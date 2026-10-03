@@ -26,6 +26,7 @@ import { patchCardFields } from "./card-fields.js";
 import { unpinArchivedCardChats, type PinnedMemberLookup } from "./card-archive-unpin.js";
 import { chatFileService } from "./chat-file-service.js";
 import { archivedFlagOf } from "./chat-visibility.js";
+import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
 
 export class ChatArchiveWriteError extends Error {}
 
@@ -88,9 +89,28 @@ export function setRootArchived(rootChatId: string, archived: boolean, opts: Set
  * closed card when any chat in its tree receives a message. Without this half,
  * a reply landing in an archived triggered tree — a Discord thread continued, a
  * job step re-run — would arrive in a chat the sidebar is withholding.
+ *
+ * `unlessArchivedAfter` is the job-step exception: pass the run's start, and a
+ * flag stamped after it is left set (see {@link archivedAfter}).
  */
-export function reopenArchivedRoot(rootChatId: string): boolean {
+export function reopenArchivedRoot(rootChatId: string, opts?: { unlessArchivedAfter?: string }): boolean {
   const chat = chatFileService.getChat(rootChatId);
   if (!chat || !archivedFlagOf(chat)) return false;
+  const archivedAt = parseChatMetadataRecord(chat.metadata).treeArchivedAt;
+  if (archivedAfter(typeof archivedAt === "string" ? archivedAt : undefined, opts?.unlessArchivedAfter)) return false;
   return setRootArchived(chat.id, false, { isCard: false, writeKey: chat.session_id || chat.id });
+}
+
+/**
+ * Whether an archive stamped at `archivedAt` happened strictly after `since` —
+ * the test behind "a job step does not reopen a tree archived after its run
+ * started". A missing or unparseable timestamp on either side answers false,
+ * so the step reopens as any other message does: without evidence that the
+ * user archived the tree mid-run, the archive is treated as predating it.
+ */
+export function archivedAfter(archivedAt: string | undefined, since: string | undefined): boolean {
+  if (!archivedAt || !since) return false;
+  const at = Date.parse(archivedAt);
+  const from = Date.parse(since);
+  return Number.isFinite(at) && Number.isFinite(from) && at > from;
 }

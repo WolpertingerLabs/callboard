@@ -59,7 +59,7 @@ import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
 import { patchCardFields, readCardFields } from "./card-fields.js";
-import { reopenArchivedRoot } from "./chat-archive.js";
+import { archivedAfter, reopenArchivedRoot } from "./chat-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
@@ -1176,15 +1176,27 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   //
   // A new job-step chat (and every retry of one) has no parent pointer: the
   // runner ties it to its run's tree only through `jobContext.rootChatId`,
-  // which is stamped as the step's `rootChatId`. Resolve that too, through
-  // walkToRootId so a stamp naming a deleted root degrades as it does
-  // everywhere else — otherwise a step spawned into an archived tree would run
-  // in a chat the sidebar withholds.
+  // which is stamped as the step's `rootChatId`. Resolve that too — otherwise
+  // a step spawned into an archived tree would run in a chat the sidebar
+  // withholds. If that root has since been deleted, walkToRootId hands the
+  // deleted id straight back (it has no record to walk from), and both reopen
+  // reads below find nothing there: a no-op, not a reopen of some other tree.
   const jobRootId = !opts.chatId && !newChatRootId && opts.jobContext?.rootChatId ? walkToRootId(opts.jobContext.rootChatId) : undefined;
   const reopenRootId = opts.chatId ? walkToRootId(opts.chatId) : (newChatRootId ?? jobRootId);
+  // A job step is automation, not the user: it must not undo an archive the
+  // user made while its run was already going — archiving a tree mid-run is
+  // an explicit "I'm done with this", and the next step reopening it would
+  // make that gesture impossible to keep. So on a job-step send, an archive
+  // stamped after the run was created is left alone. One that predates the
+  // run (a new run started against an archived tree), or one with no stamp,
+  // reopens as before. Every other sender — the UI, continue_chat, triggers,
+  // a spawned child — reopens unconditionally.
+  const runStartedAt = opts.jobContext?.runId ? getJobRun(opts.jobContext.runId)?.createdAt : undefined;
   if (reopenRootId) {
     const rootCard = readCardFields(reopenRootId);
-    if (rootCard?.lifecycle === "closed") {
+    if (rootCard?.lifecycle === "closed" && archivedAfter(rootCard.closedAt, runStartedAt)) {
+      log.info(`Left card ${reopenRootId} closed: it was archived after job run ${opts.jobContext!.runId} started`);
+    } else if (rootCard?.lifecycle === "closed") {
       patchCardFields(reopenRootId, { lifecycle: "open" });
       clearListCaches();
       sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
@@ -1202,7 +1214,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // and leaving it set would deliver the new turn into a chat the sidebar
     // withholds. Best-effort — a failed clear must not refuse the message.
     try {
-      if (reopenArchivedRoot(reopenRootId)) {
+      if (reopenArchivedRoot(reopenRootId, { unlessArchivedAfter: runStartedAt })) {
         clearListCaches();
         sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
         log.info(`Unarchived chat tree ${reopenRootId} because chat ${opts.chatId || "(new)"} received a new message`);

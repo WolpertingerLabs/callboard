@@ -10,7 +10,7 @@
  * Same no-supertest style as cards.patch-unpin.test.ts.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
@@ -324,5 +324,29 @@ describe("POST /api/chats/bulk-archive", () => {
     const meta = metaOf("codex-root");
     expect(meta.treeArchived).toBe(true);
     expect(meta.card).toBeUndefined();
+  });
+
+  it("fails, and overwrites nothing, when a record-less session turns out to have an unreadable record", async () => {
+    // The snapshot skips a file it cannot parse, so the route believes there
+    // is no record and tries to materialise one over it.
+    const sessionId = `bulk-archive-unreadable-${seq++}`;
+    const path = join(tmpRoot, "chats", `${sessionId}.json`);
+    writeFileSync(path, "{ truncated");
+    filesystemOnly.set(sessionId, {
+      id: sessionId,
+      folder: "/tmp/proj",
+      session_id: sessionId,
+      metadata: JSON.stringify({}),
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+      _from_filesystem: true,
+    });
+
+    const res = await bulkArchive({ ids: [sessionId], archived: true });
+
+    expect(res.code).toBe(200);
+    expect(res.body.updated).toEqual([]);
+    expect(res.body.failed).toEqual([{ id: sessionId, error: expect.stringMatching(/could not be read/) }]);
+    expect(readFileSync(path, "utf8")).toBe("{ truncated");
   });
 });

@@ -1,6 +1,6 @@
 import { collectContentMatches } from "../services/chat-content-search.js";
 import { listChatsSnapshot } from "../services/chats-snapshot.js";
-import { createCardMembership } from "../services/card-membership.js";
+import { createCardMembership, isNativeRecord } from "../services/card-membership.js";
 import { chatViews } from "../services/chat-view.js";
 import { discoverChatCorpus } from "../services/chat-discovery.js";
 import { createTriggeredPredicate, cardIsArchived, archivedRootIdsOf } from "../services/chat-visibility.js";
@@ -2247,7 +2247,8 @@ chatsRouter.post("/bulk-archive", (req, res) => {
      * Stored records by every session id they own — a record's own
      * `session_id` and each of `metadata.session_ids` — so a requested session
      * id resolves from the snapshot in hand instead of `getChat`'s miss path,
-     * which reads every record in the directory per lookup. An id two records
+     * which still lists and stats every record in the directory per lookup
+     * (cheaper since its parses are cached, but per id). An id two records
      * claim is left out rather than guessed, as card-membership does.
      */
     const storedBySession = new Map<string, any>();
@@ -2277,7 +2278,7 @@ chatsRouter.post("/bulk-archive", (req, res) => {
     const materialized = (rootId: string): Target | null => {
       const found = findChat(rootId, false, null) as any;
       if (!found?._from_filesystem) return null;
-      const isCard = isCardEligible(found) && !parseChatMetadata(found.metadata).nativeAgent;
+      const isCard = isCardEligible(found) && !isNativeRecord(found);
       return { rootChatId: found.id, isCard, writeKey: found.session_id, materialize: found };
     };
     for (const id of ids as string[]) {
@@ -2310,8 +2311,14 @@ chatsRouter.post("/bulk-archive", (req, res) => {
           const chat = target.materialize;
           // insertChat, not upsertChat: the snapshot already established there
           // is no record, and upsertChat would rediscover that with a full
-          // directory scan before writing.
-          chatFileService.insertChat({
+          // directory scan before writing. If a record turns up anyway (the
+          // snapshot skipped an unreadable file, or two records claim the
+          // session), nothing is written: the card-or-flag decision above was
+          // made from the session log, not from that record, and the record
+          // may even belong to another tree. Failing the id is the honest
+          // answer — on a retry the record is in the snapshot and resolves
+          // through the ordinary path.
+          const { created } = chatFileService.insertChat({
             id: chat.id,
             folder: chat.folder,
             session_id: chat.session_id,
@@ -2319,6 +2326,10 @@ chatsRouter.post("/bulk-archive", (req, res) => {
             created_at: chat.created_at,
             updated_at: chat.updated_at,
           });
+          if (!created) {
+            failedRoots.set(target.rootChatId, "This chat's record changed while archiving; try again");
+            continue;
+          }
         }
         if (!setRootArchived(target.rootChatId, archived, { isCard: target.isCard, pinnedMembers, writeKey: target.writeKey })) {
           failedRoots.set(target.rootChatId, "Chat not found");

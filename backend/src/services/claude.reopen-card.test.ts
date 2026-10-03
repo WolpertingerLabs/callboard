@@ -31,6 +31,13 @@ vi.mock("./quick-completion.js", () => ({
   quickCompletion: async () => ({ text: "" }),
 }));
 
+/** Job runs by id, for the "archived after the run started" rule. */
+const runs = vi.hoisted(() => new Map<string, { runId: string; createdAt: string }>());
+vi.mock("./job-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./job-store.js")>();
+  return { ...actual, getRun: (runId: string) => (runs.get(runId) as any) ?? actual.getRun(runId) };
+});
+
 const { sendMessage } = await import("./claude.js");
 const { setAgentProviderForTesting } = await import("../agents/factory.js");
 const { MockAgentProvider } = await import("../agents/adapters/mock/MockAgentProvider.js");
@@ -218,5 +225,54 @@ describe("sendMessage — unarchive a card-less tree on new message", () => {
     await runNewChat({ parentChatId: parent.id });
 
     expect(metaOf(parent.id).treeArchived).toBeUndefined();
+  });
+});
+
+/**
+ * A job step is automation: it reopens an archive that predates its run (a run
+ * started against an archived tree), but not one the user made while the run
+ * was already going — archiving mid-run must stick.
+ */
+describe("sendMessage — a job step respects an archive made after its run started", () => {
+  const metaOf = (id: string) => JSON.parse(chatFileService.getChat(id)!.metadata || "{}");
+  const T0 = "2026-03-01T00:00:00.000Z";
+  const T1 = "2026-03-02T00:00:00.000Z";
+  const T2 = "2026-03-03T00:00:00.000Z";
+  let n = 0;
+  const step = async (rootId: string, runCreatedAt: string) => {
+    const runId = `run-respect-${++n}`;
+    runs.set(runId, { runId, createdAt: runCreatedAt });
+    await runNewChat({ triggered: true, jobContext: { runId, stepId: "step", rootChatId: rootId } });
+  };
+
+  it("reopens a card closed BEFORE the run started", async () => {
+    const root = chatFileService.createChat(workDir, "respect-card-1", JSON.stringify({ card: { lifecycle: "closed", closedAt: T0 } }));
+    await step(root.id, T1);
+    expect(readCardFields(root.id)!.lifecycle).toBe("open");
+  });
+
+  it("leaves a card closed AFTER the run started closed", async () => {
+    const root = chatFileService.createChat(workDir, "respect-card-2", JSON.stringify({ card: { lifecycle: "closed", closedAt: T2 } }));
+    await step(root.id, T1);
+    expect(readCardFields(root.id)!.lifecycle).toBe("closed");
+  });
+
+  it("clears a treeArchived flag set BEFORE the run started", async () => {
+    const root = chatFileService.createChat(workDir, "respect-flag-1", JSON.stringify({ triggered: true, treeArchived: true, treeArchivedAt: T0 }));
+    await step(root.id, T1);
+    expect(metaOf(root.id).treeArchived).toBeUndefined();
+  });
+
+  it("leaves a treeArchived flag set AFTER the run started", async () => {
+    const root = chatFileService.createChat(workDir, "respect-flag-2", JSON.stringify({ triggered: true, treeArchived: true, treeArchivedAt: T2 }));
+    await step(root.id, T1);
+    expect(metaOf(root.id).treeArchived).toBe(true);
+    expect(metaOf(root.id).treeArchivedAt).toBe(T2);
+  });
+
+  it("still lets the user reopen a tree archived mid-run, by messaging it", async () => {
+    const root = chatFileService.createChat(workDir, "respect-flag-3", JSON.stringify({ triggered: true, treeArchived: true, treeArchivedAt: T2 }));
+    await messageChat(root.id);
+    expect(metaOf(root.id).treeArchived).toBeUndefined();
   });
 });
