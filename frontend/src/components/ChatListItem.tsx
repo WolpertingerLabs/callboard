@@ -33,11 +33,15 @@ import MenuRow from "./MenuRow";
  * home for these — the chat view's composer menu is about sending messages,
  * not filing tickets.
  *
- * The only entry is the lifecycle toggle. `card` is the resolved record of
- * the chat's lineage root; when it hasn't loaded (or the root is not a card —
- * e.g. a triggered chat) the entry is omitted rather than guessed. There is
- * no create/join/leave: membership is lineage, so a top-level chat is a card
- * the moment it exists.
+ * The only entry is the archive toggle, and every row gets one. Archived is a
+ * property of the chat's lineage root, so the toggle always acts on the whole
+ * tree; what differs is how the row describes it. `card` is the resolved board
+ * card when the root is one. `tree` describes a root that is not a card — a
+ * triggered chat, a job step, a hidden card the board no longer lists — whose
+ * archive is the server's chat-level flag. With neither (the cards have not
+ * loaded) the entry is omitted rather than guessed. There is no
+ * create/join/leave: membership is lineage, so a top-level chat is a card the
+ * moment it exists.
  */
 export interface ChatCardMenu {
   card?: {
@@ -52,6 +56,18 @@ export interface ChatCardMenu {
      * six rows faded at once.
      */
     chatCount: number;
+  };
+  /** A root that is not a (board) card; read only when `card` is absent. */
+  tree?: {
+    archived: boolean;
+    /** Chats in the tree as far as the list knows, the root included. */
+    chatCount: number;
+    /**
+     * Whether this row IS the tree's root. Archive acts from the root down, so
+     * the tooltip for a row further down cannot say "the chats under it" —
+     * its parent and siblings go too.
+     */
+    isRoot: boolean;
   };
   onToggleLifecycle?: () => void;
 }
@@ -164,6 +180,19 @@ function cardLifecycleTitle({ title, lifecycle, chatCount }: NonNullable<ChatCar
   return chatCount > 1
     ? `Archive "${title}" — all ${chatCount} chats on this card move to the board's Archived strip`
     : `Archive "${title}" — it moves to the board's Archived strip`;
+}
+
+/**
+ * The same tooltip for a row whose root is not a card. Named by the row's own
+ * title rather than a card's, and without the board: a card-less tree has no
+ * tile to move to the Archived strip, only rows that fade or leave the list.
+ */
+function treeArchiveTitle(title: string, { archived, chatCount, isRoot }: NonNullable<ChatCardMenu["tree"]>): string {
+  if (archived) return `Unarchive "${title}"`;
+  if (chatCount <= 1) return `Archive "${title}"`;
+  const n = chatCount - 1;
+  const noun = n === 1 ? "chat" : "chats";
+  return isRoot ? `Archive "${title}" and the ${n} ${noun} under it` : `Archive "${title}" and the ${n} other ${noun} in its tree`;
 }
 
 export default function ChatListItem({
@@ -319,6 +348,8 @@ export default function ChatListItem({
   const hasUnread = activity ? activity.hasUnread : lastReadAt ? new Date(chat.updated_at) > new Date(lastReadAt) : false;
 
   const displayName = title || (preview ? (preview.length > 60 ? preview.slice(0, 60) + "..." : preview) : folderName);
+  /** Whether the archive entry should offer Unarchive — see {@link ChatCardMenu}. */
+  const menuArchived = cardMenu?.card ? cardMenu.card.lifecycle !== "open" : cardMenu?.tree?.archived === true;
 
   /**
    * The dim, with the rows that need you taken back out of it.
@@ -812,11 +843,11 @@ export default function ChatListItem({
                       }}
                     />
                   )}
-                  {cardMenu?.card && cardMenu.onToggleLifecycle && (
+                  {(cardMenu?.card || cardMenu?.tree) && cardMenu.onToggleLifecycle && (
                     <MenuRow
-                      icon={cardMenu.card.lifecycle === "open" ? <Archive size={16} /> : <ArchiveRestore size={16} />}
-                      label={cardMenu.card.lifecycle === "open" ? "Archive chat" : "Unarchive chat"}
-                      title={cardLifecycleTitle(cardMenu.card)}
+                      icon={!menuArchived ? <Archive size={16} /> : <ArchiveRestore size={16} />}
+                      label={!menuArchived ? "Archive chat" : "Unarchive chat"}
+                      title={cardMenu.card ? cardLifecycleTitle(cardMenu.card) : treeArchiveTitle(displayName, cardMenu.tree!)}
                       onClick={() => {
                         setMenuPos(null);
                         cardMenu.onToggleLifecycle!();

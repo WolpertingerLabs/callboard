@@ -59,6 +59,7 @@ import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
 import { patchCardFields, readCardFields } from "./card-fields.js";
+import { archivedAfter, reopenArchivedRoot } from "./chat-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
@@ -968,6 +969,25 @@ export interface SendMessageOptions {
 const DEFAULT_MAX_NUDGES = 3;
 
 /**
+ * `createdAt` of the outermost run in `runId`'s ancestry — the moment the
+ * user's job actually started, which a nested child run's own timestamp is
+ * not. Walks `parentRunId` with a depth bound and a visited set (run files
+ * are hand-editable); a missing parent stops the walk at the highest run that
+ * still exists.
+ */
+function topLevelRunCreatedAt(runId: string): string | undefined {
+  let run = getJobRun(runId);
+  const seen = new Set<string>([runId]);
+  for (let depth = 0; run?.parentRunId && depth < 32 && !seen.has(run.parentRunId); depth++) {
+    seen.add(run.parentRunId);
+    const parent = getJobRun(run.parentRunId);
+    if (!parent) break;
+    run = parent;
+  }
+  return run?.createdAt;
+}
+
+/**
  * Unified message sending function.
  * Handles both existing chats (provide chatId) and new chats (provide folder).
  * For new chats, creates the chat record when session_id arrives from the SDK
@@ -1172,14 +1192,61 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // board. The card lives on the lineage root's metadata.card: resolve the
   // root, read the lifecycle, flip it open. A brand-new top-level chat is its
   // own root and has no card yet — nothing to reopen.
-  const reopenRootId = opts.chatId ? walkToRootId(opts.chatId) : newChatRootId;
+  //
+  // A new job-step chat (and every retry of one) has no parent pointer: the
+  // runner ties it to its run's tree only through `jobContext.rootChatId`,
+  // which is stamped as the step's `rootChatId`. Resolve that too — otherwise
+  // a step spawned into an archived tree would run in a chat the sidebar
+  // withholds. If that root has since been deleted, walkToRootId hands the
+  // deleted id straight back (it has no record to walk from), and both reopen
+  // reads below find nothing there: a no-op, not a reopen of some other tree.
+  const jobRootId = !opts.chatId && !newChatRootId && opts.jobContext?.rootChatId ? walkToRootId(opts.jobContext.rootChatId) : undefined;
+  const reopenRootId = opts.chatId ? walkToRootId(opts.chatId) : (newChatRootId ?? jobRootId);
+  // A job step is automation, not the user: it must not undo an archive the
+  // user made while its run was already going — archiving a tree mid-run is
+  // an explicit "I'm done with this", and the next step reopening it would
+  // make that gesture impossible to keep. So on a job-step send, an archive
+  // stamped after the run was created is left alone. One that predates the
+  // run (a new run started against an archived tree), or one with no stamp,
+  // reopens as before. Every other sender — the UI, continue_chat, triggers,
+  // a spawned child — reopens unconditionally.
+  //
+  // "The run" is the TOP-LEVEL run: a `job` step spawns a child run stamped
+  // with its own createdAt but the parent's tree, so measuring from the child
+  // would let a nested run started after the archive reopen it. Retries and
+  // resumes reuse their run's createdAt, so a retried step into a tree
+  // archived mid-run leaves it archived too — intentionally: the retry is the
+  // same unattended run the user archived out from under.
+  const runStartedAt = opts.jobContext?.runId ? topLevelRunCreatedAt(opts.jobContext.runId) : undefined;
   if (reopenRootId) {
     const rootCard = readCardFields(reopenRootId);
-    if (rootCard?.lifecycle === "closed") {
+    if (rootCard?.lifecycle === "closed" && archivedAfter(rootCard.closedAt, runStartedAt)) {
+      log.info(`Left card ${reopenRootId} closed: it was archived after job run ${opts.jobContext!.runId} started`);
+    } else if (rootCard?.lifecycle === "closed") {
       patchCardFields(reopenRootId, { lifecycle: "open" });
       clearListCaches();
       sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
       log.info(`Reopened card ${reopenRootId} ("${rootCard.title}") because chat ${opts.chatId || "(new)"} received a new message`);
+    }
+    // `hidden` is deliberately left alone above: on a card it is the board
+    // opt-out — "keep this off the board" — which the user set on purpose and
+    // which new activity says nothing about, so a reply must not undo it (the
+    // sidebar keeps treating the tree as archived until the user unhides it
+    // or unarchives it there). A card-less tree has no such
+    // second switch: its flag is the archive itself, so it is cleared below.
+    //
+    // The same rule for a tree whose root is not a card (triggered, job step):
+    // its archive is a flag on the root record rather than a card lifecycle,
+    // and leaving it set would deliver the new turn into a chat the sidebar
+    // withholds. Best-effort — a failed clear must not refuse the message.
+    try {
+      if (reopenArchivedRoot(reopenRootId, { unlessArchivedAfter: runStartedAt })) {
+        clearListCaches();
+        sessionRegistry.notifyMetadata(reopenRootId, { cardEvent: "updated" });
+        log.info(`Unarchived chat tree ${reopenRootId} because chat ${opts.chatId || "(new)"} received a new message`);
+      }
+    } catch (err: any) {
+      log.error(`Could not unarchive chat tree ${reopenRootId} on a new message: ${err?.message ?? err}`);
     }
   }
   // ── End reopen logic ──────────────────────────────────────

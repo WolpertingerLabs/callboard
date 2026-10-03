@@ -5,6 +5,18 @@ import { buildLineageIndex } from "./chat-lineage.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { isCardEligible } from "./card-fields.js";
 import { nativeMetadata } from "./codex-native-agents.js";
+/**
+ * Whether a chat record is a native Codex child — a subagent thread a Codex
+ * parent spawned, which Callboard reads but does not own. Never a card root.
+ * The one definition, shared by card membership below and by the routes that
+ * have to make the same card-or-not call about a record membership never saw
+ * (bulk-archive's materialised roots).
+ */
+export function isNativeRecord(chat?: { metadata?: string | null }): boolean {
+  const meta = parseChatMetadata(chat?.metadata);
+  return meta.provider === "codex" && !!meta.nativeAgent;
+}
+
 export function createCardMembership(stored = listChatsSnapshot()) {
   const storedById = new Map(stored.map((chat) => [chat.id, chat]));
   const ownersBySession = new Map<string, Chat[]>();
@@ -98,10 +110,7 @@ export function createCardMembership(stored = listChatsSnapshot()) {
     corpus.set(id, { ...chat, metadata: JSON.stringify(meta) });
   }
   const index = buildLineageIndex([...corpus.values()]);
-  const isNative = (chat?: Chat) => {
-    const meta = parseChatMetadata(chat?.metadata);
-    return meta.provider === "codex" && !!meta.nativeAgent;
-  };
+  const isNative = (chat?: Chat) => isNativeRecord(chat);
   // A stored native record with lost parent evidence is not promoted to a
   // standalone card. Ordinary stored orphans retain historical promotion.
   const roots = new Set(

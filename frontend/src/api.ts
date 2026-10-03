@@ -607,6 +607,36 @@ export async function bulkDeleteChats(ids: string[]): Promise<BulkDeleteResponse
   return request("/chats/bulk-delete", { method: "POST", json: { ids }, error: "Failed to delete chats" });
 }
 
+/** One requested id that was archived or unarchived, and the root that moved. */
+export interface BulkArchiveUpdate {
+  /** The id as requested — what the caller's selection is keyed by. */
+  id: string;
+  /** The lineage root the id resolved to; the whole tree under it moved. */
+  rootChatId: string;
+  archived: boolean;
+  /** Whether that root is a card (archived by its lifecycle) or card-less (by a chat-level flag). */
+  isCard: boolean;
+}
+
+export interface BulkArchiveResponse {
+  updated: BulkArchiveUpdate[];
+  failed: BulkDeleteFailure[];
+}
+
+/**
+ * Archive or unarchive the lineage trees behind many chats — card and
+ * card-less alike. Send the selected chat ids as they are: the server resolves
+ * each to its root and picks the representation, and two ids on one tree flip
+ * it once. Partial success, same shape as {@link BulkDeleteResponse}.
+ */
+export async function bulkArchiveChats(ids: string[], archived: boolean): Promise<BulkArchiveResponse> {
+  return request("/chats/bulk-archive", {
+    method: "POST",
+    json: { ids, archived },
+    error: archived ? "Failed to archive chats" : "Failed to unarchive chats",
+  });
+}
+
 export async function getChat(id: string): Promise<Chat> {
   return request(`/chats/${seg(id)}`, { error: "Failed to get chat" });
 }

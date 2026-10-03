@@ -21,7 +21,7 @@
  * before the service is imported.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -143,3 +143,54 @@ describe("getChat keeps its fallback", () => {
     expect(chatFileService.getChat(randomUUID())).toBeNull();
   });
 });
+
+/**
+ * `insertChat` skips upsertChat's lookup (a getChat miss is a full scan) on the
+ * strength of a snapshot that said "no record". A snapshot can be wrong about
+ * one file, so the method checks the target path itself — one stat — and never
+ * overwrites what is there.
+ */
+describe("insertChat", () => {
+  const record = (sessionId: string, metadata = '{"title":"new"}') => ({
+    id: sessionId,
+    folder: "/repo",
+    session_id: sessionId,
+    metadata,
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:00.000Z",
+  });
+
+  it("writes a new record with the caller's timestamps, without scanning the directory", () => {
+    for (let i = 0; i < 5; i++) chatFileService.createChat("/repo", randomUUID());
+    probe.readdirCalls = 0;
+    const sessionId = randomUUID();
+
+    const { chat, created } = chatFileService.insertChat(record(sessionId));
+
+    expect(created).toBe(true);
+    expect(chat.session_log_path).toBeNull();
+    expect(chatFileService.getChatBySessionId(sessionId)?.updated_at).toBe("2026-01-01T00:00:00.000Z");
+    expect(probe.readdirCalls).toBe(0);
+  });
+
+  it("returns a readable record already filed there untouched, and says it did not create it", () => {
+    const sessionId = randomUUID();
+    const existing = chatFileService.createChat("/repo", sessionId, '{"title":"real","triggered":true}');
+
+    const { chat, created } = chatFileService.insertChat(record(sessionId));
+
+    expect(created).toBe(false);
+    expect(chat.id).toBe(existing.id);
+    expect(JSON.parse(chatFileService.getChatBySessionId(sessionId)!.metadata)).toEqual({ title: "real", triggered: true });
+  });
+
+  it("refuses to overwrite a record that exists but cannot be read", () => {
+    const sessionId = randomUUID();
+    const path = join(chatsDir, `${sessionId}.json`);
+    writeFileSync(path, "{ not json");
+
+    expect(() => chatFileService.insertChat(record(sessionId))).toThrow(/could not be read/);
+    expect(readFileSync(path, "utf8")).toBe("{ not json");
+  });
+});
+

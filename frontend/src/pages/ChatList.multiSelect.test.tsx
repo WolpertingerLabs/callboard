@@ -9,10 +9,11 @@
  *
  *  - the shift+click range order, which must be the order the list actually
  *    rendered — one row per lineage GROUP, not one per chat;
- *  - the scope, which is a chat's CARD lifecycle and has a third value for a
- *    chat on no card at all;
- *  - the chats → cards mapping behind the archive verb, including two selected
- *    chats resolving to one card;
+ *  - the scope, which is whether a row's lineage tree is ARCHIVED — by its
+ *    card's lifecycle, or for a chat on no card by the server's `archived`
+ *    field — so card and card-less rows share one;
+ *  - the bulk archive call, which sends the selected chat ids as they are and
+ *    leaves root resolution (and two chats on one card) to the server;
  *  - what happens to a selection when a bulk call half-fails, and when a
  *    refresh takes a selected row away underneath it.
  */
@@ -20,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { CardSummary, Chat, ChatListResponse } from "../api";
-import { listChats, listCards, getDrafts, bulkSetCardLifecycle, bulkDeleteChats, searchChatContents } from "../api";
+import { listChats, listCards, getDrafts, bulkArchiveChats, bulkDeleteChats, searchChatContents } from "../api";
 import ChatList from "./ChatList";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -28,7 +29,7 @@ vi.mock("../api", async (importOriginal) => ({
   listChats: vi.fn(),
   listCards: vi.fn(),
   getDrafts: vi.fn(),
-  bulkSetCardLifecycle: vi.fn(),
+  bulkArchiveChats: vi.fn(),
   bulkDeleteChats: vi.fn(),
   searchChatContents: vi.fn(),
 }));
@@ -47,7 +48,12 @@ vi.mock("../components/SidebarHeader", () => ({ default: () => <div /> }));
 vi.mock("../components/NewChatPanel", () => ({ default: () => <div /> }));
 
 const mockListChats = vi.mocked(listChats);
-const mockBulkLifecycle = vi.mocked(bulkSetCardLifecycle);
+const mockBulkArchive = vi.mocked(bulkArchiveChats);
+
+/** One `updated` entry of a bulk-archive response. */
+function moved(id: string, rootChatId: string, archived: boolean, isCard = true) {
+  return { id, rootChatId, archived, isCard };
+}
 const mockBulkDelete = vi.mocked(bulkDeleteChats);
 
 const FOLDER = "/home/cybil/projects/callboard";
@@ -88,6 +94,7 @@ function card(id: string, lifecycle: "open" | "closed", chatIds: string[], extra
  *   three   │ open card "c-shared"
  *   four    │ open card "c-shared"           ← same card as three, no lineage stamp
  *   robot   │ no card at all (triggered)
+ *   shelved │ no card, its tree ARCHIVED (the server's `archived` field)
  *
  * The archived row sitting in the middle is what makes the range tests worth
  * running: the board can slice its ordered ids unfiltered because it lists
@@ -106,6 +113,7 @@ const CHATS: Chat[] = [
   makeChat("three", "chat three"),
   makeChat("four", "chat four"),
   makeChat("robot", "chat robot", { triggered: true }),
+  { ...makeChat("shelved", "chat shelved", { triggered: true }), archived: true },
 ];
 
 const CARDS: CardSummary[] = [
@@ -319,34 +327,41 @@ describe("shift+click ranges", () => {
 });
 
 describe("the archive scope", () => {
-  it("offers Archive over an open selection", async () => {
+  it("offers Archive over an open selection, counting chats", async () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
 
-    expect(actionLabels()).toEqual(["Archive 1 card", "Delete 1 chat"]);
+    expect(actionLabels()).toEqual(["Archive 1 chat", "Delete 1 chat"]);
   });
 
   it("offers Unarchive when the selection started on an archived row", async () => {
     await mount();
     fireEvent.click(row("chat old"), { metaKey: true });
 
-    expect(actionLabels()).toEqual(["Unarchive 1 card", "Delete 1 chat"]);
+    expect(actionLabels()).toEqual(["Unarchive 1 chat", "Delete 1 chat"]);
   });
 
-  it("offers Delete alone for a chat on no card at all", async () => {
+  it("offers Archive for a chat on no card at all", async () => {
     await mount();
     fireEvent.click(row("chat robot"), { metaKey: true });
 
-    // No card, so there is no lifecycle to flip and no honest verb to offer.
-    // Delete is per chat and works regardless.
-    expect(actionLabels()).toEqual(["Delete 1 chat"]);
+    // No card, but its tree can still be archived — by the chat-level flag the
+    // server keeps on its root.
+    expect(actionLabels()).toEqual(["Archive 1 chat", "Delete 1 chat"]);
+  });
+
+  it("offers Unarchive for a card-less chat the server reports as archived", async () => {
+    await mount();
+    fireEvent.click(row("chat shelved"), { metaKey: true });
+
+    expect(actionLabels()).toEqual(["Unarchive 1 chat", "Delete 1 chat"]);
   });
 
   it("makes rows in another scope inert", async () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
 
-    for (const preview of ["chat old", "chat robot"]) {
+    for (const preview of ["chat old", "chat shelved"]) {
       // Inert, not merely dimmed: no checkbox to press, and the row's own
       // click does nothing at all — not even navigate.
       expect(row(preview).style.opacity).toBe("0.35");
@@ -356,12 +371,12 @@ describe("the archive scope", () => {
     expect(selectedPreviews()).toEqual(["chat one"]);
   });
 
-  it("keeps a card-less chat out of an open selection even by Ctrl+A", async () => {
+  it("puts card and card-less rows in one open selection by Ctrl+A", async () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
     pressInList({ key: "a", ctrlKey: true });
 
-    expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three", "chat four"]);
+    expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three", "chat four", "chat robot"]);
   });
 });
 
@@ -405,7 +420,8 @@ describe("Ctrl+A", () => {
     fireEvent.click(row("chat old"), { metaKey: true });
     pressInList({ key: "a", ctrlKey: true });
 
-    expect(selectedPreviews()).toEqual(["chat old"]);
+    // An archived card and an archived card-less tree: one scope.
+    expect(selectedPreviews()).toEqual(["chat old", "chat shelved"]);
   });
 
   it("does nothing before selection mode is entered", async () => {
@@ -435,7 +451,7 @@ describe("mobile Select all", () => {
     expect(selectAll.disabled).toBe(false);
     fireEvent.click(selectAll);
 
-    expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three", "chat four"]);
+    expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three", "chat four", "chat robot"]);
     expect(selectAll.disabled).toBe(true);
   });
 
@@ -448,49 +464,82 @@ describe("mobile Select all", () => {
 });
 
 describe("bulk archive", () => {
-  it("maps the selected chats to their card ids", async () => {
+  it("sends the selected chat ids, not card ids", async () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat two"));
 
-    mockBulkLifecycle.mockResolvedValue({ updated: [card("c-one", "closed", ["one"]), card("c-two", "closed", ["two"])], failed: [] });
+    mockBulkArchive.mockResolvedValue({ updated: [moved("one", "c-one", true), moved("two", "c-two", true)], failed: [] });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Archive 2 cards" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive 2 chats" }));
     });
 
-    expect(mockBulkLifecycle).toHaveBeenCalledWith(["c-one", "c-two"], "closed");
+    expect(mockBulkArchive).toHaveBeenCalledWith(["one", "two"], true);
     await waitFor(() => expect(count()).toBeNull());
   });
 
-  it("dedupes two chats on one card, and says so on the button", async () => {
+  it("archives a mixed selection of card and card-less rows in one request, and fades both", async () => {
+    await mount();
+    fireEvent.click(row("chat one"), { metaKey: true });
+    fireEvent.click(row("chat robot"));
+    // A mixed selection is counted in chats — a card count would leave the
+    // card-less row out of the number while the request archives it anyway.
+    expect(actionLabels()).toEqual(["Archive 2 chats", "Delete 2 chats"]);
+
+    mockBulkArchive.mockResolvedValue({ updated: [moved("one", "c-one", true), moved("robot", "robot", true, false)], failed: [] });
+    // The refetch the action triggers: still listed ("Archived" is on), and
+    // the server now reports the card-less tree as archived.
+    mockListChats.mockResolvedValue(listResponse(CHATS.map((c) => (c.id === "robot" ? { ...c, archived: true } : c))));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Archive 2 chats" }));
+    });
+
+    expect(mockBulkArchive).toHaveBeenCalledWith(["one", "robot"], true);
+    await waitFor(() => {
+      expect(screen.getByText("chat one").closest(".chatlist-item-dimmed")).toBeTruthy();
+      expect(screen.getByText("chat robot").closest(".chatlist-item-dimmed")).toBeTruthy();
+    });
+  });
+
+  it("fades a card-less row on the response itself, before any refetch", async () => {
+    await mount();
+    fireEvent.click(row("chat robot"), { metaKey: true });
+
+    mockBulkArchive.mockResolvedValue({ updated: [moved("robot", "robot", true, false)], failed: [] });
+    // A refetch that never lands, so only the local merge can fade the row.
+    mockListChats.mockReturnValue(new Promise(() => {}));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Archive 1 chat" }));
+    });
+
+    await waitFor(() => expect(screen.getByText("chat robot").closest(".chatlist-item-dimmed")).toBeTruthy());
+  });
+
+  it("sends both chats on one card and leaves the dedupe to the server", async () => {
     await mount();
     fireEvent.click(row("chat three"), { metaKey: true });
     fireEvent.click(row("chat four"));
 
-    // Two rows selected, ONE card behind them. The count and the label carry
-    // different nouns deliberately — the alternative is promising to archive
-    // 2 and moving every chat on the card.
     expect(count()).toBe("2 chats selected");
-    const button = screen.getByRole("button", { name: "Archive 1 card" });
-
-    mockBulkLifecycle.mockResolvedValue({ updated: [card("c-shared", "closed", ["three", "four"])], failed: [] });
+    mockBulkArchive.mockResolvedValue({ updated: [moved("three", "c-shared", true), moved("four", "c-shared", true)], failed: [] });
     await act(async () => {
-      fireEvent.click(button);
+      fireEvent.click(screen.getByRole("button", { name: "Archive 2 chats" }));
     });
 
-    expect(mockBulkLifecycle).toHaveBeenCalledWith(["c-shared"], "closed");
+    expect(mockBulkArchive).toHaveBeenCalledWith(["three", "four"], true);
   });
 
   it("unarchives from an archived selection", async () => {
     await mount();
     fireEvent.click(row("chat old"), { metaKey: true });
+    fireEvent.click(row("chat shelved"));
 
-    mockBulkLifecycle.mockResolvedValue({ updated: [card("c-old", "open", ["old"])], failed: [] });
+    mockBulkArchive.mockResolvedValue({ updated: [moved("old", "c-old", false), moved("shelved", "shelved", false, false)], failed: [] });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Unarchive 1 card" }));
+      fireEvent.click(screen.getByRole("button", { name: "Unarchive 2 chats" }));
     });
 
-    expect(mockBulkLifecycle).toHaveBeenCalledWith(["c-old"], "open");
+    expect(mockBulkArchive).toHaveBeenCalledWith(["old", "shelved"], false);
   });
 
   it("fades the archived rows on the response, without waiting for a refetch", async () => {
@@ -499,42 +548,45 @@ describe("bulk archive", () => {
 
     // The refetch this triggers returns the row still present — as it would
     // with "Archived" on. What must not wait for the server is the DIM.
-    mockBulkLifecycle.mockResolvedValue({ updated: [card("c-one", "closed", ["one"])], failed: [] });
+    mockBulkArchive.mockResolvedValue({ updated: [moved("one", "c-one", true)], failed: [] });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Archive 1 card" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive 1 chat" }));
     });
 
     await waitFor(() => expect(screen.getByText("chat one").closest(".chatlist-item-dimmed")).toBeTruthy());
   });
 
-  it("on partial failure, reports the count and keeps exactly the failed card's chats selected", async () => {
+  it("on partial failure, reports the count and keeps exactly the failed chats selected", async () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
     fireEvent.click(row("chat three"));
     fireEvent.click(row("chat four"));
 
-    // c-shared failed, so BOTH its chats stay selected — the failure came back
-    // keyed by card and has to be mapped back to the rows the user picked.
-    mockBulkLifecycle.mockResolvedValue({
-      updated: [card("c-one", "closed", ["one"])],
-      failed: [{ id: "c-shared", error: "locked" }],
+    // Failures come back per requested id — per selected chat — so they map
+    // straight onto the selection.
+    mockBulkArchive.mockResolvedValue({
+      updated: [moved("one", "c-one", true)],
+      failed: [
+        { id: "three", error: "locked" },
+        { id: "four", error: "locked" },
+      ],
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Archive 2 cards" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive 3 chats" }));
     });
 
-    await screen.findByText("1 of 2 cards could not be updated");
+    await screen.findByText("2 of 3 chats could not be updated");
     expect(selectedPreviews()).toEqual(["chat three", "chat four"]);
-    expect(screen.getByRole("button", { name: "Archive 1 card" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Archive 2 chats" })).toBeTruthy();
   });
 
   it("takes the failure message down with the selection it was about", async () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
 
-    mockBulkLifecycle.mockRejectedValue(new Error("network down"));
+    mockBulkArchive.mockRejectedValue(new Error("network down"));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Archive 1 card" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive 1 chat" }));
     });
     await screen.findByText("network down");
 
@@ -546,9 +598,9 @@ describe("bulk archive", () => {
     await mount();
     fireEvent.click(row("chat one"), { metaKey: true });
 
-    mockBulkLifecycle.mockRejectedValue(new Error("network down"));
+    mockBulkArchive.mockRejectedValue(new Error("network down"));
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Archive 1 card" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive 1 chat" }));
     });
 
     await screen.findByText("network down");
@@ -853,7 +905,7 @@ describe("the shortcuts stay inside the list", () => {
     fireEvent.click(row("chat one"), { metaKey: true });
     pressInList({ key: "a", metaKey: true });
 
-    expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three", "chat four"]);
+    expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three", "chat four", "chat robot"]);
   });
 
   it("focuses the list when a selection starts, so the shortcuts have somewhere to arrive", async () => {

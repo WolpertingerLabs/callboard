@@ -7,7 +7,7 @@ import {
   listChats,
   deleteChat,
   bulkDeleteChats,
-  bulkSetCardLifecycle,
+  bulkArchiveChats,
   toggleBookmark,
   togglePin,
   getDrafts,
@@ -17,6 +17,7 @@ import {
   type Chat,
   type QueueItem,
   type CardSummary,
+  type BulkArchiveUpdate,
 } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
@@ -79,17 +80,17 @@ function indexByChat(list: CardSummary[]): Map<string, CardSummary> {
 }
 
 /**
- * Which archive scope a row belongs to.
+ * Which archive scope a row belongs to: whether its lineage tree is archived.
  *
- * `"open"` and `"closed"` are its card's lifecycle; `"none"` is a chat on no
- * board card at all — a triggered chat, a job step, a session nothing recorded,
- * or a chat whose card is hidden (see `boardCards`). That third value is what
- * gives the no-card case a defined answer instead of a silent exclusion: a
- * selection is scoped to ONE of these three, so a card-less chat can be
- * selected and deleted but can never join a batch the bar offers to archive,
- * and can never be quietly dropped from a count that promised to archive it.
+ * About archived-ness, not card-ness. Every row can be archived — a card root
+ * by its card's lifecycle, a card-less root (a triggered chat, a job step, a
+ * session nothing recorded, a card hidden from the board) by the chat-level
+ * flag the server reports as `Chat.archived` — so every row is in exactly one
+ * of these two, by the same verdict the dim uses. A selection is scoped to ONE
+ * of them, which is what lets the bar offer a single verb, Archive or
+ * Unarchive, whatever mix of card and card-less rows it holds.
  */
-type ChatScope = "open" | "closed" | "none";
+type ChatScope = "open" | "archived";
 
 /**
  * Bottom padding the list falls back to while the bar is up and has not
@@ -216,7 +217,7 @@ export default function ChatList({
   const [rawSelectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   // Non-null IS "in selection mode", and it scopes the selection to one
   // archive scope. That scoping is what lets the action bar offer exactly one
-  // archive verb — "Archive 2 cards" — instead of "Archive 3 / Unarchive 2",
+  // archive verb — "Archive 5 chats" — instead of "Archive 3 / Unarchive 2",
   // which is a small puzzle every time.
   const [selectionScope, setSelectionScope] = useState<ChatScope | null>(null);
   const [anchorId, setAnchorId] = useState<string | null>(null);
@@ -706,7 +707,9 @@ export default function ChatList({
    * the board under no lifecycle, and flipping one would not even clear the dim
    * the user is looking at — `hidden` stays set, and nothing in the sidebar can
    * unset it. An action that cannot reach the state it appears to control is
-   * not worth offering, so `cardOf` returns undefined and no entry renders.
+   * not worth offering AS A CARD ACTION, so `cardOf` returns undefined and
+   * the row falls through to the card-less archive entry, which goes through
+   * `/api/chats/bulk-archive` — and that, on unarchive, clears `hidden` too.
    */
   const boardCards = useMemo(() => cards.filter((card) => !card.hidden), [cards]);
   const cardsById = useMemo(() => new Map(boardCards.map((c) => [c.id, c])), [boardCards]);
@@ -729,8 +732,9 @@ export default function ChatList({
   );
 
   /**
-   * Fade rows whose card is archived — closed or hidden. A row on no card is
-   * not archived and is not faded. Unconditional — purely a
+   * Fade rows whose tree is archived — a card closed or hidden, or a card-less
+   * root archived by the chat-level flag (`Chat.archived`). A card-less row
+   * nobody archived is not faded. Unconditional — purely a
    * render decision over cards already on the page, so there is no request to
    * change and nothing for the user to switch off. "Show archived" is the
    * other half of the same idea and not an exception to it: it decides whether
@@ -746,25 +750,96 @@ export default function ChatList({
    */
   const isDimmed = (chat: Chat): boolean => isChatDimmed(chat, dimCardsByChatId, { cardsLoaded });
 
-  const handleToggleCardLifecycle = async (chat: Chat) => {
-    const card = cardOf(chat);
-    if (!card) return;
-    try {
-      const res = await updateCard(card.id, { lifecycle: card.lifecycle === "open" ? "closed" : "open" });
-      setCards((prev) => prev.map((c) => (c.id === res.card.id ? res.card : c)));
-    } catch (err) {
-      console.error("Failed to change card lifecycle:", err);
+  /**
+   * Fold a bulk-archive response into local state, so the affected rows fade
+   * (or un-fade) on this render instead of the next fetch. The caller still
+   * refetches — whether a row should now LEAVE the list is the server's call.
+   *
+   * Two writes, and the second is for EVERY update, card or not. The card
+   * index is what the dim reads first for a card row, so card roots are
+   * patched there. But `isCard` is the server's verdict, and the client may
+   * have no card for that root at all — a record-less session the server just
+   * materialised into one, or a card created since the last `listCards` — and
+   * a row with no card in the index is dimmed by its own `archived` field. So
+   * that field is set on every row of every updated tree too; on a row that
+   * does have a card it is simply not the one read.
+   */
+  const applyArchiveUpdates = (updated: BulkArchiveUpdate[]) => {
+    const cardRoots = new Map(updated.filter((u) => u.isCard).map((u) => [u.rootChatId, u.archived]));
+    const roots = new Map(updated.map((u) => [u.rootChatId, u.archived]));
+    const requested = new Map(updated.map((u) => [u.id, u.archived]));
+    if (cardRoots.size > 0) {
+      setCards((prev) =>
+        prev.map((c) => {
+          const archived = cardRoots.get(c.id);
+          if (archived === undefined) return c;
+          // Unarchive clears `hidden` server-side as well; mirror it.
+          return archived ? { ...c, lifecycle: "closed" as const } : { ...c, lifecycle: "open" as const, hidden: undefined };
+        }),
+      );
+    }
+    if (roots.size > 0) {
+      setChats((prev) =>
+        prev.map((c) => {
+          const root = chatCardId(c) ?? c.id;
+          const archived = requested.get(c.id) ?? roots.get(root);
+          return archived === undefined ? c : { ...c, archived: archived || undefined };
+        }),
+      );
     }
   };
 
+  /**
+   * The row menu's archive toggle. A board card keeps its card PATCH — the
+   * response is the card summary the index wants. Anything else goes through
+   * the chat-level bulk route with one id, which resolves the root and picks
+   * the representation server-side.
+   */
+  const handleToggleArchive = async (chat: Chat) => {
+    const card = cardOf(chat);
+    try {
+      if (card) {
+        const res = await updateCard(card.id, { lifecycle: card.lifecycle === "open" ? "closed" : "open" });
+        setCards((prev) => prev.map((c) => (c.id === res.card.id ? res.card : c)));
+        return;
+      }
+      const res = await bulkArchiveChats([chat.id], !isDimmed(chat));
+      if (res.failed.length > 0) throw new Error(res.failed[0].error);
+      applyArchiveUpdates(res.updated);
+      load();
+    } catch (err) {
+      console.error("Failed to change archive state:", err);
+      setBulkError(`Could not ${isDimmed(chat) ? "unarchive" : "archive"} this chat: ${(err as Error).message}`);
+    }
+  };
+
+  /**
+   * How many chats the list holds on each tree, by root id — one pass per list
+   * change rather than one per row per render, since `chatCardId` parses
+   * metadata. The list is lineage-complete (the server appends a windowed
+   * tree's members), so this is the tree's size for any row it shows.
+   */
+  const treeSizes = useMemo(() => {
+    const sizes = new Map<string, number>();
+    for (const c of chats) {
+      const root = chatCardId(c) ?? c.id;
+      sizes.set(root, (sizes.get(root) ?? 0) + 1);
+    }
+    return sizes;
+  }, [chats]);
+  const treeSizeOf = (chat: Chat): number => Math.max(1, treeSizes.get(chatCardId(chat) ?? chat.id) ?? 0);
+
   /** Every card action for one row's kebab menu. The only one left is the
-   * lifecycle toggle — membership is lineage now, so there is nothing to
-   * create, join, or leave: a top-level chat is a card the moment it exists. */
+   * archive toggle — membership is lineage now, so there is nothing to
+   * create, join, or leave: a top-level chat is a card the moment it exists.
+   * Offered on every row once the cards have loaded, since every tree can be
+   * archived; before that, a row cannot tell "no card" from "not loaded". */
   const cardMenuFor = (chat: Chat): ChatCardMenu => {
     const card = cardOf(chat);
     return {
       ...(card && { card: { title: card.title, lifecycle: card.lifecycle, chatCount: card.chatCount } }),
-      onToggleLifecycle: () => handleToggleCardLifecycle(chat),
+      ...(!card && cardsLoaded && { tree: { archived: isDimmed(chat), chatCount: treeSizeOf(chat), isRoot: (chatCardId(chat) ?? chat.id) === chat.id } }),
+      onToggleLifecycle: () => handleToggleArchive(chat),
     };
   };
 
@@ -830,18 +905,22 @@ export default function ChatList({
   const orderedIds = useMemo(() => rows.map((row) => row.chat.id), [rows]);
 
   /**
-   * A row's archive scope — see {@link ChatScope}.
+   * A row's archive scope — see {@link ChatScope}. The dim's verdict exactly,
+   * so a selection never mixes faded and unfaded rows.
    *
-   * Gated on `cardsLoaded`, exactly as `isDimmed` is and for the same reason:
+   * Gated on `cardsLoaded` through `isChatDimmed`, and for the same reason:
    * before the first `listCards` returns, "no card in the index" and "no card"
    * are indistinguishable, and `/api/cards` is the expensive uncached request
    * while `/api/chats` is a paginated window — the gap between them is two
-   * round trips, not a paint. Answering `"none"` there is not a guess dressed
+   * round trips, not a paint. Answering `"open"` there is not a guess dressed
    * up as an answer, because nothing can be selected until it closes: the list
    * withholds selection entirely while `!cardsLoaded` (see the `selectionFor`
    * prop), so no selection can be scoped from an index that has not arrived.
    */
-  const scopeOf = useCallback((chat: Chat): ChatScope => (cardsLoaded ? (cardOf(chat)?.lifecycle ?? "none") : "none"), [cardOf, cardsLoaded]);
+  const scopeOf = useCallback(
+    (chat: Chat): ChatScope => (isChatDimmed(chat, dimCardsByChatId, { cardsLoaded }) ? "archived" : "open"),
+    [dimCardsByChatId, cardsLoaded],
+  );
 
   /**
    * The selection, reconciled against the rows that actually exist — derived
@@ -931,7 +1010,7 @@ export default function ChatList({
       // card before every closed one, so nothing out of scope can lie between
       // two cards that are both in it. This list is ordered by recency and
       // mixes the scopes freely, so a range from one open row to another can
-      // step straight over an archived one or a card-less one. Both ENDS are
+      // step straight over an archived one. Both ENDS are
       // still guaranteed in scope by the inert row: an out-of-scope row never
       // receives the click.
       const inRange = orderedIds.slice(lo, hi + 1).filter((id) => {
@@ -1025,80 +1104,49 @@ export default function ChatList({
   const selectedInOrder = orderedIds.filter((id) => selectedIds.has(id));
 
   /**
-   * The cards behind the selection, deduped, in rendered order.
-   *
-   * Archive is a CARD action — the row menu's entry has always toggled the
-   * lifecycle of the chat's lineage root, i.e. the whole tree — and bulk
-   * archive keeps that meaning rather than inventing a per-chat archive that
-   * does not exist. Two selected chats on one card therefore resolve to one id,
-   * and the bar says so: see `bulkActions`.
-   *
-   * Nothing is silently dropped here. Every chat in an "open" or "closed"
-   * scoped selection has a card by construction — that is what put it in the
-   * scope — and a chat with no card sits in the `"none"` scope, where no
-   * archive verb is offered at all.
-   */
-  const selectedCardIds = (() => {
-    const ids: string[] = [];
-    const seen = new Set<string>();
-    for (const id of selectedInOrder) {
-      const chat = rowChats.get(id);
-      const card = chat && cardOf(chat);
-      if (!card || seen.has(card.id)) continue;
-      seen.add(card.id);
-      ids.push(card.id);
-    }
-    return ids;
-  })();
-
-  /**
    * No confirmation and no undo, by the same decision the board made: archiving
    * is reversible, its inverse is one gesture away, and the "Archived" toggle
    * that brings the rows back is in view. A modal on a reversible bulk action
    * only trains people to dismiss modals.
+   *
+   * Sends the selected CHAT ids, not card ids. Archive acts on a lineage tree —
+   * the row menu's entry always has — and the server resolves each id to its
+   * root, picks the representation (card lifecycle or the chat-level flag),
+   * and flips two ids on one tree once. A mixed selection of card and
+   * card-less rows is therefore one request with no client-side branching.
    */
-  const runBulkLifecycle = async () => {
-    if (selectionScope !== "open" && selectionScope !== "closed") return;
-    const cardIds = selectedCardIds;
-    if (cardIds.length === 0) return;
-    const target = selectionScope === "open" ? "closed" : "open";
+  const runBulkArchive = async () => {
+    if (selectionScope === null) return;
+    const ids = selectedInOrder;
+    if (ids.length === 0) return;
+    const archived = selectionScope === "open";
     setBulkBusy(true);
     try {
-      const res = await bulkSetCardLifecycle(cardIds, target);
-      // Merged into the card index rather than waited for: the dim reads the
-      // cards, so every affected row fades (or un-fades) on this render
-      // instead of on the next poll.
-      const updatedById = new Map(res.updated.map((c) => [c.id, c]));
-      setCards((prev) => prev.map((c) => updatedById.get(c.id) ?? c));
+      const res = await bulkArchiveChats(ids, archived);
+      applyArchiveUpdates(res.updated);
       const failed = res.failed ?? [];
       if (failed.length > 0) {
-        // Failures come back per CARD; the selection is per CHAT, so map back
-        // through the cards to leave exactly the chats whose card did not
-        // flip selected — retrying those is the user's next move.
-        const failedCardIds = new Set(failed.map((f) => f.id));
-        setSelectedIds(
-          new Set(
-            selectedInOrder.filter((id) => {
-              const chat = rowChats.get(id);
-              const card = chat && cardOf(chat);
-              return !!card && failedCardIds.has(card.id);
-            }),
-          ),
-        );
+        // Failures come back per requested id, which is per selected chat —
+        // leave exactly those selected, since retrying them is the next move.
+        setSelectedIds(new Set(failed.map((f) => f.id)));
         setAnchorId(null);
-        setBulkError(`${failedCardIds.size} of ${cardIds.length} cards could not be updated`);
+        setBulkError(`${failed.length} of ${ids.length} chats could not be updated`);
       } else {
         setBulkError(null);
         exitSelection();
       }
       // Whether the rows should now LEAVE the list is the server's call, not
       // this component's: with "Archived" off the scope withholds an archived
-      // card's tree, with it on the rows stay and read as faded. So refetch
-      // rather than filter locally — the merge above has already paid for the
-      // instant feedback.
+      // tree, with it on the rows stay and read as faded. So refetch rather
+      // than filter locally — the merge above has already paid for the
+      // instant feedback. The card index is not refetched from here because it
+      // does not need to be: the merge set the two fields the dim and the
+      // scope read, and the route's own metadata notification bumps
+      // `metadataVersion`, whose effect reloads both the list and the cards
+      // with the server's full summaries shortly after.
       load();
     } catch (err) {
-      setBulkError(errorMessage(err, "Failed to update cards"));
+      setBulkError(errorMessage(err, "Failed to update chats"));
     } finally {
       setBulkBusy(false);
     }
@@ -1143,30 +1191,29 @@ export default function ChatList({
   /**
    * The bar's actions, and the one wording decision worth reading twice.
    *
-   * Every number on the bar names its unit — "5 chats selected" over
-   * "Archive 2 cards" and "Delete 5 chats" — because two different things are
-   * being counted and the honest thing is to say which. Archive acts on cards,
-   * and a card is a lineage tree: five selected chats can live on two cards,
-   * and archiving those two moves every chat on them, which may be forty.
-   * "Archive 5" would name neither the thing being acted on nor the blast
-   * radius, and the user would watch forty rows fade after being promised
-   * five. The row menu already sets that precedent, spelling out "all N chats
-   * on this card" in its tooltip.
+   * Both verbs count CHATS — "Archive 5 chats", "Delete 5 chats" — the rows
+   * the user selected. Archive used to count cards ("Archive 2 cards"), which
+   * was honest while only card rows could be archived. A selection can now mix
+   * card rows with card-less ones (triggered chats, job steps), and a card
+   * count would leave the card-less rows out of the number while the request
+   * archives them anyway. The selected-row count is the one number that is
+   * true of every mix.
    *
-   * The count's own noun is what stops the pair reading as a bug: "5 selected"
-   * beside "Archive 2 cards" is a puzzle, and "5 chats selected" is a fact.
+   * It is not the blast radius, and neither was the card count: archive acts
+   * on each selected row's whole lineage tree, so five rows can fade forty
+   * chats. The row menu's tooltip is where that gets spelled out per tree.
    *
    * Delete counts chats because it acts on chats — one per selected ROW, and
    * that is the limitation the confirmation has to spell out; see
    * `bulkDeleteMessage`.
    */
   const bulkActions: SelectionAction[] = [
-    ...(selectionScope === "open" || selectionScope === "closed"
+    ...(selectionScope !== null
       ? [
           {
             key: "lifecycle",
-            label: `${selectionScope === "open" ? "Archive" : "Unarchive"} ${selectedCardIds.length} ${selectedCardIds.length === 1 ? "card" : "cards"}`,
-            onRun: runBulkLifecycle,
+            label: `${selectionScope === "open" ? "Archive" : "Unarchive"} ${selectedIds.size} ${selectedIds.size === 1 ? "chat" : "chats"}`,
+            onRun: runBulkArchive,
           },
         ]
       : []),
@@ -1253,13 +1300,13 @@ export default function ChatList({
    * which is the whole benefit of it being there: the fix is one click away,
    * in view, rather than two clicks deep in a modal.
    *
-   * What it must NOT say any more is "no chats on an open card". The scope
-   * withholds the archived trees and nothing else, so a chat on no card at all
-   * — triggered, a job step, a session nothing recorded — IS in this list, and
-   * blaming its absence on not having a card would point the user at a toggle
-   * that could not have produced it. "No unarchived chats" is the narrower
-   * claim and the true one; it also stays true when there are simply no chats,
-   * which "every chat here is archived" would not.
+   * What it must NOT say any more is "no chats on an open card", nor talk
+   * about cards at all. The scope withholds archived trees and nothing else,
+   * and a tree can be archived with or without a card — a triggered chat or a
+   * job step is archived by its own flag — so "chats on archived cards" would
+   * undercount what the toggle brings back. "No unarchived chats" is the
+   * narrower claim and the true one; it also stays true when there are simply
+   * no chats, which "every chat here is archived" would not.
    *
    * `searching` cancels that, because it cancels the scope: a search runs
    * against everything, so blaming an empty result on hidden archived chats
@@ -1271,7 +1318,7 @@ export default function ChatList({
       ? "No chats match the current filters. Archived chats are hidden."
       : "No chats match the current filters"
     : archivedHidden
-      ? "No unarchived chats. Turn on “Archived” above to include chats on archived cards."
+      ? "No unarchived chats. Turn on “Archived” above to include archived chats."
       : "No chats yet. Create one to get started.";
 
   // Collapsed sidebar view — icon rail with logo + vertical buttons
@@ -1545,8 +1592,8 @@ export default function ChatList({
           cardMenuFor={cardMenuFor}
           sessionStatusFor={(chatId) => (activeSessions.has(chatId) ? { active: true, type: activeSessions.get(chatId)!.type } : undefined)}
           isDimmed={isDimmed}
-          // Withheld until the cards are in: a row's selection scope is its
-          // card's lifecycle, and there is no honest scope to put a row in
+          // Withheld until the cards are in: a row's selection scope reads its
+          // card's state when it has one, and there is no honest scope to put a row in
           // before the card index exists. See `scopeOf`. (If `listCards` keeps
           // failing, `cardsLoaded` stays false and the list offers no bulk
           // selection at all — the row kebab's own actions are unaffected,
@@ -1594,8 +1641,8 @@ export default function ChatList({
         <SelectionBar
           position="absolute"
           count={selectedIds.size}
-          // The count names its unit, so it does not read as the same number
-          // as the archive label's — see `bulkActions`.
+          // The count names its unit, like both action labels — see
+          // `bulkActions`.
           noun={selectedIds.size === 1 ? "chat selected" : "chats selected"}
           onMeasure={setBarHeight}
           // Mobile has no Ctrl/Cmd+A, so the button is the only way to reach

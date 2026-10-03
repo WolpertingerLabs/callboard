@@ -135,8 +135,9 @@ describe("ChatListItem card menu", () => {
   });
 
   it("omits the lifecycle entry when the card record has not loaded", () => {
-    // A root whose card has not been fetched (or a triggered chat, which is
-    // no card at all) must never render a guessed direction.
+    // Handed neither a card nor a tree — the cards have not been fetched, so
+    // the list cannot yet tell a card row from a card-less one — the entry
+    // must never render a guessed direction.
     const chat = makeChat({ metadata: JSON.stringify({ rootChatId: "card-gone" }) });
     const { container } = render(<ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={CARD_MENU} />);
     openRowMenu(container);
@@ -146,40 +147,75 @@ describe("ChatListItem card menu", () => {
   });
 
   /**
-   * The third way to reach that shape, and the only one that is a decision
-   * rather than a timing: a HIDDEN card.
-   *
-   * `ChatList.cardOf` reads the board cards, so a card with `hidden: true`
-   * answers undefined and this menu is handed no `card` — while the row is
-   * faded regardless, because the dim reads the full set including hidden. A
-   * dimmed row with no lifecycle entry is therefore the intended pairing, not
-   * a gap.
-   *
-   * Both labels below are written about the board — "moves to the board's
-   * Archived strip", "returns to the board" — and a hidden card is on the board
-   * under neither lifecycle. Worse, the entry could not do what the row implies
-   * it would: archiving a hidden card leaves it dimmed (it already was), and
-   * unarchiving leaves it dimmed too, because `hidden` is still set and nothing
-   * in the sidebar can unset it.
+   * A row whose root is not a board card — a triggered chat, a job step, a
+   * card hidden from the board — is archivable all the same, through the
+   * chat-level flag. The menu is handed a `tree` instead of a `card`, and the
+   * tooltip names the row's own title, since there is no card title and no
+   * board strip to move to.
    */
-  it("offers no lifecycle entry for a hidden card, whose row is dimmed all the same", () => {
-    const chat = makeChat({ metadata: JSON.stringify({ rootChatId: "hidden-card" }) });
-    const { container } = render(<ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={CARD_MENU} dimmed />);
-    openRowMenu(container);
+  describe("a card-less row", () => {
+    const titleOf = (label: string) => screen.getByText(label).closest("button")!.getAttribute("title")!;
 
-    expect(screen.queryByText("Archive chat")).toBeNull();
-    expect(screen.queryByText("Unarchive chat")).toBeNull();
-    // The row really is faded — the assertion above is about the withheld card,
-    // not about a row the list decided to leave alone.
-    expect(container.querySelector(".chatlist-item-dimmed")).toBeTruthy();
-    // And the same menu WITH a board card does offer the entry, so the absence
-    // is the card and not a broken fixture.
-    cleanup();
-    const withCard = render(
-      <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 } }} dimmed />,
-    );
-    openRowMenu(withCard.container);
-    expect(screen.getByText("Archive chat")).toBeTruthy();
+    it("offers Archive chat, titled by the row and with no board in it", () => {
+      const chat = makeChat({ metadata: JSON.stringify({ title: "Discord thread", triggered: true }) });
+      const onToggleLifecycle = vi.fn();
+      const { container } = render(
+        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ onToggleLifecycle, tree: { archived: false, chatCount: 1, isRoot: true } }} />,
+      );
+      openRowMenu(container);
+
+      expect(titleOf("Archive chat")).toBe('Archive "Discord thread"');
+      fireEvent.click(screen.getByText("Archive chat"));
+      expect(onToggleLifecycle).toHaveBeenCalledTimes(1);
+    });
+
+    it("mentions the chats under it when the tree has more than one", () => {
+      const chat = makeChat({ metadata: JSON.stringify({ title: "Nightly run", triggered: true }) });
+      const { container } = render(
+        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: false, chatCount: 4, isRoot: true } }} />,
+      );
+      openRowMenu(container);
+
+      expect(titleOf("Archive chat")).toBe('Archive "Nightly run" and the 3 chats under it');
+    });
+
+    it("names the whole tree, not the chats under it, on a row that is not the root", () => {
+      // Archive acts from the root down: on a child row the parent and its
+      // siblings go too, so "under it" would undercount.
+      const chat = makeChat({ metadata: JSON.stringify({ title: "Step 2", triggered: true, rootChatId: "run-root" }) });
+      const { container } = render(
+        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: false, chatCount: 4, isRoot: false } }} />,
+      );
+      openRowMenu(container);
+
+      expect(titleOf("Archive chat")).toBe('Archive "Step 2" and the 3 other chats in its tree');
+    });
+
+    it("offers Unarchive when its tree is archived", () => {
+      const chat = makeChat({ metadata: JSON.stringify({ title: "Discord thread", triggered: true }) });
+      const { container } = render(
+        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: true, chatCount: 3, isRoot: true } }} dimmed />,
+      );
+      openRowMenu(container);
+
+      expect(screen.queryByText("Archive chat")).toBeNull();
+      expect(titleOf("Unarchive chat")).toBe('Unarchive "Discord thread"');
+    });
+
+    it("prefers the card when handed both", () => {
+      const chat = makeChat({ metadata: JSON.stringify({ title: "Row title" }) });
+      const { container } = render(
+        <ChatListItem
+          chat={chat}
+          onClick={() => {}}
+          onDelete={() => {}}
+          cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 }, tree: { archived: true, chatCount: 1, isRoot: true } }}
+        />,
+      );
+      openRowMenu(container);
+
+      expect(titleOf("Archive chat")).toContain("Ship it");
+    });
   });
 
   it("renders no card entries at all without a cardMenu", () => {

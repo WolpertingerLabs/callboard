@@ -19,7 +19,7 @@ import { chatCardId, isChatDimmed, type DimContext } from "./chatDimming";
 
 type Cards = ReadonlyMap<string, Pick<CardSummary, "lifecycle" | "hidden">>;
 
-const chat = (metadata: Record<string, unknown>, id = "chat-1"): Pick<Chat, "id" | "metadata"> => ({ id, metadata: JSON.stringify(metadata) });
+const chat = (metadata: Record<string, unknown>, id = "chat-1"): Pick<Chat, "id" | "metadata" | "archived"> => ({ id, metadata: JSON.stringify(metadata) });
 
 /**
  * Annotated, not inferred, and that is the assertion: `cardsLoaded` is the
@@ -88,6 +88,30 @@ describe("isChatDimmed", () => {
     expect(isChatDimmed(chat({ triggered: true }, "triggered-root"), CARDS, LOADED)).toBe(false);
     expect(isChatDimmed(chat({ jobRunId: "run-1" }, "job-step"), CARDS, LOADED)).toBe(false);
     expect(isChatDimmed(chat({}, "unfiled"), CARDS, LOADED)).toBe(false);
+  });
+
+  /**
+   * The card-less representation: a tree whose root is not a card carries its
+   * archive as a chat-level flag, which `GET /api/chats` reports on every row
+   * of the tree as `archived: true`. With no card to ask, that field is the
+   * verdict — and with a card, the card wins, because the card index is what
+   * the sidebar patches on the spot after an archive.
+   */
+  it("dims a card-less chat the server reports as archived, and only that one", () => {
+    expect(isChatDimmed({ ...chat({ triggered: true }, "triggered-root"), archived: true }, CARDS, LOADED)).toBe(true);
+    expect(isChatDimmed({ ...chat({ jobRunId: "run-1" }, "job-step"), archived: true }, CARDS, LOADED)).toBe(true);
+    expect(isChatDimmed(chat({ triggered: true }, "triggered-root"), CARDS, LOADED)).toBe(false);
+  });
+
+  it("reads a card row's card, not its archived field", () => {
+    // Just unarchived from the menu: the card index says open, the row's field
+    // is from the list fetch before it.
+    expect(isChatDimmed({ ...chat({ rootChatId: "open-card" }), archived: true }, CARDS, LOADED)).toBe(false);
+    expect(isChatDimmed({ ...chat({ rootChatId: "closed-card" }), archived: undefined }, CARDS, LOADED)).toBe(true);
+  });
+
+  it("still dims nothing before the cards load, archived field or not", () => {
+    expect(isChatDimmed({ ...chat({ triggered: true }, "triggered-root"), archived: true }, CARDS, LOADING)).toBe(false);
   });
 
   /**

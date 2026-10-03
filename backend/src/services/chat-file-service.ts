@@ -377,6 +377,32 @@ class ChatFileService {
     }
   }
 
+  // Write a record the caller believes does not exist yet — it has just checked
+  // a snapshot of the store — without upsertChat's lookup. That lookup is
+  // getChat, whose miss path lists and stats every record in the directory,
+  // and a miss is exactly the expected case here, so upsertChat would pay that
+  // full scan to learn what the caller already knew. Timestamps are the
+  // caller's, so a view-only materialisation keeps the session's real
+  // updated_at.
+  //
+  // "Believes", because a snapshot can be wrong about one file: it skips a
+  // record it could not parse, and a session id two records claim resolves to
+  // neither. So the target path is checked first — one stat, not a scan — and
+  // a file already there is never overwritten. A readable one is returned
+  // untouched with `created: false`, so the caller can tell its assumption was
+  // wrong and decide again from the real record; an unreadable one throws,
+  // because replacing it would destroy whatever it still holds.
+  insertChat(chat: Pick<Chat, "id" | "folder" | "session_id" | "metadata" | "created_at" | "updated_at">): { chat: Chat; created: boolean } {
+    if (existsSync(join(chatsDir, `${chat.session_id}.json`))) {
+      const existing = this.getChatBySessionId(chat.session_id);
+      if (existing) return { chat: existing, created: false };
+      throw new Error(`A chat record for session "${chat.session_id}" exists but could not be read; refusing to overwrite it`);
+    }
+    const newChat: Chat = { ...chat, session_log_path: null };
+    this.saveChat(newChat);
+    return { chat: newChat, created: true };
+  }
+
   // Update specific metadata fields on a chat (read-merge-write).
   // normalizeLegacy opts into treating malformed/non-object legacy JSON as {}.
   // `touch: false` preserves updated_at — for view-only writes (board card

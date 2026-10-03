@@ -8,7 +8,7 @@ import { createCardMembership } from "./card-membership.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { cardLifecycleOf, rawCardFields } from "./card-fields.js";
-import { createTriggeredPredicate, cardIsArchived } from "./chat-visibility.js";
+import { createTriggeredPredicate, cardIsArchived, rootIsArchived } from "./chat-visibility.js";
 import { isIgnoredProjectFolder } from "../utils/paths.js";
 import { isRetiredProvider, type AgentProviderKind } from "../agents/ports/AgentProvider.js";
 import { isAbsolute } from "node:path";
@@ -444,8 +444,14 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     if (view.options.bookmarked && meta.bookmarked !== true) return false;
     if (!view.options.showTriggered && !survivesTriggered(chat)) return false;
     const rootId = membership.index.existingRootIdOf(chat.id);
-    const root = membership.roots.has(rootId) ? membership.storedById.get(rootId) : undefined;
-    return !(cardLifecycleFor({ showArchived: view.options.showArchived, searching: !!view.submittedSearch }) !== "all" && root && cardIsArchived(root));
+    // Either representation of archived — a card root's card state, any other
+    // root's `metadata.treeArchived` flag — exactly as the sidebar's scope reads it.
+    const root = membership.storedById.get(rootId);
+    return !(
+      cardLifecycleFor({ showArchived: view.options.showArchived, searching: !!view.submittedSearch }) !== "all" &&
+      root &&
+      rootIsArchived(root, membership.roots.has(rootId))
+    );
   };
   const touchedRoots = new Set([...rows.values()].filter(baseAdmits).map((chat) => membership.index.rootKeyOf(chat.id)));
   for (const chat of stored) {
