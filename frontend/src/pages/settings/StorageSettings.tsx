@@ -16,27 +16,7 @@ import {
 import type { StorageKeySummary, StorageKeyDetail, StorageItem } from "../../api";
 import ConfirmModal from "../../components/ConfirmModal";
 import MarkdownRenderer from "../../components/MarkdownRenderer";
-
-const sectionStyle: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: 20,
-  background: "var(--bg)",
-  marginBottom: 16,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 6,
-  border: "1px solid var(--border)",
-  background: "var(--surface)",
-  color: "var(--text)",
-  fontSize: 13,
-  boxSizing: "border-box",
-};
-
-const helpStyle: React.CSSProperties = { fontSize: 12, color: "var(--text-muted)", marginTop: 4 };
+import { sectionStyle, inputStyle, helpStyle } from "./styles";
 
 const errorBoxStyle: React.CSSProperties = {
   padding: "8px 12px",

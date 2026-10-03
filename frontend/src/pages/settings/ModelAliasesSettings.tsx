@@ -8,6 +8,7 @@ import AcpModelSelector from "../../components/AcpModelSelector";
 import PiModelSelector from "../../components/PiModelSelector";
 import { emptyRow, toRows, toAliases, hasEditableTarget, onlyOpenRouterTarget, type AliasRow } from "./modelAliasRows";
 import { errorMessage } from "../../utils/errorMessage";
+import { sectionStyle } from "./styles";
 
 /**
  * Settings → Model Aliases.
@@ -25,13 +26,6 @@ import { errorMessage } from "../../utils/errorMessage";
  * why it is still carried.
  */
 
-const sectionStyle: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: 20,
-  background: "var(--bg)",
-  marginBottom: 16,
-};
 const helpStyle: React.CSSProperties = { fontSize: 11, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.5 };
 const inputStyle: React.CSSProperties = {
   width: "100%",

@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 // useOutletContext removed — agent is now passed as a prop
-import { Plus, Zap, Play, Pause, Trash2, X, Search, ChevronDown, ChevronRight, Info, Pencil, Moon, Timer } from "lucide-react";
+import { Plus, Zap, Play, Pause, Trash2, X, Search, ChevronDown, ChevronRight, Info, Pencil, Timer } from "lucide-react";
 import ProviderConfigPicker from "../../../components/ProviderConfigPicker";
 import type { AgentProviderKind, EffortLevel } from "../../../utils/localStorage";
 import ModalOverlay from "../../../components/ModalOverlay";
 import { useIsMobile } from "../../../hooks/useIsMobile";
+import { useSystemInfo } from "../../../hooks/useSystemInfo";
 import {
-  getSystemInfo,
   getAgentTriggers,
   createAgentTrigger,
   updateAgentTrigger,
@@ -17,6 +17,8 @@ import {
 } from "../../../api";
 import type { Trigger, FilterCondition, TriggerFilter, AgentConfig, BacktestResult, StoredEvent } from "../../../api";
 import { errorMessage } from "../../../utils/errorMessage";
+import { QuietHoursBadge, QuietHoursFields } from "./QuietHours";
+import { dangerOutlineStyle, deleteButtonStyle } from "./dashboardStyles";
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -60,18 +62,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
   const [formModels, setFormModels] = useState<Partial<Record<AgentProviderKind, string>>>({});
   const [formEffort, setFormEffort] = useState<EffortLevel | undefined>();
   const [originalAction, setOriginalAction] = useState<Trigger["action"] | null>(null);
-  const [systemInfo, setSystemInfo] = useState<Awaited<ReturnType<typeof getSystemInfo>> | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    getSystemInfo({ refresh: true })
-      .then((info) => {
-        if (!cancelled) setSystemInfo(info);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { info: systemInfo } = useSystemInfo({ refresh: true });
 
   const changeModel = (provider: AgentProviderKind, model: string) => setFormModels((models) => ({ ...models, [provider]: model }));
   const buildAction = (): Trigger["action"] => {
@@ -482,10 +473,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                         justifyContent: "center",
                         padding: 8,
                         borderRadius: 6,
-                        background: "transparent",
-                        color: "var(--danger, #f85149)",
-                        border: "1px solid color-mix(in srgb, var(--danger, #f85149) 30%, transparent)",
-                        cursor: "pointer",
+                        ...dangerOutlineStyle,
                         flexShrink: 0,
                       }}
                     >
@@ -596,25 +584,16 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
           </div>
 
           {/* Quiet Hours */}
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={formQHEnabled} onChange={(e) => setFormQHEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
-              <span style={{ fontSize: 13, fontWeight: 500 }}>Quiet hours</span>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>— suppress during a time window</span>
-            </label>
-            {formQHEnabled && (
-              <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>Start</label>
-                  <input type="time" value={formQHStart} onChange={(e) => setFormQHStart(e.target.value)} style={inputStyle} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>End</label>
-                  <input type="time" value={formQHEnd} onChange={(e) => setFormQHEnd(e.target.value)} style={inputStyle} />
-                </div>
-              </div>
-            )}
-          </div>
+          <QuietHoursFields
+            enabled={formQHEnabled}
+            start={formQHStart}
+            end={formQHEnd}
+            onEnabledChange={setFormQHEnabled}
+            onStartChange={setFormQHStart}
+            onEndChange={setFormQHEnd}
+            inputStyle={inputStyle}
+            style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}
+          />
 
           {/* Debounce */}
           <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
@@ -894,23 +873,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                 </div>
 
                 {/* Quiet hours indicator */}
-                {trigger.quietHours?.enabled && (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 5,
-                      fontSize: 12,
-                      color: "var(--text-muted)",
-                      marginBottom: 6,
-                    }}
-                  >
-                    <Moon size={12} />
-                    <span>
-                      Quiet {trigger.quietHours.start} – {trigger.quietHours.end}
-                    </span>
-                  </div>
-                )}
+                <QuietHoursBadge quietHours={trigger.quietHours} />
 
                 {/* Debounce indicator */}
                 {trigger.debounce?.enabled && (
@@ -999,22 +962,7 @@ export default function Triggers({ agent }: { agent: AgentConfig }) {
                       {trigger.status === "active" ? <Pause size={12} /> : <Play size={12} />}
                       {trigger.status === "active" ? "Pause" : "Resume"}
                     </button>
-                    <button
-                      onClick={() => handleDelete(trigger.id)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                        padding: "6px 10px",
-                        borderRadius: 6,
-                        fontSize: 12,
-                        fontWeight: 500,
-                        background: "transparent",
-                        color: "var(--danger, #f85149)",
-                        border: "1px solid color-mix(in srgb, var(--danger, #f85149) 30%, transparent)",
-                        cursor: "pointer",
-                      }}
-                    >
+                    <button onClick={() => handleDelete(trigger.id)} style={deleteButtonStyle}>
                       <Trash2 size={12} />
                     </button>
                   </div>

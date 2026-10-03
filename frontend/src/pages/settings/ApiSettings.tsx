@@ -15,6 +15,7 @@ import {
 import PiModelSelector from "../../components/PiModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
 import { mergeAcpProviderModel } from "./acpProviderModels";
+import { EMPTY_API_SETTINGS_FORM, formFromSettings, settingsFromForm, type ApiSettingsForm } from "./apiSettingsForm";
 import {
   readClaudeCredentialMode,
   writeClaudeCredentialMode,
@@ -35,27 +36,7 @@ import CodexModelSelector from "../../components/CodexModelSelector";
 import { getDefaultProvider, getDefaultAcpProviderId } from "../../utils/localStorage";
 import type { AgentProviderKind } from "../../utils/localStorage";
 import { errorMessage } from "../../utils/errorMessage";
-
-const sectionStyle: React.CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: 20,
-  background: "var(--bg)",
-  marginBottom: 16,
-};
-
-const headerStyle: React.CSSProperties = {
-  marginBottom: 6,
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-};
-
-const subtitleStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: "var(--text-muted)",
-  marginBottom: 12,
-};
+import { sectionStyle, headerStyle, subtitleStyle } from "./styles";
 
 const labelStyle: React.CSSProperties = {
   display: "block",
@@ -1004,78 +985,71 @@ export default function ApiSettings() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
 
-  // Editable form state — mirrors the override fields on AgentSettings.
-  const [apiBaseUrl, setApiBaseUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [authToken, setAuthToken] = useState("");
-  const [model, setModel] = useState("");
-  const [defaultOpusModel, setDefaultOpusModel] = useState("");
-  const [defaultSonnetModel, setDefaultSonnetModel] = useState("");
-  const [defaultHaikuModel, setDefaultHaikuModel] = useState("");
-  const [subagentModel, setSubagentModel] = useState("");
-  // Binary overrides — "run my copy, not the one you found". Two engines have
-  // one; Cline and pi are in-process libraries with no subprocess to point
-  // elsewhere, so they get no field rather than a disabled one.
-  const [pathToClaudeCodeExecutable, setPathToClaudeCodeExecutable] = useState("");
-  const [codexPathOverride, setCodexPathOverride] = useState("");
-  // Claude Code → OpenRouter endpoint routing
-  const [claudeCodeUseOpenRouter, setClaudeCodeUseOpenRouter] = useState(false);
-  const [claudeCodeOpenRouterApiKey, setClaudeCodeOpenRouterApiKey] = useState("");
-  const [claudeCodeOpenRouterBaseUrl, setClaudeCodeOpenRouterBaseUrl] = useState("");
-  // Model overrides while routed through OpenRouter. Deliberately separate from
-  // the five generic model fields above so flipping the toggle doesn't leave the
-  // other mode pointing at a slug its endpoint can't resolve.
-  const [claudeCodeOpenRouterModel, setClaudeCodeOpenRouterModel] = useState("");
-  const [claudeCodeOpenRouterOpusModel, setClaudeCodeOpenRouterOpusModel] = useState("");
-  const [claudeCodeOpenRouterSonnetModel, setClaudeCodeOpenRouterSonnetModel] = useState("");
-  const [claudeCodeOpenRouterHaikuModel, setClaudeCodeOpenRouterHaikuModel] = useState("");
-  const [claudeCodeOpenRouterSubagentModel, setClaudeCodeOpenRouterSubagentModel] = useState("");
-  // OpenRouter as a service: the account key, plus the utility completions it
-  // can pay for (chat titles, branch names, themes). Not a harness — see the
-  // SettingsTab doc-comment.
-  const [openRouterApiKey, setOpenRouterApiKey] = useState("");
-  const [openRouterBaseUrl, setOpenRouterBaseUrl] = useState("");
-  const [openRouterUtilityCompletions, setOpenRouterUtilityCompletions] = useState(false);
-  const [openRouterUtilityHaikuModel, setOpenRouterUtilityHaikuModel] = useState("");
-  const [openRouterUtilitySonnetModel, setOpenRouterUtilitySonnetModel] = useState("");
-  const [openRouterUtilityOpusModel, setOpenRouterUtilityOpusModel] = useState("");
+  // Editable form state — mirrors the override fields on AgentSettings. See
+  // `apiSettingsForm.ts` for the field-by-field load/save mapping.
+  const [form, setForm] = useState<ApiSettingsForm>(EMPTY_API_SETTINGS_FORM);
+  const setField = <K extends keyof ApiSettingsForm>(key: K, value: ApiSettingsForm[K]) => setForm((prev) => ({ ...prev, [key]: value }));
+  /** `setField` pre-applied to one key, for the inputs that take a value-only `onChange`. */
+  const bind =
+    <K extends keyof ApiSettingsForm>(key: K) =>
+    (value: ApiSettingsForm[K]) =>
+      setField(key, value);
+  const {
+    apiBaseUrl,
+    apiKey,
+    authToken,
+    model,
+    defaultOpusModel,
+    defaultSonnetModel,
+    defaultHaikuModel,
+    subagentModel,
+    pathToClaudeCodeExecutable,
+    codexPathOverride,
+    claudeCodeUseOpenRouter,
+    claudeCodeOpenRouterApiKey,
+    claudeCodeOpenRouterBaseUrl,
+    claudeCodeOpenRouterModel,
+    claudeCodeOpenRouterOpusModel,
+    claudeCodeOpenRouterSonnetModel,
+    claudeCodeOpenRouterHaikuModel,
+    claudeCodeOpenRouterSubagentModel,
+    openRouterApiKey,
+    openRouterBaseUrl,
+    openRouterUtilityCompletions,
+    openRouterUtilityHaikuModel,
+    openRouterUtilitySonnetModel,
+    openRouterUtilityOpusModel,
+    codexAuthMode,
+    codexApiKey,
+    codexBaseUrl,
+    codexModel,
+    codexHome,
+    codexSandboxMode,
+    codexUseOpenRouter,
+    codexOpenRouterApiKey,
+    codexOpenRouterBaseUrl,
+    codexOpenRouterModel,
+    acpUseOpenRouter,
+    acpOpenRouterApiKey,
+    clineProviderId,
+    clineModel,
+    clineApiKey,
+    clineBaseUrl,
+    clineMaxIterations,
+    piProviderId,
+    piModel,
+    piApiKey,
+    piBaseUrl,
+  } = form;
   // Catalog models, for the role-model placeholders on the routed-harness tabs.
   const [orModels, setOrModels] = useState<OpenRouterModelInfo[]>([]);
-  // Codex (alternative provider, subscription-auth) overrides.
-  const [codexAuthMode, setCodexAuthMode] = useState<"subscription" | "api-key">("subscription");
-  const [codexApiKey, setCodexApiKey] = useState("");
-  const [codexBaseUrl, setCodexBaseUrl] = useState("");
-  const [codexModel, setCodexModel] = useState("");
-  const [codexHome, setCodexHome] = useState("");
-  const [codexSandboxMode, setCodexSandboxMode] = useState<"read-only" | "workspace-write" | "danger-full-access">("workspace-write");
-  // Codex → OpenRouter endpoint routing
-  const [codexUseOpenRouter, setCodexUseOpenRouter] = useState(false);
-  const [codexOpenRouterApiKey, setCodexOpenRouterApiKey] = useState("");
-  // ACP → OpenRouter. Unlike the two above this rewrites nothing in the agent's
-  // config; it only hands the vendor a key, so there is no base-URL or model
-  // pair to keep alongside it.
-  const [acpUseOpenRouter, setAcpUseOpenRouter] = useState(false);
-  const [acpOpenRouterApiKey, setAcpOpenRouterApiKey] = useState("");
-  // Default model for the ACTIVE ACP vendor tab. Unlike every other model
-  // field above, this one can't be seeded once at load: `settings` holds a map
-  // keyed by vendor id (`acpProviderModels`), and which entry is "the" value
-  // depends on which tab is open. Kept in sync by the effect below rather than
-  // in `loadAll`, so switching tabs re-seeds it without a re-fetch.
+  // Default model for the ACTIVE ACP vendor tab. Unlike every field in `form`,
+  // this one can't be seeded once at load: `settings` holds a map keyed by
+  // vendor id (`acpProviderModels`), and which entry is "the" value depends on
+  // which tab is open. Kept in sync by the effect below rather than in
+  // `loadAll`, so switching tabs re-seeds it without a re-fetch.
   const [acpProviderModel, setAcpProviderModel] = useState("");
-  const [codexOpenRouterBaseUrl, setCodexOpenRouterBaseUrl] = useState("");
-  const [codexOpenRouterModel, setCodexOpenRouterModel] = useState("");
-  // Cline (embedded SDK). No auth *mode* to pick: the runtime is in-process and
-  // takes credentials as config, falling back to its own env lookup when blank.
-  const [clineProviderId, setClineProviderId] = useState("");
-  const [clineModel, setClineModel] = useState("");
-  const [clineApiKey, setClineApiKey] = useState("");
-  const [clineBaseUrl, setClineBaseUrl] = useState("");
-  const [clineMaxIterations, setClineMaxIterations] = useState("");
   const [clineProviders, setClineProviders] = useState<string[]>([]);
-  const [piProviderId, setPiProviderId] = useState("");
-  const [piModel, setPiModel] = useState("");
-  const [piApiKey, setPiApiKey] = useState("");
-  const [piBaseUrl, setPiBaseUrl] = useState("");
   const [piProviders, setPiProviders] = useState<string[]>([]);
 
   const loadAll = async () => {
@@ -1126,60 +1100,7 @@ export default function ApiSettings() {
         const pick = vendors.find((v) => v.id === saved) ?? vendors.find((v) => v.available) ?? vendors[0];
         setActiveAcpProviderId((current) => current || pick.id);
       }
-      setApiBaseUrl(s.apiBaseUrl ?? "");
-      setApiKey(s.apiKey ?? "");
-      setAuthToken(s.authToken ?? "");
-      setModel(s.model ?? "");
-      setDefaultOpusModel(s.defaultOpusModel ?? "");
-      setDefaultSonnetModel(s.defaultSonnetModel ?? "");
-      setDefaultHaikuModel(s.defaultHaikuModel ?? "");
-      setSubagentModel(s.subagentModel ?? "");
-      setPathToClaudeCodeExecutable(s.pathToClaudeCodeExecutable ?? "");
-      // The stored flag, and nothing else. Seeding an unsaved `true` from a
-      // detected environment made the control claim a routing the daemon was
-      // not doing: both backend predicates start `if (!flag) return false`, and
-      // an unsaved flag is `undefined`, so the session took the native branch
-      // while Settings showed OpenRouter and New Chat showed Anthropic. The
-      // "Detected OpenRouter in your environment" banner is where that env gets
-      // mentioned; it invites the click rather than faking it.
-      setClaudeCodeUseOpenRouter(Boolean(s.claudeCodeUseOpenRouter));
-      setClaudeCodeOpenRouterApiKey(s.claudeCodeOpenRouterApiKey ?? "");
-      setClaudeCodeOpenRouterBaseUrl(s.claudeCodeOpenRouterBaseUrl ?? "");
-      setClaudeCodeOpenRouterModel(s.claudeCodeOpenRouterModel ?? "");
-      setClaudeCodeOpenRouterOpusModel(s.claudeCodeOpenRouterOpusModel ?? "");
-      setClaudeCodeOpenRouterSonnetModel(s.claudeCodeOpenRouterSonnetModel ?? "");
-      setClaudeCodeOpenRouterHaikuModel(s.claudeCodeOpenRouterHaikuModel ?? "");
-      setClaudeCodeOpenRouterSubagentModel(s.claudeCodeOpenRouterSubagentModel ?? "");
-      setOpenRouterApiKey(s.openRouterApiKey ?? "");
-      setOpenRouterBaseUrl(s.openRouterBaseUrl ?? "");
-      setOpenRouterUtilityCompletions(Boolean(s.openRouterUtilityCompletions));
-      setOpenRouterUtilityHaikuModel(s.openRouterUtilityHaikuModel ?? "");
-      setOpenRouterUtilitySonnetModel(s.openRouterUtilitySonnetModel ?? "");
-      setOpenRouterUtilityOpusModel(s.openRouterUtilityOpusModel ?? "");
-      setPiProviderId(s.piProviderId ?? "");
-      setPiModel(s.piModel ?? "");
-      setPiApiKey(s.piApiKey ?? "");
-      setPiBaseUrl(s.piBaseUrl ?? "");
-      setCodexAuthMode(s.codexAuthMode ?? "subscription");
-      setCodexApiKey(s.codexApiKey ?? "");
-      setCodexBaseUrl(s.codexBaseUrl ?? "");
-      setCodexModel(s.codexModel ?? "");
-      setCodexHome(s.codexHome ?? "");
-      setCodexPathOverride(s.codexPathOverride ?? "");
-      setCodexSandboxMode(s.codexSandboxMode ?? "workspace-write");
-      // Stored flag only, for the reason above — and more sharply here, since a
-      // detected Codex env with no endpoint override does not route at all.
-      setCodexUseOpenRouter(Boolean(s.codexUseOpenRouter));
-      setCodexOpenRouterApiKey(s.codexOpenRouterApiKey ?? "");
-      setAcpUseOpenRouter(Boolean(s.acpUseOpenRouter));
-      setAcpOpenRouterApiKey(s.acpOpenRouterApiKey ?? "");
-      setCodexOpenRouterBaseUrl(s.codexOpenRouterBaseUrl ?? "");
-      setCodexOpenRouterModel(s.codexOpenRouterModel ?? "");
-      setClineProviderId(s.clineProviderId ?? "");
-      setClineModel(s.clineModel ?? "");
-      setClineApiKey(s.clineApiKey ?? "");
-      setClineBaseUrl(s.clineBaseUrl ?? "");
-      setClineMaxIterations(typeof s.clineMaxIterations === "number" ? String(s.clineMaxIterations) : "");
+      setForm(formFromSettings(s));
       // Provider list comes from the SDK, not a table here. Best-effort: the
       // fields are free text, so an offline backend degrades to typing an id.
       getClineProviders()
@@ -1254,64 +1175,14 @@ export default function ApiSettings() {
       codexPathOverride.trim() !== (settings?.codexPathOverride ?? "").trim();
 
     try {
-      const updated = await updateAgentSettings({
-        apiBaseUrl,
-        apiKey,
-        authToken,
-        model,
-        defaultOpusModel,
-        defaultSonnetModel,
-        defaultHaikuModel,
-        subagentModel,
-        pathToClaudeCodeExecutable,
-        claudeCodeUseOpenRouter,
-        claudeCodeOpenRouterApiKey,
-        claudeCodeOpenRouterBaseUrl,
-        claudeCodeOpenRouterModel,
-        claudeCodeOpenRouterOpusModel,
-        claudeCodeOpenRouterSonnetModel,
-        claudeCodeOpenRouterHaikuModel,
-        claudeCodeOpenRouterSubagentModel,
-        openRouterApiKey,
-        openRouterBaseUrl,
-        openRouterUtilityCompletions,
-        openRouterUtilityHaikuModel,
-        openRouterUtilitySonnetModel,
-        openRouterUtilityOpusModel,
-        piProviderId,
-        piModel,
-        piApiKey,
-        piBaseUrl,
-        // Codex provider settings. Auth mode + sandbox mode are enums with a
-        // defined default, so they're always sent; the key/url/model/home are
-        // free-text overrides that fall back to the ambient env when empty.
-        codexAuthMode,
-        codexApiKey,
-        codexBaseUrl,
-        codexModel,
-        codexHome,
-        codexPathOverride,
-        codexSandboxMode,
-        codexUseOpenRouter,
-        codexOpenRouterApiKey,
-        codexOpenRouterBaseUrl,
-        codexOpenRouterModel,
-        acpUseOpenRouter,
-        acpOpenRouterApiKey,
-        // One tab is open but the stored value is a map, so this tab's edit is
-        // merged into the map rather than sent alone — see
-        // `mergeAcpProviderModel` for why every other vendor's entry survives,
-        // why a blank passes through instead of being deleted here, and why an
-        // unresolved vendor id is a no-op.
-        acpProviderModels: mergeAcpProviderModel(settings?.acpProviderModels, activeAcpProviderId, acpProviderModel),
-        clineProviderId,
-        clineModel,
-        clineApiKey,
-        clineBaseUrl,
-        // Blank clears the override so the SDK's own ceiling applies; a
-        // non-numeric entry is dropped rather than saved as NaN.
-        clineMaxIterations: clineMaxIterations.trim() ? Number(clineMaxIterations.trim()) || undefined : undefined,
-      });
+      // Every field, every time — see `settingsFromForm`. One tab is open but
+      // the stored ACP model is a map, so this tab's edit is merged into it
+      // rather than sent alone — see `mergeAcpProviderModel` for why every
+      // other vendor's entry survives, why a blank passes through instead of
+      // being deleted here, and why an unresolved vendor id is a no-op.
+      const updated = await updateAgentSettings(
+        settingsFromForm(form, mergeAcpProviderModel(settings?.acpProviderModels, activeAcpProviderId, acpProviderModel)),
+      );
       setSettings(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -1446,8 +1317,8 @@ export default function ApiSettings() {
     void persistCredentialFields(
       "claude",
       fields,
-      () => setClaudeCodeUseOpenRouter(fields.claudeCodeUseOpenRouter),
-      () => setClaudeCodeUseOpenRouter(previous),
+      () => setField("claudeCodeUseOpenRouter", fields.claudeCodeUseOpenRouter),
+      () => setField("claudeCodeUseOpenRouter", previous),
     );
   };
 
@@ -1459,14 +1330,14 @@ export default function ApiSettings() {
       "codex",
       fields,
       () => {
-        setCodexUseOpenRouter(fields.codexUseOpenRouter);
+        setField("codexUseOpenRouter", fields.codexUseOpenRouter);
         // Absent when selecting OpenRouter, because the native choice is parked
         // rather than overwritten — so there is nothing to move locally either.
-        if (fields.codexAuthMode) setCodexAuthMode(fields.codexAuthMode);
+        if (fields.codexAuthMode) setField("codexAuthMode", fields.codexAuthMode);
       },
       () => {
-        setCodexUseOpenRouter(previousUseOpenRouter);
-        setCodexAuthMode(previousAuthMode);
+        setField("codexUseOpenRouter", previousUseOpenRouter);
+        setField("codexAuthMode", previousAuthMode);
       },
     );
   };
@@ -1485,8 +1356,8 @@ export default function ApiSettings() {
     void persistCredentialFields(
       "codexParkedAuth",
       { codexAuthMode: mode },
-      () => setCodexAuthMode(mode),
-      () => setCodexAuthMode(previous),
+      () => setField("codexAuthMode", mode),
+      () => setField("codexAuthMode", previous),
     );
   };
 
@@ -1783,9 +1654,9 @@ export default function ApiSettings() {
             harness="Claude Code"
             inactiveNote={claudeInactiveNote}
             apiKey={claudeCodeOpenRouterApiKey}
-            onApiKeyChange={setClaudeCodeOpenRouterApiKey}
+            onApiKeyChange={bind("claudeCodeOpenRouterApiKey")}
             baseUrl={claudeCodeOpenRouterBaseUrl}
-            onBaseUrlChange={setClaudeCodeOpenRouterBaseUrl}
+            onBaseUrlChange={bind("claudeCodeOpenRouterBaseUrl")}
             detected={Boolean(systemInfo?.claudeCodeOpenRouterDetected)}
             endpoint="https://openrouter.ai/api"
             keyEnvLabel="ANTHROPIC_AUTH_TOKEN"
@@ -1822,7 +1693,7 @@ export default function ApiSettings() {
                 id="apiBaseUrl"
                 type="text"
                 value={apiBaseUrl}
-                onChange={(e) => setApiBaseUrl(e.target.value)}
+                onChange={(e) => setField("apiBaseUrl", e.target.value)}
                 placeholder="https://api.anthropic.com"
                 autoComplete="off"
                 spellCheck={false}
@@ -1869,7 +1740,7 @@ export default function ApiSettings() {
               <label htmlFor="apiKey" style={labelStyle}>
                 API Key<span style={envLabelStyle}>ANTHROPIC_API_KEY</span>
               </label>
-              <SecretField id="apiKey" value={apiKey} onChange={setApiKey} placeholder="sk-ant-..." />
+              <SecretField id="apiKey" value={apiKey} onChange={bind("apiKey")} placeholder="sk-ant-..." />
               <div style={helpStyle}>Sent as the X-Api-Key header. Takes precedence over your subscription login.</div>
             </div>
 
@@ -1877,7 +1748,7 @@ export default function ApiSettings() {
               <label htmlFor="authToken" style={labelStyle}>
                 Auth Token<span style={envLabelStyle}>ANTHROPIC_AUTH_TOKEN</span>
               </label>
-              <SecretField id="authToken" value={authToken} onChange={setAuthToken} placeholder="Bearer token value" />
+              <SecretField id="authToken" value={authToken} onChange={bind("authToken")} placeholder="Bearer token value" />
               <div style={helpStyle}>Sent as the Authorization: Bearer header. Use for gateways that require a bearer token.</div>
             </div>
           </div>
@@ -1901,7 +1772,7 @@ export default function ApiSettings() {
               id="pathToClaudeCodeExecutable"
               engineId="claude-code"
               value={pathToClaudeCodeExecutable}
-              onChange={setPathToClaudeCodeExecutable}
+              onChange={bind("pathToClaudeCodeExecutable")}
               placeholder="/usr/local/bin/claude"
               help={
                 <>
@@ -1968,7 +1839,7 @@ export default function ApiSettings() {
                 <OpenRouterModelSelector
                   id="model"
                   value={claudeCodeOpenRouterModel}
-                  onChange={setClaudeCodeOpenRouterModel}
+                  onChange={bind("claudeCodeOpenRouterModel")}
                   priorityPrefix="anthropic/"
                   placeholder="anthropic/claude-opus-4.7"
                 />
@@ -1977,7 +1848,7 @@ export default function ApiSettings() {
                   id="model"
                   type="text"
                   value={model}
-                  onChange={(e) => setModel(e.target.value)}
+                  onChange={(e) => setField("model", e.target.value)}
                   placeholder="e.g. opus, sonnet, claude-opus-4-7"
                   autoComplete="off"
                   spellCheck={false}
@@ -2005,7 +1876,7 @@ export default function ApiSettings() {
                 <OpenRouterModelSelector
                   id="opusModel"
                   value={claudeCodeOpenRouterOpusModel}
-                  onChange={setClaudeCodeOpenRouterOpusModel}
+                  onChange={bind("claudeCodeOpenRouterOpusModel")}
                   priorityPrefix="anthropic/"
                   placeholder={latestAnthropicRoleSlug(orModels, "opus") ?? "anthropic/claude-opus-4.8"}
                 />
@@ -2014,7 +1885,7 @@ export default function ApiSettings() {
                   id="opusModel"
                   type="text"
                   value={defaultOpusModel}
-                  onChange={(e) => setDefaultOpusModel(e.target.value)}
+                  onChange={(e) => setField("defaultOpusModel", e.target.value)}
                   placeholder="claude-opus-4-7"
                   autoComplete="off"
                   spellCheck={false}
@@ -2031,7 +1902,7 @@ export default function ApiSettings() {
                 <OpenRouterModelSelector
                   id="sonnetModel"
                   value={claudeCodeOpenRouterSonnetModel}
-                  onChange={setClaudeCodeOpenRouterSonnetModel}
+                  onChange={bind("claudeCodeOpenRouterSonnetModel")}
                   priorityPrefix="anthropic/"
                   placeholder={latestAnthropicRoleSlug(orModels, "sonnet") ?? "anthropic/claude-sonnet-4.6"}
                 />
@@ -2040,7 +1911,7 @@ export default function ApiSettings() {
                   id="sonnetModel"
                   type="text"
                   value={defaultSonnetModel}
-                  onChange={(e) => setDefaultSonnetModel(e.target.value)}
+                  onChange={(e) => setField("defaultSonnetModel", e.target.value)}
                   placeholder="claude-sonnet-4-6"
                   autoComplete="off"
                   spellCheck={false}
@@ -2057,7 +1928,7 @@ export default function ApiSettings() {
                 <OpenRouterModelSelector
                   id="haikuModel"
                   value={claudeCodeOpenRouterHaikuModel}
-                  onChange={setClaudeCodeOpenRouterHaikuModel}
+                  onChange={bind("claudeCodeOpenRouterHaikuModel")}
                   priorityPrefix="anthropic/"
                   placeholder={latestAnthropicRoleSlug(orModels, "haiku") ?? "anthropic/claude-haiku-4.5"}
                 />
@@ -2066,7 +1937,7 @@ export default function ApiSettings() {
                   id="haikuModel"
                   type="text"
                   value={defaultHaikuModel}
-                  onChange={(e) => setDefaultHaikuModel(e.target.value)}
+                  onChange={(e) => setField("defaultHaikuModel", e.target.value)}
                   placeholder="claude-haiku-4-5"
                   autoComplete="off"
                   spellCheck={false}
@@ -2084,7 +1955,7 @@ export default function ApiSettings() {
                 <OpenRouterModelSelector
                   id="subagentModel"
                   value={claudeCodeOpenRouterSubagentModel}
-                  onChange={setClaudeCodeOpenRouterSubagentModel}
+                  onChange={bind("claudeCodeOpenRouterSubagentModel")}
                   priorityPrefix="anthropic/"
                   placeholder={latestAnthropicRoleSlug(orModels, "sonnet") ?? "anthropic/claude-sonnet-4.6"}
                 />
@@ -2093,7 +1964,7 @@ export default function ApiSettings() {
                   id="subagentModel"
                   type="text"
                   value={subagentModel}
-                  onChange={(e) => setSubagentModel(e.target.value)}
+                  onChange={(e) => setField("subagentModel", e.target.value)}
                   placeholder="e.g. haiku"
                   autoComplete="off"
                   spellCheck={false}
@@ -2124,7 +1995,7 @@ export default function ApiSettings() {
               <label htmlFor="openRouterApiKey" style={labelStyle}>
                 API Key<span style={envLabelStyle}>OPENROUTER_API_KEY</span>
               </label>
-              <SecretField id="openRouterApiKey" value={openRouterApiKey} onChange={setOpenRouterApiKey} placeholder="sk-or-..." />
+              <SecretField id="openRouterApiKey" value={openRouterApiKey} onChange={bind("openRouterApiKey")} placeholder="sk-or-..." />
               <div style={helpStyle}>
                 Create one at openrouter.ai/keys. Also handed to ACP agents when the key on their own tab is blank, so a single key can cover both.
               </div>
@@ -2138,7 +2009,7 @@ export default function ApiSettings() {
                 id="openRouterBaseUrl"
                 type="text"
                 value={openRouterBaseUrl}
-                onChange={(e) => setOpenRouterBaseUrl(e.target.value)}
+                onChange={(e) => setField("openRouterBaseUrl", e.target.value)}
                 placeholder="https://openrouter.ai/api/v1"
                 autoComplete="off"
                 spellCheck={false}
@@ -2165,7 +2036,7 @@ export default function ApiSettings() {
               <input
                 type="checkbox"
                 checked={openRouterUtilityCompletions}
-                onChange={(e) => setOpenRouterUtilityCompletions(e.target.checked)}
+                onChange={(e) => setField("openRouterUtilityCompletions", e.target.checked)}
                 style={{ flexShrink: 0 }}
               />
               <span style={{ fontSize: 13, color: "var(--text)" }}>Use OpenRouter for chat titles, branch names and themes</span>
@@ -2186,7 +2057,7 @@ export default function ApiSettings() {
                   <OpenRouterModelSelector
                     id="openRouterUtilityHaikuModel"
                     value={openRouterUtilityHaikuModel}
-                    onChange={setOpenRouterUtilityHaikuModel}
+                    onChange={bind("openRouterUtilityHaikuModel")}
                     placeholder="~anthropic/claude-haiku-latest"
                   />
                   <div style={helpStyle}>Chat titles and branch names. Keep this one cheap and fast — it runs on every new chat.</div>
@@ -2199,7 +2070,7 @@ export default function ApiSettings() {
                   <OpenRouterModelSelector
                     id="openRouterUtilitySonnetModel"
                     value={openRouterUtilitySonnetModel}
-                    onChange={setOpenRouterUtilitySonnetModel}
+                    onChange={bind("openRouterUtilitySonnetModel")}
                     placeholder="~anthropic/claude-sonnet-latest"
                   />
                   <div style={helpStyle}>Theme generation, which asks for ~90 colour values in two modes and wants the better model.</div>
@@ -2212,7 +2083,7 @@ export default function ApiSettings() {
                   <OpenRouterModelSelector
                     id="openRouterUtilityOpusModel"
                     value={openRouterUtilityOpusModel}
-                    onChange={setOpenRouterUtilityOpusModel}
+                    onChange={bind("openRouterUtilityOpusModel")}
                     placeholder="~anthropic/claude-opus-latest"
                   />
                   <div style={helpStyle}>Nothing asks for this tier today; it exists so a future caller has somewhere to point.</div>
@@ -2239,9 +2110,9 @@ export default function ApiSettings() {
               onEnginesUpdated={handleEnginesUpdated}
               enginesLoading={enginesLoading}
               useOpenRouter={acpUseOpenRouter}
-              onUseOpenRouterChange={setAcpUseOpenRouter}
+              onUseOpenRouterChange={bind("acpUseOpenRouter")}
               openRouterApiKey={acpOpenRouterApiKey}
-              onOpenRouterApiKeyChange={setAcpOpenRouterApiKey}
+              onOpenRouterApiKeyChange={bind("acpOpenRouterApiKey")}
               accountKeySet={Boolean(settings?.openRouterApiKey?.trim())}
               defaultModel={acpProviderModel}
               onDefaultModelChange={setAcpProviderModel}
@@ -2280,9 +2151,9 @@ export default function ApiSettings() {
             harness="Codex"
             inactiveNote={codexInactiveNote}
             apiKey={codexOpenRouterApiKey}
-            onApiKeyChange={setCodexOpenRouterApiKey}
+            onApiKeyChange={bind("codexOpenRouterApiKey")}
             baseUrl={codexOpenRouterBaseUrl}
-            onBaseUrlChange={setCodexOpenRouterBaseUrl}
+            onBaseUrlChange={bind("codexOpenRouterBaseUrl")}
             detected={Boolean(systemInfo?.codexOpenRouterDetected)}
             endpoint="https://openrouter.ai/api/v1"
             keyEnvLabel="OPENROUTER_API_KEY"
@@ -2385,7 +2256,7 @@ export default function ApiSettings() {
                   <label htmlFor="codexApiKey" style={labelStyle}>
                     API Key<span style={envLabelStyle}>OPENAI_API_KEY</span>
                   </label>
-                  <SecretField id="codexApiKey" value={codexApiKey} onChange={setCodexApiKey} placeholder="sk-..." />
+                  <SecretField id="codexApiKey" value={codexApiKey} onChange={bind("codexApiKey")} placeholder="sk-..." />
                   <div style={helpStyle}>Billed to your OpenAI API account rather than your ChatGPT subscription.</div>
                 </div>
                 <div style={fieldWrap}>
@@ -2396,7 +2267,7 @@ export default function ApiSettings() {
                     id="codexBaseUrl"
                     type="text"
                     value={codexBaseUrl}
-                    onChange={(e) => setCodexBaseUrl(e.target.value)}
+                    onChange={(e) => setField("codexBaseUrl", e.target.value)}
                     placeholder="https://api.openai.com/v1"
                     autoComplete="off"
                     spellCheck={false}
@@ -2424,12 +2295,12 @@ export default function ApiSettings() {
                 <OpenRouterModelSelector
                   id="codexModel"
                   value={codexOpenRouterModel}
-                  onChange={setCodexOpenRouterModel}
+                  onChange={bind("codexOpenRouterModel")}
                   priorityPrefix="openai/"
                   placeholder="openai/gpt-5.5-codex"
                 />
               ) : (
-                <CodexModelSelector id="codexModel" value={codexModel} onChange={setCodexModel} placeholder="gpt-5.5" />
+                <CodexModelSelector id="codexModel" value={codexModel} onChange={bind("codexModel")} placeholder="gpt-5.5" />
               )}
               <div style={helpStyle}>
                 {codexCredentialMode === "openrouter"
@@ -2445,7 +2316,7 @@ export default function ApiSettings() {
               <select
                 id="codexSandboxMode"
                 value={codexSandboxMode}
-                onChange={(e) => setCodexSandboxMode(e.target.value as typeof codexSandboxMode)}
+                onChange={(e) => setField("codexSandboxMode", e.target.value as typeof codexSandboxMode)}
                 style={{ ...inputStyle, fontFamily: "inherit", cursor: "pointer" }}
               >
                 <option value="read-only">read-only — no writes or command execution</option>
@@ -2466,7 +2337,7 @@ export default function ApiSettings() {
                 id="codexHome"
                 type="text"
                 value={codexHome}
-                onChange={(e) => setCodexHome(e.target.value)}
+                onChange={(e) => setField("codexHome", e.target.value)}
                 placeholder="~/.codex"
                 autoComplete="off"
                 spellCheck={false}
@@ -2500,7 +2371,7 @@ export default function ApiSettings() {
               id="codexPathOverride"
               engineId="codex"
               value={codexPathOverride}
-              onChange={setCodexPathOverride}
+              onChange={bind("codexPathOverride")}
               placeholder={engineFor("codex")?.userCliPath || "/usr/local/bin/codex"}
               help={
                 <>
@@ -2555,7 +2426,7 @@ export default function ApiSettings() {
                 type="text"
                 list="pi-provider-ids"
                 value={piProviderId}
-                onChange={(e) => setPiProviderId(e.target.value)}
+                onChange={(e) => setField("piProviderId", e.target.value)}
                 onFocus={() => {
                   if (piProviders.length === 0) {
                     getPiProviders()
@@ -2583,7 +2454,7 @@ export default function ApiSettings() {
               <label htmlFor="piApiKey" style={labelStyle}>
                 API Key
               </label>
-              <SecretField id="piApiKey" value={piApiKey} onChange={setPiApiKey} placeholder="sk-or-v1-..." />
+              <SecretField id="piApiKey" value={piApiKey} onChange={bind("piApiKey")} placeholder="sk-or-v1-..." />
               <div style={helpStyle}>
                 Optional. Left blank, pi falls back to its own environment lookup (<code style={{ fontSize: 11 }}>OPENROUTER_API_KEY</code>, …). A key set here
                 <strong> wins</strong> over one in the environment, so a shell variable cannot silently take over a chat you configured differently.
@@ -2598,7 +2469,7 @@ export default function ApiSettings() {
                 id="piBaseUrl"
                 type="text"
                 value={piBaseUrl}
-                onChange={(e) => setPiBaseUrl(e.target.value)}
+                onChange={(e) => setField("piBaseUrl", e.target.value)}
                 placeholder="(the provider&rsquo;s own endpoint)"
                 autoComplete="off"
                 spellCheck={false}
@@ -2622,7 +2493,7 @@ export default function ApiSettings() {
               <label htmlFor="piModel" style={labelStyle}>
                 Default Model
               </label>
-              <PiModelSelector id="piModel" value={piModel} onChange={setPiModel} placeholder="google/gemini-3.6-flash" providerId={piProviderId} />
+              <PiModelSelector id="piModel" value={piModel} onChange={bind("piModel")} placeholder="google/gemini-3.6-flash" providerId={piProviderId} />
               <div style={helpStyle}>
                 Type to filter — this catalog is large (~300 models on OpenRouter), so the list narrows as you type rather than showing everything. Free text is
                 accepted for a slug newer than the bundled catalog; pi falls back to its own default if it does not recognise one.
@@ -2657,7 +2528,7 @@ export default function ApiSettings() {
                 type="text"
                 list="cline-provider-ids"
                 value={clineProviderId}
-                onChange={(e) => setClineProviderId(e.target.value)}
+                onChange={(e) => setField("clineProviderId", e.target.value)}
                 placeholder="anthropic"
                 autoComplete="off"
                 spellCheck={false}
@@ -2678,7 +2549,7 @@ export default function ApiSettings() {
               <label htmlFor="clineApiKey" style={labelStyle}>
                 API Key
               </label>
-              <SecretField id="clineApiKey" value={clineApiKey} onChange={setClineApiKey} placeholder="sk-..." />
+              <SecretField id="clineApiKey" value={clineApiKey} onChange={bind("clineApiKey")} placeholder="sk-..." />
               <div style={helpStyle}>
                 Optional. Left blank, the runtime falls back to its own environment lookup (<code style={{ fontSize: 11 }}>ANTHROPIC_API_KEY</code>,{" "}
                 <code style={{ fontSize: 11 }}>OPENAI_API_KEY</code>, the AWS credential chain, …), so a machine that already has those configured needs nothing
@@ -2694,7 +2565,7 @@ export default function ApiSettings() {
                 id="clineBaseUrl"
                 type="text"
                 value={clineBaseUrl}
-                onChange={(e) => setClineBaseUrl(e.target.value)}
+                onChange={(e) => setField("clineBaseUrl", e.target.value)}
                 placeholder="https://my-llm-host.internal/v1"
                 autoComplete="off"
                 spellCheck={false}
@@ -2725,7 +2596,7 @@ export default function ApiSettings() {
               <ClineModelSelector
                 id="clineModel"
                 value={clineModel}
-                onChange={setClineModel}
+                onChange={bind("clineModel")}
                 providerId={clineProviderId.trim() || "anthropic"}
                 placeholder="claude-sonnet-5"
               />
@@ -2744,7 +2615,7 @@ export default function ApiSettings() {
                 type="number"
                 min={1}
                 value={clineMaxIterations}
-                onChange={(e) => setClineMaxIterations(e.target.value)}
+                onChange={(e) => setField("clineMaxIterations", e.target.value)}
                 placeholder="(SDK default)"
                 autoComplete="off"
                 style={inputStyle}
