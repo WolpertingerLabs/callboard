@@ -572,14 +572,54 @@ describe("a card-less row", () => {
     });
     expect(screen.getByText("Archive chat").closest("button")!.getAttribute("title")).toBe('Archive "discord reply"');
 
-    // The refetch the action triggers, as the server would answer it.
-    mockListChats.mockResolvedValue(listResponse([OPEN, { ...BOT, archived: true }]));
+    // A refetch that never lands, so only the local merge of the response
+    // can fade the row.
+    mockListChats.mockReturnValue(new Promise(() => {}));
     await act(async () => {
       fireEvent.click(screen.getByText("Archive chat"));
     });
 
     expect(bulkArchiveChats).toHaveBeenCalledWith(["bot-1"], true);
     await waitFor(() => expect(screen.getByText("discord reply").closest(".chatlist-item-dimmed")).toBeTruthy());
+  });
+
+  it("says so when the server reports the archive failed, and leaves the row as it was", async () => {
+    vi.mocked(bulkArchiveChats).mockResolvedValue({ updated: [], failed: [{ id: "bot-1", error: "locked" }] });
+    await renderList();
+    await waitFor(() => {
+      openRowMenu("discord reply");
+      expect(screen.getByText("Archive chat")).toBeTruthy();
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Archive chat"));
+    });
+
+    await screen.findByText("Could not archive this chat: locked");
+    expect(screen.getByText("discord reply").closest(".chatlist-item-dimmed")).toBeNull();
+  });
+
+  /**
+   * `isCard` is the server's verdict, and the client can have no card for that
+   * root — here a session Callboard never recorded, which the server
+   * materialises into a card and closes. The card index has nothing to patch,
+   * so the row's own `archived` field has to be set from the response.
+   */
+  it("fades a row the server archived as a card the client has no card for", async () => {
+    const LOOSE = makeChat("loose-1", { preview: "loose session" });
+    mockListChats.mockResolvedValue(listResponse([OPEN, LOOSE]));
+    vi.mocked(bulkArchiveChats).mockResolvedValue({ updated: [{ id: "loose-1", rootChatId: "loose-1", archived: true, isCard: true }], failed: [] });
+    await renderList();
+    await waitFor(() => {
+      openRowMenu("loose session");
+      expect(screen.getByText("Archive chat")).toBeTruthy();
+    });
+
+    mockListChats.mockReturnValue(new Promise(() => {}));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Archive chat"));
+    });
+
+    await waitFor(() => expect(screen.getByText("loose session").closest(".chatlist-item-dimmed")).toBeTruthy());
   });
 
   it("offers Unarchive when the server reports its tree archived", async () => {

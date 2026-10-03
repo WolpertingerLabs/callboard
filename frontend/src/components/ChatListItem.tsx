@@ -62,6 +62,12 @@ export interface ChatCardMenu {
     archived: boolean;
     /** Chats in the tree as far as the list knows, the root included. */
     chatCount: number;
+    /**
+     * Whether this row IS the tree's root. Archive acts from the root down, so
+     * the tooltip for a row further down cannot say "the chats under it" —
+     * its parent and siblings go too.
+     */
+    isRoot: boolean;
   };
   onToggleLifecycle?: () => void;
 }
@@ -181,9 +187,12 @@ function cardLifecycleTitle({ title, lifecycle, chatCount }: NonNullable<ChatCar
  * title rather than a card's, and without the board: a card-less tree has no
  * tile to move to the Archived strip, only rows that fade or leave the list.
  */
-function treeArchiveTitle(title: string, { archived, chatCount }: NonNullable<ChatCardMenu["tree"]>): string {
+function treeArchiveTitle(title: string, { archived, chatCount, isRoot }: NonNullable<ChatCardMenu["tree"]>): string {
   if (archived) return `Unarchive "${title}"`;
-  return chatCount > 1 ? `Archive "${title}" and the ${chatCount - 1} ${chatCount === 2 ? "chat" : "chats"} under it` : `Archive "${title}"`;
+  if (chatCount <= 1) return `Archive "${title}"`;
+  const n = chatCount - 1;
+  const noun = n === 1 ? "chat" : "chats";
+  return isRoot ? `Archive "${title}" and the ${n} ${noun} under it` : `Archive "${title}" and the ${n} other ${noun} in its tree`;
 }
 
 export default function ChatListItem({

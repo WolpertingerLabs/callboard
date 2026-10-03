@@ -160,7 +160,7 @@ describe("ChatListItem card menu", () => {
       const chat = makeChat({ metadata: JSON.stringify({ title: "Discord thread", triggered: true }) });
       const onToggleLifecycle = vi.fn();
       const { container } = render(
-        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ onToggleLifecycle, tree: { archived: false, chatCount: 1 } }} />,
+        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ onToggleLifecycle, tree: { archived: false, chatCount: 1, isRoot: true } }} />,
       );
       openRowMenu(container);
 
@@ -172,17 +172,29 @@ describe("ChatListItem card menu", () => {
     it("mentions the chats under it when the tree has more than one", () => {
       const chat = makeChat({ metadata: JSON.stringify({ title: "Nightly run", triggered: true }) });
       const { container } = render(
-        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: false, chatCount: 4 } }} />,
+        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: false, chatCount: 4, isRoot: true } }} />,
       );
       openRowMenu(container);
 
       expect(titleOf("Archive chat")).toBe('Archive "Nightly run" and the 3 chats under it');
     });
 
+    it("names the whole tree, not the chats under it, on a row that is not the root", () => {
+      // Archive acts from the root down: on a child row the parent and its
+      // siblings go too, so "under it" would undercount.
+      const chat = makeChat({ metadata: JSON.stringify({ title: "Step 2", triggered: true, rootChatId: "run-root" }) });
+      const { container } = render(
+        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: false, chatCount: 4, isRoot: false } }} />,
+      );
+      openRowMenu(container);
+
+      expect(titleOf("Archive chat")).toBe('Archive "Step 2" and the 3 other chats in its tree');
+    });
+
     it("offers Unarchive when its tree is archived", () => {
       const chat = makeChat({ metadata: JSON.stringify({ title: "Discord thread", triggered: true }) });
       const { container } = render(
-        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: true, chatCount: 3 } }} dimmed />,
+        <ChatListItem chat={chat} onClick={() => {}} onDelete={() => {}} cardMenu={{ ...CARD_MENU, tree: { archived: true, chatCount: 3, isRoot: true } }} dimmed />,
       );
       openRowMenu(container);
 
@@ -197,7 +209,7 @@ describe("ChatListItem card menu", () => {
           chat={chat}
           onClick={() => {}}
           onDelete={() => {}}
-          cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 }, tree: { archived: true, chatCount: 1 } }}
+          cardMenu={{ ...CARD_MENU, card: { title: "Ship it", lifecycle: "open", chatCount: 1 }, tree: { archived: true, chatCount: 1, isRoot: true } }}
         />,
       );
       openRowMenu(container);

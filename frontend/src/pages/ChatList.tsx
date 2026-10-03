@@ -752,15 +752,22 @@ export default function ChatList({
 
   /**
    * Fold a bulk-archive response into local state, so the affected rows fade
-   * (or un-fade) on this render instead of the next fetch: card roots through
-   * the card index the dim reads first, card-less roots through the rows'
-   * `archived` field. The caller still refetches — whether a row should now
-   * LEAVE the list is the server's call.
+   * (or un-fade) on this render instead of the next fetch. The caller still
+   * refetches — whether a row should now LEAVE the list is the server's call.
+   *
+   * Two writes, and the second is for EVERY update, card or not. The card
+   * index is what the dim reads first for a card row, so card roots are
+   * patched there. But `isCard` is the server's verdict, and the client may
+   * have no card for that root at all — a record-less session the server just
+   * materialised into one, or a card created since the last `listCards` — and
+   * a row with no card in the index is dimmed by its own `archived` field. So
+   * that field is set on every row of every updated tree too; on a row that
+   * does have a card it is simply not the one read.
    */
   const applyArchiveUpdates = (updated: BulkArchiveUpdate[]) => {
     const cardRoots = new Map(updated.filter((u) => u.isCard).map((u) => [u.rootChatId, u.archived]));
-    const treeRoots = new Map(updated.filter((u) => !u.isCard).map((u) => [u.rootChatId, u.archived]));
-    const requestedTrees = new Map(updated.filter((u) => !u.isCard).map((u) => [u.id, u.archived]));
+    const roots = new Map(updated.map((u) => [u.rootChatId, u.archived]));
+    const requested = new Map(updated.map((u) => [u.id, u.archived]));
     if (cardRoots.size > 0) {
       setCards((prev) =>
         prev.map((c) => {
@@ -771,11 +778,11 @@ export default function ChatList({
         }),
       );
     }
-    if (treeRoots.size > 0) {
+    if (roots.size > 0) {
       setChats((prev) =>
         prev.map((c) => {
-          const root = chatCardId(c);
-          const archived = requestedTrees.get(c.id) ?? (root !== undefined ? treeRoots.get(root) : undefined);
+          const root = chatCardId(c) ?? c.id;
+          const archived = requested.get(c.id) ?? roots.get(root);
           return archived === undefined ? c : { ...c, archived: archived || undefined };
         }),
       );
@@ -831,7 +838,7 @@ export default function ChatList({
     const card = cardOf(chat);
     return {
       ...(card && { card: { title: card.title, lifecycle: card.lifecycle, chatCount: card.chatCount } }),
-      ...(!card && cardsLoaded && { tree: { archived: isDimmed(chat), chatCount: treeSizeOf(chat) } }),
+      ...(!card && cardsLoaded && { tree: { archived: isDimmed(chat), chatCount: treeSizeOf(chat), isRoot: (chatCardId(chat) ?? chat.id) === chat.id } }),
       onToggleLifecycle: () => handleToggleArchive(chat),
     };
   };
@@ -1132,9 +1139,11 @@ export default function ChatList({
       // this component's: with "Archived" off the scope withholds an archived
       // tree, with it on the rows stay and read as faded. So refetch rather
       // than filter locally — the merge above has already paid for the
-      // instant feedback. The card index is NOT refetched: the merge set the
-      // two fields the dim and the scope read, and a refetch racing the
-      // server's cache invalidation could hand back the pre-archive state.
+      // instant feedback. The card index is not refetched from here because it
+      // does not need to be: the merge set the two fields the dim and the
+      // scope read, and the route's own metadata notification bumps
+      // `metadataVersion`, whose effect reloads both the list and the cards
+      // with the server's full summaries shortly after.
       load();
     } catch (err) {
       setBulkError(errorMessage(err, "Failed to update chats"));
