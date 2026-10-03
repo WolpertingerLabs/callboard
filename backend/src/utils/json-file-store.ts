@@ -15,6 +15,13 @@
  *   the alternative: every auth check throwing until someone fixes the file by
  *   hand. The next load finds no file and recreates it empty; the corrupt
  *   copy is never touched again.
+ * - ...unless the file is merely mid-write. Something outside the daemon may
+ *   rewrite it in place, and a read that lands inside that write sees half a
+ *   file. So a parse failure is re-read a couple of times, a few ms apart, and
+ *   the file is only moved aside when it still fails AND its (mtimeNs, size)
+ *   held still across the wait — stably corrupt. A file still changing after
+ *   the last attempt throws for this one load and is left exactly where it is;
+ *   the next load reads it again.
  */
 import { renameSync, readFileSync, statSync, type BigIntStats } from "fs";
 import { atomicWriteFileSync } from "./atomic-write.js";
@@ -24,6 +31,15 @@ const log = createLogger("json-file-store");
 
 /** Auth files hold secrets: owner read/write only. */
 const SECRET_FILE_MODE = 0o600;
+
+/** Re-reads of a file that failed to parse: 3 × 20ms, so at most ~60ms on the event loop. */
+const TORN_READ_RETRIES = 3;
+const TORN_READ_RETRY_DELAY_MS = 20;
+
+/** `load()` is synchronous, so the wait between re-reads has to be too. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 export interface JsonFileStore<T> {
   /** Current contents. Creates the file (with `empty()`) when absent. */
@@ -79,7 +95,28 @@ export function createJsonFileStore<T>(filePath: string, empty: () => T): JsonFi
       const parsed = JSON.parse(raw) as T;
       remember(parsed, st);
       return parsed;
-    } catch (err) {
+    } catch (firstErr) {
+      // Mid-write or corrupt? Wait, look again, and only call it corrupt once
+      // the file has stopped changing and still does not parse.
+      let err = firstErr;
+      let before: BigIntStats = st;
+      for (let attempt = 1; ; attempt++) {
+        sleepSync(TORN_READ_RETRY_DELAY_MS);
+        const after = statOrNull(filePath);
+        // Replaced by rename and momentarily absent, or deleted: start over.
+        if (!after) return load();
+        try {
+          const parsed = JSON.parse(readFileSync(filePath, "utf8")) as T;
+          remember(parsed, after);
+          return parsed;
+        } catch (retryErr) {
+          err = retryErr;
+        }
+        if (sameKey(before, after)) break;
+        if (attempt >= TORN_READ_RETRIES) throw err;
+        before = after;
+      }
+
       const fallback = empty();
       const aside = `${filePath}.corrupt-${Date.now()}`;
       try {
