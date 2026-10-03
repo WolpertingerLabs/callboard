@@ -52,10 +52,10 @@
  * @see plans/pi-spike-findings.md (§2 — project trust; §3 — the gate, measured)
  * @see ../cline/permissionAdapter.ts (the closest precedent)
  */
-import { isComputerControlToolName } from "../../permissions/computerControl.js";
 import type { ExtensionAPI, ExtensionFactory, ToolCallEvent, ToolCallEventResult, CreateAgentSessionServicesOptions } from "@earendil-works/pi-coding-agent";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { decidePermission, type PermissionCategory } from "../../permissions/ToolPermissionPolicy.js";
+import { isToolIdentifier, makeNameCategorizer, MOST_RESTRICTIVE_CATEGORY } from "../../permissions/nameCategorizer.js";
 import { createLogger } from "../../../utils/logger.js";
 
 const log = createLogger("pi-permissions");
@@ -66,15 +66,7 @@ export const PI_EXTENSION_NAME = "callboard-permissions";
 /** An inline extension factory, as `resourceLoaderOptions.extensionFactories` takes it. */
 export type PiPermissionExtension = ExtensionFactory;
 
-/**
- * The category anything unrecognizable resolves to.
- *
- * `codeExecution` is the top of the restrictiveness order: a tool that can run
- * code can do everything the other three axes describe, so it is the only safe
- * answer when we do not know what a tool is. See the header for why this is not
- * `null`.
- */
-export const MOST_RESTRICTIVE_CATEGORY: PermissionCategory = "codeExecution";
+export { MOST_RESTRICTIVE_CATEGORY };
 
 /**
  * pi's built-in tools, all eight.
@@ -202,103 +194,35 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
 ]);
 
 /**
- * Token families for names not in {@link EXACT_CATEGORIES}, **most restrictive
- * first**. A name matching more than one family resolves to the first listed.
- *
- * The order is by what a tool in that family can do, not by alphabet:
- * `codeExecution` subsumes the rest, `fileWrite` mutates local state,
- * `webAccess` moves data in and out of the machine, `fileRead` only observes.
- * Resolving `search_and_run` to `fileRead` would treat a run-capable tool as
- * read-only — the widening this ordering exists to prevent.
- *
- * In the pi adapter this fallback serves callboard's own `customTools`, which
- * surface under their bare names (`spawn_job`, `set_chat_title`). pi has no MCP
- * client, so unlike the Cline adapter there is no third-party tool surface for it
- * to also cover — see the plan's Decision 5.
- *
- * Deliberately mirrors the Cline/ACP/OpenRouter tables rather than importing
- * one: each adapter owning its own categorizer is the property the registry in
- * `permissions/categorizers.ts` protects. Consolidating them is a reasonable
- * follow-up, but should be a deliberate refactor rather than a side effect of
- * adding a provider.
- */
-const CATEGORY_TOKENS: ReadonlyArray<readonly [PermissionCategory, readonly string[]]> = [
-  ["codeExecution", ["bash", "sh", "shell", "exec", "execute", "run", "terminal", "command", "spawn", "eval", "script", "process", "kill"]],
-  [
-    "fileWrite",
-    [
-      "write",
-      "edit",
-      "create",
-      "delete",
-      "remove",
-      "move",
-      "rename",
-      "patch",
-      "apply",
-      "mkdir",
-      "replace",
-      "insert",
-      "append",
-      "update",
-      "modify",
-      "save",
-      "touch",
-    ],
-  ],
-  ["webAccess", ["fetch", "http", "https", "web", "browse", "url", "download", "upload", "curl", "request"]],
-  ["fileRead", ["read", "glob", "grep", "search", "find", "list", "cat", "view", "stat"]],
-];
-
-/**
- * Does this string look like a *tool name* rather than a sentence?
- *
- * Rule 3 of the two-pass ruling. `ToolPermissionPolicy` is a
- * `(toolName: string, …)` bridge and nothing structurally guarantees the caller
- * passes an identifier, so prose is never parsed for a gate: anything that is not
- * a single identifier-shaped token goes straight to
- * {@link MOST_RESTRICTIVE_CATEGORY} and its words are never read.
+ * Does this string look like a *tool name* rather than a sentence? Prose is
+ * never parsed for a gate — see `isToolIdentifier` in
+ * `permissions/nameCategorizer.ts`.
  */
 export function isPiToolIdentifier(value: string): boolean {
-  return /^[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,63}$/.test(value);
+  return isToolIdentifier(value);
 }
+
+const categorizeByName = makeNameCategorizer(EXACT_CATEGORIES);
 
 /**
  * Category for a pi tool, from its name and nothing else.
  *
- * Resolution order:
+ * Resolution order (see {@link makeNameCategorizer}):
  *  1. exact match in {@link EXACT_CATEGORIES}
- *  2. token match in {@link CATEGORY_TOKENS}, most restrictive family first
+ *  2. token match in the shared token table, most restrictive family first
  *  3. {@link MOST_RESTRICTIVE_CATEGORY}
+ *
+ * In the pi adapter the token fallback serves callboard's own `customTools`,
+ * which surface under their bare names (`spawn_job`, `set_chat_title`). pi has
+ * no MCP client, so unlike the Cline adapter there is no third-party tool
+ * surface for it to also cover — see the plan's Decision 5.
  *
  * Never returns `null` — see the header. The return type keeps `| null` only to
  * satisfy the shared `ToolCategorizer` signature that
  * `permissions/categorizers.ts` requires (Phase 3 registers it there).
  */
 export function categorizePiToolName(toolName: string): PermissionCategory | null {
-  if (isComputerControlToolName(toolName)) return "computerControl";
-  const trimmed = toolName.trim();
-  if (!isPiToolIdentifier(trimmed)) return MOST_RESTRICTIVE_CATEGORY;
-
-  const exact = EXACT_CATEGORIES.get(trimmed);
-  if (exact) return exact;
-
-  // Tokenize rather than using `\b` word boundaries: these names are
-  // overwhelmingly snake_case and `_` is a word character, so `/\bread\b/` does
-  // NOT match `read_files`. Splitting on non-alphanumerics handles snake_case,
-  // camelCase and kebab-case for free.
-  const tokens = new Set(
-    trimmed
-      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean),
-  );
-
-  for (const [category, words] of CATEGORY_TOKENS) {
-    if (words.some((w) => tokens.has(w))) return category;
-  }
-  return MOST_RESTRICTIVE_CATEGORY;
+  return categorizeByName(toolName);
 }
 
 /** A callboard `canUseTool` callback, as `services/claude.ts` builds it. */

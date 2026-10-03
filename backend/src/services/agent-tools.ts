@@ -13,7 +13,7 @@ import type { EffortLevel } from "shared";
  * engine's registration shape via `provider.buildToolServer(spec)`.
  */
 import { z } from "zod";
-import { defineTool } from "../agents/ports/tools.js";
+import { defineTool, jsonResult, textResult } from "../agents/ports/tools.js";
 import { withActivity } from "./chat-activity.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { listAgents, getAgent, createAgent, agentExists, isValidAlias, ensureAgentWorkspaceDir, getAgentWorkspacePath } from "./agent-file-service.js";
@@ -35,6 +35,7 @@ import { createLogger } from "../utils/logger.js";
 import { resolveAgentKeyAlias, routeKeyAliasForPersist } from "./agent-settings.js";
 import type { CronJob, Trigger, AgentConfig } from "shared";
 import type { SendMessageOptions } from "./claude.js";
+import { awaitChatCreated, toPromptIterable, unattendedPermissions } from "./session-spawn.js";
 
 const log = createLogger("agent-tools");
 
@@ -109,12 +110,12 @@ export function buildAgentToolsSpec(
             // 1. Validate target agent exists
             const targetConfig = getAgent(args.targetAlias);
             if (!targetConfig) {
-              return { content: [{ type: "text" as const, text: `Agent "${args.targetAlias}" not found` }] };
+              return textResult(`Agent "${args.targetAlias}" not found`);
             }
 
             // 2. Prevent self-talk
             if (args.targetAlias === agentAlias) {
-              return { content: [{ type: "text" as const, text: "Error: An agent cannot talk to itself" }] };
+              return textResult("Error: An agent cannot talk to itself");
             }
 
             const providerModel = resolveProviderModelArgs(args, {
@@ -123,12 +124,12 @@ export function buildAgentToolsSpec(
               getModel: opts?.getModel,
             });
             if (!providerModel.ok) {
-              return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
+              return textResult(`Error: ${providerModel.error}`);
             }
-            await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: getAgentWorkspacePath(args.targetAlias) });
+            const workspacePath = getAgentWorkspacePath(args.targetAlias);
+            await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: workspacePath });
 
             // 3. Compile target agent's identity and workspace context
-            const workspacePath = getAgentWorkspacePath(args.targetAlias);
             const fullSystemPrompt = compileSystemPrompt(targetConfig, workspacePath).prompt;
 
             // 4. Build prompt with caller context
@@ -138,23 +139,15 @@ export function buildAgentToolsSpec(
 
             const sendMessage = getSendMessage();
 
-            // 5. Build async generator prompt
-            const promptIterable = (async function* () {
-              yield {
-                type: "user" as const,
-                message: { role: "user" as const, content: contextualPrompt },
-              };
-            })();
-
-            // 6. Start target agent session (linked into the caller's chat
+            // 5. Start target agent session (linked into the caller's chat
             // parentage tree when the calling chat is resolvable)
             const emitter = await sendMessage({
-              prompt: promptIterable,
+              prompt: toPromptIterable(contextualPrompt),
               folder: workspacePath,
               systemPrompt: fullSystemPrompt,
               agentAlias: args.targetAlias,
               maxTurns: args.maxTurns ?? 50,
-              defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" },
+              defaultPermissions: unattendedPermissions(),
               provider: providerModel.provider,
               ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
@@ -162,21 +155,14 @@ export function buildAgentToolsSpec(
               ...(getChatId?.() && { parentChatId: getChatId(), chatRole: "agent-consult" }),
             });
 
-            // 7. Wait for chat_created to get chatId
-            const chatId = await new Promise<string>((resolve, reject) => {
-              const timeout = setTimeout(() => reject(new Error("Timed out waiting for target agent session to start")), 30_000);
-              emitter.on("event", (event: any) => {
-                if (event.type === "chat_created" && event.chatId) {
-                  clearTimeout(timeout);
-                  resolve(event.chatId);
-                } else if (event.type === "error") {
-                  clearTimeout(timeout);
-                  reject(new Error(event.content || "Target agent session failed to start"));
-                }
-              });
+            // 6. Wait for chat_created to get chatId
+            const chatId = await awaitChatCreated(emitter, {
+              timeoutMs: 30_000,
+              timeoutMessage: "Timed out waiting for target agent session to start",
+              failMessage: "Target agent session failed to start",
             });
 
-            // 8. Collect text output and wait for completion.
+            // 7. Collect text output and wait for completion.
             //    This tool always blocks — there is no async variant — so
             //    without an activity the calling chat looks idle for up to ten
             //    minutes. Not interruptible: the target agent keeps working,
@@ -217,7 +203,7 @@ export function buildAgentToolsSpec(
               await awaitTarget();
             }
 
-            // 9. Log activity
+            // 8. Log activity
             log.info(`Agent ${agentAlias} talked to ${args.targetAlias}, session ${chatId}`);
             appendActivity(agentAlias, {
               type: "system",
@@ -225,29 +211,22 @@ export function buildAgentToolsSpec(
               metadata: { chatId, targetAlias: args.targetAlias },
             });
 
-            // 10. Return the collected response
+            // 9. Return the collected response
             const response = responseTexts.join("") || "(No text response from target agent)";
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    chatId,
-                    targetAlias: args.targetAlias,
-                    // What the target agent ran on, and how the model was
-                    // chosen — see start_chat_session for the rationale.
-                    ...(providerModel.model && { model: providerModel.model }),
-                    ...(args.effort && { effort: args.effort as EffortLevel }),
-                    modelSource: providerModel.modelSource,
-                    ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
-                    response,
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              chatId,
+              targetAlias: args.targetAlias,
+              // What the target agent ran on, and how the model was
+              // chosen — see start_chat_session for the rationale.
+              ...(providerModel.model && { model: providerModel.model }),
+              ...(args.effort && { effort: args.effort as EffortLevel }),
+              modelSource: providerModel.modelSource,
+              ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
+              response,
+            });
           } catch (err: any) {
             log.error(`talk_to_agent failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error talking to agent: ${err.message}` }] };
+            return textResult(`Error talking to agent: ${err.message}`);
           }
         },
       ),
@@ -266,7 +245,7 @@ export function buildAgentToolsSpec(
             // 1. Validate target agent exists
             const targetConfig = getAgent(args.targetAlias);
             if (!targetConfig) {
-              return { content: [{ type: "text" as const, text: `Agent "${args.targetAlias}" not found` }] };
+              return textResult(`Agent "${args.targetAlias}" not found`);
             }
 
             const providerModel = resolveProviderModelArgs(args, {
@@ -275,7 +254,7 @@ export function buildAgentToolsSpec(
               getModel: opts?.getModel,
             });
             if (!providerModel.ok) {
-              return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
+              return textResult(`Error: ${providerModel.error}`);
             }
             await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: getAgentWorkspacePath(args.targetAlias) });
 
@@ -295,7 +274,7 @@ export function buildAgentToolsSpec(
             });
 
             if (!result) {
-              return { content: [{ type: "text" as const, text: `Failed to deploy agent "${args.targetAlias}" — check agent config` }] };
+              return textResult(`Failed to deploy agent "${args.targetAlias}" — check agent config`);
             }
 
             log.info(`Agent ${agentAlias} deployed agent ${args.targetAlias}, session ${result.chatId}`);
@@ -305,27 +284,20 @@ export function buildAgentToolsSpec(
               metadata: { chatId: result.chatId, targetAlias: args.targetAlias },
             });
 
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    chatId: result.chatId,
-                    status: "started",
-                    targetAlias: args.targetAlias,
-                    // What the spawned agent session will run, and how the
-                    // model was chosen — see start_chat_session for the rationale.
-                    ...(providerModel.model && { model: providerModel.model }),
-                    ...(args.effort && { effort: args.effort as EffortLevel }),
-                    modelSource: providerModel.modelSource,
-                    ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              chatId: result.chatId,
+              status: "started",
+              targetAlias: args.targetAlias,
+              // What the spawned agent session will run, and how the
+              // model was chosen — see start_chat_session for the rationale.
+              ...(providerModel.model && { model: providerModel.model }),
+              ...(args.effort && { effort: args.effort as EffortLevel }),
+              modelSource: providerModel.modelSource,
+              ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
+            });
           } catch (err: any) {
             log.error(`deploy_agent failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error deploying agent: ${err.message}` }] };
+            return textResult(`Error deploying agent: ${err.message}`);
           }
         },
       ),
@@ -335,9 +307,9 @@ export function buildAgentToolsSpec(
       defineTool("list_cron_jobs", "List all scheduled cron jobs for your agent.", {}, async () => {
         try {
           const jobs = listCronJobs(agentAlias);
-          return { content: [{ type: "text" as const, text: JSON.stringify(jobs, null, 2) }] };
+          return textResult(JSON.stringify(jobs, null, 2));
         } catch (err: any) {
-          return { content: [{ type: "text" as const, text: `Error listing cron jobs: ${err.message}` }] };
+          return textResult(`Error listing cron jobs: ${err.message}`);
         }
       }),
 
@@ -381,9 +353,9 @@ export function buildAgentToolsSpec(
               metadata: { jobId: job.id },
             });
 
-            return { content: [{ type: "text" as const, text: JSON.stringify(job, null, 2) }] };
+            return textResult(JSON.stringify(job, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error creating cron job: ${err.message}` }] };
+            return textResult(`Error creating cron job: ${err.message}`);
           }
         },
       ),
@@ -414,7 +386,7 @@ export function buildAgentToolsSpec(
 
             const updated = updateCronJob(agentAlias, args.jobId, updates);
             if (!updated) {
-              return { content: [{ type: "text" as const, text: `Cron job "${args.jobId}" not found` }] };
+              return textResult(`Cron job "${args.jobId}" not found`);
             }
 
             // Sync scheduler: cancel old schedule, re-schedule if active
@@ -424,9 +396,9 @@ export function buildAgentToolsSpec(
             }
 
             log.info(`Agent ${agentAlias} updated cron job: ${args.jobId}`);
-            return { content: [{ type: "text" as const, text: JSON.stringify(updated, null, 2) }] };
+            return textResult(JSON.stringify(updated, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error updating cron job: ${err.message}` }] };
+            return textResult(`Error updating cron job: ${err.message}`);
           }
         },
       ),
@@ -444,13 +416,13 @@ export function buildAgentToolsSpec(
 
             const deleted = deleteCronJob(agentAlias, args.jobId);
             if (!deleted) {
-              return { content: [{ type: "text" as const, text: `Cron job "${args.jobId}" not found` }] };
+              return textResult(`Cron job "${args.jobId}" not found`);
             }
 
             log.info(`Agent ${agentAlias} deleted cron job: ${args.jobId}`);
-            return { content: [{ type: "text" as const, text: `Cron job "${args.jobId}" deleted successfully` }] };
+            return textResult(`Cron job "${args.jobId}" deleted successfully`);
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error deleting cron job: ${err.message}` }] };
+            return textResult(`Error deleting cron job: ${err.message}`);
           }
         },
       ),
@@ -464,9 +436,9 @@ export function buildAgentToolsSpec(
         async () => {
           try {
             const triggers = listTriggers(agentAlias);
-            return { content: [{ type: "text" as const, text: JSON.stringify(triggers, null, 2) }] };
+            return textResult(JSON.stringify(triggers, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error listing triggers: ${err.message}` }] };
+            return textResult(`Error listing triggers: ${err.message}`);
           }
         },
       ),
@@ -513,9 +485,9 @@ export function buildAgentToolsSpec(
               metadata: { triggerId: trigger.id },
             });
 
-            return { content: [{ type: "text" as const, text: JSON.stringify(trigger, null, 2) }] };
+            return textResult(JSON.stringify(trigger, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error creating trigger: ${err.message}` }] };
+            return textResult(`Error creating trigger: ${err.message}`);
           }
         },
       ),
@@ -563,13 +535,13 @@ export function buildAgentToolsSpec(
 
             const updated = updateTrigger(agentAlias, args.triggerId, updates);
             if (!updated) {
-              return { content: [{ type: "text" as const, text: `Trigger "${args.triggerId}" not found` }] };
+              return textResult(`Trigger "${args.triggerId}" not found`);
             }
 
             log.info(`Agent ${agentAlias} updated trigger: ${args.triggerId}`);
-            return { content: [{ type: "text" as const, text: JSON.stringify(updated, null, 2) }] };
+            return textResult(JSON.stringify(updated, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error updating trigger: ${err.message}` }] };
+            return textResult(`Error updating trigger: ${err.message}`);
           }
         },
       ),
@@ -584,13 +556,13 @@ export function buildAgentToolsSpec(
           try {
             const deleted = deleteTrigger(agentAlias, args.triggerId);
             if (!deleted) {
-              return { content: [{ type: "text" as const, text: `Trigger "${args.triggerId}" not found` }] };
+              return textResult(`Trigger "${args.triggerId}" not found`);
             }
 
             log.info(`Agent ${agentAlias} deleted trigger: ${args.triggerId}`);
-            return { content: [{ type: "text" as const, text: `Trigger "${args.triggerId}" deleted successfully` }] };
+            return textResult(`Trigger "${args.triggerId}" deleted successfully`);
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error deleting trigger: ${err.message}` }] };
+            return textResult(`Error deleting trigger: ${err.message}`);
           }
         },
       ),
@@ -610,9 +582,9 @@ export function buildAgentToolsSpec(
               type: args.type,
               limit: args.limit || 20,
             });
-            return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
+            return textResult(JSON.stringify(entries, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error reading activity: ${err.message}` }] };
+            return textResult(`Error reading activity: ${err.message}`);
           }
         },
       ),
@@ -632,9 +604,9 @@ export function buildAgentToolsSpec(
               message: args.message,
               metadata: args.metadata,
             });
-            return { content: [{ type: "text" as const, text: JSON.stringify(entry, null, 2) }] };
+            return textResult(JSON.stringify(entry, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error logging activity: ${err.message}` }] };
+            return textResult(`Error logging activity: ${err.message}`);
           }
         },
       ),
@@ -651,9 +623,9 @@ export function buildAgentToolsSpec(
             role: a.role || null,
             description: a.description,
           }));
-          return { content: [{ type: "text" as const, text: JSON.stringify(summaries, null, 2) }] };
+          return textResult(JSON.stringify(summaries, null, 2));
         } catch (err: any) {
-          return { content: [{ type: "text" as const, text: `Error listing agents: ${err.message}` }] };
+          return textResult(`Error listing agents: ${err.message}`);
         }
       }),
 
@@ -667,7 +639,7 @@ export function buildAgentToolsSpec(
           try {
             const config = getAgent(args.alias);
             if (!config) {
-              return { content: [{ type: "text" as const, text: `Agent "${args.alias}" not found` }] };
+              return textResult(`Agent "${args.alias}" not found`);
             }
             const info = {
               alias: config.alias,
@@ -679,9 +651,9 @@ export function buildAgentToolsSpec(
               tone: config.tone || null,
               guidelines: config.guidelines || [],
             };
-            return { content: [{ type: "text" as const, text: JSON.stringify(info, null, 2) }] };
+            return textResult(JSON.stringify(info, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error getting agent info: ${err.message}` }] };
+            return textResult(`Error getting agent info: ${err.message}`);
           }
         },
       ),
@@ -709,21 +681,12 @@ export function buildAgentToolsSpec(
           try {
             // Validate alias format
             if (!isValidAlias(args.alias)) {
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: "Error: Alias must be 2-64 characters: lowercase letters, numbers, hyphens, underscores. Must start with a letter or number.",
-                  },
-                ],
-              };
+              return textResult("Error: Alias must be 2-64 characters: lowercase letters, numbers, hyphens, underscores. Must start with a letter or number.");
             }
 
             // Check uniqueness
             if (agentExists(args.alias)) {
-              return {
-                content: [{ type: "text" as const, text: `Error: An agent with alias "${args.alias}" already exists` }],
-              };
+              return textResult(`Error: An agent with alias "${args.alias}" already exists`);
             }
 
             // Build config
@@ -753,10 +716,10 @@ export function buildAgentToolsSpec(
               metadata: { createdAlias: config.alias },
             });
 
-            return { content: [{ type: "text" as const, text: JSON.stringify({ ...config, workspacePath }, null, 2) }] };
+            return textResult(JSON.stringify({ ...config, workspacePath }, null, 2));
           } catch (err: any) {
             log.error(`create_agent failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error creating agent: ${err.message}` }] };
+            return textResult(`Error creating agent: ${err.message}`);
           }
         },
       ),
@@ -797,7 +760,7 @@ export function buildAgentToolsSpec(
             // Check agent exists
             const existing = getAgent(args.alias);
             if (!existing) {
-              return { content: [{ type: "text" as const, text: `Error: Agent "${args.alias}" not found` }] };
+              return textResult(`Error: Agent "${args.alias}" not found`);
             }
 
             // Build updated config — only override fields present in args
@@ -833,11 +796,11 @@ export function buildAgentToolsSpec(
 
             // Validate required fields after merge
             if (!updated.name || updated.name.length === 0 || updated.name.length > 128) {
-              return { content: [{ type: "text" as const, text: "Error: Name must be 1-128 characters" }] };
+              return textResult("Error: Name must be 1-128 characters");
             }
 
             if (!updated.description || updated.description.length === 0 || updated.description.length > 512) {
-              return { content: [{ type: "text" as const, text: "Error: Description must be 1-512 characters" }] };
+              return textResult("Error: Description must be 1-512 characters");
             }
 
             // Persist (createAgent acts as upsert)
@@ -852,10 +815,10 @@ export function buildAgentToolsSpec(
               metadata: { updatedAlias: args.alias },
             });
 
-            return { content: [{ type: "text" as const, text: JSON.stringify({ ...resolveAgentKeyAlias(updated), workspacePath }, null, 2) }] };
+            return textResult(JSON.stringify({ ...resolveAgentKeyAlias(updated), workspacePath }, null, 2));
           } catch (err: any) {
             log.error(`update_agent failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error updating agent: ${err.message}` }] };
+            return textResult(`Error updating agent: ${err.message}`);
           }
         },
       ),
@@ -865,9 +828,9 @@ export function buildAgentToolsSpec(
       defineTool("list_themes", "List all custom UI themes available on the Callboard instance.", {}, async () => {
         try {
           const themes = themeFileService.listThemes();
-          return { content: [{ type: "text" as const, text: JSON.stringify({ themes }, null, 2) }] };
+          return textResult(JSON.stringify({ themes }, null, 2));
         } catch (err: any) {
-          return { content: [{ type: "text" as const, text: `Error listing themes: ${err.message}` }] };
+          return textResult(`Error listing themes: ${err.message}`);
         }
       }),
 
@@ -881,11 +844,11 @@ export function buildAgentToolsSpec(
           try {
             const theme = themeFileService.getTheme(args.name);
             if (!theme) {
-              return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found.` }] };
+              return textResult(`Theme "${args.name}" not found.`);
             }
-            return { content: [{ type: "text" as const, text: JSON.stringify(theme, null, 2) }] };
+            return textResult(JSON.stringify(theme, null, 2));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error getting theme: ${err.message}` }] };
+            return textResult(`Error getting theme: ${err.message}`);
           }
         },
       ),
@@ -903,7 +866,7 @@ export function buildAgentToolsSpec(
           try {
             const existing = themeFileService.getTheme(args.name);
             if (existing) {
-              return { content: [{ type: "text" as const, text: `Theme "${args.name}" already exists. Use a different name or delete it first.` }] };
+              return textResult(`Theme "${args.name}" already exists. Use a different name or delete it first.`);
             }
             const result = await generateThemeCSS(args.name, args.description);
             if (!result.ok) {
@@ -911,39 +874,28 @@ export function buildAgentToolsSpec(
               // You are a model reading a tool result; "see the server log" is
               // the one place you provably cannot look, and a blind retry costs
               // two more generations against a problem you never saw.
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text:
-                      result.reason === "contrast"
-                        ? `Theme not created: after ${result.attempts} attempts these pairings were still below WCAG AA, and no lightness ` +
-                          `adjustment fixes them — ${result.detail}. Nothing was saved. Try again with genuinely different colours for the ` +
-                          `variables named above (a much darker foreground in light mode, or a much lighter one in dark mode).`
-                        : `Theme not created: after ${result.attempts} attempts the model did not return usable theme data — ${result.detail}. Nothing was saved.`,
-                  },
-                ],
-              };
+              return textResult(
+                result.reason === "contrast"
+                  ? `Theme not created: after ${result.attempts} attempts these pairings were still below WCAG AA, and no lightness ` +
+                      `adjustment fixes them — ${result.detail}. Nothing was saved. Try again with genuinely different colours for the ` +
+                      `variables named above (a much darker foreground in light mode, or a much lighter one in dark mode).`
+                  : `Theme not created: after ${result.attempts} attempts the model did not return usable theme data — ${result.detail}. Nothing was saved.`,
+              );
             }
             themeFileService.createTheme(result.theme);
-            return {
-              content: [
+            return textResult(
+              JSON.stringify(
                 {
-                  type: "text" as const,
-                  text: JSON.stringify(
-                    {
-                      message: `Theme "${result.theme.name}" created successfully.`,
-                      ...(result.corrections.length > 0 ? { correctedForContrast: describeCorrections(result.corrections) } : {}),
-                      theme: result.theme,
-                    },
-                    null,
-                    2,
-                  ),
+                  message: `Theme "${result.theme.name}" created successfully.`,
+                  ...(result.corrections.length > 0 ? { correctedForContrast: describeCorrections(result.corrections) } : {}),
+                  theme: result.theme,
                 },
-              ],
-            };
+                null,
+                2,
+              ),
+            );
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error generating theme: ${err.message}` }] };
+            return textResult(`Error generating theme: ${err.message}`);
           }
         },
       ),
@@ -972,21 +924,15 @@ export function buildAgentToolsSpec(
           try {
             const existing = themeFileService.getTheme(args.name);
             if (!existing) {
-              return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found. Use get_theme to see available themes.` }] };
+              return textResult(`Theme "${args.name}" not found. Use get_theme to see available themes.`);
             }
             const prepared = await prepareThemeWrite({ dark: args.dark, light: args.light, existing });
             if (prepared.unsatisfiable.length > 0) {
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text:
-                      `Theme "${args.name}" NOT updated — nothing was written. These pairings would be below WCAG AA and no lightness ` +
-                      `adjustment fixes them: ${describeFailures(prepared.unsatisfiable)}. Pick genuinely different colours for the variables ` +
-                      `named above and call update_theme again.`,
-                  },
-                ],
-              };
+              return textResult(
+                `Theme "${args.name}" NOT updated — nothing was written. These pairings would be below WCAG AA and no lightness ` +
+                  `adjustment fixes them: ${describeFailures(prepared.unsatisfiable)}. Pick genuinely different colours for the variables ` +
+                  `named above and call update_theme again.`,
+              );
             }
             const updated: CustomTheme = {
               name: args.new_name?.trim() || existing.name,
@@ -996,27 +942,22 @@ export function buildAgentToolsSpec(
               updatedAt: new Date().toISOString(),
             };
             themeFileService.updateTheme(args.name, updated);
-            return {
-              content: [
+            return textResult(
+              JSON.stringify(
                 {
-                  type: "text" as const,
-                  text: JSON.stringify(
-                    {
-                      message: `Theme "${updated.name}" updated successfully.`,
-                      ...(prepared.corrections.length > 0 ? { correctedForContrast: describeCorrections(prepared.corrections) } : {}),
-                      ...(prepared.dropped.length > 0
-                        ? { droppedNotThemeVariables: prepared.dropped, droppedWhy: "these are derived from other variables and cannot be set directly" }
-                        : {}),
-                      theme: updated,
-                    },
-                    null,
-                    2,
-                  ),
+                  message: `Theme "${updated.name}" updated successfully.`,
+                  ...(prepared.corrections.length > 0 ? { correctedForContrast: describeCorrections(prepared.corrections) } : {}),
+                  ...(prepared.dropped.length > 0
+                    ? { droppedNotThemeVariables: prepared.dropped, droppedWhy: "these are derived from other variables and cannot be set directly" }
+                    : {}),
+                  theme: updated,
                 },
-              ],
-            };
+                null,
+                2,
+              ),
+            );
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error updating theme: ${err.message}` }] };
+            return textResult(`Error updating theme: ${err.message}`);
           }
         },
       ),
@@ -1031,12 +972,12 @@ export function buildAgentToolsSpec(
           try {
             const existing = themeFileService.getTheme(args.name);
             if (!existing) {
-              return { content: [{ type: "text" as const, text: `Theme "${args.name}" not found.` }] };
+              return textResult(`Theme "${args.name}" not found.`);
             }
             themeFileService.deleteTheme(args.name);
-            return { content: [{ type: "text" as const, text: `Theme "${args.name}" deleted successfully.` }] };
+            return textResult(`Theme "${args.name}" deleted successfully.`);
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error deleting theme: ${err.message}` }] };
+            return textResult(`Error deleting theme: ${err.message}`);
           }
         },
       ),

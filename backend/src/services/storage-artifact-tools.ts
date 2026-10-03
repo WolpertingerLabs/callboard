@@ -18,7 +18,7 @@
  */
 import { closeSync, readFileSync } from "fs";
 import { z } from "zod";
-import { defineTool } from "../agents/ports/tools.js";
+import { defineTool, jsonError, jsonResult } from "../agents/ports/tools.js";
 import type { AnyToolDefinition, ToolCallResult } from "../agents/ports/tools.js";
 import { ARTIFACT_CONTENT_TYPES, ARTIFACT_STORAGE_ACCESS } from "shared/types/index.js";
 import type { RenderArtifactToolResult } from "shared/types/index.js";
@@ -51,21 +51,14 @@ export const READ_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 
 const IMAGE_BLOCK_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-function ok(payload: unknown): ToolCallResult {
-  return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
-}
-function error(message: string): ToolCallResult {
-  return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
-}
-
 /** Run a handler body; a StorageError (or anything else) becomes the `{ error }` result. */
 async function guard(what: string, fn: () => Promise<ToolCallResult> | ToolCallResult): Promise<ToolCallResult> {
   try {
     return await fn();
   } catch (err) {
-    if (err instanceof StorageError) return error(err.message);
+    if (err instanceof StorageError) return jsonError(err.message);
     log.error(`${what} failed: ${err instanceof Error ? err.message : String(err)}`);
-    return error(`${what} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return jsonError(`${what} failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -99,7 +92,7 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       "List the Callboard storage catalogue: every storage key (a named bucket of items) with its description, item count, total size and last update. " +
         "Storage is shared with the user — they browse the same keys in Settings → Storage.",
       {},
-      async () => guard("list_storage_keys", () => ok({ keys: listStorageKeys() })),
+      async () => guard("list_storage_keys", () => jsonResult({ keys: listStorageKeys() })),
     ),
 
     defineTool(
@@ -110,14 +103,14 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
         key: z.string().describe('The new key, e.g. "project-notes"'),
         description: z.string().optional().describe("What this key holds (shown in the catalogue)"),
       },
-      async (args) => guard("create_storage_key", async () => ok({ key: await createStorageKey(args.key, args.description) })),
+      async (args) => guard("create_storage_key", async () => jsonResult({ key: await createStorageKey(args.key, args.description) })),
     ),
 
     defineTool(
       "list_storage_items",
       "List the items in one storage key: name, MIME type, size, sha256 and last update.",
       { key: z.string().describe("The storage key") },
-      async (args) => guard("list_storage_items", () => ok({ key: args.key, items: listStorageItems(args.key) })),
+      async (args) => guard("list_storage_items", () => jsonResult({ key: args.key, items: listStorageItems(args.key) })),
     ),
 
     defineTool(
@@ -144,7 +137,10 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
 
             if (!args.encoding && IMAGE_BLOCK_TYPES.has(item.mimeType)) {
               if (size > READ_IMAGE_MAX_BYTES) {
-                return ok({ ...base, note: `Image is larger than ${MB(READ_IMAGE_MAX_BYTES)}; not returned inline. Use file_path (e.g. with render_file).` });
+                return jsonResult({
+                  ...base,
+                  note: `Image is larger than ${MB(READ_IMAGE_MAX_BYTES)}; not returned inline. Use file_path (e.g. with render_file).`,
+                });
               }
               return {
                 content: [
@@ -156,15 +152,15 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
 
             const encoding = args.encoding ?? (isTextual(item.mimeType) ? "text" : undefined);
             if (!encoding) {
-              return ok({ ...base, note: 'Binary item — content not returned. Pass encoding "base64" (≤1MB) or use file_path.' });
+              return jsonResult({ ...base, note: 'Binary item — content not returned. Pass encoding "base64" (≤1MB) or use file_path.' });
             }
             if (size > READ_INLINE_MAX_BYTES) {
-              return error(
+              return jsonError(
                 `Item is ${(size / 1024 / 1024).toFixed(1)}MB, over the ${MB(READ_INLINE_MAX_BYTES)} inline limit — read it from file_path instead: ${filePath}`,
               );
             }
             const data = read();
-            return ok({ ...base, encoding, content: encoding === "base64" ? data.toString("base64") : data.toString("utf-8") });
+            return jsonResult({ ...base, encoding, content: encoding === "base64" ? data.toString("base64") : data.toString("utf-8") });
           } finally {
             closeSync(fd);
           }
@@ -189,9 +185,9 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       async (args) =>
         guard("save_storage_item", async () => {
           const sources = [args.content, args.content_base64, args.source_path].filter((v) => v !== undefined).length;
-          if (sources !== 1) return error("Provide exactly one of content, content_base64 or source_path");
+          if (sources !== 1) return jsonError("Provide exactly one of content, content_base64 or source_path");
           if (!args.create_key && !storageKeyExists(args.key)) {
-            return error(`Storage key not found: ${args.key} — create it with create_storage_key, or pass create_key: true`);
+            return jsonError(`Storage key not found: ${args.key} — create it with create_storage_key, or pass create_key: true`);
           }
           const opts = { mimeType: args.mime_type, createKey: args.create_key };
           const item =
@@ -203,7 +199,7 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
                   args.content !== undefined ? Buffer.from(args.content, "utf-8") : decodeBase64Strict(args.content_base64!),
                   opts,
                 );
-          return ok({ key: args.key, item });
+          return jsonResult({ key: args.key, item });
         }),
     ),
 
@@ -217,7 +213,7 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       async (args) =>
         guard("delete_storage_item", async () => {
           await deleteStorageItem(args.key, args.name);
-          return ok({ success: true, key: args.key, name: args.name });
+          return jsonResult({ success: true, key: args.key, name: args.name });
         }),
     ),
 
@@ -230,9 +226,9 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       },
       async (args) =>
         guard("delete_storage_key", async () => {
-          if (args.confirm !== true) return error("Refusing to delete: pass confirm: true to delete the key and all its items");
+          if (args.confirm !== true) return jsonError("Refusing to delete: pass confirm: true to delete the key and all its items");
           await deleteStorageKey(args.key);
-          return ok({ success: true, key: args.key });
+          return jsonResult({ success: true, key: args.key });
         }),
     ),
 
@@ -243,7 +239,7 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       "List Callboard artifacts: named, versioned, reusable single-file HTML apps, SVGs and markdown documents. Each has a stable id, a content type, " +
         "the storage access it may be granted, and its current version.",
       {},
-      async () => guard("list_artifacts", () => ok({ artifacts: listArtifacts() })),
+      async () => guard("list_artifacts", () => jsonResult({ artifacts: listArtifacts() })),
     ),
 
     defineTool(
@@ -256,7 +252,7 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       async (args) =>
         guard("read_artifact", () => {
           const { artifact, version, content } = readArtifactVersion(args.id, args.version);
-          return ok({ artifact, version: version.version, note: version.note, content });
+          return jsonResult({ artifact, version: version.version, note: version.note, content });
         }),
     ),
 
@@ -290,7 +286,7 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       },
       async (args) =>
         guard("save_artifact", async () => {
-          if ((args.content === undefined) === (args.source_path === undefined)) return error("Provide exactly one of content or source_path");
+          if ((args.content === undefined) === (args.source_path === undefined)) return jsonError("Provide exactly one of content or source_path");
           const input = {
             id: args.id,
             name: args.name,
@@ -304,7 +300,7 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
               ? await saveArtifactFromFile({ ...input, sourcePath: args.source_path })
               : await saveArtifact({ ...input, content: args.content! });
           const { versions: _versions, ...artifact } = result.artifact;
-          return ok({ created: result.created, artifact, version: result.version });
+          return jsonResult({ created: result.created, artifact, version: result.version });
         }),
     ),
 
@@ -317,9 +313,9 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
       },
       async (args) =>
         guard("delete_artifact", async () => {
-          if (args.confirm !== true) return error("Refusing to delete: pass confirm: true to delete the artifact and all its versions");
+          if (args.confirm !== true) return jsonError("Refusing to delete: pass confirm: true to delete the artifact and all its versions");
           await deleteArtifact(args.id);
-          return ok({ success: true, id: args.id });
+          return jsonResult({ success: true, id: args.id });
         }),
     ),
 
@@ -345,15 +341,15 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
           const version = args.version ?? artifact.currentVersion;
           const pinned = artifact.versions.find((v) => v.version === version);
           if (!pinned) {
-            return error(`Version ${version} of artifact "${args.id}" not found (kept versions: ${artifact.versions.map((v) => v.version).join(", ")})`);
+            return jsonError(`Version ${version} of artifact "${args.id}" not found (kept versions: ${artifact.versions.map((v) => v.version).join(", ")})`);
           }
           if (args.storage_key !== undefined) {
             if (artifact.storageAccess === "none") {
-              return error(
+              return jsonError(
                 `Artifact "${args.id}" has storage_access "none" and cannot be bound to a storage key — save it with storage_access read or readwrite first`,
               );
             }
-            if (!storageKeyExists(args.storage_key)) return error(`Storage key not found: ${args.storage_key}`);
+            if (!storageKeyExists(args.storage_key)) return jsonError(`Storage key not found: ${args.storage_key}`);
           }
           const result: RenderArtifactToolResult = {
             type: "render_artifact",
@@ -370,7 +366,7 @@ export function buildStorageArtifactTools(): AnyToolDefinition[] {
             ...(args.caption ? { caption: args.caption } : {}),
             ...(args.display_mode ? { display_mode: args.display_mode } : {}),
           };
-          return ok(result);
+          return jsonResult(result);
         }),
     ),
   ];

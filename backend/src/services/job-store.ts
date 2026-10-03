@@ -12,12 +12,13 @@
  * routes, and the runner so every entry point rejects the same things with
  * the same messages.
  */
-import { readFileSync, writeFileSync, readdirSync, unlinkSync, existsSync, mkdirSync, renameSync } from "fs";
+import { readFileSync, readdirSync, unlinkSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { randomUUID } from "node:crypto";
 import type { JobDefinition, JobDefinitionPayload, JobExportEnvelope, JobRun, JobRunListItem, JobRunStatus, JobStep, JobStepResult } from "shared";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
+import { atomicWriteFileSync } from "../utils/atomic-write.js";
 
 const log = createLogger("job-store");
 
@@ -52,9 +53,7 @@ function slugifyJobId(name: string): string {
 }
 
 function atomicWrite(filepath: string, content: string): void {
-  const tmp = `${filepath}.tmp`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, filepath);
+  atomicWriteFileSync(filepath, content, { fsync: false });
 }
 
 // ── Definitions ─────────────────────────────────────────────────────

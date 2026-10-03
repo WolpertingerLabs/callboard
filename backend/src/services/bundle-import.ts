@@ -152,7 +152,6 @@ export function inspectBundle(raw: unknown): ParsedBundle {
   };
 }
 
-
 export interface ImportResult {
   alias: string;
   fingerprint: string;

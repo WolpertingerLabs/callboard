@@ -5,7 +5,7 @@ import type { CardLifecycle, EffortLevel } from "shared";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat, readNativeLifecycle, NATIVE_CONTROL_NOTE } from "./codex-native-agents.js";
 import { z } from "zod";
-import { defineTool } from "../agents/ports/tools.js";
+import { defineTool, jsonError, jsonResult, textResult } from "../agents/ports/tools.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { existsSync, statSync } from "fs";
 import path from "path";
@@ -38,6 +38,7 @@ import { buildWorkspaceTools } from "./workspace-tools.js";
 import { buildStorageArtifactTools } from "./storage-artifact-tools.js";
 import { createLogger } from "../utils/logger.js";
 import type { SendMessageOptions } from "./claude.js";
+import { awaitChatCreated, toPromptIterable, unattendedPermissions } from "./session-spawn.js";
 
 const log = createLogger("callboard-tools");
 
@@ -112,7 +113,7 @@ const MIME_MAP: Record<string, { mime: string; category: string }> = {
 };
 
 function error(message: string) {
-  return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }] };
+  return jsonError(message);
 }
 
 /**
@@ -273,23 +274,16 @@ export function buildCallboardToolsSpec(
               return error(`Unsupported file type or could not determine type from URL${ext ? `: ${ext}` : ""}`);
             }
 
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    type: "render_file",
-                    url: args.url,
-                    media_type: info.category,
-                    mime_type: info.mime,
-                    display_mode: args.display_mode || "inline",
-                    file_size: 0,
-                    caption: args.caption || undefined,
-                    ...(args.untrusted ? { untrusted: true, untrusted_reason: args.untrusted_reason || undefined } : {}),
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              type: "render_file",
+              url: args.url,
+              media_type: info.category,
+              mime_type: info.mime,
+              display_mode: args.display_mode || "inline",
+              file_size: 0,
+              caption: args.caption || undefined,
+              ...(args.untrusted ? { untrusted: true, untrusted_reason: args.untrusted_reason || undefined } : {}),
+            });
           }
 
           // ── File path ──
@@ -321,23 +315,16 @@ export function buildCallboardToolsSpec(
             return error(`File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB, max 100MB)`);
           }
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  type: "render_file",
-                  file_path: resolved,
-                  media_type: info.category,
-                  mime_type: info.mime,
-                  display_mode: args.display_mode || "inline",
-                  file_size: stat.size,
-                  caption: args.caption || undefined,
-                  ...(args.untrusted ? { untrusted: true, untrusted_reason: args.untrusted_reason || undefined } : {}),
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            type: "render_file",
+            file_path: resolved,
+            media_type: info.category,
+            mime_type: info.mime,
+            display_mode: args.display_mode || "inline",
+            file_size: stat.size,
+            caption: args.caption || undefined,
+            ...(args.untrusted ? { untrusted: true, untrusted_reason: args.untrusted_reason || undefined } : {}),
+          });
         },
       ),
 
@@ -363,21 +350,14 @@ export function buildCallboardToolsSpec(
 
           if (result.error) return error(result.error);
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  type: "render_canvas",
-                  canvas_id: result.result!.canvas_id,
-                  version: result.result!.version,
-                  name: result.result!.name,
-                  content_type: result.result!.content_type,
-                  caption: args.caption || undefined,
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            type: "render_canvas",
+            canvas_id: result.result!.canvas_id,
+            version: result.result!.version,
+            name: result.result!.name,
+            content_type: result.result!.content_type,
+            caption: args.caption || undefined,
+          });
         },
       ),
 
@@ -401,22 +381,15 @@ export function buildCallboardToolsSpec(
 
           if (result.error) return error(result.error);
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  type: "render_canvas",
-                  canvas_id: result.result!.canvas_id,
-                  version: result.result!.version,
-                  name: result.result!.name,
-                  content_type: result.result!.content_type,
-                  description: result.result!.description || undefined,
-                  caption: args.caption || undefined,
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            type: "render_canvas",
+            canvas_id: result.result!.canvas_id,
+            version: result.result!.version,
+            name: result.result!.name,
+            content_type: result.result!.content_type,
+            description: result.result!.description || undefined,
+            caption: args.caption || undefined,
+          });
         },
       ),
 
@@ -432,17 +405,10 @@ export function buildCallboardToolsSpec(
 
           if (result.error) return error(result.error);
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  type: "canvas_content",
-                  ...result.result,
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            type: "canvas_content",
+            ...result.result,
+          });
         },
       ),
 
@@ -469,19 +435,12 @@ export function buildCallboardToolsSpec(
 
           sessionRegistry.notifyMetadata(chatId, { chatStatus: args.status || null, chatStatusEmoji: args.emoji || null });
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: true,
-                  chatId,
-                  status: args.status || null,
-                  emoji: args.emoji || null,
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            success: true,
+            chatId,
+            status: args.status || null,
+            emoji: args.emoji || null,
+          });
         },
       ),
 
@@ -518,7 +477,7 @@ export function buildCallboardToolsSpec(
               ...(c.description && { description: c.description.length > 200 ? `${c.description.slice(0, 200)}…` : c.description }),
               updatedAt: c.updatedAt,
             }));
-          return { content: [{ type: "text" as const, text: JSON.stringify({ cards }) }] };
+          return jsonResult({ cards });
         },
       ),
 
@@ -553,7 +512,7 @@ export function buildCallboardToolsSpec(
             status: r.status,
             updatedAt: r.updatedAt,
           }));
-          return { content: [{ type: "text" as const, text: JSON.stringify({ card, memberChats, memberRuns }) }] };
+          return jsonResult({ card, memberChats, memberRuns });
         },
       ),
 
@@ -624,22 +583,15 @@ export function buildCallboardToolsSpec(
           // strictly more specific of the two; a consumer that only knows
           // "updated" still re-reads the card either way.
           sessionRegistry.notifyMetadata(card.id, { cardEvent: touchesStatus ? "status" : "updated" });
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: true,
-                  cardId: card.id,
-                  title: card.title,
-                  emoji: card.emoji,
-                  status: card.status ?? null,
-                  statusEmoji: card.statusEmoji ?? null,
-                  category: card.category ?? null,
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            success: true,
+            cardId: card.id,
+            title: card.title,
+            emoji: card.emoji,
+            status: card.status ?? null,
+            statusEmoji: card.statusEmoji ?? null,
+            category: card.category ?? null,
+          });
         },
       ),
 
@@ -667,9 +619,7 @@ export function buildCallboardToolsSpec(
           }
           if (!card) return error(`Card "${target.rootChatId}" not found`);
           sessionRegistry.notifyMetadata(card.id, { cardEvent: "updated" });
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ success: true, cardId: card.id, metadata: card.metadata ?? {} }) }],
-          };
+          return jsonResult({ success: true, cardId: card.id, metadata: card.metadata ?? {} });
         },
       ),
 
@@ -695,18 +645,11 @@ export function buildCallboardToolsSpec(
 
           sessionRegistry.addSummon(chatId, summon);
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: true,
-                  chatId,
-                  summon,
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            success: true,
+            chatId,
+            summon,
+          });
         },
       ),
 
@@ -749,21 +692,14 @@ export function buildCallboardToolsSpec(
             );
           }
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: true,
-                  guidance:
-                    "Use the drawlatch mcp__mcp-proxy__* tools with the connection named below to reach the user. " +
-                    "If a connection isn't configured, tell the user it needs to be added in the drawlatch dashboard " +
-                    "(linked from Settings → Proxy) — callboard itself cannot add one.",
-                  channels,
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            success: true,
+            guidance:
+              "Use the drawlatch mcp__mcp-proxy__* tools with the connection named below to reach the user. " +
+              "If a connection isn't configured, tell the user it needs to be added in the drawlatch dashboard " +
+              "(linked from Settings → Proxy) — callboard itself cannot add one.",
+            channels,
+          });
         },
       ),
 
@@ -782,18 +718,11 @@ export function buildCallboardToolsSpec(
 
           sessionRegistry.notifyMetadata(chatId, { title: args.title || null });
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: true,
-                  chatId,
-                  title: args.title || null,
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            success: true,
+            chatId,
+            title: args.title || null,
+          });
         },
       ),
 
@@ -862,20 +791,13 @@ export function buildCallboardToolsSpec(
             // without a branch: the caller asked for two things that cannot
             // both hold, and only it knows which one it meant.
             if (args.independent === true && args.role) {
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: JSON.stringify({
-                      ok: false,
-                      error: "role_requires_parent",
-                      message:
-                        "`role` labels the spawned chat's node in the parentage tree, but `independent: true` means it has no node there. " +
-                        "Drop `role` to spawn it top-level, or drop `independent` to spawn it as a labelled child of this chat.",
-                    }),
-                  },
-                ],
-              };
+              return jsonResult({
+                ok: false,
+                error: "role_requires_parent",
+                message:
+                  "`role` labels the spawned chat's node in the parentage tree, but `independent: true` means it has no node there. " +
+                  "Drop `role` to spawn it top-level, or drop `independent` to spawn it as a labelled child of this chat.",
+              });
             }
 
             const providerModel = resolveProviderModelArgs(args, {
@@ -884,7 +806,7 @@ export function buildCallboardToolsSpec(
               getModel: opts?.getModel,
             });
             if (!providerModel.ok) {
-              return { content: [{ type: "text" as const, text: `Error: ${providerModel.error}` }] };
+              return textResult(`Error: ${providerModel.error}`);
             }
             await assertReasoningEffort({ ...providerModel, effort: args.effort, cwd: args.folder });
 
@@ -897,7 +819,7 @@ export function buildCallboardToolsSpec(
             });
 
             if (!branchResult.ok) {
-              return { content: [{ type: "text" as const, text: JSON.stringify(branchResult) }] };
+              return jsonResult(branchResult);
             }
 
             const effectiveFolder = branchResult.folder;
@@ -932,18 +854,13 @@ export function buildCallboardToolsSpec(
               : args.prompt;
 
             // Build async generator prompt (required when MCP servers are present)
-            const promptIterable = (async function* () {
-              yield {
-                type: "user" as const,
-                message: { role: "user" as const, content: childPrompt },
-              };
-            })();
+            const promptIterable = toPromptIterable(childPrompt);
 
             const emitter = await sendMessage({
               prompt: promptIterable,
               folder: effectiveFolder,
               maxTurns: args.maxTurns ?? 200,
-              defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" },
+              defaultPermissions: unattendedPermissions(),
               provider: providerModel.provider,
               ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
@@ -954,30 +871,10 @@ export function buildCallboardToolsSpec(
             });
 
             // Listen for chat_created to get the chatId.
-            //
-            // The listener is named and detached on all three exits. The
-            // emitter outlives this promise by the whole length of the spawned
-            // run, so an anonymous handler left attached would go on being
-            // called for every event of a session this tool stopped caring
-            // about the moment it had the id — and one spawner that starts many
-            // children accumulates one dead listener per child.
-            const chatId = await new Promise<string>((resolve, reject) => {
-              const onEvent = (event: any) => {
-                if (event.type === "chat_created" && event.chatId) {
-                  clearTimeout(timeout);
-                  emitter.off("event", onEvent);
-                  resolve(event.chatId);
-                } else if (event.type === "error") {
-                  clearTimeout(timeout);
-                  emitter.off("event", onEvent);
-                  reject(new Error(event.content || "Session failed to start"));
-                }
-              };
-              const timeout = setTimeout(() => {
-                emitter.off("event", onEvent);
-                reject(new Error("Timed out waiting for session to start"));
-              }, 30000);
-              emitter.on("event", onEvent);
+            const chatId = await awaitChatCreated(emitter, {
+              timeoutMs: 30000,
+              timeoutMessage: "Timed out waiting for session to start",
+              failMessage: "Session failed to start",
             });
 
             log.info(`Started chat session ${chatId} in ${effectiveFolder}`);
@@ -994,37 +891,30 @@ export function buildCallboardToolsSpec(
               onComplete = { registered, ...(note && { note }) };
             }
 
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    chatId,
-                    status: "started",
-                    folder: effectiveFolder,
-                    // What the child will run, and how the model was chosen — so
-                    // a caller that expected "same model as me" can see when
-                    // that did NOT hold (cross-engine, non-alias) and pass an
-                    // explicit model if it cares.
-                    ...(providerModel.model && { model: providerModel.model }),
-                    ...(args.effort && { effort: args.effort as EffortLevel }),
-                    modelSource: providerModel.modelSource,
-                    ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
-                    // Where the child landed in the tree. `independent: true`
-                    // is reported rather than just omitting parentChatId, so a
-                    // caller can tell a deliberate detach from the other way
-                    // the link goes missing — a caller with no stored record.
-                    ...(independent
-                      ? { independent: true, ...(parentChat && { spawnedBy: parentChat.id }) }
-                      : parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),
-                    ...(onComplete && { onComplete }),
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              chatId,
+              status: "started",
+              folder: effectiveFolder,
+              // What the child will run, and how the model was chosen — so
+              // a caller that expected "same model as me" can see when
+              // that did NOT hold (cross-engine, non-alias) and pass an
+              // explicit model if it cares.
+              ...(providerModel.model && { model: providerModel.model }),
+              ...(args.effort && { effort: args.effort as EffortLevel }),
+              modelSource: providerModel.modelSource,
+              ...(providerModel.inheritanceNote && { inheritanceNote: providerModel.inheritanceNote }),
+              // Where the child landed in the tree. `independent: true`
+              // is reported rather than just omitting parentChatId, so a
+              // caller can tell a deliberate detach from the other way
+              // the link goes missing — a caller with no stored record.
+              ...(independent
+                ? { independent: true, ...(parentChat && { spawnedBy: parentChat.id }) }
+                : parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),
+              ...(onComplete && { onComplete }),
+            });
           } catch (err: any) {
             log.error(`start_chat_session failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error starting session: ${err.message}` }] };
+            return textResult(`Error starting session: ${err.message}`);
           }
         },
       ),
@@ -1043,21 +933,14 @@ export function buildCallboardToolsSpec(
               name: m.displayName,
               ...(m.description && { description: m.description }),
             }));
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    count: rows.length,
-                    aliases: ["opus", "sonnet", "haiku", "opusplan"],
-                    models: rows,
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              count: rows.length,
+              aliases: ["opus", "sonnet", "haiku", "opusplan"],
+              models: rows,
+            });
           } catch (err: any) {
             log.error(`list_anthropic_models failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error listing models: ${err.message}` }] };
+            return textResult(`Error listing models: ${err.message}`);
           }
         },
       ),
@@ -1093,22 +976,15 @@ export function buildCallboardToolsSpec(
               ...(m.supportedReasoningLevels && { supportedReasoningLevels: m.supportedReasoningLevels }),
               ...(m.serviceTiers && { serviceTiers: m.serviceTiers }),
             }));
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    ...(args.query !== undefined && { query: args.query }),
-                    count: rows.length,
-                    total: models.length,
-                    models: rows,
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              ...(args.query !== undefined && { query: args.query }),
+              count: rows.length,
+              total: models.length,
+              models: rows,
+            });
           } catch (err: any) {
             log.error(`list_codex_models failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error listing Codex models: ${err.message}` }] };
+            return textResult(`Error listing Codex models: ${err.message}`);
           }
         },
       ),
@@ -1141,23 +1017,16 @@ export function buildCallboardToolsSpec(
               in: formatOpenRouterPrice(m.promptPrice),
               out: formatOpenRouterPrice(m.completionPrice),
             }));
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    ...(args.query !== undefined && { query: args.query }),
-                    count: rows.length,
-                    total: models.length,
-                    pricingUnit: "per 1M tokens",
-                    models: rows,
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              ...(args.query !== undefined && { query: args.query }),
+              count: rows.length,
+              total: models.length,
+              pricingUnit: "per 1M tokens",
+              models: rows,
+            });
           } catch (err: any) {
             log.error(`list_openrouter_models failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error listing models: ${err.message}` }] };
+            return textResult(`Error listing models: ${err.message}`);
           }
         },
       ),
@@ -1173,48 +1042,34 @@ export function buildCallboardToolsSpec(
           try {
             const native = nativeAgentForChat(args.chatId, true);
             if (native)
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: JSON.stringify({
-                      status: readNativeLifecycle(native.logPath),
-                      chatId: args.chatId,
-                      parentThreadId: native.parentThreadId,
-                      management: "read-only",
-                      note: NATIVE_CONTROL_NOTE,
-                      evidence: "Rollout replay; active means activity within 30 seconds, not verified process liveness",
-                    }),
-                  },
-                ],
-              };
+              return jsonResult({
+                status: readNativeLifecycle(native.logPath),
+                chatId: args.chatId,
+                parentThreadId: native.parentThreadId,
+                management: "read-only",
+                note: NATIVE_CONTROL_NOTE,
+                evidence: "Rollout replay; active means activity within 30 seconds, not verified process liveness",
+              });
             // Check if there's an active web session
             const activeSession = getActiveSession(args.chatId);
             if (activeSession) {
-              return { content: [{ type: "text" as const, text: JSON.stringify({ status: "active", chatId: args.chatId }) }] };
+              return jsonResult({ status: "active", chatId: args.chatId });
             }
 
             // Check if the session exists in storage
             const chat = findChat(args.chatId, false);
             if (!chat) {
-              return { content: [{ type: "text" as const, text: JSON.stringify({ status: "not_found", chatId: args.chatId }) }] };
+              return jsonResult({ status: "not_found", chatId: args.chatId });
             }
 
             // Session exists but not active — it's complete
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    status: "complete",
-                    chatId: args.chatId,
-                    lastActivity: chat.updated_at,
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              status: "complete",
+              chatId: args.chatId,
+              lastActivity: chat.updated_at,
+            });
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error checking status: ${err.message}` }] };
+            return textResult(`Error checking status: ${err.message}`);
           }
         },
       ),
@@ -1230,7 +1085,7 @@ export function buildCallboardToolsSpec(
           try {
             const chat = findChat(args.chatId, false);
             if (!chat) {
-              return { content: [{ type: "text" as const, text: `Session "${args.chatId}" not found` }] };
+              return textResult(`Session "${args.chatId}" not found`);
             }
 
             if (chat._provider_resolution_error) throw new Error(chat._provider_resolution_error);
@@ -1248,12 +1103,12 @@ export function buildCallboardToolsSpec(
 
             const messages = allMessages.slice(-(args.limit || 50));
             if (messages.length === 0) {
-              return { content: [{ type: "text" as const, text: "No messages found in this session" }] };
+              return textResult("No messages found in this session");
             }
 
-            return { content: [{ type: "text" as const, text: messages.join("\n\n") }] };
+            return textResult(messages.join("\n\n"));
           } catch (err: any) {
-            return { content: [{ type: "text" as const, text: `Error reading messages: ${err.message}` }] };
+            return textResult(`Error reading messages: ${err.message}`);
           }
         },
       ),
@@ -1287,20 +1142,13 @@ export function buildCallboardToolsSpec(
             // 1. Verify the chat exists
             const chat = findChat(args.chatId, false);
             if (!chat) {
-              return { content: [{ type: "text" as const, text: `Chat "${args.chatId}" not found` }] };
+              return textResult(`Chat "${args.chatId}" not found`);
             }
 
             // 2. Check if session is currently active
             const activeSession = getActiveSession(args.chatId);
             if (activeSession) {
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: `Chat "${args.chatId}" already has an active session — wait for it to complete or stop it first`,
-                  },
-                ],
-              };
+              return textResult(`Chat "${args.chatId}" already has an active session — wait for it to complete or stop it first`);
             }
 
             const sendMessage = getSendMessage();
@@ -1325,12 +1173,7 @@ export function buildCallboardToolsSpec(
             }
 
             // 4. Build async generator prompt (required when MCP servers are present)
-            const promptIterable = (async function* () {
-              yield {
-                type: "user" as const,
-                message: { role: "user" as const, content: args.prompt },
-              };
-            })();
+            const promptIterable = toPromptIterable(args.prompt);
 
             // 5. Send the continuation message
             try {
@@ -1351,21 +1194,14 @@ export function buildCallboardToolsSpec(
             //    read_session_messages if the caller did not ask for one.
             log.info(`Continued chat ${args.chatId} (async)`);
 
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    chatId: args.chatId,
-                    status: "continued",
-                    ...(onComplete && { onComplete }),
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              chatId: args.chatId,
+              status: "continued",
+              ...(onComplete && { onComplete }),
+            });
           } catch (err: any) {
             log.error(`continue_chat failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error continuing chat: ${err.message}` }] };
+            return textResult(`Error continuing chat: ${err.message}`);
           }
         },
       ),
@@ -1388,10 +1224,10 @@ export function buildCallboardToolsSpec(
             if (!result) {
               return error(`Chat "${requestedId}" not found or has no stored record`);
             }
-            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+            return jsonResult(result);
           } catch (err: any) {
             log.error(`get_chat_tree failed: ${err.message}`);
-            return { content: [{ type: "text" as const, text: `Error getting chat tree: ${err.message}` }] };
+            return textResult(`Error getting chat tree: ${err.message}`);
           }
         },
       ),
@@ -1407,7 +1243,7 @@ export function buildCallboardToolsSpec(
         async () => {
           try {
             const skills = customSkillsService.listSkills();
-            return { content: [{ type: "text" as const, text: JSON.stringify({ skills }) }] };
+            return jsonResult({ skills });
           } catch (err: any) {
             log.error(`list_custom_skills failed: ${err.message}`);
             return error(`Failed to list custom skills: ${err.message}`);
@@ -1427,7 +1263,7 @@ export function buildCallboardToolsSpec(
             if (!skill) {
               return error(`Custom skill "${args.name}" not found — use list_custom_skills to see available skills`);
             }
-            return { content: [{ type: "text" as const, text: JSON.stringify({ skill }) }] };
+            return jsonResult({ skill });
           } catch (err: any) {
             log.error(`read_custom_skill failed: ${err.message}`);
             return error(`Failed to read custom skill: ${err.message}`);
@@ -1466,18 +1302,11 @@ export function buildCallboardToolsSpec(
               });
               action = "created";
             }
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: JSON.stringify({
-                    action,
-                    skill: { name: skill.name, description: skill.description, updatedAt: skill.updatedAt },
-                    note: `Invocable as callboard:${skill.name} starting with the next message in any chat.`,
-                  }),
-                },
-              ],
-            };
+            return jsonResult({
+              action,
+              skill: { name: skill.name, description: skill.description, updatedAt: skill.updatedAt },
+              note: `Invocable as callboard:${skill.name} starting with the next message in any chat.`,
+            });
           } catch (err: any) {
             log.error(`write_custom_skill failed: ${err.message}`);
             return error(`Failed to write custom skill: ${err.message}`);
@@ -1526,24 +1355,17 @@ export function buildCallboardToolsSpec(
               // would let this same condition be re-opened for a fresh budget,
               // which is exactly what the cap exists to prevent.
               const spent = exhaustWatch(chatId) ?? watch;
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: JSON.stringify({
-                      waited: 0,
-                      refused: true,
-                      condition: args.require_condition,
-                      attempts: spent.attempts,
-                      maxAttempts: spent.maxAttempts,
-                      note:
-                        `This condition has already been polled ${spent.maxAttempts} times without being met, so no further wait was performed — and calling wait again with the same condition will keep being refused. ` +
-                        `Stop polling. Either take a different approach to verifying it, or call summon_user to ask the user to check. ` +
-                        `If you are done with it either way, call wait_condition_met with satisfied: false.`,
-                    }),
-                  },
-                ],
-              };
+              return jsonResult({
+                waited: 0,
+                refused: true,
+                condition: args.require_condition,
+                attempts: spent.attempts,
+                maxAttempts: spent.maxAttempts,
+                note:
+                  `This condition has already been polled ${spent.maxAttempts} times without being met, so no further wait was performed — and calling wait again with the same condition will keep being refused. ` +
+                  `Stop polling. Either take a different approach to verifying it, or call summon_user to ask the user to check. ` +
+                  `If you are done with it either way, call wait_condition_met with satisfied: false.`,
+              });
             }
           }
 
@@ -1593,25 +1415,18 @@ export function buildCallboardToolsSpec(
           const waited = Math.round((Date.now() - startedAt) / 1000);
           const endedEarly = releasedBy !== undefined;
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  waited,
-                  ...(endedEarly && { requested: seconds, endedEarly: true, releasedBy }),
-                  flavor: args.flavor,
-                  ...(args.reason && { reason: args.reason }),
-                  ...(watch && {
-                    condition: watch.text,
-                    attempt: watch.attempts,
-                    maxAttempts: watch.maxAttempts,
-                  }),
-                  note: buildWaitNote({ endedEarly, hasCondition: !!watch }),
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            waited,
+            ...(endedEarly && { requested: seconds, endedEarly: true, releasedBy }),
+            flavor: args.flavor,
+            ...(args.reason && { reason: args.reason }),
+            ...(watch && {
+              condition: watch.text,
+              attempt: watch.attempts,
+              maxAttempts: watch.maxAttempts,
+            }),
+            note: buildWaitNote({ endedEarly, hasCondition: !!watch }),
+          });
         },
       ),
 
@@ -1639,20 +1454,13 @@ export function buildCallboardToolsSpec(
 
           log.info(`Condition "${watch.text}" on ${chatId} resolved after ${watch.attempts} attempt(s): ${args.satisfied ? "met" : "abandoned"}`);
 
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  success: true,
-                  condition: watch.text,
-                  attempts: watch.attempts,
-                  satisfied: args.satisfied,
-                  ...(args.evidence && { evidence: args.evidence }),
-                }),
-              },
-            ],
-          };
+          return jsonResult({
+            success: true,
+            condition: watch.text,
+            attempts: watch.attempts,
+            satisfied: args.satisfied,
+            ...(args.evidence && { evidence: args.evidence }),
+          });
         },
       ),
 

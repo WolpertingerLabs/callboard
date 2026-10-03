@@ -14,6 +14,7 @@ import { createLogger } from "../utils/logger.js";
 
 import type { ActivityEntry, EffortLevel, UiAgentProviderKind } from "shared";
 import type { SendMessageOptions } from "./claude.js";
+import { awaitChatCreated, toPromptIterable, unattendedPermissions } from "./session-spawn.js";
 
 const log = createLogger("agent-executor");
 
@@ -109,12 +110,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
     const sendMessage = getSendMessage();
 
     // Build async generator prompt (required when MCP servers are present)
-    const promptIterable = (async function* () {
-      yield {
-        type: "user" as const,
-        message: { role: "user" as const, content: prompt },
-      };
-    })();
+    const promptIterable = toPromptIterable(prompt);
 
     const emitter = await sendMessage({
       prompt: promptIterable,
@@ -124,13 +120,7 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
       maxTurns: maxTurns ?? 200,
       triggered: true,
       triggeredBy,
-      defaultPermissions: {
-        fileRead: "allow",
-        fileWrite: "allow",
-        codeExecution: "allow",
-        webAccess: "allow",
-        computerControl: "deny",
-      },
+      defaultPermissions: unattendedPermissions(),
       ...(provider && { provider }),
       ...(provider === "acp" && acpProviderId && { acpProviderId }),
       ...(model && { model }),
@@ -140,17 +130,10 @@ export async function executeAgent(opts: ExecuteAgentOptions): Promise<ExecuteAg
     });
 
     // Wait for chat_created event to get chatId
-    const chatId = await new Promise<string>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Timed out waiting for session to start")), 30_000);
-      emitter.on("event", (event: any) => {
-        if (event.type === "chat_created" && event.chatId) {
-          clearTimeout(timeout);
-          resolve(event.chatId);
-        } else if (event.type === "error") {
-          clearTimeout(timeout);
-          reject(new Error(event.content || "Session failed to start"));
-        }
-      });
+    const chatId = await awaitChatCreated(emitter, {
+      timeoutMs: 30_000,
+      timeoutMessage: "Timed out waiting for session to start",
+      failMessage: "Session failed to start",
     });
 
     log.info(`[${triggeredBy}] Started session ${chatId} for agent ${agentAlias}`);

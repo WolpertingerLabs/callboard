@@ -66,6 +66,7 @@ import { compileSystemPrompt } from "./claude-compiler.js";
 import { readChatSessionMessages, findChat, findChatIdByJobExecutionKey } from "../utils/chat-lookup.js";
 import { createLogger } from "../utils/logger.js";
 import type { SendMessageOptions } from "./claude.js";
+import { awaitChatCreated, toPromptIterable, unattendedPermissions } from "./session-spawn.js";
 
 const log = createLogger("job-runner");
 
@@ -1086,9 +1087,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
   // none — see resolveJobSessionModel.
   const model = resolveJobSessionModel(sessionFields ?? {}, defaults);
 
-  const promptIterable = (async function* () {
-    yield { type: "user" as const, message: { role: "user" as const, content: prompt } };
-  })();
+  const promptIterable = toPromptIterable(prompt);
 
   // Deterministic chat title: triggered chats skip LLM title generation, so
   // without this the step chats render as "untitled" on the card/board.
@@ -1101,7 +1100,7 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     ...(systemPrompt && { systemPrompt }),
     ...(agentAlias && { agentAlias }),
     maxTurns: sessionFields?.maxTurns ?? (opts.advisory || step?.type === "notify" ? 40 : 200),
-    defaultPermissions: { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" },
+    defaultPermissions: unattendedPermissions(),
     triggered: true,
     triggeredBy: "job",
     provider,
@@ -1121,17 +1120,10 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     chatTitle: chatTitle.slice(0, 120),
   });
 
-  const chatId = await new Promise<string>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Timed out waiting for step session to start")), 30_000);
-    emitter.on("event", (event: any) => {
-      if (event.type === "chat_created" && event.chatId) {
-        clearTimeout(timeout);
-        resolve(event.chatId);
-      } else if (event.type === "error") {
-        clearTimeout(timeout);
-        reject(new Error(event.content || "Step session failed to start"));
-      }
-    });
+  const chatId = await awaitChatCreated(emitter, {
+    timeoutMs: 30_000,
+    timeoutMessage: "Timed out waiting for step session to start",
+    failMessage: "Step session failed to start",
   });
 
   chatToStep.set(chatId, { runId, stepId, ...(opts.branchId && { branchId: opts.branchId }), ...(opts.advisory && { advisory: true }) });

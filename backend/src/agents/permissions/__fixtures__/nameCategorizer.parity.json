@@ -1,0 +1,1934 @@
+[
+  {
+    "name": "",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": " ",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "   ",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "   read_file  ",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "(empty)",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "-leading",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "-m ...",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "../../permissions/ToolPermissionPolicy.js",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "../claude-code/permissionAdapter.js",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "./cu_payload",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "./optionsAdapter.js",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "./permissionAdapter.js",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": ".dot",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "/elsewhere",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "/tmp/proj/hello.txt",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "/tmp/proj/notes.txt",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "/tmp/some-repo",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "/tmp/x",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "123",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "@agentclientprotocol/sdk",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "@cline/sdk",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "@earendil-works/pi-coding-agent",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "A tool",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Aborted",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Allow once",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Always",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Approval failed",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Auto-denied by default codeExecution policy",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Bash",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Click via cu_action",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Edit",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "HTTPRequest",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "List the files in src/",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Never",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "No approval channel available for this run",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Not that file",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "READ_FILE",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "Read",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "Read README.md",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "ReadFile",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "Read_File",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "Reading a file",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Reject",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Run",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Run `rm -rf` to clear the search index",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "Run something",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "RunCommand",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "SSE gone",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "WebFetch",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "Write",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "_",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "a managed computer-control name in the title labels the call only when the kind has no opinion",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "a managed-looking filename never overrides an informative kind",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "a null-opinion kind with a managed-looking title is still not trusted when the input is some other tool's",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "a/b/c",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "a1",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "a2",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "accepts the always variant when it is the only one offered",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "accepts the identifier shapes real tools use",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "acpToolLabel",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "admits powershell on Windows, where it resolves",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "agrees with itself on every category, because it is one function over one string",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "allow",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "allow_always",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "allow_once",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "an OpenCode edit of a file named like a managed tool is prompted as a write, not admitted as computer control",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "answers cancelled when no offered option matches the decision",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "answers cancelled when the agent offers no options at all",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "answers cancelled when the run aborts while the user is being asked",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "apply_patch",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "ask",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "ask_question",
+    "cline": "fileRead",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "assertPiTrustDenied catches %s",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "assertPiTrustDenied catches a session built with no gate at all",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "assertPiTrustDenied catches noExtensions being turned off",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "auto-allows when the axis says allow, without prompting",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "auto-allows without prompting when policy allows",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "auto-rejects without prompting when policy denies",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "bash",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "blocks a tool name it cannot categorize when the axis says ask",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "blocks on ask with no canUseTool — nobody to ask",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "blocks when canUseTool throws",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "blocks when the run was aborted mid-prompt",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "blocks when there is no toolName at all",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "blocks with no permissions configured at all",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "browser",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "buildClineToolPolicies",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "buildPermissionExtension",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "buildPiServicesOptions produces options with no trust holes",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "buildRequestToolApproval",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "buildToolFilters",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "c",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "c1",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "c2",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "c3",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "call-1",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "callboard could not identify this tool",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "cancelled",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "cannot disagree with pass 2 about the policy, because both read the same accessor",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "carries the user's refusal back to the model",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "cat",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "categorizeAcpToolKind (logging only — never a gate)",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "categorizeAcpToolName",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "categorizeClineToolName",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "categorizePiToolName",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "categorizes from the ACP kind when the title is prose",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "categorizes powershell the same on every platform",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "click",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "codeExecution",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "commit",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "computer",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "computerControl",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "computer_use",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "computer_use.py",
+    "cline": "computerControl",
+    "pi": "computerControl",
+    "acp": "computerControl"
+  },
+  {
+    "name": "computer_use/main",
+    "cline": "computerControl",
+    "pi": "computerControl",
+    "acp": "computerControl"
+  },
+  {
+    "name": "computer_use_cu_observe",
+    "cline": "computerControl",
+    "pi": "computerControl",
+    "acp": "computerControl"
+  },
+  {
+    "name": "computer_useful_action",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "covers every built-in pi ships — no tool falls through to the token table",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "covers the ten tools the docs describe as nine, spawn_agent included",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "cu_action",
+    "cline": "computerControl",
+    "pi": "computerControl",
+    "acp": "computerControl"
+  },
+  {
+    "name": "cu_open",
+    "cline": "computerControl",
+    "pi": "computerControl",
+    "acp": "computerControl"
+  },
+  {
+    "name": "cu_payload",
+    "cline": "computerControl",
+    "pi": "computerControl",
+    "acp": "computerControl"
+  },
+  {
+    "name": "cu_status",
+    "cline": "computerControl",
+    "pi": "computerControl",
+    "acp": "computerControl"
+  },
+  {
+    "name": "curl",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "darwin",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "decidePiToolCall is fail-closed",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "delete",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "delete_artifact",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "denies a request with no tool name",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "denies an ask decision when no approval channel exists",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "denies an unrecognised tool under an all-allow policy",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "denies on a deny axis without consulting the user",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "denies once the run is aborted mid-prompt",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "denies rather than throwing when canUseTool blows up",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "denies when the axis says deny, and tells the model why",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "denies when there is no policy at all",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "deny",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "does NOT register project_trust — that event is dead on the SDK path",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "does not let the shape of a filename choose the permission axis",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "edit",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "editor",
+    "cline": "fileWrite",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "emitter gone",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "emoji_🚀_run",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "encodes no allow/deny decision, whatever the axes say",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "escalates to canUseTool on ask and honours the user's allow",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "escalates to the user when the axis says ask",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "evalJs",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "execute",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "execute_shell",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "f",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "falls back to the token table for callboard's own %s",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "fetch",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "fetch_page",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "fetch_web_content",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "fileRead",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "fileWrite",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "filters out malformed options before deciding",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "find",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "frobnicate",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "fs.read",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "fs.write",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "gated wrongly",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "gates callboard's own tools too",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "gates subagent spawning at the execution axis",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "getURL",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "gives anything it cannot identify the strictest gate",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "grep",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "grep_and_exec",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "hides denied built-ins from the model",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "identical input",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "ignores a kind that is not identifier-shaped",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "installs callboard's gate as an inline factory despite noExtensions",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "keeps callboard's own tools in the allowlist when an axis narrows it",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "keeps callboard's tools even when every built-in is denied",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "keeps powershell out of the allowlist off Windows",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "kill_process",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "linux",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "list_and_delete",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "list_cards",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "list_storage_keys",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "ls",
+    "cline": "codeExecution",
+    "pi": "fileRead",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "maps ACP's structured tool kinds onto callboard's four axes",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "maps every ACP kind onto a category at least as strict as the kind table's",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "maps every built-in tool to the axis that actually governs it",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "maps the built-in %s to %s",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "maps the obvious families",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "matches names across snake_case, camelCase and kebab-case",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "mcp__callboard-tools__render_file",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "mcp__computer-use__cu_action",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "mcp__computer_use__cu_open",
+    "cline": "computerControl",
+    "pi": "computerControl",
+    "acp": "computerControl"
+  },
+  {
+    "name": "mcp__fs__read_file",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "mcp__server__read_file",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "mcp__shell__exec",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "mcp__x__y",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "move",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "names a call after its ACP kind when nothing else identifies it",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "naïve_write",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "never lists a denied tool in the allowlist",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "never reads words out of prose",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "never returns null — an unknown name is codeExecution, not ask",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "never returns null, so an unattended run cannot hang on a bookkeeping call",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "never throw, never omit",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "new\nline",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "no extensionFactories",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "no id",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "no resolveProjectTrust",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "no settingsManager",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "noExtensions is not true",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "noExtensions is not true — project-local extensions are discoverable",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "not a kind",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "not on prod",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "notes.txt",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "other",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "passes the user's own rejection message back to the model",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "piAllowlistBuiltinNames drops Windows-only built-ins off Windows",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "please read the file",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "powershell",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "prefers a name, then the kind, then a shaped title — in that order",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "prefers the one-shot variant so callboard keeps control of policy",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "prefers the programmatic name, falls back to the title, then a placeholder",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "project trust is denied by construction",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "project_trust",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "prompt channel died",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "prompts for $name instead of silently executing it",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "r1",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "r2",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "read",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "read file",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "read-file",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "read2file",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "readFile",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "read_file",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "read_files",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "read_ファイル",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "reads permissions at decision time, not at construction",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "reads the policy at decision time, not at session start",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "reads the policy at decision time, so a mid-turn tightening binds on the very next call",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "refuses to categorize a tool from prose alone",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "refuses to parse prose for a gate",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "refuses to tokenize a sentence",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "registers a tool_call handler and nothing else",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "reject_always",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "reject_once",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "rejects when canUseTool throws instead of propagating the error",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "render_artifact",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "render_file",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "resolveAcpPermission",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "resolveProjectTrust missing",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "resolves an ambiguous name to the MOST restrictive family it matches",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "resolves an ambiguous name to the most restrictive matching family",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "resolves most-restrictive-first when a name matches two families",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "returns nothing when no axis denies",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "returns nothing with no permissions configured",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "returns null for kinds no axis governs",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "returns null rather than picking an option meaning the opposite",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "returns undefined (not {block:false}) on allow — pi's 'no opinion' shape",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "rm -rf /",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "routes an ACP execute tool to codeExecution, not the Claude map's fileWrite default",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "routes every built-in through the live gate",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "run the command rm -rf /",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "run-command",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "runCommand",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "run_command",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "run_commands",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "run_something",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "s",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "s1",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "search",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "search_and_run",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "search_codebase",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "search_replace",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "selectPermissionOption",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "selected",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "sends a name with no recognizable token to codeExecution",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "sends anything it cannot identify to the strictest axis",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "server:tool",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "set",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "set_chat_title",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "sets all three mitigations explicitly, not by default",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "settingsManager missing",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "shared/types/index.js",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "skills",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "some_new_cline_tool",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "spawn_agent",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "spawn_job",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "special-cases render_file, as the Claude/OR/Cline maps do",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "stat",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "still excludes powershell on a codeExecution deny, on every platform",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "still refuses to be identified by prose",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "submit_and_exit",
+    "cline": "fileRead",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "survives a request with no toolCall at all",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "switch_mode",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "t1",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "tab\tread",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "takes a lying kind at face value — the same standing risk as a lying name",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "the allowlist is platform-gated (the catalogue is not)",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "the two-pass rule",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "think",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "tool123",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "tool_call",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "totally_unknown",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "totally_unknown_xyz",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "treats `skills` as execution, not a disk read",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "treats absent permissions as ask",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "unknown_tool",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "update_card",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "v2_fetch",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "view_file",
+    "cline": "fileRead",
+    "pi": "fileRead",
+    "acp": "fileRead"
+  },
+  {
+    "name": "vitest",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "we don't know what this is",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "web-browse",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "web-search",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "webAccess",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "web_fetch",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "web_search",
+    "cline": "webAccess",
+    "pi": "webAccess",
+    "acp": "webAccess"
+  },
+  {
+    "name": "win32",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "wires the handler to the fail-closed decision",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "write",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "write_file",
+    "cline": "fileWrite",
+    "pi": "fileWrite",
+    "acp": "fileWrite"
+  },
+  {
+    "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  },
+  {
+    "name": "ünïcödé",
+    "cline": "codeExecution",
+    "pi": "codeExecution",
+    "acp": "codeExecution"
+  }
+]
