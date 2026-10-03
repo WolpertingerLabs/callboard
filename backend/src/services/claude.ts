@@ -1,31 +1,27 @@
 import type { ChatViewBinding } from "./chat-view.js";
 import { randomUUID } from "node:crypto";
-import { assertStoredReasoningEffort, resolveReasoningTarget } from "./reasoning-capabilities.js";
+import { assertStoredReasoningEffort } from "./reasoning-capabilities.js";
 import { resolveCodexExecutionRoute, type CodexExecutionRoute } from "./codex-execution-route.js";
 import { assertChatContextUnchanged, chatContextFingerprint } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
 import { beginComputerUseTurn, buildComputerUseToolsSpec } from "./computer-use-tools.js";
-import { getAgentProvider, getSessionProvider } from "../agents/factory.js";
+import { getAgentProvider } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
-import type { PermissionResult, HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput } from "../agents/adapters/claude-code/types.js";
+import type { PermissionResult } from "../agents/adapters/claude-code/types.js";
+import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
 import { getToolCategorizer } from "../agents/permissions/categorizers.js";
 import { EventEmitter } from "events";
-import { execFile } from "child_process";
-import { accessSync, constants as fsConstants, statSync } from "fs";
-import { resolve, isAbsolute, delimiter as pathDelimiter, join as pathJoin } from "path";
 import { chatFileService } from "./chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 import type { StreamEvent, TaskListItem } from "shared/types/index.js";
 import { TASK_LIST_TOOLS, normalizePermissions } from "shared/types/index.js";
-import type { McpServerConfig } from "shared/types/index.js";
-import { getPluginsForDirectory, type Plugin } from "./plugins.js";
-import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
-import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "./custom-skills-service.js";
+import { buildPluginOptions, buildMcpServerOptions, buildHookOptions, type PluginDescriptor } from "./claude-session-options.js";
+import { buildAcpExtras, buildClineExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
 import { buildJobStepToolsSpec } from "./job-step-tools.js";
@@ -49,12 +45,9 @@ import {
   resolveDefaultCaller,
   getApiEnvOverrides,
   resolveModelAlias,
-  resolveSessionModel,
-  getCodexExecutablePath,
 } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
-import { detectCodexOpenRouterEnv } from "../agents/adapters/codex/codexAuth.js";
 import { appendActivity } from "./agent-activity.js";
 import { getAgent } from "./agent-file-service.js";
 import { generateChatTitle } from "./quick-completion.js";
@@ -77,6 +70,10 @@ export type { StreamEvent };
 // this module and closing a cycle. Re-exported here because every existing
 // caller — routes, caches, tests — knows it by this address.
 export { getPendingRequest, hasPendingRequest, pendingRequestFingerprint, respondToPermission } from "./pending-requests.js";
+
+// The plugin/MCP/hook option builders live in ./claude-session-options.js;
+// re-exported here for the importers and tests that know them by this address.
+export { buildPluginOptions, resolveServerPaths, isCommandLaunchable } from "./claude-session-options.js";
 
 /** Thrown for a chat pinned to a harness this build no longer implements. */
 export class RetiredProviderError extends Error {}
@@ -112,6 +109,14 @@ function resolveProviderKind(value: unknown): InternalProviderKind {
   return "claude-code";
 }
 
+/** The fields of a drawlatch route listing this prompt reads; the listing itself is untyped. */
+interface ProxyRouteListing {
+  alias?: string;
+  name?: string;
+  description?: string;
+  docsUrl?: string;
+}
+
 /**
  * Build a system prompt section listing available MCP proxy connections.
  *
@@ -127,7 +132,7 @@ async function buildProxyConnectionsPrompt(proxyKeyAlias: string): Promise<strin
   const { routes, configured, stale, error } = await fetchProxyRoutes(proxyKeyAlias);
   if (!configured) return "";
 
-  const connections = (routes as any[]).map((r) => ({
+  const connections = (routes as ProxyRouteListing[]).map((r) => ({
     alias: r.alias ?? r.name ?? "",
     name: r.name ?? r.alias ?? "",
     ...(r.description && { description: r.description }),
@@ -174,333 +179,6 @@ async function buildProxyConnectionsPrompt(proxyKeyAlias: string): Promise<strin
 interface ActiveSession {
   abortController: AbortController;
   emitter: EventEmitter;
-}
-
-/**
- * Build plugin configuration for Claude SDK from active plugin IDs.
- * Merges per-directory plugins with enabled app-wide plugins.
- * Per-directory plugins take precedence over app-wide plugins with the same name.
- */
-export function buildPluginOptions(folder: string, activePluginIds?: string[]): any[] {
-  const sdkPlugins: any[] = [];
-  const includedNames = new Set<string>();
-
-  // Per-directory plugins (existing behavior)
-  if (activePluginIds && activePluginIds.length > 0) {
-    try {
-      const plugins = getPluginsForDirectory(folder);
-      const activePlugins = plugins.filter((p: Plugin) => activePluginIds.includes(p.id));
-
-      for (const plugin of activePlugins) {
-        sdkPlugins.push({
-          type: "local",
-          path: plugin.manifest.source,
-          name: plugin.manifest.name,
-        });
-        includedNames.add(plugin.manifest.name);
-      }
-    } catch (error) {
-      log.warn(`Failed to build per-directory plugin options: ${error}`);
-    }
-  }
-
-  // App-wide plugins (always included if enabled in settings)
-  try {
-    const appPlugins = getEnabledAppPlugins();
-    for (const appPlugin of appPlugins) {
-      // Deduplicate: per-directory plugins take precedence
-      if (!includedNames.has(appPlugin.manifest.name)) {
-        sdkPlugins.push({
-          type: "local",
-          path: appPlugin.pluginPath,
-          name: appPlugin.manifest.name,
-        });
-        includedNames.add(appPlugin.manifest.name);
-      }
-    }
-  } catch (error) {
-    log.warn(`Failed to build app-wide plugin options: ${error}`);
-  }
-
-  // Callboard custom skills — a synthetic plugin, so the Claude Code SDK loads
-  // them through the same path as any other local plugin: this descriptor goes
-  // into `options.plugins` below, the CLI loads the directory, and the skills
-  // surface as `callboard:<name>`. Null when no custom skills exist.
-  //
-  // This is the only consumer of the descriptor. pi reaches the same skills by
-  // a different door — `customSkillsService.getSkillsDir()` into pi's
-  // `additionalSkillPaths` (agents/adapters/pi/optionsAdapter.ts) — because it
-  // has no plugin concept at all.
-  try {
-    const customSkillsDir = customSkillsService.getPluginDir();
-    if (customSkillsDir && !includedNames.has(CUSTOM_SKILLS_PLUGIN_NAME)) {
-      sdkPlugins.push({
-        type: "local",
-        path: customSkillsDir,
-        name: CUSTOM_SKILLS_PLUGIN_NAME,
-      });
-      includedNames.add(CUSTOM_SKILLS_PLUGIN_NAME);
-    }
-  } catch (error) {
-    log.warn(`Failed to build custom-skills plugin options: ${error}`);
-  }
-
-  return sdkPlugins;
-}
-
-/**
- * Build MCP server configuration for Claude SDK from enabled plugin-embedded MCP servers.
- */
-function resolveEnvReferences(env: Record<string, string>): Record<string, string> {
-  const resolved: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    // Resolve ${VAR_NAME} references from process.env
-    const match = value.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/);
-    if (match) {
-      resolved[key] = process.env[match[1]] || "";
-    } else {
-      resolved[key] = value;
-    }
-  }
-  return resolved;
-}
-
-/**
- * Resolve ${CLAUDE_PLUGIN_ROOT} and relative paths in MCP server command/args.
- *
- * Two base directories, because the two substitutions mean different things:
- *   - `${CLAUDE_PLUGIN_ROOT}` is by definition the PLUGIN root, so it expands to
- *     `pluginPath` when we know it.
- *   - A bare relative path in a .mcp.json is relative to that file, so it
- *     resolves against `mcpJsonDir`.
- * They coincide for the common layout (.mcp.json sits at the plugin root) and
- * each falls back to the other when only one is known.
- *
- * `args` and `command` are NOT interchangeable, and neither is unconditionally
- * a path.
- *
- * For `command` the rule is execvp(3)'s own: a command containing a path
- * separator is a path; a bare name is looked up on PATH and must pass through
- * untouched. Getting that wrong is what this function used to do —
- * `"command": "node"` was rewritten to `<plugin-dir>/node`, which does not
- * exist, so the server died with ENOENT and took its tools out of the session.
- *
- * For `args`, most are paths, but flags and package specs are not: `npx -y
- * @scope/pkg` was being rewritten to `<plugin-dir>/-y <plugin-dir>/@scope/pkg`.
- * Anything that cannot be a relative path — a leading `-`, a leading `@` (npm
- * scope), or a URL — is left alone; everything else keeps being anchored to the
- * base dir, so bare relative paths like `dist/server.js` still resolve.
- *
- * Together these break every .mcp.json using a bare interpreter (node, npx,
- * python3, uvx, bun, deno), which is the overwhelming majority of them.
- */
-export function resolveServerPaths(server: McpServerConfig, pluginPath?: string): { command?: string; args?: string[] } {
-  const pluginRoot = pluginPath || server.mcpJsonDir;
-  const relativeBase = server.mcpJsonDir || pluginPath;
-  if (!pluginRoot || !relativeBase) return { command: server.command, args: server.args };
-
-  const substitute = (value: string): string => value.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot);
-
-  // A flag, an npm scope, or a URL is never a relative path — anchoring one
-  // produces nonsense like `<plugin-dir>/-y`.
-  const isNotAPath = (value: string): boolean => value.startsWith("-") || value.startsWith("@") || value.includes("://");
-
-  const resolveArg = (value: string): string => {
-    const replaced = substitute(value);
-    if (isNotAPath(replaced)) return replaced;
-    return isAbsolute(replaced) ? replaced : resolve(relativeBase, replaced);
-  };
-
-  // Commands are program names unless they look like a path.
-  const resolveCommand = (value: string): string => {
-    const replaced = substitute(value);
-    // No separator → bare program name → leave it for PATH lookup.
-    if (!replaced.includes("/")) return replaced;
-    return isAbsolute(replaced) ? replaced : resolve(relativeBase, replaced);
-  };
-
-  return {
-    command: server.command ? resolveCommand(server.command) : server.command,
-    args: server.args?.map(resolveArg),
-  };
-}
-
-/**
- * Is `command` something we can actually exec — an executable file at a path, or
- * a bare name present on PATH?
- *
- * Purely advisory. A stdio server that fails to spawn is already isolated by the
- * SDK (its siblings and the in-process servers stay connected), but the failure
- * is invisible from callboard's side: the CLI reports `status: "failed"` on its
- * init message, which callboard does not consume, so the only evidence is the
- * absence of tools the log has already claimed to inject. This turns that into a
- * named warning at build time.
- */
-export function isCommandLaunchable(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  const isExecutableFile = (candidate: string): boolean => {
-    try {
-      if (!statSync(candidate).isFile()) return false;
-      accessSync(candidate, fsConstants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // Anything with a separator is a path, per the same rule resolveServerPaths uses.
-  if (command.includes("/")) return isExecutableFile(command);
-
-  const pathEntries = (env.PATH || "").split(pathDelimiter).filter(Boolean);
-  return pathEntries.some((dir) => isExecutableFile(pathJoin(dir, command)));
-}
-
-function buildMcpServerOptions(): { mcpServers: Record<string, any>; allowedTools: string[]; resolvedEnvVars: Record<string, string> } | undefined {
-  try {
-    const mcpServers = getEnabledMcpServers();
-    if (mcpServers.length === 0) return undefined;
-
-    // Build a map of plugin ID → plugin path for resolving MCP server paths
-    const appPlugins = getEnabledAppPlugins();
-    const pluginPathMap = new Map<string, string>();
-    for (const plugin of appPlugins) {
-      pluginPathMap.set(plugin.id, plugin.pluginPath);
-    }
-
-    const serverConfig: Record<string, any> = {};
-    const allowedTools: string[] = [];
-    // Collect all resolved env vars so they can be propagated to the CLI subprocess.
-    // Plugins loaded by the CLI re-read .mcp.json and resolve ${VAR} templates from
-    // process.env, so we must ensure these vars are present in the subprocess environment.
-    const resolvedEnvVars: Record<string, string> = {};
-
-    for (const server of mcpServers) {
-      const resolvedEnv = server.env ? resolveEnvReferences(server.env) : undefined;
-      if (resolvedEnv) {
-        Object.assign(resolvedEnvVars, resolvedEnv);
-      }
-      if (server.type === "stdio") {
-        const pluginPath = pluginPathMap.get(server.sourcePluginId);
-        const { command, args } = resolveServerPaths(server, pluginPath);
-        if (command && !isCommandLaunchable(command)) {
-          log.warn(
-            `MCP server "${server.name}" (plugin ${server.sourcePluginId}) has an unlaunchable command "${command}" — ` +
-              `it will fail to start and its mcp__${server.name}__* tools will be absent from the session`,
-          );
-        }
-        serverConfig[server.name] = {
-          command,
-          args: args || [],
-          ...(resolvedEnv && { env: resolvedEnv }),
-        };
-      } else {
-        // HTTP/SSE type
-        serverConfig[server.name] = {
-          type: server.type,
-          url: server.url,
-          ...(server.headers && { headers: server.headers }),
-          ...(resolvedEnv && { env: resolvedEnv }),
-        };
-      }
-      allowedTools.push(`mcp__${server.name}__*`);
-    }
-
-    if (Object.keys(serverConfig).length === 0) return undefined;
-
-    return { mcpServers: serverConfig, allowedTools, resolvedEnvVars };
-  } catch (error) {
-    log.warn(`Failed to build MCP server options: ${error}`);
-    return undefined;
-  }
-}
-
-/**
- * Create a HookCallback that executes a shell command.
- * Receives HookInput as JSON on stdin, expects HookJSONOutput as JSON on stdout.
- */
-function createCommandHookCallback(command: string, pluginPath: string, hookTimeout?: number, hookAskOverride?: { reason: string }): HookCallback {
-  return async (input: HookInput, toolUseId: string | undefined, { signal }: { signal: AbortSignal }) => {
-    return new Promise<HookJSONOutput>((resolvePromise) => {
-      const timeout = (hookTimeout ?? 60) * 1000;
-      const child = execFile("bash", ["-c", command], { timeout, env: { ...process.env, CLAUDE_PLUGIN_ROOT: pluginPath } }, (error, stdout) => {
-        if (error) {
-          log.warn(`Hook command failed: ${command} — ${error.message}`);
-          resolvePromise({ continue: true });
-          return;
-        }
-        try {
-          const result = JSON.parse(stdout.trim());
-          // When a hook returns permissionDecision "ask", stash the reason
-          // so canUseTool can skip auto-approval and prompt the user.
-          if (hookAskOverride && result?.hookSpecificOutput?.permissionDecision === "ask") {
-            hookAskOverride.reason = result.hookSpecificOutput.permissionDecisionReason || "Hook requested user approval";
-          }
-          resolvePromise(result);
-        } catch {
-          log.warn(`Hook command returned non-JSON output: ${command} — ${stdout.slice(0, 200)}`);
-          resolvePromise({ continue: true });
-        }
-      });
-
-      signal.addEventListener("abort", () => child.kill(), { once: true });
-
-      if (child.stdin) {
-        child.stdin.write(JSON.stringify({ ...input, tool_use_id: toolUseId }));
-        child.stdin.end();
-      }
-    });
-  };
-}
-
-/**
- * Build SDK hooks from all enabled plugins' hook configurations.
- * Merges hooks across plugins by event type, resolving ${CLAUDE_PLUGIN_ROOT} in commands.
- */
-function buildHookOptions(hookAskOverride?: { reason: string }): Partial<Record<HookEvent, HookCallbackMatcher[]>> | undefined {
-  try {
-    const appPlugins = getEnabledAppPlugins();
-    const mergedHooks: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {};
-    let hookCount = 0;
-
-    for (const plugin of appPlugins) {
-      if (!plugin.hooksConfig?.hooks) continue;
-
-      for (const [eventName, matchers] of Object.entries(plugin.hooksConfig.hooks)) {
-        if (!Array.isArray(matchers)) continue;
-
-        const hookEvent = eventName as HookEvent;
-        if (!mergedHooks[hookEvent]) {
-          mergedHooks[hookEvent] = [];
-        }
-
-        for (const matcher of matchers) {
-          const callbacks: HookCallback[] = [];
-
-          for (const hookEntry of matcher.hooks) {
-            if (hookEntry.type === "command" && hookEntry.command) {
-              const resolvedCommand = hookEntry.command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, plugin.pluginPath);
-              callbacks.push(createCommandHookCallback(resolvedCommand, plugin.pluginPath, hookEntry.timeout ?? matcher.timeout, hookAskOverride));
-              hookCount++;
-            }
-          }
-
-          if (callbacks.length > 0) {
-            mergedHooks[hookEvent]!.push({
-              matcher: matcher.matcher,
-              hooks: callbacks,
-              timeout: matcher.timeout,
-            });
-          }
-        }
-      }
-    }
-
-    if (hookCount === 0) return undefined;
-    log.info(`Built ${hookCount} hook callback(s) from enabled plugins`);
-    return mergedHooks;
-  } catch (error) {
-    log.warn(`Failed to build hook options: ${error}`);
-    return undefined;
-  }
 }
 
 export function getActiveSession(chatId: string): ActiveSession | undefined {
@@ -964,6 +642,39 @@ export interface SendMessageOptions {
    */
   workspaceId?: string;
 }
+
+/**
+ * An entry in a session's `mcpServers`: a plugin MCP config, or an adapter's
+ * opaque in-process tool server. Only `type` (logging) and `env` (the
+ * MCP_KEY_ALIAS rewrite) are ever read here.
+ */
+type McpServerEntry = { type?: string; env?: Record<string, string> };
+
+/**
+ * The options blob `sendMessage` hands every provider: Claude-SDK-shaped, plus
+ * one extras sub-object per non-Claude harness, which its adapter reads.
+ */
+type SessionQueryOptions = {
+  abortController: AbortController;
+  cwd: string;
+  pathToClaudeCodeExecutable?: string;
+  model?: string;
+  settingSources: string[];
+  maxTurns: number;
+  resume?: string;
+  plugins?: PluginDescriptor[];
+  mcpServers?: Record<string, McpServerEntry>;
+  allowedTools?: string[];
+  hooks?: NonNullable<ReturnType<typeof buildHookOptions>>;
+  systemPrompt?: { type: "preset"; preset: "claude_code"; append: string };
+  env: Record<string, string | undefined>;
+  canUseTool: ReturnType<typeof buildCanUseTool>;
+  stderr: (data: string) => void;
+  codex?: Awaited<ReturnType<typeof buildCodexExtras>>;
+  acp?: ReturnType<typeof buildAcpExtras>;
+  cline?: Awaited<ReturnType<typeof buildClineExtras>>;
+  pi?: Awaited<ReturnType<typeof buildPiExtras>>;
+};
 
 /** Default number of times a requiring session is nudged to continue before giving up. */
 const DEFAULT_MAX_NUDGES = 3;
@@ -1449,7 +1160,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   const hookOpts = buildHookOptions(hookAskOverride);
 
   // Build MCP servers map: start with configured servers, add Callboard agent tools if this is an agent session
-  const mcpServers: Record<string, any> = mcpOpts ? { ...mcpOpts.mcpServers } : {};
+  const mcpServers: Record<string, McpServerEntry> = mcpOpts ? { ...mcpOpts.mcpServers } : {};
   const allowedTools: string[] = mcpOpts ? [...mcpOpts.allowedTools] : [];
   const endComputerUseTurn = beginComputerUseTurn(() => trackingId, abortController.signal);
   // All harnesses proxy these tools through the same package MCP service.
@@ -1472,77 +1183,86 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     const server = agentProvider.buildToolServer(buildComputerUseToolsSpec(() => trackingId));
     if (server) {
       if (mcpServers["computer_use"]) log.warn('A configured MCP server named "computer_use" is shadowed by the built-in computer-control server');
-      mcpServers["computer_use"] = server;
+      mcpServers["computer_use"] = server as McpServerEntry;
       for (let i = allowedTools.length - 1; i >= 0; i--) if (allowedTools[i].startsWith("mcp__computer_use__")) allowedTools.splice(i, 1);
     }
   } catch (error) {
     log.warn(`Computer-control tool registration unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
   }
 
-  // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
-  try {
-    const spec = buildCallboardToolsSpec(
-      () => trackingId,
-      () => opts.agentAlias,
-      {
-        // Agent sessions get the job management tools on the "callboard" agent
-        // server (alongside deploy_agent etc.) — skip them here to avoid duplicates.
-        includeJobTools: !opts.agentAlias,
-        chatView: opts.chatView,
-        // The engine this session runs on, so start_chat_session spawns children
-        // onto it by default instead of always handing them to Claude Code.
-        provider: providerKind,
-        ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
-        // Live read of this chat's current model override, so a child started
-        // without an explicit `model` inherits it. A getter, not a value: the
-        // model can change mid-session, and a still-registering chat (temp
-        // tracking id, no record yet) simply reads as undefined.
-        getModel: () => chatFileService.getModelOverride(trackingId),
-      },
-    );
-    const server = agentProvider.buildToolServer(spec);
-    if (server) {
-      mcpServers["callboard-tools"] = server;
-      allowedTools.push("mcp__callboard-tools__*");
-      log.info("Injected callboard-tools MCP server");
+  /**
+   * Register one in-process tool server: build its spec, let the provider wrap
+   * it, add it under `key` and auto-approve `mcp__<key>__*`. Call order is the
+   * order servers land in `mcpServers` and `allowedTools`. A failure is logged
+   * and skipped — one tool server never takes the session down.
+   */
+  const inject = (
+    key: string,
+    buildSpec: () => ToolServerSpec,
+    label: string,
+    injected: string | ((spec: ToolServerSpec) => string),
+    noServer?: string,
+  ): void => {
+    try {
+      const spec = buildSpec();
+      const server = agentProvider.buildToolServer(spec);
+      if (server) {
+        mcpServers[key] = server as McpServerEntry;
+        allowedTools.push(`mcp__${key}__*`);
+        log.info(typeof injected === "string" ? injected : injected(spec));
+      } else if (noServer) {
+        log.error(noServer);
+      }
+    } catch (err: any) {
+      log.error(`Failed to build ${label}: ${err.message}`);
     }
-  } catch (err: any) {
-    log.error(`Failed to build callboard-tools server: ${err.message}`);
-  }
+  };
+
+  // ── Callboard platform tools: injected for ALL sessions (regular + agent) ──
+  inject(
+    "callboard-tools",
+    () =>
+      buildCallboardToolsSpec(
+        () => trackingId,
+        () => opts.agentAlias,
+        {
+          // Agent sessions get the job management tools on the "callboard" agent
+          // server (alongside deploy_agent etc.) — skip them here to avoid duplicates.
+          includeJobTools: !opts.agentAlias,
+          chatView: opts.chatView,
+          // The engine this session runs on, so start_chat_session spawns children
+          // onto it by default instead of always handing them to Claude Code.
+          provider: providerKind,
+          ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
+          // Live read of this chat's current model override, so a child started
+          // without an explicit `model` inherits it. A getter, not a value: the
+          // model can change mid-session, and a still-registering chat (temp
+          // tracking id, no record yet) simply reads as undefined.
+          getModel: () => chatFileService.getModelOverride(trackingId),
+        },
+      ),
+    "callboard-tools server",
+    "Injected callboard-tools MCP server",
+  );
 
   // ── Job step tools: injected only for job runner step sessions ──
   if (opts.jobContext && !opts.jobContext.advisory) {
-    try {
-      const spec = buildJobStepToolsSpec(() => opts.jobContext);
-      const server = agentProvider.buildToolServer(spec);
-      if (server) {
-        mcpServers["job-tools"] = server;
-        allowedTools.push("mcp__job-tools__*");
-        log.info(`Injected job-tools MCP server (run=${opts.jobContext.runId}, step=${opts.jobContext.stepId})`);
-      }
-    } catch (err: any) {
-      log.error(`Failed to build job-tools server: ${err.message}`);
-    }
+    const { runId, stepId } = opts.jobContext;
+    inject("job-tools", () => buildJobStepToolsSpec(() => opts.jobContext), "job-tools server", `Injected job-tools MCP server (run=${runId}, step=${stepId})`);
   }
 
   // ── Objective tools: injected only when explicit completion is required ──
   // Job steps are excluded — they report through complete_job_step above.
   if (requireCompletion && !isJobStepSession) {
-    try {
-      const spec = buildObjectiveToolsSpec(() => trackingId);
-      const server = agentProvider.buildToolServer(spec);
-      if (server) {
-        mcpServers["objective-tools"] = server;
-        allowedTools.push("mcp__objective-tools__*");
-        log.info("Injected objective-tools MCP server (explicit completion required)");
-      }
-    } catch (err: any) {
-      log.error(`Failed to build objective-tools server: ${err.message}`);
-    }
+    inject("objective-tools", () => buildObjectiveToolsSpec(() => trackingId), "objective-tools server", "Injected objective-tools MCP server (explicit completion required)");
   }
 
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
   const agentSettings = getAgentSettings();
+  // The agent's resolved caller alias, looked up once: it is both the agent's
+  // drawlatch identity below and the MCP_KEY_ALIAS stamped further down.
+  const agentConfig = opts.agentAlias ? getAgent(opts.agentAlias) : undefined;
+  const agentMcpKeyAlias = agentConfig ? resolveAgentKeyAlias(agentConfig).mcpKeyAlias : undefined;
   // Resolve the caller alias that gives this session its drawlatch identity:
   //   - Agent sessions use ONLY the agent's explicitly-assigned alias. There is
   //     no implicit "default" fallback — an agent must be granted a caller
@@ -1551,13 +1271,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   //   - Regular (human-operated) sessions use the configured default caller for
   //     the active proxy mode (Proxy Settings → "Default" toggle). When no
   //     default is set, they get NO caller and the proxy tools are not injected.
-  let proxyKeyAlias: string | undefined;
-  if (opts.agentAlias) {
-    const proxyAgent = getAgent(opts.agentAlias);
-    proxyKeyAlias = proxyAgent ? resolveAgentKeyAlias(proxyAgent).mcpKeyAlias : undefined;
-  } else {
-    proxyKeyAlias = resolveDefaultCaller();
-  }
+  const proxyKeyAlias = opts.agentAlias ? agentMcpKeyAlias : resolveDefaultCaller();
 
   if (agentSettings.proxyMode && proxyKeyAlias) {
     // Make sure this caller is usable (local: the managed daemon is up and has
@@ -1568,30 +1282,17 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       log.warn(`Caller enrollment for "${proxyKeyAlias}" failed: ${err.message}`);
     }
 
-    try {
-      const spec = buildProxyToolsSpec(proxyKeyAlias);
-      const server = agentProvider.buildToolServer(spec);
-      if (server) {
-        mcpServers["mcp-proxy"] = server;
-        allowedTools.push("mcp__mcp-proxy__*");
-        log.info(`Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`);
-      }
-    } catch (err: any) {
-      log.error(`Failed to build proxy tools server: ${err.message}`);
-    }
+    inject("mcp-proxy", () => buildProxyToolsSpec(proxyKeyAlias), "proxy tools server", `Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`);
   } else if (opts.agentAlias && !proxyKeyAlias) {
     log.info(`Agent "${opts.agentAlias}" has no caller alias assigned — proxy tools not injected`);
   }
 
-  // Resolve the agent's MCP key alias for proxy identity.
+  // Use the agent's MCP key alias for proxy identity.
   // When an agent has mcpKeyAlias set, inject MCP_KEY_ALIAS into each MCP server's
   // env and into the subprocess env so the drawlatch plugin uses the correct
   // caller key identity (keys/callers/<alias>/).
-  let agentMcpKeyAlias: string | undefined;
   if (opts.agentAlias) {
-    const agentConfig = getAgent(opts.agentAlias);
-    agentMcpKeyAlias = agentConfig ? resolveAgentKeyAlias(agentConfig).mcpKeyAlias : undefined;
-
+    const agentAlias = opts.agentAlias;
     if (agentMcpKeyAlias) {
       // Override MCP_KEY_ALIAS in each MCP server's env that declares it
       for (const serverName of Object.keys(mcpServers)) {
@@ -1600,27 +1301,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           server.env = { ...server.env, MCP_KEY_ALIAS: agentMcpKeyAlias };
         }
       }
-      log.debug(`Set MCP_KEY_ALIAS="${agentMcpKeyAlias}" for agent=${opts.agentAlias}`);
+      log.debug(`Set MCP_KEY_ALIAS="${agentMcpKeyAlias}" for agent=${agentAlias}`);
     }
 
-    try {
-      const spec = buildAgentToolsSpec(opts.agentAlias, () => trackingId, {
-        provider: providerKind,
-        ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
-        // Same live model-override read as the callboard-tools spec above.
-        getModel: () => chatFileService.getModelOverride(trackingId),
-      });
-      const server = agentProvider.buildToolServer(spec);
-      if (server) {
-        mcpServers["callboard"] = server;
-        allowedTools.push("mcp__callboard__*");
-        log.info(`Injected Callboard agent tools for agent="${opts.agentAlias}" (spec.name=${spec.name}, ${spec.tools.length} tools)`);
-      } else {
-        log.error(`buildAgentToolsSpec produced no server for agent="${opts.agentAlias}"`);
-      }
-    } catch (err: any) {
-      log.error(`Failed to build Callboard agent tools for agent="${opts.agentAlias}": ${err.message}`);
-    }
+    inject(
+      "callboard",
+      () =>
+        buildAgentToolsSpec(agentAlias, () => trackingId, {
+          provider: providerKind,
+          ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
+          // Same live model-override read as the callboard-tools spec above.
+          getModel: () => chatFileService.getModelOverride(trackingId),
+        }),
+      `Callboard agent tools for agent="${agentAlias}"`,
+      (spec) => `Injected Callboard agent tools for agent="${agentAlias}" (spec.name=${spec.name}, ${spec.tools.length} tools)`,
+      `buildAgentToolsSpec produced no server for agent="${agentAlias}"`,
+    );
   }
 
   const hasMcpServers = Object.keys(mcpServers).length > 0;
@@ -1635,7 +1331,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // Log MCP server configuration for debugging
   if (hasMcpServers) {
     const serverSummary = Object.entries(mcpServers)
-      .map(([key, val]: [string, any]) => `${key}(${val.type || "stdio"})`)
+      .map(([key, val]) => `${key}(${val.type || "stdio"})`)
       .join(", ");
     log.info(`MCP servers for session: [${serverSummary}], allowedTools: [${allowedTools.join(", ")}]`);
   }
@@ -1652,6 +1348,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     : "";
   const systemPromptAppend = [opts.systemPrompt, completionInstruction].filter(Boolean).join("\n\n");
 
+  // The per-chat model and effort as stored in chat metadata (new chats: just
+  // written above; resumed chats: loaded from disk). Every harness reads them.
+  const chatModel = typeof initialMetadata.model === "string" ? initialMetadata.model : undefined;
+  const chatEffort = initialMetadata.effort as EffortLevel | undefined;
+
   // Per-chat Anthropic model override for claude-code chats. Read from chat
   // metadata (covers both new chats — just written above — and resumed chats
   // loaded from disk) and passed to the SDK as `options.model`, which maps to
@@ -1666,11 +1367,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // claude-code target resolves to undefined ⇒ no --model passed ⇒ the env-var /
   // subscription default takes over (same as the unset case).
   const claudeCodeModel =
-    providerKind === "claude-code" && typeof initialMetadata.model === "string" && initialMetadata.model.trim().length > 0
-      ? resolveModelAlias(initialMetadata.model.trim(), "claude-code", agentSettings)
+    providerKind === "claude-code" && chatModel !== undefined && chatModel.trim().length > 0
+      ? resolveModelAlias(chatModel.trim(), "claude-code", agentSettings)
       : undefined;
 
-  const queryOpts: any = {
+  const queryOpts: { prompt: string | AsyncIterable<unknown>; options: SessionQueryOptions } = {
     prompt: effectivePrompt,
     options: {
       abortController,
@@ -1710,245 +1411,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     },
   };
 
-  // For Codex chats, surface the per-provider settings the Codex adapter's
-  // optionsAdapter looks for (the `codex` extras sub-object). Auth defaults to
-  // subscription (ChatGPT login via
-  // $CODEX_HOME/auth.json — no key passed); api-key mode forwards the key/base
-  // url. CODEX_HOME itself rides in via the subprocess env that
-  // getApiEnvOverrides() already injected above, so it isn't repeated here.
-  if (providerKind === "codex") {
-    const authMode = agentSettings.codexAuthMode ?? "subscription";
-    // OpenRouter endpoint routing takes precedence over codexAuthMode: the native
-    // Codex harness talks to OpenRouter via the injected config.toml provider
-    // block, keyed from OPENROUTER_API_KEY. Credentials may come from the stored
-    // key or from an ambient OpenRouter setup — see isCodexRoutedThroughOpenRouter
-    // for why the env case additionally requires an explicit endpoint override.
-    codexRoute ??= await resolveCodexExecutionRoute(agentSettings, folder);
-    const reasoningTarget = await resolveReasoningTarget(
-      { provider: "codex", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined, cwd: folder, codexRoute },
-      agentSettings,
-    );
-    const useOpenRouter = reasoningTarget.injectedOpenRouter;
-    // Routing requested with no credentials anywhere — no stored key and no
-    // ambient OpenRouter setup — is a misconfiguration rather than a silent
-    // fallback onto codexAuthMode.
-    if (agentSettings.codexUseOpenRouter && !useOpenRouter && !detectCodexOpenRouterEnv()) {
-      const message = "Codex chat selected with OpenRouter routing, but no OpenRouter API key is configured in Settings → API.";
-      log.error(message);
-      throw new Error(message);
-    }
-    // api-key mode needs a key; subscription mode draws on the stored login.
-    // Skipped entirely when OpenRouter routing is active.
-    if (!useOpenRouter && authMode === "api-key" && !agentSettings.codexApiKey?.trim()) {
-      const message = "Codex chat selected in api-key mode but OPENAI_API_KEY is not configured in Settings → API.";
-      log.error(message);
-      throw new Error(message);
-    }
-    // Per-chat model override (persisted to metadata) takes precedence over the
-    // global default. Covers new chats (just written above) and resumed chats
-    // (loaded from disk).
-    // Per-chat override wins; either it or the global default may be a
-    // cross-harness alias. A per-chat alias with no codex target falls back to the
-    // configured default rather than the SDK's built-in default.
-    // Which global default applies is mode-specific: routing through OpenRouter
-    // reads codexOpenRouterModel (an OR slug), native Codex reads codexModel (a
-    // bare CLI slug). Sharing one field made toggling lossy — see the
-    // AgentSettings doc-comment on codexOpenRouterModel.
-    const requestedModel = reasoningTarget.model;
-    // Per-chat reasoning effort, read back out of metadata — maps onto Codex's
-    // modelReasoningEffort in the optionsAdapter.
-    const chatEffort = initialMetadata.effort as EffortLevel | undefined;
-    // Permissions collapse onto Codex's sandbox + approval policy at thread
-    // start (Codex has no per-call canUseTool hook). Surface them so the
-    // optionsAdapter can derive the sandbox tier when no explicit one is set.
-    const permissions = getDefaultPermissions() ?? undefined;
-    // Which `codex` binary this chat spawns. `undefined` — the answer for every
-    // chat before Phase 4, and still the default — leaves the SDK to resolve the
-    // platform binary nested under `@openai/codex-sdk`. A configured override
-    // that failed its `stat`/execute check also lands here as `undefined`, with
-    // a warning already logged by the resolver: a typo in a settings field must
-    // not break every Codex chat, and the status card is where it is reported.
-    const codexBinary = getCodexExecutablePath(agentSettings);
-    queryOpts.options.codex = {
-      authMode,
-      ...(codexBinary && { pathOverride: codexBinary }),
-      ...(useOpenRouter && { useOpenRouter: true }),
-      ...(useOpenRouter && agentSettings.codexOpenRouterBaseUrl?.trim() && { openRouterBaseUrl: agentSettings.codexOpenRouterBaseUrl.trim() }),
-      ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey?.trim() && { apiKey: agentSettings.codexApiKey.trim() }),
-      ...(!useOpenRouter && authMode === "api-key" && agentSettings.codexBaseUrl?.trim() && { baseUrl: agentSettings.codexBaseUrl.trim() }),
-      ...(requestedModel && { model: requestedModel }),
-      ...(agentSettings.codexSandboxMode && { sandboxMode: agentSettings.codexSandboxMode }),
-      ...(chatEffort && { reasoningEffort: chatEffort }),
-      uiAliasPresence: codexRoute.uiAliasPresence,
-      ...(codexRoute.directUiNamespaces && {
-        directUiNamespaces: codexRoute.directUiNamespaces,
-        directUiCodeModeEnabled: codexRoute.directUiCodeModeEnabled,
-        directUiPolicy: codexRoute.directUiPolicy,
-      }),
-      reasoningRoute: reasoningTarget.route === "openrouter" ? "openrouter" : reasoningTarget.route === "codex" ? "native" : "unknown",
-      ...(permissions && { permissions }),
-    };
-    log.info(
-      `Codex chat config — trackingId=${trackingId}, authMode=${useOpenRouter ? "openrouter" : authMode}, ` +
-        `model=${requestedModel ?? "(default)"}, effort=${chatEffort ?? "(default)"}, ` +
-        `binary=${codexBinary ?? "(bundled)"}, ` +
-        `sandbox=${agentSettings.codexSandboxMode ?? "(permission-derived)"}, ` +
-        `codexHome=${agentSettings.codexHome?.trim() || "~/.codex"}` +
-        `${useOpenRouter ? `, orBaseUrl=${agentSettings.codexOpenRouterBaseUrl?.trim() || "(default)"}` : ""}` +
-        `${useOpenRouter && agentSettings.codexOpenRouterApiKey ? `, orKeyTail=…${agentSettings.codexOpenRouterApiKey.trim().slice(-4)}` : ""}` +
-        `${!useOpenRouter && authMode === "api-key" && agentSettings.codexApiKey ? `, apiKeyTail=…${agentSettings.codexApiKey.trim().slice(-4)}` : ""}`,
-    );
-  }
-
-  // For ACP chats, surface the provider id and the permission defaults the ACP
-  // adapter needs. Unlike Codex — which must collapse permissions onto a sandbox
-  // tier chosen at thread start — ACP gates per call, so the defaults are only
-  // the FIRST half of the decision: the adapter consults them, and anything
-  // resolving to "ask" escalates through the `canUseTool` already on
-  // `queryOpts.options` (the same callback Claude Code uses). A model IS passed
-  // now — ACP exposes models only as a post-session config option, so the
-  // adapter applies it with `session/set_config_option` after attaching rather
-  // than requesting it on `session/new`. There is still no effort knob: ACP has
-  // no reasoning-effort concept at all, so there would be nothing honest to send.
-  if (providerKind === "acp") {
-    // The vendor's own model id, e.g. "opencode/nemotron-3-ultra-free". Resolved
-    // with the same three-step fallback every other harness uses
-    // (resolveSessionModel): a per-chat override wins first — itself alias-aware,
-    // so `planner` on the chat resolves through the `acp` alias target — then
-    // this vendor's stored default from `agentSettings.acpProviderModels`
-    // (looked up by `acpProviderId`, also alias-aware), then nothing at all —
-    // the vendor CLI's own configured default stands.
-    //
-    // The per-vendor lookup exists because "acp" is one kind covering many
-    // vendors whose catalogs share nothing: a flat default (like a single alias
-    // `acp` target) would apply the same model id to every vendor a user
-    // configures, and the wrong one would be refused by that vendor's own CLI
-    // rather than silently substituted. `acpProviderModels` is keyed by vendor id
-    // for exactly that reason; an alias whose `acp` target only makes sense for
-    // one vendor still applies to all of them if used as a per-chat override —
-    // that limitation is real and lives on the alias mechanism, not here.
-    const acpProviderDefaultModel = acpProviderId ? agentSettings.acpProviderModels?.[acpProviderId] : undefined;
-    const acpModel = resolveSessionModel(
-      typeof initialMetadata.model === "string" ? initialMetadata.model : undefined,
-      acpProviderDefaultModel,
-      "acp",
-      agentSettings,
-    );
-    // OpenRouter credential, when the user turned it on. The dedicated key wins,
-    // then the account-wide one — unlike the Codex pair, which requires its own,
-    // because nothing here rewrites the agent's provider config and there is no
-    // reason to make a user re-enter a key they have already given. The adapter
-    // still drops it unless the vendor's preset names an env var for it.
-    const acpOpenRouterApiKey = agentSettings.acpUseOpenRouter
-      ? agentSettings.acpOpenRouterApiKey?.trim() || agentSettings.openRouterApiKey?.trim() || undefined
-      : undefined;
-    queryOpts.options.acp = {
-      ...(acpProviderId && { providerId: acpProviderId }),
-      ...(acpModel && { model: acpModel }),
-      ...(acpOpenRouterApiKey && { openRouterApiKey: acpOpenRouterApiKey }),
-      // The accessor, not its value. `toolPermissionPolicy` above holds this
-      // same function and calls it per tool call; handing the adapter a
-      // snapshot taken here would let pass 1 auto-allow on a policy the user
-      // has since tightened, and pass 2 — the one that would have caught it —
-      // is only reached when pass 1 says "ask". Two passes, one input, one
-      // moment of reading it.
-      getPermissions: getDefaultPermissions,
-    };
-    log.info(
-      `ACP chat config — trackingId=${trackingId}, providerId=${acpProviderId ?? "(unset)"}, model=${acpModel ?? "(agent default)"}, ` +
-        `openRouter=${acpOpenRouterApiKey ? "on" : "off"}`,
-    );
-  }
-
-  // For Cline chats, surface the per-provider settings the Cline adapter's
-  // optionsAdapter looks for. Closest in shape to the ACP block above rather than
-  // the Codex one: Cline gates per call through `requestToolApproval`, so the
-  // permission defaults are only the FIRST half of the decision and anything
-  // resolving to "ask" escalates through the same `canUseTool` Claude Code uses.
-  //
-  // Unlike every other provider there is no credential *mode* to resolve and no
-  // "not configured" error to raise here. `@cline/sdk` runs in this process and
-  // falls back to its own environment lookup when no key is set, so a user whose
-  // machine already has ANTHROPIC_API_KEY exported gets a working chat with an
-  // empty Settings → API form. A genuinely missing credential surfaces as the
-  // provider's own error on the terminal `result`, which is both more accurate
-  // and more specific than anything a pre-flight check here could say.
-  if (providerKind === "cline") {
-    // Per-chat override wins over the global default; either may be a
-    // cross-harness alias, resolved through the same registry as every other
-    // harness so `planner` lands on whatever the user pointed the `cline` target
-    // at.
-    const clineModel = (
-      await resolveReasoningTarget({ provider: "cline", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined }, agentSettings)
-    ).model;
-    const chatEffort = initialMetadata.effort as EffortLevel | undefined;
-    queryOpts.options.cline = {
-      ...(agentSettings.clineProviderId?.trim() && { providerId: agentSettings.clineProviderId.trim() }),
-      ...(clineModel && { model: clineModel }),
-      ...(agentSettings.clineApiKey?.trim() && { apiKey: agentSettings.clineApiKey.trim() }),
-      ...(agentSettings.clineBaseUrl?.trim() && { baseUrl: agentSettings.clineBaseUrl.trim() }),
-      ...(typeof agentSettings.clineMaxIterations === "number" && { maxIterations: agentSettings.clineMaxIterations }),
-      ...(chatEffort && { effort: chatEffort }),
-      // The accessor, not its value — see the ACP block above for why. Both
-      // permission passes must read the policy at the same moment.
-      getPermissions: getDefaultPermissions,
-    };
-    log.info(
-      `Cline chat config — trackingId=${trackingId}, provider=${agentSettings.clineProviderId?.trim() || "(anthropic)"}, ` +
-        `model=${clineModel ?? "(provider default)"}, effort=${chatEffort ?? "(default)"}, ` +
-        `baseUrl=${agentSettings.clineBaseUrl?.trim() || "(default)"}, ` +
-        `apiKey=${agentSettings.clineApiKey?.trim() ? `…${agentSettings.clineApiKey.trim().slice(-4)}` : "(from environment)"}`,
-    );
-  }
-
-  // pi chats. Same shape as the Cline block above — pi also runs in this process
-  // and takes its credentials as config fields — with one difference that is not
-  // cosmetic: **pi resumes by file path, not by session id**.
-  //
-  // `queryOpts.options.resume` carries the id, as it does for every other
-  // harness. Handing that to pi would silently start a fresh session with the
-  // chat's history gone, so the id is resolved to a path here and travels in its
-  // own explicitly named field. `PiAdapter.assertPiResumePath` throws if a value
-  // that is not an absolute `.jsonl` path ever reaches it.
-  if (providerKind === "pi") {
-    const piModel = (
-      await resolveReasoningTarget({ provider: "pi", model: typeof initialMetadata.model === "string" ? initialMetadata.model : undefined }, agentSettings)
-    ).model;
-    const chatEffort = initialMetadata.effort as EffortLevel | undefined;
-
-    // id → path. A chat whose session file has been removed resolves to nothing;
-    // that is a real (if rare) state — the history is genuinely gone — so it
-    // starts fresh with a warning rather than failing the turn outright. The
-    // thing that must never happen quietly is the *type* confusion above, and
-    // that is what throws.
-    let piResumePath: string | undefined;
-    if (resumeSessionId) {
-      const resolved = getSessionProvider("pi")?.resolveSession(resumeSessionId) ?? null;
-      if (resolved) {
-        piResumePath = resolved.logPath;
-      } else {
-        log.warn(`pi chat ${opts.chatId ?? "(new)"} references session ${resumeSessionId} but no session file exists — starting a fresh session`);
-      }
-    }
-
-    queryOpts.options.pi = {
-      ...(agentSettings.piProviderId?.trim() && { providerId: agentSettings.piProviderId.trim() }),
-      ...(piModel && { model: piModel }),
-      ...(agentSettings.piApiKey?.trim() && { apiKey: agentSettings.piApiKey.trim() }),
-      ...(agentSettings.piBaseUrl?.trim() && { baseUrl: agentSettings.piBaseUrl.trim() }),
-      ...(chatEffort && { effort: chatEffort }),
-      ...(piResumePath && { resumeSessionPath: piResumePath }),
-      // The accessor, not its value — both permission passes must read the
-      // policy at the same moment. See the Cline block above.
-      getPermissions: getDefaultPermissions,
-    };
-    log.info(
-      `pi chat config — trackingId=${trackingId}, provider=${agentSettings.piProviderId?.trim() || "(openrouter)"}, ` +
-        `model=${piModel ?? "(provider default)"}, effort=${chatEffort ?? "(default)"}, ` +
-        `resume=${piResumePath ? "path resolved" : resumeSessionId ? "UNRESOLVED — fresh session" : "new"}, ` +
-        `apiKey=${agentSettings.piApiKey?.trim() ? `…${agentSettings.piApiKey.trim().slice(-4)}` : "(from environment)"}`,
-    );
-  }
+  // Per-harness extras (`options.codex` / `.acp` / `.cline` / `.pi`) — see
+  // ./provider-session-options.ts. Each reads only the context it is handed.
+  const providerCtx: ProviderOptionsContext = { agentSettings, folder, chatModel, chatEffort, getDefaultPermissions, trackingId };
+  if (providerKind === "codex") queryOpts.options.codex = await buildCodexExtras({ ...providerCtx, codexRoute });
+  if (providerKind === "acp") queryOpts.options.acp = buildAcpExtras({ ...providerCtx, acpProviderId });
+  if (providerKind === "cline") queryOpts.options.cline = await buildClineExtras(providerCtx);
+  if (providerKind === "pi") queryOpts.options.pi = await buildPiExtras({ ...providerCtx, resumeSessionId, chatId: opts.chatId });
 
   log.debug(
     `SDK query options — provider=${providerKind}, cwd=${folder}, maxTurns=${queryOpts.options.maxTurns}, ` +

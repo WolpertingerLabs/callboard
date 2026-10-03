@@ -12,4 +12,5 @@ export type {
   HookCallback,
   HookInput,
   HookJSONOutput,
+  SdkPluginConfig,
 } from "@anthropic-ai/claude-agent-sdk";
