@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { CardSummary, Chat, ChatListResponse } from "../api";
-import { listChats, listCards, getDrafts, searchChatContents } from "../api";
+import { listChats, listCards, getDrafts, searchChatContents, bulkArchiveChats } from "../api";
 import ChatList from "./ChatList";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -33,6 +33,7 @@ vi.mock("../api", async (importOriginal) => ({
   listCards: vi.fn(),
   getDrafts: vi.fn(),
   searchChatContents: vi.fn(),
+  bulkArchiveChats: vi.fn(),
 }));
 
 vi.mock("../contexts/SessionContext", () => ({
@@ -520,25 +521,75 @@ describe("a hidden card", () => {
   });
 
   /**
-   * The trap that asking for hidden cards opens, closed. Before they were
-   * fetched, `cardOf` returned undefined for one and no entry rendered; the
-   * split in `ChatList` keeps that true rather than teaching the tooltip a
-   * fourth case for a card it could not act on anyway.
+   * A hidden card is not a BOARD card, so `cardOf` still answers undefined for
+   * it and the card PATCH — which would reopen the lifecycle and leave
+   * `hidden`, and the dim, in place — is never offered. The row gets the
+   * chat-level entry instead, whose route clears `hidden` on unarchive.
    */
-  it("offers no lifecycle entry on its row, while an open card's row still does", async () => {
+  it("offers Unarchive on its row through the chat-level archive, not the card PATCH", async () => {
+    vi.mocked(bulkArchiveChats).mockResolvedValue({ updated: [{ id: "chat-2", rootChatId: "chat-2", archived: false, isCard: true }], failed: [] });
     await renderList();
     openRowMenu("hidden chat");
     expect(screen.queryByText("Archive chat")).toBeNull();
-    expect(screen.queryByText("Unarchive chat")).toBeNull();
-    // Deleting a chat is unaffected — the row keeps every entry that is not
-    // about the card.
-    expect(screen.getByText("Delete")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Unarchive chat"));
+    });
+    expect(bulkArchiveChats).toHaveBeenCalledWith(["chat-2"], false);
+    // The local merge clears `hidden`, so the row stops fading on the response.
+    await waitFor(() => expect(screen.getByText("hidden chat").closest(".chatlist-item-dimmed")).toBeNull());
   });
 
-  it("still offers it on a board card's row, so the absence above is the hidden flag", async () => {
+  it("still offers Archive on a board card's row", async () => {
     await renderList();
     openRowMenu("open chat");
     expect(screen.getByText("Archive chat")).toBeTruthy();
+  });
+});
+
+/**
+ * Per-chat archive for a row on no card. Before it, a triggered chat's menu
+ * had Delete and nothing else — the only way to clear a Discord reply out of
+ * the sidebar was to destroy it.
+ */
+describe("a card-less row", () => {
+  const OPEN = makeChat("chat-1", { preview: "open chat", rootChatId: "chat-1" });
+  const BOT = makeChat("bot-1", { preview: "discord reply", triggered: true });
+  const card = (id: string): CardSummary =>
+    ({ id, title: `card ${id}`, lifecycle: "open", chatCount: 1, memberChats: [{ chatId: id }], memberRuns: [] }) as unknown as CardSummary;
+
+  beforeEach(() => {
+    localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true }));
+    mockListChats.mockResolvedValue(listResponse([OPEN, BOT]));
+    vi.mocked(listCards).mockResolvedValue({ cards: [card("chat-1")] });
+  });
+
+  it("offers Archive in its menu and archives through the chat-level route", async () => {
+    vi.mocked(bulkArchiveChats).mockResolvedValue({ updated: [{ id: "bot-1", rootChatId: "bot-1", archived: true, isCard: false }], failed: [] });
+    await renderList();
+    await waitFor(() => {
+      openRowMenu("discord reply");
+      expect(screen.getByText("Archive chat")).toBeTruthy();
+    });
+    expect(screen.getByText("Archive chat").closest("button")!.getAttribute("title")).toBe('Archive "discord reply"');
+
+    // The refetch the action triggers, as the server would answer it.
+    mockListChats.mockResolvedValue(listResponse([OPEN, { ...BOT, archived: true }]));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Archive chat"));
+    });
+
+    expect(bulkArchiveChats).toHaveBeenCalledWith(["bot-1"], true);
+    await waitFor(() => expect(screen.getByText("discord reply").closest(".chatlist-item-dimmed")).toBeTruthy());
+  });
+
+  it("offers Unarchive when the server reports its tree archived", async () => {
+    mockListChats.mockResolvedValue(listResponse([OPEN, { ...BOT, archived: true }]));
+    await renderList();
+    await waitFor(() => {
+      openRowMenu("discord reply");
+      expect(screen.getByText("Unarchive chat")).toBeTruthy();
+    });
+    expect(screen.getByText("discord reply").closest(".chatlist-item-dimmed")).toBeTruthy();
   });
 });
 

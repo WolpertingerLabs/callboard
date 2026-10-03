@@ -41,16 +41,25 @@ export function chatCardId(chat: Pick<Chat, "id" | "metadata">): string | undefi
 export type DimCard = Pick<CardSummary, "lifecycle" | "hidden">;
 
 /**
- * Whether the chat is filed under a card that is currently ARCHIVED — closed,
- * or hidden from the board.
+ * Whether the chat's lineage tree is currently ARCHIVED.
  *
- * The question behind the dim: it fades the rows this returns true for. Note
- * which way round the missing-card case falls, because it is the whole of this
- * change and the reverse of what this predicate used to say: **no card is not
- * archived.** A triggered chat, a job-step chat, a session with no stored
- * record, and a dangling id whose root was deleted are all chats with no live
- * card, and none of them is on an archived one — they are ordinary chats and
- * they render undimmed.
+ * Archived is a property of the tree's root, stored one of two ways, and this
+ * reads whichever applies:
+ *
+ *  - **the root is a card** → the card's state: closed, or hidden from the
+ *    board. Read off the card index rather than the row because the index is
+ *    the fresher of the two — archiving from the row menu or the bulk bar
+ *    patches `cards` on the spot, while the row's `archived` field waits for
+ *    the next list fetch.
+ *  - **the root is not a card** — a triggered chat, a job step, a session
+ *    nothing recorded — → the row's `archived` field, which `GET /api/chats`
+ *    computes per response from the root's chat-level flag. There is no card
+ *    to ask, so the server's verdict is the only one there is.
+ *
+ * What does NOT fade is a card-less chat nobody archived: no card is not
+ * archived. Before per-chat archive existed that was the whole of the
+ * card-less case, and the rule that "no card" means "not archived" is what
+ * still keeps a card-less row from fading merely for being card-less.
  *
  * The complement of the rows the server withholds under
  * `cardLifecycle=unarchived`, the scope "Show archived" asks for when it is off
@@ -62,18 +71,19 @@ export type DimCard = Pick<CardSummary, "lifecycle" | "hidden">;
  *
  * Says nothing about whether the cards have loaded: its one caller,
  * {@link isChatDimmed}, holds that flag (see {@link DimContext.cardsLoaded}).
- * Module-private since the sectioning that was the second caller went away —
- * it is a step of the dim now, not a shared predicate.
  */
-function isChatOnArchivedCard(chat: Pick<Chat, "id" | "metadata">, cardsById: ReadonlyMap<string, DimCard>): boolean {
+function isChatArchived(chat: DimChat, cardsById: ReadonlyMap<string, DimCard>): boolean {
   // Callers can index CardSummary.memberChats into this map. Prefer that
   // authoritative membership: legacy multi-level trees may have neither a
   // rootChatId stamp nor a direct parent pointer to the actual root.
   const id = cardsById.has(chat.id) ? chat.id : chatCardId(chat);
   const card = id ? cardsById.get(id) : undefined;
-  if (!card) return false;
+  if (!card) return chat.archived === true;
   return card.lifecycle === "closed" || card.hidden === true;
 }
+
+/** The fields of a row the dim reads. */
+export type DimChat = Pick<Chat, "id" | "metadata" | "archived">;
 
 export interface DimContext {
   /**
@@ -86,9 +96,10 @@ export interface DimContext {
    * card — and on first paint `cards` is `[]`, so all three look identical to
    * "no card". Under the old rule "no card" meant DIMMED, so the whole sidebar
    * flashed faded on every mount until the fetch landed, and this flag was the
-   * only thing preventing it. Under the current rule "no card" means NOT
-   * archived, so the pre-fetch state already renders as undimmed and the flash
-   * cannot happen.
+   * only thing preventing it. Under the current rule "no card" defers to the
+   * row's own `archived` field — the server's verdict, which is right for a
+   * card row too — so the pre-fetch state could not flash every row faded
+   * even without this flag.
    *
    * Kept because it is the honest statement of what the dim knows, and because
    * it is exactly what makes the un-dimmed first paint deliberate instead of
@@ -111,14 +122,15 @@ export interface DimContext {
  * now everyone's default rather than an opt-in, so do not describe the
  * exemptions as "rows that need the user" and leave it at that.
  *
- * Fades a chat whose card is archived — closed or hidden — and ONLY that. A
- * chat on no card is not archived and does not fade: it is a triggered chat, a
- * job step, a session nothing ever recorded, or a tree whose root was deleted,
- * and none of those is a piece of finished work. That is the narrowing this
- * predicate exists to carry; before it, "no card" faded too, and since
- * `isCardEligible` refuses to make a card of a triggered root, switching on
- * "Show triggered chats" produced a list of uniformly faded rows — when the
- * scope let them through at all.
+ * Fades a chat whose tree is archived — its card closed or hidden, or, for a
+ * tree with no card, its root archived by the chat-level flag (the row's
+ * `archived` field) — and ONLY that. A card-less chat nobody archived does not
+ * fade: being a triggered chat, a job step or a session nothing recorded is
+ * not the same as being finished work. That narrowing predates per-chat
+ * archive; before it, "no card" faded too, and since `isCardEligible` refuses
+ * to make a card of a triggered root, switching on "Show triggered chats"
+ * produced a list of uniformly faded rows — when the scope let them through at
+ * all.
  *
  * "Show archived" is not a toggle in front of this: it decides whether the
  * archived rows are fetched at all, so with it off this has almost nothing to
@@ -155,12 +167,12 @@ export interface DimContext {
  * already removed, not that the fade is provably unreachable.
  */
 export function isChatDimmed(
-  chat: Pick<Chat, "id" | "metadata">,
+  chat: DimChat,
   // See {@link DimCard} for why this is not a full CardSummary. The map must
   // be built from a `listCards(true)` — hidden cards are part of the verdict.
   cardsById: ReadonlyMap<string, DimCard>,
   { cardsLoaded }: DimContext,
 ): boolean {
   if (!cardsLoaded) return false;
-  return isChatOnArchivedCard(chat, cardsById);
+  return isChatArchived(chat, cardsById);
 }
