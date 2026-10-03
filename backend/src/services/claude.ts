@@ -969,12 +969,6 @@ export interface SendMessageOptions {
 const DEFAULT_MAX_NUDGES = 3;
 
 /**
- * Unified message sending function.
- * Handles both existing chats (provide chatId) and new chats (provide folder).
- * For new chats, creates the chat record when session_id arrives from the SDK
- * and emits a "chat_created" event so the frontend can navigate.
- */
-/**
  * `createdAt` of the outermost run in `runId`'s ancestry — the moment the
  * user's job actually started, which a nested child run's own timestamp is
  * not. Walks `parentRunId` with a depth bound and a visited set (run files
@@ -993,6 +987,12 @@ function topLevelRunCreatedAt(runId: string): string | undefined {
   return run?.createdAt;
 }
 
+/**
+ * Unified message sending function.
+ * Handles both existing chats (provide chatId) and new chats (provide folder).
+ * For new chats, creates the chat record when session_id arrives from the SDK
+ * and emits a "chat_created" event so the frontend can navigate.
+ */
 export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitter> {
   if (opts.chatId) assertNativeAgentControllable(opts.chatId);
   const { prompt, imageMetadata, activePlugins, defaultPermissions } = opts;
