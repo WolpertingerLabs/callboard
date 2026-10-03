@@ -151,6 +151,7 @@ export function useChatCommands(id: string | undefined, agentChat: boolean | nul
     keywords,
     handleKeywordCreated,
     mcpTools,
-    mcpToolsLoading,
+    // A context still unknown with nothing listed yet is a fetch about to start.
+    mcpToolsLoading: mcpToolsLoading || (agentChat === null && !mcpTools),
   };
 }

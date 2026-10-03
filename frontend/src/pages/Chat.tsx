@@ -353,8 +353,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [inFlightMessages, setInFlightMessages] = useState<InFlightMessage[]>(transitionInFlightMessages);
   // Which MCP tool set this chat runs with: an agent's, or the ordinary one.
   // A new chat knows from the route; an existing one only once its own record
-  // has loaded (null until then — see useChatCommands).
-  const agentChat = !id ? !!agentAlias : chat?.id === id ? !!chatMeta.agentAlias : null;
+  // has loaded (null until then — see useChatCommands), or failed to load, which
+  // falls back to the ordinary set.
+  const [chatLoadFailedFor, setChatLoadFailedFor] = useState<string | null>(null);
+  const agentChat = !id ? !!agentAlias : chat?.id === id ? !!chatMeta.agentAlias : chatLoadFailedFor === id ? false : null;
   const {
     slashCommands,
     setSlashCommands,
@@ -1782,6 +1784,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       if (!chatData?.slash_commands?.length && !chatData?.plugins?.length) {
         loadSlashCommands();
       }
+    }).catch((err) => {
+      console.warn("Failed to load chat:", err);
+      // With no record there is no agentAlias to read: list the ordinary tools.
+      if (currentIdRef.current === id) setChatLoadFailedFor(id);
     });
     // Mark chat as read (fire-and-forget — best-effort background update)
     markAsRead(id!).catch(() => {});

@@ -205,4 +205,32 @@ describe("MCP tools follow the chat's tool-set context", () => {
     await act(async () => resolveAgent(AGENT_TOOLS));
     expect(toolsPill().textContent).toContain("1");
   });
+
+  it("a chat whose record fails to load still lists the ordinary tools, with one request", async () => {
+    vi.mocked(getChat).mockRejectedValueOnce(new Error("Failed to get chat"));
+    mount("/chat/missing");
+    await waitFor(() => expect(getMcpTools).toHaveBeenCalled());
+    expect(await contexts()).toEqual(["default"]);
+
+    fireEvent.click(screen.getByTitle("View available MCP tools"));
+    await waitFor(() => expect(screen.queryByText("Loading tools...")).toBeNull());
+    expect(screen.queryByText("No MCP tools available.")).toBeNull();
+  });
+
+  it("shows the tools as loading, not empty, while an existing chat's record is still on its way", async () => {
+    let resolveChat!: (chat: Awaited<ReturnType<typeof getChat>>) => void;
+    vi.mocked(getChat).mockImplementationOnce(() => new Promise((resolve) => (resolveChat = resolve)));
+    mount("/chat/plain-1");
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("View available MCP tools"));
+    });
+    expect(screen.getByText("Loading tools...")).toBeTruthy();
+    expect(screen.queryByText("No MCP tools available.")).toBeNull();
+    expect(getMcpTools).not.toHaveBeenCalled();
+
+    await act(async () => resolveChat({ id: "plain-1", folder: "/tmp", metadata: "{}" } as Awaited<ReturnType<typeof getChat>>));
+    await waitFor(() => expect(screen.queryByText("Loading tools...")).toBeNull());
+    expect(screen.queryByText("No MCP tools available.")).toBeNull();
+    expect(await contexts()).toEqual(["default"]);
+  });
 });
