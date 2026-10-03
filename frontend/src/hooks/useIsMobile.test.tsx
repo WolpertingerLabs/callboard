@@ -22,7 +22,7 @@ function renderRecorder() {
   return { seen, view };
 }
 
-/** A controllable MediaQueryList for `(max-width: 767px)`. */
+/** A controllable MediaQueryList for `not all and (min-width: 768px)`. */
 function stubMatchMedia(initial: boolean) {
   const listeners = new Set<() => void>();
   const query = {
@@ -58,7 +58,7 @@ describe("with matchMedia", () => {
     const { seen } = renderRecorder();
     expect(seen[0]).toBe(true);
     expect(seen.every(Boolean)).toBe(true);
-    expect(mq.matchMedia).toHaveBeenCalledWith("(max-width: 767px)");
+    expect(mq.matchMedia).toHaveBeenCalledWith("not all and (min-width: 768px)");
   });
 
   it("is false on the first render on a desktop", () => {

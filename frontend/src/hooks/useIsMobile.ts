@@ -3,10 +3,11 @@ import { useState, useEffect } from "react";
 /**
  * Narrower than 768px — `innerWidth < 768`, expressed as a media query.
  *
- * `innerWidth` is a whole number, so for it `max-width: 767px` and `< 768` are
- * the same test.
+ * The media query sees the fractional viewport width (browser zoom, device
+ * scaling), where `max-width: 767px` would miss 767 < w < 768. Negating
+ * `min-width: 768px` is exactly `< 768` at any width.
  */
-const MOBILE_QUERY = "(max-width: 767px)";
+const MOBILE_QUERY = "not all and (min-width: 768px)";
 const MOBILE_MAX_WIDTH = 768;
 
 /** `null` where `matchMedia` is missing (jsdom), so the caller falls back to `innerWidth`. */
