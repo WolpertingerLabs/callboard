@@ -109,7 +109,7 @@ export class ProxyClient {
    * several scheduled jobs firing at the top of the hour) otherwise retry in
    * lockstep and trip the same rate limit again.
    */
-  private async backoff(attempt: number, retryAfter?: string | null): Promise<void> {
+  private async backoff(attempt: number, retryAfter?: string | null, signal?: AbortSignal): Promise<void> {
     let delayMs = Math.min(500 * 2 ** (attempt - 1), MAX_BACKOFF_MS);
 
     if (retryAfter) {
@@ -120,7 +120,15 @@ export class ProxyClient {
     }
 
     delayMs += Math.floor(Math.random() * 250);
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, delayMs);
+      signal?.addEventListener("abort", done, { once: true });
+      function done() {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", done);
+        resolve();
+      }
+    });
   }
 
   /**
@@ -139,6 +147,19 @@ export class ProxyClient {
   }
 
   /**
+   * Drop the shared session, but only if it is still the one a failing request
+   * used. Calls run concurrently on one client (the event watcher's long-poll
+   * is always in flight), so by the time a reply fails another call may already
+   * have rehandshaked; discarding that newer session would make every request
+   * in flight on it fail to decrypt and be re-sent.
+   */
+  private dropSession(channel: EncryptedChannel): void {
+    if (this.channel !== channel) return;
+    this.channel = null;
+    this.sessionId = null;
+  }
+
+  /**
    * Make an authenticated tool call to the remote server.
    *
    * Auto-handshakes on first call and recovers from the transient failures
@@ -146,14 +167,26 @@ export class ProxyClient {
    * bursts when many sessions start at once), 5xx, network blips, and
    * stale-channel crypto errors. Genuine failures (403, unknown tool, a tool
    * returning an error) still throw on the first attempt.
+   *
+   * Each attempt encrypts and decrypts with the session it captured when it
+   * was sent. The reply is encrypted for that session, so decrypting it with
+   * whatever the shared channel has since become reads as "stale" and re-sends
+   * a request the hub already executed.
+   *
+   * `signal` aborts the call: an in-flight request is cancelled (the hub
+   * releases a held wait on disconnect) and no further attempt is made.
    */
-  async callTool(toolName: string, toolInput: Record<string, unknown> = {}): Promise<unknown> {
+  async callTool(toolName: string, toolInput: Record<string, unknown> = {}, opts: { signal?: AbortSignal } = {}): Promise<unknown> {
+    const { signal } = opts;
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      signal?.throwIfAborted();
       if (!this.channel || !this.sessionId) {
         await this.handshakeWithRetry();
       }
+      const channel = this.channel!;
+      const sessionId = this.sessionId!;
 
       const request: ProxyRequest = {
         type: "proxy_request",
@@ -164,22 +197,22 @@ export class ProxyClient {
       };
 
       try {
-        const encrypted = this.channel!.encryptJSON(request);
+        const encrypted = channel.encryptJSON(request);
 
         const res = await fetch(`${this.remoteUrl}/request`, {
           method: "POST",
           headers: {
             "Content-Type": "application/octet-stream",
-            "X-Session-Id": this.sessionId!,
+            "X-Session-Id": sessionId,
           },
           body: new Uint8Array(encrypted),
+          signal,
         });
 
         if (res.status === 401) {
           // Session expired (30-min TTL) — drop the channel and rehandshake.
           log.warn(`Session expired on "${toolName}", rehandshaking (attempt ${attempt}/${MAX_ATTEMPTS})`);
-          this.channel = null;
-          this.sessionId = null;
+          this.dropSession(channel);
           lastError = new Error("Proxy request failed: 401");
           continue;
         }
@@ -188,7 +221,7 @@ export class ProxyClient {
           lastError = new Error(`Proxy request failed: ${res.status}`);
           if (attempt === MAX_ATTEMPTS) break;
           log.warn(`Proxy ${res.status} on "${toolName}" — backing off (attempt ${attempt}/${MAX_ATTEMPTS})`);
-          await this.backoff(attempt, res.headers.get("retry-after"));
+          await this.backoff(attempt, res.headers.get("retry-after"), signal);
           continue;
         }
 
@@ -198,7 +231,7 @@ export class ProxyClient {
         }
 
         const responseBuffer = Buffer.from(await res.arrayBuffer());
-        const response = this.channel!.decryptJSON<ProxyResponse>(responseBuffer);
+        const response = channel.decryptJSON<ProxyResponse>(responseBuffer);
 
         if (!response.success) {
           throw new Error(response.error || "Unknown proxy error");
@@ -208,11 +241,12 @@ export class ProxyClient {
       } catch (err: any) {
         const message = err?.message || String(err);
 
+        if (signal?.aborted) throw err;
+
         // Stale channel — the session is unrecoverable but a fresh one works.
         if (isStaleChannelError(message)) {
           log.warn(`Stale channel on "${toolName}" (${message}) — rehandshaking (attempt ${attempt}/${MAX_ATTEMPTS})`);
-          this.channel = null;
-          this.sessionId = null;
+          this.dropSession(channel);
           lastError = err;
           if (attempt === MAX_ATTEMPTS) break;
           continue;
@@ -223,7 +257,7 @@ export class ProxyClient {
           lastError = err;
           if (attempt === MAX_ATTEMPTS) break;
           log.warn(`Proxy network error on "${toolName}" (${message}) — backing off (attempt ${attempt}/${MAX_ATTEMPTS})`);
-          await this.backoff(attempt);
+          await this.backoff(attempt, undefined, signal);
           continue;
         }
 

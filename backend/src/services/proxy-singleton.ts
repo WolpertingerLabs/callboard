@@ -29,7 +29,7 @@ const REMOTE_URL = process.env.EVENT_WATCHER_REMOTE_URL || "http://127.0.0.1:999
 
 /** Minimal interface consumers depend on (satisfied by ProxyClient). */
 export interface ProxyLike {
-  callTool(toolName: string, toolInput?: Record<string, unknown>): Promise<unknown>;
+  callTool(toolName: string, toolInput?: Record<string, unknown>, opts?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
 // ── Per-alias client cache ──────────────────────────────────────────

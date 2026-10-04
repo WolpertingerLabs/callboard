@@ -9,7 +9,10 @@
  * Two modes:
  *   - "wait": long-polls drawlatch's `wait_for_events`, which holds until one
  *     of this caller's ingestors emits and answers for every stream at once.
- *     One request per wake (or per ~25s when idle), re-issued immediately.
+ *     One request per wake (or per ~25s when idle). An idle wait answers the
+ *     first event at once; after a reply that wasn't a plain timeout the next
+ *     wait is spaced WAIT_MIN_SPACING out, so a busy source can't turn
+ *     "one request per event" back into a saturated session.
  *   - "legacy": hubs without `wait_for_events` answer "Unknown tool", so we
  *     fall back to the `ingestor_status` + per-connection `poll_events` loop
  *     every EVENT_WATCHER_POLL_INTERVAL and re-probe every 10 minutes.
@@ -38,6 +41,12 @@ const MAX_BACKOFF = 60_000; // 60 seconds
 const WAIT_TIMEOUT_MS = 25_000;
 /** How often a legacy-mode watcher re-checks whether the hub gained wait_for_events. */
 const WAIT_REPROBE_INTERVAL = 10 * 60_000;
+/**
+ * Gap before re-issuing after a reply that carried events. Caps a busy alias
+ * at ~28 req/min (of the hub's 60/min per session, shared with chat tools);
+ * only the 2nd+ event of a burst waits for it.
+ */
+const WAIT_MIN_SPACING = 2000;
 /** drawlatch's single-instance sentinel; part of the stream key `${connection}:${instanceId}`. */
 const DEFAULT_INSTANCE_ID = "_default";
 
@@ -109,6 +118,8 @@ interface WatcherState {
    * per ingestor *instance*, so even one connection's instances can't share.
    */
   streamCursors: Map<string, StreamCursor>;
+  /** Aborted on stop, cancelling a held wait so it doesn't keep a hub slot. */
+  abort: AbortController;
   currentBackoff: number;
   consecutiveFailures: number;
 }
@@ -171,6 +182,7 @@ export function startWatcherForAlias(alias: string): void {
     alias,
     pollTimer: null,
     stopped: false,
+    abort: new AbortController(),
     mode: "wait",
     nextProbeAt: 0,
     cursors: new Map(),
@@ -194,6 +206,7 @@ export function stopWatcherForAlias(alias: string): void {
   // A wait_for_events call may be in flight; it can't be cancelled, but this
   // makes it drop its reply and not schedule another cycle.
   state.stopped = true;
+  state.abort.abort();
   if (state.pollTimer) {
     clearTimeout(state.pollTimer);
     state.pollTimer = null;
@@ -211,6 +224,15 @@ export function stopWatcherForAlias(alias: string): void {
 function schedulePoll(state: WatcherState, delay: number = state.currentBackoff): void {
   if (state.stopped) return;
   state.pollTimer = setTimeout(() => pollLoop(state), delay);
+}
+
+/** Highest finite event id, or -1. Ids that aren't numbers can't advance a cursor. */
+function maxFiniteId(events: IngestedEvent[]): number {
+  let max = -1;
+  for (const e of events) {
+    if (Number.isFinite(e.id) && e.id > max) max = e.id;
+  }
+  return max;
 }
 
 /** drawlatch's /request handler throws exactly this for a tool it doesn't have. */
@@ -252,10 +274,14 @@ function ingestEvents(state: WatcherState, label: string, events: IngestedEvent[
 async function pollConnection(state: WatcherState, proxyClient: ProxyLike, connection: string): Promise<void> {
   const cursor = state.cursors.get(connection) ?? -1;
 
-  const result = (await proxyClient.callTool("poll_events", {
-    after_id: cursor,
-    connection,
-  })) as IngestedEvent[] | { events?: IngestedEvent[] };
+  const result = (await proxyClient.callTool(
+    "poll_events",
+    {
+      after_id: cursor,
+      connection,
+    },
+    { signal: state.abort.signal },
+  )) as IngestedEvent[] | { events?: IngestedEvent[] };
 
   if (state.stopped) return;
 
@@ -267,7 +293,7 @@ async function pollConnection(state: WatcherState, proxyClient: ProxyLike, conne
   log.debug(`[${state.alias}/${connection}] Received ${events.length} events`);
 
   // Update per-connection cursor to the max event ID
-  const maxId = Math.max(...events.map((e) => e.id));
+  const maxId = maxFiniteId(events);
   if (maxId > cursor) state.cursors.set(connection, maxId);
 
   ingestEvents(state, connection, events);
@@ -281,7 +307,7 @@ async function pollConnection(state: WatcherState, proxyClient: ProxyLike, conne
  * (e.g. Slack).
  */
 async function legacyCycle(state: WatcherState, proxyClient: ProxyLike): Promise<void> {
-  const statusResult = await proxyClient.callTool("ingestor_status");
+  const statusResult = await proxyClient.callTool("ingestor_status", {}, { signal: state.abort.signal });
   if (state.stopped) return;
   const ingestors: IngestorStatusEntry[] = Array.isArray(statusResult) ? statusResult : [];
 
@@ -302,14 +328,18 @@ async function legacyCycle(state: WatcherState, proxyClient: ProxyLike): Promise
  * picked up here — at the cursor the hub returned, since the reply already
  * carries their events.
  */
-async function waitCycle(state: WatcherState, proxyClient: ProxyLike): Promise<void> {
+async function waitCycle(state: WatcherState, proxyClient: ProxyLike): Promise<{ timedOut: boolean } | undefined> {
   const cursors: Record<string, number> = {};
   for (const [key, s] of state.streamCursors) cursors[key] = s.cursor;
 
-  const result = (await proxyClient.callTool("wait_for_events", {
-    cursors,
-    timeout_ms: WAIT_TIMEOUT_MS,
-  })) as WaitForEventsResult;
+  const result = (await proxyClient.callTool(
+    "wait_for_events",
+    {
+      cursors,
+      timeout_ms: WAIT_TIMEOUT_MS,
+    },
+    { signal: state.abort.signal },
+  )) as WaitForEventsResult;
 
   // Stopped while the hub held the request: drop the reply. A restarted
   // watcher starts from fresh cursors and gets these events again.
@@ -322,7 +352,9 @@ async function waitCycle(state: WatcherState, proxyClient: ProxyLike): Promise<v
   for (const [key, stream] of Object.entries(result.streams)) {
     const events = Array.isArray(stream.events) ? stream.events : [];
     const prev = state.streamCursors.get(key)?.cursor ?? -1;
-    const returned = Number.isFinite(stream.cursor) ? stream.cursor : Math.max(-1, ...events.map((e) => e.id));
+    // A non-finite cursor would serialize as null and the hub would reject
+    // every later wait, so fall back to the events' ids, then to `prev`.
+    const returned = Number.isFinite(stream.cursor) ? stream.cursor : maxFiniteId(events);
     state.streamCursors.set(key, { connection: stream.connection, cursor: Math.max(prev, returned) });
 
     if (events.length > 0) {
@@ -334,6 +366,8 @@ async function waitCycle(state: WatcherState, proxyClient: ProxyLike): Promise<v
   if (result.unknownStreams?.length) {
     log.debug(`[${state.alias}] Hub reports inactive streams: ${result.unknownStreams.join(", ")}`);
   }
+
+  return { timedOut: result.timedOut === true };
 }
 
 /**
@@ -366,14 +400,16 @@ function enterWaitMode(state: WatcherState): void {
 }
 
 /**
- * The main loop for one alias: one wait_for_events (re-issued immediately on
- * success) or one legacy poll cycle, with exponential backoff on failure.
+ * The main loop for one alias: one wait_for_events (re-issued at once after a
+ * timeout, WAIT_MIN_SPACING after any other reply) or one legacy poll cycle,
+ * with exponential backoff on failure.
  */
 async function pollLoop(state: WatcherState): Promise<void> {
   state.pollTimer = null;
   if (state.stopped) return;
 
   let nextDelay: number;
+  let waitResult: { timedOut: boolean } | undefined;
   try {
     const proxyClient = getProxy(state.alias);
     if (!proxyClient) return;
@@ -384,7 +420,7 @@ async function pollLoop(state: WatcherState): Promise<void> {
 
     if (state.mode === "wait") {
       try {
-        await waitCycle(state, proxyClient);
+        waitResult = await waitCycle(state, proxyClient);
       } catch (err) {
         if (!isWaitUnsupported(err) || state.stopped) throw err;
         enterLegacyMode(state);
@@ -398,7 +434,9 @@ async function pollLoop(state: WatcherState): Promise<void> {
     // Reset backoff on success
     state.consecutiveFailures = 0;
     state.currentBackoff = BASE_POLL_INTERVAL;
-    nextDelay = state.mode === "wait" ? 0 : BASE_POLL_INTERVAL;
+    // Wait mode: re-issue at once after a timeout (nothing happened, the next
+    // event should wake us immediately); otherwise space it out.
+    nextDelay = state.mode === "legacy" ? BASE_POLL_INTERVAL : waitResult?.timedOut ? 0 : WAIT_MIN_SPACING;
   } catch (err: any) {
     if (state.stopped) return;
     state.consecutiveFailures++;
