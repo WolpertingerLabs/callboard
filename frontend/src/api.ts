@@ -420,8 +420,13 @@ export async function dismissSummon(id: string): Promise<Chat> {
  * says "not archived" while `cardLifecycle=unarchived` withholds them for being
  * archived — the two halves out of step in the one way #440 set out to prevent.
  */
-export async function listCards(includeHidden?: boolean): Promise<CardListResponse> {
-  return request(`/cards${includeHidden ? "?includeHidden=true" : ""}`, { error: "Failed to list cards" });
+export async function listCards(includeHidden?: boolean, archive: { closedLimit?: number; closedSince?: string } = {}): Promise<CardListResponse> {
+  const params = new URLSearchParams();
+  if (includeHidden) params.set("includeHidden", "true");
+  if (archive.closedLimit !== undefined) params.set("closedLimit", String(archive.closedLimit));
+  if (archive.closedSince !== undefined) params.set("closedSince", archive.closedSince);
+  const query = params.toString();
+  return request(`/cards${query ? `?${query}` : ""}`, { error: "Failed to list cards" });
 }
 
 export async function getCard(id: string): Promise<CardResponse> {
