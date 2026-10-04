@@ -264,14 +264,6 @@ chatsRouter.get("/search", async (req, res) => {
   }
 });
 
-// Tombstone for browser tabs still running a bundle from before the Folders
-// view was removed: without it their 15s poll falls through to GET /:id and
-// pays a full chat-store miss scan before 404ing.
-chatsRouter.get("/folders", (_req, res) => {
-  // #swagger.ignore = true
-  res.json({ folders: [] });
-});
-
 // List all chats (pull from log directories, augment with file storage data)
 chatsRouter.get("/", (req, res) => {
   // #swagger.tags = ['Chats']
