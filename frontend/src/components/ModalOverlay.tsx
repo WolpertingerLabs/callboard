@@ -47,8 +47,9 @@ const overlayStyle: CSSProperties = {
  * including the kind of dialog (a since-removed workspace manager) whose
  * `removability` row took the whole SPA down during #364's review. The
  * boundary wraps the backdrop rather than the children so that "Dismiss" can
- * remove the backdrop too; a fallback rendered *inside* it would leave a full-screen click trap with no way out, since the
- * dialog that threw owns the Escape handler and the close button.
+ * remove the backdrop too; a fallback rendered *inside* it would leave a
+ * full-screen click trap with no way out, since the dialog that threw owns the
+ * Escape handler and the close button.
  *
  * What it covers is **descendant components** — see `ErrorBoundary`'s note on
  * the seam, which is narrower than "everything a modal does".

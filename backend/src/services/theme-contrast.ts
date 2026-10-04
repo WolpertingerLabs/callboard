@@ -998,8 +998,8 @@ function* nearestLightnessFirst(target: number, budget: number): Generator<{ l: 
  * cream knob dark — technically AA, and not the theme anyone asked for.
  *
  * The number is calibrated rather than chosen: it is the largest move #293 made
- * by hand on this palette. Those moves, in OKLCh lightness, were --text-muted
- * 0.069, --danger 0.131, --status-green 0.195, --warning 0.204, and
+ * by hand on this palette. Those moves, in OKLCh lightness, included
+ * --text-muted 0.069, --danger 0.131, --warning 0.204, and
  * --status-triggered 0.295 (amber-500 to amber-800, two full ramp steps, taken
  * deliberately to keep the badge's own hue instead of collapsing it onto
  * --warning). A budget under 0.30 would refuse the very correction the palette's

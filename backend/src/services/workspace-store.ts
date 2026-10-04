@@ -75,8 +75,9 @@ const FORBIDDEN_NAME_CHARS = new RegExp(FORBIDDEN_NAME_CLASS, "gu");
 /**
  * Why this name cannot be used, or null when it can. Safe to surface directly.
  *
- * Used by everything a *caller* names — the create and rename MCP tools — so a bad name comes back as a refusal with a reason rather than
- * as a silently mangled record. {@link createWorkspace} itself stays lenient
+ * Used by everything a *caller* names — the create and rename MCP tools — so
+ * a bad name comes back as a refusal with a reason rather than as a silently
+ * mangled record. {@link createWorkspace} itself stays lenient
  * (see {@link coerceName}): it is on the chat-start path, where a name is
  * derived rather than typed and must never be able to fail a chat.
  */

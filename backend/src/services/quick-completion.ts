@@ -476,7 +476,7 @@ async function generateThemeAttempt(name: string, description: string, feedback:
         `  * text-on-accent must reach 4.5:1 on accent, accent-hover, badge-worktree, ` +
         `badge-provider-codex-bg and status-active; text-on-danger must reach 4.5:1 on danger. ` +
         `Pick whichever of near-white or near-black clears all of them — do not default to white.\n` +
-        `  * status-active, status-green and warning are painted as small dots on bg-sidebar and ` +
+        `  * status-active and warning are painted as small dots on bg-sidebar and ` +
         `need 3:1 there; toggle-knob needs 3:1 on accent.\n` +
         `  * status-triggered and accent are each painted as text on a 15% tint of themselves ` +
         `over bg-sidebar, which is the hardest pairing in the UI — give them plenty of headroom.\n` +

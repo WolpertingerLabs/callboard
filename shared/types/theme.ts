@@ -60,7 +60,7 @@ export interface ThemeContrastReport {
    *
    * This is the audit's *other* half, and it is the half a user is more likely
    * to be looking at. A theme that overrides `--status-triggered` but not
-   * `--status-green` paints one sidebar dot in its own palette and the next in
+   * `--status-active` paints one sidebar dot in its own palette and the next in
    * the built-in one — visibly wrong, and worth exactly zero contrast failures,
    * because each colour is perfectly legible on its own. A panel that reported
    * only ratios would say nothing at all about it.
