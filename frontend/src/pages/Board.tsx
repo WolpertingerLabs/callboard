@@ -21,7 +21,7 @@ import CardDrawer from "../components/board/CardDrawer";
 import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { usePolling } from "../hooks/usePolling";
-import { errorMessage } from "../utils/errorMessage";
+import { errorMessage, httpStatusOf } from "../utils/errorMessage";
 
 /** A category's cards inside one status section. `label: null` is uncategorized. */
 type Group = { key: string; label: string | null; cards: CardSummary[] };
@@ -35,6 +35,21 @@ const rank = (card: CardSummary): number => ROLLUP_RANK[card.rollup] ?? 0;
 
 /** The archived strip's sort key, and the server's closedSince cursor key: most recently archived first. */
 const closedOrder = (card: CardSummary): string => card.closedAt ?? card.updatedAt;
+
+/**
+ * The closedSince cursor for a window: the oldest archived card's key, as the
+ * server compares it (Date.parse) and normalized so the server can parse it
+ * back. Keys that do not parse (legacy closedAt strings are copied verbatim)
+ * are skipped; if none parse, null — the next fetch is a fresh first page.
+ */
+function oldestClosedKey(closedCards: CardSummary[]): string | null {
+  let oldest = Infinity;
+  for (const card of closedCards) {
+    const ms = Date.parse(closedOrder(card));
+    if (!Number.isNaN(ms) && ms < oldest) oldest = ms;
+  }
+  return oldest === Infinity ? null : new Date(oldest).toISOString();
+}
 
 /** Archived cards fetched per page — and per poll, until "Show more" raises it. */
 const ARCHIVE_PAGE_SIZE = 50;
@@ -210,51 +225,75 @@ export default function Board() {
   // outnumbers the open cards by hundreds to one, and every poll used to ship
   // and re-render all of it. `closedTotal` keeps the strip's count honest about
   // what is left on the server; null until a daemon that reports it answers.
+  // `closedLoaded` is how many archived cards that same response carried, so
+  // the count can follow local edits without double-counting — see closedCount.
   const [closedTotal, setClosedTotal] = useState<number | null>(null);
+  const [closedLoaded, setClosedLoaded] = useState(0);
   const [serverCategories, setServerCategories] = useState<string[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   // Once a page has landed, refetches ask for "everything archived since the
   // oldest card I hold", not "the newest N": under a count, each card archived
   // elsewhere would push the oldest loaded one off the strip — closing its
-  // drawer and its unsaved edits, or dropping it from a selection. A ref, not
+  // drawer and its unsaved edits, or dropping it from a selection. Refs, not
   // state, so loadCards keeps one identity (a new one re-arms the effects below
   // and double-fetches). Null until the first page has an archived card in it.
   const closedCursor = useRef<string | null>(null);
+  // A "Show more" count every request carries until one that carried it lands.
+  // Only the newest request may land (below), so a poll that overtakes the
+  // click must ask for the click's page too, or it would silently discard it.
+  const pendingShowUpTo = useRef<number | null>(null);
   // Polls and "Show more" can overlap; only the newest request may land, or a
   // slow poll at the old limit would shrink the strip back under the user.
   const requestSeq = useRef(0);
 
-  /** `showUpTo` reaches past the cursor: "Show more" asks for that many. */
-  const loadCards = useCallback(async (showUpTo?: number) => {
+  /**
+   * One request; resolves true when it should be retried without its cursor.
+   * Reads only refs and state setters, so the first render's copy, which
+   * loadCards keeps, is as good as any.
+   */
+  async function fetchOnce(): Promise<boolean> {
     const seq = ++requestSeq.current;
     const cursor = closedCursor.current ?? undefined;
+    const requested = pendingShowUpTo.current;
+    let retryWithoutCursor = false;
     try {
       const res = await listCards(false, {
-        closedLimit: showUpTo ?? (cursor ? undefined : ARCHIVE_PAGE_SIZE),
+        closedLimit: requested ?? (cursor ? undefined : ARCHIVE_PAGE_SIZE),
         closedSince: cursor,
       });
-      if (seq !== requestSeq.current) return;
+      if (seq !== requestSeq.current) return false;
+      const closedCards = res.cards.filter((c) => c.lifecycle === "closed");
       setCards(res.cards);
       setClosedTotal(res.closedTotal ?? null);
+      setClosedLoaded(closedCards.length);
       setServerCategories(res.categories ?? []);
       setError(null);
-      // The cursor follows the oldest card actually returned, so unarchiving
-      // that card moves it to the next one instead of widening the window. An
-      // empty archive window resets it to a fresh first page.
-      const oldest = res.cards
-        .filter((c) => c.lifecycle === "closed")
-        .map(closedOrder)
-        .reduce<string | null>((min, key) => (min === null || key.localeCompare(min) < 0 ? key : min), null);
-      closedCursor.current = oldest;
+      closedCursor.current = oldestClosedKey(closedCards);
     } catch (err) {
-      if (seq !== requestSeq.current) return;
-      setError(errorMessage(err, "Failed to load board"));
+      if (seq !== requestSeq.current) return false;
+      // A cursor the daemon refuses would 400 every refetch forever. Drop it
+      // and start over from a fresh first page instead of freezing the board.
+      if (cursor && httpStatusOf(err) === 400) {
+        closedCursor.current = null;
+        retryWithoutCursor = true;
+      } else {
+        setError(errorMessage(err, "Failed to load board"));
+      }
     } finally {
       if (seq === requestSeq.current) {
-        setLoaded(true);
-        setLoadingMore(false);
+        if (!retryWithoutCursor && requested !== null && pendingShowUpTo.current === requested) pendingShowUpTo.current = null;
+        if (pendingShowUpTo.current === null) setLoadingMore(false);
+        if (!retryWithoutCursor) setLoaded(true);
       }
     }
+    return retryWithoutCursor;
+  }
+
+  /** `showUpTo` reaches past the cursor: "Show more" asks for that many. */
+  const loadCards = useCallback(async (showUpTo?: number) => {
+    if (showUpTo !== undefined) pendingShowUpTo.current = Math.max(pendingShowUpTo.current ?? 0, showUpTo);
+    // A second attempt only follows a refused cursor, and it sends none.
+    while (await fetchOnce());
   }, []);
 
   useEffect(() => {
@@ -283,7 +322,11 @@ export default function Board() {
   const closed = cards.filter((c) => c.lifecycle === "closed").sort((a, b) => closedOrder(b).localeCompare(closedOrder(a)));
   // Older daemons ignore closedLimit and send the whole archive, which is then
   // its own total.
-  const closedCount = closedTotal ?? closed.length;
+  // Local edits since that response (bulk lifecycle, a drawer patch) move the
+  // count with them by the difference in loaded archived cards. Derived, not
+  // adjusted: a refetch that lands mid-edit resets both sides at once, so a
+  // change it already counted is never counted again.
+  const closedCount = closedTotal === null ? closed.length : Math.max(closed.length, closedTotal + closed.length - closedLoaded);
   // Datalist suggestions for the category inputs — includes archived cards so a
   // category doesn't vanish from autocomplete when its last open card closes.
   // The server's list covers the archive past the loaded page; the local one
@@ -413,20 +456,10 @@ export default function Board() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [selectionMode, exitSelection, selectAllInScope]);
 
-  /**
-   * Lands server-returned cards in place. The archive count moves with them:
-   * `closedTotal` came from the last fetch, and without this, unarchiving every
-   * loaded card leaves "Archived 30" over an empty strip until the next poll.
-   */
+  /** Lands server-returned cards in place; closedCount follows them on its own. */
   const mergeCards = (updated: CardSummary[]) => {
     const updatedById = new Map(updated.map((c) => [c.id, c]));
-    const closedDelta = cards.reduce((delta, c) => {
-      const next = updatedById.get(c.id);
-      if (!next || next.lifecycle === c.lifecycle) return delta;
-      return delta + (next.lifecycle === "closed" ? 1 : 0) - (c.lifecycle === "closed" ? 1 : 0);
-    }, 0);
     setCards((prev) => prev.map((c) => updatedById.get(c.id) ?? c));
-    if (closedDelta !== 0) setClosedTotal((total) => (total === null ? null : Math.max(0, total + closedDelta)));
   };
 
   /**

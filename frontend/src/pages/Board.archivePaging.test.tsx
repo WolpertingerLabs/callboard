@@ -215,6 +215,84 @@ describe("Board archive paging", () => {
     expect(mockList.mock.calls.length).toBe(fetches);
   });
 
+  it("a refetch that overtakes a slow Show more carries its page instead of discarding it", async () => {
+    mount();
+    await screen.findByText("Archived 049");
+    let releaseShowMore!: () => void;
+    mockList.mockImplementationOnce(
+      (hidden, window) =>
+        new Promise((resolve) => {
+          releaseShowMore = () => resolve(daemon(hidden, window));
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show 50 more of 70" }));
+    await waitFor(() => expect(lastWindow()).toEqual({ closedLimit: 100, closedSince: closedCard(49).closedAt }));
+    // The poll takes a newer sequence number, so only it may land — and it
+    // must ask for the click's page too.
+    refetch();
+    await waitFor(() => expect(mockList.mock.calls.at(-1)?.[1]).toEqual({ closedLimit: 100, closedSince: closedCard(49).closedAt }));
+    expect(await screen.findByText("Archived 099")).toBeTruthy();
+    releaseShowMore();
+    expect(await screen.findByRole("button", { name: "Show 20 more of 20" })).toBeTruthy();
+    // Landed, so the next poll is back to the cursor alone.
+    refetch();
+    await waitFor(() => expect(lastWindow()).toEqual({ closedLimit: undefined, closedSince: closedCard(99).closedAt }));
+  });
+
+  it("picks the cursor by time and skips a key that does not parse", async () => {
+    archive = [closedCard(0), closedCard(1), { ...closedCard(2), closedAt: "0000-legacy" /* sorts first as a string */ }];
+    mockList.mockResolvedValue({ cards: archive, closedTotal: 3, categories: [] });
+    mount();
+    await screen.findByText("Archived 001");
+    refetch();
+    await waitFor(() => expect(lastWindow()).toEqual({ closedLimit: undefined, closedSince: closedCard(1).closedAt }));
+  });
+
+  it("with no parseable key, refetches a fresh first page", async () => {
+    archive = [{ ...closedCard(0), closedAt: "legacy" }];
+    mockList.mockResolvedValue({ cards: archive, closedTotal: 1, categories: [] });
+    mount();
+    await screen.findByText("Archived 000");
+    refetch();
+    await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2));
+    expect(lastWindow()).toEqual({ closedLimit: 50, closedSince: undefined });
+  });
+
+  it("a cursor the daemon refuses falls back to a fresh first page, without an error", async () => {
+    mount();
+    await screen.findByText("Archived 049");
+    mockList.mockImplementation(async (hidden, window) => {
+      if (window?.closedSince) throw Object.assign(new Error("closedSince must be a timestamp"), { status: 400 });
+      return daemon(hidden, window);
+    });
+    const calls = mockList.mock.calls.length;
+    refetch();
+    await waitFor(() => expect(mockList.mock.calls.length).toBe(calls + 2));
+    expect(lastWindow()).toEqual({ closedLimit: 50, closedSince: undefined });
+    expect(screen.getByText("Archived 049")).toBeTruthy();
+    expect(screen.queryByText("closedSince must be a timestamp")).toBeNull();
+  });
+
+  it("an unarchive a mid-request refetch already counted is not counted again", async () => {
+    let releasePatch!: () => void;
+    vi.mocked(updateCard).mockImplementation(
+      (id) =>
+        new Promise((resolve) => {
+          releasePatch = () => resolve({ card: { ...closedCard(Number(id.slice(1))), lifecycle: "open" } });
+        }),
+    );
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /Archived 049/ }));
+    fireEvent.click(screen.getByRole("button", { name: "drawer-unarchive" }));
+    // The server applies it and a refetch lands before the PATCH resolves.
+    archive = archive.filter((c) => c.id !== "c49");
+    refetch();
+    await waitFor(() => expect(header().textContent).toMatch(/119/));
+    releasePatch();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(header().textContent).toMatch(/119/);
+  });
+
   it("falls back to the loaded cards when an older daemon sends no closedTotal", async () => {
     mockList.mockResolvedValue({ cards: archive.slice(0, 3) });
     mount();
