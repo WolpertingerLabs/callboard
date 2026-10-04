@@ -3,7 +3,7 @@
  *
  * Handles the Ed25519/X25519 handshake and AES-256-GCM encrypted channel,
  * providing a simple interface for making authenticated tool calls
- * (poll_events, ingestor_status, list_routes, http_request).
+ * (wait_for_events, poll_events, ingestor_status, list_routes, http_request).
  *
  * Imports crypto primitives and protocol types from the drawlatch
  * package — no vendored crypto code.
