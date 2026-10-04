@@ -198,8 +198,7 @@ function errorBodyMessage(body: unknown, fallback: string): string {
 async function assertOk(res: Response, fallback: string): Promise<void> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    // `status` rides along for the few callers that branch on it (utils/errorMessage httpStatusOf).
-    throw Object.assign(new Error(errorBodyMessage(body, fallback)), { status: res.status });
+    throw new Error(errorBodyMessage(body, fallback));
   }
 }
 

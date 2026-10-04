@@ -21,7 +21,7 @@ import CardDrawer from "../components/board/CardDrawer";
 import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { usePolling } from "../hooks/usePolling";
-import { errorMessage, httpStatusOf } from "../utils/errorMessage";
+import { errorMessage } from "../utils/errorMessage";
 
 /** A category's cards inside one status section. `label: null` is uncategorized. */
 type Group = { key: string; label: string | null; cards: CardSummary[] };
@@ -246,22 +246,18 @@ export default function Board() {
   // slow poll at the old limit would shrink the strip back under the user.
   const requestSeq = useRef(0);
 
-  /**
-   * One request; resolves true when it should be retried without its cursor.
-   * Reads only refs and state setters, so the first render's copy, which
-   * loadCards keeps, is as good as any.
-   */
-  async function fetchOnce(): Promise<boolean> {
+  /** `showUpTo` reaches past the cursor: "Show more" asks for that many. */
+  const loadCards = useCallback(async (showUpTo?: number) => {
+    if (showUpTo !== undefined) pendingShowUpTo.current = Math.max(pendingShowUpTo.current ?? 0, showUpTo);
     const seq = ++requestSeq.current;
     const cursor = closedCursor.current ?? undefined;
     const requested = pendingShowUpTo.current;
-    let retryWithoutCursor = false;
     try {
       const res = await listCards(false, {
         closedLimit: requested ?? (cursor ? undefined : ARCHIVE_PAGE_SIZE),
         closedSince: cursor,
       });
-      if (seq !== requestSeq.current) return false;
+      if (seq !== requestSeq.current) return;
       const closedCards = res.cards.filter((c) => c.lifecycle === "closed");
       setCards(res.cards);
       setClosedTotal(res.closedTotal ?? null);
@@ -270,30 +266,15 @@ export default function Board() {
       setError(null);
       closedCursor.current = oldestClosedKey(closedCards);
     } catch (err) {
-      if (seq !== requestSeq.current) return false;
-      // A cursor the daemon refuses would 400 every refetch forever. Drop it
-      // and start over from a fresh first page instead of freezing the board.
-      if (cursor && httpStatusOf(err) === 400) {
-        closedCursor.current = null;
-        retryWithoutCursor = true;
-      } else {
-        setError(errorMessage(err, "Failed to load board"));
-      }
+      if (seq !== requestSeq.current) return;
+      setError(errorMessage(err, "Failed to load board"));
     } finally {
       if (seq === requestSeq.current) {
-        if (!retryWithoutCursor && requested !== null && pendingShowUpTo.current === requested) pendingShowUpTo.current = null;
+        if (requested !== null && pendingShowUpTo.current === requested) pendingShowUpTo.current = null;
         if (pendingShowUpTo.current === null) setLoadingMore(false);
-        if (!retryWithoutCursor) setLoaded(true);
+        setLoaded(true);
       }
     }
-    return retryWithoutCursor;
-  }
-
-  /** `showUpTo` reaches past the cursor: "Show more" asks for that many. */
-  const loadCards = useCallback(async (showUpTo?: number) => {
-    if (showUpTo !== undefined) pendingShowUpTo.current = Math.max(pendingShowUpTo.current ?? 0, showUpTo);
-    // A second attempt only follows a refused cursor, and it sends none.
-    while (await fetchOnce());
   }, []);
 
   useEffect(() => {

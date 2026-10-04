@@ -10,9 +10,3 @@
 export function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
-
-/** The HTTP status an api.ts request rejected with, if it got as far as a response. */
-export function httpStatusOf(err: unknown): number | undefined {
-  const status = (err as { status?: unknown } | null)?.status;
-  return typeof status === "number" ? status : undefined;
-}

@@ -61,14 +61,15 @@ const TOTAL = 120;
 let archive: CardSummary[];
 const mockList = vi.mocked(listCards);
 
-/** A daemon that honors closedLimit and closedSince, with the backend's either-admits union. */
+/** A daemon that honors closedLimit and closedSince, with the backend's either-admits union. Open cards are never windowed. */
 async function daemon(_hidden?: boolean, { closedLimit, closedSince }: { closedLimit?: number; closedSince?: string } = {}) {
-  const sorted = [...archive].sort((a, b) => b.closedAt!.localeCompare(a.closedAt!));
+  const open = archive.filter((c) => c.lifecycle !== "closed");
+  const closed = archive.filter((c) => c.lifecycle === "closed").sort((a, b) => b.closedAt!.localeCompare(a.closedAt!));
   const windowed = closedLimit !== undefined || closedSince !== undefined;
-  const cards = sorted.filter(
+  const kept = closed.filter(
     (c, i) => !windowed || (closedLimit !== undefined && i < closedLimit) || (closedSince !== undefined && Date.parse(c.closedAt!) >= Date.parse(closedSince)),
   );
-  return { cards, closedTotal: archive.length, categories: [] };
+  return { cards: [...open, ...kept], closedTotal: closed.length, categories: [] };
 }
 
 beforeEach(() => {
@@ -258,21 +259,6 @@ describe("Board archive paging", () => {
     expect(lastWindow()).toEqual({ closedLimit: 50, closedSince: undefined });
   });
 
-  it("a cursor the daemon refuses falls back to a fresh first page, without an error", async () => {
-    mount();
-    await screen.findByText("Archived 049");
-    mockList.mockImplementation(async (hidden, window) => {
-      if (window?.closedSince) throw Object.assign(new Error("closedSince must be a timestamp"), { status: 400 });
-      return daemon(hidden, window);
-    });
-    const calls = mockList.mock.calls.length;
-    refetch();
-    await waitFor(() => expect(mockList.mock.calls.length).toBe(calls + 2));
-    expect(lastWindow()).toEqual({ closedLimit: 50, closedSince: undefined });
-    expect(screen.getByText("Archived 049")).toBeTruthy();
-    expect(screen.queryByText("closedSince must be a timestamp")).toBeNull();
-  });
-
   it("an unarchive a mid-request refetch already counted is not counted again", async () => {
     let releasePatch!: () => void;
     vi.mocked(updateCard).mockImplementation(
@@ -284,10 +270,12 @@ describe("Board archive paging", () => {
     mount();
     fireEvent.click(await screen.findByRole("button", { name: /Archived 049/ }));
     fireEvent.click(screen.getByRole("button", { name: "drawer-unarchive" }));
-    // The server applies it and a refetch lands before the PATCH resolves.
-    archive = archive.filter((c) => c.id !== "c49");
+    // The server applies it and a refetch lands before the PATCH resolves:
+    // c49 comes back as an open card, already out of the archive count.
+    archive = archive.map((c) => (c.id === "c49" ? { ...c, lifecycle: "open" } : c));
     refetch();
     await waitFor(() => expect(header().textContent).toMatch(/119/));
+    expect(screen.getByTestId("drawer").textContent).toContain("Archived 049");
     releasePatch();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(header().textContent).toMatch(/119/);
