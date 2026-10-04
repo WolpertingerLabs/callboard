@@ -2,7 +2,6 @@ import { useLocation } from "react-router-dom";
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ChatList from "../pages/ChatList";
-import FolderList from "../pages/FolderList";
 import Chat from "../pages/Chat";
 import Board from "../pages/Board";
 import Settings from "../pages/Settings";
@@ -13,12 +12,9 @@ import ErrorBoundary from "./ErrorBoundary";
 import {
   getSidebarCollapsed,
   saveSidebarCollapsed,
-  getSidebarViewMode,
-  saveSidebarViewMode,
   getSidebarWidth,
   saveSidebarWidth,
   SIDEBAR_MIN_WIDTH,
-  type SidebarViewMode,
 } from "../utils/localStorage";
 
 /** Largest the expanded sidebar may be dragged: 60% of the window, capped at 700px. */
@@ -37,7 +33,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   const location = useLocation();
   const chatListRefreshRef = useRef<(() => void) | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => getSidebarCollapsed());
-  const [viewMode, setViewMode] = useState<SidebarViewMode>(() => getSidebarViewMode());
   const [sidebarWidth, setSidebarWidth] = useState(() => getSidebarWidth());
   const [isResizing, setIsResizing] = useState(false);
   const layoutRef = useRef<HTMLDivElement | null>(null);
@@ -86,11 +81,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const changeViewMode = useCallback((mode: SidebarViewMode) => {
-    saveSidebarViewMode(mode);
-    setViewMode(mode);
-  }, []);
-
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((prev) => {
       const next = !prev;
@@ -130,7 +120,7 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
   // Try again", not "the other column keeps working".
   if (isMobile) {
     return (
-      <ErrorBoundary region="This page" variant="region" resetKey={`${location.pathname}:${viewMode}`}>
+      <ErrorBoundary region="This page" variant="region" resetKey={location.pathname}>
         {isSettings ? (
           <Settings onLogout={onLogout} />
         ) : isAgentList ? (
@@ -143,15 +133,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
           <Board />
         ) : isNewChat || activeChatId ? (
           <Chat onChatListRefresh={refreshChatList} />
-        ) : viewMode === "folders" ? (
-          <FolderList
-            onRefresh={(fn) => {
-              chatListRefreshRef.current = fn;
-            }}
-            claudeLoggedIn={claudeLoggedIn}
-            onShowClaudeModal={onShowClaudeModal}
-            onViewModeChange={changeViewMode}
-          />
         ) : (
           <ChatList
             onRefresh={(fn) => {
@@ -159,7 +140,6 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
             }}
             claudeLoggedIn={claudeLoggedIn}
             onShowClaudeModal={onShowClaudeModal}
-            onViewModeChange={changeViewMode}
           />
         )}
       </ErrorBoundary>
@@ -191,34 +171,19 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
           overflow: "hidden",
         }}
       >
-        {/* Contained separately from the main pane: a bad row in the chat or
-            folder list must not cost you the chat you are typing into. */}
-        <ErrorBoundary region="The sidebar" variant="region" resetKey={viewMode}>
-          {viewMode === "folders" ? (
-            <FolderList
-              activeChatId={activeChatId ?? undefined}
-              onRefresh={(fn) => {
-                chatListRefreshRef.current = fn;
-              }}
-              sidebarCollapsed={sidebarCollapsed}
-              onToggleSidebar={toggleSidebar}
-              claudeLoggedIn={claudeLoggedIn}
-              onShowClaudeModal={onShowClaudeModal}
-              onViewModeChange={changeViewMode}
-            />
-          ) : (
-            <ChatList
-              activeChatId={activeChatId ?? undefined}
-              onRefresh={(fn) => {
-                chatListRefreshRef.current = fn;
-              }}
-              sidebarCollapsed={sidebarCollapsed}
-              onToggleSidebar={toggleSidebar}
-              claudeLoggedIn={claudeLoggedIn}
-              onShowClaudeModal={onShowClaudeModal}
-              onViewModeChange={changeViewMode}
-            />
-          )}
+        {/* Contained separately from the main pane: a bad row in the chat list
+            must not cost you the chat you are typing into. */}
+        <ErrorBoundary region="The sidebar" variant="region" resetKey={location.pathname}>
+          <ChatList
+            activeChatId={activeChatId ?? undefined}
+            onRefresh={(fn) => {
+              chatListRefreshRef.current = fn;
+            }}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={toggleSidebar}
+            claudeLoggedIn={claudeLoggedIn}
+            onShowClaudeModal={onShowClaudeModal}
+          />
         </ErrorBoundary>
       </div>
 

@@ -69,8 +69,6 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "chatlist-badge-agent": 5.37,
     "chatlist-badge-status": 4.62,
     "chatlist-title-active": 13.55,
-    "chatlist-path-active": 5.2,
-    "chatlist-path-hover": 5.62,
     "on-accent": 4.89,
     "on-accent-hover": 4.52,
     "on-danger": 5.52,
@@ -82,7 +80,6 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "worktree-badge": 5.7,
     "builtin-on-user-bg": 10.33,
     "builtin-on-assistant-bg": 10.3,
-    "status-green-dot": 7.76,
     "status-active-dot": 6.97,
     "warning-waiting-dot": 7.01,
     "toggle-knob-on-accent": 4.89,
@@ -125,8 +122,6 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "chatlist-badge-agent": 5.05,
     "chatlist-badge-status": 4.6,
     "chatlist-title-active": 11.72,
-    "chatlist-path-active": 5.11,
-    "chatlist-path-hover": 6.09,
     "on-accent": 4.89,
     "on-accent-hover": 4.52,
     "on-danger": 6.47,
@@ -138,7 +133,6 @@ const BUILTIN_RATIOS: Record<"dark" | "light", Record<string, number>> = {
     "worktree-badge": 5.7,
     "builtin-on-user-bg": 7.15,
     "builtin-on-assistant-bg": 8.01,
-    "status-green-dot": 4.43,
     "status-active-dot": 4.84,
     "warning-waiting-dot": 6.05,
     "toggle-knob-on-accent": 4.89,
@@ -361,8 +355,8 @@ describe("built-in palette tripwire", () => {
     ]) {
       expect(light[id], id).toBeGreaterThanOrEqual(4.5);
     }
-    // --status-green, defined by #293, clears the 3:1 a status dot needs.
-    expect(light["status-green-dot"]).toBeGreaterThanOrEqual(3);
+    // --status-active (emerald-700) clears the 3:1 a status dot needs.
+    expect(light["status-active-dot"]).toBeGreaterThanOrEqual(3);
   });
 });
 

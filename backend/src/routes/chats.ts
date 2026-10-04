@@ -24,7 +24,6 @@ import { getGitInfo, resolveWorktreeToMainRepoCached, type GitInfo } from "../ut
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
-import { hasPendingRequest, pendingRequestFingerprint } from "../services/claude.js";
 import { buildChatTree, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
@@ -35,19 +34,14 @@ import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/ha
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
 import { normalizePermissions, type ParsedMessage, type Chat as SharedChat } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
-import { buildFolderSummaries } from "../services/folder-summaries.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
-import { describeWorkspaceDirectory } from "../services/workspace-service.js";
-import { newAsyncDiskUsageBudget } from "../utils/disk-usage.js";
-// Both listing caches live in standalone modules so services can invalidate
-// them without closing an import cycle back through this route, and
-// `clearListCaches` is the one call that empties both — see list-caches.ts.
+// The chat-list cache lives in a standalone module so services can invalidate
+// it without closing an import cycle back through this route; `clearListCaches`
+// is the call services use — see list-caches.ts.
 import { chatListCache, CHAT_LIST_CACHE_TTL, CHAT_LIST_CACHE_MAX_AGE, clearChatListCache } from "../services/chat-list-cache.js";
-import { folderListCache, folderListGeneration, folderListInFlight, FOLDER_LIST_CACHE_TTL, clearFolderListCache } from "../services/folder-list-cache.js";
-import { workspaceRegistryVersion } from "../services/workspace-store.js";
 import { clearListCaches } from "../services/list-caches.js";
 import { parseIntParam } from "../utils/query-params.js";
-export { clearChatListCache, clearFolderListCache, clearListCaches };
+export { clearChatListCache, clearListCaches };
 
 const log = createLogger("chats");
 
@@ -267,139 +261,6 @@ chatsRouter.get("/search", async (req, res) => {
   } catch (err: any) {
     log.error(`Error searching chats: ${err}`);
     res.status(500).json({ error: "Failed to search chats", details: err.message });
-  }
-});
-
-// List chats grouped by folder, ordered by most recent chat created
-chatsRouter.get("/folders", async (req, res) => {
-  // #swagger.tags = ['Chats']
-  // #swagger.summary = 'List chats grouped by folder'
-  // #swagger.description = 'Returns folders with aggregated chat info, ordered by most recently created chat. Folders that no longer exist on disk are filtered out, except when an active workspace record claims them — those are listed with directoryState "missing" so the stale record can be seen and archived. Each row also carries the active workspace records claiming the directory (id, name, isolation, owned, branch, directory state); it deliberately carries no removal verdict, which costs several git subprocesses per record — ask GET /api/workspaces for that.'
-  /* #swagger.parameters['maxAgeDays'] = { in: 'query', type: 'integer', description: 'Maximum age in days (default: 5)' } */
-  /* #swagger.parameters['includeDiskUsage'] = { in: 'query', type: 'string', description: 'Pass the string true to measure each listed directory with du -sk. Off by default: it is the slow part, and this endpoint is polled. Measurements are memoised for five minutes.' } */
-  /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass the response cache and force fresh data' } */
-  try {
-    const maxAgeDays = parseInt(req.query.maxAgeDays as string, 10) || 5;
-    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
-    const includeDiskUsage = req.query.includeDiskUsage === "true";
-
-    // Both parameters change the response body — `maxAgeDays` the row set,
-    // `includeDiskUsage` the per-row `diskUsage` — so both are in the key.
-    const cacheKey = `${maxAgeDays}:${includeDiskUsage}`;
-    // The in-memory state a row reports that no request need touch to change:
-    // `status` (session registry + parked permission prompts) and the workspace
-    // record fields (`displayName`, `workspaceId`, `workspaces[]`,
-    // `directoryState`, …). Recomputed per request and compared against what
-    // the entry was built from; a mismatch is a miss. See the header of
-    // services/folder-list-cache.ts for why these are checked, not hooked.
-    const fingerprint = `${sessionRegistry.version}:${sessionRegistry.metadataVersion}:${pendingRequestFingerprint()}:${workspaceRegistryVersion()}`;
-    const bypassCache = req.query.cached === "false";
-    const now = Date.now();
-    // Read before anything is read *from*, so an invalidation landing at any
-    // point during the build is caught. Erring early only ever costs a cache
-    // miss; erring late stores rows that predate a delete. @see folderListGeneration
-    const generation = folderListGeneration();
-
-    if (!bypassCache) {
-      const cached = folderListCache.get(cacheKey);
-      if (cached && cached.fingerprint === fingerprint && now - cached.createdAt < FOLDER_LIST_CACHE_TTL) {
-        return res.json(cached.data);
-      }
-      // Nothing cached, but a build for this exact key and state may already be
-      // running — see folderListInFlight. Joining it costs nothing and saves a
-      // whole duplicate listing, synchronous head included.
-      const sharing = folderListInFlight.get(cacheKey);
-      if (sharing && sharing.fingerprint === fingerprint) {
-        return res.json(await sharing.response);
-      }
-    }
-
-    const build = buildFolderListResponse();
-    // `cached=false` means "compute mine from scratch", so it neither joins a
-    // build nor publishes one for others to join.
-    if (!bypassCache) folderListInFlight.set(cacheKey, { fingerprint, response: build });
-    try {
-      return res.json(await build);
-    } finally {
-      if (folderListInFlight.get(cacheKey)?.response === build) folderListInFlight.delete(cacheKey);
-    }
-
-    async function buildFolderListResponse() {
-      // One budget across the listing, not one timeout per row: an unbounded
-      // listing would be an unbounded wait even now that the `du`s run in
-      // parallel. What it did not get to is reported rather than silently
-      // absent — `diskUsageNote` has been in FolderListResponse since Phase 4a
-      // and this is what sets it. The rows come back holding unfilled
-      // measurements that `settle()` writes into, below.
-      const budget = newAsyncDiskUsageBudget();
-
-      // The 9999 most recently updated sessions. Lossless for this listing:
-      // discovery is sorted by updatedAt descending, and only sessions
-      // *created* since `cutoff` count — each of which was updated since
-      // then too — so a row can only be lost if more than 9999 sessions were
-      // touched inside the age window (the UI's widest is 30 days). Kept
-      // rather than lifted because, on a single-provider install, the cap is
-      // what keeps this on the provider's paged fast path instead of the
-      // whole-corpus drain (see discoverSessionsPaginated).
-      const { sessions } = discoverSessionsPaginated(9999, 0);
-
-      // One registry read for the whole listing, not one per row.
-      const workspaces = buildWorkspaceIndex();
-
-      const folders = buildFolderSummaries(sessions, {
-        cutoff,
-        workspaces,
-        directoryExists: (folder) => existsSync(folder),
-        chatMetadata: (sessionId) => {
-          // Session id straight from discovery, so this is the direct-filename
-          // read with no fallback scan. This bounds a spike rather than saving
-          // steady-state work: rows whose newest chat has a record cost the same
-          // either way, but one started from a terminal `claude` used to make
-          // getChat readdir + parse the whole chats directory (~88 ms) to prove
-          // the record is absent — once per such row, on a route the sidebar
-          // polls every 15 seconds.
-          const storedChat = chatFileService.getChatBySessionId(sessionId);
-          return storedChat ? parseChatMetadata(storedChat.metadata) : {};
-        },
-        isOngoing: (sessionId) => sessionRegistry.has(sessionId),
-        isWaiting: (sessionId) => hasPendingRequest(sessionId),
-        gitInfo: (folder) => getCachedGitInfo(folder),
-        describeDirectory: (workspace) => describeWorkspaceDirectory(workspace),
-        // Absent unless asked for — that absence *is* the opt-in.
-        ...(includeDiskUsage && { diskUsage: (folder: string) => budget.measure(folder) }),
-      });
-
-      // Fills in the measurements the rows are already holding. Must precede
-      // both `note()` and the cache write below — a row cached mid-flight would
-      // be cached with an unfilled placeholder and served that way for the TTL.
-      await budget.settle();
-
-      const diskUsageNote = budget.note(folders.length);
-      const responseData = { folders, ...(diskUsageNote && { diskUsageNote }) };
-      // Both the fingerprint and `createdAt` are the values read *before* the
-      // rows were built. The rows can only be as fresh as that read, so
-      // recording either later would claim a freshness they do not have — the
-      // fingerprint would hide a transition that landed mid-build, and a
-      // post-`settle()` timestamp would grant the entry the whole duration of
-      // the `du` sweep as extra TTL.
-      //
-      // And the write only happens if no invalidation landed while we ran.
-      // The fingerprint cannot cover this: `clearListCaches()` fires for changes
-      // that move no version counter — a deleted chat, a closed card, a toggled
-      // bookmark — so a build that started before one produces an entry whose
-      // fingerprint still matches and would be served as valid for a full TTL.
-      // @see folderListGeneration
-      if (folderListGeneration() === generation) {
-        folderListCache.set(cacheKey, { data: responseData, createdAt: now, fingerprint });
-      }
-      // The response itself is still returned: this request read a consistent
-      // snapshot, and it began before the invalidation did. Only *storing* it
-      // for later requests would be wrong.
-      return responseData;
-    }
-  } catch (err: any) {
-    log.error(`Error listing folders: ${err}`);
-    res.status(500).json({ error: "Failed to list folders", details: err.message });
   }
 });
 
@@ -1234,8 +1095,8 @@ chatsRouter.get("/new/info", (req, res) => {
     gitInfo = getGitInfo(folder);
   } catch {}
 
-  // Resolve worktree to get main repo path — through the same projection the
-  // sidebar row uses, so the two cannot disagree about one directory.
+  // Resolve worktree to get main repo path — through the workspace projection,
+  // so a record's claim about the directory wins over the `.git` file.
   const view = viewForDirectory(folder, buildWorkspaceIndex());
   const isWorktree = view.isWorktree;
   const mainRepoPath = view.repoPath ?? folder;

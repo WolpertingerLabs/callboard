@@ -16,8 +16,8 @@
  * chats-snapshot.ts for that reason; the ~8k-record scan it replaced was
  * measured at up to 1.9 s of frozen daemon per request.
  *
- * The sibling listings (`GET /api/chats`, `GET /api/chats/folders`) took the
- * other route out of the same problem — a short TTL plus a fingerprint of the
+ * The sibling listing (`GET /api/chats`) took the other route out of the same
+ * problem — a short TTL plus a fingerprint of the
  * state that moves without a request. That does not transfer here: the state
  * this route reads *is* the chat corpus, so validating an entry would cost the
  * same scan the entry exists to avoid.

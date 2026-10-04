@@ -58,7 +58,7 @@ vi.mock("child_process", async () => {
 });
 
 // Imported after the mock so the module under test binds the faked `execFile`.
-const { clearDiskUsageCache, DISK_USAGE_CONCURRENCY, newAsyncDiskUsageBudget } = await import("./disk-usage.js");
+const { DISK_USAGE_CONCURRENCY, newAsyncDiskUsageBudget } = await import("./disk-usage.js");
 
 /** Let the pool's microtasks run, so anything it is going to start has started. */
 const settleTicks = async () => {
@@ -74,7 +74,6 @@ async function drain(): Promise<void> {
 }
 
 beforeEach(() => {
-  clearDiskUsageCache();
   inFlight.length = 0;
   started = [];
   peak = 0;
@@ -111,7 +110,7 @@ describe("the daemon-wide du pool", () => {
   });
 
   it("shares the cap across concurrent listings rather than giving each its own", async () => {
-    // Two tabs opening the Manage modal at once. A per-listing cap would allow
+    // Two discovery scans at once. A per-listing cap would allow
     // 2 × DISK_USAGE_CONCURRENCY processes, which is the thing the cap exists to
     // prevent.
     const first = newAsyncDiskUsageBudget();

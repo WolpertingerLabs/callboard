@@ -11,8 +11,9 @@ import { Component, Fragment, type CSSProperties, type ErrorInfo, type ReactNode
  *     TypeError: Cannot destructure property 'removable' of 'e.removability'
  *     root html length: 0
  *
- * from one row of one modal. #364 shipped a shim for that one field; the next
- * response-shape change gets the same hazard with no shim to hand.
+ * from one row of one modal (the since-removed workspace manager). #364
+ * shipped a shim for that one field; the next response-shape change gets the
+ * same hazard with no shim to hand.
  *
  * **Granularity is the point.** A single boundary at the root still blanks the
  * app, just politely. So this takes a `variant` and is mounted at three depths:
@@ -25,29 +26,29 @@ import { Component, Fragment, type CSSProperties, type ErrorInfo, type ReactNode
  *   "Try again" (re-mount just this subtree) before it offers a reload. This is
  *   the **only** variant that gets that button, and the reason is structural:
  *   here the boundary owns the subtree, so clearing the error re-mounts
- *   `ChatList` / `FolderList` / `Chat` and their fetches re-run. A modal's
+ *   `ChatList` / `Chat` and their fetches re-run. A modal's
  *   `children` are built by the parent component, which sits *outside* the
  *   boundary and does not re-render when the boundary resets — the same broken
  *   element object comes straight back, so a retry there is a control that
  *   cannot ever do anything.
- * - `modal` — `ModalOverlay`, which is the single ancestor of ~16 dialogs
- *   including the workspace manager that produced the crash above. It also
+ * - `modal` — `ModalOverlay`, which is the single ancestor of ~16 dialogs,
+ *   the kind of surface that produced the crash above. It also
  *   offers "Dismiss", which renders nothing at all: the dialog that threw took
  *   its own Escape handler and close button down with it, so without this the
  *   fallback would be a backdrop the user cannot get out of.
  *
  * **The modal seam catches descendant components only**, which is narrower than
- * it sounds. A dialog whose rows are real sub-components is covered — and
- * `WorkspaceManagerModal` is, since the `removability` reads live in `RecordRow`
- * inside the overlay, so the #364 case genuinely lands here. But a dialog whose
+ * it sounds. A dialog whose rows are real sub-components is covered — the
+ * #364 crash was one, its `removability` reads living in a row component
+ * inside the overlay, so that case genuinely landed here. But a dialog whose
  * content is inline JSX in its own body (`ConfirmModal`, `DraftModal`) has
  * *nothing* inside the boundary: every throw happens while the parent renders,
  * before `<ModalOverlay>` mounts, and falls to the enclosing region instead.
  *
  * That fall-through is survivable rather than fatal, and worth knowing when
  * reading a report: with the fault still armed, "Try again" on the region
- * restores it, because re-mounting `FolderList` resets `showManager` to `false`
- * and the broken dialog is simply never constructed again. The layering is
+ * restores it, because re-mounting the region resets whatever state opened the
+ * dialog and the broken dialog is simply never constructed again. The layering is
  * doing the work there — which is the argument for having it rather than one
  * boundary in one clever place.
  *

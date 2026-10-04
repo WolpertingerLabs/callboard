@@ -84,8 +84,9 @@ export interface TrashManifest {
    * commit, checked out under the right name, reported as a successful restore
    * with the untracked files copied on top. The cleanliness gate proves the
    * commit exists somewhere; it proves nothing about where the *name* points
-   * thirty days later. Absent on entries quarantined before this was recorded,
-   * which restore handles by falling back to the branch and saying so.
+   * thirty days later. Absent on entries quarantined before this was recorded;
+   * for those, a manual restore can only go by the branch name, so check what
+   * it checked out.
    */
   headSha?: string;
   /** ISO timestamp. {@link sweepTrash} reads only this; never the entry name. */

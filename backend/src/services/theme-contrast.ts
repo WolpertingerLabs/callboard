@@ -506,7 +506,7 @@ export const PAIRINGS: Pairing[] = [
   { id: "warning-on-warning-bg-surface", where: "McpToolsPanel 'external' badge", fg: v("warning"), bg: v("warning-bg"), backdrop: v("surface"), kind: "text" },
   {
     id: "warning-on-warning-bg-sidebar",
-    where: "FolderListItem warning strip",
+    where: "ChatListItem job-approval badge, SidebarHeader login warning",
     fg: v("warning"),
     bg: v("warning-bg"),
     backdrop: v("bg-sidebar"),
@@ -591,7 +591,7 @@ export const PAIRINGS: Pairing[] = [
   },
   {
     id: "chatlist-badge-triggered",
-    where: "ChatListItem/FolderListItem triggered badge",
+    where: "ChatListItem triggered badge",
     fg: v("chatlist-badge-triggered-text"),
     bg: v("chatlist-badge-triggered-bg"),
     backdrop: v("bg-sidebar"),
@@ -599,7 +599,7 @@ export const PAIRINGS: Pairing[] = [
   },
   {
     id: "chatlist-badge-agent",
-    where: "FolderListItem agent badge",
+    where: "ChatListItem agent badge",
     fg: v("chatlist-badge-agent-text"),
     bg: v("chatlist-badge-agent-bg"),
     backdrop: v("bg-sidebar"),
@@ -607,7 +607,7 @@ export const PAIRINGS: Pairing[] = [
   },
   {
     id: "chatlist-badge-status",
-    where: "FolderListItem status badge",
+    where: "ChatListItem status badge",
     fg: v("chatlist-badge-status-text"),
     bg: v("chatlist-badge-status-bg"),
     backdrop: v("bg-sidebar"),
@@ -618,22 +618,6 @@ export const PAIRINGS: Pairing[] = [
     where: "active chat row title",
     fg: v("chatlist-item-title-text"),
     bg: v("chatlist-item-active-bg"),
-    backdrop: v("bg-sidebar"),
-    kind: "text",
-  },
-  {
-    id: "chatlist-path-active",
-    where: "active chat row path",
-    fg: v("chatlist-item-path-text"),
-    bg: v("chatlist-item-active-bg"),
-    backdrop: v("bg-sidebar"),
-    kind: "text",
-  },
-  {
-    id: "chatlist-path-hover",
-    where: "hovered chat row path",
-    fg: v("chatlist-item-path-text"),
-    bg: v("chatlist-item-hover-bg"),
     backdrop: v("bg-sidebar"),
     kind: "text",
   },
@@ -686,7 +670,7 @@ export const PAIRINGS: Pairing[] = [
     backdrop: v("bg-sidebar"),
     kind: "text",
   },
-  { id: "worktree-badge", where: "FolderListItem worktree badge", fg: v("text-on-accent"), bg: v("badge-worktree"), backdrop: v("bg-sidebar"), kind: "text" },
+  { id: "worktree-badge", where: "Chat header worktree badge", fg: v("text-on-accent"), bg: v("badge-worktree"), backdrop: v("bg-sidebar"), kind: "text" },
   { id: "builtin-on-user-bg", where: "slash-command user message", fg: v("builtin-text"), bg: v("builtin-user-bg"), backdrop: v("bg"), kind: "text" },
   {
     id: "builtin-on-assistant-bg",
@@ -698,9 +682,8 @@ export const PAIRINGS: Pairing[] = [
   },
 
   // ── Non-text indicators (3:1) ──
-  { id: "status-green-dot", where: "FolderListItem running dot", fg: v("status-green"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
   { id: "status-active-dot", where: "ChatTreeIndicator ongoing dot", fg: v("status-active"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
-  { id: "warning-waiting-dot", where: "FolderListItem waiting dot", fg: v("warning"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
+  { id: "warning-waiting-dot", where: "ChatTreeIndicator waiting dot", fg: v("warning"), bg: v("bg-sidebar"), backdrop: v("bg-sidebar"), kind: "nonText" },
   { id: "toggle-knob-on-accent", where: "toggle switch knob, on", fg: v("toggle-knob"), bg: v("accent"), backdrop: v("surface"), kind: "nonText" },
 ];
 
@@ -1015,8 +998,8 @@ function* nearestLightnessFirst(target: number, budget: number): Generator<{ l: 
  * cream knob dark — technically AA, and not the theme anyone asked for.
  *
  * The number is calibrated rather than chosen: it is the largest move #293 made
- * by hand on this palette. Those moves, in OKLCh lightness, were --text-muted
- * 0.069, --danger 0.131, --status-green 0.195, --warning 0.204, and
+ * by hand on this palette. Those moves, in OKLCh lightness, included
+ * --text-muted 0.069, --danger 0.131, --warning 0.204, and
  * --status-triggered 0.295 (amber-500 to amber-800, two full ramp steps, taken
  * deliberately to keep the badge's own hue instead of collapsing it onto
  * --warning). A budget under 0.30 would refuse the very correction the palette's

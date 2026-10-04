@@ -655,10 +655,9 @@ function jitteredExpiry(now: number): number {
  *
  * Called wherever Callboard itself moves a directory it might have decoded:
  * `quarantineDirectory` (utils/worktree-trash.ts) when a worktree goes to the
- * trash, and `restoreTrashEntry` (services/workspace-trash.ts) when it comes
- * back. Those two are a pair and the restore is the one that needs it — see the
- * note on {@link projectDirToFolder}. Also used by tests that re-ask one name
- * against different filesystems.
+ * trash. A worktree later recreated at the same path is the case that needs
+ * it — see the note on {@link projectDirToFolder}. Also used by tests that
+ * re-ask one name against different filesystems.
  */
 export function clearProjectDirFolderCache(): void {
   projectDirFolderCache.clear();
@@ -685,15 +684,15 @@ export function clearProjectDirFolderCache(): void {
  *   has never decoded, so it is a new key and is decoded fresh.
  * - A directory that is deleted keeps its name and its decoded path, which is
  *   still the right answer — the path is simply gone now, and callers that care
- *   (`GET /api/chats/folders` via `directoryExists`) test for that themselves.
+ *   test for that themselves.
  *
  * The case that is **not** benign is a path that comes *back*: a worktree
- * removed and recreated where it was, or archive-then-restore. The name is not
+ * removed and recreated where it was. The name is not
  * new, so it is not decoded fresh, and a decode taken while the directory was
  * absent is a best-effort guess that may name a path which never existed. That
  * guess would outlive the directory's return and hide its row for up to the
- * TTL. It is why {@link clearProjectDirFolderCache} is wired into both halves
- * of the quarantine/restore pair rather than left for tests.
+ * TTL. It is why {@link clearProjectDirFolderCache} is wired into the
+ * quarantine path rather than left for tests.
  *
  * What the TTL is left covering is the residue: a name that resolved to a
  * missing best-effort path resolving differently once some *unrelated*

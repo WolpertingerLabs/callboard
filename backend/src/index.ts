@@ -69,7 +69,6 @@ import { enginesRouter } from "./routes/engines.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
-import { workspacesRouter } from "./routes/workspaces.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAllowedIp, requireAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { installProcessGuards } from "./utils/process-guards.js";
@@ -244,7 +243,6 @@ app.use("/api/engines", enginesRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/cards", cardsRouter);
 app.use("/api/api-keys", apiKeysRouter);
-app.use("/api/workspaces", workspacesRouter);
 
 // Instance name endpoints (requires auth)
 import { getInstanceName, saveInstanceName, generateInstanceName } from "./utils/paths.js";
@@ -307,8 +305,8 @@ app.put("/api/ignored-project-dirs", (req, res) => {
     });
   }
   const saved = saveIgnoredProjectDirPrefixes(prefixes);
-  // Invalidate both listing caches so the next /api/chats and
-  // /api/chats/folders calls reflect the change.
+  // Invalidate the listing caches so the next /api/chats call reflects the
+  // change.
   clearListCaches();
   res.json({ prefixes: saved, defaults: [...DEFAULT_IGNORED_PROJECT_DIR_PREFIXES] });
 });

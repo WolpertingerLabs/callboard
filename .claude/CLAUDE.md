@@ -46,7 +46,7 @@ A **workspace** (`shared/types/workspace.ts`, `~/.callboard/workspaces/`) is whe
 Two corollaries that already bite:
 
 - `workspaceId` is **opaque**. Never parse it back into a path, and never assume a chat has one: workspace records are only written when a chat starts in a worktree, so the overwhelming majority of chats are path-only. Reads prefer the workspace when present and fall back to `folder`/`displayFolder` when absent.
-- **Listings of directories key on the directory.** The sidebar's `FolderSummary` is one row per `cwd` with the workspace record supplying identity, not one row per record — see `backend/src/services/workspace-views.ts`. Grouping a directory listing by `Chat.workspaceId` splits a folder's chats across identically-named rows for as long as any chat predates the entity, which is approximately all of them.
+- **Listings of directories key on the directory.** `viewForDirectory` in `backend/src/services/workspace-views.ts` resolves one `cwd` to one view, with the workspace record supplying identity (and only when exactly one record claims it) — not one view per record. Grouping a directory listing by `Chat.workspaceId` splits a folder's chats across identically-named rows for as long as any chat predates the entity, which is approximately all of them.
 
 Callboard has less workspace-owned client state than this rule anticipates. Adopting it *before* accumulating that state is the entire point.
 

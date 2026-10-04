@@ -164,7 +164,7 @@ describe("PATCH /api/chats/:id/title", () => {
 
     // Without this every open tab keeps the old title until its next poll.
     expect(notifyMetadata).toHaveBeenCalledWith("chat-1", { title: "Dark mode toggle" });
-    // And without this a folder row keeps serving the old one out of cache
+    // And without this the chat list keeps serving the old one out of cache
     // until the five-minute backstop expires. Invisible when omitted, so it
     // is asserted rather than trusted.
     expect(clearListCaches).toHaveBeenCalled();

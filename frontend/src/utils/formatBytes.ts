@@ -1,8 +1,8 @@
 /**
  * One byte-size formatter for the whole UI, with presets for the ladders the
  * call sites already showed. The presets differ on purpose — a diff's binary
- * file, a storage item and a worktree's disk usage live at different scales —
- * so each keeps its own wording rather than being normalised to one.
+ * file and a storage item live at different scales — so each keeps its own
+ * wording rather than being normalised to one.
  *
  * Every preset prints `N B` below 1 KiB and divides by 1024 per step.
  */
@@ -23,12 +23,6 @@ export const BYTES_UP_TO_MB: ByteFormat = {
 export const BYTES_UP_TO_GB: ByteFormat = {
   units: ["KB", "MB", "GB"],
   format: (value, unit) => value.toFixed(unit === 2 ? 2 : 1),
-};
-
-/** `9.4 GB`, `954 MB` — one decimal below 10, whole numbers above; runs to TB. */
-export const BYTES_ROUNDED_TO_TB: ByteFormat = {
-  units: ["KB", "MB", "GB", "TB"],
-  format: (value) => (value < 10 ? value.toFixed(1) : String(Math.round(value))),
 };
 
 export function formatBytes(bytes: number, { units, format }: ByteFormat = BYTES_UP_TO_MB): string {

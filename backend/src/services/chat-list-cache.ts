@@ -24,10 +24,9 @@ export const CHAT_LIST_CACHE_TTL = 5_000;
  * refills the entry on the way past. Between the TTL and this bound a response
  * is therefore shown once and replaced, not left to age.
  *
- * The folder list deliberately has no equivalent (see folder-list-cache.ts).
- * The asymmetry is a cost argument, not an oversight: hiding a ~270 ms
- * recompute behind an instant stale paint is worth a second round trip, and
- * hiding a ~21 ms one is not.
+ * It is a cost argument: hiding a ~270 ms recompute behind an instant stale
+ * paint is worth a second round trip. A listing that recomputes in ~21 ms
+ * would not be.
  */
 export const CHAT_LIST_CACHE_MAX_AGE = 300_000;
 

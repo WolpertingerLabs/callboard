@@ -272,9 +272,9 @@ function revParseGitDir(directory: string): string | undefined {
  * ## Why the branch is read and not asked for
  *
  * `git branch --show-current` is a subprocess, and this function is called once
- * per **directory** on the two listing routes — `GET /api/chats/folders` (24
- * directories on the profiled machine) and `GET /api/chats` (95) — plus once per
- * candidate project dir in chat search. For the folder listing that was 26
+ * per **directory** on the chat listing (`GET /api/chats`, 95 directories on the
+ * profiled machine) plus once per candidate project dir in chat search. It was
+ * measured on the since-removed folder listing (24 directories), where it was 26
  * spawns: a branch lookup for each of the 24, and a `rev-parse --git-dir` for
  * the 2 that have no `.git` of their own. Measured at 90 ms of blocked event
  * loop warm, 271 ms cold.
@@ -528,7 +528,7 @@ const WORKTREE_CACHE_TTL = 300000; // 5 minutes
  * remaining callers — chat-search, chat-lookup, ClaudeCodeSessionProvider —
  * map a chat's `folder` to its main repo to find *session log directories*,
  * which the registry cannot answer for a path-only chat. What did move is the
- * sidebar's folder listing: `services/workspace-views.ts` answers from the
+ * directory projection: `services/workspace-views.ts` answers from the
  * workspace record when one claims the directory and only falls through to
  * here when none does.
  *

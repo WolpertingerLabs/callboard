@@ -16,9 +16,9 @@
  * One that a record claims is that record; one that no record claims is a
  * *synthesised* directory workspace — the same shape, derived from the path,
  * persisted nowhere. Reads get a uniform object without adopt-on-open writing
- * registry entries as a side effect of scrolling a sidebar.
+ * registry entries as a side effect of looking at a directory.
  *
- * ## Why the row is not keyed on the chat's workspaceId
+ * ## Why a directory listing is not keyed on the chat's workspaceId
  *
  * Because grouping by `Chat.workspaceId` splits directories. `/home/cybil/
  * callboard` holds 84 chats of which exactly one has a `workspaceId`; keyed
@@ -68,8 +68,8 @@ export interface WorkspaceView {
 /**
  * Active workspace records indexed by directory.
  *
- * Built once per request rather than per row: `listWorkspaces` reads the whole
- * registry directory, and the sidebar asks about ~20 folders at a time. The
+ * Built once per request rather than per directory: `listWorkspaces` reads the
+ * whole registry directory, and a caller may ask about many directories. The
  * registry's own growth (an index, rather than a directory scan) is out of
  * scope for this phase and tracked separately.
  */

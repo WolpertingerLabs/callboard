@@ -47,7 +47,6 @@ import {
   saveShowTriggeredChats,
   getChatsShowArchived,
   saveChatsShowArchived,
-  type SidebarViewMode,
 } from "../utils/localStorage";
 import { errorMessage } from "../utils/errorMessage";
 import { chatMeta, withChatMeta } from "../utils/chatMeta";
@@ -60,7 +59,6 @@ interface ChatListProps {
   onToggleSidebar?: () => void;
   claudeLoggedIn?: boolean;
   onShowClaudeModal?: () => void;
-  onViewModeChange?: (mode: SidebarViewMode) => void;
 }
 
 /**
@@ -115,7 +113,6 @@ export default function ChatList({
   onToggleSidebar,
   claudeLoggedIn,
   onShowClaudeModal,
-  onViewModeChange,
 }: ChatListProps) {
   const { activeSessions, metadataVersion } = useSessionContext();
   const isMobile = useIsMobile();
@@ -1423,9 +1420,7 @@ export default function ChatList({
       style={{ position: "relative", height: "100%", display: "flex", flexDirection: "column", outline: "none" }}
     >
       <SidebarHeader
-        viewMode="chats"
         onToggleNew={() => setShowNew(!showNew)}
-        onViewModeChange={onViewModeChange}
         claudeLoggedIn={claudeLoggedIn}
         onShowClaudeModal={onShowClaudeModal}
         onToggleSidebar={onToggleSidebar}

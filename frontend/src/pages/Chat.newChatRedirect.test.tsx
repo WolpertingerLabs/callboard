@@ -26,7 +26,6 @@ import SplitLayout from "../components/SplitLayout";
 // sidebar and sibling pages are stubs: what matters is that the mobile and
 // desktop branches return different root elements, not what they contain.
 vi.mock("./ChatList", () => ({ default: () => <div>chat list</div> }));
-vi.mock("./FolderList", () => ({ default: () => <div>folder list</div> }));
 vi.mock("./Board", () => ({ default: () => <div>board</div> }));
 vi.mock("./Settings", () => ({ default: () => <div>settings</div> }));
 vi.mock("./agents/AgentList", () => ({ default: () => <div>agents</div> }));
