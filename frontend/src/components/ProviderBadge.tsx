@@ -43,7 +43,7 @@ const RETIRED_PROVIDER_TAGS: Record<string, { tag: string; label: string }> = {
 
 // Small tag marking which provider a chat runs on: "CX" for Codex, "CL" for
 // Cline, "PI" for pi, the vendor's own tag for an ACP agent, "CC" (Claude Code)
-// otherwise. Shared by the chat header, the chat list, and the folder list so
+// otherwise. Shared by the chat header and the chat list so
 // the indicator is consistent everywhere.
 export default function ProviderBadge({ provider, acpProviderId, compact }: ProviderBadgeProps) {
   const isCodex = provider === "codex";

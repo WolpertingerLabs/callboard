@@ -257,7 +257,7 @@ describe("renameWorkspace", () => {
 });
 
 /**
- * Names reach a sidebar row, a modal, an MCP result and a log line. Two classes
+ * Names reach an MCP result and a log line. Two classes
  * of character break those, and both are refused where a *caller* supplies the
  * name — while the derived default (a directory basename, which may legally
  * contain a newline on Linux) is cleaned instead, because refusing there would

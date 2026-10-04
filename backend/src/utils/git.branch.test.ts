@@ -8,7 +8,7 @@
  *     directory, so the oracle is git itself rather than what this test's author
  *     believed about HEAD files.
  *  2. **It does not spawn.** That is the entire point of the change — 22 spawns
- *     per cold folder listing, and a 295 ms event-loop block every five minutes
+ *     per cold listing of 24 folders, and a 295 ms event-loop block every five minutes
  *     when the caller's memo expires — so git.ts's `execFileSync` is stubbed to
  *     throw. A revision that quietly goes back to shelling out does not fail
  *     slowly here, it fails: `getGitInfo` catches the throw and reports

@@ -58,7 +58,7 @@ vi.mock("child_process", async () => {
 });
 
 // Imported after the mock so the module under test binds the faked `execFile`.
-const { clearDiskUsageCache, DISK_USAGE_CONCURRENCY, newAsyncDiskUsageBudget } = await import("./disk-usage.js");
+const { DISK_USAGE_CONCURRENCY, newAsyncDiskUsageBudget } = await import("./disk-usage.js");
 
 /** Let the pool's microtasks run, so anything it is going to start has started. */
 const settleTicks = async () => {
@@ -74,7 +74,6 @@ async function drain(): Promise<void> {
 }
 
 beforeEach(() => {
-  clearDiskUsageCache();
   inFlight.length = 0;
   started = [];
   peak = 0;

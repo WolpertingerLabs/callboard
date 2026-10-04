@@ -173,7 +173,7 @@ export default function SplitLayout({ onLogout, claudeLoggedIn, onShowClaudeModa
       >
         {/* Contained separately from the main pane: a bad row in the chat list
             must not cost you the chat you are typing into. */}
-        <ErrorBoundary region="The sidebar" variant="region">
+        <ErrorBoundary region="The sidebar" variant="region" resetKey={location.pathname}>
           <ChatList
             activeChatId={activeChatId ?? undefined}
             onRefresh={(fn) => {

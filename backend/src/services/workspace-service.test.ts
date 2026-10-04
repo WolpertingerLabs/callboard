@@ -33,7 +33,6 @@ process.env.CODEX_HOME = join(tmpRoot, "codex");
 const { checkWorktreeClean } = await import("../utils/git.js");
 const { WORKTREE_TOKEN_FILE, readWorktreeToken, worktreeTokenPath } = await import("../utils/worktree-token.js");
 const { TRASH_MANIFEST_FILE } = await import("../utils/worktree-trash.js");
-const { directoryDiskUsageCached } = await import("../utils/disk-usage.js");
 const { createWorkspace, getWorkspace, listWorkspaces, recordWorktreeWorkspace } = await import("./workspace-store.js");
 const {
   archiveWorkspace,
@@ -493,26 +492,6 @@ describe("archiveWorkspace quarantines what it may", () => {
     // entry this archive just created.
     expect(existsSync(young)).toBe(true);
     expect(existsSync(result!.worktree.trashPath!)).toBe(true);
-  });
-
-  /**
-   * The size cache has a five-minute TTL, which is fine for a directory that
-   * is merely sitting there and wrong for one this call just moved: a listing
-   * would go on reporting 9.4 GB against a path that is gone. The archive is the
-   * caller `clearDiskUsageCache` was exported for.
-   */
-  it("drops memoised sizes for a directory it just moved", async () => {
-    const { workspace, cwd } = ownedWorktree("cache/moved");
-    // Warm the cache while the directory is still there.
-    expect(directoryDiskUsageCached(cwd).bytes).toBeGreaterThan(0);
-
-    await archiveWorkspace(workspace.id);
-
-    // Same path, same TTL window — but the measurement is taken again, and the
-    // directory is not there any more.
-    const after = directoryDiskUsageCached(cwd);
-    expect(after.bytes).toBeUndefined();
-    expect(after.error).toContain("does not exist");
   });
 
   it("says nothing about the sweep when the sweep took nothing", async () => {

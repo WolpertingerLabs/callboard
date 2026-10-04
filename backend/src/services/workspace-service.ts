@@ -64,7 +64,6 @@ import {
   resolveWorktreeToMainRepo,
   worktreeContainsSubmodules,
 } from "../utils/git.js";
-import { clearDiskUsageCache } from "../utils/disk-usage.js";
 import { readWorktreeToken, verifyWorktreeToken } from "../utils/worktree-token.js";
 import { quarantineDirectory, sweepTrash } from "../utils/worktree-trash.js";
 import { chatFileService } from "./chat-file-service.js";
@@ -73,8 +72,8 @@ import { archiveWorkspace as markWorkspaceArchived, getWorkspace, listWorkspaces
 // Phase 3's predicate, imported rather than restated: "does this record claim
 // its cwd is a worktree?" must have exactly one definition, or the directory
 // projection (workspace-views.ts) and the state in the workspace list can
-// disagree about the same record. workspace-views reads the registry and git and nothing else, so this
-// is a leaf dependency, not a cycle.
+// disagree about the same record. workspace-views reads the registry and git
+// and nothing else, so this is a leaf dependency, not a cycle.
 import { recordSaysWorktree } from "./workspace-views.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -185,10 +184,10 @@ function activeWorkspaces(ctx: RemovalContext): Workspace[] {
  * How many chats each workspace owns, from a single pass over the chat store.
  *
  * Per-workspace {@link chatsForWorkspace} reads every chat, so a listing that
- * called it per record would be quadratic. Counted here rather than left to the
- * UI because the archive confirmation has to state the number — an archive
- * interrupts and stamps every linked chat, and a confirmation that omits that
- * is describing a different action than the one the button performs.
+ * called it per record would be quadratic. Counted here because whoever decides
+ * to archive needs the number — an archive interrupts and stamps every linked
+ * chat, and a listing that omits that describes a gentler action than the
+ * archive performs.
  */
 function chatCounts(ctx: RemovalContext): Map<string, number> {
   if (ctx.chatCounts) return ctx.chatCounts;
@@ -675,22 +674,6 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
   result.worktree.disposition = "quarantined";
   log.info(`Quarantined worktree ${cwd} → ${quarantine.trashPath} for archived workspace ${workspace.id}`);
 
-  // The directory just moved, so every memoised `du` for it — and for anything
-  // the sweep is about to delete — now describes a path that is not there. Five
-  // minutes of a listing reporting a size against a gone directory is the stale
-  // reading this cache's TTL was never meant to cover.
-  //
-  // This clears what is *memoised*, not what is *in flight*. Since the listings
-  // measure asynchronously, a worker that already ran `du` on this directory can
-  // write its pre-move size back into the memo after this call, and it will sit
-  // there for the TTL. Left alone deliberately: a quarantined directory drops
-  // out of the listing that shows sizes (unmanaged-worktree discovery only sees
-  // directories git still registers), so the entry is unreachable rather than
-  // wrong, and the next measurement of the path (if it ever returns) is a
-  // miss. Making it airtight would mean a generation counter on the memo, which
-  // is more machinery than an unreachable entry is worth.
-  clearDiskUsageCache();
-
   // Age-out anything that has been in the trash past the retention window.
   // Here rather than only at startup so a long-running server keeps the trash
   // bounded, and after the move so a failure to sweep can never affect it.
@@ -698,8 +681,8 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
   // **This deletes, and it deletes entries this archive knows nothing about.**
   // Every past-retention entry goes, including ones belonging to other
   // workspaces the user may have been about to restore. It is therefore
-  // reported rather than only logged: a click whose confirmation says "nothing
-  // is deleted" must not be the click that silently emptied someone's trash.
+  // reported rather than only logged: an archive described as "nothing is
+  // deleted" must not be the call that silently emptied someone's trash.
   try {
     const swept = sweepTrash();
     if (swept.removed.length > 0) log.info(`Trash sweep removed ${swept.removed.length} expired entr(ies)`);

@@ -104,7 +104,7 @@ describe("GET /api/themes — contrast report", () => {
     expect(strip.ratio).toBeCloseTo(3.25, 2);
     expect(strip.required).toBe(4.5);
     // The report says where, not just what — the point is a human can act on it.
-    expect(strip.where).toContain("FolderListItem");
+    expect(strip.where).toContain("ChatListItem");
   });
 
   it("sorts worst first, so the top of the list is the thing to fix", async () => {
@@ -114,11 +114,11 @@ describe("GET /api/themes — contrast report", () => {
   });
 
   it("measures inherited variables through the stylesheet, as the browser would", async () => {
-    // This theme never defines --status-green. It must still be measured — at
+    // This theme never defines --status-active. It must still be measured — at
     // the stylesheet's value — rather than skipped as unmeasurable.
     const res = await list();
     const failures = res.body.themes[0].contrast.failures;
-    expect(failures.some((f: any) => f.id === "status-green-dot")).toBe(false);
+    expect(failures.some((f: any) => f.id === "status-active-dot")).toBe(false);
     expect(failures.every((f: any) => f.unmeasurable === undefined)).toBe(true);
   });
 

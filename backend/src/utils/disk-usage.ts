@@ -77,56 +77,6 @@ export const DISK_USAGE_CONCURRENCY = Math.max(2, Math.min(8, availableParalleli
  */
 export const DISK_USAGE_BUDGET_MS = 120000;
 
-/**
- * How long a measurement is reused.
- *
- * The listings that show sizes are *polled* — the sidebar refreshes every
- * fifteen seconds while a session is live — and a directory's size does not
- * meaningfully change between two of those. Without this, turning sizes on
- * would run `du` over every listed worktree four times a minute forever.
- *
- * Five minutes is chosen to be obviously stale-tolerant: the number is an
- * order-of-magnitude prompt for "which of these is worth cleaning up", never an
- * input to a decision about whether to delete something.
- */
-const DISK_USAGE_TTL_MS = 5 * 60 * 1000;
-
-interface CacheEntry {
-  measuredAt: number;
-  usage: WorktreeDiskUsage;
-}
-
-const cache = new Map<string, CacheEntry>();
-
-/**
- * {@link directoryDiskUsage}, memoised per resolved directory for
- * {@link DISK_USAGE_TTL_MS}.
- *
- * Failures are cached too, and deliberately: a `du` that timed out will time
- * out again, and re-running it on every poll is precisely the cost this exists
- * to avoid. The error travels with the entry, so a caller still sees why there
- * is no number.
- */
-export function directoryDiskUsageCached(directory: string, now: number = Date.now()): WorktreeDiskUsage {
-  const key = resolve(directory);
-  const hit = memoPeek(key, now);
-  if (hit) return hit;
-  const usage = directoryDiskUsage(directory);
-  cache.set(key, { measuredAt: now, usage });
-  return usage;
-}
-
-/** The live memo entry for an already-resolved key, or undefined when there is none. */
-function memoPeek(key: string, now: number): WorktreeDiskUsage | undefined {
-  const hit = cache.get(key);
-  return hit && now - hit.measuredAt < DISK_USAGE_TTL_MS ? hit.usage : undefined;
-}
-
-/** Drop everything memoised. For tests, and for a caller that just moved a directory. */
-export function clearDiskUsageCache(): void {
-  cache.clear();
-}
-
 // ── The daemon-wide `du` pool ────────────────────────────────────────
 //
 // A counting semaphore, shared by every async budget in the process. See
@@ -213,8 +163,9 @@ function noteFor(skipped: number, budgetMs: number, measured?: number): string |
  * A budget whose measurements happen *after* the rows are built.
  *
  * The problem this solves is that the row builders are synchronous and want to
- * stay that way — they are pure shaping code, and threading a promise through them to reach one optional field would be a
- * far larger change than the freeze warrants. So {@link DiskUsageBudget.measure}
+ * stay that way — they are pure shaping code, and threading a promise through
+ * them to reach one optional field would be a far larger change than the
+ * freeze warrants. So {@link DiskUsageBudget.measure}
  * keeps its synchronous signature and keeps returning a `WorktreeDiskUsage`; it
  * just returns an **empty one it has not filled in yet**, and remembers it.
  * {@link settle} then measures every remembered directory in parallel and writes
@@ -272,30 +223,16 @@ function replaceUsage(target: WorktreeDiskUsage, usage: WorktreeDiskUsage): void
  * listing counts against this one, which is the honest accounting: a listing that
  * waited 120s for the pool really has spent its budget.
  *
- * A memo hit costs no slot and is served regardless of the deadline — it is not
- * work, and refusing to hand back a number already in memory would be a skip
- * reported for nothing.
- *
- * `cached: false` opts out of the memo *read* and keeps the memo *write*. The
- * asymmetry is the point, and it is what "refresh" means everywhere else: the
- * caller is saying its own answer must be current, not that the answer it
- * computes is unfit for anyone else. Discovery is the one caller — it is asked
- * to find out what is on disk *now*, so handing it a number from before someone
- * emptied a `node_modules` would answer a question nobody asked, with nothing
- * admitting the number is five minutes old. Dropping the write as well (which
- * is what the synchronous budget's version of this option did) threw that
- * expensive measurement away and left the very next listing to pay for the
- * same directories again.
+ * Nothing is memoised across budgets: every measurement is a fresh `du`. The
+ * one caller (unmanaged-worktree discovery) is asked what is on disk *now*, and
+ * nothing polls it, so a reused number would only ever be a stale one.
  */
 export function newAsyncDiskUsageBudget(opts?: {
   budgetMs?: number;
   concurrency?: number;
-  /** Default true. False re-measures rather than recalling — but still publishes. */
-  cached?: boolean;
   now?: () => number;
 }): AsyncDiskUsageBudget {
   const budgetMs = opts?.budgetMs ?? DISK_USAGE_BUDGET_MS;
-  const cached = opts?.cached !== false;
   const now = opts?.now ?? Date.now;
   const startedAt = now();
   let skipped = 0;
@@ -315,17 +252,7 @@ export function newAsyncDiskUsageBudget(opts?: {
       // the synchronous path. Nothing in the codebase does this; the fallback is
       // here so that if something ever does, it gets a number rather than a
       // placeholder that will never be filled in.
-      //
-      // The uncached fallback publishes by hand, because `directoryDiskUsage`
-      // does not. Skipping that would make one stray call obey the opposite of
-      // the read/write split documented above — the same budget skipping the memo
-      // read on every path but populating it on all of them except this one.
-      if (run) {
-        if (cached) return directoryDiskUsageCached(directory, now());
-        const usage = directoryDiskUsage(directory);
-        cache.set(resolve(directory), { measuredAt: now(), usage });
-        return usage;
-      }
+      if (run) return directoryDiskUsage(directory);
       const target: WorktreeDiskUsage = { error: UNSETTLED };
       pending.push({ key: resolve(directory), directory, target });
       return target;
@@ -363,14 +290,7 @@ export function newAsyncDiskUsageBudget(opts?: {
       for (;;) {
         const index = next++;
         if (index >= queue.length) return;
-        const [key, { directory, targets }] = queue[index];
-
-        // Free: already in memory, so neither a slot nor the deadline applies.
-        const memo = cached ? memoPeek(key, now()) : undefined;
-        if (memo) {
-          for (const target of targets) replaceUsage(target, memo);
-          continue;
-        }
+        const [, { directory, targets }] = queue[index];
 
         await acquireSlot();
         try {
@@ -380,16 +300,7 @@ export function newAsyncDiskUsageBudget(opts?: {
             for (const target of targets) replaceUsage(target, { error });
             continue;
           }
-          // Re-check the memo now that we actually hold a slot. This catches a
-          // concurrent listing that *finished* this directory while we queued —
-          // the tail of an overlapping sweep, not its head: the memo is only
-          // written on completion, so two listings that acquire slots for the
-          // same directory inside the same window both spawn `du`. Best-effort
-          // by design; the cap still bounds the machine either way.
-          const warmed = cached ? memoPeek(key, now()) : undefined;
-          const usage = warmed ?? (await directoryDiskUsageAsync(directory));
-          // Written even when the memo was not read: see `cached` above.
-          if (!warmed) cache.set(key, { measuredAt: now(), usage });
+          const usage = await directoryDiskUsageAsync(directory);
           for (const target of targets) replaceUsage(target, usage);
         } finally {
           releaseSlot();

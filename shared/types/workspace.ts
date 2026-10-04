@@ -245,8 +245,8 @@ export interface WorkspaceEntry extends Workspace {
    *
    * Archiving interrupts every one of them and stamps it archived — before the
    * removability gate runs, so it happens even when the directory is left
-   * exactly where it is. A confirmation that does not state this number is
-   * describing a gentler action than the button performs, which is why the
+   * exactly where it is. A listing that does not state this number is
+   * describing a gentler action than archiving performs, which is why the
    * count travels with the record rather than being an optional extra a caller
    * may forget to fetch.
    */
@@ -361,8 +361,8 @@ export interface ArchiveWorkspaceResult {
    * A successful quarantine runs {@link sweepTrash}, which permanently removes
    * **every** past-retention trash entry — not just this workspace's. That is
    * the one deletion in the whole archive path, so it is returned rather than
-   * only logged: a caller whose confirmation said "nothing is deleted" needs to
-   * be able to tell the user what in fact was.
+   * only logged: a caller that said "nothing is deleted" needs to be able to
+   * tell the user what in fact was.
    */
   trashSweep?: {
     /** Trash entry names that were deleted. */

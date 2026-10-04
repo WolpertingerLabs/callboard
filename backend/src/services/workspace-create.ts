@@ -56,10 +56,9 @@ function refuse(code: WorkspaceCreationRefusal, detail: string): CreateWorkspace
 /**
  * Create a `local` workspace record for an existing directory.
  *
- * The name defaults to the directory's last segment, which is exactly what the
- * sidebar would have shown anyway — so an unnamed create changes nothing a user
- * can see, and a named one is the whole point of {@link renameWorkspace} having
- * a sibling here.
+ * The name defaults to the directory's last segment, so an unnamed create
+ * labels the record with what the directory is already called, and a named
+ * one is the whole point of {@link renameWorkspace} having a sibling here.
  */
 export function createLocalWorkspace(input: { cwd: string; name?: string }): CreateWorkspaceResult {
   const raw = (input.cwd ?? "").trim();

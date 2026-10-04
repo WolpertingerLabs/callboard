@@ -55,15 +55,15 @@ export { WORKSPACE_NAME_MAX };
  *
  * A workspace name is a **label on a record** and nothing else — it is not the
  * directory, the branch or the worktree path, and nothing derives a path from
- * it (see {@link renameWorkspace}). What it *is* is a string that reaches a
- * sidebar row, a modal, an MCP tool result and a log line, so the two things
- * that break those are refused at the boundary:
+ * it (see {@link renameWorkspace}). What it *is* is a string that reaches an
+ * MCP tool result and a log line, so the two things that break those are
+ * refused at the boundary:
  *
  * - C0/C1 controls and DEL — a newline in a name splits a log line in two, and
  *   the second half reads as a log entry nothing wrote.
  * - Zero-width space and the bidi controls (LRM/RLM, the LRE…RLO embedding
- *   block, the isolates) — U+202E in a name reverses the text that follows it
- *   in the row, so a name can rewrite how its neighbours render.
+ *   block, the isolates) — U+202E in a name reverses the text that follows it,
+ *   so a name can rewrite how whatever it is printed next to renders.
  *
  * Deliberately NOT in the class: ZWJ (U+200D) and the variation selectors, so
  * emoji sequences survive intact. They are hard to type and harmless to render.
@@ -75,8 +75,7 @@ const FORBIDDEN_NAME_CHARS = new RegExp(FORBIDDEN_NAME_CLASS, "gu");
 /**
  * Why this name cannot be used, or null when it can. Safe to surface directly.
  *
- * Used by everything a *caller* names — the create and rename routes and their
- * MCP tools — so a bad name comes back as a refusal with a reason rather than
+ * Used by everything a *caller* names — the create and rename MCP tools — so a bad name comes back as a refusal with a reason rather than
  * as a silently mangled record. {@link createWorkspace} itself stays lenient
  * (see {@link coerceName}): it is on the chat-start path, where a name is
  * derived rather than typed and must never be able to fail a chat.
