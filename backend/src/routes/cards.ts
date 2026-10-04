@@ -56,14 +56,20 @@ cardsRouter.get("/", (req: Request, res: Response) => {
   // #swagger.summary = 'List all cards (lineage roots) with live rollups'
   // #swagger.description = 'Every non-triggered top-level chat is a card; its fields live on that chat\'s metadata. Hidden cards are omitted unless includeHidden=true.'
   /* #swagger.parameters['includeHidden'] = { in: 'query', type: 'string', description: 'Include cards opted out of the board (metadata.card.hidden). Default false — the board never wants them. The sidebar does: its archived dim has to agree with GET /api/chats?cardLifecycle=unarchived, which counts a hidden card as archived, and a card the client cannot see reads as no card at all, and therefore as not archived.' } */
-  /* #swagger.parameters['closedLimit'] = { in: 'query', type: 'integer', description: 'Return only the N most recently archived (lifecycle "closed") cards; open cards are never limited. closedTotal still counts every archived card and categories still covers them all. Omitted = every card, as before.' } */
+  /* #swagger.parameters['closedLimit'] = { in: 'query', type: 'integer', description: 'Return only the N most recently archived (lifecycle "closed") cards, by closedAt (else updatedAt); open cards are never limited. closedTotal still counts every archived card and categories still covers them all. Omitted (with closedSince) = every card, as before.' } */
+  /* #swagger.parameters['closedSince'] = { in: 'query', type: 'string', description: 'ISO timestamp cursor: return every archived card whose closedAt (else updatedAt) is at or after it, uncapped. How a client refetches the window it already holds, so newly archived cards add on top instead of pushing older loaded ones out. With closedLimit, a card is returned if EITHER admits it.' } */
   const rawLimit = req.query.closedLimit;
   const closedLimit = typeof rawLimit === "string" && /^\d+$/.test(rawLimit) ? Number(rawLimit) : undefined;
   if (rawLimit !== undefined && closedLimit === undefined) {
     return res.status(400).json({ error: "closedLimit must be a non-negative integer" });
   }
+  const rawSince = req.query.closedSince;
+  const closedSince = typeof rawSince === "string" ? Date.parse(rawSince) : undefined;
+  if (rawSince !== undefined && (closedSince === undefined || Number.isNaN(closedSince))) {
+    return res.status(400).json({ error: "closedSince must be a timestamp" });
+  }
   try {
-    const { cards, closedTotal, categories } = createCardContext().board(listRuns({ withRoot: true }), req.query.includeHidden === "true", closedLimit);
+    const { cards, closedTotal, categories } = createCardContext().board(listRuns({ withRoot: true }), req.query.includeHidden === "true", { closedLimit, closedSince });
     // Pinned first, then most recent activity.
     cards.sort((a, b) => (a.pinned === b.pinned ? b.lastActivityAt.localeCompare(a.lastActivityAt) : a.pinned ? -1 : 1));
     res.json({ cards, closedTotal, categories });

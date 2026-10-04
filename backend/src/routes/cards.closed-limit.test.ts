@@ -1,5 +1,5 @@
 /**
- * `GET /api/cards?closedLimit` — the board pages its archive.
+ * `GET /api/cards?closedLimit` / `?closedSince` — the board pages its archive.
  *
  * Archived cards outnumber open ones by hundreds to one on a long-lived
  * install, so the board asks for only the newest page of them. What has to
@@ -50,7 +50,8 @@ function makeCard(title: string, card: Record<string, unknown> = {}): void {
 }
 
 beforeEach(() => {
-  for (const chat of chatFileService.getAllChats() || []) chatFileService.deleteChat(chat.id);
+  // deleteChat takes the session id — the file name — not chat.id.
+  for (const chat of chatFileService.getAllChats() || []) chatFileService.deleteChat(chat.session_id);
   makeCard("open-a");
   makeCard("open-b");
   // Archived on days 1..4; day 1 is the only card in its category.
@@ -94,6 +95,58 @@ describe("GET /api/cards closedLimit", () => {
   it("400s on a value that is not a non-negative integer rather than ignoring it", async () => {
     for (const closedLimit of ["-1", "abc", "1.5", ""]) {
       expect((await listCards({ closedLimit })).status).toBe(400);
+    }
+  });
+});
+
+describe("GET /api/cards closedSince", () => {
+  it("keeps every archived card at or after the cursor, uncapped, and every open one", async () => {
+    const { body } = await listCards({ closedSince: "2026-01-02T00:00:00.000Z" });
+    expect(titlesOf(body, "open").sort()).toEqual(["open-a", "open-b"]);
+    expect(titlesOf(body, "closed").sort()).toEqual(["closed-2", "closed-3", "closed-4"]);
+    expect(body.closedTotal).toBe(4);
+    expect(body.categories).toEqual(["ancient", "recent"]);
+  });
+
+  it("a newly archived card adds on top instead of pushing the oldest loaded one out", async () => {
+    // The window a client holds after closedLimit=2: closed-3 and closed-4.
+    const cursor = "2026-01-03T00:00:00.000Z";
+    makeCard("closed-5", { lifecycle: "closed", closedAt: "2026-01-06T00:00:00.000Z" });
+    expect(titlesOf((await listCards({ closedLimit: "2" })).body, "closed").sort()).toEqual(["closed-4", "closed-5"]);
+    expect(titlesOf((await listCards({ closedSince: cursor })).body, "closed").sort()).toEqual(["closed-3", "closed-4", "closed-5"]);
+  });
+
+  it("falls back to updatedAt for a card archived before closedAt existed", async () => {
+    makeCard("closed-undated", { lifecycle: "closed" });
+    const { body } = await listCards({ closedSince: "2026-01-04T00:00:00.000Z" });
+    // Created just now, so its updatedAt is past every dated cursor.
+    expect(titlesOf(body, "closed").sort()).toEqual(["closed-4", "closed-undated"]);
+  });
+
+  it("with closedLimit, returns a card either one admits", async () => {
+    // Cursor alone: closed-4. Count alone: closed-4, closed-3, closed-2.
+    expect(titlesOf((await listCards({ closedSince: "2026-01-04T00:00:00.000Z", closedLimit: "3" })).body, "closed").sort()).toEqual([
+      "closed-2",
+      "closed-3",
+      "closed-4",
+    ]);
+    // Count alone: closed-4. Cursor alone: closed-2..4.
+    expect(titlesOf((await listCards({ closedSince: "2026-01-02T00:00:00.000Z", closedLimit: "1" })).body, "closed").sort()).toEqual([
+      "closed-2",
+      "closed-3",
+      "closed-4",
+    ]);
+  });
+
+  it("a cursor past every archived card returns none of them", async () => {
+    const { body } = await listCards({ closedSince: "2027-01-01T00:00:00.000Z" });
+    expect(titlesOf(body, "closed")).toEqual([]);
+    expect(body.closedTotal).toBe(4);
+  });
+
+  it("400s on a value that is not a timestamp", async () => {
+    for (const closedSince of ["", "yesterday", "2026-13-45"]) {
+      expect((await listCards({ closedSince })).status).toBe(400);
     }
   });
 });

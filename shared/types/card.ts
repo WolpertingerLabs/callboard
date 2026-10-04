@@ -197,11 +197,11 @@ export interface CardListResponse {
   cards: CardSummary[];
   /**
    * Every archived (`lifecycle: "closed"`) card the listing admitted, including
-   * those a `closedLimit` left out of `cards`. Optional: older daemons omit it,
-   * and then `cards` is the whole archive.
+   * those a `closedLimit`/`closedSince` window left out of `cards`. Optional:
+   * older daemons omit it, and then `cards` is the whole archive.
    */
   closedTotal?: number;
-  /** Distinct categories across every admitted card, `closedLimit` notwithstanding. Alphabetical. */
+  /** Distinct categories across every admitted card, any archive window notwithstanding. Alphabetical. */
   categories?: string[];
 }
 

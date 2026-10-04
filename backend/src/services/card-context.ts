@@ -53,9 +53,9 @@ export function createCardContext(stored = listChatsSnapshot()) {
       const selected = rootIds ? chats.filter((chat) => rootIds.has(index.existingRootIdOf(chat.id))) : chats;
       return buildCardSummaries(selected, runs, budgetedDeps(), { includeHidden, lifecycle });
     },
-    /** The whole board, with the archive optionally cut to its newest `closedLimit` cards. */
-    board(runs: JobRunListItem[], includeHidden = false, closedLimit?: number) {
-      return buildCardBoard(chats, runs, budgetedDeps(), { includeHidden, closedLimit });
+    /** The whole board, with the archive optionally windowed — see {@link buildCardBoard}. */
+    board(runs: JobRunListItem[], includeHidden = false, window: { closedLimit?: number; closedSince?: number } = {}) {
+      return buildCardBoard(chats, runs, budgetedDeps(), { includeHidden, ...window });
     },
   };
 }

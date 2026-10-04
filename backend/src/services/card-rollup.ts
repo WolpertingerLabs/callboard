@@ -343,11 +343,19 @@ const closedOrder = (card: Card): string => card.closedAt ?? card.updatedAt;
  * {@link buildCardSummaries}, plus what a client that asked for only part of
  * the archive needs to describe the rest.
  *
- * `closedLimit` keeps the newest N closed cards by `closedAt` and drops the
- * others BEFORE member projection — which is the point: archived cards
- * outnumber open ones by hundreds to one on a long-lived install, and
- * projecting every one of them was most of the board's response. Measured on
- * one: 861 closed vs 4 open, 755 KB per 15 s poll.
+ * The archive is windowed BEFORE member projection — which is the point:
+ * archived cards outnumber open ones by hundreds to one on a long-lived
+ * install, and projecting every one of them was most of the board's response.
+ * Measured on one: 861 closed vs 4 open, 734 KB per 15 s poll.
+ *
+ * - `closedLimit` keeps the newest N closed cards (by `closedAt ?? updatedAt`).
+ * - `closedSince` (epoch ms) keeps every closed card whose key is at or after
+ *   it, uncapped. It is the cursor a client refetches an already-loaded
+ *   window with: a count would let each newly archived card push the oldest
+ *   loaded one out from under an open drawer or a selection.
+ * - Both: a card is kept if EITHER keeps it — the window never shrinks below
+ *   the cursor, and the count can still reach past it ("show more").
+ * - Neither: every closed card.
  *
  * `closedTotal` and `categories` are counted over every card the filters
  * admitted, trimmed or not: the strip's header reports the whole archive, and
@@ -358,7 +366,7 @@ export function buildCardBoard(
   chats: Chat[],
   allRuns: JobRunListItem[],
   deps: RollupDeps = ROLLUP_DEPS,
-  opts: { includeHidden?: boolean; lifecycle?: Card["lifecycle"]; closedLimit?: number } = {},
+  opts: { includeHidden?: boolean; lifecycle?: Card["lifecycle"]; closedLimit?: number; closedSince?: number } = {},
 ): { cards: CardSummary[]; closedTotal: number; categories: string[] } {
   const { existingRootIdOf } = buildLineageIndex(chats);
 
@@ -383,11 +391,14 @@ export function buildCardBoard(
     else cardsByRoot.set(chat.id, card);
   }
   const closedTotal = closedRoots.length;
-  if (opts.closedLimit !== undefined) {
-    closedRoots.sort(([, a], [, b]) => closedOrder(b).localeCompare(closedOrder(a)));
-    closedRoots.length = Math.min(closedRoots.length, Math.max(0, opts.closedLimit));
+  const { closedLimit, closedSince } = opts;
+  if (closedLimit !== undefined) closedRoots.sort(([, a], [, b]) => closedOrder(b).localeCompare(closedOrder(a)));
+  const windowed = closedLimit !== undefined || closedSince !== undefined;
+  for (const [newestFirst, [rootId, card]] of closedRoots.entries()) {
+    const inCount = closedLimit !== undefined && newestFirst < closedLimit;
+    const inCursor = closedSince !== undefined && Date.parse(closedOrder(card)) >= closedSince;
+    if (!windowed || inCount || inCursor) cardsByRoot.set(rootId, card);
   }
-  for (const [rootId, card] of closedRoots) cardsByRoot.set(rootId, card);
 
   // Group chats by root.
   const chatsByRoot = new Map<string, CardMemberChat[]>();

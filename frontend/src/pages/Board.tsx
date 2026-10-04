@@ -33,6 +33,9 @@ const ROLLUP_RANK: Record<CardSummary["rollup"], number> = { needs_you: 3, job_r
 /** Rank of one card, tolerating a rollup value this bundle predates. */
 const rank = (card: CardSummary): number => ROLLUP_RANK[card.rollup] ?? 0;
 
+/** The archived strip's sort key, and the server's closedSince cursor key: most recently archived first. */
+const closedOrder = (card: CardSummary): string => card.closedAt ?? card.updatedAt;
+
 /** Archived cards fetched per page — and per poll, until "Show more" raises it. */
 const ARCHIVE_PAGE_SIZE = 50;
 
@@ -207,25 +210,42 @@ export default function Board() {
   // outnumbers the open cards by hundreds to one, and every poll used to ship
   // and re-render all of it. `closedTotal` keeps the strip's count honest about
   // what is left on the server; null until a daemon that reports it answers.
-  // A ref, not state: loadCards must keep one identity, or raising the limit
-  // re-runs every effect that depends on it and fetches the page twice.
-  const closedLimit = useRef(ARCHIVE_PAGE_SIZE);
   const [closedTotal, setClosedTotal] = useState<number | null>(null);
   const [serverCategories, setServerCategories] = useState<string[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Once a page has landed, refetches ask for "everything archived since the
+  // oldest card I hold", not "the newest N": under a count, each card archived
+  // elsewhere would push the oldest loaded one off the strip — closing its
+  // drawer and its unsaved edits, or dropping it from a selection. A ref, not
+  // state, so loadCards keeps one identity (a new one re-arms the effects below
+  // and double-fetches). Null until the first page has an archived card in it.
+  const closedCursor = useRef<string | null>(null);
   // Polls and "Show more" can overlap; only the newest request may land, or a
   // slow poll at the old limit would shrink the strip back under the user.
   const requestSeq = useRef(0);
 
-  const loadCards = useCallback(async () => {
+  /** `showUpTo` reaches past the cursor: "Show more" asks for that many. */
+  const loadCards = useCallback(async (showUpTo?: number) => {
     const seq = ++requestSeq.current;
+    const cursor = closedCursor.current ?? undefined;
     try {
-      const res = await listCards(false, closedLimit.current);
+      const res = await listCards(false, {
+        closedLimit: showUpTo ?? (cursor ? undefined : ARCHIVE_PAGE_SIZE),
+        closedSince: cursor,
+      });
       if (seq !== requestSeq.current) return;
       setCards(res.cards);
       setClosedTotal(res.closedTotal ?? null);
       setServerCategories(res.categories ?? []);
       setError(null);
+      // The cursor follows the oldest card actually returned, so unarchiving
+      // that card moves it to the next one instead of widening the window. An
+      // empty archive window resets it to a fresh first page.
+      const oldest = res.cards
+        .filter((c) => c.lifecycle === "closed")
+        .map(closedOrder)
+        .reduce<string | null>((min, key) => (min === null || key.localeCompare(min) < 0 ? key : min), null);
+      closedCursor.current = oldest;
     } catch (err) {
       if (seq !== requestSeq.current) return;
       setError(errorMessage(err, "Failed to load board"));
@@ -252,7 +272,7 @@ export default function Board() {
   // stopping bumps the session version, not metadataVersion), so poll the
   // cards every 15s as a safety net. Skipped while the tab is hidden; a
   // visibility change refreshes immediately to catch up.
-  usePolling(loadCards, 15_000);
+  usePolling(() => loadCards(), 15_000);
 
   const open = cards.filter((c) => c.lifecycle === "open");
   // Sorted HERE rather than inline in the JSX, so the shift+click range order
@@ -260,7 +280,7 @@ export default function Board() {
   // order separately from what is on screen means shift+click eventually
   // selects a range the user never saw, and that drift stays invisible until
   // someone reorders a section.
-  const closed = cards.filter((c) => c.lifecycle === "closed").sort((a, b) => (b.closedAt ?? b.updatedAt).localeCompare(a.closedAt ?? a.updatedAt));
+  const closed = cards.filter((c) => c.lifecycle === "closed").sort((a, b) => closedOrder(b).localeCompare(closedOrder(a)));
   // Older daemons ignore closedLimit and send the whole archive, which is then
   // its own total.
   const closedCount = closedTotal ?? closed.length;
@@ -394,6 +414,22 @@ export default function Board() {
   }, [selectionMode, exitSelection, selectAllInScope]);
 
   /**
+   * Lands server-returned cards in place. The archive count moves with them:
+   * `closedTotal` came from the last fetch, and without this, unarchiving every
+   * loaded card leaves "Archived 30" over an empty strip until the next poll.
+   */
+  const mergeCards = (updated: CardSummary[]) => {
+    const updatedById = new Map(updated.map((c) => [c.id, c]));
+    const closedDelta = cards.reduce((delta, c) => {
+      const next = updatedById.get(c.id);
+      if (!next || next.lifecycle === c.lifecycle) return delta;
+      return delta + (next.lifecycle === "closed" ? 1 : 0) - (c.lifecycle === "closed" ? 1 : 0);
+    }, 0);
+    setCards((prev) => prev.map((c) => updatedById.get(c.id) ?? c));
+    if (closedDelta !== 0) setClosedTotal((total) => (total === null ? null : Math.max(0, total + closedDelta)));
+  };
+
+  /**
    * No confirmation and no undo, by decision: archiving is reversible, its
    * inverse is one gesture away, and the archived strip is on the same screen.
    * A modal on a reversible bulk action only trains people to dismiss modals.
@@ -405,8 +441,7 @@ export default function Board() {
     setBulkBusy(true);
     try {
       const res = await bulkSetCardLifecycle(ids, target);
-      const updatedById = new Map(res.updated.map((c) => [c.id, c]));
-      setCards((prev) => prev.map((c) => updatedById.get(c.id) ?? c));
+      mergeCards(res.updated);
       const failed = res.failed ?? [];
       if (failed.length > 0) {
         // Exactly the failed ids stay selected: retrying those is the user's
@@ -429,7 +464,7 @@ export default function Board() {
   const patchCard = async (cardId: string, patch: CardPatch): Promise<boolean> => {
     try {
       const res = await updateCard(cardId, patch);
-      setCards((prev) => prev.map((c) => (c.id === cardId ? res.card : c)));
+      mergeCards([res.card]);
       return true;
     } catch (err) {
       setError(errorMessage(err, "Failed to update card"));
@@ -726,8 +761,7 @@ export default function Board() {
                     disabled={loadingMore}
                     onClick={() => {
                       setLoadingMore(true);
-                      closedLimit.current = closed.length + ARCHIVE_PAGE_SIZE;
-                      loadCards();
+                      loadCards(closed.length + ARCHIVE_PAGE_SIZE);
                     }}
                     style={{
                       marginTop: 12,
