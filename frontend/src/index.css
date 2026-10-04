@@ -368,7 +368,7 @@
   /* Nothing to step down to: emerald-700 already carries white at 5.48:1. */
   --status-active-solid: var(--status-active);
   /* Same story as --warning: painted as a colour on a 15% tint of itself (the
-     triggered badge in ChatListItem/FolderListItem, the "consolidation" filter
+     triggered badge in ChatListItem, the "consolidation" filter
      pill in Activity), where amber-500 bottomed out at 1.71:1 — the worst
      pairing in the palette. Tint opacity is not the lever here: 12% only
      reaches 1.75:1, so the colour has to move. amber-700 still misses at

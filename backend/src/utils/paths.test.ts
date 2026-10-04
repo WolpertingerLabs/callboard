@@ -853,7 +853,7 @@ describe("isIgnoredProjectFolder", () => {
 });
 
 /**
- * The memo, which is the reason `GET /api/chats/folders` is affordable.
+ * The memo, which is what keeps session discovery affordable on every listing.
  *
  * The decoder probes the filesystem — a `statSync` per candidate split, a
  * `readdirSync` scan, and for a name that resolves to nothing a combinatorial

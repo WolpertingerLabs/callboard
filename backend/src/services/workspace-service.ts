@@ -64,16 +64,16 @@ import {
   resolveWorktreeToMainRepo,
   worktreeContainsSubmodules,
 } from "../utils/git.js";
-import { clearDiskUsageCache, newDiskUsageBudget, type DiskUsageBudget } from "../utils/disk-usage.js";
+import { clearDiskUsageCache } from "../utils/disk-usage.js";
 import { readWorktreeToken, verifyWorktreeToken } from "../utils/worktree-token.js";
 import { quarantineDirectory, sweepTrash } from "../utils/worktree-trash.js";
 import { chatFileService } from "./chat-file-service.js";
 import { sessionRegistry } from "./session-registry.js";
 import { archiveWorkspace as markWorkspaceArchived, getWorkspace, listWorkspaces } from "./workspace-store.js";
 // Phase 3's predicate, imported rather than restated: "does this record claim
-// its cwd is a worktree?" must have exactly one definition, or the badge in the
-// sidebar and the state in the workspace list can disagree about the same
-// record. workspace-views reads the registry and git and nothing else, so this
+// its cwd is a worktree?" must have exactly one definition, or the directory
+// projection (workspace-views.ts) and the state in the workspace list can
+// disagree about the same record. workspace-views reads the registry and git and nothing else, so this
 // is a leaf dependency, not a cycle.
 import { recordSaysWorktree } from "./workspace-views.js";
 import { createLogger } from "../utils/logger.js";
@@ -428,109 +428,28 @@ export function describeWorkspaceDirectory(workspace: Workspace): WorkspaceDirec
   return { state: "present", detail: `${cwd} is still a worktree of ${workspace.repoPath}` };
 }
 
-/**
- * Disk usage is opt-in for the same reason it is on discovery: `du -sk` over a
- * worktree with a cold `node_modules` is seconds, and a caller that only wants
- * the records should not pay for it. Measurements are memoised for five
- * minutes, so a management view that re-polls costs nothing.
- */
-interface ListingOptions {
-  includeDiskUsage?: boolean;
-  /**
-   * The listing's `du` budget. A caller passes one in when it wants to read
-   * {@link DiskUsageBudget.note} afterwards; when it does not, one is created
-   * here anyway — there must be no path through these functions that measures N
-   * directories unbounded.
-   *
-   * Pass an {@link AsyncDiskUsageBudget} — as `GET /api/workspaces` does — and
-   * the measurements do not happen during this call at all: the entries come
-   * back holding placeholders, and the caller's `await budget.settle()` fills
-   * them in from a bounded parallel pool. The default created here is the
-   * synchronous one, which is correct but blocks the event loop for the length
-   * of the listing; it is the right choice only where a single record is being
-   * measured.
-   */
-  budget?: DiskUsageBudget;
-}
-
-function newBudget(opts?: ListingOptions): DiskUsageBudget | undefined {
-  return opts?.includeDiskUsage ? (opts.budget ?? newDiskUsageBudget()) : undefined;
-}
-
-function toEntry(workspace: Workspace, ctx: RemovalContext, budget?: DiskUsageBudget): WorkspaceEntry {
-  const directory = describeWorkspaceDirectory(workspace);
+function toEntry(workspace: Workspace, ctx: RemovalContext): WorkspaceEntry {
   return {
     ...workspace,
-    directory,
+    directory: describeWorkspaceDirectory(workspace),
     chatCount: chatCounts(ctx).get(workspace.id) ?? 0,
-    // Nothing to measure when the directory is gone — and `du` on a missing
-    // path returns an error string, which reads as a failure rather than as
-    // the "there is nothing here" that `directory.state` already says.
-    ...(budget && directory.state !== "missing" && { diskUsage: budget.measure(workspace.cwd) }),
   };
 }
 
 /**
- * Every workspace with the observed state of its directory — and **no removal
- * verdict**. This is what a listing should call.
- *
- * The cost here is a registry read, an `lstat` of one `.git` entry per record,
- * one pass over the chat store, and (opt-in) `du`. No `git status`, no
- * `rev-list`, no submodule scan — which is the difference between a listing that
- * costs milliseconds and one that spawns ~350 synchronous subprocesses and holds
- * the daemon for a second and a half. See {@link WorkspaceWithRemovability} for
- * the measurement, and {@link getWorkspaceWithRemovability} for the verdict when
- * something actually needs one.
- *
- * Read-only, like every listing here: it writes nothing, archives nothing and
- * removes nothing, however stale a record turns out to be.
- */
-export function listWorkspaceEntries(filter?: { status?: Workspace["status"] }, opts?: ListingOptions): WorkspaceEntry[] {
-  const ctx = newRemovalContext();
-  const budget = newBudget(opts);
-  return listWorkspaces(filter).map((workspace) => toEntry(workspace, ctx, budget));
-}
-
-/**
- * Every workspace with its removability verdict attached.
+ * Every workspace with its removability verdict attached — what the
+ * agent-facing `list_workspaces` tool reports.
  *
  * **Expensive, and linear in git subprocesses** — see
- * {@link WorkspaceWithRemovability}. Two callers, both deliberate: the
- * agent-facing `list_workspaces` tool, because a verdict per record is the
- * entire content of what it reports; and `GET /api/workspaces` for a client that
- * sends `includeRemovability=true` — the Workspace manager's explicit "Check
- * all" click. Every other frontend listing passes `false` and takes the path
- * above.
+ * {@link WorkspaceWithRemovability}. A verdict per record is the entire content
+ * of what that tool reports, so it pays; nothing polls it.
  */
-export function listWorkspacesWithRemovability(filter?: { status?: Workspace["status"] }, opts?: ListingOptions): WorkspaceWithRemovability[] {
+export function listWorkspacesWithRemovability(filter?: { status?: Workspace["status"] }): WorkspaceWithRemovability[] {
   const ctx = newRemovalContext();
-  const budget = newBudget(opts);
   return listWorkspaces(filter).map((workspace) => ({
-    ...toEntry(workspace, ctx, budget),
+    ...toEntry(workspace, ctx),
     removability: evaluateWorktreeRemoval(workspace, ctx),
   }));
-}
-
-/**
- * One workspace, freshly evaluated — the verdict at the moment it decides
- * something.
- *
- * This is the shape of the fix for the listing above: a management view loads
- * cheap rows and asks this for the single record whose archive confirmation is
- * opening, so the git subprocesses are paid once per click instead of N times
- * per page load.
- *
- * It remains an *affordance*. {@link archiveWorkspace} evaluates removability
- * itself, from the record, on every call — it does not accept a verdict, and no
- * route offers a way to supply one.
- *
- * Returns null when there is no such record.
- */
-export function getWorkspaceWithRemovability(id: string, opts?: ListingOptions): WorkspaceWithRemovability | null {
-  const workspace = getWorkspace(id);
-  if (!workspace) return null;
-  const ctx = newRemovalContext();
-  return { ...toEntry(workspace, ctx, newBudget(opts)), removability: evaluateWorktreeRemoval(workspace, ctx) };
 }
 
 /**
@@ -758,16 +677,16 @@ export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResu
 
   // The directory just moved, so every memoised `du` for it — and for anything
   // the sweep is about to delete — now describes a path that is not there. Five
-  // minutes of a sidebar showing a size against a gone directory is the stale
+  // minutes of a listing reporting a size against a gone directory is the stale
   // reading this cache's TTL was never meant to cover.
   //
   // This clears what is *memoised*, not what is *in flight*. Since the listings
   // measure asynchronously, a worker that already ran `du` on this directory can
   // write its pre-move size back into the memo after this call, and it will sit
   // there for the TTL. Left alone deliberately: a quarantined directory drops
-  // out of both listings that show sizes — the workspace record is archived and
-  // the folder no longer exists — so the entry is unreachable rather than wrong
-  // on screen, and the next measurement of the path (if it ever returns) is a
+  // out of the listing that shows sizes (unmanaged-worktree discovery only sees
+  // directories git still registers), so the entry is unreachable rather than
+  // wrong, and the next measurement of the path (if it ever returns) is a
   // miss. Making it airtight would mean a generation counter on the memo, which
   // is more machinery than an unreachable entry is worth.
   clearDiskUsageCache();

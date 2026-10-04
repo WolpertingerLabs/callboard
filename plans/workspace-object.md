@@ -8,6 +8,15 @@ Status: **Shipped.** Phase 1 #281, Phase 2 #282, Phase 2b #287, Phase 3 #289, Ph
 #294 (2026-07-27 to 2026-07-28). Originally: **Proposed.** Model observed in getpaseo/paseo (AGPLv3) — architecture only, no code
 reuse.
 
+**Later (2026-10):** the Phase 4 UI — the sidebar Folders view (`GET /api/chats/folders`,
+`FolderSummary`), the Manage worktrees modal, every `/api/workspaces` route, and trash
+listing/restore — was removed. It polled an uncached, per-folder git/du listing and was
+superseded by the agent MCP tools in `backend/src/services/workspace-tools.ts`
+(`list_workspaces`, `create_workspace`, `rename_workspace`, `archive_workspace`,
+`list_unmanaged_worktrees`, `adopt_worktrees`). Archive still quarantines into
+`~/.callboard/trash`; restoring is by the recipe in each entry's manifest. The sections
+below describe the design as shipped.
+
 ---
 
 ## What callboard does today

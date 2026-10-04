@@ -13,19 +13,13 @@
  * a measurement can legitimately come back absent — a missing number is never
  * fatal here, it is just a column a caller cannot sort on.
  *
- * There are two ways to spend it, and the difference is which thread waits:
+ * A listing spends it through {@link newAsyncDiskUsageBudget}: `du` runs in
+ * the background, {@link DISK_USAGE_CONCURRENCY} at a time, and the daemon goes
+ * on serving HTTP while it does. Costs the caller one `await settle()`.
  *
- * - {@link newAsyncDiskUsageBudget} — what every listing uses. `du` runs in the
- *   background, {@link DISK_USAGE_CONCURRENCY} at a time, and the daemon goes on
- *   serving HTTP while it does. Costs the caller one `await settle()`.
- * - {@link newDiskUsageBudget} — the synchronous original, kept for the callers
- *   that measure a single directory, and for synchronous call sites that cannot
- *   await. It blocks the event loop for as long as `du` runs.
- *
- * The distinction is not stylistic. Measured against 34 worktrees, the
- * synchronous budget held the event loop for 2.1s — every request, every SSE
- * flush and every timer in the process waited behind it. Prefer the async one
- * anywhere more than one directory is measured.
+ * Async is not stylistic. Measured against 34 worktrees, the synchronous budget
+ * this replaced held the event loop for 2.1s — every request, every SSE flush
+ * and every timer in the process waited behind it.
  */
 import { execFile, execFileSync } from "child_process";
 import { existsSync } from "fs";
@@ -65,8 +59,8 @@ const DISK_USAGE_TIMEOUT_MS = 15000;
  * nothing. Floor of two so a single-core container still overlaps.
  *
  * This is a **daemon-wide** budget, not a per-listing one. Bounding each listing
- * separately does not bound the machine: two tabs opening the Manage modal at
- * once would be 2 × cap. Every listing draws from this one pool.
+ * separately does not bound the machine: two discovery scans running at once
+ * would be 2 × cap. Every listing draws from this one pool.
  */
 export const DISK_USAGE_CONCURRENCY = Math.max(2, Math.min(8, availableParallelism()));
 
@@ -205,30 +199,7 @@ export interface DiskUsageBudget {
   note(measured?: number): string | undefined;
 }
 
-export function newDiskUsageBudget(opts?: { budgetMs?: number; now?: () => number }): DiskUsageBudget {
-  const budgetMs = opts?.budgetMs ?? DISK_USAGE_BUDGET_MS;
-  const now = opts?.now ?? Date.now;
-  const startedAt = now();
-  let skipped = 0;
-
-  return {
-    measure(directory: string): WorktreeDiskUsage {
-      if (now() - startedAt >= budgetMs) {
-        skipped++;
-        return { error: `not measured — the ${budgetMs}ms disk-usage budget for this listing was exhausted` };
-      }
-      return directoryDiskUsageCached(directory);
-    },
-    get skipped() {
-      return skipped;
-    },
-    note(measured?: number): string | undefined {
-      return noteFor(skipped, budgetMs, measured);
-    },
-  };
-}
-
-/** The one sentence both budgets surface, so the two cannot drift apart. */
+/** The sentence a budget surfaces when it skipped anything. */
 function noteFor(skipped: number, budgetMs: number, measured?: number): string | undefined {
   if (skipped === 0) return undefined;
   const of = measured === undefined ? "" : ` of ${measured}`;
@@ -242,8 +213,7 @@ function noteFor(skipped: number, budgetMs: number, measured?: number): string |
  * A budget whose measurements happen *after* the rows are built.
  *
  * The problem this solves is that the row builders are synchronous and want to
- * stay that way — `buildFolderSummaries` and `toEntry` are pure shaping code,
- * and threading a promise through them to reach one optional field would be a
+ * stay that way — they are pure shaping code, and threading a promise through them to reach one optional field would be a
  * far larger change than the freeze warrants. So {@link DiskUsageBudget.measure}
  * keeps its synchronous signature and keeps returning a `WorktreeDiskUsage`; it
  * just returns an **empty one it has not filled in yet**, and remembers it.
@@ -283,9 +253,9 @@ function replaceUsage(target: WorktreeDiskUsage, usage: WorktreeDiskUsage): void
 /**
  * A listing's share of `du`, spent off the event loop.
  *
- * Same contract as {@link newDiskUsageBudget} — one shared wall-clock budget,
- * skips reported per entry and summarised by {@link DiskUsageBudget.note} — with
- * two deliberate redefinitions that concurrency forces:
+ * One shared wall-clock budget, skips reported per entry and summarised by
+ * {@link DiskUsageBudget.note} — with two deliberate redefinitions that
+ * concurrency forces:
  *
  * **The budget bounds when a measurement may *start*, not when it must finish.**
  * A directory is not handed a `du` once the deadline has passed; up to
@@ -309,13 +279,13 @@ function replaceUsage(target: WorktreeDiskUsage, usage: WorktreeDiskUsage): void
  * `cached: false` opts out of the memo *read* and keeps the memo *write*. The
  * asymmetry is the point, and it is what "refresh" means everywhere else: the
  * caller is saying its own answer must be current, not that the answer it
- * computes is unfit for anyone else. Discovery is the one caller — a Scan is a
- * button a human pressed to find out what is on disk *now*, so handing it a
- * number from before they emptied a `node_modules` would answer a question they
- * did not ask, with nothing on screen admitting the number is five minutes old.
- * Dropping the write as well (which is what the synchronous budget's version of
- * this option did) threw that expensive measurement away and left the very next
- * polled listing to pay for the same directories again.
+ * computes is unfit for anyone else. Discovery is the one caller — it is asked
+ * to find out what is on disk *now*, so handing it a number from before someone
+ * emptied a `node_modules` would answer a question nobody asked, with nothing
+ * admitting the number is five minutes old. Dropping the write as well (which
+ * is what the synchronous budget's version of this option did) threw that
+ * expensive measurement away and left the very next listing to pay for the
+ * same directories again.
  */
 export function newAsyncDiskUsageBudget(opts?: {
   budgetMs?: number;

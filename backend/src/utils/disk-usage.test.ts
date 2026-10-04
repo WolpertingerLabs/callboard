@@ -14,7 +14,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clearDiskUsageCache, newAsyncDiskUsageBudget, newDiskUsageBudget } from "./disk-usage.js";
+import { clearDiskUsageCache, newAsyncDiskUsageBudget } from "./disk-usage.js";
 
 const root = mkdtempSync(join(tmpdir(), "callboard-disk-budget-"));
 writeFileSync(join(root, "a.txt"), "x".repeat(4096));
@@ -30,38 +30,8 @@ function dirs(n: number, label: string): string[] {
   });
 }
 
-describe("the listing budget", () => {
-  it("measures while there is budget left", () => {
-    const budget = newDiskUsageBudget();
-    expect(budget.measure(root).bytes).toBeGreaterThan(0);
-    expect(budget.skipped).toBe(0);
-    expect(budget.note()).toBeUndefined();
-  });
-
-  it("stops measuring once the wall clock is spent", () => {
-    let clock = 1000;
-    const budget = newDiskUsageBudget({ budgetMs: 100, now: () => clock });
-    expect(budget.measure(root).bytes).toBeGreaterThan(0);
-
-    clock += 100;
-    const skipped = budget.measure(root);
-    expect(skipped.bytes).toBeUndefined();
-    expect(skipped.error).toContain("budget");
-    expect(budget.skipped).toBe(1);
-  });
-
-  /** A skipped measurement is reported per entry *and* summarised for the listing. */
-  it("gives the listing a sentence to surface", () => {
-    const budget = newDiskUsageBudget({ budgetMs: 0 });
-    budget.measure(root);
-    budget.measure(root);
-    expect(budget.note(5)).toContain("2 of 5");
-    expect(budget.note(5)).toContain("du -sh");
-  });
-});
-
 /**
- * The async budget carries the same contract off the event loop. The properties
+ * The budget, off the event loop. The properties
  * below are the ones a caller and a reviewer actually depend on; each is written
  * so that removing the line of production code it covers fails it.
  */

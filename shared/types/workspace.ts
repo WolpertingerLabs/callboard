@@ -227,13 +227,11 @@ export interface WorkspaceDirectory {
 /**
  * A workspace plus the freshly observed state of its directory.
  *
- * **This is the cheap shape, and that is the point.** Everything here is a
- * registry read plus an `lstat` of one `.git` entry (and, opt-in, a `du`) — no
- * `git status`, no `rev-list`, no submodule scan. The removal verdict is
- * {@link WorkspaceWithRemovability}, which is a strictly more expensive thing to
- * ask for and therefore a separate type rather than an optional field: a listing
- * hands back `WorkspaceEntry[]`, and anything that needs a verdict has to have
- * gone and fetched one.
+ * **This is the cheap shape.** Everything here is a registry read plus an
+ * `lstat` of one `.git` entry — no `git status`, no `rev-list`, no submodule
+ * scan. The removal verdict is {@link WorkspaceWithRemovability}, which is a
+ * strictly more expensive thing to ask for and therefore a separate type rather
+ * than an optional field.
  */
 export interface WorkspaceEntry extends Workspace {
   /**
@@ -242,15 +240,6 @@ export interface WorkspaceEntry extends Workspace {
    * that no longer exists — archive it?"), never something to act on.
    */
   directory: WorkspaceDirectory;
-  /**
-   * Approximate size on disk. **Opt-in** (`includeDiskUsage`), because `du -sk`
-   * over a worktree with a cold `node_modules` is seconds and this listing is
-   * otherwise cheap enough to poll. Absent when it was not requested.
-   *
-   * It is here for the same reason it is on {@link UnmanagedWorktree}: "10
-   * workspaces" is not a number anyone acts on, and "9.4 GB" is.
-   */
-  diskUsage?: WorktreeDiskUsage;
   /**
    * Chats linked to this workspace by `workspaceId`.
    *
@@ -274,68 +263,28 @@ export interface WorkspaceEntry extends Workspace {
  * `rev-list` via the cleanliness check, a submodule scan, and `status --ignored`
  * on top when the answer comes back removable. All of them are synchronous, so
  * they do not merely make the caller wait: they hold the whole daemon. Measured
- * against 65 active records, `GET /api/workspaces?includeDiskUsage=true` took
+ * against 65 active records, a listing that carried a verdict per record took
  * 1.6 s and a trivial `GET /api/auth/status` fired 150 ms into it took 1.53 s —
  * the express thread was simply gone, SSE and chat input with it.
  *
- * So a listing is {@link WorkspaceEntry}, and a verdict is asked for per
- * workspace at the moment it decides something — the click on Archive — or
- * for the whole list only on an explicit user request (the Workspace manager's
- * "Check all" button, which passes `includeRemovability=true`). `GET
- * /api/workspaces` fills this in only when asked; through 1.0.0-alpha.60 it
- * did so by default, as a shim for browser tabs running a bundle that predates
- * the split — see backend/src/routes/workspaces.ts.
+ * So nothing polls a list of these. The one caller is the agent-facing
+ * `list_workspaces` tool, where a verdict per record is the whole point of the
+ * call and an agent asked for it explicitly.
  *
  * **The verdict is an affordance, never the gate.** `archiveWorkspace`
- * re-evaluates removability server-side on every call and acts only on its own
- * answer; there is no route that accepts a verdict from a caller, and adding one
- * would hand the safety property to the client.
+ * re-evaluates removability on every call and acts only on its own answer;
+ * nothing accepts a verdict from a caller, and adding that would hand the
+ * safety property to the client.
  */
 export interface WorkspaceWithRemovability extends WorkspaceEntry {
   removability: WorkspaceRemovability;
 }
 
 /**
- * `GET /api/workspaces`.
- *
- * Typed as {@link WorkspaceEntry}: the shape a caller gets unless it passes
- * `includeRemovability=true`. Daemons through 1.0.0-alpha.60 fill `removability`
- * in when the parameter is omitted (a `WorkspaceWithRemovability[]` is
- * assignable here) — but a reader that did not ask for it must not be able to
- * reach for it, so the response type does not promise it.
- */
-export interface WorkspaceListResponse {
-  workspaces: WorkspaceEntry[];
-  /** Set when the disk-usage budget ran out before every workspace was measured. */
-  diskUsageNote?: string;
-}
-
-/**
- * `GET /api/workspaces?includeRemovability=true` — the same listing with a
- * verdict on every entry.
- *
- * A separate type from {@link WorkspaceListResponse} so that a caller which has
- * paid for the verdicts can read them without a cast, and — more to the point —
- * so that one which has not, cannot. The cost is stated on
- * {@link WorkspaceWithRemovability}: this is the response that holds the daemon
- * for seconds, and nothing should reach for this type without a user having
- * asked for it in as many words.
- */
-export interface WorkspaceVerdictListResponse {
-  workspaces: WorkspaceWithRemovability[];
-  diskUsageNote?: string;
-}
-
-/** `GET /api/workspaces/:id/removability` — one workspace, freshly evaluated. */
-export interface WorkspaceRemovabilityResponse {
-  workspace: WorkspaceWithRemovability;
-}
-
-/**
  * The three independent things that make a worktree unsafe to remove, plus the
  * "a git command failed" case. Reported by `checkWorktreeClean` in
  * backend/src/utils/git.ts, whose `WorktreeCleanliness` is an alias of this —
- * one definition, so the shape a route returns and the shape the gate reads can
+ * one definition, so the shape a caller is shown and the shape the gate reads can
  * never drift apart.
  */
 export interface WorkspaceCleanliness {
@@ -570,47 +519,6 @@ export interface AdoptWorktreesResult {
   refused: number;
 }
 
-// ── The list view (Phase 4a) ────────────────────────────────────────
-//
-// One row per **directory**, never per record. Phase 3 keys the sidebar on
-// `cwd` because keying on the record splits one folder into two rows, and the
-// registry-hygiene fix made that concrete: a `useWorktree` chat on the main
-// checkout now writes a `local` record alongside a legacy `worktree` one, so
-// `/home/cybil/callboard` legitimately has two active records. The row reports
-// them as a list with a count; per-record detail is a drill-down.
-
-/**
- * A workspace record as a directory *row* needs it.
- *
- * Deliberately NOT {@link WorkspaceWithRemovability}. The removal verdict runs
- * `git status`, `git rev-list`, a submodule scan and a token read per record —
- * fine for a user-initiated management view, far too much for a sidebar that
- * re-polls every fifteen seconds. Everything here is a registry read plus an
- * `lstat` of one `.git` entry.
- *
- * The row therefore says what it cheaply knows — this directory is gone, this
- * one is no longer a worktree, Callboard does not own this one — and sends the
- * user to the management view for the full gate. That split is why the sidebar
- * can afford to carry cleanup information at all.
- */
-export interface FolderWorkspaceRecord {
-  /** Opaque record id. Never parsed. */
-  id: string;
-  name: string;
-  isolation: WorkspaceIsolation;
-  /**
-   * `worktree.owned` — false for a local record and for every worktree that
-   * predates the entity. The single most common reason a directory cannot be
-   * cleaned up, and the thing adoption exists to change.
-   */
-  owned: boolean;
-  /** From `worktree.branch`; absent on a local record. */
-  branch?: string;
-  createdAt: string;
-  /** Freshly observed, never stored. @see WorkspaceDirectoryState */
-  directory: WorkspaceDirectory;
-}
-
 // ── Creation (Phase 4b) ─────────────────────────────────────────────
 //
 // The exposed `create_workspace` writes **local records only**, and the reason
@@ -666,127 +574,7 @@ export interface CreateWorkspaceResult {
    * Not a refusal — several workspaces on one `cwd` is a supported state and is
    * the point of having a create call at all ("two pieces of work in the same
    * checkout"). It is reported because it is also how a caller creates a
-   * duplicate by accident, and because a directory with more than one record
-   * stops showing a record's name in the sidebar row: identity is only
-   * unambiguous when exactly one record claims the directory.
+   * duplicate by accident.
    */
   sharedWith?: Array<{ id: string; name: string }>;
-}
-
-// ── Trash visibility ────────────────────────────────────────────────
-//
-// The retention sweep in utils/worktree-trash.ts is the one place Callboard
-// deletes user data without being asked, and until this there was no way to see
-// what was queued for it. Listing is read-only; restore copies out and leaves
-// the trash entry exactly where it was.
-
-/** One directory under ~/.callboard/trash, as a reader needs it. */
-export interface TrashEntryView {
-  /** Directory name under the trash root. This is what a restore names. */
-  entry: string;
-  /** Every field below is absent when the entry has no readable manifest. */
-  workspaceId?: string;
-  originalPath?: string;
-  repoPath?: string;
-  branch?: string;
-  quarantinedAt?: string;
-  /**
-   * When the sweep would delete this entry. Absent when it never would —
-   * an entry the sweep refuses to touch is kept forever, by design.
-   */
-  expiresAt?: string;
-  /** Why the sweep will never take it. Set exactly when `expiresAt` is not. */
-  sweepBlocked?: string;
-  /** Opt-in, like everywhere else `du` appears. */
-  diskUsage?: WorktreeDiskUsage;
-  /** The recipe from the manifest, so it survives without Callboard. */
-  restore: string[];
-  /** True when a restore would have somewhere to land and something to run. */
-  restorable: boolean;
-  /** Why not. Set exactly when `restorable` is false. */
-  restoreBlocker?: string;
-}
-
-export interface TrashListing {
-  root: string;
-  /** {@link TRASH_RETENTION_MS} in days, so a UI need not restate it. */
-  retentionDays: number;
-  entries: TrashEntryView[];
-  /** Set when the disk-usage budget ran out before every entry was measured. */
-  diskUsageNote?: string;
-}
-
-export type TrashRestoreFailure =
-  /** No such directory under the trash root. */
-  | "entry-not-found"
-  /** No readable `.callboard-trash.json`, so there is no recipe to run. */
-  | "no-manifest"
-  /** The manifest is missing the repo, branch or original path. */
-  | "incomplete-manifest"
-  /** Something already exists at the original path. Never overwritten. */
-  | "destination-occupied"
-  /** `git worktree add` refused — branch checked out elsewhere, say. */
-  | "worktree-add-failed"
-  /** The checkout was recreated but copying the untracked files back failed. */
-  | "copy-failed";
-
-/** How the recreated checkout ended up on the commit the entry was quarantined at. */
-export type TrashRestoreBranchOutcome =
-  /** The branch still pointed at the recorded commit; it was checked out. */
-  | "branch"
-  /** The branch was gone. It was recreated, at the recorded commit. */
-  | "branch-recreated"
-  /**
-   * The branch now points somewhere else, so the recorded commit was checked
-   * out detached rather than following the name to a different tree.
-   */
-  | "detached"
-  /** The entry predates {@link TrashManifest.headSha}: restored by name alone. */
-  | "branch-unverified";
-
-/**
- * Result of restoring one trash entry.
- *
- * `trashRetained` is always true and is stated rather than implied: a restore
- * **copies** the untracked and ignored files back and leaves the quarantined
- * directory alone, so a restore that goes wrong loses nothing. The entry ages
- * out through the normal sweep.
- *
- * The counts below are not decoration. A restore that reported only what it
- * copied could drop a whole subtree and still read as a success, which is
- * precisely the bug this shape exists to make impossible to hide: everything
- * the copy did *not* bring back is returned, counted, and has to be rendered.
- */
-export interface TrashRestoreResult {
-  ok: boolean;
-  entry: string;
-  originalPath?: string;
-  /** Files and symlinks copied back out of the trash, at any depth. */
-  copiedEntries?: number;
-  /**
-   * Paths (relative to the worktree root) left alone because git had already
-   * written them. Capped for size — {@link skippedCount} is the true total.
-   *
-   * These are expected and benign: git checks the tracked files out at the
-   * recorded commit and they win. Directories are never skipped wholesale — the
-   * copy descends into a collision and only a *leaf* is ever left alone.
-   */
-  skippedEntries?: string[];
-  /** Total skipped, including any beyond the cap on {@link skippedEntries}. */
-  skippedCount?: number;
-  /**
-   * Paths that could NOT be copied back — unreadable, unwritable, or of a type
-   * that cannot be reproduced. **These were not restored**; they are still in
-   * the trash entry and nothing else will put them back. Capped, like the
-   * skips; {@link failedCount} is the total.
-   */
-  failedEntries?: Array<{ path: string; error: string }>;
-  /** Total failures, including any beyond the cap on {@link failedEntries}. */
-  failedCount?: number;
-  /** The commit the checkout was recreated at, when the manifest recorded one. */
-  restoredCommit?: string;
-  /** How the branch was handled. @see TrashRestoreBranchOutcome */
-  branchOutcome?: TrashRestoreBranchOutcome;
-  trashRetained: true;
-  failure?: { code: TrashRestoreFailure; detail: string };
 }

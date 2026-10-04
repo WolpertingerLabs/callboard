@@ -8,15 +8,15 @@ vi.mock("../api", () => ({
 }));
 
 describe("SidebarHeader", () => {
-  it("matches new-chat and sidebar-view sizing to the main-view controls", () => {
+  it("matches new-chat sizing to the main-view controls", () => {
     render(
       <MemoryRouter>
-        <SidebarHeader viewMode="chats" onToggleNew={() => {}} onViewModeChange={() => {}} />
+        <SidebarHeader onToggleNew={() => {}} />
       </MemoryRouter>,
     );
 
     const mainViewControls = [screen.getByTitle("Board"), screen.getByTitle("Agents"), screen.getByTitle("Settings")];
-    const requestedControls = [screen.getByTitle("New Chat"), screen.getByTitle("Switch to folders view"), screen.getByTitle("Chats view (active)")];
+    const requestedControls = [screen.getByTitle("New Chat")];
     const mainViewSize = {
       width: mainViewControls[0].style.width,
       height: mainViewControls[0].style.height,

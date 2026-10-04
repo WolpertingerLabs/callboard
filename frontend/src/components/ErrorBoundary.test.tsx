@@ -164,7 +164,7 @@ describe("recovery", () => {
   it("re-mounts the subtree, which is what makes a region's fetches re-run", () => {
     spyConsole();
     // The whole argument for keeping "Try again" at region depth is that the
-    // retry re-mounts ChatList / FolderList / Chat, so their loaders run again.
+    // retry re-mounts ChatList / Chat, so their loaders run again.
     // A re-render would leave the failed state exactly as it was.
     const lifecycle: string[] = [];
     let boom = false;

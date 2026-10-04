@@ -45,22 +45,21 @@ export function shouldAutoRefresh(timestamp: string): boolean {
  *
  * `now` defaults to the clock; pass it when a parent ticks one `now` for a whole
  * list. `seconds` adds a `12s ago` tier from 10 seconds up (below that it is
- * still "just now"). `justNow` is the label for anything under the first tier.
- * Future timestamps read as "just now".
+ * still "just now"). Future timestamps read as "just now".
  */
 export function formatShortAgo(
   ms: number,
   now: number = Date.now(),
-  { seconds = false, justNow = "Just now" }: { seconds?: boolean; justNow?: string } = {},
+  { seconds = false }: { seconds?: boolean } = {},
 ): string {
   const diff = now - ms;
   if (seconds) {
     const secs = Math.floor(diff / 1000);
-    if (secs < 10) return justNow;
+    if (secs < 10) return "Just now";
     if (secs < 60) return `${secs}s ago`;
   }
   const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return justNow;
+  if (mins < 1) return "Just now";
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h ago`;

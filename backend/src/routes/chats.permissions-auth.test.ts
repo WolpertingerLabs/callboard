@@ -44,7 +44,7 @@ vi.mock("../services/chat-file-service.js", () => ({
   chatFileService: { updateChatMetadata: (...args: any[]) => (updateChatMetadata as any)(...args), getChat: () => chat },
 }));
 vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { has: () => false, notifyMetadata: () => {} } }));
-vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false, pendingRequestFingerprint: () => "" }));
+vi.mock("../services/claude.js", () => ({ hasPendingRequest: () => false }));
 
 const { chatsRouter } = await import("./chats.js");
 

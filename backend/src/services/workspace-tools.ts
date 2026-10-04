@@ -164,7 +164,7 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
     defineTool(
       "create_workspace",
       "Create a Callboard workspace record for an existing directory: a named entry for 'where work happens', so the directory has an identity in the " +
-        "workspace list and the sidebar instead of being just a path on some chats. " +
+        "workspace list instead of being just a path on some chats. " +
         "THIS CREATES NOTHING ON DISK. No directory is made, no git worktree is added, no branch is touched, and the record can never mark a directory as " +
         "owned by Callboard — records made here carry no worktree block at all, so the flag that gates worktree removal does not exist on them. " +
         "A directory that is ALREADY A GIT WORKTREE is refused (`is-a-worktree`): use adopt_worktrees for those. That is not a formality — adoption writes " +
@@ -172,14 +172,13 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
         "neither while still making the worktree permanently unadoptable, because adoption refuses any directory that already has an active record. " +
         "To get a worktree in the first place, start a chat with useWorktree; that path records one properly. " +
         "Several workspaces may share one directory — that is supported, not a bug — so this does not refuse a directory that already has a record; the " +
-        "existing ones come back as `sharedWith`. Note that a directory with more than one record shows the directory's own name in the sidebar rather than " +
-        "any record's, since no single record identifies the row.",
+        "existing ones come back as `sharedWith`.",
       {
         cwd: z.string().describe("Absolute path of the existing directory. It must exist, and must not be a git worktree."),
         name: z
           .string()
           .optional()
-          .describe("Label for the workspace. Defaults to the directory's last path segment — which is what the sidebar shows anyway."),
+          .describe("Label for the workspace. Defaults to the directory's last path segment."),
       },
       async (args) => {
         try {
@@ -201,8 +200,7 @@ export function buildWorkspaceTools(): AnyToolDefinition[] {
         "and will not affect where a chat's logs are written. " +
         "The name must be 1–200 characters and may not contain control or text-direction characters, because it is rendered in lists and written to log " +
         "lines. Archived workspaces can be renamed too. " +
-        "Where the name is visible: the workspace list, and — when exactly one active record claims a directory — that directory's row in the sidebar. A " +
-        "directory claimed by several records keeps showing its own name, because no single record identifies the row.",
+        "Where the name is visible: list_workspaces.",
       {
         workspaceId: z.string().describe("Workspace id (opaque — from list_workspaces; never a path)"),
         name: z.string().describe("The new label. 1–200 characters, no control or text-direction characters."),

@@ -11,7 +11,6 @@ import type {
   ParsedMessage,
   ChatListResponse,
   ChatTreeResponse,
-  FolderListResponse,
   DefaultPermissions,
   ImageUploadResult,
   QueueItem,
@@ -49,16 +48,6 @@ import type {
   CardSummary,
   CardListResponse,
   CardResponse,
-  Workspace,
-  WorkspaceWithRemovability,
-  WorkspaceListResponse,
-  WorkspaceVerdictListResponse,
-  WorkspaceRemovabilityResponse,
-  UnmanagedWorktreeListing,
-  AdoptWorktreesResult,
-  ArchiveWorkspaceResult,
-  TrashListing,
-  TrashRestoreResult,
   EngineStatus,
   EngineStatusResponse,
   EngineRefreshResponse,
@@ -90,8 +79,6 @@ export type {
   ChatTreeAncestor,
   ChatTreeNode,
   ChatTreeResponse,
-  FolderSummary,
-  FolderListResponse,
   PermissionLevel,
   DefaultPermissions,
   StoredImage,
@@ -150,29 +137,6 @@ export type {
   CardMemberRun,
   CardListResponse,
   CardResponse,
-  Workspace,
-  WorkspaceEntry,
-  WorkspaceWithRemovability,
-  WorkspaceListResponse,
-  WorkspaceVerdictListResponse,
-  WorkspaceRemovabilityResponse,
-  WorkspaceRemovalBlocker,
-  WorkspaceCleanliness,
-  WorkspaceRefusalReason,
-  WorktreeNamingGuess,
-  WorkspaceRemovability,
-  WorkspaceRemovalReason,
-  WorkspaceIgnoredPreview,
-  WorkspaceDirectory,
-  FolderWorkspaceRecord,
-  UnmanagedWorktree,
-  UnmanagedWorktreeListing,
-  AdoptWorktreesResult,
-  ArchiveWorkspaceResult,
-  WorktreeDiskUsage,
-  TrashEntryView,
-  TrashListing,
-  TrashRestoreResult,
   EngineStatus,
   EngineStatusResponse,
   EngineRefreshResponse,
@@ -384,27 +348,6 @@ export async function listChats(
   if (includePinned) params.append("includePinned", "true");
 
   return request(`/chats${query(params)}`, { error: "Failed to list chats" });
-}
-
-/**
- * `signal` is optional and trailing, so existing callers are unaffected. The
- * sidebar passes one because a request whose answer is already superseded
- * should stop occupying the connection rather than run to completion and be
- * thrown away.
- *
- * The server caches this response for 5 s, which is shorter than the sidebar's
- * 15 s poll — so a scheduled poll still costs a full recompute, and aborting a
- * superseded request still saves real work. Nor does an event-driven refresh
- * get a hit: it fires because session or workspace state moved, which is the
- * same movement that invalidates the entry. Assume every request from here
- * costs a recompute; see backend/src/services/folder-list-cache.ts.
- */
-export async function listFolders(maxAgeDays?: number, includeDiskUsage?: boolean, signal?: AbortSignal): Promise<FolderListResponse> {
-  const params = new URLSearchParams();
-  if (maxAgeDays !== undefined) params.append("maxAgeDays", maxAgeDays.toString());
-  // Off unless asked: `du` is the slow part and this endpoint is polled.
-  if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  return request(`/chats/folders${query(params)}`, { signal, error: "Failed to list folders" });
 }
 
 export async function getChatTree(id: string): Promise<ChatTreeResponse> {
@@ -2074,136 +2017,6 @@ export function resumeJobRun(runId: string): Promise<JobRun> {
 
 export function retryJobStep(runId: string): Promise<JobRun> {
   return postJobRunAction(runId, "retry-step");
-}
-
-// ── Workspaces (plans/workspace-object.md, Phase 4a) ─────────────────
-//
-// The read/write split in these five is the safety property, not an accident of
-// naming: `listWorkspaces` and `listUnmanagedWorktrees` observe and write
-// nothing, `adoptWorktrees` acts only on paths the caller enumerated, and
-// `archiveWorkspace` acts on exactly one id. There is deliberately no
-// adopt-everything and no archive-many — the backend does not offer them and
-// the UI must not synthesise them out of a loop.
-
-/**
- * The rows: records, the observed state of each directory, and (opt-in) sizes.
- *
- * Deliberately **without** removal verdicts. One verdict is ~5 synchronous git
- * subprocesses, so a listing that carried them cost 1.6s of frozen daemon at 65
- * records — every other request, SSE included, waited behind it. Ask
- * {@link fetchWorkspaceRemovability} for the one record a user is acting on.
- *
- * `includeRemovability=false` is sent explicitly — see {@link workspaceListing}
- * for why neither caller may rely on the route's default. The verdict-bearing
- * variant is {@link listWorkspacesWithVerdicts}, and it is not a substitute for
- * this: nothing automatic may call it.
- */
-export async function listWorkspaces(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceListResponse> {
-  return workspaceListing(status, includeDiskUsage, false);
-}
-
-/**
- * The same listing, with a removal verdict on every entry — **the expensive one**.
- *
- * Roughly five synchronous git subprocesses per record, so ~150 of them on a
- * real registry and 1.5–3s in which the daemon serves nobody. That is the whole
- * cost this PR exists to take off the automatic paths, so it lives behind its
- * own name rather than a boolean argument to {@link listWorkspaces}: a call site
- * has to say what it is doing, and there is exactly one — the "Check all" button
- * a user presses on purpose.
- *
- * **Never call this on mount, on a tab switch, on a timer, or after a mutation.**
- * The answer it returns is a point in time and the UI has to render it as one;
- * it is decoration for scanning a list, and never what an action is gated on.
- * The archive confirmation re-fetches a single fresh verdict regardless of
- * whether this has ever run — see {@link fetchWorkspaceRemovability}.
- */
-export async function listWorkspacesWithVerdicts(status?: "active" | "archived", includeDiskUsage?: boolean): Promise<WorkspaceVerdictListResponse> {
-  return workspaceListing(status, includeDiskUsage, true) as Promise<WorkspaceVerdictListResponse>;
-}
-
-async function workspaceListing(
-  status: "active" | "archived" | undefined,
-  includeDiskUsage: boolean | undefined,
-  includeRemovability: boolean,
-): Promise<WorkspaceListResponse> {
-  // Sent explicitly in both directions, never omitted: daemons through
-  // 1.0.0-alpha.60 default it to *true* (a shim for bundles from before the
-  // verdict was splittable), later ones to false, and this bundle may be
-  // talking to either.
-  const params = new URLSearchParams({ includeRemovability: String(includeRemovability) });
-  if (status) params.append("status", status);
-  if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  return request(`/workspaces?${params}`, { error: "Failed to list workspaces" });
-}
-
-/**
- * The removal verdict for one workspace, evaluated now.
- *
- * Read-only, and **not** what makes an archive safe: `archiveWorkspace` runs
- * every gate again server-side and there is no way to hand this back to it. What
- * it is for is telling a user what their click is about to do before they make
- * it — which of the two archives they are looking at, and which gitignored files
- * would travel into the trash.
- */
-export async function fetchWorkspaceRemovability(id: string): Promise<WorkspaceWithRemovability> {
-  const body = await request<WorkspaceRemovabilityResponse>(`/workspaces/${seg(id)}/removability`, { error: "Failed to evaluate the workspace" });
-  return body.workspace;
-}
-
-/** Read-only discovery. Creates no record and writes nothing. */
-export async function listUnmanagedWorktrees(repoPath: string, includeDiskUsage = true): Promise<UnmanagedWorktreeListing> {
-  const params = new URLSearchParams({ repoPath });
-  if (!includeDiskUsage) params.append("includeDiskUsage", "false");
-  return request(`/workspaces/unmanaged?${params}`, { error: "Failed to list unmanaged worktrees" });
-}
-
-/**
- * Adopt the named worktrees. Paths only — never a filter, never a pattern.
- *
- * The backend cannot tell "a human chose this path" from "an agent generated
- * it", which is Phase 2b's stated limitation; the confirmation step in front of
- * this call is where that gap is closed, so nothing may call it without one.
- */
-export async function adoptWorktrees(paths: string[]): Promise<AdoptWorktreesResult> {
-  return request("/workspaces/adopt", { method: "POST", json: { paths }, error: "Failed to adopt worktrees" });
-}
-
-/**
- * Rename one workspace record. **Nothing on disk moves.**
- *
- * The name is a label: no directory, branch or worktree path is derived from
- * it anywhere. A rejected name (empty, over 200 characters, or carrying control
- * or text-direction characters) comes back as a 400 whose message is the
- * sentence to show — `assertOk` surfaces it.
- */
-export async function renameWorkspace(id: string, name: string): Promise<Workspace> {
-  return requestField(`/workspaces/${seg(id)}/rename`, "workspace", { method: "POST", json: { name }, error: "Failed to rename workspace" });
-}
-
-/** Archive one workspace, quarantining its worktree only if every gate passes. */
-export async function archiveWorkspace(id: string): Promise<ArchiveWorkspaceResult> {
-  return request(`/workspaces/${seg(id)}/archive`, { method: "POST", error: "Failed to archive workspace" });
-}
-
-export async function listTrash(includeDiskUsage = true): Promise<TrashListing> {
-  const params = new URLSearchParams();
-  if (includeDiskUsage) params.append("includeDiskUsage", "true");
-  return request(`/workspaces/trash${query(params)}`, { error: "Failed to list trash" });
-}
-
-/**
- * Restore a quarantined worktree.
- *
- * A refusal comes back as HTTP 409 with a `TrashRestoreResult` body rather than
- * an error, because the refusal *is* the answer the caller wants — and every
- * refusal leaves the trash entry intact.
- */
-export async function restoreTrashEntry(entry: string): Promise<TrashRestoreResult> {
-  const res = await fetch(`${BASE}/workspaces/trash/${seg(entry)}/restore`, { method: "POST", credentials: "include" });
-  if (res.status === 409) return res.json();
-  await assertOk(res, "Failed to restore trash entry");
-  return res.json();
 }
 
 /** Resolved by the same backend routing/model defaults used for execution. */

@@ -118,7 +118,10 @@ interface LocalStorageData {
   sidebarCollapsed?: boolean;
   /** Desktop sidebar width in pixels when expanded. Clamped to >= SIDEBAR_MIN_WIDTH on read. */
   sidebarWidth?: number;
-  sidebarViewMode?: "folders" | "chats";
+  // Retired keys, deliberately left out: `sidebarViewMode` (the removed
+  // Folders/Jobs sidebar views), `folderMaxAgeDays` and `folderShowSizes`.
+  // Stores written by older bundles still carry them; nothing reads them, so a
+  // persisted `sidebarViewMode: "folders"` simply lands on the chat list.
   /** Whether the board's Closed section is expanded. */
   boardClosedExpanded?: boolean;
   /** Board layout: full-width rows instead of the tile grid. Absent = "cards". */
@@ -127,8 +130,6 @@ interface LocalStorageData {
   boardShowPaths?: boolean;
   /** List view: whether rows rest expanded. Absent = collapsed. */
   boardRowsExpanded?: boolean;
-  folderMaxAgeDays?: number;
-  folderShowSizes?: boolean;
   /** User's last-selected provider in the New Chat panel — persisted so the
    * toggle remembers their choice across page reloads. */
   defaultProvider?: AgentProviderKind;
@@ -646,20 +647,6 @@ export function saveSidebarWidth(value: number): void {
   updateStorage({ sidebarWidth: Math.max(SIDEBAR_MIN_WIDTH, Math.round(value)) });
 }
 
-export type SidebarViewMode = "folders" | "chats";
-
-const SIDEBAR_VIEW_MODES: readonly SidebarViewMode[] = ["folders", "chats"];
-
-export function getSidebarViewMode(): SidebarViewMode {
-  // Anyone who last used the removed "jobs" view still has it persisted, and a
-  // mode with no branch left to render would leave them on a blank sidebar.
-  return readEnum(getStorageData().sidebarViewMode, SIDEBAR_VIEW_MODES, "chats");
-}
-
-export function saveSidebarViewMode(mode: SidebarViewMode): void {
-  updateStorage({ sidebarViewMode: mode });
-}
-
 export function getBoardClosedExpanded(): boolean {
   const data = getStorageData();
   return data.boardClosedExpanded === true;
@@ -706,32 +693,6 @@ export function getBoardRowsExpanded(): boolean {
 
 export function saveBoardRowsExpanded(expanded: boolean): void {
   updateStorage({ boardRowsExpanded: expanded });
-}
-
-export function getFolderMaxAgeDays(): number {
-  const data = getStorageData();
-  return data.folderMaxAgeDays ?? 5;
-}
-
-export function saveFolderMaxAgeDays(days: number): void {
-  updateStorage({ folderMaxAgeDays: days });
-}
-
-/**
- * Whether the folder list asks the server to measure each directory.
- *
- * Off by default and deliberately sticky: `du -sk` over a worktree with a cold
- * `node_modules` is seconds, and this list is polled every fifteen seconds
- * while a session is live. A user who wants sizes turns them on once; everyone
- * else never pays for them.
- */
-export function getFolderShowSizes(): boolean {
-  const data = getStorageData();
-  return data.folderShowSizes ?? false;
-}
-
-export function saveFolderShowSizes(value: boolean): void {
-  updateStorage({ folderShowSizes: value });
 }
 
 export function initializeSuggestedDirectories(chatDirectories: string[]): void {

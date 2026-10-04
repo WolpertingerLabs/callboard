@@ -69,7 +69,7 @@ export type { StreamEvent };
 // producer (the blocking computer-use approval) can reach it without importing
 // this module and closing a cycle. Re-exported here because every existing
 // caller — routes, caches, tests — knows it by this address.
-export { getPendingRequest, hasPendingRequest, pendingRequestFingerprint, respondToPermission } from "./pending-requests.js";
+export { getPendingRequest, hasPendingRequest, respondToPermission } from "./pending-requests.js";
 
 // The plugin/MCP/hook option builders live in ./claude-session-options.js;
 // re-exported here for the importers and tests that know them by this address.

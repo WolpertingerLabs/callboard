@@ -43,23 +43,6 @@ const EVENTS: Table = [
   [2592000000, "30d ago"],
 ];
 
-// FolderListItem `formatRelativeTime(iso, now)` — lower-case "just now".
-const FOLDER: Table = [
-  [-5000, "just now"],
-  [0, "just now"],
-  [999, "just now"],
-  [9999, "just now"],
-  [10000, "just now"],
-  [59999, "just now"],
-  [60000, "1m ago"],
-  [119999, "1m ago"],
-  [3599999, "59m ago"],
-  [3600000, "1h ago"],
-  [86399999, "23h ago"],
-  [86400000, "1d ago"],
-  [2592000000, "30d ago"],
-];
-
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -73,10 +56,5 @@ describe("formatShortAgo parity", () => {
 
   it.each(EVENTS)("Events, age %d ms → %s", (age, expected) => {
     expect(formatShortAgo(NOW - age, NOW, { seconds: true })).toBe(expected);
-  });
-
-  it.each(FOLDER)("FolderListItem, age %d ms → %s (injected now, ISO input)", (age, expected) => {
-    const iso = new Date(NOW - age).toISOString();
-    expect(formatShortAgo(new Date(iso).getTime(), NOW, { justNow: "just now" })).toBe(expected);
   });
 });

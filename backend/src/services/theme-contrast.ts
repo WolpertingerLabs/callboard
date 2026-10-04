@@ -591,7 +591,7 @@ export const PAIRINGS: Pairing[] = [
   },
   {
     id: "chatlist-badge-triggered",
-    where: "ChatListItem/FolderListItem triggered badge",
+    where: "ChatListItem triggered badge",
     fg: v("chatlist-badge-triggered-text"),
     bg: v("chatlist-badge-triggered-bg"),
     backdrop: v("bg-sidebar"),

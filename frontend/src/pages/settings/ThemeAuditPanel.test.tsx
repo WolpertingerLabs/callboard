@@ -23,7 +23,7 @@ function failure(mode: "dark" | "light", id: string, ratio: number | null, where
 const REPORT: ThemeContrastReport = {
   checked: 104,
   failures: [
-    failure("light", "chatlist-badge-triggered", 2.62, "ChatListItem/FolderListItem triggered badge"),
+    failure("light", "chatlist-badge-triggered", 2.62, "ChatListItem triggered badge"),
     failure("dark", "warning-on-warning-bg-bg", 3.25, "CodeLoginModal warning box"),
     failure("dark", "danger-on-danger-bg-bg", 3.97, "DraftModal / MessageBubble error box"),
     failure("light", "accent-on-accent-bg-bg", 4.11, "PromptInput attachment chip"),

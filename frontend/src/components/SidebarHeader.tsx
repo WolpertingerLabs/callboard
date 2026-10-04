@@ -1,25 +1,17 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Settings, Bot, PanelLeftClose, List, FolderOpen, AlertTriangle, Plus, LayoutGrid } from "lucide-react";
+import { Settings, Bot, PanelLeftClose, AlertTriangle, Plus, LayoutGrid } from "lucide-react";
 import { fetchInstanceName } from "../api";
 import { HEADER_BUTTON_STYLE, HEADER_ROW_GAP } from "./headerButtonStyle";
-import type { SidebarViewMode } from "../utils/localStorage";
 
 interface SidebarHeaderProps {
-  viewMode: SidebarViewMode;
   onToggleNew: () => void;
-  onViewModeChange?: (mode: SidebarViewMode) => void;
   claudeLoggedIn?: boolean;
   onShowClaudeModal?: () => void;
   onToggleSidebar?: () => void;
 }
 
-const VIEW_MODES: { mode: SidebarViewMode; label: string; Icon: typeof List }[] = [
-  { mode: "folders", label: "Folders", Icon: FolderOpen },
-  { mode: "chats", label: "Chats", Icon: List },
-];
-
-export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange, claudeLoggedIn, onShowClaudeModal, onToggleSidebar }: SidebarHeaderProps) {
+export default function SidebarHeader({ onToggleNew, claudeLoggedIn, onShowClaudeModal, onToggleSidebar }: SidebarHeaderProps) {
   const [instanceName, setInstanceName] = useState("");
   const navigate = useNavigate();
   const location = useLocation();
@@ -64,40 +56,6 @@ export default function SidebarHeader({ viewMode, onToggleNew, onViewModeChange,
         >
           <Plus size={16} />
         </button>
-        {onViewModeChange && (
-          <div style={{ display: "flex" }}>
-            {VIEW_MODES.map(({ mode, label, Icon }, i) => {
-              const isActiveMode = viewMode === mode;
-              const isFirst = i === 0;
-              const isLast = i === VIEW_MODES.length - 1;
-              return (
-                <button
-                  key={mode}
-                  onClick={isActiveMode ? undefined : () => onViewModeChange(mode)}
-                  style={{
-                    ...HEADER_BUTTON_STYLE,
-                    background: isActiveMode ? "var(--accent)" : "var(--bg-secondary)",
-                    color: isActiveMode ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                    borderTopLeftRadius: isFirst ? 6 : 0,
-                    borderBottomLeftRadius: isFirst ? 6 : 0,
-                    borderTopRightRadius: isLast ? 6 : 0,
-                    borderBottomRightRadius: isLast ? 6 : 0,
-                    border: isActiveMode ? "none" : "1px solid var(--chatlist-item-border)",
-                    // Seam suppression, spelled as a width rather than
-                    // `border-right: none` — identical in Chromium, and the
-                    // only spelling jsdom keeps, so it can be asserted. See the
-                    // note in ChatFilterBar.test.tsx.
-                    ...(isFirst && { borderRightWidth: 0 }),
-                    ...(isLast && { borderLeftWidth: 0 }),
-                  }}
-                  title={isActiveMode ? `${label} view (active)` : `Switch to ${label.toLowerCase()} view`}
-                >
-                  <Icon size={16} />
-                </button>
-              );
-            })}
-          </div>
-        )}
         <div style={{ display: "flex" }}>
           <button
             onClick={() => navigate("/board")}

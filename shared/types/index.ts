@@ -14,7 +14,7 @@ export type {
   PluginHooksConfig,
 } from "./appPlugins.js";
 
-export type { Chat, ChatListResponse, FolderSummary, FolderListResponse, ChatTreeAncestor, ChatTreeNode, ChatTreeResponse } from "./chat.js";
+export type { Chat, ChatListResponse, ChatTreeAncestor, ChatTreeNode, ChatTreeResponse } from "./chat.js";
 
 export type {
   Card,
@@ -48,7 +48,6 @@ export type {
   WorkspaceDirectory,
   WorkspaceEntry,
   WorkspaceWithRemovability,
-  WorkspaceRemovabilityResponse,
   WorktreeDisposition,
   WorktreeInspection,
   ArchiveWorkspaceResult,
@@ -62,16 +61,8 @@ export type {
   UnmanagedWorktreeListing,
   WorkspaceAdoptionOutcome,
   AdoptWorktreesResult,
-  FolderWorkspaceRecord,
-  WorkspaceListResponse,
-  WorkspaceVerdictListResponse,
   WorkspaceCreationRefusal,
   CreateWorkspaceResult,
-  TrashEntryView,
-  TrashListing,
-  TrashRestoreFailure,
-  TrashRestoreBranchOutcome,
-  TrashRestoreResult,
 } from "./workspace.js";
 
 export type { ParsedMessage } from "./message.js";

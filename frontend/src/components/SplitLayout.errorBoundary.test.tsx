@@ -32,7 +32,6 @@ vi.mock("../pages/Chat", () => ({
 vi.mock("../pages/ChatList", () => ({
   default: () => (listThrows ? crash() : <div>Chat list</div>),
 }));
-vi.mock("../pages/FolderList", () => ({ default: () => <div>Folder list</div> }));
 vi.mock("../pages/Board", () => ({ default: () => <div>Board</div> }));
 vi.mock("../pages/Settings", () => ({ default: () => <div>Settings</div> }));
 vi.mock("../pages/agents/AgentList", () => ({ default: () => <div>Agents</div> }));

@@ -111,7 +111,7 @@ describe("the daemon-wide du pool", () => {
   });
 
   it("shares the cap across concurrent listings rather than giving each its own", async () => {
-    // Two tabs opening the Manage modal at once. A per-listing cap would allow
+    // Two discovery scans at once. A per-listing cap would allow
     // 2 × DISK_USAGE_CONCURRENCY processes, which is the thing the cap exists to
     // prevent.
     const first = newAsyncDiskUsageBudget();
