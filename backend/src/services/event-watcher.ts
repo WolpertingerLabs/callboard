@@ -10,7 +10,7 @@
  *   - "wait": long-polls drawlatch's `wait_for_events`, which holds until one
  *     of this caller's ingestors emits and answers for every stream at once.
  *     One request per wake (or per ~25s when idle). An idle wait answers the
- *     first event at once; after a reply that wasn't a plain timeout the next
+ *     first event at once; after a reply that wasn't a held-to-timeout the next
  *     wait is spaced WAIT_MIN_SPACING out, so a busy source can't turn
  *     "one request per event" back into a saturated session.
  *   - "legacy": hubs without `wait_for_events` answer "Unknown tool", so we
@@ -328,10 +328,11 @@ async function legacyCycle(state: WatcherState, proxyClient: ProxyLike): Promise
  * picked up here — at the cursor the hub returned, since the reply already
  * carries their events.
  */
-async function waitCycle(state: WatcherState, proxyClient: ProxyLike): Promise<{ timedOut: boolean } | undefined> {
+async function waitCycle(state: WatcherState, proxyClient: ProxyLike): Promise<{ heldToTimeout: boolean } | undefined> {
   const cursors: Record<string, number> = {};
   for (const [key, s] of state.streamCursors) cursors[key] = s.cursor;
 
+  const startedAt = Date.now();
   const result = (await proxyClient.callTool(
     "wait_for_events",
     {
@@ -367,7 +368,10 @@ async function waitCycle(state: WatcherState, proxyClient: ProxyLike): Promise<{
     log.debug(`[${state.alias}] Hub reports inactive streams: ${result.unknownStreams.join(", ")}`);
   }
 
-  return { timedOut: result.timedOut === true };
+  // A timeout only proves "nothing happened" if the hub actually held. One
+  // that answers timedOut early (a draining hub, a clamped timeout, an older
+  // or buggy hub) would otherwise be re-issued at RTT speed.
+  return { heldToTimeout: result.timedOut === true && Date.now() - startedAt >= WAIT_TIMEOUT_MS / 2 };
 }
 
 /**
@@ -401,7 +405,7 @@ function enterWaitMode(state: WatcherState): void {
 
 /**
  * The main loop for one alias: one wait_for_events (re-issued at once after a
- * timeout, WAIT_MIN_SPACING after any other reply) or one legacy poll cycle,
+ * wait that held to its timeout, WAIT_MIN_SPACING after any other reply) or one legacy poll cycle,
  * with exponential backoff on failure.
  */
 async function pollLoop(state: WatcherState): Promise<void> {
@@ -409,7 +413,7 @@ async function pollLoop(state: WatcherState): Promise<void> {
   if (state.stopped) return;
 
   let nextDelay: number;
-  let waitResult: { timedOut: boolean } | undefined;
+  let waitResult: { heldToTimeout: boolean } | undefined;
   try {
     const proxyClient = getProxy(state.alias);
     if (!proxyClient) return;
@@ -434,9 +438,10 @@ async function pollLoop(state: WatcherState): Promise<void> {
     // Reset backoff on success
     state.consecutiveFailures = 0;
     state.currentBackoff = BASE_POLL_INTERVAL;
-    // Wait mode: re-issue at once after a timeout (nothing happened, the next
-    // event should wake us immediately); otherwise space it out.
-    nextDelay = state.mode === "legacy" ? BASE_POLL_INTERVAL : waitResult?.timedOut ? 0 : WAIT_MIN_SPACING;
+    // Wait mode: re-issue at once after a wait that held to its timeout
+    // (nothing happened, the next event should wake us immediately);
+    // otherwise space it out.
+    nextDelay = state.mode === "legacy" ? BASE_POLL_INTERVAL : waitResult?.heldToTimeout ? 0 : WAIT_MIN_SPACING;
   } catch (err: any) {
     if (state.stopped) return;
     state.consecutiveFailures++;

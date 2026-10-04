@@ -186,12 +186,13 @@ describe("event-watcher wait mode", () => {
     expect(dispatchedIds()).toEqual(["slack#1"]);
   });
 
-  it("re-issues the wait immediately after a reply, including a timed-out empty one", async () => {
+  it("re-issues the wait immediately after a timed-out reply that actually held", async () => {
     await start();
     expect(hub.client.callTool).toHaveBeenCalledTimes(1);
 
+    await vi.advanceTimersByTimeAsync(25_000); // the hub holds the full timeout
     hub.resolve(hub.current("wait_for_events"), { streams: {}, unknownStreams: [], timedOut: true });
-    await flush(); // no time passes
+    await flush(); // no further time passes
     expect(hub.client.callTool).toHaveBeenCalledTimes(2);
     expect(hub.pendingTools()).toEqual(["wait_for_events"]);
 
@@ -214,10 +215,54 @@ describe("event-watcher wait mode", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(hub.pendingTools()).toEqual(["wait_for_events"]);
 
-    // A timeout after that re-issues at once again.
+    // A timeout after that (one that held) re-issues at once again.
+    await vi.advanceTimersByTimeAsync(25_000);
     hub.resolve(hub.current("wait_for_events"), { streams: { "discord-bot:_default": stream("discord-bot", [], 1) }, timedOut: true });
     await flush();
     expect(hub.pendingTools()).toEqual(["wait_for_events"]);
+  });
+
+  it("spaces a timedOut reply that came back early, so a draining or clamping hub can't hot-spin", async () => {
+    await start();
+    // Just under half the 25s timeout: not a real hold.
+    await vi.advanceTimersByTimeAsync(12_499);
+    hub.resolve(hub.current("wait_for_events"), { streams: {}, timedOut: true });
+    await flush();
+    expect(hub.pendingTools()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(hub.pendingTools()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hub.pendingTools()).toEqual(["wait_for_events"]);
+
+    // An instant timedOut (drawlatch's pre-4a4f829 draining reply) is spaced the same way.
+    hub.resolve(hub.current("wait_for_events"), { streams: {}, timedOut: true });
+    await flush();
+    expect(hub.pendingTools()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(hub.pendingTools()).toEqual(["wait_for_events"]);
+
+    // Half the timeout counts as a hold.
+    await vi.advanceTimersByTimeAsync(12_500);
+    hub.resolve(hub.current("wait_for_events"), { streams: {}, timedOut: true });
+    await flush();
+    expect(hub.pendingTools()).toEqual(["wait_for_events"]);
+  });
+
+  it("treats the hub's \"server shutting down\" error as a transient failure: backoff, not legacy fallback", async () => {
+    await start();
+    hub.reject(hub.current("wait_for_events"), "server shutting down");
+    await flush();
+    expect(hub.pendingTools()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(5999);
+    expect(hub.pendingTools()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    // Still in wait mode: no ingestor_status/poll_events, no reset of the session.
+    hub.reject(hub.current("wait_for_events"), "server shutting down");
+    await flush();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(hub.pendingTools()).toEqual(["wait_for_events"]);
+    expect(hub.calls.map((c) => c.tool)).toEqual(["wait_for_events", "wait_for_events", "wait_for_events"]);
+    expect(resetClient).not.toHaveBeenCalled();
   });
 
   it("also spaces an empty reply that isn't a timeout, so a hub answering instantly can't hot-spin", async () => {
