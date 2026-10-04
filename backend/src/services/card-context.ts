@@ -5,7 +5,7 @@ import { createCardMembership } from "./card-membership.js";
  */
 import type { CardLifecycle, Chat, JobRunListItem } from "shared";
 import { listChatsSnapshot } from "./chats-snapshot.js";
-import { buildCardSummaries, ROLLUP_DEPS } from "./card-rollup.js";
+import { buildCardBoard, buildCardSummaries, ROLLUP_DEPS, type RollupDeps } from "./card-rollup.js";
 import { createLifecycleBudget, readNativeLifecycle } from "./codex-native-agents.js";
 
 export function createCardContext(stored = listChatsSnapshot()) {
@@ -49,18 +49,22 @@ export function createCardContext(stored = listChatsSnapshot()) {
       chats[position] = chat;
     },
     summaries(runs: JobRunListItem[], includeHidden = false, rootId?: string | ReadonlySet<string>, lifecycle?: CardLifecycle) {
-      const budget = createLifecycleBudget();
       const rootIds = typeof rootId === "string" ? new Set([rootId]) : rootId;
       const selected = rootIds ? chats.filter((chat) => rootIds.has(index.existingRootIdOf(chat.id))) : chats;
-      return buildCardSummaries(
-        selected,
-        runs,
-        {
-          ...ROLLUP_DEPS,
-          nativeLifecycleOf: (chat) => (chat.session_log_path ? readNativeLifecycle(chat.session_log_path, Date.now(), budget, chat.session_id) : "unknown"),
-        },
-        { includeHidden, lifecycle },
-      );
+      return buildCardSummaries(selected, runs, budgetedDeps(), { includeHidden, lifecycle });
     },
+    /** The whole board, with the archive optionally cut to its newest `closedLimit` cards. */
+    board(runs: JobRunListItem[], includeHidden = false, closedLimit?: number) {
+      return buildCardBoard(chats, runs, budgetedDeps(), { includeHidden, closedLimit });
+    },
+  };
+}
+
+/** Rollup deps whose native-lifecycle reads share one response-wide byte budget. */
+function budgetedDeps(): RollupDeps {
+  const budget = createLifecycleBudget();
+  return {
+    ...ROLLUP_DEPS,
+    nativeLifecycleOf: (chat) => (chat.session_log_path ? readNativeLifecycle(chat.session_log_path, Date.now(), budget, chat.session_id) : "unknown"),
   };
 }

@@ -56,11 +56,17 @@ cardsRouter.get("/", (req: Request, res: Response) => {
   // #swagger.summary = 'List all cards (lineage roots) with live rollups'
   // #swagger.description = 'Every non-triggered top-level chat is a card; its fields live on that chat\'s metadata. Hidden cards are omitted unless includeHidden=true.'
   /* #swagger.parameters['includeHidden'] = { in: 'query', type: 'string', description: 'Include cards opted out of the board (metadata.card.hidden). Default false — the board never wants them. The sidebar does: its archived dim has to agree with GET /api/chats?cardLifecycle=unarchived, which counts a hidden card as archived, and a card the client cannot see reads as no card at all, and therefore as not archived.' } */
+  /* #swagger.parameters['closedLimit'] = { in: 'query', type: 'integer', description: 'Return only the N most recently archived (lifecycle "closed") cards; open cards are never limited. closedTotal still counts every archived card and categories still covers them all. Omitted = every card, as before.' } */
+  const rawLimit = req.query.closedLimit;
+  const closedLimit = typeof rawLimit === "string" && /^\d+$/.test(rawLimit) ? Number(rawLimit) : undefined;
+  if (rawLimit !== undefined && closedLimit === undefined) {
+    return res.status(400).json({ error: "closedLimit must be a non-negative integer" });
+  }
   try {
-    const cards = summarizeAll(req.query.includeHidden === "true");
+    const { cards, closedTotal, categories } = createCardContext().board(listRuns({ withRoot: true }), req.query.includeHidden === "true", closedLimit);
     // Pinned first, then most recent activity.
     cards.sort((a, b) => (a.pinned === b.pinned ? b.lastActivityAt.localeCompare(a.lastActivityAt) : a.pinned ? -1 : 1));
-    res.json({ cards });
+    res.json({ cards, closedTotal, categories });
   } catch (err: any) {
     log.error(`Error listing cards: ${err}`);
     res.status(500).json({ error: "Failed to list cards", details: err.message });
