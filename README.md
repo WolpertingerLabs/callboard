@@ -22,7 +22,7 @@ Then open **http://localhost:8000** and log in.
 
 ## Engines
 
-Each chat runs on one of five engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine; it holds the OpenRouter key and base URL that model catalogs use.
+Each chat runs on one of five engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine. It holds the account-wide OpenRouter key and base URL, which Callboard uses for model catalogs and one-shot completions (chat titles, branch names, generated themes).
 
 | Engine          | How it runs                                                        | Must you install it? | Sign-in                                                 |
 | --------------- | ------------------------------------------------------------------ | -------------------- | ------------------------------------------------------- |
@@ -81,7 +81,7 @@ opencode auth login
 
 Callboard never touches OpenCode's credential file. Settings → API → OpenCode has two settings:
 
-- **Give ACP agents an OpenRouter key:** passed to OpenCode as `OPENROUTER_API_KEY`.
+- **Give ACP agents an OpenRouter key:** when this is on, OpenCode gets the key from this tab (or the account-wide OpenRouter key if this one is blank) as `OPENROUTER_API_KEY`.
 - **Default Model:** the model new OpenCode chats start on.
 
 Callboard can check that `opencode` is installed but not whether you're signed in. If you never signed in, the first message fails with OpenCode's own error.
