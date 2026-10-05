@@ -14,13 +14,13 @@ All paths start with `/api/computer-use/:chatId`. Requests send cookies (`creden
 
 **Errors** are `{ code, error }`, and the HTTP status comes from `code`:
 
-| `code`                                                                | Status |
-| --------------------------------------------------------------------- | ------ |
-| `not_found`                                                           | 404    |
-| `invalid_request`                                                     | 400    |
-| `denied`, `approval_required`                                         | 403    |
+| `code`                                                                    | Status |
+| ------------------------------------------------------------------------- | ------ |
+| `not_found`                                                               | 404    |
+| `invalid_request`                                                         | 400    |
+| `denied`, `approval_required`                                             | 403    |
 | `lease_conflict`, `stale_frame`, `stale_generation`, `stopped`, `revoked` | 409    |
-| anything else                                                         | 503    |
+| anything else                                                             | 503    |
 
 The client throws the message and attaches `code` to the error (`controlErrorCode`). A `not_found` from stop or revoke is terminal for that session: the server no longer knows it, so it can't be running. The client records it as `closed`, and the emergency Stop ledger stops retrying it.
 
@@ -39,13 +39,13 @@ For other host adapters, the viewer also accepts `active | running` (active), `p
 
 ## Viewer behaviour
 
-The Chat page serves both ordinary and agent chats, so one viewer integration covers both. The Computer view is the panel. The chat header shows a compact status strip with an emergency Stop when:
+The common Chat page is also the agent-chat destination (both agent dashboard entry points navigate to it), so one viewer integration serves ordinary and agent chats. The Computer view is the panel. The chat header shows a compact status strip with an emergency Stop when:
 
 - the chat has used computer control (`hasUsage`)
 - the view is open
 - a Stop is in flight or has failed
 
-**Polling.** Status is read once when a chat loads, so stopped history or a pending approval from an earlier visit still shows the strip. After that it polls every 3 seconds, but only while the chat's agent is running, the chat has used computer control, the view is open, or a Stop is in flight. A chat that never used computer control costs one read. Reopening the view reads immediately; closing it issues no read. Polls never capture screenshots.
+**Polling.** Status is read once when a chat loads, so stopped history or a pending approval from an earlier visit still shows the strip. After that it polls every 3 seconds, but only while the chat's agent is running, the chat has used computer control, the view is open, or a Stop is in flight. A chat that never used computer control therefore costs one status read and nothing more until its agent runs or the human opens the view. Reopening the view after an idle stretch reads immediately rather than waiting out an interval. Closing the view issues no extra read. Polls never capture screenshots.
 
 **Explicit clicks.** Enable, approve, capture, takeover and resume are each a separate click.
 
@@ -55,4 +55,4 @@ The Chat page serves both ordinary and agent chats, so one viewer integration co
 
 **Readiness.** Capability availability must reflect server, runtime and engine readiness. On headless or unsupported hosts, native capability must be unavailable, with an actionable reason. The viewer doesn't qualify models or platforms, install browsers or helpers, or substitute the viewer's own machine for the service host.
 
-A native capability may carry an optional `readiness` value: `setup-required`, `unsupported`, `permission-blocked` or `unknown`. This is driver or host metadata; the viewer never derives it from `reason`. Missing or unrecognized values get generic retry guidance. Chat permission restrictions take precedence over the driver's classification, even when a probe throws. Readiness grants nothing, and enabling a target is still a separate human action. Technical details are rendered as escaped text, and the package's `operatorDetail` never reaches model-visible probe results.
+A native capability may carry an optional `readiness` value: `setup-required`, `unsupported`, `permission-blocked` or `unknown`. This is driver or host metadata; the viewer never derives it from `reason`. Missing or unrecognized values get generic retry guidance. Chat permission restrictions take precedence over the driver's classification, even when a probe throws. Readiness grants nothing: setup guidance is passive, and enabling a target remains a separate human action. Technical details are escaped text in the authenticated viewer, and the package's `operatorDetail` never reaches model-visible probe results.
