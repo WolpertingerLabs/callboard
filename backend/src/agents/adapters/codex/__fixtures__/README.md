@@ -39,11 +39,14 @@ reason, and this fixture is what says so.
 ## The one edit
 
 `session_meta.payload.base_instructions.text` is replaced with a redaction
-marker in all three `rollout-cli-*` files above. It is OpenAI's full Codex system prompt (18–22 KB, half
-the file), this parser never reads its value, and the head-window scan that
-does care about a large blob sitting in front of the meta scalars is covered
-separately by `sessionParser.meta.test.ts`. Everything else is byte-for-byte
-as the CLI wrote it.
+marker in the three rollouts above (`0.146.0`, `0.153.4` and
+`0.153.4-resumed`). `rollout-cli-0.153.4-compacting.jsonl`, described below,
+needs no redaction because its `session_meta` line was left out entirely. The
+redacted text is OpenAI's full Codex system prompt (18–22 KB, half the file),
+this parser never reads its value, and the head-window scan that does care
+about a large blob sitting in front of the meta scalars is covered separately
+by `sessionParser.meta.test.ts`. Everything else is byte-for-byte as the CLI
+wrote it.
 
 ## What they show
 
