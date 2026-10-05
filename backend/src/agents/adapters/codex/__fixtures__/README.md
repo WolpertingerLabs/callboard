@@ -39,7 +39,7 @@ reason, and this fixture is what says so.
 ## The one edit
 
 `session_meta.payload.base_instructions.text` is replaced with a redaction
-marker in both files. It is OpenAI's full Codex system prompt (18–22 KB, half
+marker in all three `rollout-cli-*` files above. It is OpenAI's full Codex system prompt (18–22 KB, half
 the file), this parser never reads its value, and the head-window scan that
 does care about a large blob sitting in front of the meta scalars is covered
 separately by `sessionParser.meta.test.ts`. Everything else is byte-for-byte
@@ -116,3 +116,14 @@ Contains six genuine `ContextCompaction` records with their real ids, thirteen
 extractor must ignore. Regenerating it from a synthetic run would lose exactly
 the property under test: that real compaction records are recognised, and that
 nothing else in a real rollout is mistaken for one.
+
+## Other fixtures
+
+- `direct-ui-rollout.jsonl` and `direct-ui-sdk.json` — the same four
+  native `callboard-ui` tool calls (`render_file`, `create_canvas`, an `exec`,
+  `update_canvas`) in both lanes: rollout `function_call` lines and SDK
+  `mcp_tool_call` events. `directUi.test.ts` describes them as a sanitized
+  real start/resume capture; they were added in #434 without capture notes.
+- `helloTxtStream.ts` — a public-lane stream from the Step-1 spike that
+  created `hello.txt`, used by `messageAdapter.test.ts`. Its header comment
+  has the details.
