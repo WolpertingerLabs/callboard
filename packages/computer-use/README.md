@@ -1,138 +1,202 @@
 # @wolpertingerlabs/computer-use · 0.1.0
 
-Extraction-ready Node 22+ / TypeScript library and standard MCP stdio executable. No host-application imports. **Default deny, no targets, no automatic browser/app installation.** This is a preview, not a claim of OS, engine, model-vision, or application-workflow qualification.
+A Node 22+ TypeScript library and MCP stdio server for agent-controlled browser and desktop sessions. It has no host-application imports. **Default deny, no targets configured, and nothing is installed automatically.** This is a preview; see [Tests and qualification](#tests-and-qualification) for what has and hasn't been verified.
 
-## Install / build
+## Install and build
 
 ```sh
-# From this package's source directory (independent of any monorepo):
+# From this directory; no monorepo configuration is required.
 npm install --ignore-scripts
 npm run build
 npm test
 npm pack
 ```
 
-The independent package has not been established as published on npm. From a separate consumer directory, install the tarball produced above:
+The package is not published to npm, and shipping inside Callboard doesn't publish it. To use it elsewhere, install the tarball that `npm pack` produced:
 
 ```sh
 npm install /absolute/path/to/wolpertingerlabs-computer-use-0.1.0.tgz
 ```
 
-A registry command such as `npm install @wolpertingerlabs/computer-use` applies **only after separate registry publication**; inclusion in Callboard does not publish this package.
+Playwright is an **optional** dependency, imported lazily. The core and the native driver work without it. Browser binaries must already be on the host; importing or probing never downloads them. The published files are the compiled JS, type declarations, this README and the MIT licence.
 
-Playwright is an **optional**, lazily imported dependency. Browser binaries must already be provisioned by the operator; import/probe never downloads them. Removing Playwright does not prevent importing the core or using a native driver. Published files include JS, declarations, README and MIT license. No root workspace configuration is required.
+## Public API
 
-## Exact public API
-
-Types and `ComputerUseError` are in `src/contracts.ts`, exported from the package root and `./contracts`. Root additionally exports:
+Types and `ComputerUseError` live in `src/contracts.ts` and are exported from both the package root and `./contracts`. The root also exports:
 
 - `ComputerUseService`, `createComputerUseService(options?)`
 - `createBrowserDriver(options?)`, `BrowserDriverOptions`
 - `createNativeDesktopDriver(options?)`, `NativeDesktopDriverOptions`
 - `createMcpServer(service, principal): McpServer`
-- `getToolDefinitions(service, principal): ToolDefinition[]`
+- `getToolDefinitions(service, principal): ToolDefinition[]`, `ToolDefinition`
+- `actionSchema`, the Zod schema the service validates actions against, so a host can check an action before acting on it
 
 ```ts
 interface Principal {
   readonly ownerId: string;
   readonly actorId: string; // Distinct authenticated controller/turn/viewer identity.
-  readonly role: 'agent' | 'human';
+  readonly role: "agent" | "human";
 }
-interface SessionRef { sessionId: string; generation: number }
-interface LeaseRef extends SessionRef { leaseId: string }
-interface ActionRequest extends LeaseRef { frameId: string; actionId: string; action: Action }
+interface SessionRef {
+  sessionId: string;
+  generation: number;
+}
+interface LeaseRef extends SessionRef {
+  leaseId: string;
+}
+interface ActionRequest extends LeaseRef {
+  frameId: string;
+  actionId: string;
+  action: Action;
+}
 
 const service = new ComputerUseService({ targets, authorize });
-service.status(principal, sessionId?);             // SessionStatus[]; redacted, no leases
-await service.probe(principal, targetId);          // Probe
-await service.open(principal, targetId, signal?);  // Lease; observe before first act
+service.status(principal, sessionId?);                 // SessionStatus[]; redacted, no leases
+await service.probe(principal, targetId);              // Probe
+await service.open(principal, targetId, signal?);      // Lease; observe before the first act
 await service.observe(principal, sessionRef, signal?); // Observation { ...ref, frameId, frame }
 await service.act(principal, actionRequest, signal?);  // SessionStatus
 await service.takeover(humanPrincipal, sessionRef);    // Lease for that human actor
-await service.resume(humanPrincipal, humanLeaseRef);  // Lease & { observation }
-await service.stop(principal, sessionId);          // SessionStatus; idempotent fencing
-await service.revoke(principal, sessionId);        // SessionStatus; irreversible for session
+await service.resume(humanPrincipal, humanLeaseRef);   // Lease & { observation }
+await service.stop(principal, sessionId);              // SessionStatus; idempotent fencing
+await service.revoke(principal, sessionId);            // SessionStatus; irreversible for the session
 await service.dispose();
-const unsubscribe = service.subscribe(principal, event => {});
+const unsubscribe = service.subscribe(principal, (event) => {});
 ```
 
-`resume` restores the immutable original opener identity with a **new lease and generation**, and captures a fresh frame under that identity's current authorization before returning. Normally the host opens using an agent principal even when an authenticated user clicks Enable. Human observations/input use the same service; human input requires the human lease. `takeover`/`resume` are **trusted human control-plane APIs only**, never model tools. Keep lease IDs in authenticated controller state, not status listings or audit events. Opening a new MCP connection does not itself rotate an existing lease. Hosts must stop/revoke the old controller's sessions before retiring/rebinding its turn identity, or explicitly hand control through the human control plane; transport close alone is not a service revocation.
+**Takeover and resume.** `takeover` and `resume` are trusted human control-plane APIs, never model tools. Human observation and input go through the same service, and human input requires the human lease. `resume` restores the original opener's identity with a **new lease and generation**, and captures a fresh frame under that identity's current authorization before it returns. Hosts normally open sessions as an agent principal, even when a signed-in user clicks Enable.
 
-A `Driver` has immutable `kind: 'browser' | 'native-desktop'`, `probe()`, `open({sessionId, signal, onTargetChanged?})`, and an optional `lockDomain` (mandatory for native). `open` returns a `DriverSession` with `observe(signal)`, `act(action, signal)`, `releaseInput()`, and `close()`. Driver code is privileged trusted infrastructure, not a security sandbox. It must settle promptly on abort, release only its held input, never mutate after settlement, and preserve pre-existing native apps. Screenshot pixel coordinates must equal input coordinates. Share lock domains for any shared input device; separate native display screens do not imply independent keyboards.
+**Leases.** Keep lease IDs in authenticated controller state, never in status listings or audit events. Opening a new MCP connection doesn't rotate an existing lease, and closing a transport doesn't revoke anything. Before retiring or rebinding a controller's turn identity, stop or revoke its sessions, or hand control over through the human control plane.
 
-`Probe.readiness` is optional host-fact metadata (`setup-required`, `unsupported`, `permission-blocked`, or `unknown`) for actionable guidance. Custom drivers may omit it; consumers must use a generic fallback for missing/unrecognized values, not parse `reason`. It does not grant consent or authorize setup. `operatorDetail` remains operator-only and is stripped from MCP probe results.
+**Drivers.** A `Driver` has an immutable `kind` (`'browser' | 'native-desktop'`), `probe()`, `open({ sessionId, signal, onTargetChanged? })`, and an optional `lockDomain`, which is mandatory for native drivers. `open` returns a `DriverSession` with `observe(signal)`, `act(action, signal)`, `releaseInput()` and `close()`. Driver code is trusted infrastructure, not a sandbox. A driver must:
 
-`Action` is a strict discriminated union: `click`, `move`, `drag`, `scroll`, `type`, `key`, `navigate` (browser only), `wait`. No arbitrary shell/eval, app launch, DOM evaluation, clipboard, upload/download API or host file paths. See the exported type for exact fields. Keys use e.g. `Control+a`, `Enter`, `ArrowDown`. Holds/waits are at most 2 seconds, text at most 4096 characters, pointer coordinates are checked against an authorized frame. Native scroll maps each 100 pixels to a wheel step. Native Unicode typing is conservative per-key input and may be slow/layout-dependent; it needs live target qualification.
+- settle promptly on abort, release only the input it holds, and never mutate after settling
+- leave existing native apps alone
+- use screenshot pixel coordinates that equal input coordinates
+- share a lock domain with anything that shares an input device (separate screens don't mean separate keyboards)
+
+**Probe readiness.** `Probe.readiness` is optional metadata: `setup-required`, `unsupported`, `permission-blocked` or `unknown`. Consumers need a generic fallback for missing or unknown values, and must not parse `reason`. Readiness grants nothing. `operatorDetail` is for operators only and is stripped from MCP probe results.
+
+**Actions.** `Action` is a strict discriminated union: `click`, `move`, `drag`, `scroll`, `type`, `key`, `navigate` (browser only) and `wait`. There is no shell, eval, app launch, DOM evaluation, clipboard, upload, download or host file path. See the exported type for fields.
+
+- Keys look like `Control+a`, `Enter`, `ArrowDown`.
+- Holds and waits are capped at 2 seconds, and text at 4096 characters.
+- Pointer coordinates are checked against an authorized frame.
+- Native scroll maps every 100 pixels to one wheel step.
+- Native Unicode typing is sent key by key. It can be slow, depends on the keyboard layout, and hasn't been qualified on a live target.
 
 ## Authorization and lifecycle
 
 ```ts
-import { ComputerUseService, createBrowserDriver } from '@wolpertingerlabs/computer-use';
+import { ComputerUseService, createBrowserDriver } from "@wolpertingerlabs/computer-use";
 
 const service = new ComputerUseService({
-  targets: [{ id: 'isolated-browser', enabled: true, driver: createBrowserDriver() }],
-  authorize: async request => {
-    // Lookup CURRENT trusted policy/grant, not model-supplied approval fields.
+  targets: [{ id: "isolated-browser", enabled: true, driver: createBrowserDriver() }],
+  authorize: async (request) => {
+    // Look up CURRENT trusted policy/grant, not model-supplied approval fields.
     // Intersect owner, actor/turn, target, kind, operation, session, generation,
     // expiry and host web/file/code permissions. Unattended ask is not allow.
-    return 'deny';
+    return "deny";
   },
 });
 ```
 
-The immutable authorization request contains `principal`, `operation`, `targetId`, `kind`, and (when known) `sessionId`, `generation`. Allowed operations: `probe | open | observe | act | takeover | resume`. An `Authorizer` returns `allow | deny | ask`; missing, throwing, invalid or timed-out policy denies. `ask` returns typed `approval_required` immediately; it **does not mint a grant**, wait indefinitely, or expose an approval tool. The host can create a pending approval record from the request, resolve it through an authenticated external control plane, then retry with a new action ID. This package does not persist approvals or revocations; hosts requiring durable audit/revocation must persist policy first and invoke `revoke`. No authority is restored after restart.
+**The authorizer.** It receives a frozen request with `principal`, `operation` (`probe | open | observe | act | takeover | resume`), `targetId` and `kind`, plus `sessionId` and `generation` when known. It returns `allow`, `deny` or `ask`. Missing, throwing, invalid or timed-out policy means deny.
 
-Identity is bound out of band at `createMcpServer`/`getToolDefinitions`, and copied/frozen at each direct service call. Hosts must authenticate direct callers themselves. Each session has one owner. No model-supplied owner, target switch, role, or approval flag is accepted in action schemas. Status and safety stop/revoke remain available to the authenticated owner under deny. Events are owner-scoped metadata only—no pixels, text, URLs or leases.
+**Ask.** `ask` immediately returns a typed `approval_required` error. It doesn't mint a grant, wait, or expose an approval tool. The host can record a pending approval, resolve it through its own authenticated control plane, and retry with a new action ID.
 
-Policy is checked at enqueue, dequeue and result delivery, including screenshots. Revocation and stop synchronously bump the generation and abort the current epoch before returning; stale/queued/future calls fail. In-flight real effects cannot be rolled back. Cleanup happens asynchronously, and an uncertain native lock is not released for reuse until the previous operation has settled and cleanup succeeds. Human takeover waits for physical settlement/release before granting input; a stuck operation fails the handoff rather than giving a second controller access. Timeout/cancellation of ordinary input, and any driver fault, fence the session (`failed`) because the driver's physical state is uncertain. A request rejected before dispatch — out-of-bounds coordinates for the authorized frame, `navigate` on a native target, a driver's own policy refusal such as navigation while offline — returns its typed error and leaves the session ready; observe again and continue. Late screenshots are discarded. Already delivered model images cannot be retroactively erased.
+**Persistence.** The package doesn't persist approvals or revocations, and no authority survives a restart. A host that needs durable audit or revocation must persist its policy and call `revoke`.
 
-Human takeover is also a screen-privacy boundary: agents cannot observe while a human controls the session, even if they read the new generation from status. Capture is blocked during handoff, queued observations are fenced, and late images are discarded before delivery. Authorized human viewers remain able to observe a ready session. Only explicit human `resume` restores agent observation; this cannot erase images already sent to a model.
+**Identity.** Identity is bound out of band, at `createMcpServer` / `getToolDefinitions` time, and copied and frozen on each direct service call. Hosts must authenticate direct callers themselves. Each session has one owner. Action schemas accept no model-supplied owner, target switch, role or approval flag. Status, stop and revoke stay available to the owner even under deny. Events are owner-scoped metadata only: no pixels, text, URLs or leases.
 
-Defaults: 30-second operation/policy timeout, queue 16, 15-minute absolute session TTL, 16 active sessions, 10,000 action IDs per session. A stopped/failed/revoked session stays in `status` for `terminalRetentionMs` (default 60 seconds) after its cleanup settles, so a host can still see the outcome it just triggered, then it is dropped and its ID answers `not_found`; audit history lives in the owner-scoped events, not in status. At most 1024 terminal records are held at any time. Duplicate action IDs are rejected, not replayed, including failed attempts. Grants/frames are not cached to disk. Host policy changes should actively call `revoke`; changing a request filter alone does not terminate background network traffic. `stop` means control fencing, not a guarantee that asynchronous cleanup is already complete. `dispose` waits for cleanup; custom drivers must honor their bounded-settlement contract. Browser profiles are ephemeral, isolated per session, persistent across turns while open, deleted on close. No restart/retained-profile recovery or orphan-process reaper is provided in this preview.
+**Enforcement timing.** Policy is checked at enqueue, at dequeue and at result delivery, screenshots included. `stop` and `revoke` bump the generation and abort the current epoch before they return, so stale, queued and future calls fail. Effects already in flight can't be rolled back, and images already delivered to a model can't be erased. Cleanup is asynchronous. An uncertain native lock isn't reused until the previous operation settles and cleanup succeeds.
+
+**Failures.**
+
+- A timed-out or cancelled input, or any driver fault, marks the session `failed`, because the driver's physical state is uncertain.
+- A request refused before dispatch returns its typed error and leaves the session ready, so observe again and continue. Examples: coordinates outside the authorized frame, `navigate` on a native target, or a driver policy refusal such as navigating while offline.
+- Late screenshots are discarded.
+
+**Human takeover is a privacy boundary.** While a human controls a session, agents can't observe it, even if they read the new generation from status. Capture is blocked during the handoff, queued observations are fenced, and late images are dropped before delivery. Takeover waits for in-flight input to settle and release, and a stuck operation fails the handoff rather than giving a second controller access. Authorized human viewers can still observe a ready session. Only an explicit human `resume` restores agent observation.
+
+**Defaults.**
+
+| Setting                                    | Default            |
+| ------------------------------------------ | ------------------ |
+| Operation and policy timeout               | 30 seconds         |
+| Queue depth                                | 16                 |
+| Absolute session TTL                       | 15 minutes         |
+| Active sessions                            | 16                 |
+| Action IDs per session                     | 10,000             |
+| `terminalRetentionMs`                      | 60 seconds         |
+| Terminal records held                      | 1024               |
+
+- A stopped, failed or revoked session stays visible in `status` for `terminalRetentionMs` after cleanup settles. After that its ID answers `not_found`. Audit history lives in events, not status.
+- Duplicate action IDs are rejected rather than replayed, failed attempts included.
+- Grants and frames are never written to disk.
+- When host policy changes, call `revoke`. Changing a request filter alone doesn't stop background network traffic.
+- `stop` fences control, but cleanup may still be in progress. `dispose` waits for cleanup.
+- Browser profiles are ephemeral, isolated per session, kept across turns while the session is open, and deleted on close. There is no profile recovery after a restart and no orphan-process reaper.
 
 ## Browser driver
 
-Uses Playwright `chromium.launchPersistentContext` in a private temporary profile, viewport 1280×800, headless by default, device scale 1. Actual PNG screenshots, pointer/keyboard input, navigation and popup-page selection share that context. There is no personal profile import. Browser kind **never** grants desktop access.
+The driver uses Playwright's `chromium.launchPersistentContext` with a private temporary profile: viewport 1280×800, headless by default, device scale 1. Screenshots, input, navigation and popup selection all share that context. Personal profiles can't be imported. A browser target **never** grants desktop access.
 
-Chromium sandboxing is **mandatory** (`chromiumSandbox: true`); there is no configuration switch or automatic `--no-sandbox` fallback. Provision a supported Chromium executable and its OS libraries. On Linux, run as a non-root user and provide the kernel/container permissions required by Chromium's sandbox (user namespaces and compatible seccomp policy, or a supported sandbox helper). Do not bypass sandboxing to make a root/restricted-container deployment launch. An executable-existence probe does not qualify sandbox support: a failed sandboxed launch returns actionable `ComputerUseError('unsupported')`, removes the temporary profile, and does not start a usable session or terminate the host. Launch diagnostics are sanitized; the error does not claim that every launch failure was caused by the sandbox.
+**The Chromium sandbox is mandatory** (`chromiumSandbox: true`). There's no switch to disable it and no `--no-sandbox` fallback. On Linux, run as a non-root user with the kernel or container support Chromium's sandbox needs: user namespaces and a compatible seccomp policy, or a supported sandbox helper. Finding the executable doesn't prove the sandbox works. If a sandboxed launch fails, the driver throws `ComputerUseError('unsupported')` with sanitized diagnostics, removes the temporary profile, and leaves the host running.
 
-Options: `headless`, `executablePath` (trusted operator only), `viewport`, `network`, optional `allowRequest(url)`. Network defaults to `offline`. Select `network: 'unrestricted'` only when the operator explicitly permits broad browser networking, or `'externally-confined'` only when the host provisions its own enforceable OS/proxy boundary. Request filters deny on errors; service workers and WebSockets are blocked, file/non-HTTP(S) routed requests are denied, downloads are disabled/cancelled. These controls **are not an OS firewall or strict filesystem/network sandbox** (DNS, browser internals, WebRTC and arbitrary page/app behavior need external confinement). Do not promise narrow egress/path policy from URL interception. A host with strict web/file restrictions must provision and qualify external confinement or refuse enable; browser mode is not a substitute for native desktop.
+**Options.** `headless`, `executablePath` (trusted operators only), `viewport`, `network` and an optional `allowRequest(url)`.
 
-The package does not execute page JS/eval. Ordinary website JavaScript still runs. File chooser selection is not exposed. Playwright/Chromium runtime profile writes are necessary infrastructure, not authorization to read/write arbitrary host projects. See [Playwright BrowserContext documentation](https://playwright.dev/docs/api/class-browsercontext) for routing and service-worker limits.
+- `network` defaults to `offline`. Use `'unrestricted'` only when the operator allows broad browser networking, and `'externally-confined'` only when the host enforces its own OS or proxy boundary.
+- Request filters deny on error. Service workers and WebSockets are blocked, file and non-HTTP(S) requests are denied, and downloads are cancelled.
 
-## Native desktop driver: explicit opt-in Linux X11
+These controls **are not a firewall or a filesystem sandbox**. DNS, browser internals, WebRTC and page behaviour need external confinement. A host with strict web or file restrictions must provide that confinement or refuse to enable the browser.
+
+The package never evaluates JS in the page, but the website's own JavaScript still runs. File choosers aren't exposed. Chromium's own profile writes are infrastructure, not permission to touch host projects. See Playwright's [BrowserContext docs](https://playwright.dev/docs/api/class-browsercontext) for the limits of routing and service-worker blocking.
+
+## Native desktop driver (Linux X11, explicit opt-in)
 
 ```ts
 const driver = createNativeDesktopDriver({
   enabled: true,
-  display: ':0', // Explicit operator selection; never reads ambient DISPLAY as target.
+  display: ":0", // Explicit operator selection; never reads ambient DISPLAY as the target.
   acknowledgeFullDesktopAccess: true,
   permissions: {
-    webAccess: 'allow', fileRead: 'allow', fileWrite: 'allow', codeExecution: 'allow',
+    webAccess: "allow",
+    fileRead: "allow",
+    fileWrite: "allow",
+    codeExecution: "allow",
   },
 });
 ```
 
-Requires **operator-provisioned** `/usr/bin/xdotool` (libxdo/XTEST, BSD-style upstream license), `/usr/bin/import` (ImageMagick license), and a reachable local X11 display. Nothing is installed. `import -window root png:-` captures actual root-window PNG pixels, with dimensions parsed from the PNG header; xdotool fixed executable/argument vectors implement actual input. No shell process, string command evaluation or model-provided executable is used. Probe checks prerequisites and display geometry, not screenshots/input.
+**Prerequisites.** The operator provides `/usr/bin/xdotool` (XTEST), ImageMagick's `/usr/bin/import` and a reachable local X11 display. Nothing is installed or bundled. Screenshots come from `import -window root png:-`, and input comes from xdotool, run with fixed argument vectors and no shell. The probe checks prerequisites and display geometry, not capture or input.
 
-A missing explicit DISPLAY, headless host, disabled/incompatible target, unsupported OS, Wayland/XWayland, or absent commands returns an unavailable `Probe`; `open` throws typed `ComputerUseError('unsupported')`. macOS/Windows/Wayland require an explicitly installed qualified `driver` plugin with native kind and shared lock domain; there are no placeholder-success drivers. The compatibility gate also applies to custom native helpers in this factory.
+**Unavailable hosts.** A missing display, a headless host, Wayland/XWayland, an unsupported OS or missing commands produce an unavailable `Probe`, and `open` throws `ComputerUseError('unsupported')`. macOS, Windows and Wayland need a separately installed, qualified native `driver` plugin with a shared lock domain. There are no placeholder drivers that pretend to succeed, and the same compatibility gate applies to custom native helpers passed to this factory.
 
-X11 controls the **full OS desktop**, including terminals and apps able to read/write/network. All four external scopes must therefore be allow and full-desktop effects explicitly acknowledged. An ask/deny scope is rejected, not silently weakened. Pixel/app-name filtering cannot enforce code/file/egress restrictions. Explicitly configured native input has one process-wide lease and a per-user, per-display cross-process lock directory under the private OS temporary directory (`computer-use-x11-<uid>/<sha256(lockDomain)>`), recording the holder's PID. A lock whose recorded holder process no longer exists is reclaimed by the next `open`, so a crashed host does not need operator recovery to regain native control. A lock is **quarantined** — kept, with a `quarantined` file naming the reason — when the holder's input release failed at close, because a key or button may still be held; it is never reclaimed automatically, and the `lease_conflict` error names the lock path so an operator can inspect the desktop, release input, and remove the directory. A live holder is never displaced. This is not a watchdog/helper daemon; a killed process can leave input held. Use an independently supervised qualified helper for stronger crash recovery. Native close releases held input and detaches; it never kills apps or discards unsaved documents. Physical keyboard/mouse activity outside this service cannot be locked out.
+**X11 controls the whole desktop**, including terminals and apps that can read, write and reach the network. All four permission scopes must therefore be `allow`, and full-desktop access must be acknowledged explicitly. An `ask` or `deny` scope is rejected rather than silently weakened.
 
-Native command choices are based on [upstream xdotool documentation](https://github.com/jordansissel/xdotool/blob/main/xdotool.pod) and [ImageMagick import](https://imagemagick.org/script/import.php). No redistributable native binary is bundled. Prerequisite detection is not live OS/app qualification.
+**Locking.** Native input has one process-wide lease, plus a cross-process lock directory per user and display: `computer-use-x11-<uid>/<sha256(lockDomain)>` under the OS temp directory, recording the holder's PID.
 
-## MCP executable and embedding
+- The next `open` reclaims a lock whose holder process is gone.
+- If releasing input failed at close, the lock is **quarantined**, because a key or button may still be held down. A `quarantined` file records why, and the lock is never reclaimed automatically. The `lease_conflict` error names the path so an operator can check the desktop, release input and remove the directory.
+- A live holder is never displaced.
+
+There's no watchdog, so a killed process can leave input held. Closing a native session releases input and detaches, but never kills apps or discards unsaved work. Physical keyboard and mouse use outside the service can't be locked out.
+
+Command choices follow upstream [xdotool](https://github.com/jordansissel/xdotool/blob/main/xdotool.pod) and [ImageMagick import](https://imagemagick.org/script/import.php) documentation.
+
+## MCP server
 
 ```sh
-computer-use-mcp                     # No enabled targets; default deny.
+computer-use-mcp                                   # No enabled targets; default deny.
 computer-use-mcp --config /absolute/trusted-config.mjs
 ```
 
-The optional file is trusted **operator code**, imported only at startup, exporting `options: ServiceOptions` and optional `principal: Principal`. It must not be writable or chosen by an untrusted model/session. Do not log to stdout in the config; stdout is exclusively MCP. Built-in diagnostics are generic stderr messages without driver errors or screenshot/input contents. An example config can import the library and construct the service options shown above; replace deny with a real external authorizer, never a model-supplied `approved` flag.
+**The config file** is trusted operator code, imported once at startup. It exports `options: ServiceOptions` and, optionally, `principal: Principal`. It must not be writable or selectable by a model or session, and it must not log to stdout, which belongs to MCP. Built-in diagnostics go to stderr without screenshot or input contents. Replace the example's `deny` with a real external authorizer, never a model-supplied `approved` flag.
 
-`createMcpServer` returns the official SDK `McpServer` so the host chooses stdio or authenticated/in-memory transport. Closing an embedded server does not dispose a shared service. Shutdown ownership belongs to the host. The CLI disposes on EOF/SIGINT/SIGTERM, with a 5-second emergency exit deadline.
+**Embedding.** `createMcpServer` returns the official SDK `McpServer`, so the host chooses the transport. Closing an embedded server doesn't dispose a shared service, because the host owns shutdown. The CLI disposes on EOF, SIGINT or SIGTERM, with a 5-second emergency exit.
 
-One canonical tool surface, from `getToolDefinitions`:
+**Tools.** `getToolDefinitions` defines the tools:
 
 1. `computer_status` — `{ sessionId? }`
 2. `computer_probe` — `{ targetId }`
@@ -142,24 +206,42 @@ One canonical tool surface, from `getToolDefinitions`:
 6. `computer_stop` — `{ sessionId }`
 7. `computer_revoke` — `{ sessionId }`
 
-Definitions are `{ name, description, inputSchema: z.ZodRawShape, handler(input, {signal}?) }`. The server wraps those same handlers with strict Zod schemas. An observation returns **MCP text metadata + a real `{type:'image', data, mimeType}` block**, not base64 in a text placeholder. Errors are sanitized text JSON with `isError: true`. Results are not sanitized by that boundary, so the one field carrying host layout — `Probe.operatorDetail`, e.g. the resolved Chromium path a browser probe checked — is stripped from `computer_probe` before serialization; `Probe.reason` stays safe for any principal. An embedder that displays `operatorDetail` must serve it only to an authenticated operator surface, never back over a tool result. There is no grant/approve/takeover/resume tool, no resource route for cached frames, and no provider/host SDK import. Harness discovery and image-to-model qualification remain integration work; an MCP image test alone does not prove model vision.
+**Definitions and results.** Each definition is `{ name, description, inputSchema: z.ZodRawShape, handler(input, { signal }?) }`, and the server wraps the same handlers with strict Zod schemas. An observation returns text metadata plus a real `{ type: 'image', data, mimeType }` block. Errors are sanitized JSON text with `isError: true`. Results aren't sanitized, so `Probe.operatorDetail` (for example, the Chromium path a probe checked) is stripped from `computer_probe` explicitly. An embedder that shows `operatorDetail` must serve it only on an authenticated operator surface.
+
+There is no grant, approve, takeover or resume tool, no resource route for cached frames, and no provider SDK import.
+
+## Observation authority
+
+A generation is a **control-lease epoch**, not a screenshot token.
+
+- **Frames.** Every observation returns an unguessable UUID `frameId`, and an action must quote that exact ID. The service keeps at most one actionable frame per session, bound to the controller, generation and target revision, and rechecks it after asynchronous authorization. A newer capture by the controller supersedes older coordinates. Passive human previews of agent-controlled work grant no agent authority and don't replace the agent's frame.
+- **Every action consumes its frame** before dispatch, even if the action partly fails, so observe again before the next action.
+- **Other invalidation.** Navigation, page creation or closure, frame navigation, takeover, resume and stop also invalidate old frames. Drivers should call `onTargetChanged` whenever they detect a change.
+- **Approvals.** A human approval binds one exact action and frame. A changed target or a newer controlling capture makes the approval stale rather than replayable. Missing or legacy IDs fail closed. `stale_frame` means capture again and ask again, not retry.
+
+Pixels can't reveal every asynchronous change (animation, DOM updates, physical input, native app activity). These tokens fence **known** revisions; re-observe after any suspected change.
 
 ## Tests and qualification
 
 ```sh
 npm test
-# Opt in to the existing operator-provisioned Chromium executable for actual smoke:
+# Opt in to a real, operator-provisioned Chromium for the live smoke test:
 COMPUTER_USE_TEST_CHROMIUM=/absolute/path/to/chrome npm test
 ```
 
-**Qualification status:** earlier successful Chromium/Callboard smoke results used the pre-security-fix, unsandboxed implementation. They do not qualify the current sandbox-enforced driver. The current sandboxed live smoke could not run on the build host; live sandboxed operation remains unqualified.
+The live smoke test uses a disposable browser and a local fixture server. It covers real pixels, navigation, persistent form state, human input and resume, and cross-owner profile isolation. Without `COMPUTER_USE_TEST_CHROMIUM` it skips with a reason, and it never installs browsers. **CI doesn't set the variable**, so a passing `npm test` doesn't prove the live browser driver. When opted in, missing prerequisites or a failed sandboxed launch (`SANDBOXED_BROWSER_UNAVAILABLE`) fail the test rather than passing or retrying unsandboxed.
 
-The smoke test uses only a disposable isolated browser and local fixture HTTP server. It tests actual pixels, navigation, persistent form state, human input/resume and cross-owner profile isolation. It skips with an explicit unqualified reason unless `COMPUTER_USE_TEST_CHROMIUM` is supplied; it never installs browsers. **CI does not set that variable**, so the real-Chromium path is exercised only when an operator opts in locally; `npm test` passing does not prove the live browser driver. When opted in, missing prerequisites or sandboxed launch failure **fail** the smoke rather than counting as a pass or retrying without a sandbox. Launch failure is labelled `SANDBOXED_BROWSER_UNAVAILABLE` and occurs before the fixture HTTP listener starts. Mock launch tests verify mandatory sandbox options, sanitized failure, profile cleanup and absence of fallback; they are not live browser qualification. Fake-driver tests cover policy, identity, lease/generation races, human-takeover screen privacy at capture/queue/delivery boundaries, queued cancellation, revocation before image delivery, TTL, and native incompatibility. Real MCP in-memory initialize/list/call and actual stdio subprocess discovery are tested, including a stdio run against a trusted config whose enabled target has no authorizer, which must deny `probe`/`open` without ever opening the driver. The native lock directory (PID record, dead-holder reclaim, quarantine, concurrent reclaim) is tested without a display. No tests capture/control a live native desktop. Native apps, GPU/Wayland/macOS/Windows, five harness/model vision routes, durable host policy, crash watchdogs and artistic workflows remain **unqualified**.
+The offline suites cover:
 
-### Observation authority
+- **Mocked launch:** mandatory sandbox options, sanitized failure, profile cleanup, and no fallback.
+- **Fake drivers:** policy, identity, lease and generation races, takeover privacy at capture, queue and delivery, queued cancellation, revocation before image delivery, TTL, and native incompatibility.
+- **MCP:** real in-memory initialize/list/call, stdio subprocess discovery, and a stdio run whose enabled target has no authorizer and must deny `probe` and `open` without opening the driver.
+- **Native lock directory:** PID record, dead-holder reclaim, quarantine and concurrent reclaim, all without a display.
 
-A generation is a **control-lease epoch**, not a screenshot token. Every observation returns an unguessable UUID `frameId` in its metadata (MCP still returns a separate image block). Actions require that exact ID. The service retains at most one actionable frame per session, bound to controller identity, generation and target/action revision, and rechecks it at execution after asynchronous authorization. A newer controller capture supersedes older tab coordinates. Passive human previews of agent-controlled work issue no agent action authority and do not replace its capture.
+**Not qualified:**
 
-Every action consumes its frame before driver dispatch, even if it partially fails. Observe again before the next action. Navigation, page creation/closure, frame navigation, takeover, resume and stop also invalidate old authority. Drivers should call `onTargetChanged` whenever they detect a target change. Human approvals bind the exact action and frame; a changed target or newer controlling capture makes the approval stale rather than permitting replay. Missing/legacy IDs fail closed; `stale_frame` means capture again and request a new approval, not retry the old mutation.
-
-Asynchronous external changes (animation, DOM updates, physical input and native app activity) cannot be perfectly detected from pixels. Re-observe after any suspected change; these tokens fence **known** revisions, not a promise that the screen cannot change between capture and input.
+- Live sandboxed browser operation. Earlier Chromium smoke passes predate the sandbox fix, and the sandboxed smoke couldn't run on the build host.
+- Any live native desktop.
+- GPU, Wayland, macOS and Windows.
+- Image-to-model vision across the five engine routes.
+- Durable host policy, crash watchdogs, and drawing or modelling workflows.
