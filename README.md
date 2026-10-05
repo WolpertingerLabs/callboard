@@ -22,15 +22,15 @@ Then open **http://localhost:8000** and log in.
 
 ## Engines
 
-Each chat runs on one of five engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine. It holds the account-wide OpenRouter key and base URL, which Callboard uses for model catalogs and one-shot completions (chat titles, branch names, generated themes).
+Each chat runs on one of five engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine. It holds the account-wide OpenRouter key and base URL, used for the OpenRouter model catalog and, when **Use OpenRouter for chat titles, branch names and themes** is ticked, for those one-shot completions. Otherwise they run on Claude Code.
 
-| Engine          | How it runs                                                        | Must you install it? | Sign-in                                                 |
-| --------------- | ------------------------------------------------------------------ | -------------------- | ------------------------------------------------------- |
-| **Claude Code** | Bundled Agent SDK; prefers a `claude` binary if it finds one        | No (recommended)     | `claude auth login`, or an API key in Settings → API     |
-| **Codex**       | Bundled `codex` binary                                              | Only to log in       | `codex login`, or an OpenAI key in Settings → API        |
-| **Cline**       | In-process library                                                  | No                   | A provider key in Settings → API                         |
-| **pi**          | In-process library                                                  | No                   | A provider key in Settings → API                         |
-| **OpenCode**    | Your `opencode` binary, spawned per turn over the [Agent Client Protocol](https://agentclientprotocol.com) | **Yes** | `opencode auth login` in your own terminal |
+| Engine          | How it runs                                                                                                | Must you install it? | Sign-in                                              |
+| --------------- | ---------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------- |
+| **Claude Code** | Bundled Agent SDK; prefers a `claude` binary if it finds one                                               | No (recommended)     | `claude auth login`, or an API key in Settings → API |
+| **Codex**       | Bundled `codex` binary                                                                                     | Only to log in       | `codex login`, or an OpenAI key in Settings → API    |
+| **Cline**       | In-process library                                                                                         | No                   | A provider key in Settings → API                     |
+| **pi**          | In-process library                                                                                         | No                   | A provider key in Settings → API                     |
+| **OpenCode**    | Your `opencode` binary, spawned per turn over the [Agent Client Protocol](https://agentclientprotocol.com) | **Yes**              | `opencode auth login` in your own terminal           |
 
 Bundled engines are npm dependencies of Callboard, so updating Callboard updates them. A global install of the same package has no effect, because Node resolves Callboard's own copy first.
 
@@ -58,10 +58,10 @@ To use an API key or a gateway token, set it under **Settings → API → Claude
 
 The bundled `codex` binary is always available. What varies is the sign-in:
 
-- **ChatGPT subscription:** install the CLI and run `npm install -g @openai/codex && codex login`. This writes `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`), which Callboard reads. Chats still run on the bundled binary.
+- **ChatGPT subscription:** install the CLI and run `npm install -g @openai/codex && codex login`. This writes `auth.json` under your `$CODEX_HOME` (default `~/.codex`). Callboard reads it from the **Codex Home** setting under Settings → API → Codex, which defaults to `~/.codex` and is passed to every Codex run as `CODEX_HOME`, so set it if your CLI uses a different directory. Chats still run on the bundled binary.
 - **API key:** switch the auth mode under **Settings → API → Codex** and paste an OpenAI key.
 
-To run a different `codex`, set **Binary path** (`codexPathOverride`). This field does no `PATH` search: chats use either the path you set or the bundled copy. Callboard parses Codex's undocumented rollout files, so a far-off version can render transcripts with missing turns. When the version in effect differs from the one the parser targets, the status card shows a **Compatibility** row.
+To run a different `codex`, set **Binary path** (`codexPathOverride`); if you installed the CLI globally, `which codex` prints the path. This field does no `PATH` search: chats use either the path you set or the bundled copy. Callboard parses Codex's undocumented rollout files, so a far-off version can render transcripts with missing turns. When the version in effect differs from the one the parser targets, the status card shows a **Compatibility** row.
 
 ### Cline and pi
 
@@ -82,7 +82,7 @@ opencode auth login
 Callboard never touches OpenCode's credential file. Settings → API → OpenCode has two settings:
 
 - **Give ACP agents an OpenRouter key:** when this is on, OpenCode gets the key from this tab (or the account-wide OpenRouter key if this one is blank) as `OPENROUTER_API_KEY`.
-- **Default Model:** the model new OpenCode chats start on.
+- **Default Model:** the model new OpenCode chats start on. Blank leaves OpenCode's own configured model alone, and a model picked for a chat always overrides it.
 
 Callboard can check that `opencode` is installed but not whether you're signed in. If you never signed in, the first message fails with OpenCode's own error.
 
@@ -100,6 +100,8 @@ Recheck can't fix a stale `PATH`. You need `callboard restart`, run from a termi
 
 - a vendor install script (`opencode.ai/install` → `~/.opencode/bin`, `claude.ai/install.sh` → `~/.local/bin`) added its directory to `PATH` through your shell rc file
 - you installed under a different nvm Node version than the one running Callboard
+
+If `npm install -g` fails with `EACCES`, npm's global prefix isn't writable. Point it somewhere you own (`npm config set prefix ~/.npm-global`) and put that `bin/` on your `PATH`.
 
 ### The Install button
 
@@ -133,7 +135,7 @@ To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-
 - **Workspaces:** a workspace is a `cwd` plus its git isolation. Callboard records one when a chat starts in a worktree. Agents manage workspaces with MCP tools (`list_workspaces`, `create_workspace`, `rename_workspace`, `archive_workspace`, `list_unmanaged_worktrees`, `adopt_worktrees`). Archiving moves a clean, Callboard-owned worktree into `~/.callboard/trash` for 30 days, and each entry includes a restore recipe.
 - **Jobs:** deterministic multi-step workflows. Step types are `agent`, `approval`, `poll`, `wait_event`, `gate`, `notify`, `parallel` and nested `job`. You can pause, resume and cancel a run, or retry a failed step, and runs survive a restart. Build jobs under Settings → Jobs, or import and export them as JSON.
 - **Storage:** a key-based blob store, managed under Settings → Storage and with the `*_storage_*` tools.
-- **Artifacts:** named, versioned HTML, SVG or markdown documents (the last 50 versions are kept). Agents save them with `save_artifact` and show them with `render_artifact`. An artifact can have read or read-write access to one storage key. Manage them under Settings → Artifacts. Each artifact also opens full-window at `/a/<id>`.
+- **Artifacts:** named, versioned HTML, SVG or markdown documents (the last 50 versions are kept). Agents save them with `save_artifact` and show them with `render_artifact`. Each artifact declares the most storage access it may have (`none`, `read` or `readwrite`); the storage key itself is chosen when it's rendered. Manage them under Settings → Artifacts. Each artifact also opens full-window at `/a/<id>?key=<storage-key>`.
 - **Custom skills:** skills you write under Settings → Skills are saved to `~/.callboard/custom-skills/skills/<name>/SKILL.md` and invoked as `callboard:<name>`.
 - **Model aliases:** one name, such as `planner`, that maps to a different model per engine. Aliases work anywhere a model is set.
 - **Plugins & MCP:** Callboard scans directories you register for Claude Code plugin marketplaces and picks up their commands, hooks and MCP servers. Plugins are toggled per directory.
@@ -142,13 +144,13 @@ To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-
 
 ### Browser & Computer Control (preview)
 
-This lets an agent drive a managed Chromium browser, or a Linux X11 desktop, **on the machine running Callboard**. It is off unless you turn it on.
+This lets an agent drive a managed Chromium browser, or a Linux X11 desktop, **on the machine running Callboard**. It is off unless you turn it on. Agents with unrestricted code execution may still run their own automation.
 
 - **Permission:** Browser & Computer Control is the fifth permission axis. It defaults to **Deny**, and new child chats, job steps and agent sessions start with it denied. To use it, set it to **Ask** or **Allow** in the chat's permission dialog.
 - **Enabling a target is always a human action.** The agent can call `cu_request_control` to put an **Enable browser control** or **Enable desktop control** card in the chat. You can also enable a target from the Computer view, which you open with the monitor icon (**Show computer control**) in the chat header. The agent can't grant itself access.
 - **Ask vs Allow:** under **Ask**, every GUI action pauses the turn until you approve it in the chat. Only a signed-in browser can approve, not an API key. Under **Allow**, the agent acts unattended and each action is written to the server log.
 - **Subagents share the grant.** Claude Code Task subagents and Codex native subagents act as the parent chat.
-- **Stop computer control** in the chat header stops every session in the chat. Take over before you type or click yourself, and choose **Resume** to hand control back. Images already sent to a model can't be recalled.
+- **Stop computer control** in the chat header stops every session in the chat. Take over before you type or click yourself, and choose **Resume agent** to hand control back. Images already sent to a model can't be recalled.
 - If a tab is running an older Callboard bundle, it shows **Reload this Callboard tab** instead of an approval card.
 
 Set up the host first:
@@ -211,6 +213,8 @@ Both modes use the same encrypted, signed protocol.
   2. In Settings → Proxy, switch to Remote and import the bundle. Confirm the pinned server key. Bundles protected by a passphrase will ask for it.
   3. Enter the **Server URL** by hand. Callboard ignores the endpoint in the bundle because tunnel URLs change.
 
+  Enrolled callers are listed on the same page with their fingerprints and bound agents, and can be deleted there.
+
 ## CLI
 
 ```
@@ -222,6 +226,7 @@ callboard status              PID, port, uptime, health
 callboard logs [-n N] [--no-follow]
 callboard config [--path]     Effective configuration (or just the file path)
 callboard set-password
+callboard help
 callboard -v                  Version
 ```
 
@@ -231,18 +236,18 @@ Every subcommand accepts `--help`. The first run creates `~/.callboard/.env`.
 
 Callboard reads `~/.callboard/.env`. If the package root also has a `.env`, its values override the first file. `callboard config` prints the merged result.
 
-| Variable                       | Default                         | Purpose                                                         |
-| ------------------------------ | ------------------------------- | --------------------------------------------------------------- |
-| `PORT`                         | `8000`                          | Server port                                                     |
-| `LOG_LEVEL`                    | `info`                          | `error`, `warn`, `info`, `debug`                                |
-| `SESSION_COOKIE_NAME`          | `callboard_session`             | Change to avoid cookie collisions on localhost                  |
-| `AUTH_PASSWORD_HASH` / `_SALT` | —                               | Written by `callboard set-password`; don't edit by hand         |
-| `INSTANCE_NAME`                | generated                       | Friendly instance name                                          |
-| `CALLBOARD_DATA_DIR`           | `~/.callboard`                  | All stored data. Read from the process environment only         |
-| `CALLBOARD_WORKSPACES_DIR`     | `$CALLBOARD_DATA_DIR/agent-workspaces` | Where agent workspaces live                              |
-| `CALLBOARD_MAX_BACKGROUND_HOLD_MS` | `900000` (15 min)           | How long a finished turn waits on its backgrounded shell tasks   |
+| Variable                           | Default                                | Purpose                                                                                  |
+| ---------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `PORT`                             | `8000`                                 | Server port                                                                              |
+| `LOG_LEVEL`                        | `info`                                 | `error`, `warn`, `info`, `debug`. Process environment only (see below)                   |
+| `SESSION_COOKIE_NAME`              | `callboard_session`                    | Change to avoid cookie collisions on localhost. Process environment only                 |
+| `AUTH_PASSWORD_HASH` / `_SALT`     | —                                      | Written by `callboard set-password`; don't edit by hand                                  |
+| `INSTANCE_NAME`                    | generated                              | Friendly instance name                                                                   |
+| `CALLBOARD_DATA_DIR`               | `~/.callboard`                         | All stored data. Process environment only                                                |
+| `CALLBOARD_WORKSPACES_DIR`         | `$CALLBOARD_DATA_DIR/agent-workspaces` | Where agent workspaces live. Process environment only                                    |
+| `CALLBOARD_MAX_BACKGROUND_HOLD_MS` | `900000` (15 min)                      | How long a finished turn waits on its backgrounded shell tasks. Process environment only |
 
-`CALLBOARD_DATA_DIR` decides which `.env` is read, so it can't be set inside one. That directory holds everything: chats, agents, jobs, workspaces, storage, artifacts, settings (`agent-settings.json`), API keys, themes, logs and the PID file.
+Variables marked **process environment only** must be set in the daemon's environment (for example `SESSION_COOKIE_NAME=x callboard start`); a value in `.env` is ignored. `CALLBOARD_DATA_DIR` decides which `.env` is read, so it can't be set inside one. The others are read while the server's modules load, before `.env` is applied. That directory holds everything: chats, agents, jobs, workspaces, storage, artifacts, settings (`agent-settings.json`), API keys, themes, logs and the PID file.
 
 ## Remote access
 
@@ -268,20 +273,20 @@ npm run dev
 
 The frontend runs at `http://localhost:3000` and the backend at `:3002`. Watch for two things:
 
-- **Uncomment `DEV_PORT_SERVER`.** Vite proxies `/api` to 3002, but without this variable the dev backend binds `PORT` (8000) instead.
+- **Uncomment `DEV_PORT_SERVER`.** Vite proxies `/api` to 3002, but without this variable the dev backend binds `PORT` (8000) instead. Set `DEV_PORT_UI` too if 3000 is taken.
 - **Dev has its own data directory.** `npm run dev` uses `~/.callboard-dev`, so the dev password hash lives there. That's why the `set-password` line above sets the directory. There's no auth bypass in dev.
 
-| Command                                | What it does                                                              |
-| -------------------------------------- | ------------------------------------------------------------------------- |
-| `npm run dev`                          | Frontend and backend dev servers against `~/.callboard-dev`               |
-| `npm run build`                        | Build shared, computer-use, backend and frontend                          |
-| `npm run clean`                        | Delete build output. Run it before `build` if you removed a `dist/` by hand, because `tsc -b` won't notice |
-| `npm start`                            | Run the production build from `backend/dist`                              |
-| `npm test` / `test:watch` / `test:coverage` | Vitest (`npm test` also runs the computer-use package's tests)       |
-| `npm run lint` / `lint:fix`            | ESLint on **staged** files only. On a clean index this lints nothing      |
-| `npm run lint:all` / `lint:all:fix`    | ESLint on the whole tree                                                  |
-| `npm run prettier`                     | Format changed and staged files                                           |
-| `npm run swagger`                      | Regenerate `backend/swagger.json`, which is served at `GET /api/docs`     |
+| Command                                     | What it does                                                                                               |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                               | Frontend and backend dev servers against `~/.callboard-dev`                                                |
+| `npm run build`                             | Build shared, computer-use, backend and frontend                                                           |
+| `npm run clean`                             | Delete build output. Run it before `build` if you removed a `dist/` by hand, because `tsc -b` won't notice |
+| `npm start`                                 | Run the production build from `backend/dist`                                                               |
+| `npm test` / `test:watch` / `test:coverage` | Vitest (`npm test` also runs the computer-use package's tests)                                             |
+| `npm run lint` / `lint:fix`                 | ESLint on **staged** files only. On a clean index this lints nothing                                       |
+| `npm run lint:all` / `lint:all:fix`         | ESLint on the whole tree                                                                                   |
+| `npm run prettier`                          | Format changed and staged files                                                                            |
+| `npm run swagger`                           | Regenerate `backend/swagger.json`, which is served at `GET /api/docs`                                      |
 
 ### Layout
 
