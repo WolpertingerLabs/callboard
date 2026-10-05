@@ -1,75 +1,58 @@
 # Computer-use viewer HTTP contract
 
-Network/envelope adaptation is isolated in `computerUse.ts`. Shared DTOs are in
-`shared/types/computerUse.ts`; they do not import the driver package.
+Network and envelope handling lives in `computerUse.ts`. Shared DTOs are in `shared/types/computerUse.ts` and don't import the driver package.
 
-All paths start with `/api/computer-use/:chatId`. Cookies are sent with
-`credentials: include`, and POSTs use JSON, matching existing authenticated
-frontend calls. The backend owns Origin/CSRF, ownership, grant, human-controller
-lease and stale-frame enforcement.
+## Endpoints
 
-- GET `/status`: `{ capabilities: [{ kind, available, reason?, readiness? }], sessions, permission }`.
-- POST `/open`: `{ kind: "browser" | "native" }` → `{ session }`.
-- POST `/:sessionId/observe`: `{}` → `{ frame: { data, mimeType, width, height }, frameId, generation }`.
-  Data is raw base64 raster bytes, not a URL. Screenshots are never stored in localStorage.
-- POST `/:sessionId/action`: `{ action, expectedGeneration, frameId, requestId }`.
-  See shared discriminated action union (click, move, drag, scroll, key, type, navigate).
-  Pointer coordinates are screenshot pixels; the driver owns capture/DPI/native-coordinate transforms.
-- POST `/:sessionId/takeover|resume|stop|revoke|approve`: `{ expectedGeneration }`.
-  Action/control responses may be JSON or 204; the viewer refreshes status afterward.
-  Approval is an authenticated, session-scoped human decision; no agent grant endpoint is exposed.
-- Errors: `{ code, error }` with an HTTP status derived from `code` (`not_found` 404,
-  `invalid_request` 400, `denied`/`approval_required` 403, `lease_conflict`/`stale_frame`/
-  `stale_generation`/`stopped`/`revoked` 409, otherwise 503). The client throws the
-  message and carries `code` on the error (`controlErrorCode`). `not_found` from
-  stop/revoke is terminal evidence for that session id: the server no longer knows
-  it, so it cannot be running; the client records it as `closed` and the emergency
-  ledger stops retrying it.
+All paths start with `/api/computer-use/:chatId`. Requests send cookies (`credentials: include`), and POST bodies are JSON. The backend enforces Origin/CSRF, ownership, grants, the human-controller lease and stale frames.
 
-Session fields: `id, kind, state, controller: "agent" | "human" | null, generation`,
-optional immutable `targetLabel`, optional actionable `reason`.
-The host emits the package states `starting|ready|stopped|revoked|failed`, plus
-`pending_approval` for its own generation-zero target/action requests. The viewer
-maps them as: active `ready`; waiting for approval `pending_approval`; terminal
-`stopped|revoked|failed`; anything else (including `starting`) is shown as "other"
-and disables capture and input. It additionally tolerates the aliases
-`active|running` (active), `pending|awaiting_approval|approval_required` (waiting)
-and `closed|expired` (terminal) for other host adapters; the host does not emit them.
-`shared/types/computerUse.ts` types `state` as `string`, so an unknown value never
-breaks an old client — it lands in "other".
+- `GET /status` → `{ capabilities: [{ kind, available, reason?, readiness? }], sessions, permission, events? }`. `events` entries are `{ sessionId, generation, type, at }`.
+- `POST /open` with `{ kind: "browser" | "native" }` → `{ session }`. The backend also accepts `"desktop"` and `"native-desktop"` as aliases for `"native"`.
+- `POST /:sessionId/observe` with `{}` → `{ frame: { data, mimeType, width, height }, frameId, generation }`. `data` is raw base64 raster bytes, not a URL. Screenshots are never written to localStorage.
+- `POST /:sessionId/action` with `{ action, expectedGeneration, frameId, requestId }`. `action` is the shared union: `click`, `move`, `drag`, `scroll`, `key`, `type`, `navigate`. Pointer coordinates are screenshot pixels; the driver handles capture, DPI and native-coordinate transforms. The viewer sends a fresh UUID as `requestId` on every call, but nothing reads it: the server mints its own action ID.
+- `POST /:sessionId/takeover|resume|stop|revoke|approve` with `{ expectedGeneration }`. Responses may be JSON or 204, and the viewer refreshes status afterwards. `approve` is an authenticated, session-scoped human decision. There's no endpoint that lets an agent grant itself access.
 
-The common Chat page is also the agent-chat destination (both agent dashboard
-entry points navigate to it), so one viewer integration serves ordinary and agent chats.
-The Computer view is the panel; the chat header carries a compact status strip
-with an emergency Stop, shown once the chat has used computer control
-(`hasUsage`), while the view is open, or while a Stop is in flight or failed.
-Status is read once when a chat loads, so stopped history or a pending approval
-from an earlier visit still shows the strip. It then polls every 3 seconds only
-while at least one of these holds: the chat's agent is running, the chat has used
-computer control, the Computer view is open, or a Stop is in flight. A chat that
-never used computer control therefore costs one status read and nothing more
-until its agent runs or the human opens the view. Reopening the view after an
-idle stretch reads immediately rather than waiting out an interval. Closing the
-view issues no extra read. No poll ever captures a screenshot.
-Enable, approval, screenshot capture, takeover and resume are separate explicit clicks.
-Manual input requires human control and the required frameId from a fresh same-generation screenshot;
-screenshots clear on hide/close/control changes/error/revoke. Emergency stop/revoke
-can supersede in-flight requests. The action list is local tab activity, not a
-claim of complete server audit history.
+**Errors** are `{ code, error }`, and the HTTP status comes from `code`:
 
-Capability availability must include server/runtime/engine readiness. This UI
-does not qualify models or platforms, install browsers/helpers, or substitute
-the viewer's machine for a native service-host target. Native availability on
-headless or unsupported hosts must be false with an actionable reason.
+| `code`                                                                    | Status |
+| ------------------------------------------------------------------------- | ------ |
+| `not_found`                                                               | 404    |
+| `invalid_request`                                                         | 400    |
+| `denied`, `approval_required`                                             | 403    |
+| `lease_conflict`, `stale_frame`, `stale_generation`, `stopped`, `revoked` | 409    |
+| anything else                                                             | 503    |
 
-The frameId is a UUID, not a lease generation or optional image label. Missing IDs return 400; stale IDs return 409. The viewer sends the exact ID paired with its displayed capture, then captures again after an action. A capture in another controlling tab supersedes the prior frame; subsequent captures cannot make an old ID valid again. Approval cards retain their exact frame/action snapshot. External asynchronous UI changes cannot be perfectly detected; re-observation remains necessary after suspected changes.
+The client throws the message and attaches `code` to the error (`controlErrorCode`). A `not_found` from stop or revoke is terminal for that session: the server no longer knows it, so it can't be running. The client records it as `closed`, and the emergency Stop ledger stops retrying it.
 
+## Sessions
 
-Native capabilities may include optional `readiness`: `setup-required`,
-`unsupported`, `permission-blocked`, or `unknown`. This is driver/host metadata,
-never a classification derived from `reason`. Missing or unrecognized values
-retain generic retry/check guidance. Chat permission restrictions override
-driver classification, including when a probe throws. This metadata grants
-nothing: setup guidance is passive, and enabling a target remains a separate
-human action. Technical details are escaped text in the authenticated viewer;
-package `operatorDetail` remains excluded from model-visible MCP probe results.
+A session has `id`, `kind`, `state`, `controller` (`"agent" | "human" | null`) and `generation`, plus an optional immutable `targetLabel` and an optional actionable `reason`.
+
+The host emits the package states `starting | ready | stopped | revoked | failed`, plus `pending_approval` for its own generation-zero requests. The viewer groups them like this:
+
+- **Active:** `ready`
+- **Waiting:** `pending_approval`
+- **Terminal:** `stopped`, `revoked`, `failed`
+- **Other:** anything else, including `starting`. Capture and input are disabled.
+
+For other host adapters, the viewer also accepts `active | running` (active), `pending | awaiting_approval | approval_required` (waiting) and `closed | expired` (terminal). Callboard's host never emits these. `state` is typed as `string`, so an unknown value lands in "other" instead of breaking an old client.
+
+## Viewer behaviour
+
+The common Chat page is also the agent-chat destination (both agent dashboard entry points navigate to it), so one viewer integration serves ordinary and agent chats. The Computer view is the panel. The chat header shows a compact status strip with an emergency Stop when:
+
+- the chat has used computer control (`hasUsage`)
+- the view is open
+- a Stop is in flight or has failed
+
+**Polling.** Status is read once when a chat loads, so stopped history or a pending approval from an earlier visit still shows the strip. After that it polls every 3 seconds, but only while the chat's agent is running, the chat has used computer control, the view is open, or a Stop is in flight. A chat that never used computer control therefore costs one status read and nothing more until its agent runs or the human opens the view. Reopening the view after an idle stretch reads immediately rather than waiting out an interval. Closing the view issues no extra read. Polls never capture screenshots.
+
+**Explicit clicks.** Enable, approve, capture, takeover and resume are each a separate click.
+
+**Manual input.** Input requires human control and the `frameId` from a fresh screenshot in the same generation. Screenshots are cleared on hide, close, control change, error or revoke. Emergency stop and revoke can supersede requests in flight. The action list shows this tab's activity only; it isn't a server audit log.
+
+**Frames.** A `frameId` is a UUID, not a generation or an image label. A missing ID returns 400, and a stale one returns 409. The viewer sends the ID paired with the capture it's showing, then captures again after each action. A capture in another controlling tab supersedes the old frame, and later captures can't revive an old ID. Approval cards keep their exact frame and action snapshot. Asynchronous UI changes can't always be detected, so re-observe after any suspected change.
+
+**Readiness.** Capability availability must reflect server, runtime and engine readiness. On headless or unsupported hosts, native capability must be unavailable, with an actionable reason. The viewer doesn't qualify models or platforms, install browsers or helpers, or substitute the viewer's own machine for the service host.
+
+A native capability may carry an optional `readiness` value: `setup-required`, `unsupported`, `permission-blocked` or `unknown`. This is driver or host metadata; the viewer never derives it from `reason`. Missing or unrecognized values get generic retry guidance. Chat permission restrictions take precedence over the driver's classification, even when a probe throws. Readiness grants nothing: setup guidance is passive, and enabling a target remains a separate human action. Technical details are escaped text in the authenticated viewer, and the package's `operatorDetail` never reaches model-visible probe results.
