@@ -1,418 +1,307 @@
 # Callboard
 
-A web control panel for coding agents — run [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, Cline, pi or OpenCode through your browser instead of the terminal.
+A browser control panel for coding agents. Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Codex, Cline, pi or OpenCode from a web UI instead of a terminal.
 
-> **Alpha Software** — Expect breaking changes between updates.
+> **Alpha software.** Expect breaking changes between updates.
 
-Callboard gives you a full-featured chat interface on top of five agent harnesses. You get real-time streaming responses, tool permission controls, image uploads, git worktree isolation, a card board, scheduled and event-driven agents, and multi-step jobs — all from a browser tab you can keep open alongside your editor.
+You get streaming chats with tool-permission controls, image uploads, git worktree isolation, a card board, scheduled and event-driven agents, multi-step jobs, a blob store and reusable HTML artifacts.
 
-## Quick Start
-
-### 1. Install
+## Quick start
 
 ```bash
 npm install -g @wolpertingerlabs/callboard
-```
-
-Requires **Node.js 22.19+**, and — for Claude Code, the default engine — either the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated, or an Anthropic API key set under Settings → API. See [Engines](#engines) for that and for the four other engines Callboard can run.
-
-### 2. Set a password
-
-```bash
 callboard set-password
-```
-
-This step is not optional. Callboard has no anonymous mode: until a password hash is stored, `/api/auth/login` returns 503 and every other API route with it, so a server started without one has a login page that cannot be used. Minimum eight characters; the password is hashed with scrypt and the plaintext is never written anywhere.
-
-### 3. Start the server
-
-```bash
 callboard start
 ```
 
-Open **http://localhost:8000** in your browser and log in. That's it.
+Then open **http://localhost:8000** and log in.
+
+- Requires **Node.js 22.19+**.
+- The password is required. Until one is set, login and every authenticated API route return 503, so the UI can't be used. The minimum length is eight characters. Callboard stores only an scrypt hash.
+- To use Claude Code, the default engine, either sign in with the `claude` CLI or add an Anthropic API key under **Settings → API**. See [Engines](#engines).
 
 ## Engines
 
-Callboard runs a chat on one of five agent **engines** — Claude Code, Codex, Cline, pi, or OpenCode. You pick one per chat, and set each one's defaults under **Settings → API**. Every engine gets a tab there whether or not it can actually run, so start here. (The OpenRouter tab alongside them is not an engine — it holds a service credential the other engines can be routed through.)
+Each chat runs on one of five engines. You pick the engine per chat and set each engine's defaults on its tab under **Settings → API**. The **OpenRouter** tab there isn't an engine; it holds the OpenRouter key and base URL that model catalogs use.
 
-| Engine          | How it runs                                                   | Install anything?     | Authentication                                                    |
-| --------------- | ------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------- |
-| **Claude Code** | Bundled agent SDK, but a `claude` on your `PATH` is preferred | Optional, recommended | `claude auth login`, or a key in Settings → API                   |
-| **Codex**       | Bundled — the `codex` binary ships inside Callboard           | Only to log in        | `codex login` (needs the CLI), or an OpenAI key in Settings → API |
-| **Cline**       | Bundled — runs in the Callboard process, no binary            | No                    | A key for the provider you pick, in Settings → API                |
-| **pi**          | Bundled — runs in the Callboard process, no binary            | No                    | A key for the provider you pick, in Settings → API                |
-| **OpenCode**    | An `opencode` binary you install, spawned per turn            | **Yes** — required    | `opencode auth login`, in your own terminal                       |
+| Engine          | How it runs                                                        | Must you install it? | Sign-in                                                 |
+| --------------- | ------------------------------------------------------------------ | -------------------- | ------------------------------------------------------- |
+| **Claude Code** | Bundled Agent SDK; prefers a `claude` binary if it finds one        | No (recommended)     | `claude auth login`, or an API key in Settings → API     |
+| **Codex**       | Bundled `codex` binary                                              | Only to log in       | `codex login`, or an OpenAI key in Settings → API        |
+| **Cline**       | In-process library                                                  | No                   | A provider key in Settings → API                         |
+| **pi**          | In-process library                                                  | No                   | A provider key in Settings → API                         |
+| **OpenCode**    | Your `opencode` binary, spawned per turn over the [Agent Client Protocol](https://agentclientprotocol.com) | **Yes** | `opencode auth login` in your own terminal |
 
-**Bundled** means the engine is an ordinary npm dependency of Callboard: you got it with `npm install -g @wolpertingerlabs/callboard`, and you update it by updating Callboard. Installing a bundled engine globally does not upgrade it — Node resolves the package from Callboard's own `node_modules` first, and global installs aren't on that search path, so the two copies coexist and Callboard keeps using its own. It doesn't break anything either; it just has no effect. To move a bundled engine forward, update Callboard.
+Bundled engines are npm dependencies of Callboard, so updating Callboard updates them. A global install of the same package has no effect, because Node resolves Callboard's own copy first.
 
 ### Claude Code
 
-No engine to install: the Claude Agent SDK ships with Callboard, and carries a native `claude` binary for your platform with it. That binary is an *optional* dependency, so it is missing if you installed with `--omit=optional` or you're on a platform Anthropic doesn't publish one for — in which case the SDK throws on startup and asks you to reinstall or point it at a `claude` yourself.
+Callboard uses the first `claude` it finds, checking in this order:
 
-Callboard prefers a `claude` you installed anyway, and one lookup decides it — for chats, for the login prompt and for the About page alike. In order:
-
-1. the **Binary path** field under Settings → API → Claude Code (`pathToClaudeCodeExecutable`)
-2. the `CLAUDE_BINARY` environment variable
+1. **Binary path** under Settings → API → Claude Code (`pathToClaudeCodeExecutable`)
+2. the `CLAUDE_BINARY` environment variable (it must answer `--version` as Claude Code)
 3. `which claude`
-4. four well-known install directories — `~/.local/bin`, `~/.claude/bin`, `/usr/local/bin`, `/opt/homebrew/bin`
+4. `~/.local/bin`, `~/.claude/bin`, `/usr/local/bin`, `/usr/bin`, `/opt/homebrew/bin`
 
-Nothing resolving means this machine has no native CLI, and the Agent SDK's bundled binary runs. The status card names the path in effect and which of the four found it, which is worth reading: `~/.local/bin/claude` is where Anthropic's own `install.sh` lands, and a daemon that started before that directory was on its `PATH` finds it only through step 4.
+If none of these resolve, the Agent SDK's bundled binary runs. That binary is an optional dependency, so it's missing if you installed with `--omit=optional`. The engine's status card shows which path is in effect and which step found it.
 
-Either binary field — Claude Code's or Codex's — is checked before it is used: the path must be **absolute**, exist, be a regular file, and be executable by the user running the Callboard daemon. (Absolute matters more than it looks: Callboard would resolve a relative path against the daemon's own directory while the engine spawns it from the chat's folder, so it would name a different file in every chat.) A path that fails any of those is **rejected** and resolution carries on as if the field were blank, so a typo cannot break every chat. The field says why while you are typing, and the status card says why afterwards. Editing either field takes effect on the next chat; no restart.
-
-Both fields can only be changed from a browser on the same machine or LAN, or by editing `~/.callboard/agent-settings.json` on the host. They decide which executable the daemon spawns, so they are held to the same scope as running an install — a client reaching Callboard through Remote Access can see which binary is in effect but not change it.
-
-Installing it is the recommended setup, and it is the only way to sign in with a Claude subscription:
+Installing the CLI is the only way to use a Claude subscription:
 
 ```bash
 npm install -g @anthropic-ai/claude-code
 claude auth login
 ```
 
-To use an API key or a gateway bearer token instead, set it under **Settings → API → Claude Code**, which also shows which token source is currently live. Callboard's "Claude Code Login Required" prompt reads that credential before it reaches for the CLI, so an API-key install doesn't get asked to log in — the prompt appears only when no credential of any kind was found, and it says which of the two remedies applies to your machine.
+To use an API key or a gateway token, set it under **Settings → API → Claude Code** instead. The "Claude Code Needs Credentials" dialog appears only when Callboard finds no credential at all.
 
 ### Codex
 
-Nothing to install to *run* Codex: `@openai/codex-sdk` brings the `codex` binary for your platform with it, so the engine is always present. What varies is whether you are signed in. Two ways to do that:
+The bundled `codex` binary is always available. What varies is the sign-in:
 
-- **ChatGPT subscription.** This needs the Codex CLI as a separate install — Callboard's copy of the binary sits inside its own `node_modules` and never lands on your `PATH`, so `codex login` is not a command you have otherwise.
+- **ChatGPT subscription:** install the CLI and run `npm install -g @openai/codex && codex login`. This writes `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`), which Callboard reads. Chats still run on the bundled binary.
+- **API key:** switch the auth mode under **Settings → API → Codex** and paste an OpenAI key.
 
-  ```bash
-  npm install -g @openai/codex
-  codex login
-  ```
+To run a different `codex`, set **Binary path** (`codexPathOverride`). This field does no `PATH` search: chats use either the path you set or the bundled copy. Callboard parses Codex's undocumented rollout files, so a far-off version can render transcripts with missing turns. When the version in effect differs from the one the parser targets, the status card shows a **Compatibility** row.
 
-  That writes `~/.codex/auth.json` (or wherever `CODEX_HOME` points) and Callboard reads it from there. The global CLI is only needed to log in — chats still run on Callboard's bundled copy, unless you point the **Binary path** field at it (below).
+### Cline and pi
 
-- **API key.** Switch the auth mode to API key under **Settings → API → Codex** and paste an OpenAI key. Nothing to install, no CLI involved.
+Both run inside the Callboard process, with no binary. Pick a provider and add its key under their tabs in Settings → API. Cline defaults to `anthropic` and pi to `openrouter`.
 
-#### Running your own `codex`
-
-Set **Binary path** under Settings → API → Codex (`codexPathOverride`) and chats spawn that binary instead of the bundled one — useful if you want a newer Codex than the release Callboard pins, or a build of your own. If you installed the CLI globally to run `codex login`, `which codex` prints the path to use.
-
-There is no `PATH` search behind that field: it is your path or the bundled copy, nothing in between. Auth and sessions do not move either — the overriding binary still reads `$CODEX_HOME/auth.json` and writes to the same rollout tree.
-
-One thing to watch. Callboard parses Codex's session rollout files by hand, and that format is undocumented and changes between releases. Run a `codex` far enough from the version Callboard targets and the transcripts it writes **from now on** can render with turns missing rather than fail loudly — chats recorded by a matching version still read correctly. The status card shows a **Compatibility** row when the version in effect differs from the one the parser was written against.
-
-### Cline
-
-Nothing to install, and no binary at all — the `@cline/sdk` runtime runs inside the Callboard process.
-
-Pick a provider (`anthropic` by default) and give it a key under **Settings → API → Cline**. Leave the key blank and the runtime falls back to the usual environment variables — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, the AWS credential chain, and so on.
-
-### pi
-
-Nothing to install. Like Cline, pi is an in-process library.
-
-Pick a provider (`openrouter` by default) and give it a key under **Settings → API → pi**. Blank falls back to the environment (`OPENROUTER_API_KEY`, …); a key set here wins over the environment when both are present. Callboard never writes to pi's own auth file.
+- **Cline:** if you leave the key blank, Callboard passes no key and leaves the SDK to its own environment fallback (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and so on).
+- **pi:** a key set in Settings overrides the environment. Callboard never writes pi's auth file.
 
 ### OpenCode
 
-**The one engine you have to install.** Callboard talks to OpenCode over the [Agent Client Protocol](https://agentclientprotocol.com) by spawning the `opencode` binary, so if it isn't on the `PATH` of the user running the Callboard daemon, the engine does not work at all.
+OpenCode is the only engine you have to install yourself, and it must be on the daemon's `PATH`:
 
 ```bash
-npm install -g opencode-ai
+npm install -g opencode-ai     # or OpenCode's own installer
+opencode auth login
 ```
 
-Or use OpenCode's own installer — see the [OpenCode docs](https://opencode.ai/docs/).
+Callboard never touches OpenCode's credential file. Settings → API → OpenCode has two settings:
 
-Authentication is mostly OpenCode's own: run `opencode auth login` in a terminal. Callboard never touches OpenCode's credential file, which OpenCode shares with your own terminal sessions. The one credential Callboard does hold for it is **Give ACP agents an OpenRouter key**, under **Settings → API → OpenCode** — handed to the spawned process as `OPENROUTER_API_KEY` so OpenCode's own OpenRouter provider works.
+- **Give ACP agents an OpenRouter key:** passed to OpenCode as `OPENROUTER_API_KEY`.
+- **Default Model:** the model new OpenCode chats start on.
 
-**Default Model**, on the same tab, sets which model new OpenCode chats start on. Blank leaves OpenCode's own configured model alone — the same one it would use if you ran it from a terminal — and a per-chat model, when you pick one for a chat, always overrides it.
+Callboard can check that `opencode` is installed but not whether you're signed in. If you never signed in, the first message fails with OpenCode's own error.
 
-Note that "installed" and "signed in" are separate questions here, and Callboard can only answer the first — it checks that the binary resolves on your `PATH`. ACP gives no way to ask an agent who is logged in, so an OpenCode you installed but never signed into shows as available and then fails when you send your first message, with OpenCode's own error. When that happens, `opencode auth login` is the fix.
+### Binary path fields
 
-### After installing an engine, or signing in
+The Claude Code and Codex **Binary path** fields only accept a path that is absolute, exists, is a regular file, and is executable by the daemon's user. If the path fails a check, Callboard ignores it and the card explains why. Changes apply to the next chat.
 
-Callboard resolves engine binaries — and the Claude Code account — once, and caches the answers for the life of the daemon, because `PATH` doesn't change underneath a running process. So after you install a CLI or run a `login` command, the card in **Settings → API** is still reporting what it found before.
+Only a browser on the same machine or LAN can change these fields, because they decide what the daemon executes. A client coming through [Remote Access](#remote-access) can see them but not change them.
 
-Press **Recheck** on that card. It drops every cached lookup (each engine's binary path and version, the executable handed to the Agent SDK, and the Agent SDK's account info) and probes again, so a running daemon picks up both a new binary and a fresh login without a restart. Re-probing spawns processes, so it's limited to one real check every ten seconds; press it again inside that and you'll be told you're seeing the previous result.
+### After you install or sign in
 
-**Recheck cannot see everything.** Three cases need `callboard restart` instead, and Callboard states each one on the card rather than pretending it checked:
+Callboard caches binary lookups and Claude account info for the life of the daemon. After you install a CLI or log in, press **Recheck** on the engine's card. It re-probes at most once every 10 seconds.
 
-- **A vendor install script.** `https://opencode.ai/install` installs to `~/.opencode/bin` and `https://claude.ai/install.sh` lands in `~/.local/bin`; both put that directory on your `PATH` by editing your shell rc. New terminals get it — a process that's already running never does, because its `PATH` was fixed when it started. This is the common case, not an edge one: restart Callboard from a terminal where the command works.
-- **A global prefix you can't write to.** A system-wide Node install fails `npm install -g` with `EACCES` until you point npm somewhere you own (`npm config set prefix ~/.npm-global`, then make sure that `bin/` is on your `PATH`).
-- **nvm.** The global prefix belongs to the active Node version, so a binary installed under one version is invisible to a daemon running under another. Compare `node -v` in the terminal you installed from against the Node running Callboard.
+Recheck can't fix a stale `PATH`. You need `callboard restart`, run from a terminal where the command works, when:
 
-### Installing a CLI from the card
+- a vendor install script (`opencode.ai/install` → `~/.opencode/bin`, `claude.ai/install.sh` → `~/.local/bin`) added its directory to `PATH` through your shell rc file
+- you installed under a different nvm Node version than the one running Callboard
 
-Three of the install commands above have an **Install** button beside them, which runs the `npm install -g …` for you and streams the output into the card: the native `claude`, the Codex CLI, and `opencode`. The package comes from a closed list in the source — nothing from the request reaches a command line, and there is no shell.
+### The Install button
 
-The button is offered only to a browser on the same machine or LAN, never to one reaching Callboard through Remote Access, and only when npm's global prefix resolved and is writable. Turn it off entirely with `allowEngineInstalls: false` in `~/.callboard/agent-settings.json`. Whenever it is withheld, the card says why and the copy-and-paste command is still there. The vendor `curl … | bash` installers never get a button — Callboard offers that text and will not run it for you.
+The engine cards for `claude`, Codex and `opencode` have an **Install** button. It runs `npm install -g` from a fixed list of packages, without a shell, and then re-probes. The button only appears when all of these hold:
 
-A zero exit from npm is not the same claim as "the engine is installed", so the card doesn't make it: after a successful install Callboard re-probes and reports what it actually found, which is how you learn that the global bin directory isn't on the daemon's `PATH`.
+- the browser is on the same machine or LAN
+- npm's global prefix is writable
+- the host isn't Windows
 
-## What You Can Do
+To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-settings.json`, or use the toggle on the Remote Access page. Callboard never runs `curl … | bash` installers for you.
+
+## Features
 
 ### In a chat
 
-- **Watch it work** — streaming responses with thinking, tool calls, and permission prompts, on whichever engine the chat runs
-- **Gate tools** — set `allow` / `ask` / `deny` per chat on five axes: file read, file write, code execution, web access, and Browser & Computer Control
-- **Attach images** — drag and drop PNG, JPEG, GIF or WebP, up to 10 MB each
-- **Start on a branch** — pick a base branch, name a new one (or have one generated from your prompt), and optionally run the chat in its own git worktree
-- **Read the diff** — the chat's working tree, file by file, without leaving the tab
-- **Use slash commands** — autocomplete over the commands your project and enabled plugins provide. The one you pick becomes a *chip* in the composer rather than text, so the prose you type alongside it stays yours; click the chip to read the command's body
-- **Expand `$keyword` snippets** — named chunks of prompt text you keep under Settings → Keywords and drop inline by typing `$name`. Purely a client-side expansion: the harness sees prose you could have typed by hand
-- **Save drafts** — park a message on a chat, or on a folder before the chat exists, and send it later
-- **Fork a chat** — branch off an earlier message into a new chat. Forks keep their parentage, and the resulting tree is browsable
-- **Switch model mid-chat** — and pick a reasoning effort on the harnesses that have one
-- **See what the agent renders** — images, audio, video and PDFs pushed into the transcript, plus versioned HTML/SVG **canvases** an agent can create and then update in place
-
-### Browser & Computer Control (preview)
-
-The dedicated Computer view contains target selection, approvals, screenshots and manual takeover. Switching views never enables a target, captures a screenshot or resumes an agent. Closing the view drops local screenshots and input; it does not cancel an already accepted server capture. Status continues to poll without screenshots. The status/Stop strip is hidden in unused chats until a session (including stopped history), approval request or valid late session response is observed; it then stays visible for that chat/controller lifetime, even after errors, permission denial or empty status. **Stop computer control** stays reachable even on mobile with the action bar closed after use. The Computer view remains available in the view menu for unused chats and temporarily shows the strip for emergency global Stop discovery/retry even when status fails. Closing an unused view hides the strip again unless Stop is still pending or has an unresolved retry error (a successful empty Stop clears that exception): viewing alone is not usage or automatic enable. It attempts all current chat browser/native sessions and pending requests, independently of Stop generation; partial failures remain visible for retry. Native Codex child chats are read-only. This UI has offline regression coverage, not live UI, model, browser, Aseprite or Blender qualification.
-
-Existing chats continue normally: this feature does not automatically open a browser or control a desktop. In an existing chat, select the monitor (**Show computer control**) in the header view switcher (on mobile, open the secondary action bar), then open **Chat permissions**, and explicitly change its fifth permission from **Deny** to **Ask** or **Allow**. Missing legacy values and new child/job defaults deny managed access, including screenshots.
-
-> Control a managed browser or desktop on the service host. Agents with unrestricted code execution may still run their own automation.
-
-The agent can call `cu_request_control` to show an **Enable browser control** or **Enable desktop control** card directly in chat. Read the host, screenshot/model, duration and permission disclosures, then Enable or Deny; after approval the agent receives the created session and continues automatically, without switching views or sending another message. Both Ask and Allow require this initial human consent. Deny (including missing policy) remains denied; change permissions explicitly in the chat permissions dialog if needed. You can still choose **Managed browser** or **Native desktop (service host)** in Computer view and click **Enable**; that existing Ask path also requires scoped approval. Browser permission does not authorize desktop control. **Only you can enable a target, at every level**: the agent's `cu_open` lists ready sessions and grants nothing. What the level decides is what happens after that — under **Ask**, every model-requested GUI action stops the agent's turn and asks you in the chat, and only a signed-in browser session can answer (an API key cannot; human-only replies require the current server-issued request ID and same-origin session authentication); under **Allow**, the agent acts unattended, and each action it performs is written to the server log instead. Confirmations expire and bind one action to one captured frame; the agent must re-observe and ask again if the frame becomes stale. Initial enablement instead binds the target, policy and bounded grant duration: readiness probes time out after 10 seconds, and Stop/cancellation or changed authority during startup prevents success and fences the new session. Failed submissions remain visible for retry; refreshed tabs replay the current request, not the old consent. Tabs running an older bundle receive an in-chat **Reload this Callboard tab** notice for both initial enablement and existing per-action confirmations, including when they connect to a chat that was already waiting. Stream attachment subscribes before checking pending state; capable clients and ordinary prompts retain REST replay without duplicate cards. Reload to recover the pending card (or ask again if it expired); ID-less human-only replies are never accepted. The REST pending endpoint advertises `reloadRequired` without an answerable placeholder for clients missing `human_prompt_identity`.
-
-Subagents that run inside a chat's turn share that chat's tool server and therefore its computer-control grant: Claude Code Task subagents and Codex native subagents both make their screenshot and action requests as the parent chat, and they are authorized and audited as the parent, not as the child. Enable a target only if you are comfortable with everything the chat spawns using it.
-
-**Provision the service host first:**
-
-- **Browser:** install the optional Playwright runtime and provision compatible Chromium plus its OS libraries separately; Callboard never downloads browsers automatically. Set `CALLBOARD_BROWSER_EXECUTABLE=/absolute/path/to/chrome` in the service environment to select an existing executable, or provision Playwright's expected executable. Profiles are isolated and disposable. Web Access must be Allow. **Chromium sandboxing is mandatory**: Linux needs a non-root user and OS support for Chromium's sandbox (user namespaces/seccomp or a supported sandbox helper). There is no unsandboxed fallback. An executable-found probe does not prove sandboxed launch works.
-- **Native desktop:** the built-in driver targets an existing **Linux X11** session, requiring reachable local display access, `/usr/bin/xdotool` (XTEST) and ImageMagick's `/usr/bin/import`. Configure `CALLBOARD_NATIVE_DISPLAY=:0` for the intended local display, or the service's `DISPLAY`. The original four permission axes must all be Allow: a pixel driver cannot enforce narrower OS file, code or network authority. This is not an OS isolation boundary.
-- Missing dependencies, inaccessible displays and unsupported targets fail unavailable rather than silently falling back or breaking ordinary chats. Built-in native macOS, Windows and Wayland/XWayland control is unavailable; headless hosts have no native desktop to control.
-
-**Viewer and privacy:** refresh screenshots explicitly or opt into Live preview. Take over before manual input; agent capture and input are blocked during human control. Each input consumes its frame, so refresh before the next action. **Resume** explicitly restores agent control and captures a fresh agent-visible frame—remove sensitive windows first. Stop/Revoke fence queued and future access; native applications remain open. Previously delivered model images cannot be recalled. Events are memory-only, and hard-crash input recovery is not yet supervised.
-
-Tools operate on the **service host**, not the machine viewing this page. A separately installed authenticated helper would be needed for another machine; that helper is not included in this preview.
-
-Claude Code, Codex, Cline, pi and OpenCode via ACP share the MCP execution/authorization service; Cline/pi use host bridges. Offline image-serialization tests do not qualify arbitrary models or provider routes. Live sandboxed-browser operation on the current build host, native desktop workflows, and Aseprite/Blender artwork/export scenarios remain unqualified; this is not a promise of autonomous drawing or modeling.
-
-See the [standalone package guide](packages/computer-use/README.md) for contracts, prerequisites, limitations and source/tarball use.
+- **Streaming:** text, thinking, tool calls and permission prompts, on any engine.
+- **Tool permissions:** set `allow`, `ask` or `deny` per chat on five axes: file read, file write, code execution, web access, and Browser & Computer Control.
+- **Images:** drag in PNG, JPEG, GIF or WebP files, up to 10 MB each.
+- **Branches and worktrees:** pick a base branch, name a new branch (or generate a name from the prompt), and optionally run the chat in its own worktree.
+- **Diffs:** view the chat's working-tree diff file by file.
+- **Slash commands:** autocomplete covers your project's and plugins' commands. The chosen command becomes a chip in the composer.
+- **`$keyword` snippets:** saved under Settings → Keywords. Callboard expands them in the browser before sending.
+- **Drafts:** save a message for an existing chat, or for a folder before its chat exists.
+- **Forks:** branch off an earlier message into a new chat. The fork tree is browsable.
+- **Model and effort:** switch the model mid-chat, and set the reasoning effort on engines that support it.
+- **Rendered output:** agents can show images, audio, video and PDFs inline, plus versioned HTML/SVG canvases that they update in place.
 
 ### Around the work
 
-- **Workspaces** — a workspace is a `cwd` plus its git isolation. Start a chat in a worktree and Callboard records one. Agents manage them through MCP tools (`list_workspaces`, `create_workspace`, `rename_workspace`, `archive_workspace`, `list_unmanaged_worktrees`, `adopt_worktrees`): archiving quarantines a clean, Callboard-owned worktree into `~/.callboard/trash` (kept 30 days, with a restore recipe in each entry), and adoption brings in worktrees Callboard didn't create. Several workspaces may share one checkout — that is a supported state, not a bug
-- **Cards and the board** — every conversation is a card: the card is the board view of a top-level chat and everything spawned from it (child chats, job runs), so a card exists the moment you send a prompt and disappears when that chat is deleted. The board files open cards under **Needs you**, **Running** and **Idle**, with a card's own category as a sub-heading inside each — the question it answers first is what is waiting on you. Agents can list, read, and amend cards — title, description, emoji, narrative status, category, cross-reference metadata
-- **Jobs** — deterministic multi-step workflows. A job definition is an ordered list of steps (`agent`, `approval`, `poll`, `wait_event`, `gate`, `notify`, `parallel`, and nested `job`); control flow is backend code, the work inside a step is a spawned agent session. Spawning one creates a run you can pause, resume, cancel, or retry a failed step of, and runs survive a daemon restart. Built under Settings → Jobs, and importable/exportable as JSON
-- **Custom skills** — write a skill under Settings → Skills and it lands at `~/.callboard/custom-skills/skills/<name>/SKILL.md`, invoked in chat as `callboard:<name>`
-- **Model aliases** — one name (`planner`, `worker`) that resolves to a different concrete model per harness, accepted anywhere a model is configured: new chats, per-chat overrides, provider defaults, cron actions, job steps
-- **Plugins & MCP** — register directories to scan and Callboard discovers Claude Code plugin marketplaces under them, along with the slash commands, hooks and MCP servers each plugin carries. Toggle plugins per directory
-- **Themes** — every colour in the UI is a CSS variable, in a light and a dark set. Custom themes live as files in `~/.callboard/themes/`, and an agent can generate one for you
-- **API keys** — mint `cbk_` bearer tokens under Settings → Account to drive the REST API from scripts. They do not authorize human-only operations such as minting more keys or using the computer-control viewer/control plane
+- **Cards and the board:** every top-level chat is a card, along with everything spawned from it (child chats and job runs). The board groups cards under **Needs you**, **Running** and **Idle**, with sub-headings for each card's category. Agents can read and edit the title, description, emoji, status, category and metadata of their own card.
+- **Workspaces:** a workspace is a `cwd` plus its git isolation. Callboard records one when a chat starts in a worktree. Agents manage workspaces with MCP tools (`list_workspaces`, `create_workspace`, `rename_workspace`, `archive_workspace`, `list_unmanaged_worktrees`, `adopt_worktrees`). Archiving moves a clean, Callboard-owned worktree into `~/.callboard/trash` for 30 days, and each entry includes a restore recipe.
+- **Jobs:** deterministic multi-step workflows. Step types are `agent`, `approval`, `poll`, `wait_event`, `gate`, `notify`, `parallel` and nested `job`. You can pause, resume and cancel a run, or retry a failed step, and runs survive a restart. Build jobs under Settings → Jobs, or import and export them as JSON.
+- **Storage:** a key-based blob store, managed under Settings → Storage and with the `*_storage_*` tools.
+- **Artifacts:** named, versioned HTML, SVG or markdown documents (the last 50 versions are kept). Agents save them with `save_artifact` and show them with `render_artifact`. An artifact can have read or read-write access to one storage key. Manage them under Settings → Artifacts. Each artifact also opens full-window at `/a/<id>`.
+- **Custom skills:** skills you write under Settings → Skills are saved to `~/.callboard/custom-skills/skills/<name>/SKILL.md` and invoked as `callboard:<name>`.
+- **Model aliases:** one name, such as `planner`, that maps to a different model per engine. Aliases work anywhere a model is set.
+- **Plugins & MCP:** Callboard scans directories you register for Claude Code plugin marketplaces and picks up their commands, hooks and MCP servers. Plugins are toggled per directory.
+- **Themes:** every UI colour is a CSS variable, with light and dark sets. Custom themes are files in `~/.callboard/themes/`, and an agent can generate one for you.
+- **API keys:** mint `cbk_` bearer tokens under Settings → Account for scripts. These keys can't perform human-only actions such as minting more keys or controlling a computer.
+
+### Browser & Computer Control (preview)
+
+This lets an agent drive a managed Chromium browser, or a Linux X11 desktop, **on the machine running Callboard**. It is off unless you turn it on.
+
+- **Permission:** Browser & Computer Control is the fifth permission axis. It defaults to **Deny**, and new child chats, job steps and agent sessions start with it denied. To use it, set it to **Ask** or **Allow** in the chat's permission dialog.
+- **Enabling a target is always a human action.** The agent can call `cu_request_control` to put an **Enable browser control** or **Enable desktop control** card in the chat. You can also enable a target from the Computer view, which you open with the monitor icon (**Show computer control**) in the chat header. The agent can't grant itself access.
+- **Ask vs Allow:** under **Ask**, every GUI action pauses the turn until you approve it in the chat. Only a signed-in browser can approve, not an API key. Under **Allow**, the agent acts unattended and each action is written to the server log.
+- **Subagents share the grant.** Claude Code Task subagents and Codex native subagents act as the parent chat.
+- **Stop computer control** in the chat header stops every session in the chat. Take over before you type or click yourself, and choose **Resume** to hand control back. Images already sent to a model can't be recalled.
+- If a tab is running an older Callboard bundle, it shows **Reload this Callboard tab** instead of an approval card.
+
+Set up the host first:
+
+- **Browser:** Playwright installs with Callboard as an optional dependency, but no browser is downloaded. Provide Chromium and its OS libraries, and set `CALLBOARD_BROWSER_EXECUTABLE=/absolute/path/to/chrome` if Playwright won't find it. Chromium's sandbox is mandatory. On Linux, run as a non-root user with sandbox support. The chat's Web Access permission must be Allow.
+- **Desktop:** only an existing Linux X11 session works. It needs `/usr/bin/xdotool`, ImageMagick's `/usr/bin/import`, and `CALLBOARD_NATIVE_DISPLAY` (or `DISPLAY`). All four other permission axes must be Allow, because desktop control can reach everything the user can. This isn't an isolation boundary. macOS, Windows and Wayland aren't supported.
+
+Live sandboxed-browser use and native desktop workflows haven't been qualified yet. For the security model and limits, see [`packages/computer-use/README.md`](packages/computer-use/README.md).
 
 ## Agents
 
-Callboard isn't just a chat window — it's a platform for running autonomous agents. Each agent gets its own identity, workspace, memory, and schedule.
+An agent is a named identity with its own workspace, memory, schedule and triggers, created from the **Agents** page. Its identity (name, emoji, role, personality, tone, pronouns, guidelines) and what it knows about you (name, timezone, location) are compiled into a system-prompt append. You can inspect that append section by section, with token estimates, on the agent's dashboard.
 
-### Creating Agents
+Each agent gets:
 
-Agents are created from the UI. Each agent has a name, emoji, personality, role, tone, pronouns and guidelines that shape how it behaves, plus what it knows about you — your name, timezone and location. Those compile into a system-prompt append you can inspect, section by section with a token estimate, from the agent's dashboard. Behind the scenes, an agent gets:
+- **A workspace** at `~/.callboard/agent-workspaces/<alias>/`, seeded with `CLAUDE.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md` and `MEMORY.md`.
+- **Two-tier memory:** daily journals in `memory/YYYY-MM-DD.md`, plus a curated `MEMORY.md`. Every session preloads `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `MEMORY.md`, today's journal and yesterday's journal. Yesterday's journal is capped by the **journal budget** on the Memory tab, which defaults to 16k tokens. A capped journal keeps its tail and includes a note telling the agent to read the full file.
+- **Permissions:** the four original axes default to allow, and Browser & Computer Control is denied.
+- **A caller identity** for the connection proxy, which decides which external APIs the agent can reach.
 
-- **A workspace** at `~/.callboard/agent-workspaces/<alias>/` with scaffold files that teach it how to maintain memory, take notes, and work proactively — `CLAUDE.md`, `SOUL.md`, `USER.md`, `TOOLS.md`, `HEARTBEAT.md`, `MEMORY.md`
-- **A two-tier memory system** — daily journal files at `memory/YYYY-MM-DD.md` for running notes, and a curated long-term `MEMORY.md` distilled over time. Today's journal and `MEMORY.md` are pre-loaded whole; each *earlier* day is capped by the **journal budget** on the Memory tab — 16k tokens by default, a backstop against one runaway day rather than a tight budget, and settable up to no limit. A capped journal carries a notice telling the agent to read or search the file for the entries left out
-- **Tool permissions** — agents default to allow on the original four axes (file read/write, code execution, web access), but you can restrict per session. Browser & Computer Control defaults to deny
-- **A caller identity** for the connection proxy, chosen per proxy mode, which decides which external APIs it can reach
+Setting `enabled: false` turns off an agent's crons, triggers and sessions.
 
-An agent can be switched off outright (`enabled: false`), which suppresses its crons, its triggers and its sessions at once.
+### Triggering agents
 
-### Triggering Agents
+- **Cron jobs:** one-off, recurring or indefinite, evaluated in the agent's timezone. They can optionally skip a run while the previous one is still going. Every new agent gets two: a **Heartbeat** every 30 minutes (it reads `HEARTBEAT.md`) and a nightly **Memory Consolidation** at 03:00.
+- **Event triggers:** filter incoming events by source, event type and dot-path conditions, and build a prompt from `{{event.*}}`. Triggers can debounce bursts of events.
+- **Event subscriptions:** watch a connection and wake the agent when events arrive, with no filter or template.
+- **Other agents:** `deploy_agent` starts a session as another agent (fire and forget). `talk_to_agent` sends a message and waits for the reply.
 
-Agents can run in four ways:
+Each cron job and trigger sets its own engine, model and reasoning effort, and its own **quiet hours**. Recurring jobs and triggers don't fire inside their quiet hours. One-off jobs fire regardless.
 
-- **Cron jobs** — scheduled tasks with cron expressions, evaluated in the agent's configured timezone. One-off, recurring, or indefinite, and optionally skipped when the previous run is still going. Two are created for every new agent: a **Heartbeat** every 30 minutes that reads `HEARTBEAT.md` and acts on what it finds, and a nightly **Memory Consolidation** at 03:00 that distils the day's journals into `MEMORY.md`.
-- **Event triggers** — react to incoming events from external services (Discord messages, GitHub webhooks, etc.) with filters on source, event type and dot-notation conditions over the payload, and prompt templates that interpolate event data via `{{event.*}}`. A trigger can debounce, so a burst of events produces one session rather than forty.
-- **Event subscriptions** — the lighter option: name a connection the agent watches, and it is woken when events arrive, with no filter or prompt template to configure. The agent decides what to do.
-- **Direct invocation** — agents can start sessions as other agents (`deploy_agent`, fire-and-forget) or send them a message and wait for the reply (`talk_to_agent`), creating multi-agent workflows.
+### Agent tools
 
-Each cron job and trigger names the harness, model and reasoning effort its sessions run on, so one agent can plan on one engine and grind on another.
+Beyond their engine's normal tools, agents can:
 
-### Quiet Hours
+- start, monitor and continue chats, and read their messages
+- run and steer jobs
+- manage their own crons and triggers, and read their activity log
+- find and orchestrate other agents
+- edit their card, manage workspaces, custom skills, model aliases, storage and artifacts
+- render media and canvases into the chat
+- reach you: `summon_user` flags the chat on the dashboard, and `notify_user` returns a contact channel you've enabled (Discord, Telegram or email)
+- use everything the connection proxy exposes (below)
 
-Quiet hours are set **per cron job and per trigger**, not once per agent: each item carries its own window, evaluated in the agent's timezone. A recurring cron job or a trigger inside its window is suppressed. One-off cron jobs fire regardless — something you scheduled for 3am still happens at 3am.
+## Connections and events
 
-### Agent Tools
+[Drawlatch](https://www.npmjs.com/package/@wolpertingerlabs/drawlatch) gives agents authenticated access to external APIs such as Discord, GitHub, Slack, Google and Trello. A connection is a route template: allowed URL patterns, required secrets and auth headers. An agent calls `secure_request` with a URL, and Drawlatch checks it against the patterns, injects credentials and proxies the call. The agent never sees the keys.
 
-Agents have access to specialized tools beyond the standard coding-agent toolkit:
+You configure connections, secrets, event listeners and the webhook tunnel in **Drawlatch's own dashboard**, which Settings → Proxy links to. Callboard stores only the wiring: the proxy mode, each agent's caller identity, and which caller regular chats use.
 
-- Start, monitor, and continue chat sessions in any directory or branch, and read back their messages
-- Run jobs — spawn a run, approve a step, pause, resume, cancel, or retry a failed step
-- Manage their own cron jobs and event triggers, and query their own activity log
-- Discover and orchestrate other agents on the platform
-- List, read, and amend the card their conversation belongs to — title, description, emoji, status, category, and cross-reference metadata. Cards are created by the conversation itself; there is nothing to create or join
-- Create and update workspaces, and adopt worktrees Callboard didn't create
-- Read and write custom skills, and manage model aliases
-- Render media and canvases into the chat, and reach you outside it — `summon_user` raises a flag on the chat in the dashboard, `notify_user` hands back the handle for a contact channel you've enabled (Discord, Telegram or email) so the agent can deliver a message through the proxy
-- Everything the connection proxy exposes: authenticated HTTP requests, event polling, listener control
+Drawlatch takes in events through WebSocket listeners (Discord Gateway, Slack Socket Mode), signed webhooks (GitHub, Stripe, Trello) and pollers. Callboard runs one watcher per caller. It long-polls Drawlatch's `wait_for_events`, and falls back to `ingestor_status` plus `poll_events` on older Drawlatch servers. The events it collects drive triggers and subscriptions.
 
-## Connections & Event Listening
+### Local vs remote mode
 
-Callboard uses [@wolpertingerlabs/drawlatch](https://www.npmjs.com/package/@wolpertingerlabs/drawlatch) to give agents authenticated access to external APIs — Discord, GitHub, Slack, Google, Trello, and [many more](https://www.npmjs.com/package/@wolpertingerlabs/drawlatch).
+Both modes use the same encrypted, signed protocol.
 
-### How Connections Work
+- **Local** (default): Callboard starts and supervises a Drawlatch daemon on loopback and enrols itself automatically.
+- **Remote:** Callboard connects to a Drawlatch server elsewhere that holds the keys and enforces per-caller access. Use this to keep secrets off the agent machine, or to share one server between users. To set it up:
+  1. Issue a caller on the Drawlatch side (its Callers page, or `drawlatch issue-caller`) to get a `.drawlatch-caller.json` bundle.
+  2. In Settings → Proxy, switch to Remote and import the bundle. Confirm the pinned server key. Bundles protected by a passphrase will ask for it.
+  3. Enter the **Server URL** by hand. Callboard ignores the endpoint in the bundle because tunnel URLs change.
 
-A connection is a pre-configured API route template. Each connection defines the allowed endpoints (URL patterns), required secrets, and auth headers. When an agent makes a request, Drawlatch matches the URL against allowed patterns, injects the right credentials, and proxies the request. Agents never see the raw API keys — they just call `secure_request` with a URL and Drawlatch handles authentication.
-
-Connections, secrets, event listeners and the webhook tunnel are **configured in Drawlatch's own password-gated dashboard**, not in Callboard. Settings → Proxy links straight to it. What Callboard keeps on its side is the wiring: which mode it talks to Drawlatch in, which caller identity each agent uses, and which caller regular (non-agent) chats borrow.
-
-### Event Listening
-
-Drawlatch supports real-time event ingestion from external services through three mechanisms:
-
-- **WebSocket listeners** — persistent connections to services like Discord Gateway and Slack Socket Mode, with automatic reconnection and heartbeat management
-- **Webhook receivers** — HTTP endpoints that receive and verify signed payloads from GitHub, Stripe, Trello, and others
-- **Pollers** — interval-based HTTP polling for services like Notion, Linear, Reddit, and Telegram
-
-Events are buffered in per-caller ring buffers. Callboard polls `poll_events` on a loop, one watcher per caller alias, and appends what it finds to an event log. This is what powers event triggers and event subscriptions — when an agent has a trigger configured for Discord messages, Drawlatch's event listener catches the message and the trigger dispatcher routes it to the right agent.
-
-### Local vs. Remote Mode
-
-Drawlatch runs in two modes. Both speak the same encrypted protocol — the difference is who owns the daemon and how the caller gets enrolled, not whether the channel is protected.
-
-**Local mode** (the default) starts and supervises a Drawlatch daemon as a child process on loopback, and talks to it over that protocol like any other. Enrolment is automatic: Callboard points the daemon at its own keys directory and the daemon writes the key files there at boot, the same-host write being the proof of trust. This is the simplest way to get started on a personal server, and it is where the dashboard link takes you.
-
-**Remote mode** points Callboard at a Drawlatch server somewhere else, which holds all the API keys. Communication is encrypted end-to-end with AES-256-GCM, authenticated with Ed25519 signatures, and protected against replay attacks. The remote server enforces per-caller access control — each caller only sees routes it has been explicitly granted. This is the right choice when you want secrets isolated from the machine running agents, or when several users share one Drawlatch server with different credentials.
-
-To connect to a remote server, go to **Settings → Proxy**, switch the mode to Remote, and:
-
-1. Issue a caller on the Drawlatch side (its Callers page → Issue credentials, or `drawlatch issue-caller`). That produces a `.drawlatch-caller.json` bundle.
-2. Import that file on the Proxy page. Callboard pins the server key out of the bundle and shows it to you to confirm before writing any keys. Bundles wrapped with a passphrase will ask for it.
-3. Set the **Server URL** by hand. The bundle carries an endpoint, but Callboard ignores it — tunnel URLs are ephemeral.
-
-Enrolled callers are listed on the same page with their fingerprints and the agents bound to them, and can be deleted from there.
-
-## CLI Reference
+## CLI
 
 ```
-callboard                    Show status if running, otherwise the help text
-callboard start              Start the server (background daemon)
-callboard stop               Stop the server
-callboard restart            Restart the server
-callboard status             Show PID, port, uptime, and health
-callboard logs               View and follow server logs
-callboard config             Show effective configuration
-callboard set-password       Set or change the login password
-callboard help               Print the help text
+callboard                     Status if running, otherwise help
+callboard start [-f] [--port N]   Start as a daemon (-f: foreground)
+callboard stop
+callboard restart [--port N]
+callboard status              PID, port, uptime, health
+callboard logs [-n N] [--no-follow]
+callboard config [--path]     Effective configuration (or just the file path)
+callboard set-password
+callboard -v                  Version
 ```
 
-Every subcommand takes `-h` / `--help` and prints its own page.
-
-### Options
-
-```
-callboard -v                  Print the version and exit
-callboard start -f            Run in the foreground
-callboard start --port 3000   Use a custom port (default: 8000)
-callboard restart --port 3000 Same, when restarting
-callboard logs -n 100         Show last 100 log lines
-callboard logs --no-follow    Print the lines and exit (default is to follow)
-callboard config --path       Print the config file path
-```
-
-`callboard` with no arguments, and `start`, `status` and `config`, all warn when no password is set. Running it for the first time scaffolds `~/.callboard/.env` and prints the three steps above.
+Every subcommand accepts `--help`. The first run creates `~/.callboard/.env`.
 
 ## Configuration
 
-Callboard reads `~/.callboard/.env` (created automatically on first run), then a `.env` in the package root if one exists, which **overrides** it. `callboard config` prints the merged result and the paths it came from.
+Callboard reads `~/.callboard/.env`. If the package root also has a `.env`, its values override the first file. `callboard config` prints the merged result.
 
-| Variable                   | Default                         | Description                                                 |
-| -------------------------- | ------------------------------- | ----------------------------------------------------------- |
-| `PORT`                     | `8000`                          | Server port                                                  |
-| `LOG_LEVEL`                | `info`                          | Log level (`error`, `warn`, `info`, `debug`)                 |
-| `SESSION_COOKIE_NAME`      | `callboard_session`             | Cookie name (change to avoid collisions)                     |
-| `AUTH_PASSWORD_HASH`       | —                               | scrypt hash of the login password. Written by `set-password` |
-| `AUTH_PASSWORD_SALT`       | —                               | Salt for the above. Written by `set-password`                |
-| `INSTANCE_NAME`            | generated                       | Friendly name for this instance. Generated on first run      |
-| `CALLBOARD_DATA_DIR`       | `~/.callboard`                  | Everything Callboard stores — config, chats, logs, PID file  |
-| `CALLBOARD_WORKSPACES_DIR` | `~/.callboard/agent-workspaces` | Where agent workspaces are created                           |
+| Variable                       | Default                         | Purpose                                                         |
+| ------------------------------ | ------------------------------- | --------------------------------------------------------------- |
+| `PORT`                         | `8000`                          | Server port                                                     |
+| `LOG_LEVEL`                    | `info`                          | `error`, `warn`, `info`, `debug`                                |
+| `SESSION_COOKIE_NAME`          | `callboard_session`             | Change to avoid cookie collisions on localhost                  |
+| `AUTH_PASSWORD_HASH` / `_SALT` | —                               | Written by `callboard set-password`; don't edit by hand         |
+| `INSTANCE_NAME`                | generated                       | Friendly instance name                                          |
+| `CALLBOARD_DATA_DIR`           | `~/.callboard`                  | All stored data. Read from the process environment only         |
+| `CALLBOARD_WORKSPACES_DIR`     | `$CALLBOARD_DATA_DIR/agent-workspaces` | Where agent workspaces live                              |
+| `CALLBOARD_MAX_BACKGROUND_HOLD_MS` | `900000` (15 min)           | How long a finished turn waits on its backgrounded shell tasks   |
 
-Passwords are stored as scrypt hashes — plaintext is never saved. Set them with `callboard set-password`, not by editing the file.
+`CALLBOARD_DATA_DIR` decides which `.env` is read, so it can't be set inside one. That directory holds everything: chats, agents, jobs, workspaces, storage, artifacts, settings (`agent-settings.json`), API keys, themes, logs and the PID file.
 
-`CALLBOARD_DATA_DIR` is read from the process environment, not from the `.env` — it decides *which* `.env` is read, so it has to be set before Callboard starts. Everything else lives under it: `chats/`, `jobs/`, `workspaces/`, `canvas/`, `images/`, `themes/`, `custom-skills/`, `keywords.json`, `agent-settings.json`, `api-keys.json`, `logs/`. (`cards/` and `cards-archive/` appear only on installs that predate cards-as-chat-metadata, or never — the one-time startup migration moves any legacy card entities into root chats' metadata and archives the rest.)
+## Remote access
 
-## Remote access (Cloudflare tunnel)
+**Settings → Remote Access** can expose the UI through a [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) tunnel. It's off by default, and you need the `cloudflared` binary installed.
 
-Callboard can expose its web UI to the public internet through a [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-tunnel, so you can reach your instance from outside your LAN. It is **off by default** —
-enable it under **Settings → Remote Access**.
+- **Quick tunnel:** no Cloudflare account needed. You get a random `*.trycloudflare.com` URL that changes on every restart.
+- **Named tunnel:** paste a token from Cloudflare Zero Trust and route the hostname to `http://localhost:8000` for a stable address.
 
-- **Quick tunnel** — free, no Cloudflare account; gets a random `*.trycloudflare.com`
-  URL that changes on each restart.
-- **Named tunnel** — paste a token from the Cloudflare Zero Trust dashboard (route the
-  hostname to `http://localhost:8000`) for a stable hostname.
+> ⚠️ With the tunnel on, your password is the only thing protecting your sessions, files and connected services. Callboard won't start the tunnel until a password is set. Use a strong, unique one.
 
-> ⚠️ **Security:** enabling remote access makes callboard reachable by anyone with the
-> URL — your login password becomes the only barrier to your sessions, files, and
-> connected services. Callboard refuses to enable the tunnel until a password is set;
-> make sure it is strong and unique. The `cloudflared` binary must be installed.
-
-An optional **IP allowlist** on the same page narrows that further: list the addresses or CIDR ranges allowed in through the tunnel and everything else is refused before it reaches the login page. Loopback and private-LAN ranges are always allowed and are never gated by the list, so a bad entry can't lock you out of your own machine.
-
-A client arriving through the tunnel is treated as remote throughout, not just at the door. It cannot change either engine's binary-path field, and it is never offered the one-click engine install — both decide what the daemon executes, so they are held to the same scope as running an install by hand.
+An optional **IP allowlist** (addresses or CIDR ranges) refuses all other tunnel traffic before it reaches the login page. Loopback and private-LAN addresses are always allowed. Tunnel clients can't change binary paths or use the Install button.
 
 ## Development
-
-If you want to contribute or run from source:
 
 ```bash
 git clone https://github.com/WolpertingerLabs/callboard.git
 cd callboard
-npm install                # also builds, via the `prepare` script
-
-cp .env.example .env       # then UNCOMMENT the DEV_PORT_SERVER line
+npm install                 # also builds, via `prepare`
+cp .env.example .env        # then uncomment DEV_PORT_SERVER=3002
 CALLBOARD_DATA_DIR=$HOME/.callboard-dev node bin/callboard.js set-password
-
 npm run dev
 ```
 
-This starts the frontend on `http://localhost:3000` and the backend on `http://localhost:3002`.
+The frontend runs at `http://localhost:3000` and the backend at `:3002`. Watch for two things:
 
-Two things about that are easy to get wrong:
+- **Uncomment `DEV_PORT_SERVER`.** Vite proxies `/api` to 3002, but without this variable the dev backend binds `PORT` (8000) instead.
+- **Dev has its own data directory.** `npm run dev` uses `~/.callboard-dev`, so the dev password hash lives there. That's why the `set-password` line above sets the directory. There's no auth bypass in dev.
 
-- **`DEV_PORT_SERVER` is not optional.** Vite proxies `/api` to port 3002 by default, but the dev backend only binds 3002 when `DEV_PORT_SERVER` says so — otherwise it falls through to `PORT`, i.e. 8000, and the UI talks to nothing. `.env.example` ships that line commented out, so copying it is not enough; uncomment `DEV_PORT_SERVER=3002` (and `DEV_PORT_UI` if 3000 is taken).
-- **Dev has its own data directory.** `npm run dev` sets `CALLBOARD_DATA_DIR=$HOME/.callboard-dev`, so dev chats, settings and — importantly — the password hash are read from there, not from `~/.callboard`. That is why the `set-password` above names the directory explicitly. There is no auth bypass in development: without a password hash in the dev config, login returns 503.
+| Command                                | What it does                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------- |
+| `npm run dev`                          | Frontend and backend dev servers against `~/.callboard-dev`               |
+| `npm run build`                        | Build shared, computer-use, backend and frontend                          |
+| `npm run clean`                        | Delete build output. Run it before `build` if you removed a `dist/` by hand, because `tsc -b` won't notice |
+| `npm start`                            | Run the production build from `backend/dist`                              |
+| `npm test` / `test:watch` / `test:coverage` | Vitest (`npm test` also runs the computer-use package's tests)       |
+| `npm run lint` / `lint:fix`            | ESLint on **staged** files only. On a clean index this lints nothing      |
+| `npm run lint:all` / `lint:all:fix`    | ESLint on the whole tree                                                  |
+| `npm run prettier`                     | Format changed and staged files                                           |
+| `npm run swagger`                      | Regenerate `backend/swagger.json`, which is served at `GET /api/docs`     |
 
-### Scripts
-
-| Command                 | Description                                                              |
-| ----------------------- | ------------------------------------------------------------------------ |
-| `npm run dev`           | Start frontend + backend dev servers against `~/.callboard-dev`           |
-| `npm run build`         | Build shared, backend, and frontend for production                        |
-| `npm run clean`         | Delete every `dist/` and TypeScript build-info file                       |
-| `npm start`             | Start the production server from `backend/dist`                           |
-| `npm test`              | Run tests (Vitest, single pass)                                           |
-| `npm run test:watch`    | Run tests in watch mode                                                   |
-| `npm run test:coverage` | Run tests with a v8 coverage report                                       |
-| `npm run lint`          | Lint **staged** files only — what the commit workflow runs                |
-| `npm run lint:fix`      | The same, with `--fix`                                                    |
-| `npm run lint:all`      | Lint every file in the project                                            |
-| `npm run lint:all:fix`  | The same, with `--fix`                                                    |
-| `npm run prettier`      | Format changed and staged files                                           |
-| `npm run swagger`       | Regenerate `backend/swagger.json` (served, with auth, at `GET /api/docs`) |
-
-Note the split: `lint` and `lint:fix` pipe `git diff --cached` into ESLint and touch nothing else, so on a clean index they lint zero files and exit 0. Use `lint:all` when you want the whole tree.
-
-`build` is incremental. If you delete a `dist/` by hand, `tsc -b` will still believe it is up to date and skip it — run `npm run clean` first.
-
-### Project Structure
+### Layout
 
 ```
-callboard/
-├── frontend/        React UI (Vite + TypeScript)
-├── backend/         Express API server (TypeScript)
-│   └── src/
-│       ├── routes/     HTTP + SSE endpoints
-│       ├── services/   Domain logic, stores, MCP tool servers
-│       ├── agents/     Per-harness adapters behind one provider port
-│       └── scaffold/   Files copied into a new agent's workspace
-├── shared/          TypeScript types used by both ends
-├── bin/             CLI entry point (callboard command)
-├── scripts/         Build and release helpers
-└── plans/           Design docs for in-flight work
+frontend/            React UI (Vite)
+backend/src/
+  routes/            HTTP and SSE endpoints
+  services/          Domain logic, stores, MCP tool servers
+  agents/            One adapter per engine behind a common provider port
+  scaffold/          Files copied into new agent workspaces
+shared/              Types used by both ends
+packages/computer-use/  Browser/desktop control library and MCP server
+bin/                 The `callboard` CLI
+scripts/             Build and release helpers
+plans/               Design records
 ```
 
-Runtime data is not in the repo — it lives under `~/.callboard` (or `$CALLBOARD_DATA_DIR`).
+Contributor conventions (the wire-compatibility rules for `shared/types/stream.ts`, `cwd` vs `workspaceId` keying, theming) are in [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
 
-Two conventions worth reading before you change anything, both documented in `.claude/CLAUDE.md`: `shared/types/stream.ts` is a **published wire interface** with its own compatibility rules and a snapshot test, and everything cached or stored keys on either `cwd` or `workspaceId` depending on whether the directory or the workspace owns it.
-
-### Tech Stack
-
-React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston logging, Vitest, ESLint + Prettier. Agent harnesses come from `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk`, `@cline/sdk`, `@earendil-works/pi-coding-agent` and `@agentclientprotocol/sdk`; connections from `@wolpertingerlabs/drawlatch`.
+Stack: React 18, React Router 6, Express 4, TypeScript 5, Vite 5, Zod 4, Winston, Vitest. Engines come from `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk`, `@cline/sdk`, `@earendil-works/pi-coding-agent` and `@agentclientprotocol/sdk`. Connections come from `@wolpertingerlabs/drawlatch`.
 
 ## License
 
