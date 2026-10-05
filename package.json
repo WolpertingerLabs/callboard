@@ -105,7 +105,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.153.4",
     "@sap-cloud-sdk/connectivity": "4.8.0",
-    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.54",
+    "@wolpertingerlabs/drawlatch": "^1.0.0-alpha.61",
     "adm-zip": "^0.5.16",
     "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
