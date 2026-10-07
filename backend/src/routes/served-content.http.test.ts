@@ -62,6 +62,7 @@ let lookupCalls: string[];
 let upstream: Awaited<ReturnType<typeof listenUpstream>>;
 let loopbackSecret: Awaited<ReturnType<typeof listenUpstream>>;
 let repo: string;
+const stalledClosedAt: number[] = [];
 
 beforeAll(async () => {
   loopbackSecret = await listenUpstream("127.0.0.1", {
@@ -77,6 +78,11 @@ beforeAll(async () => {
     "/to-metadata.png": (res) => res.writeHead(301, { Location: "http://169.254.169.254/latest/meta-data/x.png" }).end(),
     "/to-file.png": (res) => res.writeHead(302, { Location: "file:///etc/passwd.png" }).end(),
     "/loop.png": (res) => res.writeHead(302, { Location: "/loop.png" }).end(),
+    // One chunk, then hold the response open until the proxy lets go.
+    "/stalled.png": (res) => {
+      res.writeHead(200, { "Content-Type": "image/png" }).write(PNG);
+      res.once("close", () => stalledClosedAt.push(Date.now()));
+    },
   });
 
   const prod = express();
@@ -198,6 +204,26 @@ describe("URL proxy: the extension decides the type, never the upstream", () => 
   });
 });
 
+describe("URL proxy: client disconnects", () => {
+  it("a client that aborts mid-stream releases the upstream socket at once, not at the 30s timeout", async () => {
+    const { port } = new URL(fixtureApp.origin);
+    const abortedAt = await new Promise<number>((resolve, reject) => {
+      const req = http.get(
+        { host: "127.0.0.1", port, path: `/api/files/serve?url=${encodeURIComponent(`${upstream.origin}/stalled.png`)}` },
+        (res) => {
+          res.once("data", () => {
+            req.destroy();
+            resolve(Date.now());
+          });
+        },
+      );
+      req.on("error", (err) => (err.message === "socket hang up" ? undefined : reject(err)));
+    });
+    await expect.poll(() => stalledClosedAt.length, { timeout: 2000 }).toBe(1);
+    expect(stalledClosedAt[0] - abortedAt).toBeLessThan(1000);
+  });
+});
+
 describe("URL proxy: non-public destinations are refused", () => {
   const refusedLiterals = [
     "http://127.0.0.1:1/x.png",
@@ -207,6 +233,9 @@ describe("URL proxy: non-public destinations are refused", () => {
     "http://[::ffff:7f00:1]/x.png",
     "http://0.0.0.0/x.png",
     "http://[::]/x.png",
+    "http://[::7f00:1]/x.png", // IPv4-compatible ::/96 — ipaddr.js calls it unicast
+    "http://[::127.0.0.1]/x.png",
+    "http://[::a00:1]/x.png",
     "http://10.1.2.3/x.png",
     "http://172.16.0.1/x.png",
     "http://192.168.1.1/x.png",
@@ -275,6 +304,10 @@ describe("isPublicAddress", () => {
     ["::1", false],
     ["::ffff:10.0.0.1", false],
     ["::ffff:8.8.8.8", true],
+    ["::7f00:1", false],
+    ["::808:808", false],
+    ["::ffff:0:7f00:1", false],
+    ["64:ff9b:1::7f00:1", false],
     ["fe80::1", false],
     ["fc00::1", false],
     ["fd12:3456::1", false],

@@ -179,12 +179,17 @@ export default function MediaRenderer({ data }: MediaRendererProps) {
         );
 
       case "pdf":
-        // No `sandbox` attribute: Chromium refuses to show a PDF in any sandboxed
-        // iframe, whatever the flags (even every allow-* at once). The isolation is
-        // server-side instead: /api/files/serve types the response by the file's
-        // extension (never the upstream's Content-Type), with nosniff and a
-        // `default-src 'none'; sandbox` CSP, which the PDF viewer tolerates but
-        // which gives anything that is not a PDF an opaque origin and no script.
+        // This iframe is NOT sandboxed, and a real PDF in it is same-origin with the
+        // app. Chromium refuses to show a PDF in any sandboxed iframe, whatever the
+        // flags (even every allow-* at once), and it ignores the response's CSP
+        // `sandbox` for a PDF as well. What makes it safe is the type:
+        // /api/files/serve sends `application/pdf` (from the file's extension, never
+        // the upstream's Content-Type) with nosniff, so the browser's PDF viewer
+        // handles it, and Chromium runs any PDF JavaScript inside PDFium, off the app
+        // origin. The response's `default-src 'none'; sandbox` CSP only matters for
+        // bytes that are not a PDF (say, an .svg labelled pdf): those get an opaque
+        // origin and no script. Never point this iframe at a URL whose type the
+        // server does not force.
         return (
           <iframe
             src={contentUrl}

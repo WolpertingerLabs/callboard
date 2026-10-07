@@ -172,6 +172,9 @@ async function serveUrl(url: string, res: Response, proxyOptions: FilesRouterOpt
     res.setHeader("Content-Disposition", "inline");
     setSandboxedContentHeaders(res);
 
+    // A client that goes away mid-stream releases the upstream socket now, not at the timeout.
+    res.once("close", () => upstream.destroy());
+
     let totalBytes = 0;
     for await (const chunk of upstream as AsyncIterable<Buffer>) {
       totalBytes += chunk.length;

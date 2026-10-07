@@ -40,12 +40,21 @@ export class BlockedDestinationError extends Error {
  * (RFC 1918), CGNAT (100.64/10), link-local (169.254/16, fe80::/10), ULA
  * (fc00::/7), unspecified (0.0.0.0/8, ::), multicast, broadcast, reserved and
  * documentation ranges, and the IPv6 transition prefixes that embed an IPv4
- * address (NAT64 64:ff9b::/96, 6to4, Teredo).
+ * address (NAT64 64:ff9b::/96 and 64:ff9b:1::/48, SIIT ::ffff:0:0:0/96, 6to4,
+ * Teredo).
+ *
+ * The one IPv4-embedding form ipaddr.js calls `unicast` is IPv4-compatible
+ * IPv6, `::a.b.c.d` (::/96, deprecated by RFC 4291) — `::7f00:1` is 127.0.0.1
+ * — so ::/96 is refused explicitly.
  */
 export function isPublicAddress(address: string): boolean {
   if (!ipaddr.isValid(address)) return false;
-  return ipaddr.process(address).range() === "unicast";
+  const parsed = ipaddr.process(address);
+  if (parsed.kind() === "ipv6" && (parsed as ipaddr.IPv6).match(IPV4_COMPATIBLE)) return false;
+  return parsed.range() === "unicast";
 }
+
+const IPV4_COMPATIBLE: [ipaddr.IPv6, number] = [ipaddr.IPv6.parse("::"), 96];
 
 type LookupAddress = { address: string; family: number };
 type Lookup = (hostname: string, options: dns.LookupAllOptions, callback: (err: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void) => void;
