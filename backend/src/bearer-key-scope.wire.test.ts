@@ -320,5 +320,9 @@ describe("change-password shares login's per-client attempt budget", () => {
     });
     expect(res.status).toBe(200);
     expect(res.json.ok).toBe(true);
+    // The change signs out every other session but keeps the one that made it.
+    expect((await request("GET", "/api/agent-settings", { headers: asSession() })).status).toBe(200);
+    expect((await login(PASSWORD, fromClient("198.51.100.23"))).status).toBe(401);
+    expect((await login("a brand new password", fromClient("198.51.100.23"))).status).toBe(200);
   });
 });
