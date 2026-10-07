@@ -20,7 +20,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import type { AgentSettings, ModelAlias } from "shared/types/index.js";
-import { validateModelAliases, SECRET_SETTING_FIELDS, SECRET_MASK_PREFIX, isMaskedSecret, maskSecret } from "shared/types/index.js";
+import { validateModelAliases, SECRET_SETTING_FIELDS, isMaskedSecret, maskSecret } from "shared/types/index.js";
 import {
   getAgentSettings,
   updateAgentSettings,
@@ -173,19 +173,26 @@ agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
  * otherwise. Favorites keep their own ungated route below.
  */
 agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Response): Promise<void> => {
-  // A masked credential sent back is the Settings page saving a form it never
-  // edited that field of: keep what is stored. Bullets with anything after the
-  // last four characters are someone typing onto the end of the mask, and
-  // saving that would store the bullets as the key.
+  // The exact mask of the stored secret, sent back, is the Settings page saving
+  // a form it never edited that field of: keep what is stored. Any other value
+  // with a bullet in it — a mask backspaced into, typed onto, padded with a
+  // space, or the mask of a key since replaced from another tab — is refused,
+  // because storing it would make the bullets the key. Compared after trimming,
+  // as `normalize` trims before it stores.
   const body = { ...(req.body ?? {}) };
+  const stored = getAgentSettings();
   for (const field of SECRET_SETTING_FIELDS) {
-    const value = body[field];
-    if (typeof value !== "string" || !value.startsWith(SECRET_MASK_PREFIX)) continue;
-    if (!isMaskedSecret(value)) {
-      res.status(400).json({ error: `${field} still contains the masked placeholder. Clear the field and paste the whole new value.` });
-      return;
+    const value = typeof body[field] === "string" ? body[field].trim() : undefined;
+    if (value === undefined || !isMaskedSecret(value)) continue;
+    const current = stored[field];
+    if (current && value === maskSecret(current)) {
+      delete body[field];
+      continue;
     }
-    delete body[field];
+    res.status(400).json({
+      error: `${field} still contains the masked placeholder, or the saved value changed since this page loaded. Clear the field and paste the whole new value, or reload the page.`,
+    });
+    return;
   }
 
   const {

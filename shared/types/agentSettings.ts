@@ -668,13 +668,14 @@ export function maskSecret(value: string): string {
 }
 
 /**
- * Whether a value is exactly what {@link maskSecret} produces for *some* secret.
- * Deliberately not "the mask of the stored value": a tab that loaded before the
- * key was replaced elsewhere sends the old mask, and that still means "I did not
- * touch this field", not "write these bullets".
+ * Whether a value contains the mask character anywhere. No real credential
+ * does, so such a value is a mask or what is left of one — backspaced into,
+ * typed onto, or padded with a space — and must never be stored as the key.
+ * The PUT keeps the stored secret only for the exact mask of it, and refuses
+ * every other value this matches.
  */
 export function isMaskedSecret(value: string): boolean {
-  return value.startsWith(SECRET_MASK_PREFIX) && value.length <= SECRET_MASK_PREFIX.length + 4;
+  return value.includes("•");
 }
 
 export interface KeyAliasInfo {

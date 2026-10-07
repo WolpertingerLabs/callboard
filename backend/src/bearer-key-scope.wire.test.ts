@@ -185,6 +185,10 @@ describe("a bearer API key is refused every security-relevant write", () => {
     expect(res.status).toBe(403);
     expect(res.json.error).toMatch(/logged-in session/);
     expect(readFileSync(SETTINGS_FILE, "utf-8")).toBe(before);
+    // The change-password row sends the right password. Had it gone through it
+    // would have rotated the password and signed out every other session —
+    // say so here rather than as a cascade of unrelated session failures below.
+    expect((await request("GET", "/api/agent-settings", { headers: asSession() })).status, "session still valid").toBe(200);
   });
 
   it("can still read settings (masked) and use the favorites route", async () => {
@@ -255,17 +259,21 @@ describe("saving the masked body back", () => {
     for (const field of SECRET_SETTING_FIELDS) expect(stored[field], field).toBe(SECRETS[field]);
   });
 
-  it("keeps a secret when the mask is stale (the key was replaced from another tab)", async () => {
-    const res = await request("PUT", "/api/agent-settings", { headers: asSession(), body: { openRouterApiKey: "••••zzzz" } });
+  it("keeps a secret sent back as its mask with surrounding whitespace", async () => {
+    const res = await request("PUT", "/api/agent-settings", { headers: asSession(), body: { codexApiKey: ` ${maskSecret(SECRETS.codexApiKey)} ` } });
     expect(res.status).toBe(200);
-    expect(readSettings().openRouterApiKey).toBe(SECRETS.openRouterApiKey);
+    expect(readSettings().codexApiKey).toBe(SECRETS.codexApiKey);
   });
 
-  it("refuses text typed onto the end of a mask rather than storing the bullets", async () => {
-    const res = await request("PUT", "/api/agent-settings", {
-      headers: asSession(),
-      body: { apiKey: `${maskSecret(SECRETS.apiKey)}sk-ant-new` },
-    });
+  // Every way a bullet can survive into the submitted value: none may be stored.
+  const leftovers: Array<[string, string]> = [
+    ["text typed onto the end of the mask", `${maskSecret(SECRETS.apiKey)}sk-ant-new`],
+    ["the mask backspaced down to two bullets (End, Backspace×6)", "••"],
+    ["a leading space in front of a mask", " ••••AAAA"],
+    ["the mask of a key since replaced from another tab", "••••zzzz"],
+  ];
+  it.each(leftovers)("refuses %s with a 400 and leaves the key alone", async (_what, value) => {
+    const res = await request("PUT", "/api/agent-settings", { headers: asSession(), body: { apiKey: value } });
     expect(res.status).toBe(400);
     expect(res.json.error).toMatch(/apiKey.*Clear the field/);
     expect(readSettings().apiKey).toBe(SECRETS.apiKey);
