@@ -116,8 +116,7 @@ export class ChatViewRegistry {
   }
 }
 export const chatViews = new ChatViewRegistry((owner) => {
-  const session = getSession(owner);
-  return !!session && session.expires_at > Date.now();
+  return !!getSession(owner);
 });
 export function bindChatView(owner: string | undefined, input: unknown) {
   return input === undefined ? undefined : chatViews.publish(owner, input);
