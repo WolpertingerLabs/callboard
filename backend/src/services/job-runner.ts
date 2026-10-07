@@ -357,11 +357,13 @@ export function spawnJobRun(
   // Validate inputs against declarations; apply defaults.
   const resolved: Record<string, string> = {};
   for (const def of job.inputs ?? []) {
-    const value = inputs[def.key] ?? def.default;
+    // Own keys only: an input named `constructor` must fall back to its
+    // default, not resolve to Object.prototype's member.
+    const value = (Object.hasOwn(inputs, def.key) ? inputs[def.key] : undefined) ?? def.default;
     if (def.required && (value === undefined || value === "")) {
       throw new Error(`Missing required input "${def.key}"${def.label ? ` (${def.label})` : ""}`);
     }
-    if (value !== undefined) resolved[def.key] = value;
+    if (value !== undefined) Object.defineProperty(resolved, def.key, { value, writable: true, enumerable: true, configurable: true });
   }
 
   const run = createRun(job, resolved, parent, opts?.rootChatId, opts?.executionKey);

@@ -30,3 +30,10 @@ describe("getCommandsAndPluginsForDirectory — prototype-property directories",
     expect(getCommandsAndPluginsForDirectory("/some/real/folder").slashCommands).toContain("review");
   });
 });
+
+describe("setSlashCommandsForDirectory — prototype-property directories", () => {
+  it.each(["__proto__", "constructor"])("stores and returns commands for a folder named %j", (directory) => {
+    setSlashCommandsForDirectory(directory, ["own-command"]);
+    expect(getCommandsAndPluginsForDirectory(directory).slashCommands).toContain("own-command");
+  });
+});

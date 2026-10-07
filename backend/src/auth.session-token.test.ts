@@ -85,7 +85,19 @@ describe("prototype-property session cookies", () => {
     await login();
   });
 
-  it.each(["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "isPrototypeOf"])(
+  // cookie-parser JSON-decodes a `j:`-prefixed value, so `j:["constructor"]`
+  // arrives as an array that coerces to "constructor" when used as a key.
+  it.each([
+    "constructor",
+    "__proto__",
+    "toString",
+    "hasOwnProperty",
+    "valueOf",
+    "isPrototypeOf",
+    encodeURIComponent('j:["constructor"]'),
+    encodeURIComponent('j:["__proto__"]'),
+    encodeURIComponent('j:{"a":1}'),
+  ])(
     "callboard_session=%s is not authenticated",
     async (token) => {
       const check = await authCheck(token);

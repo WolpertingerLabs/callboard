@@ -65,7 +65,9 @@ function getSlashCommandsForDirectory(directory: string): string[] {
  */
 export function setSlashCommandsForDirectory(directory: string, commands: string[]): void {
   const data = loadSlashCommandsData();
-  data[directory] = commands;
+  // defineProperty, not assignment: assigning to `data["__proto__"]` would set
+  // the prototype instead of storing the folder's commands.
+  Object.defineProperty(data, directory, { value: commands, writable: true, enumerable: true, configurable: true });
   saveSlashCommandsData(data);
 }
 

@@ -896,6 +896,24 @@ describe("per-step counters — prototype-named step ids", () => {
     expect(Object.getOwnPropertyDescriptor(run.loopCounts, gateId)?.value).toBe(3);
   });
 
+  it.each(PROTO_IDS)("an input named %j falls back to its default", (key) => {
+    const jobId = makeJob({ inputs: [{ key, required: false, default: "dflt" }], steps: [{ id: "work", type: "agent", prompt: "Do it" }] });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    expect(Object.getOwnPropertyDescriptor(store.getRun(runId)!.inputs, key)?.value).toBe("dflt");
+  });
+
+  it.each(PROTO_IDS)("a required input named %j is still required", (key) => {
+    const jobId = makeJob({ inputs: [{ key, required: true }], steps: [{ id: "work", type: "agent", prompt: "Do it" }] });
+    expect(() => runner.spawnJobRun(jobId, {})).toThrow(`Missing required input "${key}"`);
+  });
+
+  it.each(PROTO_IDS)("a supplied input named %j is kept", (key) => {
+    const jobId = makeJob({ inputs: [{ key, required: true }], steps: [{ id: "work", type: "agent", prompt: "Do it" }] });
+    // Parsed the way a request body is, so `__proto__` is an own key.
+    const runId = runner.spawnJobRun(jobId, JSON.parse(`{${JSON.stringify(key)}: "given"}`)).runId;
+    expect(Object.getOwnPropertyDescriptor(store.getRun(runId)!.inputs, key)?.value).toBe("given");
+  });
+
   it.each(PROTO_IDS)("an agent step named %j gets a numeric execution key", async (stepId) => {
     const jobId = makeJob({ steps: [{ id: stepId, type: "agent", prompt: "Do it" }] });
     const runId = runner.spawnJobRun(jobId, {}).runId;
