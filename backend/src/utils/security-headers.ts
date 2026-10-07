@@ -12,15 +12,23 @@ export const DEFAULT_CSP = "frame-ancestors 'self'";
  *
  * Each value is a *default*: it is set before any route runs, so a route that
  * sets its own header with `res.setHeader` replaces it. That is what keeps the
- * stricter per-route policies intact — artifact renders, storage items and file
- * serving set their own `Content-Security-Policy` and `Referrer-Policy:
- * no-referrer`, and those must win over these looser defaults.
+ * stricter per-route policies intact — the artifact render route and storage
+ * item downloads set their own `Content-Security-Policy` (and artifact renders
+ * `Referrer-Policy: no-referrer`), and those win over these looser defaults.
+ * Any route that adds its own policy later gets the same precedence.
  *
  * - `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'`: the session
  *   cookie is SameSite=Strict, but "site" ignores the port, so a page on
  *   another port of this host is same-site and could frame the app with the
  *   cookie attached (clickjacking). The app's own frames (artifact renders,
- *   file previews) are framed by the app origin and still load.
+ *   file previews) are framed directly by the app origin and still load.
+ *
+ *   Both checks apply to EVERY ancestor, not just the parent. So a document
+ *   with an opaque origin — a sandboxed artifact or canvas frame — can no
+ *   longer frame an app URL, even though the app framed it: its origin is not
+ *   'self'. Nothing in the app does that today, and it is the desired result
+ *   (untrusted content should not embed authenticated app pages), but a future
+ *   feature that nests app URLs inside a sandboxed frame will be refused.
  * - `Referrer-Policy: same-origin`: no app URL (chat ids, file paths) leaks to
  *   an external link target.
  * - `X-Content-Type-Options: nosniff`.

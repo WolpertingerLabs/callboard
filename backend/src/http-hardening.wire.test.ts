@@ -9,8 +9,10 @@
  *   response. Nothing may reflect an Origin back.
  * - Baseline headers on app responses, without clobbering the stricter
  *   per-route policy the artifact render route sets.
- * - The session cookie is `Secure` exactly when the request arrived over https,
- *   which on this daemon means a loopback terminator saying so.
+ * - Over https (on this daemon: a loopback terminator saying so) the session is
+ *   the Secure `__Secure-callboard_session` cookie; over http the plain
+ *   `callboard_session`, so an https session can never lock out http login on
+ *   the same hostname.
  * - Sessions have an absolute 30-day lifetime from `created_at`.
  * - Image bytes are not marked cacheable by shared caches.
  */
@@ -200,25 +202,150 @@ describe("hardening headers", () => {
   });
 });
 
-describe("Secure session cookie", () => {
-  it("plain http (localhost, LAN, the Vite dev proxy): not Secure, or the browser would drop it", async () => {
-    const cookie = cookieOf(await login(server));
+const SECURE_NAME = "__Secure-callboard_session";
+/** The Set-Cookie for one cookie name, or "" when the response sets none. */
+const setCookieFor = (res: Res, name: string) => (res.headers["set-cookie"] ?? []).find((c) => c.startsWith(`${name}=`)) ?? "";
+const isSecure = (setCookie: string) => /;\s*Secure(;|$)/i.test(setCookie);
+
+/**
+ * A browser's cookie store for ONE hostname that is not localhost (say the LAN
+ * address), reachable over both https (the tunnel or another TLS terminator)
+ * and plain http. It applies the RFC 6265bis rules that decide this bug:
+ *
+ * - a Secure cookie is only sent over https;
+ * - plain http cannot set a Secure cookie (§5.7, "secure-only-flag");
+ * - plain http cannot overwrite or delete an existing Secure cookie of the same
+ *   name ("Strict Secure Cookies", §5.7);
+ * - a `__Secure-` cookie is refused unless it is Secure and set over https.
+ *
+ * "https" on the wire is what the daemon sees from a local terminator: a
+ * loopback socket with `X-Forwarded-Proto: https`.
+ */
+class BrowserJar {
+  private cookies = new Map<string, { value: string; secure: boolean }>();
+
+  headers(https: boolean): Record<string, string> {
+    const sent = [...this.cookies].filter(([, c]) => https || !c.secure).map(([name, c]) => `${name}=${c.value}`);
+    return { ...(sent.length ? { cookie: sent.join("; ") } : {}), ...(https ? { "x-forwarded-proto": "https" } : {}) };
+  }
+
+  receive(res: Res, https: boolean): void {
+    for (const line of res.headers["set-cookie"] ?? []) {
+      const [pair, ...attrs] = line.split(";").map((part) => part.trim());
+      const eq = pair.indexOf("=");
+      const name = pair.slice(0, eq);
+      const value = pair.slice(eq + 1);
+      const secure = attrs.some((a) => a.toLowerCase() === "secure");
+      if (name.startsWith("__Secure-") && !(secure && https)) continue;
+      if (secure && !https) continue;
+      if (!https && this.cookies.get(name)?.secure) continue;
+      const expires = attrs.find((a) => /^expires=/i.test(a));
+      const maxAge = attrs.find((a) => /^max-age=/i.test(a));
+      const gone = (maxAge && Number(maxAge.split("=")[1]) <= 0) || (expires && Date.parse(expires.slice(8)) <= Date.now());
+      if (gone) this.cookies.delete(name);
+      else this.cookies.set(name, { value, secure });
+    }
+  }
+
+  has(name: string) {
+    return this.cookies.has(name);
+  }
+
+  async send(method: string, path: string, https: boolean, body?: unknown): Promise<Res> {
+    const headers = { ...this.headers(https), "cf-connecting-ip": `198.51.100.${++loginSeq}` };
+    const res = await request(server, method, path, { headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    this.receive(res, https);
+    return res;
+  }
+
+  async authenticated(https: boolean): Promise<boolean> {
+    return (JSON.parse((await this.send("GET", "/api/auth/check", https)).body) as { authenticated: boolean }).authenticated;
+  }
+}
+
+describe("session cookie per scheme", () => {
+  it("plain http (localhost, LAN, the Vite dev proxy): the plain cookie, not Secure, or the browser would drop it", async () => {
+    const res = await login(server);
+    const cookie = cookieOf(res);
     expect(cookie).toMatch(/HttpOnly/i);
     expect(cookie).toMatch(/SameSite=Strict/i);
-    expect(cookie).not.toMatch(/;\s*Secure/i);
+    expect(isSecure(cookie)).toBe(false);
+    expect(setCookieFor(res, SECURE_NAME)).toBe("");
   });
 
-  it.each(["https", "HTTPS", "http, https"])("https via a loopback terminator (X-Forwarded-Proto: %s): Secure on login and on every roll", async (proto) => {
+  it.each(["https", "HTTPS", "http, https"])("https via a loopback terminator (X-Forwarded-Proto: %s): the __Secure- cookie, Secure on login and on every roll", async (proto) => {
     const loggedIn = await login(server, { "x-forwarded-proto": proto });
-    expect(cookieOf(loggedIn)).toMatch(/;\s*Secure/i);
-    const rolled = await request(server, "GET", "/api/auth/check", withSession(tokenOf(loggedIn), { "x-forwarded-proto": proto }));
-    expect(cookieOf(rolled)).toMatch(/;\s*Secure/i);
-    const loggedOut = await request(server, "POST", "/api/auth/logout", withSession(tokenOf(loggedIn), { "x-forwarded-proto": proto }));
-    expect(cookieOf(loggedOut)).toMatch(/;\s*Secure/i);
+    const issued = setCookieFor(loggedIn, SECURE_NAME);
+    expect(isSecure(issued)).toBe(true);
+    expect(issued).toMatch(/HttpOnly/i);
+    expect(cookieOf(loggedIn)).toBe("");
+    const t = /=([^;]+)/.exec(issued)![1];
+    const rolled = await request(server, "GET", "/api/auth/check", { headers: { cookie: `${SECURE_NAME}=${t}`, "x-forwarded-proto": proto } });
+    expect(JSON.parse(rolled.body)).toEqual({ authenticated: true });
+    expect(isSecure(setCookieFor(rolled, SECURE_NAME))).toBe(true);
   });
 
-  it.each(["http", "https, http"])("X-Forwarded-Proto whose nearest hop says %j: not Secure", async (proto) => {
-    expect(cookieOf(await login(server, { "x-forwarded-proto": proto }))).not.toMatch(/;\s*Secure/i);
+  it.each(["http", "https, http"])("X-Forwarded-Proto whose nearest hop says %j: the plain cookie", async (proto) => {
+    const res = await login(server, { "x-forwarded-proto": proto });
+    expect(isSecure(cookieOf(res))).toBe(false);
+    expect(setCookieFor(res, SECURE_NAME)).toBe("");
+  });
+
+  it("rolling a plain cookie over https never makes it Secure", async () => {
+    const res = await request(server, "GET", "/api/auth/check", withSession(token, { "x-forwarded-proto": "https" }));
+    expect(JSON.parse(res.body)).toEqual({ authenticated: true });
+    expect(cookieOf(res)).not.toBe("");
+    expect(isSecure(cookieOf(res))).toBe(false);
+    expect(setCookieFor(res, SECURE_NAME)).toBe("");
+  });
+
+  it("with both cookies live, the __Secure- one authenticates (and is the one rolled)", async () => {
+    const secureToken = createSession(Date.now() + DAY);
+    const res = await request(server, "GET", "/api/auth/check", {
+      headers: { cookie: `callboard_session=${token}; ${SECURE_NAME}=${secureToken}`, "x-forwarded-proto": "https" },
+    });
+    expect(JSON.parse(res.body)).toEqual({ authenticated: true });
+    expect(setCookieFor(res, SECURE_NAME)).toContain(secureToken);
+    expect(cookieOf(res)).toBe("");
+  });
+
+  it("a dead __Secure- cookie does not shadow a live plain one (http://localhost sends both)", async () => {
+    const res = await request(server, "GET", "/api/artifacts", { headers: { cookie: `callboard_session=${token}; ${SECURE_NAME}=${"d".repeat(64)}` } });
+    expect(res.status).toBe(200);
+    expect(cookieOf(res)).toContain(token);
+  });
+
+  it("logout clears both names", async () => {
+    const t = createSession(Date.now() + DAY);
+    const res = await request(server, "POST", "/api/auth/logout", { headers: { cookie: `${SECURE_NAME}=${t}`, "x-forwarded-proto": "https" } });
+    expect(isSecure(setCookieFor(res, SECURE_NAME))).toBe(true);
+    expect(setCookieFor(res, SECURE_NAME)).toMatch(/Expires=Thu, 01 Jan 1970/);
+    expect(setCookieFor(res, "callboard_session")).toMatch(/Expires=Thu, 01 Jan 1970/);
+    expect(JSON.parse((await request(server, "GET", "/api/auth/check", { headers: { cookie: `${SECURE_NAME}=${t}`, "x-forwarded-proto": "https" } })).body)).toEqual({
+      authenticated: false,
+    });
+  });
+
+  it("mixed schemes on one hostname: an https session never locks plain http out", async () => {
+    const jar = new BrowserJar();
+    // 1. Log in over https (the tunnel), and use it — every request rolls the cookie.
+    expect((await jar.send("POST", "/api/auth/login", true, { password: PASSWORD })).status).toBe(200);
+    expect(await jar.authenticated(true)).toBe(true);
+    // 2. Now plain http on the same hostname: logging in must actually log in.
+    expect(JSON.parse((await jar.send("POST", "/api/auth/login", false, { password: PASSWORD })).body)).toEqual({ ok: true });
+    expect(await jar.authenticated(false)).toBe(true);
+    // 3. Back on https, both cookies are sent; both schemes keep working.
+    expect(await jar.authenticated(true)).toBe(true);
+    expect(await jar.authenticated(false)).toBe(true);
+    // 4. Logout over http ends the http session...
+    await jar.send("POST", "/api/auth/logout", false);
+    expect(jar.has("callboard_session")).toBe(false);
+    expect(await jar.authenticated(false)).toBe(false);
+    // 5. ...and logout over https ends everything.
+    expect(await jar.authenticated(true)).toBe(true);
+    await jar.send("POST", "/api/auth/logout", true);
+    expect(jar.has(SECURE_NAME)).toBe(false);
+    expect(await jar.authenticated(true)).toBe(false);
   });
 
   // A LAN client's X-Forwarded-Proto is its own header. Needs a non-loopback
@@ -230,9 +357,10 @@ describe("Secure session cookie", () => {
   it.skipIf(!lanAddress)("X-Forwarded-Proto from a non-loopback socket is ignored", async () => {
     const lan = await listen(buildApp(), lanAddress!);
     try {
-      const cookie = cookieOf(await login(lan, { "x-forwarded-proto": "https" }, lanAddress));
-      expect(cookie).toContain("callboard_session=");
-      expect(cookie).not.toMatch(/;\s*Secure/i);
+      const res = await login(lan, { "x-forwarded-proto": "https" }, lanAddress);
+      expect(cookieOf(res)).toContain("callboard_session=");
+      expect(isSecure(cookieOf(res))).toBe(false);
+      expect(setCookieFor(res, SECURE_NAME)).toBe("");
     } finally {
       await lan.close();
     }

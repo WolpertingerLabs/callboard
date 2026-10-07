@@ -31,6 +31,16 @@ async function verifyConfiguredPassword(password: string): Promise<boolean> {
 // ── Session constants ───────────────────────────────────────────────
 
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "callboard_session";
+/**
+ * The cookie a session gets when it was established over https. A separate
+ * name, not a `Secure` flag on the plain one, because cookies are per host and
+ * not per scheme: once https had rolled `callboard_session` into a Secure
+ * cookie, plain http on the same hostname could neither send it nor overwrite
+ * it, so http login answered `{ok:true}` and stayed logged out for up to the
+ * TTL. The `__Secure-` prefix makes the browser refuse this cookie unless it is
+ * Secure and set from https.
+ */
+const SECURE_SESSION_COOKIE_NAME = `__Secure-${SESSION_COOKIE_NAME}`;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // ── Rate limiting ───────────────────────────────────────────────────
@@ -59,26 +69,58 @@ function checkRateLimit(ip: string): boolean {
 
 // ── Session helpers ─────────────────────────────────────────────────
 
+/** A session cookie the request carried: which of the two names, and its raw value. */
+interface SessionCookie {
+  name: string;
+  /** Raw cookie-parser value — usually a string, but a `j:` cookie parses to JSON. */
+  token: unknown;
+  /** True for the `__Secure-` cookie: it is always written back Secure, the plain one never is. */
+  secure: boolean;
+}
+
+/** Every session cookie attribute except its lifetime. */
+function sessionCookieOptions(secure: boolean): CookieOptions {
+  return { httpOnly: true, sameSite: "strict", secure, path: "/" };
+}
+
+/** The session cookies a request carries, the `__Secure-` one first. */
+function presentedSessionCookies(req: Request): SessionCookie[] {
+  const presented: SessionCookie[] = [];
+  for (const [name, secure] of [
+    [SECURE_SESSION_COOKIE_NAME, true],
+    [SESSION_COOKIE_NAME, false],
+  ] as const) {
+    const token: unknown = req.cookies?.[name];
+    if (token !== undefined && token !== "") presented.push({ name, token, secure });
+  }
+  return presented;
+}
+
 /**
- * Every session cookie attribute except its lifetime. `Secure` when the request
- * reached us over https (the tunnel) — see `arrivedOverHttps` for why the
- * forwarded proto is only believed from loopback. Plain-http access (localhost,
- * LAN, the Vite dev proxy) keeps a non-Secure cookie, or it would not be stored.
+ * The cookie that authenticates this request: the first presented one whose
+ * session is live, so `__Secure-` wins when both are. A dead `__Secure-` cookie
+ * falls through to a live plain one rather than shadowing it — that matters on
+ * `http://localhost`, which browsers treat as a secure context and so send
+ * both. getSession is the whole check (format, ownership, expiry); like it,
+ * this throws when the session store cannot be read.
  */
-function sessionCookieOptions(req: Request): CookieOptions {
-  return { httpOnly: true, sameSite: "strict", secure: arrivedOverHttps(req), path: "/" };
+function liveSessionCookie(req: Request): SessionCookie | undefined {
+  return presentedSessionCookies(req).find((cookie) => getSession(cookie.token) !== undefined);
 }
 
 /**
  * Extend (roll) a session: reset both the server-side expiry and the browser
- * cookie. The store clamps the expiry to the session's absolute lifetime, and
- * the cookie follows the clamped value.
+ * cookie. The cookie is rewritten under the name it arrived with and with that
+ * name's `Secure` setting, so rolling never turns a plain cookie Secure (see
+ * {@link SECURE_SESSION_COOKIE_NAME}). The store clamps the expiry to the
+ * session's absolute lifetime, and the cookie follows the clamped value.
  */
-function rollSession(token: string, req: Request, res: Response): void {
+function rollSession(cookie: SessionCookie, res: Response): void {
+  const token = cookie.token as string; // live ⇒ a minted 64-hex string
   const now = Date.now();
   const expiresAt = extendSession(token, now + SESSION_TTL_MS);
   if (expiresAt === undefined) return;
-  res.cookie(SESSION_COOKIE_NAME, token, { ...sessionCookieOptions(req), maxAge: Math.max(0, expiresAt - now) });
+  res.cookie(cookie.name, token, { ...sessionCookieOptions(cookie.secure), maxAge: Math.max(0, expiresAt - now) });
 }
 
 // Session cleanup on startup. Best-effort: the session store can throw (a
@@ -134,14 +176,22 @@ export async function loginHandler(req: Request, res: Response) {
     return res.status(503).json({ error: SESSION_STORE_UNAVAILABLE });
   }
 
-  res.cookie(SESSION_COOKIE_NAME, token, { ...sessionCookieOptions(req), maxAge: SESSION_TTL_MS });
+  // Over https (the tunnel — see `arrivedOverHttps`) the session gets the
+  // `__Secure-` cookie; over plain http (localhost, LAN, the Vite dev proxy) the
+  // plain one, which a browser on http can store.
+  const secure = arrivedOverHttps(req);
+  res.cookie(secure ? SECURE_SESSION_COOKIE_NAME : SESSION_COOKIE_NAME, token, { ...sessionCookieOptions(secure), maxAge: SESSION_TTL_MS });
   res.json({ ok: true });
 }
 
-export function logoutHandler(_req: Request, res: Response) {
-  const token = _req.cookies?.[SESSION_COOKIE_NAME];
-  if (token) deleteSession(token);
-  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions(_req));
+export function logoutHandler(req: Request, res: Response) {
+  for (const { token } of presentedSessionCookies(req)) {
+    if (typeof token === "string") deleteSession(token);
+  }
+  // Clear both names. A browser on plain http ignores the Secure clear, but it
+  // also never sent (and so is not logged in with) the `__Secure-` cookie.
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions(false));
+  res.clearCookie(SECURE_SESSION_COOKIE_NAME, sessionCookieOptions(true));
   res.json({ ok: true });
 }
 
@@ -157,13 +207,11 @@ export function checkAuthHandler(req: Request, res: Response) {
     return res.json({ authenticated: !!apiKey });
   }
 
-  const token = req.cookies?.[SESSION_COOKIE_NAME];
-  if (!token) return res.json({ authenticated: false });
-  // getSession is the whole check: format, ownership and expiry.
-  if (!getSession(token)) return res.json({ authenticated: false });
+  const cookie = liveSessionCookie(req);
+  if (!cookie) return res.json({ authenticated: false });
 
   // Auto-extend the session when actively checking auth status
-  rollSession(token, req, res);
+  rollSession(cookie, res);
 
   res.json({ authenticated: true });
 }
@@ -189,9 +237,13 @@ export async function changePasswordHandler(req: Request, res: Response) {
   // Read the session store before committing anything: if it cannot be read
   // now, the other sessions could not be invalidated afterwards either, and
   // refusing here leaves the password unchanged rather than half-applied.
-  const currentToken = req.cookies?.[SESSION_COOKIE_NAME];
+  let currentToken: string | undefined;
   try {
-    getSession(currentToken ?? "");
+    // getSession loads the store before looking at the token, so this throws
+    // when sessions.json is unreadable whatever cookies the request carries.
+    getSession("");
+    const current = liveSessionCookie(req) ?? presentedSessionCookies(req)[0];
+    if (typeof current?.token === "string") currentToken = current.token;
   } catch (err) {
     log.warn(`Password change refused, session store unreadable: ${(err as Error).message}`);
     return res.status(503).json({ error: `${SESSION_STORE_UNAVAILABLE} Your password was not changed.` });
@@ -338,16 +390,16 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return next();
   }
 
-  const token = req.cookies?.[SESSION_COOKIE_NAME];
-  if (!token) return res.status(401).json({ error: "Not authenticated" });
+  if (presentedSessionCookies(req).length === 0) return res.status(401).json({ error: "Not authenticated" });
 
-  // getSession is the whole check: format, ownership and expiry.
-  if (!getSession(token)) return res.status(401).json({ error: "Session expired" });
+  // getSession (inside liveSessionCookie) is the whole check: format, ownership and expiry.
+  const cookie = liveSessionCookie(req);
+  if (!cookie) return res.status(401).json({ error: "Session expired" });
 
   // Auto-extend the session on every authenticated request (rolling session)
-  rollSession(token, req, res);
+  rollSession(cookie, res);
   res.locals.authMethod = "session";
-  res.locals.chatViewOwner = token;
+  res.locals.chatViewOwner = cookie.token;
 
   next();
 }
