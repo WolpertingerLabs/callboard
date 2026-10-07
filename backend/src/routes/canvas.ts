@@ -2,10 +2,25 @@ import { Router } from "express";
 import { createReadStream, readFileSync, statSync } from "fs";
 import { resolveSnapshot } from "../services/canvas-service.js";
 import { SIZE_REPORTER_SCRIPT, injectBeforeBodyClose } from "../services/html-injection.js";
+import { setSandboxedContentHeaders } from "../utils/served-content.js";
 
 export const canvasRouter = Router();
 
 const CANVAS_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * HTML canvases are agent-written pages that are meant to run their own
+ * script (dashboards, charts) inside `<iframe sandbox="allow-scripts">`
+ * (CanvasRenderer). This repeats exactly that sandbox at the response level,
+ * so the page keeps an opaque origin — no cookie, no same-origin API access,
+ * no reach into `window.opener` — even when it is opened directly as a
+ * top-level page, which the iframe attribute alone does not cover.
+ *
+ * Deliberately not the artifact CSP's `default-src 'none'`: canvases have
+ * always been able to load CDN libraries and remote images, and an opaque
+ * origin is what keeps them away from the user's session.
+ */
+export const CANVAS_HTML_CSP = "sandbox allow-scripts";
 
 /**
  * GET /api/canvas/:canvasId/:version
@@ -44,16 +59,16 @@ canvasRouter.get("/:canvasId/:version", (req, res) => {
     res.setHeader("Content-Type", mimeType!);
     res.setHeader("Content-Length", buf.length);
     res.setHeader("Content-Disposition", "inline");
-    res.setHeader("X-Content-Type-Options", "nosniff");
+    setSandboxedContentHeaders(res, CANVAS_HTML_CSP);
     return res.send(buf);
   }
 
-  // Non-HTML: stream as before
+  // Non-HTML (SVG and raster images, shown via <img>): nothing may execute if opened directly
   const stat = statSync(filePath!);
   res.setHeader("Content-Type", mimeType!);
   res.setHeader("Content-Length", stat.size);
   res.setHeader("Content-Disposition", "inline");
-  res.setHeader("X-Content-Type-Options", "nosniff");
+  setSandboxedContentHeaders(res);
 
   const stream = createReadStream(filePath!);
   stream.pipe(res);

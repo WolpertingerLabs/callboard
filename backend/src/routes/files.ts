@@ -1,8 +1,8 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { existsSync, realpathSync, statSync, createReadStream } from "fs";
 import path from "path";
-
-export const filesRouter = Router();
+import { setSandboxedContentHeaders } from "../utils/served-content.js";
+import { BlockedDestinationError, fetchPublicUrl, type PublicFetchOptions } from "../utils/public-url-fetch.js";
 
 const ALLOWED_MIME: Record<string, string> = {
   ".png": "image/png",
@@ -23,27 +23,42 @@ const ALLOWED_MIME: Record<string, string> = {
   ".pdf": "application/pdf",
 };
 
-const ALLOWED_CONTENT_TYPES = new Set(Object.values(ALLOWED_MIME));
-
 const MAX_SERVE_SIZE = 100 * 1024 * 1024; // 100MB
 
-// Serve a local file by absolute path
-filesRouter.get("/serve", (req, res) => {
-  const filePath = req.query.path as string | undefined;
-  const urlParam = req.query.url as string | undefined;
+/** Test seam for the URL proxy's address policy and resolver; production passes nothing. */
+export type FilesRouterOptions = Pick<PublicFetchOptions, "isAllowedAddress" | "lookup">;
 
-  if (urlParam) {
-    return serveUrl(urlParam, res);
-  }
+/**
+ * Every response here is user, agent or external bytes on the app origin, so
+ * all of them carry the sandboxing CSP: an SVG (or anything a browser might
+ * render as a document) gets an opaque origin and runs nothing, however it is
+ * opened.
+ */
+export function createFilesRouter(proxyOptions: FilesRouterOptions = {}) {
+  const router = Router();
 
-  if (!filePath || typeof filePath !== "string") {
-    return res.status(400).json({ error: "Missing path or url query parameter" });
-  }
+  // Serve a local file by absolute path, or proxy an http(s) URL
+  router.get("/serve", (req, res) => {
+    const filePath = req.query.path as string | undefined;
+    const urlParam = req.query.url as string | undefined;
 
-  return serveLocalFile(filePath, res);
-});
+    if (urlParam) {
+      return serveUrl(urlParam, res, proxyOptions);
+    }
 
-function serveLocalFile(filePath: string, res: any) {
+    if (!filePath || typeof filePath !== "string") {
+      return res.status(400).json({ error: "Missing path or url query parameter" });
+    }
+
+    return serveLocalFile(filePath, res);
+  });
+
+  return router;
+}
+
+export const filesRouter = createFilesRouter();
+
+function serveLocalFile(filePath: string, res: Response) {
   // Validate absolute path, no null bytes
   if (!path.isAbsolute(filePath)) {
     return res.status(400).json({ error: "Path must be absolute" });
@@ -88,7 +103,7 @@ function serveLocalFile(filePath: string, res: any) {
   res.setHeader("Content-Type", mimeType);
   res.setHeader("Content-Length", stat.size);
   res.setHeader("Content-Disposition", "inline");
-  res.setHeader("X-Content-Type-Options", "nosniff");
+  setSandboxedContentHeaders(res);
 
   const stream = createReadStream(realPath);
   stream.pipe(res);
@@ -99,7 +114,14 @@ function serveLocalFile(filePath: string, res: any) {
   });
 }
 
-async function serveUrl(url: string, res: any) {
+/**
+ * Proxy an external media URL. The served type is always the one the URL's
+ * extension implies — never the upstream's Content-Type, which the upstream
+ * controls (a ".pdf" answering `image/svg+xml` would otherwise be served as a
+ * script-capable document). Destinations are restricted to public addresses
+ * on every hop; see {@link fetchPublicUrl}.
+ */
+async function serveUrl(url: string, res: Response, proxyOptions: FilesRouterOptions) {
   // Validate URL format and protocol
   let parsed: URL;
   try {
@@ -112,89 +134,68 @@ async function serveUrl(url: string, res: any) {
     return res.status(400).json({ error: "URL must use http or https" });
   }
 
-  // Validate extension from URL path
+  // The extension decides the served type
   const ext = path.extname(parsed.pathname).toLowerCase();
-  const expectedMime = ALLOWED_MIME[ext];
-  if (!expectedMime) {
+  const mimeType = ALLOWED_MIME[ext];
+  if (!mimeType) {
     return res.status(415).json({ error: "Unsupported file type" });
   }
 
   try {
-    const upstream = await fetch(url, {
+    const upstream = await fetchPublicUrl(parsed.href, {
+      ...proxyOptions,
       headers: {
         "User-Agent": "Callboard/1.0 (media proxy)",
-        Accept: expectedMime + ", */*",
+        Accept: mimeType + ", */*",
       },
-      redirect: "follow",
       signal: AbortSignal.timeout(30_000),
     });
 
-    if (!upstream.ok) {
-      return res.status(upstream.status).json({ error: `Upstream returned ${upstream.status}` });
+    const status = upstream.statusCode ?? 0;
+    if (status < 200 || status >= 300) {
+      upstream.resume();
+      return res.status(502).json({ error: `Upstream returned ${status}` });
     }
 
-    // Validate content-type from upstream
-    const contentType = upstream.headers.get("content-type")?.split(";")[0]?.trim() || "";
-    if (!ALLOWED_CONTENT_TYPES.has(contentType) && contentType !== expectedMime) {
-      // Fall back to extension-based MIME if upstream doesn't match
-      // (some servers return generic types like application/octet-stream)
-    }
-
-    const contentLength = upstream.headers.get("content-length");
+    const contentLength = upstream.headers["content-length"];
 
     // Check size if known
     if (contentLength && parseInt(contentLength) > MAX_SERVE_SIZE) {
+      upstream.destroy();
       return res.status(413).json({ error: "File too large" });
     }
 
-    // Use upstream content-type if it's in our allowlist, otherwise use extension-based
-    const serveMime = ALLOWED_CONTENT_TYPES.has(contentType) ? contentType : expectedMime;
-
-    res.setHeader("Content-Type", serveMime);
-    if (contentLength) {
+    res.setHeader("Content-Type", mimeType);
+    if (contentLength && /^\d+$/.test(contentLength)) {
       res.setHeader("Content-Length", contentLength);
     }
     res.setHeader("Content-Disposition", "inline");
-    res.setHeader("X-Content-Type-Options", "nosniff");
+    setSandboxedContentHeaders(res);
 
-    // Stream the response body
-    if (!upstream.body) {
-      return res.status(502).json({ error: "No response body from upstream" });
-    }
-
-    const reader = upstream.body.getReader();
     let totalBytes = 0;
-
-    const pump = async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          res.end();
-          return;
-        }
-        totalBytes += value.length;
-        if (totalBytes > MAX_SERVE_SIZE) {
-          reader.cancel();
-          if (!res.headersSent) {
-            res.status(413).json({ error: "File too large" });
-          } else {
-            res.destroy();
-          }
-          return;
-        }
-        if (!res.write(value)) {
-          await new Promise<void>((resolve) => res.once("drain", resolve));
-        }
+    for await (const chunk of upstream as AsyncIterable<Buffer>) {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_SERVE_SIZE) {
+        upstream.destroy();
+        res.destroy();
+        return;
       }
-    };
-
-    await pump();
-  } catch (err: any) {
-    if (!res.headersSent) {
-      if (err.name === "TimeoutError" || err.name === "AbortError") {
-        return res.status(504).json({ error: "Upstream request timed out" });
+      if (!res.write(chunk)) {
+        await new Promise<void>((resolve) => res.once("drain", resolve));
       }
-      return res.status(502).json({ error: `Failed to fetch URL: ${err.message}` });
     }
+    res.end();
+  } catch (err: any) {
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
+    if (err instanceof BlockedDestinationError) {
+      return res.status(403).json({ error: err.message });
+    }
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      return res.status(504).json({ error: "Upstream request timed out" });
+    }
+    return res.status(502).json({ error: `Failed to fetch URL: ${err.message}` });
   }
 }

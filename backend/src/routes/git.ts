@@ -9,6 +9,7 @@ import {
   validateFolderPath,
 } from "../utils/git.js";
 import { generateBranchName } from "../services/quick-completion.js";
+import { setSandboxedContentHeaders } from "../utils/served-content.js";
 
 export const gitRouter = Router();
 
@@ -147,6 +148,8 @@ gitRouter.get("/diff/file/raw", (req, res) => {
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Length", buffer.length);
     res.setHeader("Cache-Control", "no-cache");
+    // Repository bytes (a cloned repo's .svg included): never a document on the app origin.
+    setSandboxedContentHeaders(res);
     res.end(buffer);
   } catch (err: any) {
     if (err.message === "File not found") {
