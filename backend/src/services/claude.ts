@@ -1239,6 +1239,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           // model can change mid-session, and a still-registering chat (temp
           // tracking id, no record yet) simply reads as undefined.
           getModel: () => chatFileService.getModelOverride(trackingId),
+          // The ceiling for start_chat_session / continue_chat: this session's
+          // own effective policy, read live like every other permission check.
+          // These tools are pre-approved below, so the ceiling is what stops
+          // them from handing out more than this chat has.
+          getPermissions: getDefaultPermissions,
         },
       ),
     "callboard-tools server",

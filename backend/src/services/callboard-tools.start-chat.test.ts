@@ -15,6 +15,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Chat } from "shared";
+import type { DefaultPermissions } from "shared/types/index.js";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-tools-start-chat-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
@@ -50,13 +51,15 @@ function writeCallerChat(metadata: Record<string, unknown>): void {
  * tracking id (`new-<ts>`) to build the spec of a caller that has not been
  * written to disk yet — `getChat` misses, and the tool takes its no-parent path.
  */
-function startChat(callerId: string = CALLER_CHAT_ID): ToolDefinition<any> {
-  // Mirrors the spec claude.ts builds: the engine this session runs on, plus
-  // the live model-override getter over the chat record.
+function startChat(callerId: string = CALLER_CHAT_ID, getPermissions?: () => DefaultPermissions | null): ToolDefinition<any> {
+  // Mirrors the spec claude.ts builds: the engine this session runs on, the
+  // live model-override getter over the chat record, and the caller's live
+  // permission policy.
   const spec = buildCallboardToolsSpec(() => callerId, undefined, {
     includeJobTools: false,
     provider: "codex",
     getModel: () => chatFileService.getModelOverride(callerId),
+    ...(getPermissions && { getPermissions }),
   });
   const found = spec.tools.find((t) => t.name === "start_chat_session");
   if (!found) throw new Error("start_chat_session not found");
@@ -319,5 +322,63 @@ describe("start_chat_session independent spawns", () => {
     expect(sender.calls[0]).toMatchObject({ parentChatId: CALLER_CHAT_ID });
     expect(result).toMatchObject({ parentChatId: CALLER_CHAT_ID });
     expect(result.independent).toBeUndefined();
+  });
+});
+
+/**
+ * The permission ceiling (permission-ceiling.ts). These tools are pre-approved
+ * on Claude Code and in-process everywhere else, so the child's
+ * `defaultPermissions` is the only thing standing between an "ask" chat and an
+ * allow-all child with a shell.
+ */
+describe("start_chat_session permission ceiling", () => {
+  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+
+  it("caps an ask parent's child at the parent's own policy, per category", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+    const parent: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "deny", computerControl: "deny" };
+
+    const result = payload(await startChat(CALLER_CHAT_ID, () => parent).handler({ prompt: "go", folder: "/tmp/project" }));
+
+    expect(sender.calls[0].defaultPermissions).toEqual(parent);
+    expect(result.permissions).toEqual(parent);
+  });
+
+  it("leaves an unattended allow-all parent's child exactly as before", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    const result = payload(await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED })).handler({ prompt: "go", folder: "/tmp/project" }));
+
+    expect(sender.calls[0].defaultPermissions).toEqual(UNATTENDED);
+    expect(result.permissions).toEqual(UNATTENDED);
+  });
+
+  it("keeps computer control denied for the child even when the parent allows it", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED, computerControl: "allow" })).handler({ prompt: "go", folder: "/tmp/project" });
+
+    expect(sender.calls[0].defaultPermissions).toEqual(UNATTENDED);
+  });
+
+  it("treats a parent with no permissions as ask-everything, the policy it actually runs under", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    await startChat(CALLER_CHAT_ID, () => null).handler({ prompt: "go", folder: "/tmp/project" });
+
+    expect(sender.calls[0].defaultPermissions).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" });
+  });
+
+  it("fails closed when the spec was built without a permission getter", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    await startChat().handler({ prompt: "go", folder: "/tmp/project" });
+
+    expect(sender.calls[0].defaultPermissions).toMatchObject({ codeExecution: "ask", computerControl: "deny" });
   });
 });

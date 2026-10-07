@@ -41,7 +41,10 @@ export function buildRunContext(run: JobRun): JobRunContext {
 function getNestedValue(obj: unknown, path: string): unknown {
   let current: unknown = obj;
   for (const part of path.split(".")) {
-    if (current === null || current === undefined || typeof current !== "object") return undefined;
+    // Own keys only: `inputs.toString` or `inputs.constructor` must read as
+    // unresolved, not as an inherited function (array indices and `length`
+    // are own, so they still resolve).
+    if (current === null || current === undefined || typeof current !== "object" || !Object.hasOwn(current, part)) return undefined;
     current = (current as Record<string, unknown>)[part];
   }
   return current;

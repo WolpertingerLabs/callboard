@@ -31,7 +31,8 @@ import { CARD_CATEGORY_MAX, CONTACT_CHANNEL_CONNECTIONS } from "shared";
 import type { NotifiableChannel } from "shared";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { startActivity, endActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
-import type { ConditionWatch, UiAgentProviderKind } from "shared/types/index.js";
+import type { ConditionWatch, DefaultPermissions, UiAgentProviderKind } from "shared/types/index.js";
+import { axesAboveCeiling, capPermissions } from "./permission-ceiling.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
 import { buildModelAliasTools } from "./model-alias-tools.js";
 import { buildWorkspaceTools } from "./workspace-tools.js";
@@ -205,6 +206,13 @@ export function buildCallboardToolsSpec(
      * inheritance in the session-starting tools when the caller omits `model`.
      */
     getModel?: () => string | undefined;
+    /**
+     * Live read of the calling session's effective permissions — the same
+     * getter its `ToolPermissionPolicy` decides with. It is the ceiling for
+     * `start_chat_session` and `continue_chat` (see permission-ceiling.ts).
+     * Absent means unknown, and unknown reads as `null`: ask on every axis.
+     */
+    getPermissions?: () => DefaultPermissions | null;
   },
 ): ToolServerSpec {
   /**
@@ -736,7 +744,9 @@ export function buildCallboardToolsSpec(
           "If you must poll, use get_session_status and sleep between checks with the `wait` tool. " +
           "Do NOT sleep by running `sleep` as a background Bash command: `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes. " +
           "The spawned chat is automatically linked as a child of THIS chat in the chat parentage tree (see get_chat_tree); pass `role` to label its node, " +
-          "or `independent` to spawn it as its own top-level chat instead.",
+          "or `independent` to spawn it as its own top-level chat instead. " +
+          "The child never gets looser tool permissions than THIS chat: each category is the stricter of allow and this chat's own setting, and computer control is always denied. " +
+          "Where this chat asks, the child asks too — its prompts wait for the user on the board — and the result's `permissions` shows what the child got.",
         {
           prompt: z.string().describe("The task or message for the chat session"),
           folder: z.string().describe("Absolute path to the working directory for the session"),
@@ -856,11 +866,16 @@ export function buildCallboardToolsSpec(
             // Build async generator prompt (required when MCP servers are present)
             const promptIterable = toPromptIterable(childPrompt);
 
+            // Never looser than the caller (permission-ceiling.ts). An
+            // unattended caller is itself allow-all, so its children are
+            // unchanged; a chat whose user set "ask" or "deny" passes that on.
+            const childPermissions = capPermissions(unattendedPermissions(), opts?.getPermissions?.() ?? null);
+
             const emitter = await sendMessage({
               prompt: promptIterable,
               folder: effectiveFolder,
               maxTurns: args.maxTurns ?? 200,
-              defaultPermissions: unattendedPermissions(),
+              defaultPermissions: childPermissions,
               provider: providerModel.provider,
               ...(providerModel.acpProviderId && { acpProviderId: providerModel.acpProviderId }),
               ...(providerModel.model && { model: providerModel.model }),
@@ -910,6 +925,7 @@ export function buildCallboardToolsSpec(
               ...(independent
                 ? { independent: true, ...(parentChat && { spawnedBy: parentChat.id }) }
                 : parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),
+              permissions: childPermissions,
               ...(onComplete && { onComplete }),
             });
           } catch (err: any) {
@@ -1116,6 +1132,7 @@ export function buildCallboardToolsSpec(
       defineTool(
         "continue_chat",
         "Send a follow-up message to an existing chat or agent session. Resumes the conversation preserving full context. The session must not be currently active. " +
+          "Refused when the target chat has looser tool permissions than THIS chat in any category — this chat cannot drive another one to do what it could not do itself. " +
           "The continuation runs asynchronously. Prefer onComplete=true to be notified (a new turn in THIS chat) when it finishes — no polling at all. " +
           "If you must poll, use get_session_status and sleep between checks with the `wait` tool. " +
           "Do NOT sleep by running `sleep` as a background Bash command: `wait` shows the user a live countdown they can end early, while a background shell shows nothing and forces this session to be held open until it finishes.",
@@ -1151,9 +1168,31 @@ export function buildCallboardToolsSpec(
               return textResult(`Chat "${args.chatId}" already has an active session — wait for it to complete or stop it first`);
             }
 
+            // 3. Permission ceiling (permission-ceiling.ts). The continuation
+            //    runs under the target's own stored permissions, so a stricter
+            //    caller driving a looser chat would borrow its authority.
+            //    Refused rather than run clamped: clamping would mean either
+            //    rewriting a chat the user configured or running it under a
+            //    policy its record and UI don't show, and the target's work may
+            //    simply need what it was granted. The caller is told which
+            //    categories, so it can ask the user instead.
+            const targetPermissions = parseChatMetadata(chat.metadata).defaultPermissions ?? null;
+            const looser = axesAboveCeiling(targetPermissions, opts?.getPermissions?.() ?? null);
+            if (looser.length > 0) {
+              return jsonResult({
+                ok: false,
+                error: "permission_ceiling",
+                chatId: args.chatId,
+                looserCategories: looser,
+                message:
+                  `Chat "${args.chatId}" has looser tool permissions than this chat (${looser.join(", ")}), so continuing it from here would let this chat ` +
+                  "do through it what it cannot do itself. Ask the user to continue it, or to change one chat's permissions.",
+              });
+            }
+
             const sendMessage = getSendMessage();
 
-            // 3. "Phone home" on-complete callback registration.
+            // 4. "Phone home" on-complete callback registration.
             //    Registered BEFORE the message is sent: unlike start_chat_session
             //    we already know the child chatId, so there is no window in which
             //    a fast continuation could stop before the callback exists (a
@@ -1172,10 +1211,10 @@ export function buildCallboardToolsSpec(
               onCompleteId = id;
             }
 
-            // 4. Build async generator prompt (required when MCP servers are present)
+            // 5. Build async generator prompt (required when MCP servers are present)
             const promptIterable = toPromptIterable(args.prompt);
 
-            // 5. Send the continuation message
+            // 6. Send the continuation message
             try {
               await sendMessage({
                 chatId: args.chatId,
@@ -1189,7 +1228,7 @@ export function buildCallboardToolsSpec(
               throw err;
             }
 
-            // 6. Return as soon as the session is running. Results come back
+            // 7. Return as soon as the session is running. Results come back
             //    through the onComplete callback, or via get_session_status /
             //    read_session_messages if the caller did not ask for one.
             log.info(`Continued chat ${args.chatId} (async)`);
