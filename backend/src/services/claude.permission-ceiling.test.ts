@@ -20,7 +20,7 @@ import { join } from "node:path";
 
 import type { AgentEvent } from "../agents/ports/events.js";
 import type { AgentProvider, AgentQuery } from "../agents/ports/AgentProvider.js";
-import type { ToolDefinition, ToolServerSpec } from "../agents/ports/tools.js";
+import type { ToolCallResult, ToolDefinition, ToolServerSpec } from "../agents/ports/tools.js";
 import type { DefaultPermissions, StreamEvent } from "shared/types/index.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "callboard-perm-ceiling-data-"));
@@ -124,6 +124,11 @@ async function childPermissionsFor(parent: DefaultPermissions): Promise<DefaultP
   return sent[0].defaultPermissions;
 }
 
+/** The text of a tool result's text blocks. */
+function textOf(result: ToolCallResult): string {
+  return result.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+}
+
 afterEach(() => {
   setAgentProviderForTesting(null);
   setCallboardMessageSender(sendMessage as any);
@@ -161,7 +166,7 @@ describe("sendMessage wires the session's own policy into the unattended-work gu
   async function callTool(specs: ToolServerSpec[], server: string, name: string, args: Record<string, unknown>): Promise<string> {
     const tool = specs.find((s) => s.name === server)?.tools.find((t) => t.name === name);
     if (!tool) throw new Error(`${server} ${name} was not built`);
-    return (await tool.handler(args)).content[0].text!;
+    return textOf(await tool.handler(args));
   }
 
   it("a chat that asks is refused spawn_job; an allow-all chat reaches the job store", async () => {

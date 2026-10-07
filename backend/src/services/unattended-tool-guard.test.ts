@@ -42,7 +42,7 @@ const { buildAgentToolsSpec, AGENT_UNATTENDED_TOOLS } = await import("./agent-to
 const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
 const { JOB_UNATTENDED_TOOLS } = await import("./job-management-tools.js");
 const { unattendedPermissions } = await import("./session-spawn.js");
-import type { AnyToolDefinition, ToolServerSpec } from "../agents/ports/tools.js";
+import type { AnyToolDefinition, ToolCallResult, ToolServerSpec } from "../agents/ports/tools.js";
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
@@ -92,9 +92,13 @@ function tool(spec: ToolServerSpec, name: string): AnyToolDefinition {
   return found;
 }
 
+/** The text of a tool result's text blocks. */
+function textOf(result: ToolCallResult): string {
+  return result.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+}
+
 async function call(spec: ToolServerSpec, name: string): Promise<string> {
-  const result = await tool(spec, name).handler(ARGS[name]);
-  return result.content.map((c: { text?: string }) => c.text ?? "").join("");
+  return textOf(await tool(spec, name).handler(ARGS[name]));
 }
 
 describe.each(SERVERS)("$label", ({ names, build }) => {
@@ -136,6 +140,6 @@ describe("guard surface", () => {
   it("leaves read-only and unrelated tools unguarded for an ask caller", async () => {
     const spec = buildAgentToolsSpec("test-agent", () => "agent-chat", { getPermissions: ASK_EXEC });
     const result = await tool(spec, "list_cron_jobs").handler({});
-    expect(result.content[0].text).not.toContain("permission_ceiling");
+    expect(textOf(result)).not.toContain("permission_ceiling");
   });
 });

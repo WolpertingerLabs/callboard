@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import type { DefaultPermissions } from "shared/types/index.js";
 import { axesAboveCeiling, capPermissions, codexSandboxRefusal, guardUnattendedTools } from "./permission-ceiling.js";
 import { defineTool, textResult } from "../agents/ports/tools.js";
+import type { ToolCallResult } from "../agents/ports/tools.js";
 import { unattendedPermissions } from "./session-spawn.js";
 
 const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
@@ -33,7 +34,10 @@ describe("capPermissions", () => {
 
 describe("axesAboveCeiling", () => {
   it("lists only the axes where the target is looser", () => {
-    expect(axesAboveCeiling(unattendedPermissions(), { ...unattendedPermissions(), codeExecution: "ask", webAccess: "deny" })).toEqual(["codeExecution", "webAccess"]);
+    expect(axesAboveCeiling(unattendedPermissions(), { ...unattendedPermissions(), codeExecution: "ask", webAccess: "deny" })).toEqual([
+      "codeExecution",
+      "webAccess",
+    ]);
   });
 
   it("is empty when the target is equal or stricter", () => {
@@ -64,6 +68,11 @@ describe("codexSandboxRefusal", () => {
   });
 });
 
+/** The text of a tool result's text blocks. */
+function textOf(result: ToolCallResult): string {
+  return result.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+}
+
 describe("guardUnattendedTools", () => {
   const inner = vi.fn(async () => textResult("ran"));
   const tools = () => [defineTool("starts_work", "Starts work.", {}, inner), defineTool("reads", "Reads.", {}, async () => textResult("read"))];
@@ -71,16 +80,16 @@ describe("guardUnattendedTools", () => {
   it("passes an allow-all caller straight through to the original handler", async () => {
     inner.mockClear();
     const [guarded] = guardUnattendedTools(tools(), ["starts_work"], () => unattendedPermissions());
-    expect((await guarded.handler({})).content[0].text).toBe("ran");
+    expect(textOf(await guarded.handler({}))).toBe("ran");
     expect(inner).toHaveBeenCalledTimes(1);
   });
 
   it("refuses anyone else without calling the handler, and leaves other tools alone", async () => {
     inner.mockClear();
     const [guarded, other] = guardUnattendedTools(tools(), ["starts_work"], () => ({ ...unattendedPermissions(), webAccess: "deny" }));
-    expect(JSON.parse((await guarded.handler({})).content[0].text!)).toMatchObject({ error: "permission_ceiling", looserCategories: ["webAccess"] });
+    expect(JSON.parse(textOf(await guarded.handler({})))).toMatchObject({ error: "permission_ceiling", looserCategories: ["webAccess"] });
     expect(inner).not.toHaveBeenCalled();
-    expect((await other.handler({})).content[0].text).toBe("read");
+    expect(textOf(await other.handler({}))).toBe("read");
   });
 
   it("throws on a name that is not in the list, so a rename cannot drop the guard", () => {
