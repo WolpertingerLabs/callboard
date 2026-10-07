@@ -69,7 +69,7 @@ import { enginesRouter } from "./routes/engines.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
-import { loginHandler, logoutHandler, checkAuthHandler, requireAllowedIp, requireAuth, changePasswordHandler } from "./auth.js";
+import { loginHandler, logoutHandler, checkAuthHandler, requireAllowedIp, requireAuth, requireSessionAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
 import { installProcessGuards } from "./utils/process-guards.js";
 import { sweepTrash } from "./utils/worktree-trash.js";
@@ -420,6 +420,7 @@ app.post(
   // #swagger.summary = 'Restart the Callboard server'
   // #swagger.description = 'Spawns `callboard restart` as a detached process which stops the current server and starts a fresh one.'
   /* #swagger.responses[200] = { description: "Restart initiated" } */
+  requireSessionAuth,
   (_req, res) => {
     log.info("Restart requested via API");
     res.json({ success: true, message: "Restarting..." });

@@ -16,6 +16,7 @@ import PiModelSelector from "../../components/PiModelSelector";
 import AcpModelSelector from "../../components/AcpModelSelector";
 import { mergeAcpProviderModel } from "./acpProviderModels";
 import { EMPTY_API_SETTINGS_FORM, formFromSettings, settingsFromForm, type ApiSettingsForm } from "./apiSettingsForm";
+import { selectMaskedSecret } from "./maskedSecret";
 import {
   readClaudeCredentialMode,
   writeClaudeCredentialMode,
@@ -322,6 +323,7 @@ function AcpProviderSection({
               type="password"
               value={openRouterApiKey}
               onChange={(e) => onOpenRouterApiKeyChange(e.target.value)}
+              onFocus={selectMaskedSecret}
               placeholder={accountKeySet ? "Leave empty to use your account-wide OpenRouter key" : "sk-or-v1-…"}
               style={inputStyle}
               autoComplete="off"
@@ -427,6 +429,7 @@ function SecretField({ id, value, onChange, placeholder }: SecretFieldProps) {
         type={visible ? "text" : "password"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onFocus={selectMaskedSecret}
         placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}

@@ -58,7 +58,7 @@ function makeRes() {
   const res = {
     statusCode: 200,
     body: undefined as unknown as { error: string; passwordChanged?: boolean },
-    locals: {},
+    locals: { authMethod: "session" },
     status(code: number) {
       this.statusCode = code;
       return this;

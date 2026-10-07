@@ -11,11 +11,16 @@
  *   GET  /api/agent-settings/daemon-status    — drawlatch daemon URL/health/enrollment
  *   POST /api/agent-settings/import-bundle     — import a drawlatch caller credential bundle
  *   PUT  /api/agent-settings/default-caller    — set/clear the default caller for regular sessions
+ *
+ * Credentials leave this router masked, to every caller. Every write except the
+ * favorites pair, and the connection test that authenticates as an enrolled
+ * caller, requires a logged-in session: a `cbk_` API key may read settings but
+ * not change where traffic goes, what is exposed, or which credentials are used.
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
-import type { ModelAlias } from "shared/types/index.js";
-import { validateModelAliases } from "shared/types/index.js";
+import type { AgentSettings, ModelAlias } from "shared/types/index.js";
+import { validateModelAliases, SECRET_SETTING_FIELDS, isMaskedSecret, maskSecret } from "shared/types/index.js";
 import {
   getAgentSettings,
   updateAgentSettings,
@@ -27,7 +32,7 @@ import {
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
-import { isPasswordConfigured } from "../auth.js";
+import { isPasswordConfigured, requireSessionAuth } from "../auth.js";
 import { getClientKey, isDirectLocalClient } from "../utils/client-ip.js";
 import { parseAllowlist, validateAllowlistEntry, isIpAllowed, isPrivateOrLoopback } from "../utils/ip-allowlist.js";
 import { startWebTunnel, stopWebTunnel, getWebTunnelStatus, isCloudflaredAvailable, resolveCallboardPort } from "../services/web-tunnel.js";
@@ -130,19 +135,66 @@ function favoritesOf(settings: { favoriteSkills?: string[]; favoriteJobs?: strin
   return { favoriteSkills: settings.favoriteSkills ?? [], favoriteJobs: settings.favoriteJobs ?? [] };
 }
 
-/** GET /api/agent-settings — get current agent settings */
+/**
+ * The settings as they may leave the daemon: every credential masked, for every
+ * caller. A logged-in session gets no more than an API key here — the Settings
+ * page needs to know a key is saved and which one, never its value, and the
+ * PUT below reads the mask sent back as "keep it".
+ */
+function redactSecrets(settings: AgentSettings): AgentSettings {
+  const out = { ...settings };
+  for (const field of SECRET_SETTING_FIELDS) {
+    const value = out[field];
+    if (typeof value === "string" && value) out[field] = maskSecret(value);
+  }
+  return out;
+}
+
+/** GET /api/agent-settings — get current agent settings, credentials masked */
 agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
   try {
-    const settings = getAgentSettings();
-    res.json(settings);
+    res.json(redactSecrets(getAgentSettings()));
   } catch (err: any) {
     log.error(`Error getting agent settings: ${err.message}`);
     res.status(500).json({ error: "Failed to get agent settings" });
   }
 });
 
-/** PUT /api/agent-settings — update agent settings */
-agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> => {
+/**
+ * PUT /api/agent-settings — update agent settings. Logged-in sessions only.
+ *
+ * Gated whole rather than field by field. Most of this body widens exposure or
+ * redirects traffic and credentials — remote access and its allowlist, the
+ * tunnel token, every base URL and API key, `codexHome`, the binary paths,
+ * `codexSandboxMode`, `allowEngineInstalls`, the drawlatch endpoint — and the
+ * rest (model names, aliases, archive and callback preferences) has no API-key
+ * caller. A per-field list would let the next sensitive field ship open by
+ * default; this way a new field is session-only until someone decides
+ * otherwise. Favorites keep their own ungated route below.
+ */
+agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Response): Promise<void> => {
+  // The exact mask of the stored secret, sent back, is the Settings page saving
+  // a form it never edited that field of: keep what is stored. Any other value
+  // with a bullet in it — a mask backspaced into, typed onto, padded with a
+  // space, or the mask of a key since replaced from another tab — is refused,
+  // because storing it would make the bullets the key. Compared after trimming,
+  // as `normalize` trims before it stores.
+  const body = { ...(req.body ?? {}) };
+  const stored = getAgentSettings();
+  for (const field of SECRET_SETTING_FIELDS) {
+    const value = typeof body[field] === "string" ? body[field].trim() : undefined;
+    if (value === undefined || !isMaskedSecret(value)) continue;
+    const current = stored[field];
+    if (current && value === maskSecret(current)) {
+      delete body[field];
+      continue;
+    }
+    res.status(400).json({
+      error: `${field} still contains the masked placeholder, or the saved value changed since this page loaded. Clear the field and paste the whole new value, or reload the page.`,
+    });
+    return;
+  }
+
   const {
     proxyMode,
     remoteServerUrl,
@@ -206,7 +258,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
     favoriteJobs,
     maxCallbackChainDepth,
     maxPendingCallbacks,
-  } = req.body;
+  } = body;
 
   // Empty strings clear an override; undefined leaves the field untouched.
   const normalize = (v: unknown): string | undefined => (typeof v === "string" ? (v.trim() === "" ? undefined : v.trim()) : undefined);
@@ -630,7 +682,7 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
       // after settings writes so subsequent pickers/tool calls see the new view.
       refreshCodexModelsCache().catch((err) => log.warn(`Codex model refresh failed: ${err.message}`));
     }
-    res.json(updated);
+    res.json(redactSecrets(updated));
   } catch (err: any) {
     log.error(`Error updating agent settings: ${err.message}`);
     res.status(500).json({ error: "Failed to update agent settings" });
@@ -644,15 +696,12 @@ agentSettingsRouter.put("/", async (req: Request, res: Response): Promise<void> 
  *
  * ## Why this is not just `GET /api/agent-settings`
  *
- * The full settings object is unredacted: `apiKey`, `authToken`,
- * `openRouterApiKey`, `codexApiKey`, `cloudflaredToken`. That was defensible
- * while every caller was the Settings page itself — the page exists to show and
- * edit those fields. The New Chat launchpad is not: it needs two arrays of ids
- * to draw a row of chips, and it asks on every new-chat open, from whatever
- * device is reaching Callboard through the remote-access tunnel. Shipping every
- * credential in the install across that tunnel to render a chip row is a cost
- * with no matching benefit, so the launchpad gets a payload shaped like its
- * need.
+ * The full settings object was unredacted when this route was added (it now
+ * masks every credential, see `redactSecrets`), and it is still every setting
+ * in the install. The New Chat launchpad needs two arrays of ids to draw a row
+ * of chips, and it asks on every new-chat open, from whatever device is
+ * reaching Callboard through the remote-access tunnel, so it gets a payload
+ * shaped like its need.
  *
  * The write is the same `normalizeIdList` the main PUT uses — `[]` clears,
  * a non-array leaves the stored list alone — because the star in Settings and
@@ -739,7 +788,7 @@ agentSettingsRouter.get("/key-aliases", (req: Request, res: Response): void => {
 });
 
 /** POST /api/agent-settings/test-connection — test remote proxy server connection */
-agentSettingsRouter.post("/test-connection", async (req: Request, res: Response): Promise<void> => {
+agentSettingsRouter.post("/test-connection", requireSessionAuth, async (req: Request, res: Response): Promise<void> => {
   const { url, alias } = req.body;
   if (!url) {
     res.status(400).json({ error: "url is required" });
@@ -863,7 +912,7 @@ agentSettingsRouter.get("/callers", (req: Request, res: Response): void => {
  * gated on zero associated agents. On success the caller's key dir is removed
  * and its cached proxy client is dropped. Mode defaults to the active one.
  */
-agentSettingsRouter.delete("/callers/:alias", (req: Request, res: Response): void => {
+agentSettingsRouter.delete("/callers/:alias", requireSessionAuth, (req: Request, res: Response): void => {
   const { alias } = req.params;
   if (!CALLER_ALIAS_REGEX.test(alias)) {
     res.status(400).json({ error: "Invalid caller alias" });
@@ -901,7 +950,7 @@ agentSettingsRouter.delete("/callers/:alias", (req: Request, res: Response): voi
  * defaults to the active one; pass ?proxyMode=remote to target a key store.
  * Rejects (404) when a non-empty alias is not an enrolled caller.
  */
-agentSettingsRouter.put("/default-caller", (req: Request, res: Response): void => {
+agentSettingsRouter.put("/default-caller", requireSessionAuth, (req: Request, res: Response): void => {
   const { alias } = req.body ?? {};
   if (alias !== null && alias !== undefined && typeof alias !== "string") {
     res.status(400).json({ error: "alias must be a string or null" });
@@ -936,7 +985,7 @@ agentSettingsRouter.put("/default-caller", (req: Request, res: Response): void =
  * Body: { bundle: object, passphrase?: string }. The passphrase is required
  * only when the bundle's private keys are passphrase-wrapped (422 otherwise).
  */
-agentSettingsRouter.post("/import-bundle", async (req: Request, res: Response): Promise<void> => {
+agentSettingsRouter.post("/import-bundle", requireSessionAuth, async (req: Request, res: Response): Promise<void> => {
   const { bundle, passphrase } = req.body ?? {};
   if (bundle === undefined || bundle === null) {
     res.status(400).json({ error: "bundle is required" });

@@ -140,7 +140,7 @@ To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-
 - **Model aliases:** one name, such as `planner`, that maps to a different model per engine. Aliases work anywhere a model is set.
 - **Plugins & MCP:** Callboard scans directories you register for Claude Code plugin marketplaces and picks up their commands, hooks and MCP servers. Plugins are toggled per directory.
 - **Themes:** every UI colour is a CSS variable, with light and dark sets. Custom themes are files in `~/.callboard/themes/`, and an agent can generate one for you.
-- **API keys:** mint `cbk_` bearer tokens under Settings → Account for scripts. These keys can't perform human-only actions such as minting more keys or controlling a computer.
+- **API keys:** mint `cbk_` bearer tokens under Settings → Account for scripts. These keys can't perform human-only actions: minting more keys, changing a chat's computer-control setting or answering its prompts, changing settings (they can read them, with credentials masked), restarting the server or changing the password.
 
 ### Browser & Computer Control (preview)
 

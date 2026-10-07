@@ -1103,10 +1103,10 @@ export async function updateAgentSettings(settings: Partial<AgentSettings>): Pro
 
 /**
  * The favorites pair — the only part of agent settings the New Chat launchpad
- * needs. Deliberately NOT fetched via `getAgentSettings`: that response carries
- * every credential in the install unredacted, and the launchpad asks for this
- * on every new-chat open from whatever device is on the tunnel. See the route's
- * doc-comment in `backend/src/routes/agent-settings.ts`.
+ * needs. Deliberately NOT fetched via `getAgentSettings`: that response is
+ * every setting in the install (credentials masked), and the launchpad asks for
+ * this on every new-chat open from whatever device is on the tunnel. See the
+ * route's doc-comment in `backend/src/routes/agent-settings.ts`.
  */
 export interface FavoriteLists {
   favoriteSkills: string[];
