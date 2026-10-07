@@ -55,7 +55,9 @@ function saveSlashCommandsData(data: SlashCommandsData): void {
  */
 function getSlashCommandsForDirectory(directory: string): string[] {
   const data = loadSlashCommandsData();
-  return data[directory] || [];
+  // Own keys only: `directory` is a chat's folder, which the client chose, and
+  // a folder named `constructor` must not resolve to Object.prototype's member.
+  return Object.hasOwn(data, directory) && Array.isArray(data[directory]) ? data[directory] : [];
 }
 
 /**

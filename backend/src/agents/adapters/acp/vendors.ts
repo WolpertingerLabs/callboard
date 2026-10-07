@@ -257,7 +257,9 @@ export const ACP_VENDOR_PRESETS: Readonly<Record<string, AcpVendorPreset>> = Obj
 export function resolveAcpVendorPreset(providerId: string, override?: AcpVendorPreset | null): AcpVendorPreset | null {
   if (override) return override;
   if (!providerId) return null;
-  return ACP_VENDOR_PRESETS[providerId] ?? null;
+  // Own keys only: the id is request input, and `constructor`/`toString`/...
+  // would otherwise resolve to an inherited Object.prototype member.
+  return Object.hasOwn(ACP_VENDOR_PRESETS, providerId) ? ACP_VENDOR_PRESETS[providerId] : null;
 }
 
 /** Ids of the presets that ship in this file. */

@@ -495,9 +495,29 @@ export function retryRunStep(runId: string): JobRun {
  * The caller must saveRun() the mutated run before spawning anything.
  */
 function nextExecutionKey(run: JobRun, stepId: string): string {
-  const counts = (run.executionCounts ??= {});
-  counts[stepId] = (counts[stepId] ?? 0) + 1;
-  return executionKey(run.runId, stepId, counts[stepId]);
+  return executionKey(run.runId, stepId, bumpStepCount((run.executionCounts ??= {}), stepId));
+}
+
+/**
+ * Read a persisted per-step counter. Step ids come from the job definition, so
+ * `constructor`, `toString`, `__proto__`, ... must not resolve to inherited
+ * Object.prototype members: `Object + 1` is a string, and a string never
+ * compares greater than `maxLoops`, so the bound would never trip.
+ */
+function stepCount(counts: Record<string, number>, stepId: string): number {
+  const value = Object.hasOwn(counts, stepId) ? counts[stepId] : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Increment and return a per-step counter. defineProperty rather than
+ * assignment, because assigning to `counts["__proto__"]` is silently ignored
+ * and the count would stay at 1 forever. JSON round-trips it as an own key.
+ */
+function bumpStepCount(counts: Record<string, number>, stepId: string): number {
+  const next = stepCount(counts, stepId) + 1;
+  Object.defineProperty(counts, stepId, { value: next, writable: true, enumerable: true, configurable: true });
+  return next;
 }
 
 /**
@@ -620,7 +640,7 @@ function evaluateGateStep(run: JobRun, step: Extract<JobStep, { type: "gate" }>,
   appendHistory(run, {
     stepId: step.id,
     stepType: "gate",
-    attempt: (run.loopCounts[step.id] ?? 0) + 1,
+    attempt: stepCount(run.loopCounts, step.id) + 1,
     startedAt: run.activeStep?.startedAt ?? new Date().toISOString(),
     endedAt: new Date().toISOString(),
     result: passed ? "passed" : "failed",
@@ -632,8 +652,7 @@ function evaluateGateStep(run: JobRun, step: Extract<JobStep, { type: "gate" }>,
   const stepIdx = run.definition.steps.findIndex((s) => s.id === step.id);
   const targetIdx = run.definition.steps.findIndex((s) => s.id === target);
   if (targetIdx !== -1 && targetIdx <= stepIdx) {
-    const count = (run.loopCounts[step.id] ?? 0) + 1;
-    run.loopCounts[step.id] = count;
+    const count = bumpStepCount(run.loopCounts, step.id);
     if (step.maxLoops !== undefined && count > step.maxLoops) {
       failRun(run, `Gate "${step.id}" exceeded maxLoops (${step.maxLoops})`);
       return;
@@ -789,8 +808,7 @@ function routeSubJobExit(run: JobRun, step: SubJobStep, target: string | undefin
     const stepIdx = run.definition.steps.findIndex((s) => s.id === step.id);
     const targetIdx = run.definition.steps.findIndex((s) => s.id === resolved);
     if (targetIdx !== -1 && targetIdx <= stepIdx) {
-      const count = (run.loopCounts[step.id] ?? 0) + 1;
-      run.loopCounts[step.id] = count;
+      const count = bumpStepCount(run.loopCounts, step.id);
       if (step.maxLoops !== undefined && count > step.maxLoops) {
         failRun(run, `Job step "${step.id}" exceeded maxLoops (${step.maxLoops}): ${message}`);
         return;
