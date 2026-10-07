@@ -113,3 +113,58 @@ describe("expiry fails closed", () => {
     expect(sessions.getSession(token)).toBeUndefined();
   });
 });
+
+describe("absolute lifetime", () => {
+  const DAY = 24 * HOUR;
+  const START = 10 * DAY;
+
+  it("refuses and prunes a session at created_at + 30 days, however recently it rolled", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const token = sessions.createSession(START + 7 * DAY);
+    for (let day = 6; day < 30; day += 6) {
+      vi.setSystemTime(START + day * DAY);
+      sessions.extendSession(token, Date.now() + 7 * DAY);
+    }
+    vi.setSystemTime(START + sessions.SESSION_MAX_LIFETIME_MS - 1);
+    expect(sessions.getSession(token)).toBeDefined();
+    vi.setSystemTime(START + sessions.SESSION_MAX_LIFETIME_MS);
+    expect(sessions.getSession(token)).toBeUndefined();
+    expect(readStore().sessions[token]).toBeUndefined();
+  });
+
+  it("extendSession never moves the expiry past the cap, and returns the clamped value", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const token = sessions.createSession(START + 29 * DAY);
+    vi.setSystemTime(START + 28 * DAY);
+    expect(sessions.extendSession(token, Date.now() + 7 * DAY)).toBe(START + 30 * DAY);
+    expect(storedExpiry(token)).toBe(START + 30 * DAY);
+  });
+
+  it("extendSession returns undefined for a session that is not live", () => {
+    expect(sessions.extendSession("b".repeat(64), Date.now() + HOUR)).toBeUndefined();
+  });
+
+  it.each([
+    ["missing", `{"expires_at": EXP}`],
+    ["a numeric string", `{"expires_at": EXP, "created_at": "0"}`],
+    ["null", `{"expires_at": EXP, "created_at": null}`],
+  ])("rejects and prunes an entry whose created_at is %s", (_label, entryJson) => {
+    const token = sessions.createSession(Date.now() + HOUR);
+    const data = JSON.parse(readFileSync(sessionsFile, "utf8"));
+    data.sessions[token] = "__ENTRY__";
+    writeFileSync(sessionsFile, JSON.stringify(data).replace('"__ENTRY__"', entryJson.replace("EXP", String(Date.now() + HOUR))));
+    expect(sessions.getSession(token)).toBeUndefined();
+    expect(readStore().sessions[token]).toBeUndefined();
+  });
+
+  it("cleanupExpiredSessions prunes sessions past the cap", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const token = sessions.createSession(START + 40 * DAY);
+    vi.setSystemTime(START + 31 * DAY);
+    sessions.cleanupExpiredSessions();
+    expect(readStore().sessions[token]).toBeUndefined();
+  });
+});

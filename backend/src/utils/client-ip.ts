@@ -215,3 +215,29 @@ export function isDirectLocalClient(req: Request): boolean {
   if (!socketIp) return false;
   return isPrivateOrLoopback(socketIp);
 }
+
+/**
+ * Did the browser reach us over https? Decides the session cookie's `Secure`
+ * flag.
+ *
+ * The daemon itself only speaks plain http, so on a direct connection
+ * `req.secure` is false (Express derives it from the socket, not a header,
+ * because `trust proxy` is never set). Https exists only in front of a local
+ * terminator: the cloudflared tunnel connects to `http://127.0.0.1:<port>` and
+ * sends `X-Forwarded-Proto: https` (Tailscale Serve does the same).
+ *
+ * So `X-Forwarded-Proto` is believed only when the socket is loopback — the
+ * same gate {@link getClientKey} uses. From a LAN or public socket it is the
+ * caller's own header and is ignored: a LAN browser on plain http that sent it
+ * would otherwise be handed a `Secure` cookie it then refuses to store. A
+ * spoofed value from loopback can only add `Secure` to the spoofer's own cookie,
+ * which weakens nothing. In a list the LAST entry is used: proxies append, so
+ * it is the one the loopback terminator wrote, not whatever the client sent.
+ */
+export function arrivedOverHttps(req: Request): boolean {
+  if (req.secure) return true;
+  if (!isLoopback(req.socket?.remoteAddress)) return false;
+  const xfp = req.headers["x-forwarded-proto"];
+  const chain = (typeof xfp === "string" ? xfp : Array.isArray(xfp) ? xfp.join(",") : "").split(",");
+  return chain[chain.length - 1].trim().toLowerCase() === "https";
+}

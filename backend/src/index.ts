@@ -37,10 +37,10 @@ if (existsSync(ENV_FILE)) {
 // Ensure instance name exists in .env (generates one on first run)
 ensureInstanceName();
 
-import cors from "cors";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import { getClientKey } from "./utils/client-ip.js";
+import { applyHttpHardening } from "./utils/security-headers.js";
 import { chatsRouter } from "./routes/chats.js";
 import { streamRouter } from "./routes/stream.js";
 import { imagesRouter } from "./routes/images.js";
@@ -100,7 +100,9 @@ const app = express();
 const isProduction = process.env.NODE_ENV === "production";
 const PORT = (!isProduction && process.env.DEV_PORT_SERVER) || process.env.PORT || 8000;
 
-app.use(cors({ origin: true, credentials: true }));
+// Hardening headers, no X-Powered-By, and deliberately no CORS: every browser
+// client is same-origin. See applyHttpHardening.
+applyHttpHardening(app);
 app.use(cookieParser());
 
 app.use(express.json({ limit: "50mb" }));

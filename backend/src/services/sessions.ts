@@ -66,13 +66,35 @@ function storedSession(data: SessionsFile, token: unknown): SessionData | undefi
 }
 
 /**
+ * The absolute lifetime of a session, however actively it is used. Sessions
+ * roll (`extendSession` on every cookie-authenticated request), so without this
+ * a stolen cookie that is kept warm never expires.
+ */
+export const SESSION_MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+
+/** The latest instant a session may live until, or undefined when `created_at` is unusable. */
+function lifetimeCap(session: SessionData): number | undefined {
+  const createdAt: unknown = session.created_at;
+  return isFiniteNumber(createdAt) ? createdAt + SESSION_MAX_LIFETIME_MS : undefined;
+}
+
+/**
  * Fails closed: an entry is live only while `now` is strictly before a finite
- * numeric `expires_at`. Missing, non-numeric or NaN expiry means dead.
+ * numeric `expires_at` AND strictly before `created_at` + the absolute
+ * lifetime. A missing, non-numeric or NaN value for either means dead.
+ *
+ * Missing `created_at` is treated as dead rather than grandfathered:
+ * `createSession` has written it since sessions moved to this file, so an entry
+ * without one was not minted by this code, and "no start date" must not read as
+ * "no cap". The cost is one re-login for such an entry.
  */
 function isLive(session: SessionData | undefined, now: number): session is SessionData {
   if (typeof session !== "object" || session === null) return false;
   const expiresAt: unknown = session.expires_at;
-  return typeof expiresAt === "number" && Number.isFinite(expiresAt) && now < expiresAt;
+  const cap = lifetimeCap(session);
+  return isFiniteNumber(expiresAt) && now < expiresAt && cap !== undefined && now < cap;
 }
 
 /**
@@ -112,13 +134,24 @@ export function createSession(expiresAt: number, ip?: string): string {
 // this — the same throttle api-keys applies to last_used_at.
 const EXTEND_WRITE_THRESHOLD_MS = 60 * 1000;
 
-export function extendSession(token: string, newExpiresAt: number): void {
+/**
+ * Roll a live session's expiry forward, never past its absolute lifetime cap.
+ * Returns the clamped expiry to give the cookie, or undefined when the token is
+ * not a live session. (The stored value can trail it by up to the write
+ * throttle; the cap is exact in both.)
+ */
+export function extendSession(token: string, newExpiresAt: number): number | undefined {
   const data = loadSessions();
   const session = storedSession(data, token);
-  if (isLive(session, Date.now()) && newExpiresAt - session.expires_at > EXTEND_WRITE_THRESHOLD_MS) {
-    session.expires_at = newExpiresAt;
+  if (!isLive(session, Date.now())) return undefined;
+  // isLive guarantees a usable created_at.
+  const cap = lifetimeCap(session)!;
+  const target = Math.min(newExpiresAt, cap);
+  if (target - session.expires_at > EXTEND_WRITE_THRESHOLD_MS) {
+    session.expires_at = target;
     saveSessions(data);
   }
+  return target;
 }
 
 export function deleteSession(token: string): void {

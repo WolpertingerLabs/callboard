@@ -183,7 +183,8 @@ imagesRouter.get("/:imageId", (req, res) => {
     // Set appropriate headers
     res.setHeader("Content-Type", image.mimeType);
     res.setHeader("Content-Length", buffer.length);
-    res.setHeader("Cache-Control", "public, max-age=31536000"); // 1 year cache
+    // Authenticated content: the browser may cache it, shared caches may not.
+    res.setHeader("Cache-Control", "private, max-age=86400");
     res.setHeader("ETag", `"${image.sha256}"`);
     setSandboxedContentHeaders(res);
 

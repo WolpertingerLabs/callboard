@@ -1,9 +1,9 @@
-import type { Request, Response, NextFunction } from "express";
+import type { CookieOptions, Request, Response, NextFunction } from "express";
 import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions, deleteAllSessionsExcept } from "./services/sessions.js";
 import { verifyApiToken } from "./services/api-keys.js";
 import { verifyPassword, hashPassword, generateSalt, validateNewPassword } from "./utils/password.js";
 import { updateEnvFile } from "./utils/env-writer.js";
-import { allowlistSubject, getClientKey } from "./utils/client-ip.js";
+import { allowlistSubject, arrivedOverHttps, getClientKey } from "./utils/client-ip.js";
 import { isIpAllowed } from "./utils/ip-allowlist.js";
 import { readAgentSettings } from "./services/agent-settings.js";
 import { createLogger } from "./utils/logger.js";
@@ -59,16 +59,26 @@ function checkRateLimit(ip: string): boolean {
 
 // ── Session helpers ─────────────────────────────────────────────────
 
-/** Extend (roll) a session: reset both the server-side expiry and the browser cookie. */
-function rollSession(token: string, res: Response): void {
-  const newExpiry = Date.now() + SESSION_TTL_MS;
-  extendSession(token, newExpiry);
-  res.cookie(SESSION_COOKIE_NAME, token, {
-    httpOnly: true,
-    sameSite: "strict",
-    maxAge: SESSION_TTL_MS,
-    path: "/",
-  });
+/**
+ * Every session cookie attribute except its lifetime. `Secure` when the request
+ * reached us over https (the tunnel) — see `arrivedOverHttps` for why the
+ * forwarded proto is only believed from loopback. Plain-http access (localhost,
+ * LAN, the Vite dev proxy) keeps a non-Secure cookie, or it would not be stored.
+ */
+function sessionCookieOptions(req: Request): CookieOptions {
+  return { httpOnly: true, sameSite: "strict", secure: arrivedOverHttps(req), path: "/" };
+}
+
+/**
+ * Extend (roll) a session: reset both the server-side expiry and the browser
+ * cookie. The store clamps the expiry to the session's absolute lifetime, and
+ * the cookie follows the clamped value.
+ */
+function rollSession(token: string, req: Request, res: Response): void {
+  const now = Date.now();
+  const expiresAt = extendSession(token, now + SESSION_TTL_MS);
+  if (expiresAt === undefined) return;
+  res.cookie(SESSION_COOKIE_NAME, token, { ...sessionCookieOptions(req), maxAge: Math.max(0, expiresAt - now) });
 }
 
 // Session cleanup on startup. Best-effort: the session store can throw (a
@@ -124,19 +134,14 @@ export async function loginHandler(req: Request, res: Response) {
     return res.status(503).json({ error: SESSION_STORE_UNAVAILABLE });
   }
 
-  res.cookie(SESSION_COOKIE_NAME, token, {
-    httpOnly: true,
-    sameSite: "strict",
-    maxAge: SESSION_TTL_MS,
-    path: "/",
-  });
+  res.cookie(SESSION_COOKIE_NAME, token, { ...sessionCookieOptions(req), maxAge: SESSION_TTL_MS });
   res.json({ ok: true });
 }
 
 export function logoutHandler(_req: Request, res: Response) {
   const token = _req.cookies?.[SESSION_COOKIE_NAME];
   if (token) deleteSession(token);
-  res.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+  res.clearCookie(SESSION_COOKIE_NAME, sessionCookieOptions(_req));
   res.json({ ok: true });
 }
 
@@ -158,7 +163,7 @@ export function checkAuthHandler(req: Request, res: Response) {
   if (!getSession(token)) return res.json({ authenticated: false });
 
   // Auto-extend the session when actively checking auth status
-  rollSession(token, res);
+  rollSession(token, req, res);
 
   res.json({ authenticated: true });
 }
@@ -340,7 +345,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!getSession(token)) return res.status(401).json({ error: "Session expired" });
 
   // Auto-extend the session on every authenticated request (rolling session)
-  rollSession(token, res);
+  rollSession(token, req, res);
   res.locals.authMethod = "session";
   res.locals.chatViewOwner = token;
 
