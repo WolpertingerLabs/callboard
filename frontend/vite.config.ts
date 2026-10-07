@@ -46,6 +46,10 @@ export default defineConfig(({ command }) => {
     server: {
       port: devPortUI,
       allowedHosts: true,
+      // The SPA and `/api` share this origin (the proxy below), so nothing
+      // needs CORS. Vite's default reflects any localhost origin, i.e. any
+      // other port on this machine — the same hole the backend closed.
+      cors: false,
       proxy: {
         "/api": `http://localhost:${devPortServer}`,
       },
