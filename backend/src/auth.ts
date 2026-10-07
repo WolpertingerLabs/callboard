@@ -216,7 +216,16 @@ export function checkAuthHandler(req: Request, res: Response) {
   res.json({ authenticated: true });
 }
 
+/**
+ * Logged-in sessions only, and checked here rather than by a middleware at the
+ * mount so the handler cannot be wired up without it. Bearer keys are refused
+ * because this answers "is X the password?" — it is a login, and the
+ * `currentPassword` check draws on login's per-client budget for the same
+ * reason.
+ */
 export async function changePasswordHandler(req: Request, res: Response) {
+  if (res.locals.authMethod !== "session") return requireSessionAuth(req, res, () => {});
+
   const { currentPassword, newPassword } = req.body;
 
   if (!currentPassword || !newPassword) {
@@ -226,6 +235,10 @@ export async function changePasswordHandler(req: Request, res: Response) {
   const strength = validateNewPassword(newPassword);
   if (!strength.valid) {
     return res.status(400).json({ error: strength.error });
+  }
+
+  if (!checkRateLimit(getClientIp(req))) {
+    return res.status(429).json({ error: "Too many attempts. Try again in a minute." });
   }
 
   // Verify current password

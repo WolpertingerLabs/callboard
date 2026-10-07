@@ -109,4 +109,26 @@ describe("Settings → API Save payload", () => {
       clineMaxIterations: 7,
     });
   });
+
+  /**
+   * The daemon now sends credentials masked and reads a mask sent back as "keep
+   * it". Focusing a masked field selects it, so typing replaces the mask rather
+   * than appending to it (which the daemon would refuse with a 400).
+   */
+  it("sends an untouched masked secret back as the mask, and a replaced one as typed", async () => {
+    h.updateAgentSettings.mockClear();
+    h.settings = { apiKey: "••••ored", authToken: "••••oken" };
+    render(<ApiSettings />);
+    await screen.findByLabelText(/^Base URL/);
+    const apiKey = document.getElementById("apiKey") as HTMLInputElement;
+    expect(apiKey.value).toBe("••••ored");
+
+    fireEvent.focus(apiKey);
+    expect([apiKey.selectionStart, apiKey.selectionEnd]).toEqual([0, "••••ored".length]);
+    fireEvent.change(apiKey, { target: { value: "sk-ant-replacement" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(h.updateAgentSettings).toHaveBeenCalledTimes(1));
+    expect(h.updateAgentSettings.mock.calls[0][0]).toMatchObject({ apiKey: "sk-ant-replacement", authToken: "••••oken" });
+  });
 });

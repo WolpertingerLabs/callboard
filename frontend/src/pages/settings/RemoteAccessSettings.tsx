@@ -6,6 +6,7 @@ import { getAgentSettings, updateAgentSettings, getRemoteAccessStatus } from "..
 import type { RemoteAccessStatus } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
 import ModalOverlay from "../../components/ModalOverlay";
+import { selectMaskedSecret } from "./maskedSecret";
 
 const CLOUDFLARED_INSTALL_URL = "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
 
@@ -290,6 +291,7 @@ export default function RemoteAccessSettings() {
                 type="password"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
+                onFocus={selectMaskedSecret}
                 placeholder="eyJ…"
                 style={inputStyle}
               />

@@ -85,8 +85,9 @@ export interface AgentSettings {
    *
    * ## What this does not defend against, said plainly
    *
-   * `PUT /api/agent-settings` is **not** scope-gated — any authenticated client,
-   * including one on the remote-access tunnel, can set this back to `true`. That
+   * `PUT /api/agent-settings` is not gated by client location — any logged-in
+   * session (API keys are refused that route outright), including one on the
+   * remote-access tunnel, can set this back to `true`. That
    * is harmless today only because such a client still fails the
    * `isDirectLocalClient` check and is refused anyway, so flipping the flag buys
    * them nothing. But it does mean this switch governs *the operator's own local
@@ -631,6 +632,49 @@ export interface AgentSettings {
    * Default: 25.
    */
   maxPendingCallbacks?: number;
+}
+
+/**
+ * The {@link AgentSettings} fields that hold a credential. `GET /api/agent-settings`
+ * returns each one masked (see {@link maskSecret}) to every caller, and
+ * `PUT /api/agent-settings` reads a masked value sent back as "keep what is
+ * stored". A new credential field must be added here, or it goes out raw.
+ */
+export const SECRET_SETTING_FIELDS = [
+  "cloudflaredToken",
+  "apiKey",
+  "authToken",
+  "claudeCodeOpenRouterApiKey",
+  "openRouterApiKey",
+  "codexApiKey",
+  "codexOpenRouterApiKey",
+  "acpOpenRouterApiKey",
+  "clineApiKey",
+  "piApiKey",
+] as const satisfies readonly (keyof AgentSettings)[];
+
+export type SecretSettingField = (typeof SECRET_SETTING_FIELDS)[number];
+
+export const SECRET_MASK_PREFIX = "••••";
+
+/**
+ * `••••` plus the last four characters — the same shape devboard shows — so a
+ * user can tell which key is saved without the response carrying it. Values
+ * shorter than 12 characters show the prefix alone: four characters of an
+ * eight-character secret is half of it.
+ */
+export function maskSecret(value: string): string {
+  return SECRET_MASK_PREFIX + (value.length >= 12 ? value.slice(-4) : "");
+}
+
+/**
+ * Whether a value is exactly what {@link maskSecret} produces for *some* secret.
+ * Deliberately not "the mask of the stored value": a tab that loaded before the
+ * key was replaced elsewhere sends the old mask, and that still means "I did not
+ * touch this field", not "write these bullets".
+ */
+export function isMaskedSecret(value: string): boolean {
+  return value.startsWith(SECRET_MASK_PREFIX) && value.length <= SECRET_MASK_PREFIX.length + 4;
 }
 
 export interface KeyAliasInfo {

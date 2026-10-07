@@ -47,7 +47,7 @@ afterAll(() => {
 });
 
 const route = (method: "get" | "put") =>
-  (agentSettingsRouter as any).stack.find((layer: any) => layer.route?.path === "/" && layer.route.methods[method]).route.stack[0].handle;
+  (agentSettingsRouter as any).stack.find((layer: any) => layer.route?.path === "/" && layer.route.methods[method]).route.stack.at(-1).handle;
 
 function call(handler: any, body: unknown): Promise<{ code: number; body: any }> {
   return new Promise((resolve) => {

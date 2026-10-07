@@ -81,9 +81,9 @@ export const EMPTY_API_SETTINGS_FORM: ApiSettingsForm = formFromSettings({});
 /**
  * Seed the form from the settings the daemon returned.
  *
- * Secrets are taken as-is: `GET /api/agent-settings` is unredacted, and the
- * page's Save sends every field back, so a masked value here would be written
- * over the real one.
+ * Secrets arrive masked (`••••` plus the last four) and are taken as-is: the
+ * page's Save sends every field back, and the daemon reads an untouched mask
+ * as "keep the saved value". Only a field the user cleared or replaced changes.
  */
 export function formFromSettings(s: AgentSettings): ApiSettingsForm {
   return {

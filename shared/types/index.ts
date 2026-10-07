@@ -112,7 +112,8 @@ export type {
   QuietHours,
 } from "./agentFeatures.js";
 
-export type { AgentSettings, KeyAliasInfo, EnrolledCaller, EnrolledCallerAgent } from "./agentSettings.js";
+export type { AgentSettings, KeyAliasInfo, EnrolledCaller, EnrolledCallerAgent, SecretSettingField } from "./agentSettings.js";
+export { SECRET_SETTING_FIELDS, SECRET_MASK_PREFIX, maskSecret, isMaskedSecret } from "./agentSettings.js";
 
 export type { CustomTheme, ThemeVariables, ThemeListItem, ThemeContrastReport, ThemeContrastFailure } from "./theme.js";
 
