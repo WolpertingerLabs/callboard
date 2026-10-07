@@ -37,6 +37,8 @@ const { applyHttpHardening, DEFAULT_CSP } = await import("./utils/security-heade
 const { loginHandler, logoutHandler, checkAuthHandler, requireAuth } = await import("./auth.js");
 const { artifactsRouter } = await import("./routes/artifacts.js");
 const { imagesRouter } = await import("./routes/images.js");
+const { filesRouter } = await import("./routes/files.js");
+const { SANDBOXED_CONTENT_CSP } = await import("./utils/served-content.js");
 const { ImageStorageService } = await import("./services/image-storage.js");
 const { generateSalt, hashPassword } = await import("./utils/password.js");
 const { createSession } = await import("./services/sessions.js");
@@ -69,6 +71,7 @@ function buildApp(): Express {
   app.use("/api", requireAuth);
   app.use("/api/images", imagesRouter);
   app.use("/api/artifacts", artifactsRouter);
+  app.use("/api/files", filesRouter);
   // The SPA fallback, as index.ts serves frontend/dist/index.html.
   const spa = join(tmpRoot, "spa");
   mkdirSync(spa, { recursive: true });
@@ -180,6 +183,20 @@ describe("hardening headers", () => {
     expect(res.headers["referrer-policy"]).toBe("same-origin");
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
     expect(res.headers["x-powered-by"]).toBeUndefined();
+  });
+
+  it("file serving keeps its own sandbox CSP (an .svg on disk, which would otherwise run script on the app origin)", async () => {
+    const svg = join(tmpRoot, "drawing.svg");
+    writeFileSync(svg, '<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/api/agent-settings")</script></svg>');
+    const res = await request(server, "GET", `/api/files/serve?path=${encodeURIComponent(svg)}`, withSession(token));
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/svg+xml");
+    expect(res.headers["content-security-policy"]).toBe(SANDBOXED_CONTENT_CSP);
+    expect(SANDBOXED_CONTENT_CSP).toMatch(/\bsandbox\b/);
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    // The baseline still applies where the route says nothing.
+    expect(res.headers["x-frame-options"]).toBe("SAMEORIGIN");
+    expect(res.headers["referrer-policy"]).toBe("same-origin");
   });
 
   it("the artifact render route keeps its own, stricter CSP and Referrer-Policy", async () => {
@@ -416,7 +433,7 @@ describe("absolute session lifetime", () => {
 });
 
 describe("/api/images/:id", () => {
-  it("is cacheable by the browser only", async () => {
+  it("is cacheable by the browser only, and keeps its sandbox CSP", async () => {
     // 1x1 transparent PNG.
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
     const stored = await ImageStorageService.storeImage(png, "pixel.png", "image/png");
@@ -427,5 +444,7 @@ describe("/api/images/:id", () => {
     expect(cacheControl).toMatch(/\bprivate\b/);
     expect(cacheControl).not.toMatch(/\bpublic\b/);
     expect(cacheControl).toMatch(/max-age=\d+/);
+    expect(res.headers["content-security-policy"]).toBe(SANDBOXED_CONTENT_CSP);
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 });

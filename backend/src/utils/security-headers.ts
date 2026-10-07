@@ -12,10 +12,14 @@ export const DEFAULT_CSP = "frame-ancestors 'self'";
  *
  * Each value is a *default*: it is set before any route runs, so a route that
  * sets its own header with `res.setHeader` replaces it. That is what keeps the
- * stricter per-route policies intact — the artifact render route and storage
- * item downloads set their own `Content-Security-Policy` (and artifact renders
- * `Referrer-Policy: no-referrer`), and those win over these looser defaults.
- * Any route that adds its own policy later gets the same precedence.
+ * stricter per-route policies intact. Everything that serves user, agent or
+ * external bytes on the app origin sets its own sandboxing
+ * `Content-Security-Policy` — artifact renders and storage items, plus
+ * `/api/files/serve`, canvas content, `/api/images/:id` and git raw file
+ * content via `setSandboxedContentHeaders` (utils/served-content.ts) — and
+ * artifact renders also set `Referrer-Policy: no-referrer`. Those win over
+ * these looser defaults; the headers a route doesn't set (here, usually
+ * `X-Frame-Options` and `Referrer-Policy`) keep the default.
  *
  * - `X-Frame-Options: SAMEORIGIN` and `frame-ancestors 'self'`: the session
  *   cookie is SameSite=Strict, but "site" ignores the port, so a page on
