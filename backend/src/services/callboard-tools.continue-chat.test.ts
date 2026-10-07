@@ -274,6 +274,22 @@ describe("continue_chat — Codex target under an explicit sandbox setting", () 
     expect(sender.calls).toHaveLength(1);
   });
 
+  it.each([
+    ["ask", { defaultPermissions: ASK_EXEC }],
+    ["absent", {}],
+  ])("lets an allow-all caller continue a Codex chat with %s stored permissions under it", async (_label, stored) => {
+    // The target runs danger-full-access whatever it stores; what has to fit
+    // is the setting against the caller, and an allow-all caller fits.
+    existingChatMeta = { provider: "codex", ...stored };
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ({ ...UNATTENDED })).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toMatchObject({ status: "continued" });
+    expect(sender.calls).toHaveLength(1);
+  });
+
   it("continues the same capped Codex chat when no explicit sandbox is set", async () => {
     existingChatMeta = { provider: "codex", defaultPermissions: ASK_EXEC };
     const sender = stubSender();

@@ -83,11 +83,6 @@ function recordingProvider() {
   return { provider, specs };
 }
 
-/**
- * Run one parent turn with `defaultPermissions`, then call the
- * start_chat_session tool its session was built with, and return what the
- * child would have been started with.
- */
 /** Run one turn and hand back the tool-server specs the session was built with. */
 async function specsForOneTurn(parent: DefaultPermissions, extra: Record<string, unknown> = {}): Promise<ToolServerSpec[]> {
   const { provider, specs } = recordingProvider();
@@ -105,6 +100,11 @@ async function specsForOneTurn(parent: DefaultPermissions, extra: Record<string,
   return specs;
 }
 
+/**
+ * Run one parent turn with `defaultPermissions`, then call the
+ * start_chat_session tool its session was built with, and return what the
+ * child would have been started with.
+ */
 async function childPermissionsFor(parent: DefaultPermissions): Promise<DefaultPermissions> {
   const specs = await specsForOneTurn(parent);
   const spec = specs.find((s) => s.name === "callboard-tools");

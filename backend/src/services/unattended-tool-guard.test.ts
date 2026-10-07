@@ -38,6 +38,13 @@ vi.mock("./agent-triggers.js", async (importOriginal) => ({
 }));
 vi.mock("./cron-scheduler.js", () => ({ scheduleJob: vi.fn(), cancelJob: vi.fn() }));
 
+// Approving a waiting gate resumes the run; the recorder stands in for it.
+const respondToApproval = vi.fn((runId: string) => ({ runId, status: "running", currentStepId: "next" }));
+vi.mock("./job-runner.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./job-runner.js")>()),
+  respondToApproval: (...args: unknown[]) => respondToApproval(...(args as [string])),
+}));
+
 const { buildAgentToolsSpec, AGENT_UNATTENDED_TOOLS } = await import("./agent-tools.js");
 const { buildCallboardToolsSpec } = await import("./callboard-tools.js");
 const { JOB_UNATTENDED_TOOLS } = await import("./job-management-tools.js");
@@ -49,6 +56,7 @@ afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 beforeEach(() => {
   createCronJob.mockClear();
   createTrigger.mockClear();
+  respondToApproval.mockClear();
 });
 
 /** Arguments each real handler accepts as input but stops on without side effects (or hits a mock). */
@@ -141,5 +149,34 @@ describe("guard surface", () => {
     const spec = buildAgentToolsSpec("test-agent", () => "agent-chat", { getPermissions: ASK_EXEC });
     const result = await tool(spec, "list_cron_jobs").handler({});
     expect(textOf(result)).not.toContain("permission_ceiling");
+  });
+});
+
+/**
+ * Approving a gate starts the run's next step, which runs allow-all — the same
+ * reach as spawn_job. Rejecting starts nothing, so it stays open to anyone.
+ */
+describe.each(SERVERS)("$label — respond_job_approval", ({ build }) => {
+  const respond = async (getPermissions: Getter, decision: "approve" | "reject") =>
+    textOf(await tool(build(getPermissions), "respond_job_approval").handler({ runId: "run-1", decision }));
+
+  it("refuses approve for a caller that asks, without touching the run", async () => {
+    expect(JSON.parse(await respond(ASK_EXEC, "approve"))).toMatchObject({ error: "permission_ceiling", tool: "respond_job_approval" });
+    expect(respondToApproval).not.toHaveBeenCalled();
+  });
+
+  it("fails closed on approve when the server was built without a permission getter", async () => {
+    expect(JSON.parse(await respond(undefined, "approve"))).toMatchObject({ error: "permission_ceiling" });
+    expect(respondToApproval).not.toHaveBeenCalled();
+  });
+
+  it("lets a caller that asks reject", async () => {
+    expect(JSON.parse(await respond(ASK_EXEC, "reject"))).toMatchObject({ runId: "run-1" });
+    expect(respondToApproval).toHaveBeenCalledWith("run-1", "reject", undefined, expect.anything());
+  });
+
+  it("leaves approve unchanged for an allow-all caller", async () => {
+    expect(JSON.parse(await respond(ALLOW_ALL, "approve"))).toMatchObject({ runId: "run-1", status: "running" });
+    expect(respondToApproval).toHaveBeenCalledWith("run-1", "approve", undefined, expect.anything());
   });
 });

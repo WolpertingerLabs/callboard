@@ -11,7 +11,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Chat } from "shared";
@@ -407,6 +407,35 @@ describe("start_chat_session — Codex under an explicit sandbox setting", () =>
     expect(result).toMatchObject({ ok: false, error: "codex_sandbox_exceeds_ceiling", permissions: ASK_EXEC });
     expect(result.message).toContain('codexSandboxMode="danger-full-access"');
     expect(sender.calls).toHaveLength(0);
+  });
+
+  it("refuses before resolveBranch, leaving no worktree or branch behind", async () => {
+    writeCallerChat({});
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+    // A repo with a commit, alone in its own parent: worktrees are created as
+    // siblings of the checkout, so anything new in `parent` is a leak.
+    const parent = mkdtempSync(join(tmpdir(), "callboard-tools-codex-refusal-"));
+    const repo = join(parent, "repo");
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+    execFileSync("git", ["init", "-q", "-b", "main", repo], { stdio: "pipe" });
+    git("commit", "-q", "--allow-empty", "-m", "init");
+
+    const result = payload(
+      await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({
+        prompt: "go",
+        folder: repo,
+        provider: "codex",
+        newBranch: "feat/codex-refused",
+        useWorktree: true,
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: "codex_sandbox_exceeds_ceiling" });
+    expect(sender.calls).toHaveLength(0);
+    expect(readdirSync(parent)).toEqual(["repo"]);
+    expect(git("worktree", "list").trim().split("\n")).toHaveLength(1);
+    expect(git("branch", "--list", "feat/codex-refused").trim()).toBe("");
   });
 
   it("still starts an allow-all caller's Codex child under danger-full-access", async () => {

@@ -19,7 +19,7 @@ import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRu
 import { chatFileService } from "./chat-file-service.js";
 import type { JobDefinition, JobRun, JobRunStatus } from "shared";
 import type { DefaultPermissions } from "shared/types/index.js";
-import { guardUnattendedTools } from "./permission-ceiling.js";
+import { guardUnattendedTools, unattendedRefusal, UNATTENDED_REQUIREMENT_NOTE } from "./permission-ceiling.js";
 
 /** Who is calling these tools — recorded on created definitions and approvals. */
 export interface JobToolsContext {
@@ -37,7 +37,10 @@ export interface JobToolsContext {
   getPermissions?: () => DefaultPermissions | null;
 }
 
-/** The job tools that create, change or (re)start allow-all step sessions. */
+/**
+ * The job tools that create, change or (re)start allow-all step sessions.
+ * `respond_job_approval` is guarded inline instead — only its `approve`.
+ */
 export const JOB_UNATTENDED_TOOLS = ["create_job", "update_job", "spawn_job", "retry_job_step", "resume_job_run"] as const;
 
 /**
@@ -341,13 +344,20 @@ function buildUnguardedJobTools(ctx: JobToolsContext): AnyToolDefinition[] {
 
     defineTool(
       "respond_job_approval",
-      "Approve or reject a job run that is waiting at an approval step. ONLY call this to relay an explicit decision from the user — never decide on their behalf.",
+      "Approve or reject a job run that is waiting at an approval step. ONLY call this to relay an explicit decision from the user — never decide on their behalf. " +
+        `Approving starts the next step: ${UNATTENDED_REQUIREMENT_NOTE} Rejecting starts nothing and is always allowed.`,
       {
         runId: z.string().describe("The run id waiting for approval"),
         decision: z.enum(["approve", "reject"]).describe("The user's decision"),
         comment: z.string().optional().describe("Optional comment from the user, recorded in the run history"),
       },
       async (args) => {
+        // Approval resumes the run, and its next step runs allow-all — the
+        // same reach as spawn_job. Rejecting only stops it, so anyone may.
+        if (args.decision === "approve") {
+          const refusal = unattendedRefusal("respond_job_approval", ctx.getPermissions);
+          if (refusal) return refusal;
+        }
         try {
           const run = respondToApproval(args.runId, args.decision, args.comment, ctx.via);
           return { content: [{ type: "text" as const, text: JSON.stringify({ runId: run.runId, status: run.status, currentStepId: run.currentStepId }) }] };

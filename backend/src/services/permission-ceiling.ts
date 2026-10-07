@@ -26,7 +26,7 @@
  *   because that setting overrides the permission-derived tier
  *   ({@link codexSandboxRefusal}).
  * - Tools that create, schedule or start unattended allow-all work (job
- *   create/update/spawn/retry/resume; on agent sessions also talk_to_agent,
+ *   create/update/spawn/retry/resume, and approving a job's approval gate; on agent sessions also talk_to_agent,
  *   deploy_agent, cron jobs, triggers, create/update_agent) — refused unless the
  *   caller is itself allow-all on every built-in axis ({@link guardUnattendedTools}).
  *
@@ -46,7 +46,7 @@ import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js"
 import { normalizePermissions } from "shared/types/index.js";
 import { resolveSandboxMode } from "../agents/adapters/codex/permissionAdapter.js";
 import { jsonResult } from "../agents/ports/tools.js";
-import type { AnyToolDefinition } from "../agents/ports/tools.js";
+import type { AnyToolDefinition, ToolCallResult } from "../agents/ports/tools.js";
 import { unattendedPermissions } from "./session-spawn.js";
 
 const RANK: Record<PermissionLevel, number> = { deny: 0, ask: 1, allow: 2 };
@@ -117,22 +117,31 @@ export function guardUnattendedTools(
     if (!guarded.has(tool.name)) return tool;
     return {
       ...tool,
-      description: `${tool.description} Requires THIS chat to allow fileRead, fileWrite, codeExecution and webAccess — it starts unattended allow-all work.`,
-      handler: async (args, context) => {
-        const looser = axesAboveCeiling(unattendedPermissions(), getPermissions?.() ?? null);
-        if (looser.length > 0) {
-          return jsonResult({
-            ok: false,
-            error: "permission_ceiling",
-            tool: tool.name,
-            looserCategories: looser,
-            message:
-              `${tool.name} creates or starts work that runs unattended with every category allowed, and this chat does not allow ${looser.join(", ")}. ` +
-              "Refused so it cannot reach more than it has. Ask the user to do this, or to allow those categories for this chat.",
-          });
-        }
-        return tool.handler(args, context);
-      },
+      description: `${tool.description} ${UNATTENDED_REQUIREMENT_NOTE}`,
+      handler: async (args, context) => unattendedRefusal(tool.name, getPermissions) ?? tool.handler(args, context),
     };
+  });
+}
+
+/** Appended to the description of every tool {@link unattendedRefusal} can refuse. */
+export const UNATTENDED_REQUIREMENT_NOTE =
+  "Requires THIS chat to allow fileRead, fileWrite, codeExecution and webAccess — it starts unattended allow-all work.";
+
+/**
+ * The refusal {@link guardUnattendedTools} returns, or `null` when the caller
+ * is allow-all. Exported for a tool where only some calls start unattended
+ * work — `respond_job_approval` guards `approve` and leaves `reject` open.
+ */
+export function unattendedRefusal(toolName: string, getPermissions: (() => DefaultPermissions | null) | undefined): ToolCallResult | null {
+  const looser = axesAboveCeiling(unattendedPermissions(), getPermissions?.() ?? null);
+  if (looser.length === 0) return null;
+  return jsonResult({
+    ok: false,
+    error: "permission_ceiling",
+    tool: toolName,
+    looserCategories: looser,
+    message:
+      `${toolName} creates or starts work that runs unattended with every category allowed, and this chat does not allow ${looser.join(", ")}. ` +
+      "Refused so it cannot reach more than it has. Ask the user to do this, or to allow those categories for this chat.",
   });
 }

@@ -67,6 +67,22 @@ function getSendMessage(): MessageSender {
 // ─── Tool Definitions ───────────────────────────────────────────────
 
 /**
+ * Agent tools that start or schedule allow-all agent runs, or change the agent
+ * config those runs execute with. The job tools on this server are guarded by
+ * buildJobManagementTools itself.
+ */
+export const AGENT_UNATTENDED_TOOLS = [
+  "talk_to_agent",
+  "deploy_agent",
+  "create_cron_job",
+  "update_cron_job",
+  "create_trigger",
+  "update_trigger",
+  "create_agent",
+  "update_agent",
+] as const;
+
+/**
  * Build a tool-server spec scoped to a specific agent.
  * The agentAlias is baked into the closure so scoped tools (cron jobs, activity)
  * only access that agent's data. Orchestration tools can target other agents.
@@ -83,22 +99,6 @@ function getSendMessage(): MessageSender {
  * mutable (the user can switch it mid-chat); it drives `model` inheritance
  * when the caller omits `model`.
  */
-/**
- * Agent tools that start or schedule allow-all agent runs, or change the agent
- * config those runs execute with. The job tools on this server are guarded by
- * buildJobManagementTools itself.
- */
-export const AGENT_UNATTENDED_TOOLS = [
-  "talk_to_agent",
-  "deploy_agent",
-  "create_cron_job",
-  "update_cron_job",
-  "create_trigger",
-  "update_trigger",
-  "create_agent",
-  "update_agent",
-] as const;
-
 export function buildAgentToolsSpec(
   agentAlias: string,
   getChatId?: () => string,

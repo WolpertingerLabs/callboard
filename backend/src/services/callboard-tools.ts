@@ -32,6 +32,7 @@ import type { NotifiableChannel } from "shared";
 import { captureWorktreeWorkspace } from "./workspace-store.js";
 import { startActivity, endActivity, openOrContinueWatch, closeWatch, exhaustWatch } from "./chat-activity.js";
 import type { ConditionWatch, DefaultPermissions, UiAgentProviderKind } from "shared/types/index.js";
+import { normalizePermissions } from "shared/types/index.js";
 import { axesAboveCeiling, capPermissions, codexSandboxRefusal } from "./permission-ceiling.js";
 import { getAgentSettings } from "./agent-settings.js";
 import { buildJobManagementTools } from "./job-management-tools.js";
@@ -1196,13 +1197,12 @@ export function buildCallboardToolsSpec(
                   "do through it what it cannot do itself. Ask the user to continue it, or to change one chat's permissions.",
               });
             }
-            // A Codex target runs under the explicit sandbox setting, not its
-            // permissions — so the stored record passing above is not enough.
+            // A Codex target runs under the explicit sandbox setting whatever
+            // its stored permissions say, so what must fit is the setting
+            // against the CALLER. (A target looser than the caller was
+            // already refused above.)
             if (targetMeta.provider === "codex") {
-              const refusal = codexSandboxRefusal(
-                capPermissions(targetMeta.defaultPermissions ?? null, callerPermissions),
-                getAgentSettings().codexSandboxMode,
-              );
+              const refusal = codexSandboxRefusal(normalizePermissions(callerPermissions), getAgentSettings().codexSandboxMode);
               if (refusal) return jsonResult({ ok: false, error: "codex_sandbox_exceeds_ceiling", chatId: args.chatId, message: refusal });
             }
 
