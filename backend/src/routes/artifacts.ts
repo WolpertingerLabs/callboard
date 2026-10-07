@@ -9,6 +9,7 @@ import { SIZE_REPORTER_SCRIPT, injectBeforeBodyClose } from "../services/html-in
 import { StorageError, httpStatusFor } from "../services/storage-service.js";
 import { sendStorageError } from "./storage.js";
 import { createLogger } from "../utils/logger.js";
+import { SANDBOXED_CONTENT_CSP } from "../utils/served-content.js";
 
 const log = createLogger("artifacts-route");
 
@@ -46,7 +47,7 @@ export const ARTIFACT_SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; 
 export const ARTIFACT_ERROR_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-src 'none'; sandbox";
 
 /** Raw source and markdown are text; nothing in them may ever execute. */
-export const ARTIFACT_TEXT_CSP = "default-src 'none'; sandbox";
+export const ARTIFACT_TEXT_CSP = SANDBOXED_CONTENT_CSP;
 
 type Handler = (req: Request, res: Response) => unknown;
 const wrap =

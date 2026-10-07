@@ -6,6 +6,7 @@ import { chatFileService } from "../services/chat-file-service.js";
 import { updateChatWithImages } from "../services/image-metadata.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
+import { setSandboxedContentHeaders } from "../utils/served-content.js";
 
 const log = createLogger("images");
 
@@ -184,6 +185,7 @@ imagesRouter.get("/:imageId", (req, res) => {
     res.setHeader("Content-Length", buffer.length);
     res.setHeader("Cache-Control", "public, max-age=31536000"); // 1 year cache
     res.setHeader("ETag", `"${image.sha256}"`);
+    setSandboxedContentHeaders(res);
 
     // Check if client has cached version
     const clientETag = req.headers["if-none-match"];

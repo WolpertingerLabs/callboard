@@ -19,6 +19,7 @@ import {
   updateStorageKey,
 } from "../services/storage-service.js";
 import { createLogger } from "../utils/logger.js";
+import { SANDBOXED_CONTENT_CSP } from "../utils/served-content.js";
 
 const log = createLogger("storage-route");
 
@@ -45,7 +46,7 @@ const INLINE_TYPES: Record<string, string> = {
 };
 
 /** Headers every served item carries, inline or not. */
-export const STORAGE_ITEM_CSP = "default-src 'none'; sandbox";
+export const STORAGE_ITEM_CSP = SANDBOXED_CONTENT_CSP;
 
 /** Map a service error to its status; anything else is a 500. */
 export function sendStorageError(res: Response, err: unknown, what: string): void {
