@@ -1317,6 +1317,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
           // Same live model-override read as the callboard-tools spec above.
           getModel: () => chatFileService.getModelOverride(trackingId),
+          // Same ceiling as callboard-tools: an agent chat a user started with
+          // "ask" must not start or schedule allow-all runs.
+          getPermissions: getDefaultPermissions,
         }),
       `Callboard agent tools for agent="${agentAlias}"`,
       (spec) => `Injected Callboard agent tools for agent="${agentAlias}" (spec.name=${spec.name}, ${spec.tools.length} tools)`,

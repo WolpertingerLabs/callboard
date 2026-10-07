@@ -13,7 +13,7 @@
  * again when it throws. A mock could only tell us `removeCallbacks` was called;
  * `countPending()` tells us the store is actually clean.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,6 +46,7 @@ vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
 const { buildCallboardToolsSpec, setCallboardMessageSender } = await import("./callboard-tools.js");
 const { countPending, markChildComplete, getReadyForParent } = await import("./session-callbacks.js");
 const { listActivities, __resetActivityState } = await import("./chat-activity.js");
+const { updateAgentSettings } = await import("./agent-settings.js");
 import type { ToolDefinition } from "../agents/ports/tools.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 
@@ -238,5 +239,47 @@ describe("continue_chat permission ceiling", () => {
 
     expect(result).toMatchObject({ error: "permission_ceiling", looserCategories: ["fileRead", "fileWrite", "webAccess"] });
     expect(sender.calls).toHaveLength(0);
+  });
+});
+
+/** A Codex target runs under an explicit `codexSandboxMode`, not its stored permissions. */
+describe("continue_chat — Codex target under an explicit sandbox setting", () => {
+  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+  const ASK_EXEC: DefaultPermissions = { ...UNATTENDED, codeExecution: "ask" };
+
+  afterEach(() => {
+    updateAgentSettings({ codexSandboxMode: undefined });
+  });
+
+  it("refuses continuing a capped Codex chat when codexSandboxMode is danger-full-access", async () => {
+    existingChatMeta = { provider: "codex", defaultPermissions: ASK_EXEC };
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ASK_EXEC).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toMatchObject({ ok: false, error: "codex_sandbox_exceeds_ceiling", chatId: CHILD_CHAT_ID });
+    expect(result.message).toContain("codexSandboxMode");
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  it("lets an allow-all caller continue an allow-all Codex chat under it", async () => {
+    existingChatMeta = { provider: "codex", defaultPermissions: UNATTENDED };
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ({ ...UNATTENDED })).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toMatchObject({ status: "continued" });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it("continues the same capped Codex chat when no explicit sandbox is set", async () => {
+    existingChatMeta = { provider: "codex", defaultPermissions: ASK_EXEC };
+    const sender = stubSender();
+
+    await continueChat(() => ASK_EXEC).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" });
+
+    expect(sender.calls).toHaveLength(1);
   });
 });

@@ -28,7 +28,8 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { themeFileService } from "./theme-file-service.js";
 import { generateThemeCSS } from "./quick-completion.js";
 import { prepareThemeWrite, describeFailures, describeCorrections } from "./theme-write.js";
-import type { CustomTheme, UiAgentProviderKind } from "shared/types/index.js";
+import type { CustomTheme, DefaultPermissions, UiAgentProviderKind } from "shared/types/index.js";
+import { guardUnattendedTools } from "./permission-ceiling.js";
 
 import { createLogger } from "../utils/logger.js";
 
@@ -82,15 +83,43 @@ function getSendMessage(): MessageSender {
  * mutable (the user can switch it mid-chat); it drives `model` inheritance
  * when the caller omits `model`.
  */
+/**
+ * Agent tools that start or schedule allow-all agent runs, or change the agent
+ * config those runs execute with. The job tools on this server are guarded by
+ * buildJobManagementTools itself.
+ */
+export const AGENT_UNATTENDED_TOOLS = [
+  "talk_to_agent",
+  "deploy_agent",
+  "create_cron_job",
+  "update_cron_job",
+  "create_trigger",
+  "update_trigger",
+  "create_agent",
+  "update_agent",
+] as const;
+
 export function buildAgentToolsSpec(
   agentAlias: string,
   getChatId?: () => string,
-  opts?: { provider?: UiAgentProviderKind; acpProviderId?: string; getModel?: () => string | undefined },
+  opts?: {
+    provider?: UiAgentProviderKind;
+    acpProviderId?: string;
+    getModel?: () => string | undefined;
+    /**
+     * Live read of the calling session's effective permissions. An agent chat
+     * can be started by a user with "ask" set, and the tools in
+     * {@link AGENT_UNATTENDED_TOOLS} start or schedule allow-all runs, so they
+     * are refused unless the caller already is (permission-ceiling.ts).
+     * Absent fails closed.
+     */
+    getPermissions?: () => DefaultPermissions | null;
+  },
 ): ToolServerSpec {
   const agentConfig = getAgent(agentAlias);
   const agentTimezone = agentConfig?.userTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  return {
+  const spec: ToolServerSpec = {
     name: "callboard",
     version: "1.0.0",
     tools: [
@@ -992,7 +1021,9 @@ export function buildAgentToolsSpec(
         getCreatedBy: () => ({ kind: "agent", ref: agentAlias }),
         via: "agent",
         ...(getChatId && { getChatId }),
+        ...(opts?.getPermissions && { getPermissions: opts.getPermissions }),
       }),
     ],
   };
+  return { ...spec, tools: guardUnattendedTools(spec.tools, AGENT_UNATTENDED_TOOLS, opts?.getPermissions) };
 }

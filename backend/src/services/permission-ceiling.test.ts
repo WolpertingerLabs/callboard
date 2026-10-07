@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { DefaultPermissions } from "shared/types/index.js";
-import { axesAboveCeiling, capPermissions } from "./permission-ceiling.js";
+import { axesAboveCeiling, capPermissions, codexSandboxRefusal, guardUnattendedTools } from "./permission-ceiling.js";
+import { defineTool, textResult } from "../agents/ports/tools.js";
 import { unattendedPermissions } from "./session-spawn.js";
 
 const ALL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
@@ -43,5 +44,46 @@ describe("axesAboveCeiling", () => {
   it("treats a target with no permissions as ask-everything", () => {
     expect(axesAboveCeiling(null, ALL_ASK)).toEqual([]);
     expect(axesAboveCeiling(null, { ...ALL_ASK, fileRead: "deny" })).toEqual(["fileRead"]);
+  });
+});
+
+describe("codexSandboxRefusal", () => {
+  it("allows anything when no explicit sandbox is set", () => {
+    expect(codexSandboxRefusal(ALL_ASK, undefined)).toBeNull();
+  });
+
+  it("refuses an explicit tier looser than the one the permissions map to", () => {
+    expect(codexSandboxRefusal({ ...unattendedPermissions(), codeExecution: "ask" }, "danger-full-access")).toContain("codexSandboxMode");
+    expect(codexSandboxRefusal(ALL_ASK, "workspace-write")).toContain('"read-only"');
+  });
+
+  it("accepts an explicit tier at or under the mapped one", () => {
+    expect(codexSandboxRefusal(unattendedPermissions(), "danger-full-access")).toBeNull();
+    expect(codexSandboxRefusal({ ...unattendedPermissions(), codeExecution: "ask" }, "workspace-write")).toBeNull();
+    expect(codexSandboxRefusal(ALL_ASK, "read-only")).toBeNull();
+  });
+});
+
+describe("guardUnattendedTools", () => {
+  const inner = vi.fn(async () => textResult("ran"));
+  const tools = () => [defineTool("starts_work", "Starts work.", {}, inner), defineTool("reads", "Reads.", {}, async () => textResult("read"))];
+
+  it("passes an allow-all caller straight through to the original handler", async () => {
+    inner.mockClear();
+    const [guarded] = guardUnattendedTools(tools(), ["starts_work"], () => unattendedPermissions());
+    expect((await guarded.handler({})).content[0].text).toBe("ran");
+    expect(inner).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses anyone else without calling the handler, and leaves other tools alone", async () => {
+    inner.mockClear();
+    const [guarded, other] = guardUnattendedTools(tools(), ["starts_work"], () => ({ ...unattendedPermissions(), webAccess: "deny" }));
+    expect(JSON.parse((await guarded.handler({})).content[0].text!)).toMatchObject({ error: "permission_ceiling", looserCategories: ["webAccess"] });
+    expect(inner).not.toHaveBeenCalled();
+    expect((await other.handler({})).content[0].text).toBe("read");
+  });
+
+  it("throws on a name that is not in the list, so a rename cannot drop the guard", () => {
+    expect(() => guardUnattendedTools(tools(), ["renamed_away"], undefined)).toThrow('no tool named "renamed_away"');
   });
 });

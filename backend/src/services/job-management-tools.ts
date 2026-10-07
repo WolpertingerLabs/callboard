@@ -18,6 +18,8 @@ import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, Jo
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "./job-runner.js";
 import { chatFileService } from "./chat-file-service.js";
 import type { JobDefinition, JobRun, JobRunStatus } from "shared";
+import type { DefaultPermissions } from "shared/types/index.js";
+import { guardUnattendedTools } from "./permission-ceiling.js";
 
 /** Who is calling these tools — recorded on created definitions and approvals. */
 export interface JobToolsContext {
@@ -27,7 +29,16 @@ export interface JobToolsContext {
   via: "chat" | "agent";
   /** Calling chat's id — lets spawn_job put the run on the chat's lineage root's card. */
   getChatId?: () => string;
+  /**
+   * Live read of the calling session's effective permissions. Job steps run
+   * allow-all, so the tools in {@link JOB_UNATTENDED_TOOLS} are refused unless
+   * the caller already is (permission-ceiling.ts). Absent fails closed.
+   */
+  getPermissions?: () => DefaultPermissions | null;
 }
+
+/** The job tools that create, change or (re)start allow-all step sessions. */
+export const JOB_UNATTENDED_TOOLS = ["create_job", "update_job", "spawn_job", "retry_job_step", "resume_job_run"] as const;
 
 /**
  * The lineage root of the calling chat, if it has a stored record — the card
@@ -152,6 +163,10 @@ function condenseRun(run: JobRun) {
 
 /** Build the job management tool set with the caller's attribution baked in. */
 export function buildJobManagementTools(ctx: JobToolsContext): AnyToolDefinition[] {
+  return guardUnattendedTools(buildUnguardedJobTools(ctx), JOB_UNATTENDED_TOOLS, ctx.getPermissions);
+}
+
+function buildUnguardedJobTools(ctx: JobToolsContext): AnyToolDefinition[] {
   return [
     defineTool(
       "list_jobs",

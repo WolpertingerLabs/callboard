@@ -88,10 +88,11 @@ function recordingProvider() {
  * start_chat_session tool its session was built with, and return what the
  * child would have been started with.
  */
-async function childPermissionsFor(parent: DefaultPermissions): Promise<DefaultPermissions> {
+/** Run one turn and hand back the tool-server specs the session was built with. */
+async function specsForOneTurn(parent: DefaultPermissions, extra: Record<string, unknown> = {}): Promise<ToolServerSpec[]> {
   const { provider, specs } = recordingProvider();
   setAgentProviderForTesting(provider, "claude-code");
-  const emitter = await sendMessage({ prompt: "hello", folder: workDir, defaultPermissions: parent, triggered: true } as any);
+  const emitter = await sendMessage({ prompt: "hello", folder: workDir, defaultPermissions: parent, triggered: true, ...extra } as any);
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("session did not finish within 15s")), 15_000);
     emitter.on("event", (e: StreamEvent) => {
@@ -101,7 +102,11 @@ async function childPermissionsFor(parent: DefaultPermissions): Promise<DefaultP
       }
     });
   });
+  return specs;
+}
 
+async function childPermissionsFor(parent: DefaultPermissions): Promise<DefaultPermissions> {
+  const specs = await specsForOneTurn(parent);
   const spec = specs.find((s) => s.name === "callboard-tools");
   const tool = spec?.tools.find((t) => t.name === "start_chat_session") as ToolDefinition<any> | undefined;
   if (!tool) throw new Error("callboard-tools start_chat_session was not built");
@@ -141,5 +146,38 @@ describe("sendMessage wires the session's own policy in as the spawn ceiling", (
 
   it("computer control stays denied for the child of a parent that allows it", async () => {
     expect(await childPermissionsFor({ ...unattendedPermissions(), computerControl: "allow" })).toEqual(unattendedPermissions());
+  });
+});
+
+/**
+ * The unattended-work guard needs the same wire, on both servers: a chat's
+ * job tools live on callboard-tools, an agent chat's (plus talk_to_agent,
+ * cron, triggers…) on the "callboard" server. An agent chat can be started by
+ * a user with "ask" set.
+ */
+describe("sendMessage wires the session's own policy into the unattended-work guard", () => {
+  const ASK_EXEC: DefaultPermissions = { ...unattendedPermissions(), codeExecution: "ask" };
+
+  async function callTool(specs: ToolServerSpec[], server: string, name: string, args: Record<string, unknown>): Promise<string> {
+    const tool = specs.find((s) => s.name === server)?.tools.find((t) => t.name === name);
+    if (!tool) throw new Error(`${server} ${name} was not built`);
+    return (await tool.handler(args)).content[0].text!;
+  }
+
+  it("a chat that asks is refused spawn_job; an allow-all chat reaches the job store", async () => {
+    expect(await callTool(await specsForOneTurn(ASK_EXEC), "callboard-tools", "spawn_job", { jobId: "no-such-job" })).toContain("permission_ceiling");
+    expect(await callTool(await specsForOneTurn(unattendedPermissions()), "callboard-tools", "spawn_job", { jobId: "no-such-job" })).not.toContain(
+      "permission_ceiling",
+    );
+  });
+
+  it("an agent chat that asks is refused talk_to_agent and spawn_job; an allow-all agent run is not", async () => {
+    const ask = await specsForOneTurn(ASK_EXEC, { agentAlias: "test-agent" });
+    expect(await callTool(ask, "callboard", "talk_to_agent", { targetAlias: "no-such-agent", message: "hi" })).toContain("permission_ceiling");
+    expect(await callTool(ask, "callboard", "spawn_job", { jobId: "no-such-job" })).toContain("permission_ceiling");
+
+    const allow = await specsForOneTurn(unattendedPermissions(), { agentAlias: "test-agent" });
+    expect(await callTool(allow, "callboard", "talk_to_agent", { targetAlias: "no-such-agent", message: "hi" })).not.toContain("permission_ceiling");
+    expect(await callTool(allow, "callboard", "spawn_job", { jobId: "no-such-job" })).not.toContain("permission_ceiling");
   });
 });

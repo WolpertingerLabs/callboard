@@ -8,7 +8,7 @@
  * thread from the spec builder into the resolver, and the resolved model
  * reaches sendMessage and the result JSON.
  */
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -31,6 +31,7 @@ vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
 
 const { buildCallboardToolsSpec, setCallboardMessageSender } = await import("./callboard-tools.js");
 const { chatFileService } = await import("./chat-file-service.js");
+const { updateAgentSettings } = await import("./agent-settings.js");
 import type { ToolDefinition } from "../agents/ports/tools.js";
 
 function writeCallerChat(metadata: Record<string, unknown>): void {
@@ -380,5 +381,61 @@ describe("start_chat_session permission ceiling", () => {
     await startChat().handler({ prompt: "go", folder: "/tmp/project" });
 
     expect(sender.calls[0].defaultPermissions).toMatchObject({ codeExecution: "ask", computerControl: "deny" });
+  });
+});
+
+/**
+ * An explicit `codexSandboxMode` replaces the sandbox tier Codex would derive
+ * from the child's (capped) permissions, so on this install a capped Codex
+ * child would still get `danger-full-access`. Refused instead.
+ */
+describe("start_chat_session — Codex under an explicit sandbox setting", () => {
+  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+  const ASK_EXEC: DefaultPermissions = { ...UNATTENDED, codeExecution: "ask" };
+
+  afterEach(() => {
+    updateAgentSettings({ codexSandboxMode: undefined });
+  });
+
+  it("refuses a capped Codex child when codexSandboxMode is danger-full-access, naming the setting", async () => {
+    writeCallerChat({});
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({ prompt: "go", folder: "/tmp/project", provider: "codex" }));
+
+    expect(result).toMatchObject({ ok: false, error: "codex_sandbox_exceeds_ceiling", permissions: ASK_EXEC });
+    expect(result.message).toContain('codexSandboxMode="danger-full-access"');
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  it("still starts an allow-all caller's Codex child under danger-full-access", async () => {
+    writeCallerChat({});
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED })).handler({ prompt: "go", folder: "/tmp/project", provider: "codex" }));
+
+    expect(result).toMatchObject({ status: "started" });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it("starts a capped Codex child when no explicit sandbox is set (the tier follows the permissions)", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({ prompt: "go", folder: "/tmp/project", provider: "codex" });
+
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it("does not refuse a capped child on another provider", async () => {
+    writeCallerChat({});
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({ prompt: "go", folder: "/tmp/project", provider: "claude-code" });
+
+    expect(sender.calls).toHaveLength(1);
   });
 });
