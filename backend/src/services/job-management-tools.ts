@@ -18,6 +18,8 @@ import { listJobs, getJob, createJob, updateJob, deleteJob, listRuns, getRun, Jo
 import { spawnJobRun, respondToApproval, cancelRun, pauseRun, resumeRun, retryRunStep } from "./job-runner.js";
 import { chatFileService } from "./chat-file-service.js";
 import type { JobDefinition, JobRun, JobRunStatus } from "shared";
+import type { DefaultPermissions } from "shared/types/index.js";
+import { guardUnattendedTools, unattendedRefusal, UNATTENDED_REQUIREMENT_NOTE } from "./permission-ceiling.js";
 
 /** Who is calling these tools — recorded on created definitions and approvals. */
 export interface JobToolsContext {
@@ -27,7 +29,19 @@ export interface JobToolsContext {
   via: "chat" | "agent";
   /** Calling chat's id — lets spawn_job put the run on the chat's lineage root's card. */
   getChatId?: () => string;
+  /**
+   * Live read of the calling session's effective permissions. Job steps run
+   * allow-all, so the tools in {@link JOB_UNATTENDED_TOOLS} are refused unless
+   * the caller already is (permission-ceiling.ts). Absent fails closed.
+   */
+  getPermissions?: () => DefaultPermissions | null;
 }
+
+/**
+ * The job tools that create, change or (re)start allow-all step sessions.
+ * `respond_job_approval` is guarded inline instead — only its `approve`.
+ */
+export const JOB_UNATTENDED_TOOLS = ["create_job", "update_job", "spawn_job", "retry_job_step", "resume_job_run"] as const;
 
 /**
  * The lineage root of the calling chat, if it has a stored record — the card
@@ -152,6 +166,10 @@ function condenseRun(run: JobRun) {
 
 /** Build the job management tool set with the caller's attribution baked in. */
 export function buildJobManagementTools(ctx: JobToolsContext): AnyToolDefinition[] {
+  return guardUnattendedTools(buildUnguardedJobTools(ctx), JOB_UNATTENDED_TOOLS, ctx.getPermissions);
+}
+
+function buildUnguardedJobTools(ctx: JobToolsContext): AnyToolDefinition[] {
   return [
     defineTool(
       "list_jobs",
@@ -326,13 +344,20 @@ export function buildJobManagementTools(ctx: JobToolsContext): AnyToolDefinition
 
     defineTool(
       "respond_job_approval",
-      "Approve or reject a job run that is waiting at an approval step. ONLY call this to relay an explicit decision from the user — never decide on their behalf.",
+      "Approve or reject a job run that is waiting at an approval step. ONLY call this to relay an explicit decision from the user — never decide on their behalf. " +
+        `Approving starts the next step: ${UNATTENDED_REQUIREMENT_NOTE} Rejecting starts nothing and is always allowed.`,
       {
         runId: z.string().describe("The run id waiting for approval"),
         decision: z.enum(["approve", "reject"]).describe("The user's decision"),
         comment: z.string().optional().describe("Optional comment from the user, recorded in the run history"),
       },
       async (args) => {
+        // Approval resumes the run, and its next step runs allow-all — the
+        // same reach as spawn_job. Rejecting only stops it, so anyone may.
+        if (args.decision === "approve") {
+          const refusal = unattendedRefusal("respond_job_approval", ctx.getPermissions);
+          if (refusal) return refusal;
+        }
         try {
           const run = respondToApproval(args.runId, args.decision, args.comment, ctx.via);
           return { content: [{ type: "text" as const, text: JSON.stringify({ runId: run.runId, status: run.status, currentStepId: run.currentStepId }) }] };

@@ -13,7 +13,7 @@
  * again when it throws. A mock could only tell us `removeCallbacks` was called;
  * `countPending()` tells us the store is actually clean.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,6 +28,7 @@ const CHILD_CHAT_ID = "child-chat";
 /** Swapped per-test; read lazily by the mocks below. */
 let activeSession: unknown = undefined;
 let existingChatId: string | null = CHILD_CHAT_ID;
+let existingChatMeta: Record<string, unknown> = {};
 
 // callboard-tools imports claude.ts, which registers itself back into
 // callboard-tools at module load — importing the tool module directly in a
@@ -39,18 +40,20 @@ vi.mock("./claude.js", () => ({ getActiveSession: () => activeSession }));
 // tools in the spec still build.
 vi.mock("../utils/chat-lookup.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../utils/chat-lookup.js")>()),
-  findChat: (id: string) => (existingChatId && id === existingChatId ? { id, title: "a child chat" } : null),
+  findChat: (id: string) => (existingChatId && id === existingChatId ? { id, title: "a child chat", metadata: JSON.stringify(existingChatMeta) } : null),
 }));
 
 const { buildCallboardToolsSpec, setCallboardMessageSender } = await import("./callboard-tools.js");
 const { countPending, markChildComplete, getReadyForParent } = await import("./session-callbacks.js");
 const { listActivities, __resetActivityState } = await import("./chat-activity.js");
+const { updateAgentSettings } = await import("./agent-settings.js");
 import type { ToolDefinition } from "../agents/ports/tools.js";
+import type { DefaultPermissions } from "shared/types/index.js";
 
 const storePath = join(tmpRoot, "session-callbacks.json");
 
-function continueChat(): ToolDefinition<any> {
-  const spec = buildCallboardToolsSpec(() => CALLER_CHAT_ID, undefined, { includeJobTools: false });
+function continueChat(getPermissions?: () => DefaultPermissions | null): ToolDefinition<any> {
+  const spec = buildCallboardToolsSpec(() => CALLER_CHAT_ID, undefined, { includeJobTools: false, ...(getPermissions && { getPermissions }) });
   const found = spec.tools.find((t) => t.name === "continue_chat");
   if (!found) throw new Error("continue_chat not found");
   return found as ToolDefinition<any>;
@@ -78,6 +81,7 @@ function stubSender(): { calls: any[] } {
 beforeEach(() => {
   activeSession = undefined;
   existingChatId = CHILD_CHAT_ID;
+  existingChatMeta = {};
   if (existsSync(storePath)) rmSync(storePath);
   __resetActivityState();
 });
@@ -173,5 +177,125 @@ describe("continue_chat", () => {
 
     await continueChat().handler({ chatId: CHILD_CHAT_ID, prompt: "carry on", requireExplicitCompletion: false });
     expect(sender.calls[1]).toMatchObject({ requireExplicitCompletion: false });
+  });
+});
+
+/**
+ * The permission ceiling (permission-ceiling.ts). A continuation runs under
+ * the TARGET's stored permissions, so a stricter caller must not be able to
+ * drive a looser chat. Refused, not clamped — see the handler comment.
+ */
+describe("continue_chat permission ceiling", () => {
+  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+  const ASK_EXEC: DefaultPermissions = { ...UNATTENDED, codeExecution: "ask" };
+
+  it("refuses an ask caller driving an allow-all chat, and sends nothing", async () => {
+    existingChatMeta = { defaultPermissions: UNATTENDED };
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ASK_EXEC).handler({ chatId: CHILD_CHAT_ID, prompt: "run rm -rf", onComplete: true }));
+
+    expect(result).toMatchObject({ ok: false, error: "permission_ceiling", chatId: CHILD_CHAT_ID, looserCategories: ["codeExecution"] });
+    expect(sender.calls).toHaveLength(0);
+    // Refused before the callback is registered, so nothing is left waiting.
+    expect(countPending()).toBe(0);
+  });
+
+  it("continues a chat that is no looser than the caller (an ask parent and its capped child)", async () => {
+    existingChatMeta = { defaultPermissions: ASK_EXEC };
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ASK_EXEC).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toEqual({ chatId: CHILD_CHAT_ID, status: "continued" });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it("lets an unattended allow-all caller continue an allow-all chat, as before", async () => {
+    existingChatMeta = { defaultPermissions: UNATTENDED };
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ({ ...UNATTENDED })).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toMatchObject({ status: "continued" });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it("refuses driving a chat with computer control from a caller without it", async () => {
+    existingChatMeta = { defaultPermissions: { ...UNATTENDED, computerControl: "ask" } };
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ({ ...UNATTENDED })).handler({ chatId: CHILD_CHAT_ID, prompt: "click things" }));
+
+    expect(result).toMatchObject({ error: "permission_ceiling", looserCategories: ["computerControl"] });
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  it("refuses when the caller's policy is unknown and the target allows anything", async () => {
+    existingChatMeta = { defaultPermissions: { ...ASK_EXEC, codeExecution: "deny", fileRead: "allow" } };
+    const sender = stubSender();
+
+    const result = payload(await continueChat().handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toMatchObject({ error: "permission_ceiling", looserCategories: ["fileRead", "fileWrite", "webAccess"] });
+    expect(sender.calls).toHaveLength(0);
+  });
+});
+
+/** A Codex target runs under an explicit `codexSandboxMode`, not its stored permissions. */
+describe("continue_chat — Codex target under an explicit sandbox setting", () => {
+  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+  const ASK_EXEC: DefaultPermissions = { ...UNATTENDED, codeExecution: "ask" };
+
+  afterEach(() => {
+    updateAgentSettings({ codexSandboxMode: undefined });
+  });
+
+  it("refuses continuing a capped Codex chat when codexSandboxMode is danger-full-access", async () => {
+    existingChatMeta = { provider: "codex", defaultPermissions: ASK_EXEC };
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ASK_EXEC).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toMatchObject({ ok: false, error: "codex_sandbox_exceeds_ceiling", chatId: CHILD_CHAT_ID });
+    expect(result.message).toContain("codexSandboxMode");
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  it("lets an allow-all caller continue an allow-all Codex chat under it", async () => {
+    existingChatMeta = { provider: "codex", defaultPermissions: UNATTENDED };
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ({ ...UNATTENDED })).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toMatchObject({ status: "continued" });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ["ask", { defaultPermissions: ASK_EXEC }],
+    ["absent", {}],
+  ])("lets an allow-all caller continue a Codex chat with %s stored permissions under it", async (_label, stored) => {
+    // The target runs danger-full-access whatever it stores; what has to fit
+    // is the setting against the caller, and an allow-all caller fits.
+    existingChatMeta = { provider: "codex", ...stored };
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await continueChat(() => ({ ...UNATTENDED })).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
+
+    expect(result).toMatchObject({ status: "continued" });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it("continues the same capped Codex chat when no explicit sandbox is set", async () => {
+    existingChatMeta = { provider: "codex", defaultPermissions: ASK_EXEC };
+    const sender = stubSender();
+
+    await continueChat(() => ASK_EXEC).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" });
+
+    expect(sender.calls).toHaveLength(1);
   });
 });

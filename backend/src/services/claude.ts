@@ -1239,6 +1239,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           // model can change mid-session, and a still-registering chat (temp
           // tracking id, no record yet) simply reads as undefined.
           getModel: () => chatFileService.getModelOverride(trackingId),
+          // The ceiling for start_chat_session / continue_chat: this session's
+          // own effective policy, read live like every other permission check.
+          // These tools are pre-approved below, so the ceiling is what stops
+          // them from handing out more than this chat has.
+          getPermissions: getDefaultPermissions,
         },
       ),
     "callboard-tools server",
@@ -1312,6 +1317,9 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           ...(providerKind === "acp" && acpProviderId && { acpProviderId }),
           // Same live model-override read as the callboard-tools spec above.
           getModel: () => chatFileService.getModelOverride(trackingId),
+          // Same ceiling as callboard-tools: an agent chat a user started with
+          // "ask" must not start or schedule allow-all runs.
+          getPermissions: getDefaultPermissions,
         }),
       `Callboard agent tools for agent="${agentAlias}"`,
       (spec) => `Injected Callboard agent tools for agent="${agentAlias}" (spec.name=${spec.name}, ${spec.tools.length} tools)`,

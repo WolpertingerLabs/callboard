@@ -8,13 +8,14 @@
  * thread from the spec builder into the resolver, and the resolved model
  * reaches sendMessage and the result JSON.
  */
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Chat } from "shared";
+import type { DefaultPermissions } from "shared/types/index.js";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-tools-start-chat-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
@@ -30,6 +31,7 @@ vi.mock("./claude.js", () => ({ getActiveSession: () => undefined }));
 
 const { buildCallboardToolsSpec, setCallboardMessageSender } = await import("./callboard-tools.js");
 const { chatFileService } = await import("./chat-file-service.js");
+const { updateAgentSettings } = await import("./agent-settings.js");
 import type { ToolDefinition } from "../agents/ports/tools.js";
 
 function writeCallerChat(metadata: Record<string, unknown>): void {
@@ -50,13 +52,15 @@ function writeCallerChat(metadata: Record<string, unknown>): void {
  * tracking id (`new-<ts>`) to build the spec of a caller that has not been
  * written to disk yet — `getChat` misses, and the tool takes its no-parent path.
  */
-function startChat(callerId: string = CALLER_CHAT_ID): ToolDefinition<any> {
-  // Mirrors the spec claude.ts builds: the engine this session runs on, plus
-  // the live model-override getter over the chat record.
+function startChat(callerId: string = CALLER_CHAT_ID, getPermissions?: () => DefaultPermissions | null): ToolDefinition<any> {
+  // Mirrors the spec claude.ts builds: the engine this session runs on, the
+  // live model-override getter over the chat record, and the caller's live
+  // permission policy.
   const spec = buildCallboardToolsSpec(() => callerId, undefined, {
     includeJobTools: false,
     provider: "codex",
     getModel: () => chatFileService.getModelOverride(callerId),
+    ...(getPermissions && { getPermissions }),
   });
   const found = spec.tools.find((t) => t.name === "start_chat_session");
   if (!found) throw new Error("start_chat_session not found");
@@ -319,5 +323,148 @@ describe("start_chat_session independent spawns", () => {
     expect(sender.calls[0]).toMatchObject({ parentChatId: CALLER_CHAT_ID });
     expect(result).toMatchObject({ parentChatId: CALLER_CHAT_ID });
     expect(result.independent).toBeUndefined();
+  });
+});
+
+/**
+ * The permission ceiling (permission-ceiling.ts). These tools are pre-approved
+ * on Claude Code and in-process everywhere else, so the child's
+ * `defaultPermissions` is the only thing standing between an "ask" chat and an
+ * allow-all child with a shell.
+ */
+describe("start_chat_session permission ceiling", () => {
+  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+
+  it("caps an ask parent's child at the parent's own policy, per category", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+    const parent: DefaultPermissions = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAccess: "deny", computerControl: "deny" };
+
+    const result = payload(await startChat(CALLER_CHAT_ID, () => parent).handler({ prompt: "go", folder: "/tmp/project" }));
+
+    expect(sender.calls[0].defaultPermissions).toEqual(parent);
+    expect(result.permissions).toEqual(parent);
+  });
+
+  it("leaves an unattended allow-all parent's child exactly as before", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    const result = payload(await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED })).handler({ prompt: "go", folder: "/tmp/project" }));
+
+    expect(sender.calls[0].defaultPermissions).toEqual(UNATTENDED);
+    expect(result.permissions).toEqual(UNATTENDED);
+  });
+
+  it("keeps computer control denied for the child even when the parent allows it", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED, computerControl: "allow" })).handler({ prompt: "go", folder: "/tmp/project" });
+
+    expect(sender.calls[0].defaultPermissions).toEqual(UNATTENDED);
+  });
+
+  it("treats a parent with no permissions as ask-everything, the policy it actually runs under", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    await startChat(CALLER_CHAT_ID, () => null).handler({ prompt: "go", folder: "/tmp/project" });
+
+    expect(sender.calls[0].defaultPermissions).toEqual({ fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" });
+  });
+
+  it("fails closed when the spec was built without a permission getter", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    await startChat().handler({ prompt: "go", folder: "/tmp/project" });
+
+    expect(sender.calls[0].defaultPermissions).toMatchObject({ codeExecution: "ask", computerControl: "deny" });
+  });
+});
+
+/**
+ * An explicit `codexSandboxMode` replaces the sandbox tier Codex would derive
+ * from the child's (capped) permissions, so on this install a capped Codex
+ * child would still get `danger-full-access`. Refused instead.
+ */
+describe("start_chat_session — Codex under an explicit sandbox setting", () => {
+  const UNATTENDED: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
+  const ASK_EXEC: DefaultPermissions = { ...UNATTENDED, codeExecution: "ask" };
+
+  afterEach(() => {
+    updateAgentSettings({ codexSandboxMode: undefined });
+  });
+
+  it("refuses a capped Codex child when codexSandboxMode is danger-full-access, naming the setting", async () => {
+    writeCallerChat({});
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({ prompt: "go", folder: "/tmp/project", provider: "codex" }));
+
+    expect(result).toMatchObject({ ok: false, error: "codex_sandbox_exceeds_ceiling", permissions: ASK_EXEC });
+    expect(result.message).toContain('codexSandboxMode="danger-full-access"');
+    expect(sender.calls).toHaveLength(0);
+  });
+
+  it("refuses before resolveBranch, leaving no worktree or branch behind", async () => {
+    writeCallerChat({});
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+    // A repo with a commit, alone in its own parent: worktrees are created as
+    // siblings of the checkout, so anything new in `parent` is a leak.
+    const parent = mkdtempSync(join(tmpdir(), "callboard-tools-codex-refusal-"));
+    const repo = join(parent, "repo");
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...args], { encoding: "utf8" });
+    execFileSync("git", ["init", "-q", "-b", "main", repo], { stdio: "pipe" });
+    git("commit", "-q", "--allow-empty", "-m", "init");
+
+    const result = payload(
+      await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({
+        prompt: "go",
+        folder: repo,
+        provider: "codex",
+        newBranch: "feat/codex-refused",
+        useWorktree: true,
+      }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: "codex_sandbox_exceeds_ceiling" });
+    expect(sender.calls).toHaveLength(0);
+    expect(readdirSync(parent)).toEqual(["repo"]);
+    expect(git("worktree", "list").trim().split("\n")).toHaveLength(1);
+    expect(git("branch", "--list", "feat/codex-refused").trim()).toBe("");
+  });
+
+  it("still starts an allow-all caller's Codex child under danger-full-access", async () => {
+    writeCallerChat({});
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    const result = payload(await startChat(CALLER_CHAT_ID, () => ({ ...UNATTENDED })).handler({ prompt: "go", folder: "/tmp/project", provider: "codex" }));
+
+    expect(result).toMatchObject({ status: "started" });
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it("starts a capped Codex child when no explicit sandbox is set (the tier follows the permissions)", async () => {
+    writeCallerChat({});
+    const sender = stubSender();
+
+    await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({ prompt: "go", folder: "/tmp/project", provider: "codex" });
+
+    expect(sender.calls).toHaveLength(1);
+  });
+
+  it("does not refuse a capped child on another provider", async () => {
+    writeCallerChat({});
+    updateAgentSettings({ codexSandboxMode: "danger-full-access" });
+    const sender = stubSender();
+
+    await startChat(CALLER_CHAT_ID, () => ASK_EXEC).handler({ prompt: "go", folder: "/tmp/project", provider: "claude-code" });
+
+    expect(sender.calls).toHaveLength(1);
   });
 });
