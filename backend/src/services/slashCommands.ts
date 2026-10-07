@@ -55,7 +55,9 @@ function saveSlashCommandsData(data: SlashCommandsData): void {
  */
 function getSlashCommandsForDirectory(directory: string): string[] {
   const data = loadSlashCommandsData();
-  return data[directory] || [];
+  // Own keys only: `directory` is a chat's folder, which the client chose, and
+  // a folder named `constructor` must not resolve to Object.prototype's member.
+  return Object.hasOwn(data, directory) && Array.isArray(data[directory]) ? data[directory] : [];
 }
 
 /**
@@ -63,7 +65,9 @@ function getSlashCommandsForDirectory(directory: string): string[] {
  */
 export function setSlashCommandsForDirectory(directory: string, commands: string[]): void {
   const data = loadSlashCommandsData();
-  data[directory] = commands;
+  // defineProperty, not assignment: assigning to `data["__proto__"]` would set
+  // the prototype instead of storing the folder's commands.
+  Object.defineProperty(data, directory, { value: commands, writable: true, enumerable: true, configurable: true });
   saveSlashCommandsData(data);
 }
 

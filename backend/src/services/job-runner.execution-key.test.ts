@@ -856,3 +856,68 @@ describe("execution keys — a keyed run killed before its key was written", () 
     expect(childrenOf(parentRunId)).toHaveLength(2);
   });
 });
+
+// ── Prototype-named step ids ────────────────────────────────────────────
+
+// loopCounts/executionCounts are plain objects persisted as JSON and indexed by
+// author-supplied step ids. `counts.constructor + 1` is a string, which never
+// compares greater than maxLoops, so a gate named `constructor` looped forever.
+describe("per-step counters — prototype-named step ids", () => {
+  const PROTO_IDS = ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"];
+
+  it.each(PROTO_IDS)("a gate named %j still enforces maxLoops", async (gateId) => {
+    const jobId = makeJob({
+      steps: [
+        { id: "work", type: "agent", prompt: "Do it" },
+        { id: gateId, type: "gate", condition: { all: [{ ref: "run.id", op: "exists" }] }, onPass: "work", onFail: "end", maxLoops: 2 },
+      ],
+    });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+
+    // maxLoops 2: two loop-backs are allowed, the third fails the run. Six
+    // passes is well past that, and bounds the test if the limit never trips.
+    let lastChat: string | undefined;
+    let passes = 0;
+    while (store.getRun(runId)!.status !== "failed" && passes < 6) {
+      await flush(() => {
+        const run = store.getRun(runId)!;
+        return run.status === "failed" || (!!run.activeStep?.chatId && run.activeStep.chatId !== lastChat);
+      });
+      if (store.getRun(runId)!.status === "failed") break;
+      lastChat = store.getRun(runId)!.activeStep!.chatId!;
+      endStep(runId, "work");
+      passes++;
+    }
+
+    const run = store.getRun(runId)!;
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain(`exceeded maxLoops (2)`);
+    expect(passes).toBe(3);
+    expect(Object.getOwnPropertyDescriptor(run.loopCounts, gateId)?.value).toBe(3);
+  });
+
+  it.each(PROTO_IDS)("an input named %j falls back to its default", (key) => {
+    const jobId = makeJob({ inputs: [{ key, required: false, default: "dflt" }], steps: [{ id: "work", type: "agent", prompt: "Do it" }] });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    expect(Object.getOwnPropertyDescriptor(store.getRun(runId)!.inputs, key)?.value).toBe("dflt");
+  });
+
+  it.each(PROTO_IDS)("a required input named %j is still required", (key) => {
+    const jobId = makeJob({ inputs: [{ key, required: true }], steps: [{ id: "work", type: "agent", prompt: "Do it" }] });
+    expect(() => runner.spawnJobRun(jobId, {})).toThrow(`Missing required input "${key}"`);
+  });
+
+  it.each(PROTO_IDS)("a supplied input named %j is kept", (key) => {
+    const jobId = makeJob({ inputs: [{ key, required: true }], steps: [{ id: "work", type: "agent", prompt: "Do it" }] });
+    // Parsed the way a request body is, so `__proto__` is an own key.
+    const runId = runner.spawnJobRun(jobId, JSON.parse(`{${JSON.stringify(key)}: "given"}`)).runId;
+    expect(Object.getOwnPropertyDescriptor(store.getRun(runId)!.inputs, key)?.value).toBe("given");
+  });
+
+  it.each(PROTO_IDS)("an agent step named %j gets a numeric execution key", async (stepId) => {
+    const jobId = makeJob({ steps: [{ id: stepId, type: "agent", prompt: "Do it" }] });
+    const runId = runner.spawnJobRun(jobId, {}).runId;
+    await flush(() => !!store.getRun(runId)?.activeStep?.executionKey);
+    expect(store.getRun(runId)!.activeStep!.executionKey).toBe(`${runId}:${stepId}:1`);
+  });
+});

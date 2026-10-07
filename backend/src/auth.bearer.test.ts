@@ -58,13 +58,13 @@ function makeRes() {
 }
 
 it("binds browser view ownership only to the validated server session, never request fields", () => {
-  createSession("browser-token", Date.now() + 100_000);
-  const req = makeReq({ cookies: { callboard_session: "browser-token" }, body: { chatViewOwner: "forged" } });
+  const token = createSession(Date.now() + 100_000);
+  const req = makeReq({ cookies: { callboard_session: token }, body: { chatViewOwner: "forged" } });
   const res = makeRes();
   const next = vi.fn();
   requireAuth(req, res, next);
   expect(next).toHaveBeenCalledOnce();
-  expect(res.locals.chatViewOwner).toBe("browser-token");
+  expect(res.locals.chatViewOwner).toBe(token);
 });
 
 describe("requireAuth with bearer tokens", () => {

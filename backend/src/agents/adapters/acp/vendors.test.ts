@@ -186,3 +186,11 @@ describe("AcpAdapter.query configuration", () => {
     expect(() => adapter.query({ prompt: "hi", options: { cwd: "/tmp", acp: { providerId: "opencode" } } })).not.toThrow();
   });
 });
+
+describe("resolveAcpVendorPreset — prototype-property ids", () => {
+  // The id is request input (POST /api/stream acpProviderId, GET /api/acp/models
+  // ?providerId=). An inherited member must not pass as a known vendor.
+  it.each(["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "isPrototypeOf"])("rejects %j", (id) => {
+    expect(resolveAcpVendorPreset(id)).toBeNull();
+  });
+});

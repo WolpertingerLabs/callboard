@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import { mkdirSync } from "fs";
 import { join } from "path";
 import { DATA_DIR } from "../utils/paths.js";
@@ -30,20 +31,72 @@ const store = createJsonFileStore<SessionsFile>(sessionsFilePath, () => ({
   },
 }));
 
+/**
+ * The only shape `createSession` mints: 32 random bytes as lowercase hex.
+ *
+ * Every helper that takes a token from a request checks it against this before
+ * indexing the store. `sessions` is parsed JSON, so a plain lookup would answer
+ * `constructor`, `__proto__`, `toString`, ... with an inherited Object.prototype
+ * member — a truthy "session" whose `expires_at` is undefined.
+ */
+const SESSION_TOKEN_RE = /^[0-9a-f]{64}$/;
+
+function isSessionToken(token: unknown): token is string {
+  return typeof token === "string" && SESSION_TOKEN_RE.test(token);
+}
+
 function loadSessions(): SessionsFile {
-  return store.load();
+  const data = store.load();
+  // Defense in depth behind the token format check: a null-prototype map has
+  // no inherited keys to find. Done once per parse; the store caches the result.
+  if (Object.getPrototypeOf(data.sessions) !== null) {
+    data.sessions = Object.assign(Object.create(null) as Record<string, SessionData>, data.sessions);
+  }
+  return data;
 }
 
 function saveSessions(data: SessionsFile): void {
   store.save(data);
 }
 
-export function getSession(token: string): SessionData | undefined {
-  const data = loadSessions();
+/** The stored entry for a well-formed token the store actually owns, live or not. */
+function storedSession(data: SessionsFile, token: unknown): SessionData | undefined {
+  if (!isSessionToken(token) || !Object.hasOwn(data.sessions, token)) return undefined;
   return data.sessions[token];
 }
 
-export function createSession(token: string, expiresAt: number, ip?: string): void {
+/**
+ * Fails closed: an entry is live only while `now` is strictly before a finite
+ * numeric `expires_at`. Missing, non-numeric or NaN expiry means dead.
+ */
+function isLive(session: SessionData | undefined, now: number): session is SessionData {
+  if (typeof session !== "object" || session === null) return false;
+  const expiresAt: unknown = session.expires_at;
+  return typeof expiresAt === "number" && Number.isFinite(expiresAt) && now < expiresAt;
+}
+
+/**
+ * The live session for a request-supplied token, or undefined. This is the
+ * whole validity check — callers must not re-derive it. A stored entry that is
+ * expired or malformed is deleted on the way out.
+ *
+ * The store is loaded before the token is looked at, so a call with any token
+ * (even "") still throws when sessions.json cannot be read; the
+ * change-password handler relies on that as its readability probe.
+ */
+export function getSession(token: unknown): SessionData | undefined {
+  const data = loadSessions();
+  const session = storedSession(data, token);
+  if (!session) return undefined;
+  if (isLive(session, Date.now())) return session;
+  delete data.sessions[token as string];
+  saveSessions(data);
+  return undefined;
+}
+
+/** Mint a session and return its token — the only place tokens are generated. */
+export function createSession(expiresAt: number, ip?: string): string {
+  const token = randomBytes(32).toString("hex");
   const data = loadSessions();
   data.sessions[token] = {
     expires_at: expiresAt,
@@ -51,6 +104,7 @@ export function createSession(token: string, expiresAt: number, ip?: string): vo
     ip,
   };
   saveSessions(data);
+  return token;
 }
 
 // Every cookie-authenticated request rolls its session. The stored expiry only
@@ -60,8 +114,8 @@ const EXTEND_WRITE_THRESHOLD_MS = 60 * 1000;
 
 export function extendSession(token: string, newExpiresAt: number): void {
   const data = loadSessions();
-  const session = data.sessions[token];
-  if (session && newExpiresAt - session.expires_at > EXTEND_WRITE_THRESHOLD_MS) {
+  const session = storedSession(data, token);
+  if (isLive(session, Date.now()) && newExpiresAt - session.expires_at > EXTEND_WRITE_THRESHOLD_MS) {
     session.expires_at = newExpiresAt;
     saveSessions(data);
   }
@@ -69,6 +123,7 @@ export function extendSession(token: string, newExpiresAt: number): void {
 
 export function deleteSession(token: string): void {
   const data = loadSessions();
+  if (!storedSession(data, token)) return;
   delete data.sessions[token];
   saveSessions(data);
 }
@@ -94,7 +149,7 @@ export function cleanupExpiredSessions(): number {
   let removedCount = 0;
 
   for (const [token, session] of Object.entries(data.sessions)) {
-    if (now > session.expires_at) {
+    if (!isLive(session, now)) {
       delete data.sessions[token];
       removedCount++;
     }

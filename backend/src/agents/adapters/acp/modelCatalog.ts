@@ -149,7 +149,8 @@ let cache: Record<string, AcpModelCatalog> | null = null;
 
 function load(): Record<string, AcpModelCatalog> {
   if (cache) return cache;
-  cache = {};
+  // Null prototype: ids are looked up straight from request input.
+  cache = Object.create(null) as Record<string, AcpModelCatalog>;
   try {
     const path = catalogPath();
     if (existsSync(path)) {
@@ -165,7 +166,7 @@ function load(): Record<string, AcpModelCatalog> {
   } catch (err) {
     // A corrupt catalog is a lost suggestion list, not a broken daemon.
     log.warn(`could not read the ACP model catalog: ${err instanceof Error ? err.message : String(err)}`);
-    cache = {};
+    cache = Object.create(null) as Record<string, AcpModelCatalog>;
   }
   return cache;
 }
@@ -197,7 +198,8 @@ export function recordAcpModels(providerId: string, configOptions: readonly Sess
 
 /** What is known about a vendor's models, or null if it has never been run. */
 export function getAcpModelCatalog(providerId: string): AcpModelCatalog | null {
-  return load()[providerId] ?? null;
+  const store = load();
+  return Object.hasOwn(store, providerId) ? store[providerId] : null;
 }
 
 /** Test seam: drop the in-memory copy so the next read comes from disk. */

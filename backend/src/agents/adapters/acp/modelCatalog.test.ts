@@ -145,3 +145,14 @@ describe("the catalog", () => {
     expect(JSON.parse(readFileSync(join(dataDir, "acp-models.json"), "utf8")).opencode.models).toHaveLength(2);
   });
 });
+
+describe("getAcpModelCatalog — prototype-property ids", () => {
+  it.each(["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf", "isPrototypeOf"])("has no catalog for %j", (id) => {
+    expect(getAcpModelCatalog(id)).toBeNull();
+    // And with a real catalog on disk, so the lookup goes through a parsed file.
+    writeFileSync(join(dataDir, "acp-models.json"), JSON.stringify({ opencode: { models: [{ id: "m", name: "M" }], discoveredAt: "x" } }));
+    resetAcpModelCatalogCache();
+    expect(getAcpModelCatalog("opencode")).not.toBeNull();
+    expect(getAcpModelCatalog(id)).toBeNull();
+  });
+});

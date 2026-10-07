@@ -1,4 +1,3 @@
-import { randomBytes } from "crypto";
 import type { Request, Response, NextFunction } from "express";
 import { getSession, createSession, deleteSession, extendSession, cleanupExpiredSessions, deleteAllSessionsExcept } from "./services/sessions.js";
 import { verifyApiToken } from "./services/api-keys.js";
@@ -115,11 +114,11 @@ export async function loginHandler(req: Request, res: Response) {
     return res.status(401).json({ error: "Invalid password" });
   }
 
-  const token = randomBytes(32).toString("hex");
   // An async handler on Express 4: a throw here would be an unhandled
   // rejection and a request that never gets an answer.
+  let token: string;
   try {
-    createSession(token, Date.now() + SESSION_TTL_MS, ip);
+    token = createSession(Date.now() + SESSION_TTL_MS, ip);
   } catch (err) {
     log.warn(`Login could not create a session: ${(err as Error).message}`);
     return res.status(503).json({ error: SESSION_STORE_UNAVAILABLE });
@@ -155,11 +154,8 @@ export function checkAuthHandler(req: Request, res: Response) {
 
   const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token) return res.json({ authenticated: false });
-  const entry = getSession(token);
-  if (!entry || Date.now() > entry.expires_at) {
-    if (entry) deleteSession(token);
-    return res.json({ authenticated: false });
-  }
+  // getSession is the whole check: format, ownership and expiry.
+  if (!getSession(token)) return res.json({ authenticated: false });
 
   // Auto-extend the session when actively checking auth status
   rollSession(token, res);
@@ -340,11 +336,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const token = req.cookies?.[SESSION_COOKIE_NAME];
   if (!token) return res.status(401).json({ error: "Not authenticated" });
 
-  const entry = getSession(token);
-  if (!entry || Date.now() > entry.expires_at) {
-    if (entry) deleteSession(token);
-    return res.status(401).json({ error: "Session expired" });
-  }
+  // getSession is the whole check: format, ownership and expiry.
+  if (!getSession(token)) return res.status(401).json({ error: "Session expired" });
 
   // Auto-extend the session on every authenticated request (rolling session)
   rollSession(token, res);
