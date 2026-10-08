@@ -5,8 +5,18 @@ import { createCardMembership } from "./card-membership.js";
  */
 import type { CardLifecycle, Chat, JobRunListItem } from "shared";
 import { listChatsSnapshot } from "./chats-snapshot.js";
-import { buildCardBoard, buildCardSummaries, ROLLUP_DEPS, type RollupDeps } from "./card-rollup.js";
+import { buildCardBoard, buildCardSummaries, ROLLUP_DEPS, type CardSpaceScope, type RollupDeps } from "./card-rollup.js";
+import { knownSpaceIds, normalizeSpaceId } from "./space-store.js";
 import { createLifecycleBudget, readNativeLifecycle } from "./codex-native-agents.js";
+
+/**
+ * A space scope for the rollup. Every card the context returns carries its
+ * `spaceId`; `scope` (default "all") decides which ones are returned.
+ */
+export function cardSpaceScope(scope = "all", crossSpaceNeedsYou = false): CardSpaceScope {
+  const known = knownSpaceIds();
+  return { scope, crossSpaceNeedsYou, normalize: (raw) => normalizeSpaceId(raw, known) };
+}
 
 export function createCardContext(stored = listChatsSnapshot()) {
   const { corpus, index, roots, chats, nativeAliases, isNative, nativeDiscoveryIncomplete, storedById } = createCardMembership(stored);
@@ -48,14 +58,14 @@ export function createCardContext(stored = listChatsSnapshot()) {
       const position = chats.findIndex((item) => item.id === chat.id);
       chats[position] = chat;
     },
-    summaries(runs: JobRunListItem[], includeHidden = false, rootId?: string | ReadonlySet<string>, lifecycle?: CardLifecycle) {
+    summaries(runs: JobRunListItem[], includeHidden = false, rootId?: string | ReadonlySet<string>, lifecycle?: CardLifecycle, space = cardSpaceScope()) {
       const rootIds = typeof rootId === "string" ? new Set([rootId]) : rootId;
       const selected = rootIds ? chats.filter((chat) => rootIds.has(index.existingRootIdOf(chat.id))) : chats;
-      return buildCardSummaries(selected, runs, budgetedDeps(), { includeHidden, lifecycle });
+      return buildCardSummaries(selected, runs, budgetedDeps(), { includeHidden, lifecycle, space });
     },
     /** The whole board, with the archive optionally windowed — see {@link buildCardBoard}. */
-    board(runs: JobRunListItem[], includeHidden = false, window: { closedLimit?: number; closedSince?: number } = {}) {
-      return buildCardBoard(chats, runs, budgetedDeps(), { includeHidden, ...window });
+    board(runs: JobRunListItem[], includeHidden = false, window: { closedLimit?: number; closedSince?: number } = {}, space = cardSpaceScope()) {
+      return buildCardBoard(chats, runs, budgetedDeps(), { includeHidden, ...window, space });
     },
   };
 }

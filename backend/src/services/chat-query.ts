@@ -15,6 +15,7 @@ import { isAbsolute } from "node:path";
 import { chatViews, type ChatViewBinding } from "./chat-view.js";
 import { createLiveBranchResolver, createRepoScope, type BranchSource, type RepoVerdict } from "./chat-repo-scope.js";
 import { getParentChatId } from "./chat-lineage.js";
+import { createSpaceResolver } from "./space-membership.js";
 
 export class ChatQueryError extends Error {
   constructor(
@@ -103,6 +104,12 @@ export const searchChatsSchema = {
   updatedAfter: instant.optional().describe("ISO-8601 date or date-time; only chats updated at or after this instant"),
   updatedBefore: instant.optional().describe("ISO-8601 date or date-time; only chats updated at or before this instant"),
   sort: z.enum(["updated", "created"]).optional().describe("Newest-first by update time (default) or creation time"),
+  space: z
+    .string()
+    .min(1)
+    .max(128)
+    .optional()
+    .describe('Space to search: a space id, or "all" for every space. From a chat tool call the default is the calling chat\'s own space; rows report spaceId.'),
   limit: z.number().int().min(1).max(100).optional().describe("Page size, 1-100, default 20"),
   offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().describe("Stable global offset, default 0; page with nextOffset"),
 };
@@ -478,8 +485,13 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
   };
   let branchUnevaluated = 0;
   let repoUnevaluated = 0;
+  // A tree's space is its root's (space-membership.ts). Built unconditionally:
+  // every row reports its spaceId, scoped or not.
+  const spaces = createSpaceResolver({ existingRootIdOf: membership.index.existingRootIdOf, storedById: membership.storedById });
+  const spaceScope = args.space;
   let candidates = [...rows.values()].filter((chat) => {
     if (!baseAdmits(chat)) return false;
+    if (!spaces.admits(spaceScope, chat.id, membership.storedById.get(chat.id)?.folder ?? chat.folder)) return false;
     const rootId = membership.index.existingRootIdOf(chat.id);
     const root = membership.roots.has(rootId) ? membership.storedById.get(rootId) : undefined;
     const meta = parseChatMetadata(chat.metadata);
@@ -688,6 +700,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
       ];
       return {
         chatId: chat.id,
+        spaceId: spaces.spaceOf(chat.id, membership.storedById.get(chat.id)?.folder ?? chat.folder),
         sessionId: chat.session_id,
         provider: meta.provider ?? null,
         acpProviderId: meta.acpProviderId,
@@ -730,6 +743,7 @@ export async function searchChats(input: SearchChatsInput, binding?: ChatViewBin
     appliedFilters: {
       ...args,
       scope,
+      space: spaceScope ?? "all",
       topLevelOnly: args.topLevelOnly ?? false,
       limit,
       offset,

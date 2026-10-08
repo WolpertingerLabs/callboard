@@ -145,7 +145,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "list_cards",
     qualifiedName: "mcp__callboard-tools__list_cards",
-    description: "List cards (tickets) with lifecycle and narrative status. Includes archived cards by default.",
+    description: "List cards (tickets) with lifecycle and narrative status. Includes archived cards by default. Scoped to the calling chat's space unless space is given.",
     parameters: [
       {
         name: "lifecycle",
@@ -154,6 +154,7 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
         required: false,
         enumValues: ["open", "closed"],
       },
+      { name: "space", type: "string", description: 'Space to list: a space id, or "all" for every space (default: this chat\'s space)', required: false },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
@@ -437,6 +438,12 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
         description: "Direct children of this chat. Global — children that ran in other folders are included unless you also pass folder/repo.",
         required: false,
       },
+      {
+        name: "space",
+        type: "string",
+        description: 'Space to search: a space id, or "all" for every space. Defaults to the calling chat\'s own space; rows report spaceId.',
+        required: false,
+      },
       { name: "updatedAfter", type: "string", description: "ISO-8601 date or date-time; only chats updated at or after this instant", required: false },
       { name: "updatedBefore", type: "string", description: "ISO-8601 date or date-time; only chats updated at or before this instant", required: false },
       { name: "sort", type: "enum", description: "Newest-first by update time (default) or creation time", required: false, enumValues: ["updated", "created"] },
@@ -460,8 +467,12 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
   {
     name: "get_chat_tree",
     qualifiedName: "mcp__callboard-tools__get_chat_tree",
-    description: "Get the parentage tree for a chat: ancestors plus the full tree of related chats spawned from the same root, across all engines.",
-    parameters: [{ name: "chatId", type: "string", description: "Chat ID to get the tree for (default: the current chat)", required: false }],
+    description:
+      "Get the parentage tree for a chat: ancestors plus the full tree of related chats spawned from the same root, across all engines. A tree in another space is refused unless space is given.",
+    parameters: [
+      { name: "chatId", type: "string", description: "Chat ID to get the tree for (default: the current chat)", required: false },
+      { name: "space", type: "string", description: 'Space the tree must be in: a space id, or "all" (default: this chat\'s space)', required: false },
+    ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",
     category: "platform",

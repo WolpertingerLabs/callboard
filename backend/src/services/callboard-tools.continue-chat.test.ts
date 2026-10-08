@@ -94,7 +94,7 @@ describe("continue_chat", () => {
     // old blocking mode this await would not have settled.
     const result = payload(await continueChat().handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
 
-    expect(result).toEqual({ chatId: CHILD_CHAT_ID, status: "continued" });
+    expect(result).toEqual({ chatId: CHILD_CHAT_ID, status: "continued", spaceId: "default" });
     expect(sender.calls).toHaveLength(1);
     expect(sender.calls[0]).toMatchObject({ chatId: CHILD_CHAT_ID, maxTurns: 200 });
   });
@@ -207,7 +207,7 @@ describe("continue_chat permission ceiling", () => {
 
     const result = payload(await continueChat(() => ASK_EXEC).handler({ chatId: CHILD_CHAT_ID, prompt: "carry on" }));
 
-    expect(result).toEqual({ chatId: CHILD_CHAT_ID, status: "continued" });
+    expect(result).toEqual({ chatId: CHILD_CHAT_ID, status: "continued", spaceId: "default" });
     expect(sender.calls).toHaveLength(1);
   });
 

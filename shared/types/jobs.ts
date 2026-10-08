@@ -189,6 +189,12 @@ export interface JobDefinition {
      */
     model?: string;
     agentAlias?: string;
+    /**
+     * Space the run's chats are filed into when the run has no root chat to
+     * inherit one from. A run attached to a card always follows that card's
+     * space — a tree never spans two.
+     */
+    spaceId?: string;
   };
   limits?: {
     /** Max sessions a single run may spawn (default 50). */

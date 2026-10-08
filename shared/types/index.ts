@@ -34,6 +34,18 @@ export { CARD_CATEGORY_MAX } from "./card.js";
 export type { ActivityKind, ActivityCondition, ChatActivity, ConditionWatch, ChatActivityResponse } from "./activity.js";
 export { WORKSPACE_NAME_MAX } from "./workspace.js";
 
+export type { Space, SpacePatch, SpaceDefaults, SpaceAgentScope, SpaceAccent, SpaceListItem, SpaceListResponse, SpaceRecentDirectory, SpaceScope } from "./space.js";
+export {
+  DEFAULT_SPACE_ID,
+  DEFAULT_SPACE_NAME,
+  ALL_SPACES,
+  SPACE_NAME_MAX,
+  SPACE_INSTRUCTIONS_MAX,
+  SPACE_FOLDER_RULES_MAX,
+  SPACE_ACCENTS,
+  isSpaceScope,
+} from "./space.js";
+
 export type {
   Workspace,
   WorkspacePayload,

@@ -36,6 +36,12 @@ export interface Card {
    * open cards on the board are grouped under it. Absent when uncategorized.
    */
   category?: string;
+  /**
+   * The space this card's tree belongs to — the root chat's
+   * `metadata.spaceId`, `"default"` when absent. Absent from older daemons.
+   * Moved with `PATCH /api/cards/:id { spaceId }`, which re-stamps the tree.
+   */
+  spaceId?: string;
   /** Set when lifecycle === "closed"; cleared on reopen. */
   closedAt?: string;
   /**
@@ -71,6 +77,8 @@ export interface Card {
  * (PATCH /api/cards/:id) and the MCP setters share that one implementation.
  */
 export interface CardPatch {
+  /** Move the whole tree to another space. Not a `metadata.card` field. */
+  spaceId?: string;
   title?: string;
   description?: string;
   emoji?: string;

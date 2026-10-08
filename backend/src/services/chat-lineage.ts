@@ -5,6 +5,8 @@ import { hasPendingRequest } from "./claude.js";
 import type { ChatTreeAncestor, ChatTreeNode, ChatTreeResponse } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
+import { spaceStampOf } from "./space-membership.js";
+import { normalizeSpaceId, spaceForFolder } from "./space-store.js";
 
 const log = createLogger("chat-lineage");
 
@@ -361,7 +363,14 @@ export function buildChatTree(chatId: string): ChatTreeResponse | null {
     return node;
   };
 
+  // The tree's space is its root's — see space-membership.ts. A root with no
+  // stored record (a native Codex parent discovery inferred) has no stamp to
+  // read, so it resolves through the folder rules like any discovered session.
+  const storedRoot = chatFileService.getChat(root.id);
+  const spaceId = storedRoot ? normalizeSpaceId(spaceStampOf(parseMeta(storedRoot))) : spaceForFolder(root.folder);
+
   return {
+    spaceId,
     targetChatId: target.id,
     rootChatId: root.id,
     ancestors: (() => {
