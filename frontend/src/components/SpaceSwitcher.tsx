@@ -58,27 +58,59 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const counts = useMemo(() => needsYouBySpace(cards), [cards]);
-  const elsewhere = [...counts].reduce((sum, [space, n]) => (space === activeSpaceId || activeSpaceId === ALL_SPACES ? sum : sum + n), 0);
+  // The badge is the sum of the rows the menu will show: live spaces other
+  // than the one on screen. An archived space has no row, so its blocked
+  // cards are not counted here (they still surface on the board).
+  const elsewhere = activeSpaceId === ALL_SPACES ? 0 : spaces.reduce((sum, space) => (space.id === activeSpaceId ? sum : sum + (counts.get(space.id) ?? 0)), 0);
+
+  const close = (returnFocus: boolean) => {
+    setOpen(false);
+    if (returnFocus) triggerRef.current?.focus();
+  };
 
   useEffect(() => {
     if (!open) return;
+    // Focus the selected item (or the first) when the menu opens.
+    const items = menuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]');
+    const selected = menuRef.current?.querySelector<HTMLElement>('[aria-checked="true"]');
+    (selected ?? items?.[0])?.focus();
     const onMouseDown = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
     document.addEventListener("mousedown", onMouseDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onMouseDown);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("mousedown", onMouseDown);
   }, [open]);
 
+  /** Arrow keys move through the items, Home/End jump, Escape closes and returns focus. */
+  const onMenuKeyDown = (e: React.KeyboardEvent) => {
+    const items = [...(menuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [])];
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    const focusAt = (i: number) => items[(i + items.length) % items.length]?.focus();
+    if (e.key === "Escape") {
+      e.preventDefault();
+      close(true);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      focusAt(index + 1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      focusAt(index - 1);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      focusAt(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      focusAt(items.length - 1);
+    } else if (e.key === "Tab") {
+      close(false);
+    }
+  };
+
   const choose = (id: string) => {
-    setOpen(false);
+    close(true);
     setActiveSpace(id);
   };
 
@@ -90,6 +122,7 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
       key={key}
       role="menuitemradio"
       aria-checked={selected}
+      tabIndex={-1}
       onClick={onClick}
       style={{
         display: "flex",
@@ -116,7 +149,14 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
   return (
     <div ref={rootRef} style={{ position: "relative", padding: "8px 12px 0" }} data-testid="space-switcher">
       <button
+        ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !open) {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
         aria-haspopup="menu"
         aria-expanded={open}
         title="Switch space"
@@ -144,8 +184,10 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
 
       {open && (
         <div
+          ref={menuRef}
           role="menu"
           aria-label="Spaces"
+          onKeyDown={onMenuKeyDown}
           style={{
             position: "absolute",
             left: 12,
@@ -185,6 +227,7 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
           <div style={{ height: 1, background: "var(--border)", margin: "6px 4px" }} />
           <button
             role="menuitem"
+            tabIndex={-1}
             onClick={() => {
               setOpen(false);
               navigate("/settings/spaces");

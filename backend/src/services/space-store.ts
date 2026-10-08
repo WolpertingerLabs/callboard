@@ -320,6 +320,12 @@ export function applySpacePatch(space: Space, patch: SpacePatch): Space {
     else if (patch.instructions.trim()) next.instructions = patch.instructions.trim();
     else clear("instructions");
   }
+  if (patch.folderRulesAdd !== undefined) {
+    const added = validStringList(patch.folderRulesAdd, "folderRulesAdd", SPACE_FOLDER_RULES_MAX);
+    const rules = [...new Set([...(next.folderRules ?? []), ...added])];
+    if (rules.length > SPACE_FOLDER_RULES_MAX) throw new SpaceValidationError(`folderRules is limited to ${SPACE_FOLDER_RULES_MAX} entries`);
+    if (rules.length) next.folderRules = rules;
+  }
   if (patch.removeRecentDirectory !== undefined) {
     if (typeof patch.removeRecentDirectory !== "string") throw new SpaceValidationError("removeRecentDirectory must be a path");
     const remaining = (next.defaults?.recentDirectories ?? []).filter((d) => d.path !== patch.removeRecentDirectory);

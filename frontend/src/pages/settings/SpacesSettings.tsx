@@ -11,9 +11,12 @@ import {
   listCustomSkills,
   listSpaces,
   moveToSpace,
+  reorderSpaces,
+  SpaceNotEmptyError,
   updateSpace,
   type SpaceFolderGroup,
 } from "../../api";
+import { useMetadataVersion } from "../../contexts/SessionContext";
 import { useSpaces } from "../../contexts/SpaceContext";
 import { SpaceDot, spaceLabel } from "../../components/SpaceChip";
 import ModalOverlay from "../../components/ModalOverlay";
@@ -34,12 +37,26 @@ const primaryButton: React.CSSProperties = { ...buttonStyle, background: "var(--
 const iconButton: React.CSSProperties = { ...buttonStyle, padding: "4px 6px", display: "inline-flex", alignItems: "center" };
 
 /**
+ * A text field bound to a server value. It follows the server while the user
+ * has not edited it — so a value another tab (or the new-chat panel) saved
+ * after this page loaded shows up — and holds the user's draft once they have.
+ * `reset` marks the draft as saved, re-joining it to the server value.
+ */
+function useServerField(serverValue: string): [string, (value: string) => void, () => void] {
+  const [state, setState] = useState({ value: serverValue, base: serverValue, dirty: false });
+  if (state.base !== serverValue && !state.dirty) setState({ value: serverValue, base: serverValue, dirty: false });
+  return [state.value, (value: string) => setState((s) => ({ ...s, value, dirty: true })), () => setState((s) => ({ ...s, dirty: false }))];
+}
+
+/**
  * Settings → Spaces. Every write is a delta (`PATCH` with only the field that
- * changed), so two tabs editing different fields of one space never undo each
- * other — the normal shape over remote access.
+ * changed, or an add/remove operation for a list), so two tabs editing one
+ * space never undo each other — the normal shape over remote access. The
+ * page reloads on every metadata bump, which every space write triggers.
  */
 export default function SpacesSettings() {
   const { refreshSpaces: refreshSwitcher } = useSpaces();
+  const metadataVersion = useMetadataVersion();
   const [spaces, setSpaces] = useState<SpaceListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string>(DEFAULT_SPACE_ID);
   const [newName, setNewName] = useState("");
@@ -59,6 +76,13 @@ export default function SpacesSettings() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Another tab, an agent, or this tab's own new-chat panel changed a space.
+  useEffect(() => {
+    if (metadataVersion === 0) return;
+    const timer = setTimeout(() => void load(), 400);
+    return () => clearTimeout(timer);
+  }, [metadataVersion, load]);
 
   /** Apply one delta, then refresh this page and the sidebar switcher. */
   const patch = async (id: string, delta: SpacePatch) => {
@@ -93,13 +117,20 @@ export default function SpacesSettings() {
   };
 
   const live = spaces.filter((s) => !s.archived);
+  /** Swap with a neighbour — one request carrying the whole new order, so a failure cannot leave a tie. */
   const move = async (space: SpaceListItem, dir: -1 | 1) => {
     const index = live.findIndex((s) => s.id === space.id);
-    const other = live[index + dir];
-    if (!other) return;
-    // Swap the two orders — two single-field deltas.
-    await patch(space.id, { order: other.order });
-    await patch(other.id, { order: space.order });
+    if (!live[index + dir]) return;
+    const ids = live.map((s) => s.id);
+    [ids[index], ids[index + dir]] = [ids[index + dir], ids[index]];
+    setError(null);
+    try {
+      await reorderSpaces(ids);
+      await load();
+      await refreshSwitcher();
+    } catch (err) {
+      setError(errorMessage(err, "Failed to reorder spaces"));
+    }
   };
 
   const selected = spaces.find((s) => s.id === selectedId) ?? spaces[0];
@@ -122,57 +153,69 @@ export default function SpacesSettings() {
           </p>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 12 }}>
-          {spaces.map((space) => (
-            <div
-              key={space.id}
-              onClick={() => setSelectedId(space.id)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 10px",
-                borderRadius: 6,
-                border: `1px solid ${space.id === selected?.id ? "var(--accent)" : "var(--border)"}`,
-                background: space.id === selected?.id ? "var(--accent-light)" : "var(--surface)",
-                cursor: "pointer",
-                opacity: space.archived ? 0.6 : 1,
-              }}
-            >
-              <SpaceDot space={space} />
-              <span style={{ fontSize: 14, fontWeight: 600 }}>{spaceLabel(space)}</span>
-              {space.archived && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>archived</span>}
-              <span style={{ flex: 1 }} />
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                {space.chatCount} chat{space.chatCount === 1 ? "" : "s"}
-              </span>
-              {!space.archived && (
-                <>
-                  <button
-                    aria-label={`Move ${space.name} up`}
-                    style={iconButton}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void move(space, -1);
-                    }}
-                  >
-                    <ArrowUp size={12} />
-                  </button>
-                  <button
-                    aria-label={`Move ${space.name} down`}
-                    style={iconButton}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void move(space, 1);
-                    }}
-                  >
-                    <ArrowDown size={12} />
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
+        <ul aria-label="Spaces" style={{ listStyle: "none", padding: 0, margin: "0 0 12px", display: "flex", flexDirection: "column", gap: 4 }}>
+          {spaces.map((space) => {
+            const isSelected = space.id === selected?.id;
+            const liveIndex = live.findIndex((s) => s.id === space.id);
+            return (
+              <li
+                key={space.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  borderRadius: 6,
+                  border: `1px solid ${isSelected ? "var(--accent)" : "var(--border)"}`,
+                  background: isSelected ? "var(--accent-light)" : "var(--surface)",
+                  opacity: space.archived ? 0.6 : 1,
+                }}
+              >
+                <button
+                  aria-pressed={isSelected}
+                  aria-label={`Edit ${space.name}`}
+                  onClick={() => setSelectedId(space.id)}
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 10px",
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text)",
+                    textAlign: "left",
+                    cursor: "pointer",
+                    minWidth: 0,
+                  }}
+                >
+                  <SpaceDot space={space} />
+                  <span style={{ fontSize: 14, fontWeight: 600 }}>{spaceLabel(space)}</span>
+                  {space.archived && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>archived</span>}
+                  <span style={{ flex: 1 }} />
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    {space.chatCount} chat{space.chatCount === 1 ? "" : "s"}
+                    {space.jobCount ? ` · ${space.jobCount} job${space.jobCount === 1 ? "" : "s"}` : ""}
+                  </span>
+                </button>
+                {!space.archived && (
+                  <span style={{ display: "flex", gap: 4, paddingRight: 8 }}>
+                    <button aria-label={`Move ${space.name} up`} style={iconButton} disabled={liveIndex <= 0} onClick={() => void move(space, -1)}>
+                      <ArrowUp size={12} />
+                    </button>
+                    <button
+                      aria-label={`Move ${space.name} down`}
+                      style={iconButton}
+                      disabled={liveIndex === live.length - 1}
+                      onClick={() => void move(space, 1)}
+                    >
+                      <ArrowDown size={12} />
+                    </button>
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
 
         <div style={{ display: "flex", gap: 8 }}>
           <input
@@ -245,45 +288,58 @@ function SpaceEditor({
   onPatch: (id: string, delta: SpacePatch) => Promise<boolean>;
   onDelete: () => void;
 }) {
-  const [name, setName] = useState(space.name);
-  const [emoji, setEmoji] = useState(space.emoji ?? "");
-  const [rules, setRules] = useState((space.folderRules ?? []).join("\n"));
-  const [instructions, setInstructions] = useState(space.instructions ?? "");
-  const [plugins, setPlugins] = useState<AppPlugin[]>([]);
-  const [skills, setSkills] = useState<CustomSkillListItem[]>([]);
-  const isDefault = space.id === DEFAULT_SPACE_ID;
   const defaults = space.defaults ?? {};
+  const [name, setName, savedName] = useServerField(space.name);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [emoji, setEmoji, savedEmoji] = useServerField(space.emoji ?? "");
+  const [rules, setRules, savedRules] = useServerField((space.folderRules ?? []).join("\n"));
+  const [instructions, setInstructions, savedInstructions] = useServerField(space.instructions ?? "");
+  const [model, setModel, savedModel] = useServerField(defaults.model ?? "");
+  const [plugins, setPlugins] = useState<AppPlugin[] | null>(null);
+  const [skills, setSkills] = useState<CustomSkillListItem[] | null>(null);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+  const isDefault = space.id === DEFAULT_SPACE_ID;
 
   useEffect(() => {
     getAppPlugins()
       .then((data) => setPlugins(data.plugins.filter((p) => p.enabled)))
-      .catch(() => {});
+      .catch((err) => setScopeError(errorMessage(err, "Failed to load plugins")));
     listCustomSkills()
       .then(setSkills)
-      .catch(() => {});
+      .catch((err) => setScopeError(errorMessage(err, "Failed to load custom skills")));
   }, []);
 
-  const scopeList = (key: "plugins" | "skills", all: string[]) => {
+  const saveName = async () => {
+    if (!name.trim()) {
+      setNameError("A space needs a name.");
+      return;
+    }
+    setNameError(null);
+    if (name.trim() === space.name) return savedName();
+    if (await onPatch(space.id, { name: name.trim() })) savedName();
+  };
+
+  /**
+   * One checklist's handlers. Turning the restriction on sends the full list
+   * that is loaded right now — the only whole-list write, and only possible
+   * once the list HAS loaded (an empty list would lock everything out).
+   * Ticking one entry is an add/remove delta against the server's copy.
+   */
+  const scopeList = (key: "plugins" | "skills", all: string[] | null) => {
     const allowed = space.agentScope?.[key];
     return {
+      loaded: all !== null,
       restricted: allowed !== undefined,
       has: (id: string) => allowed === undefined || allowed.includes(id),
-      toggleRestricted: (on: boolean) => void onPatch(space.id, { agentScope: { [key]: on ? all : null } }),
-      toggle: (id: string, on: boolean) => {
-        const current = allowed ?? all;
-        const next = on ? [...new Set([...current, id])] : current.filter((x) => x !== id);
-        void onPatch(space.id, { agentScope: { [key]: next } });
+      toggleRestricted: (on: boolean) => {
+        if (on && all === null) return;
+        void onPatch(space.id, { agentScope: { [key]: on ? all : null } });
       },
+      toggle: (id: string, on: boolean) => void onPatch(space.id, on ? { agentScopeAdd: { [key]: [id] } } : { agentScopeRemove: { [key]: [id] } }),
     };
   };
-  const pluginScope = scopeList(
-    "plugins",
-    plugins.map((p) => p.id),
-  );
-  const skillScope = scopeList(
-    "skills",
-    skills.map((s) => s.name),
-  );
+  const pluginScope = scopeList("plugins", plugins?.map((p) => p.id) ?? null);
+  const skillScope = scopeList("skills", skills?.map((s) => s.name) ?? null);
 
   return (
     <div style={sectionStyle}>
@@ -310,7 +366,10 @@ function SpaceEditor({
             id="space-emoji"
             value={emoji}
             onChange={(e) => setEmoji(e.target.value)}
-            onBlur={() => emoji !== (space.emoji ?? "") && void onPatch(space.id, { emoji: emoji.trim() || null })}
+            onBlur={async () => {
+              if (emoji === (space.emoji ?? "")) return savedEmoji();
+              if (await onPatch(space.id, { emoji: emoji.trim() || null })) savedEmoji();
+            }}
             style={inputStyle}
           />
         </div>
@@ -321,10 +380,20 @@ function SpaceEditor({
           <input
             id="space-name"
             value={name}
-            onChange={(e) => setName(e.target.value)}
-            onBlur={() => name.trim() && name !== space.name && void onPatch(space.id, { name: name.trim() })}
+            aria-invalid={nameError ? true : undefined}
+            aria-describedby={nameError ? "space-name-error" : undefined}
+            onChange={(e) => {
+              setName(e.target.value);
+              if (nameError && e.target.value.trim()) setNameError(null);
+            }}
+            onBlur={() => void saveName()}
             style={inputStyle}
           />
+          {nameError && (
+            <div id="space-name-error" role="alert" style={{ ...helpStyle, color: "var(--danger)" }}>
+              {nameError}
+            </div>
+          )}
         </div>
       </div>
 
@@ -366,12 +435,13 @@ function SpaceEditor({
             id="space-rules"
             value={rules}
             onChange={(e) => setRules(e.target.value)}
-            onBlur={() => {
+            onBlur={async () => {
               const next = rules
                 .split("\n")
                 .map((r) => r.trim())
                 .filter(Boolean);
-              if (next.join("\n") !== (space.folderRules ?? []).join("\n")) void onPatch(space.id, { folderRules: next.length ? next : null });
+              if (next.join("\n") === (space.folderRules ?? []).join("\n")) return savedRules();
+              if (await onPatch(space.id, { folderRules: next.length ? next : null })) savedRules();
             }}
             rows={3}
             placeholder={"~/work/**\n/srv/client-repo"}
@@ -403,7 +473,9 @@ function SpaceEditor({
         <button
           style={buttonStyle}
           disabled={instructions === (space.instructions ?? "")}
-          onClick={() => void onPatch(space.id, { instructions: instructions.trim() || null })}
+          onClick={async () => {
+            if (await onPatch(space.id, { instructions: instructions.trim() || null })) savedInstructions();
+          }}
         >
           Save instructions
         </button>
@@ -411,7 +483,7 @@ function SpaceEditor({
 
       <h4 style={{ margin: "16px 0 6px", fontSize: 14 }}>New-chat defaults</h4>
       <div style={{ ...helpStyle, marginBottom: 8 }}>
-        Remembered from the last chat started in this space, and editable here. Anything unset falls back to this browser’s own defaults.
+        Saved when you change them while starting a chat in this space, or here. Anything unset falls back to this browser’s own defaults.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
         <div>
@@ -438,8 +510,12 @@ function SpaceEditor({
           </label>
           <input
             id="space-model"
-            defaultValue={defaults.model ?? ""}
-            onBlur={(e) => e.target.value !== (defaults.model ?? "") && void onPatch(space.id, { defaults: { model: e.target.value.trim() || null } })}
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            onBlur={async () => {
+              if (model === (defaults.model ?? "")) return savedModel();
+              if (await onPatch(space.id, { defaults: { model: model.trim() || null } })) savedModel();
+            }}
             placeholder="(browser default)"
             style={inputStyle}
           />
@@ -465,7 +541,7 @@ function SpaceEditor({
           </button>
         </div>
       ) : (
-        <div style={{ ...helpStyle, marginBottom: 8 }}>Permissions: browser default (set by starting a chat in this space).</div>
+        <div style={{ ...helpStyle, marginBottom: 8 }}>Permissions: browser default (saved here when you change them while starting a chat in this space).</div>
       )}
       {(defaults.recentDirectories?.length ?? 0) > 0 && (
         <div style={{ ...helpStyle, marginBottom: 8 }}>
@@ -483,19 +559,26 @@ function SpaceEditor({
       <div style={{ ...helpStyle, marginBottom: 8 }}>
         Limit which plugins (and their MCP servers) and custom skills load in this space’s chats — e.g. keep a work Slack connection out of Personal.
       </div>
+      {scopeError && (
+        <p role="alert" style={{ color: "var(--danger)", fontSize: 13 }}>
+          {scopeError}
+        </p>
+      )}
       <ScopeChecklist
         label="Plugins & MCP servers"
+        loaded={pluginScope.loaded}
         restricted={pluginScope.restricted}
         onRestrict={pluginScope.toggleRestricted}
-        items={plugins.map((p) => ({ id: p.id, label: p.manifest.name }))}
+        items={(plugins ?? []).map((p) => ({ id: p.id, label: p.manifest.name }))}
         has={pluginScope.has}
         onToggle={pluginScope.toggle}
       />
       <ScopeChecklist
         label="Custom skills"
+        loaded={skillScope.loaded}
         restricted={skillScope.restricted}
         onRestrict={skillScope.toggleRestricted}
-        items={skills.map((s) => ({ id: s.name, label: s.name }))}
+        items={(skills ?? []).map((s) => ({ id: s.name, label: s.name }))}
         has={skillScope.has}
         onToggle={skillScope.toggle}
       />
@@ -505,6 +588,7 @@ function SpaceEditor({
 
 function ScopeChecklist({
   label,
+  loaded,
   restricted,
   onRestrict,
   items,
@@ -512,6 +596,8 @@ function ScopeChecklist({
   onToggle,
 }: {
   label: string;
+  /** False until the installed list has loaded: restricting before then would save an empty allowlist. */
+  loaded: boolean;
   restricted: boolean;
   onRestrict: (on: boolean) => void;
   items: { id: string; label: string }[];
@@ -521,10 +607,12 @@ function ScopeChecklist({
   return (
     <div style={{ marginBottom: 10 }}>
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600 }}>
-        <input type="checkbox" checked={restricted} onChange={(e) => onRestrict(e.target.checked)} />
+        <input type="checkbox" checked={restricted} disabled={!loaded} onChange={(e) => onRestrict(e.target.checked)} />
         Only selected {label.toLowerCase()}
+        {!loaded && <span style={{ fontWeight: 400, color: "var(--text-muted)" }}> (loading…)</span>}
       </label>
       {restricted &&
+        loaded &&
         (items.length === 0 ? (
           <div style={{ ...helpStyle, marginLeft: 24 }}>None installed.</div>
         ) : (
@@ -541,6 +629,12 @@ function ScopeChecklist({
   );
 }
 
+/**
+ * Delete a space. Offers the "move to" picker whenever the space holds
+ * anything — chats or jobs — and also after the server answers 409 (another
+ * tab may have filed something there since the counts were read), so the
+ * dialog can never refuse without offering the way through.
+ */
 function DeleteSpaceDialog({
   space,
   spaces,
@@ -554,14 +648,32 @@ function DeleteSpaceDialog({
 }) {
   const [moveTo, setMoveTo] = useState(DEFAULT_SPACE_ID);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [counts, setCounts] = useState({ chats: space.chatCount, jobs: space.jobCount ?? 0 });
+  const holdsSomething = counts.chats > 0 || counts.jobs > 0;
+
   const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
     try {
-      await deleteSpace(space.id, space.chatCount > 0 ? moveTo : undefined);
+      await deleteSpace(space.id, holdsSomething ? moveTo : undefined);
       onDeleted();
     } catch (err) {
-      setError(errorMessage(err, "Failed to delete space"));
+      const conflict = err instanceof SpaceNotEmptyError ? err : null;
+      if (conflict) setCounts({ chats: conflict.chatCount, jobs: conflict.jobCount });
+      setError(conflict ? "Something was added to this space meanwhile — choose where it should go." : errorMessage(err, "Failed to delete space"));
+      setBusy(false);
     }
   };
+
+  const what = [
+    counts.chats ? `${counts.chats} chat${counts.chats === 1 ? "" : "s"}` : "",
+    counts.jobs ? `${counts.jobs} job${counts.jobs === 1 ? "" : "s"}` : "",
+  ]
+    .filter(Boolean)
+    .join(" and ");
+
   return (
     <ModalOverlay onClose={onClose}>
       <div
@@ -570,11 +682,9 @@ function DeleteSpaceDialog({
         style={{ background: "var(--bg)", borderRadius: 8, padding: 20, width: "90%", maxWidth: 400, border: "1px solid var(--border)" }}
       >
         <h2 style={{ margin: "0 0 10px", fontSize: 17 }}>Delete “{space.name}”?</h2>
-        {space.chatCount > 0 ? (
+        {holdsSomething ? (
           <>
-            <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
-              It holds {space.chatCount} chat{space.chatCount === 1 ? "" : "s"}. Move them to:
-            </p>
+            <p style={{ fontSize: 13, color: "var(--text-muted)" }}>It holds {what}. Move them to:</p>
             <select aria-label="Move chats to" value={moveTo} onChange={(e) => setMoveTo(e.target.value)} style={inputStyle}>
               {spaces.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -584,7 +694,7 @@ function DeleteSpaceDialog({
             </select>
           </>
         ) : (
-          <p style={{ fontSize: 13, color: "var(--text-muted)" }}>It holds no chats.</p>
+          <p style={{ fontSize: 13, color: "var(--text-muted)" }}>It holds no chats or jobs.</p>
         )}
         {error && (
           <p role="alert" style={{ color: "var(--danger)", fontSize: 13 }}>
@@ -592,14 +702,15 @@ function DeleteSpaceDialog({
           </p>
         )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-          <button style={buttonStyle} onClick={onClose}>
+          <button style={buttonStyle} onClick={onClose} disabled={busy}>
             Cancel
           </button>
           <button
             style={{ ...primaryButton, background: "var(--danger)", border: "1px solid var(--danger)", color: "var(--text-on-danger)" }}
             onClick={() => void run()}
+            disabled={busy}
           >
-            Delete space
+            {busy ? "Deleting…" : "Delete space"}
           </button>
         </div>
       </div>
@@ -637,8 +748,8 @@ function SortChatsSheet({ spaces, onClose, onDone }: { spaces: SpaceListItem[]; 
         if (remember[group.displayFolder]) rulesBySpace.set(target, [...(rulesBySpace.get(target) ?? []), group.displayFolder]);
       }
       for (const [spaceId, folders] of rulesBySpace) {
-        const existing = spaces.find((s) => s.id === spaceId)?.folderRules ?? [];
-        await updateSpace(spaceId, { folderRules: [...new Set([...existing, ...folders])] });
+        // A delta: rules another tab added meanwhile are kept.
+        await updateSpace(spaceId, { folderRulesAdd: folders });
       }
       onDone();
     } catch (err) {

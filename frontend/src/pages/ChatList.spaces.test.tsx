@@ -12,6 +12,7 @@ import type { CardSummary, Chat, ChatListResponse } from "../api";
 import { listChats, listCards, getDrafts, searchChatContents, moveToSpace } from "../api";
 import type { SpaceListItem } from "shared/types/space.js";
 import { SpaceContext, type SpaceContextValue } from "../contexts/SpaceContext";
+import { makeSpaceContext } from "../testing/spaceContext";
 import ChatList from "./ChatList";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -75,18 +76,7 @@ function blockedCard(id: string, spaceId: string): CardSummary {
 }
 
 function renderWith(value: Partial<SpaceContextValue>) {
-  const ctx: SpaceContextValue = {
-    enabled: true,
-    spaces: SPACES,
-    activeSpaceId: "sp_work",
-    activeSpace: SPACES[1],
-    setActiveSpace: vi.fn(),
-    refreshSpaces: async () => {},
-    spaceById: (id) => SPACES.find((s) => s.id === id),
-    notice: null,
-    dismissNotice: () => {},
-    ...value,
-  };
+  const ctx = makeSpaceContext(SPACES, { activeSpaceId: "sp_work", setActiveSpace: vi.fn(), ...value });
   render(
     <MemoryRouter>
       <SpaceContext.Provider value={ctx}>
@@ -166,5 +156,40 @@ describe("ChatList in a space", () => {
     fireEvent.click(await screen.findByText("Move to space…"));
     fireEvent.click(await screen.findByRole("button", { name: /General/ }));
     await waitFor(() => expect(moveToSpace).toHaveBeenCalledWith("default", { chatIds: ["work chat"] }));
+  });
+
+  it("starts a new space from one page, however deep the last one was paged", async () => {
+    vi.mocked(listChats).mockImplementation(async () => ({ ...listResponse([makeChat("work chat", "sp_work")]), hasMore: true, windowRows: 20 }));
+    const ui = (activeSpaceId: string) => (
+      <MemoryRouter>
+        <SpaceContext.Provider value={makeSpaceContext(SPACES, { activeSpaceId })}>
+          <ChatList onRefresh={() => {}} />
+        </SpaceContext.Provider>
+      </MemoryRouter>
+    );
+    const view = render(ui("sp_work"));
+    fireEvent.click(await screen.findByText("Load next page"));
+    await waitFor(() => expect(vi.mocked(listChats).mock.calls.some((args) => args[1] === 20)).toBe(true));
+    vi.mocked(listChats).mockClear();
+    view.rerender(ui("default"));
+    await waitFor(() => expect(spacesRequested()).toContain("default"));
+    const first = vi.mocked(listChats).mock.calls.find((args) => args[9] === "default")!;
+    expect(first[0]).toBe(20);
+  });
+
+  it("in the All view, a row's own space is not offered as a move target", async () => {
+    vi.mocked(listChats).mockResolvedValue(listResponse([makeChat("work chat", "sp_work")]));
+    renderWith({ activeSpaceId: "all", activeSpace: undefined });
+    const title = await screen.findByText("work chat");
+    let row: HTMLElement | null = title;
+    while (row && !screen.queryByTitle("Chat actions")) {
+      fireEvent.mouseEnter(row);
+      row = row.parentElement;
+    }
+    fireEvent.click(screen.getByTitle("Chat actions"));
+    fireEvent.click(await screen.findByText("Move to space…"));
+    const dialog = await screen.findByRole("dialog", { name: "Move to space" });
+    expect(dialog.textContent).toContain("General");
+    expect(dialog.textContent).not.toContain("Work");
   });
 });

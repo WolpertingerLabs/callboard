@@ -122,6 +122,8 @@ export interface SpacePatch {
    * an entry another tab (or the server itself) added in the meantime.
    */
   removeRecentDirectory?: string;
+  /** Append folder rules (deduped) without replacing the list another tab may have edited. */
+  folderRulesAdd?: string[];
   /** Add entries to a restricted list. A list that is unrestricted stays so (it already admits everything). */
   agentScopeAdd?: { plugins?: string[]; skills?: string[] };
   /** Remove entries from a restricted list. An unrestricted list is left unrestricted. */

@@ -30,7 +30,7 @@ export default function SpaceChip({ space, title }: { space: SpaceListItem | und
   if (!space) return null;
   return (
     <span
-      title={title ?? `In space: ${space.name}`}
+      title={title ?? `In space: ${space.name}${space.archived ? " (archived)" : ""}`}
       data-testid="space-chip"
       style={{
         display: "inline-flex",
@@ -51,6 +51,7 @@ export default function SpaceChip({ space, title }: { space: SpaceListItem | und
       }}
     >
       {spaceLabel(space)}
+      {space.archived && <span style={{ fontStyle: "italic" }}> · archived</span>}
     </span>
   );
 }

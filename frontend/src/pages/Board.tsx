@@ -165,7 +165,7 @@ export default function Board() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const metadataVersion = useMetadataVersion();
-  const { enabled: spacesEnabled, activeSpaceId, spaces, spaceById } = useSpaces();
+  const { enabled: spacesEnabled, activeSpaceId, spaces, archivedSpaces, spaceById } = useSpaces();
   /** The tree(s) the "Move to space…" dialog is moving, or null when closed. */
   const [moveTarget, setMoveTarget] = useState<{ chatIds: string[]; subject: string } | null>(null);
   /**
@@ -173,7 +173,7 @@ export default function Board() {
    * in Needs you, or any card in the "All" view.
    */
   const chipFor = (card: CardSummary) => {
-    if (!spacesEnabled || spaces.length < 2) return undefined;
+    if (!spacesEnabled || spaces.length + archivedSpaces.length < 2) return undefined;
     const spaceId = card.spaceId ?? DEFAULT_SPACE_ID;
     return activeSpaceId === ALL_SPACES || spaceId !== activeSpaceId ? spaceById(spaceId) : undefined;
   };

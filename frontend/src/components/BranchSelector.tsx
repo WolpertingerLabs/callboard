@@ -5,6 +5,7 @@ import { worktreeDirName } from "shared/types/index.js";
 import { getWorktreeByDefault, saveWorktreeByDefault } from "../utils/localStorage";
 import { useSpaces } from "../contexts/SpaceContext";
 import { updateSpace } from "../api";
+import { spaceHasOwnDefaults } from "../utils/spaceDefaults";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /**
@@ -108,7 +109,8 @@ interface BranchListing {
 
 export default function BranchSelector({ folder, spaceId, currentBranch, isDetached, onChange }: BranchSelectorProps) {
   const { enabled: spacesEnabled, spaceById } = useSpaces();
-  const spaceWorktreeDefault = spaceById(spaceId)?.defaults?.worktreeByDefault;
+  const space = spaceById(spaceId);
+  const spaceWorktreeDefault = space?.defaults?.worktreeByDefault;
   /**
    * The branch this checkout is on, or `null` for "it is on none".
    *
@@ -222,13 +224,18 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
   }, [baseBranch, newBranch, useWorktree, propagateChange, branchError, onChange]);
 
   // Persist worktree preference — the toggle is the only sticky control here.
+  // The toggle is a user choice, so it is written to the space it was made
+  // in. The browser-wide value is the fallback for spaces WITHOUT defaults,
+  // so it is only written when this space has none — a worktree preference
+  // set in one space must not leak into General.
+  const ownDefaults = spacesEnabled && spaceHasOwnDefaults(space);
   const handleWorktreeChange = useCallback(
     (checked: boolean) => {
       setUseWorktree(checked);
-      saveWorktreeByDefault(checked);
+      if (!ownDefaults) saveWorktreeByDefault(checked);
       if (spacesEnabled && spaceId) void updateSpace(spaceId, { defaults: { worktreeByDefault: checked } }).catch(() => {});
     },
-    [spacesEnabled, spaceId],
+    [spacesEnabled, spaceId, ownDefaults],
   );
 
   const isMobile = useIsMobile();

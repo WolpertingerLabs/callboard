@@ -9,7 +9,8 @@ import { MemoryRouter } from "react-router-dom";
 import type { CardSummary } from "../api";
 import { listCards } from "../api";
 import type { SpaceListItem } from "shared/types/space.js";
-import { SpaceContext, type SpaceContextValue } from "../contexts/SpaceContext";
+import { SpaceContext } from "../contexts/SpaceContext";
+import { makeSpaceContext } from "../testing/spaceContext";
 import Board from "./Board";
 
 vi.mock("../api", async (importOriginal) => ({
@@ -53,17 +54,7 @@ afterEach(() => {
 describe("Board in a space", () => {
   it("asks for the active space plus other spaces' blocked cards, and chips the foreign ones", async () => {
     vi.mocked(listCards).mockResolvedValue({ cards: [card("own card", "sp_work", "idle"), card("general blocked", "default", "needs_you")] });
-    const ctx: SpaceContextValue = {
-      enabled: true,
-      spaces: SPACES,
-      activeSpaceId: "sp_work",
-      activeSpace: SPACES[1],
-      setActiveSpace: () => {},
-      refreshSpaces: async () => {},
-      spaceById: (id) => SPACES.find((s) => s.id === id),
-      notice: null,
-      dismissNotice: () => {},
-    };
+    const ctx = makeSpaceContext(SPACES, { activeSpaceId: "sp_work" });
     render(
       <MemoryRouter>
         <SpaceContext.Provider value={ctx}>

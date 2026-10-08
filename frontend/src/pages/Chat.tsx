@@ -101,6 +101,7 @@ import { sameActivityPayload } from "../utils/activitySnapshot";
 import { errorMessage } from "../utils/errorMessage";
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES } from "shared/types/space.js";
+import { spaceHasOwnRecents } from "../utils/spaceDefaults";
 
 /**
  * How long an opened draft's images get to come back before the composer stops
@@ -290,7 +291,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const newChatRole = routeState.chatRole;
   // The space a new chat goes into: the panel's pick, else this tab's active
   // space ("all" picks none, and the server's folder rules decide).
-  const { enabled: spacesEnabled, activeSpaceId } = useSpaces();
+  const { enabled: spacesEnabled, activeSpaceId, spaceById } = useSpaces();
   const newChatSpaceId = routeState.spaceId ?? (spacesEnabled && activeSpaceId && activeSpaceId !== ALL_SPACES ? activeSpaceId : undefined);
 
   // When navigating from /chat/new → /chat/:id, the in-flight messages are
@@ -1727,7 +1728,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // and not fixed by the reset. `BranchSelector` guards its own listing fetch
     // the same way and for the same reason.
     let current = true;
-    getNewChatInfo(folder)
+    getNewChatInfo(folder, newChatSpaceId)
       .then((data) => {
         if (!current) return;
         setInfo(data);
@@ -1748,7 +1749,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return () => {
       current = false;
     };
-  }, [folder, id]);
+  }, [folder, id, newChatSpaceId]);
 
   // Load existing chat data (only when id is available)
   useEffect(() => {
@@ -2257,7 +2258,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
         if (!id) {
           // NEW CHAT MODE: POST to /api/chats/new/message
-          addRecentDirectory(folder);
+          // The browser's recent list is only the fallback for spaces without
+          // their own; the server records the folder on the chat's space.
+          if (!spaceHasOwnRecents(spaceById(newChatSpaceId))) addRecentDirectory(folder);
 
           // Stamp the compose screen this send came from before the first
           // await, so `chat_created` can tell "still waiting here" from "moved
@@ -2493,6 +2496,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatModel,
       newChatRequireCompletion,
       newChatSpaceId,
+      spaceById,
       pendingModel,
       pendingEffort,
       chatProvider,
@@ -3851,6 +3855,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // New-chat mode has no id, and the chip popover still has to resolve
           // — the folder is what the lookup actually keys on server-side.
           folder={folder}
+          // A new chat's command bodies follow its space's agent scope.
+          space={id ? undefined : newChatSpaceId}
           activePlugins={activePluginIds}
           menuItems={
             !streaming && composerProvider

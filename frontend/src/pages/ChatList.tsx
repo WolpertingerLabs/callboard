@@ -119,11 +119,11 @@ export default function ChatList({
   onShowClaudeModal,
 }: ChatListProps) {
   const { activeSessions, metadataVersion } = useSessionContext();
-  const { enabled: spacesEnabled, activeSpaceId, spaces, spaceById } = useSpaces();
+  const { enabled: spacesEnabled, activeSpaceId, spaces, archivedSpaces, spaceById } = useSpaces();
   /** Search across every space, not just the active one. Session-only. */
   const [searchAllSpaces, setSearchAllSpaces] = useState(false);
   /** Chats whose tree the "Move to space…" dialog is moving, or null when closed. */
-  const [moveTarget, setMoveTarget] = useState<{ chatIds: string[]; subject: string } | null>(null);
+  const [moveTarget, setMoveTarget] = useState<{ chatIds: string[]; subject: string; currentSpaceId?: string } | null>(null);
   const isMobile = useIsMobile();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -328,7 +328,11 @@ export default function ChatList({
    * sends the unscoped request older daemons understand.
    */
   const listSpace = spacesEnabled ? (searching && searchAllSpaces ? ALL_SPACES : activeSpaceId) : undefined;
-  const showSpaceChips = listSpace === ALL_SPACES && spaces.length > 1;
+  // Archived spaces count: their chats still turn up in the All view, and a
+  // row there without a chip would read as General's.
+  const showSpaceChips = listSpace === ALL_SPACES && spaces.length + archivedSpaces.length > 1;
+  /** The space the loaded page count belongs to; a new space starts from one page. */
+  const pagedSpaceRef = useRef(listSpace);
 
   /**
    * Fold pending pin changes into a response, and retire the ones it already
@@ -372,6 +376,12 @@ export default function ChatList({
     // When advanced filters or content search are active, fetch all chats
     // to avoid missing matches due to pagination
     const shouldFetchAll = anyFilterActive || bookmarked;
+    // Rows loaded with "Load next page" belong to the space they were loaded
+    // in: 200 rows deep in one space is no reason to fetch 200 of the next.
+    if (pagedSpaceRef.current !== listSpace) {
+      pagedSpaceRef.current = listSpace;
+      loadedCountRef.current = 20;
+    }
     const limit = shouldFetchAll ? 9999 : Math.max(20, loadedCountRef.current);
     // When triggered chats are hidden, tell the API to exclude them so we
     // always get LIMIT real chats back (not LIMIT minus triggered ones)
@@ -1624,7 +1634,13 @@ export default function ChatList({
           spaceChipFor={showSpaceChips ? (chat) => spaceById(chat.spaceId) : undefined}
           onMoveToSpace={
             spacesEnabled && spaces.length > 1
-              ? (chat) => setMoveTarget({ chatIds: [chat.id], subject: `“${chatMeta(chat).title || chatMeta(chat).preview || "This chat"}”`.slice(0, 80) })
+              ? (chat) =>
+                  setMoveTarget({
+                    chatIds: [chat.id],
+                    subject: `“${chatMeta(chat).title || chatMeta(chat).preview || "This chat"}”`.slice(0, 80),
+                    // The row says where it is even in the All view.
+                    currentSpaceId: chat.spaceId,
+                  })
               : undefined
           }
         />
@@ -1721,7 +1737,7 @@ export default function ChatList({
         <MoveToSpaceModal
           chatIds={moveTarget.chatIds}
           subject={moveTarget.subject}
-          currentSpaceId={listSpace === ALL_SPACES ? undefined : listSpace}
+          currentSpaceId={moveTarget.currentSpaceId ?? (listSpace === ALL_SPACES ? undefined : listSpace)}
           onClose={() => setMoveTarget(null)}
           onMoved={() => {
             exitSelection();

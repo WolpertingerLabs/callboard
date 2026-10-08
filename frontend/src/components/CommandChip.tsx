@@ -11,6 +11,8 @@ interface Props {
   chatId?: string;
   /** Folder to resolve against when there is no chat id (the `/chat/new` case). */
   folder?: string;
+  /** With `folder` (no chat yet): the space the new chat goes into. */
+  space?: string;
   /** Per-directory plugin ids the user has switched on. */
   activePlugins?: string[];
   /** Description already known to the composer (plugin listings carry one). */
@@ -31,7 +33,7 @@ interface Props {
  * Click-away and Escape only close it; neither is a way to lose the command by
  * accident.
  */
-export default function CommandChip({ name, chatId, folder, activePlugins, description, onRemove, onOpenChange }: Props) {
+export default function CommandChip({ name, chatId, folder, space, activePlugins, description, onRemove, onOpenChange }: Props) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<SlashCommandContent | null>(null);
   const [loading, setLoading] = useState(false);
@@ -58,7 +60,7 @@ export default function CommandChip({ name, chatId, folder, activePlugins, descr
     requested.current = true;
     setLoading(true);
     setError(false);
-    getSlashCommandContent(name, { chatId, folder, activePlugins })
+    getSlashCommandContent(name, { chatId, folder, space, activePlugins })
       .then(setDetail)
       .catch(() => {
         // Let the next open try again rather than latching the failure.
@@ -66,7 +68,7 @@ export default function CommandChip({ name, chatId, folder, activePlugins, descr
         setError(true);
       })
       .finally(() => setLoading(false));
-  }, [open, setOpenState, chatId, folder, activePlugins, name]);
+  }, [open, setOpenState, chatId, folder, space, activePlugins, name]);
 
   // Escape closes the popover without removing the chip.
   useEffect(() => {

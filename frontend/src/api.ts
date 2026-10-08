@@ -493,16 +493,38 @@ export async function createSpace(body: SpacePatch & { name: string }): Promise<
   return requestField("/spaces", "space", { method: "POST", json: body, error: "Failed to create space" });
 }
 
+/** Rewrite the switcher order in one request (listed ids first, in this order). */
+export async function reorderSpaces(ids: string[]): Promise<void> {
+  await requestVoid("/spaces/order", { method: "POST", json: { ids }, error: "Failed to reorder spaces" });
+}
+
 /** A delta: only the keys present change, `null` clears. */
 export async function updateSpace(id: string, patch: SpacePatch): Promise<SpaceListItem> {
   return requestField(`/spaces/${seg(id)}`, "space", { method: "PATCH", json: patch, error: "Failed to update space" });
 }
 
-/** Refused with "space_not_empty" unless `moveTo` names where its chats go. */
+/** A DELETE refused because the space still holds chats or jobs; carries the server's counts. */
+export class SpaceNotEmptyError extends Error {
+  constructor(
+    message: string,
+    readonly chatCount: number,
+    readonly jobCount: number,
+  ) {
+    super(message);
+  }
+}
+
+/** Refused with {@link SpaceNotEmptyError} unless `moveTo` names where its chats and jobs go. */
 export async function deleteSpace(id: string, moveTo?: string): Promise<{ movedChats: number; movedJobs: number }> {
   const params = new URLSearchParams();
   if (moveTo) params.set("moveTo", moveTo);
-  return request(`/spaces/${seg(id)}${query(params)}`, { method: "DELETE", error: "Failed to delete space" });
+  const res = await fetch(`${BASE}/spaces/${seg(id)}${query(params)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({}));
+    throw new SpaceNotEmptyError(errorBodyMessage(body, "This space is not empty"), Number(body.chatCount) || 0, Number(body.jobCount) || 0);
+  }
+  await assertOk(res, "Failed to delete space");
+  return res.json();
 }
 
 export interface SpaceMoveResult {
@@ -516,8 +538,9 @@ export async function moveToSpace(spaceId: string, target: { chatIds?: string[];
   return request(`/spaces/${seg(spaceId)}/move`, { method: "POST", json: target, error: "Failed to move to space" });
 }
 
-export async function getChatSpace(chatId: string): Promise<string> {
-  return requestField(`/spaces/of/${seg(chatId)}`, "spaceId", { error: "Failed to resolve the chat's space" });
+/** The space a chat's tree lives in; `archived` when that space is archived. */
+export async function getChatSpace(chatId: string): Promise<{ spaceId: string; archived?: boolean }> {
+  return request(`/spaces/of/${seg(chatId)}`, { error: "Failed to resolve the chat's space" });
 }
 
 export interface SpaceFolderGroup {
@@ -558,8 +581,11 @@ export interface NewChatInfo {
   appPlugins?: AppPluginsData;
 }
 
-export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
-  return request(`/chats/new/info?folder=${encodeURIComponent(folder)}`, { error: "Failed to get chat info" });
+/** `space` is the space the chat is going into: its agent scope filters `slash_commands`. */
+export async function getNewChatInfo(folder: string, space?: string): Promise<NewChatInfo> {
+  const params = new URLSearchParams({ folder });
+  if (space) params.set("space", space);
+  return request(`/chats/new/info?${params}`, { error: "Failed to get chat info" });
 }
 
 /**
@@ -854,6 +880,8 @@ export interface SlashCommandScope {
   folder?: string;
   /** Per-directory plugin ids the user has switched on. */
   activePlugins?: string[];
+  /** For a new chat (folder only): the space it is going into, whose agent scope applies. */
+  space?: string;
 }
 
 /**
@@ -873,10 +901,10 @@ export interface SlashCommandScope {
 const slashCommandContentCache = new Map<string, SlashCommandContent>();
 
 export async function getSlashCommandContent(name: string, scope: SlashCommandScope): Promise<SlashCommandContent> {
-  const { chatId, folder, activePlugins = [] } = scope;
+  const { chatId, folder, activePlugins = [], space } = scope;
   if (!chatId && !folder) throw new Error("Cannot resolve a command without a chat or a folder");
 
-  const key = `${chatId ?? `folder:${folder}`}|${activePlugins.join(",")}|${name}`;
+  const key = `${chatId ?? `folder:${folder}|space:${space ?? ""}`}|${activePlugins.join(",")}|${name}`;
   const cached = slashCommandContentCache.get(key);
   if (cached) return cached;
 
@@ -888,6 +916,7 @@ export async function getSlashCommandContent(name: string, scope: SlashCommandSc
   } else {
     path = "/chats/new/slash-commands/content";
     params.set("folder", folder!);
+    if (space) params.set("space", space);
   }
 
   const data = await request<SlashCommandContent>(`${path}?${params.toString()}`, { error: "Failed to get command content" });

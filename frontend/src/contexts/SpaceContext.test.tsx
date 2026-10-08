@@ -85,7 +85,7 @@ describe("SpaceProvider", () => {
   });
 
   it("switches to a chat's space when the chat is opened, and says so", async () => {
-    vi.mocked(getChatSpace).mockResolvedValue("sp_work");
+    vi.mocked(getChatSpace).mockResolvedValue({ spaceId: "sp_work" });
     renderAt("/");
     await waitFor(() => expect(listSpaces).toHaveBeenCalled());
     await act(async () => navigateTo("/chat/abc"));
@@ -98,20 +98,49 @@ describe("SpaceProvider", () => {
     // The live bug: the list arriving re-ran the effect, cancelled the answer
     // and — the chat already marked as asked — never asked again.
     let resolveSpaces: (v: typeof SPACES) => void = () => {};
-    let resolveChat: (v: string) => void = () => {};
+    let resolveChat: (v: { spaceId: string }) => void = () => {};
     vi.mocked(listSpaces).mockReturnValue(new Promise((r) => (resolveSpaces = r)));
     vi.mocked(getChatSpace).mockReturnValue(new Promise((r) => (resolveChat = r)));
     renderAt("/chat/abc");
     await act(async () => resolveSpaces(SPACES));
-    await act(async () => resolveChat("sp_work"));
+    await act(async () => resolveChat({ spaceId: "sp_work" }));
     await waitFor(() => expect(screen.getByTestId("active").textContent).toBe("sp_work"));
   });
 
   it("never switches away from the All view", async () => {
-    vi.mocked(getChatSpace).mockResolvedValue("sp_work");
+    vi.mocked(getChatSpace).mockResolvedValue({ spaceId: "sp_work" });
     renderAt("/?space=all");
     await act(async () => navigateTo("/chat/abc?space=all"));
     expect(getChatSpace).not.toHaveBeenCalled();
     expect(screen.getByTestId("active").textContent).toBe("all");
+  });
+
+  it("Back does not revert a space switch: the tab keeps its space and the URL is corrected", async () => {
+    renderAt("/?space=default");
+    vi.mocked(getChatSpace).mockResolvedValue({ spaceId: "sp_work" });
+    await waitFor(() => expect(listSpaces).toHaveBeenCalled());
+    await act(async () => navigateTo("/chat/abc"));
+    await waitFor(() => expect(screen.getByTestId("active").textContent).toBe("sp_work"));
+    // Back to the page that was left at ?space=default.
+    await act(async () => nav.to(-1 as unknown as string));
+    await waitFor(() => expect(screen.getByTestId("search").textContent).toBe("?space=sp_work"));
+    expect(screen.getByTestId("active").textContent).toBe("sp_work");
+  });
+
+  it("a forward link carrying ?space= still switches", async () => {
+    renderAt("/?space=default");
+    await waitFor(() => expect(listSpaces).toHaveBeenCalled());
+    await act(async () => navigateTo("/?space=sp_work"));
+    expect(screen.getByTestId("active").textContent).toBe("sp_work");
+  });
+
+  it("opens a chat from an archived space in place, with a notice that names it", async () => {
+    vi.mocked(listSpaces).mockResolvedValue([...SPACES, { id: "sp_old", name: "Old", order: 2, chatCount: 0, createdAt: "", updatedAt: "", archived: true }]);
+    vi.mocked(getChatSpace).mockResolvedValue({ spaceId: "sp_old", archived: true });
+    renderAt("/?space=default");
+    await waitFor(() => expect(listSpaces).toHaveBeenCalled());
+    await act(async () => navigateTo("/chat/abc"));
+    await waitFor(() => expect(screen.getByTestId("notice").textContent).toContain("archived space “Old”"));
+    expect(screen.getByTestId("active").textContent).toBe("default");
   });
 });
