@@ -94,6 +94,19 @@ describe("SpaceProvider", () => {
     expect(screen.getByTestId("notice").textContent).toContain("Work");
   });
 
+  it("still switches when the space list lands while the lookup is in flight", async () => {
+    // The live bug: the list arriving re-ran the effect, cancelled the answer
+    // and — the chat already marked as asked — never asked again.
+    let resolveSpaces: (v: typeof SPACES) => void = () => {};
+    let resolveChat: (v: string) => void = () => {};
+    vi.mocked(listSpaces).mockReturnValue(new Promise((r) => (resolveSpaces = r)));
+    vi.mocked(getChatSpace).mockReturnValue(new Promise((r) => (resolveChat = r)));
+    renderAt("/chat/abc");
+    await act(async () => resolveSpaces(SPACES));
+    await act(async () => resolveChat("sp_work"));
+    await waitFor(() => expect(screen.getByTestId("active").textContent).toBe("sp_work"));
+  });
+
   it("never switches away from the All view", async () => {
     vi.mocked(getChatSpace).mockResolvedValue("sp_work");
     renderAt("/?space=all");

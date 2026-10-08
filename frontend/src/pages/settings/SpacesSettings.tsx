@@ -190,8 +190,12 @@ export default function SpacesSettings() {
             placeholder="New space name (e.g. Work)"
             style={inputStyle}
           />
-          <button style={primaryButton} onClick={() => void create()} disabled={!newName.trim()}>
-            <Plus size={14} style={{ verticalAlign: "middle" }} /> Add
+          <button
+            style={{ ...primaryButton, display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", flexShrink: 0 }}
+            onClick={() => void create()}
+            disabled={!newName.trim()}
+          >
+            <Plus size={14} /> Add
           </button>
         </div>
         {live.length > 1 && (

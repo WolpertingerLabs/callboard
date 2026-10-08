@@ -89,7 +89,8 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
   const [spaces, setSpaces] = useState<SpaceListItem[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [activeSpaceId, setActiveSpaceId] = useState<string>(() => initialSpaceId(location.search));
-  const [notice, setNotice] = useState<string | null>(null);
+  /** The space this tab was auto-switched to, while its notice is showing. Named at render, once the list has it. */
+  const [switchedTo, setSwitchedTo] = useState<string | null>(null);
 
   const refreshSpaces = useCallback(async () => {
     try {
@@ -158,34 +159,45 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
 
   // Opening a chat that lives in another space switches to it. Asked once per
   // chat id; the "all" view already shows everything, so it never switches.
-  const checkedChatRef = useRef<string | null>(null);
+  //
+  // Keyed on the chat id ALONE, reading everything else through a ref: the
+  // space list typically lands while this request is in flight, and an effect
+  // that also depended on it would cancel the answer and — having already
+  // marked the chat as asked — never ask again.
+  const latest = useRef({ activeSpaceId, spaces, setActiveSpace });
+  useEffect(() => {
+    latest.current = { activeSpaceId, spaces, setActiveSpace };
+  });
   const chatId = matchPath("/chat/:id", location.pathname)?.params.id;
   useEffect(() => {
-    if (!chatId || chatId === "new" || checkedChatRef.current === chatId) return;
-    checkedChatRef.current = chatId;
-    if (activeSpaceId === ALL_SPACES) return;
+    if (!chatId || chatId === "new") return;
+    if (latest.current.activeSpaceId === ALL_SPACES) return;
     let cancelled = false;
     getChatSpace(chatId)
       .then((spaceId) => {
-        if (cancelled || spaceId === activeSpaceId) return;
-        const target = spaces.find((s) => s.id === spaceId);
-        setActiveSpace(spaceId);
-        setNotice(`Switched to ${target?.emoji ? `${target.emoji} ` : ""}${target?.name ?? "another space"} — this chat lives there.`);
+        const now = latest.current;
+        if (cancelled || spaceId === now.activeSpaceId || now.activeSpaceId === ALL_SPACES) return;
+        now.setActiveSpace(spaceId);
+        setSwitchedTo(spaceId);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [chatId, activeSpaceId, spaces, setActiveSpace]);
+  }, [chatId]);
 
   useEffect(() => {
-    if (!notice) return;
-    const timer = setTimeout(() => setNotice(null), 5000);
+    if (!switchedTo) return;
+    const timer = setTimeout(() => setSwitchedTo(null), 5000);
     return () => clearTimeout(timer);
-  }, [notice]);
+  }, [switchedTo]);
 
   const value = useMemo<SpaceContextValue>(() => {
     const byId = new Map(spaces.map((s) => [s.id, s]));
+    const target = switchedTo ? byId.get(switchedTo) : undefined;
+    const notice = switchedTo
+      ? `Switched to ${target ? `${target.emoji ? `${target.emoji} ` : ""}${target.name}` : "this chat’s space"} — this chat lives there.`
+      : null;
     return {
       enabled: true,
       spaces,
@@ -195,9 +207,9 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
       refreshSpaces,
       spaceById: (id) => (id ? byId.get(id) : undefined),
       notice,
-      dismissNotice: () => setNotice(null),
+      dismissNotice: () => setSwitchedTo(null),
     };
-  }, [spaces, activeSpaceId, setActiveSpace, refreshSpaces, notice]);
+  }, [spaces, activeSpaceId, setActiveSpace, refreshSpaces, switchedTo]);
 
   return <SpaceContext.Provider value={value}>{children}</SpaceContext.Provider>;
 }

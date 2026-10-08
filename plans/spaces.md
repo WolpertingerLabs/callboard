@@ -5,7 +5,13 @@ _Research_). Every chat belongs to exactly one environment. The sidebar, board,
 search and the agent-facing chat tools show only the active environment, so work
 in one area doesn't get mixed up with the others.
 
-Status: **In progress** (2026-10-08). Originally drafted as "environments"; renamed — see Decisions. Where the text below says "environment", read "space".
+Status: **Phases 1–3 implemented** (2026-10-08); phase 4 is out of scope. Originally drafted as "environments"; renamed — see Decisions. Where the text below says "environment", read "space".
+
+Implementation notes (where the build differs from the text below):
+- Instructions reach Claude Code and Codex, the two harnesses that accept a system-prompt append. ACP, Cline and pi chats don't receive them, the same as the existing explicit-completion instruction.
+- `agentScope.skills` builds a scoped copy of the custom-skills plugin for Claude Code (`~/.callboard/custom-skills-scoped/`). pi still loads every custom skill.
+- A job's space is `defaults.spaceId` on the definition, set with the job tools or JSON import. There is no UI field for it yet.
+- `GET /api/spaces` counts chats only with `includeCounts=true`, because the count is a pass over the whole corpus and the switcher refetches the list on every metadata change. Needs-you counts come from the sidebar's existing card index instead.
 
 ---
 
