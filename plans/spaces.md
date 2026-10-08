@@ -12,6 +12,10 @@ Implementation notes (where the build differs from the text below):
 - `agentScope.skills` builds a scoped copy of the custom-skills plugin for Claude Code (`~/.callboard/custom-skills-scoped/`). pi still loads every custom skill.
 - A job's space is `defaults.spaceId` on the definition, set with the job tools or JSON import. There is no UI field for it yet.
 - `GET /api/spaces` counts chats only with `includeCounts=true`, because the count is a pass over the whole corpus and the switcher refetches the list on every metadata change. Needs-you counts come from the sidebar's existing card index instead.
+- Chats started by agent triggers, cron actions and agent consults (`agent-executor.ts`, and `agent-tools.ts` when there is no parent chat) carry no space of their own. They are top-level and parentless, so they resolve through the folder rules and otherwise land in General. That is deliberate: an agent's workspace folder is the natural thing to write a folder rule for, and it keeps automation out of the user's working spaces by default.
+- "In a space" has one definition everywhere, including `DELETE`: a chat is in the space its tree's root resolves to. A member record whose own stamp disagrees with its root (a half-finished move) is not counted and never blocks a delete; the delete clears it.
+- Single-chat lookups (`spaceOfChat`, `GET /api/spaces/of/:chatId`, the per-turn and per-tool-call space read) never use `getChat(chatId)`, whose miss path scans every record. They read by session id and fall back to one snapshot pass, which is memoised. Bulk moves take one snapshot and write through the records they hold. Measured on 10k chats with a 500-chat move where every record's id differs from its session id: 9.4 s before, 90 ms after.
+- List edits from the client are deltas (`removeRecentDirectory`, `agentScopeAdd`/`agentScopeRemove`), and reordering is one request (`POST /api/spaces/order`).
 
 ---
 

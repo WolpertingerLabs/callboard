@@ -111,13 +111,29 @@ export interface SpacePatch {
   /** Merged key by key; a `null` value clears that default. */
   defaults?: { [K in keyof SpaceDefaults]?: SpaceDefaults[K] | null } | null;
   instructions?: string | null;
+  /**
+   * Replaces a list wholesale — for turning a restriction on or off. Editing
+   * a single entry uses the add/remove deltas below instead.
+   */
   agentScope?: { plugins?: string[] | null; skills?: string[] | null } | null;
+  /**
+   * Delta operations, applied to the server's CURRENT copy rather than to a
+   * list the client read earlier — so a tab removing one entry can never drop
+   * an entry another tab (or the server itself) added in the meantime.
+   */
+  removeRecentDirectory?: string;
+  /** Add entries to a restricted list. A list that is unrestricted stays so (it already admits everything). */
+  agentScopeAdd?: { plugins?: string[]; skills?: string[] };
+  /** Remove entries from a restricted list. An unrestricted list is left unrestricted. */
+  agentScopeRemove?: { plugins?: string[]; skills?: string[] };
 }
 
 /** One row of `GET /api/spaces`. */
 export interface SpaceListItem extends Space {
-  /** Stored chats whose tree resolves to this space. */
+  /** Stored chats whose tree resolves to this space. 0 unless counts were requested. */
   chatCount: number;
+  /** Job definitions whose `defaults.spaceId` names this space. Only with counts. */
+  jobCount?: number;
 }
 
 export interface SpaceListResponse {

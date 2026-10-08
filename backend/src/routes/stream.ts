@@ -3,7 +3,6 @@ import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
-import { touchSpaceRecentDirectory } from "../services/space-store.js";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest } from "../services/claude.js";
 import { pendingRequestRequiresHuman } from "../services/pending-requests.js";
 import { controlOriginError } from "../auth.js";
@@ -325,17 +324,11 @@ streamRouter.post("/new/message", async (req, res) => {
           ...(typeof chatRole === "string" && chatRole && { chatRole }),
         }),
       ...(typeof spaceId === "string" && spaceId && { spaceId: spaceId.slice(0, 128) }),
+      // Recorded on the space the chat actually lands in (a parent's tree can
+      // overrule the requested one) — keyed on the folder the user picked, not
+      // the worktree it may have become.
+      ...(typeof spaceId === "string" && spaceId && { recordRecentFolder: folder }),
     });
-    // The space's own recent-folder list, so the new-chat panel can offer this
-    // folder first next time someone starts a chat in the same space. Keyed on
-    // the folder the user picked, not the worktree it may have become.
-    if (typeof spaceId === "string" && spaceId) {
-      try {
-        touchSpaceRecentDirectory(spaceId, folder);
-      } catch (err: any) {
-        log.warn(`Could not record recent folder for space ${spaceId}: ${err.message}`);
-      }
-    }
 
     // Opens the stream and answers the client's capability handshake with a
     // server_info frame. The returned session isn't consulted yet — every

@@ -86,11 +86,11 @@ export function resolveParentage(parentChatId: string): LineageMeta | null {
  * id. Reads through chatFileService per step — fine for one-off calls, not
  * for hot paths, which use buildLineageIndex over a snapshot instead.
  */
-export function walkToRootId(chatId: string): string {
+export function walkToRootId(chatId: string, read: (id: string) => Chat | null = (id) => chatFileService.getChat(id)): string {
   let currentId = chatId;
   const visited = new Set<string>([chatId]);
   for (let depth = 0; depth < MAX_LINEAGE_DEPTH; depth++) {
-    const chat = chatFileService.getChat(currentId);
+    const chat = read(currentId);
     if (!chat) return currentId;
     const meta = parseMeta(chat);
     const parentId = getParentChatId(meta);
@@ -98,9 +98,9 @@ export function walkToRootId(chatId: string): string {
     // this node was born into — present on job-step chats that never had a
     // parent pointer, absent on true roots.
     const stampedRoot = typeof meta.rootChatId === "string" && meta.rootChatId ? meta.rootChatId : undefined;
-    const stampedExists = stampedRoot !== undefined && chatFileService.getChat(stampedRoot) !== null;
+    const stampedExists = stampedRoot !== undefined && read(stampedRoot) !== null;
     if (!parentId || visited.has(parentId)) return stampedExists ? stampedRoot! : chat.id;
-    const parent = chatFileService.getChat(parentId);
+    const parent = read(parentId);
     if (!parent) return stampedExists ? stampedRoot! : chat.id;
     visited.add(parentId);
     currentId = parent.id;
@@ -330,7 +330,9 @@ export function paginateTreeRows<T>(
  * GET /api/chats.
  */
 export function buildChatTree(chatId: string): ChatTreeResponse | null {
-  const allChats = withNativeCodexChats(chatFileService.getAllChats());
+  const storedChats = chatFileService.getAllChats();
+  const storedIds = new Set(storedChats.map((chat) => chat.id));
+  const allChats = withNativeCodexChats(storedChats);
   const target = allChats.find((chat) => chat.id === chatId || chat.session_id === chatId);
   if (!target) return null;
   const byId = new Map<string, Chat>();
@@ -366,8 +368,7 @@ export function buildChatTree(chatId: string): ChatTreeResponse | null {
   // The tree's space is its root's — see space-membership.ts. A root with no
   // stored record (a native Codex parent discovery inferred) has no stamp to
   // read, so it resolves through the folder rules like any discovered session.
-  const storedRoot = chatFileService.getChat(root.id);
-  const spaceId = storedRoot ? normalizeSpaceId(spaceStampOf(parseMeta(storedRoot))) : spaceForFolder(root.folder);
+  const spaceId = storedIds.has(root.id) ? normalizeSpaceId(spaceStampOf(parseMeta(root))) : spaceForFolder(root.folder);
 
   return {
     spaceId,

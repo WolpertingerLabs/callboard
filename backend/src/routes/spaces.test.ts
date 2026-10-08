@@ -5,7 +5,7 @@
  * exception to separation, cross-space "needs you".
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
@@ -185,5 +185,117 @@ describe("GET /api/cards?space=", () => {
 
     const all = await cards("get", "/", { query: {} as any });
     expect(all.body.cards).toHaveLength(3);
+  });
+});
+
+describe("DELETE /api/spaces/:id — one definition of empty", () => {
+  const writeJob = (id: string, spaceId: string) => {
+    const dir = join(tmpRoot, "jobs", "definitions");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `${id}.json`),
+      JSON.stringify({
+        id,
+        name: id,
+        version: 1,
+        defaults: { spaceId },
+        steps: [{ id: "s", type: "notify", message: "x" }],
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }),
+    );
+  };
+
+  it("counts jobs: a space holding only a job is refused without moveTo, with both counts", async () => {
+    const work = (await spaces("post", "/", { body: { name: "Work" } })).body.space;
+    writeJob("only-job", work.id);
+    const refused = await spaces("delete", "/:id", { params: { id: work.id } });
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ chatCount: 0, jobCount: 1 });
+    const listed = await spaces("get", "/", { query: { includeCounts: "true" } as any });
+    expect(listed.body.spaces.find((s: any) => s.id === work.id)).toMatchObject({ chatCount: 0, jobCount: 1 });
+    const ok = await spaces("delete", "/:id", { params: { id: work.id }, query: { moveTo: "default" } as any });
+    expect(ok.status).toBe(200);
+    expect(ok.body.movedJobs).toBe(1);
+    rmSync(join(tmpRoot, "jobs", "definitions", "only-job.json"), { force: true });
+  });
+
+  it("a stale member stamp does not block — no view shows it there — and is cleaned up", async () => {
+    const work = (await spaces("post", "/", { body: { name: "Work" } })).body.space;
+    const root = makeChat("/repos/x");
+    const child = makeChat("/repos/x", { parentChatId: root.id, rootChatId: root.id, spaceId: work.id });
+    const res = await spaces("delete", "/:id", { params: { id: work.id } });
+    expect(res.status).toBe(200);
+    expect(stampOf(child.id)).toBeUndefined();
+  });
+
+  it("refuses an archived moveTo, as every other move does", async () => {
+    const work = (await spaces("post", "/", { body: { name: "Work" } })).body.space;
+    const old = (await spaces("post", "/", { body: { name: "Old" } })).body.space;
+    await spaces("patch", "/:id", { params: { id: old.id }, body: { archived: true } });
+    const chat = makeChat("/repos/x", { spaceId: work.id });
+    const res = await spaces("delete", "/:id", { params: { id: work.id }, query: { moveTo: old.id } as any });
+    expect(res.status).toBe(400);
+    expect(stampOf(chat.id)).toBe(work.id);
+  });
+});
+
+describe("spaces: counts are opt-in, order is one request, list edits are deltas", () => {
+  it("PATCH and GET /:id compute no counts unless asked", async () => {
+    const work = (await spaces("post", "/", { body: { name: "Work" } })).body.space;
+    makeChat("/repos/x", { spaceId: work.id });
+    expect((await spaces("patch", "/:id", { params: { id: work.id }, body: { emoji: "💼" } })).body.space.chatCount).toBe(0);
+    expect((await spaces("get", "/:id", { params: { id: work.id } })).body.space.chatCount).toBe(0);
+    expect((await spaces("get", "/:id", { params: { id: work.id }, query: { includeCounts: "true" } as any })).body.space.chatCount).toBe(1);
+  });
+
+  it("POST /order rewrites the order in one request", async () => {
+    const a = (await spaces("post", "/", { body: { name: "A" } })).body.space;
+    const b = (await spaces("post", "/", { body: { name: "B" } })).body.space;
+    await spaces("post", "/order", { body: { ids: ["default", b.id, a.id] } });
+    const names = (await spaces("get", "/")).body.spaces.map((s: any) => s.name);
+    expect(names).toEqual(["General", "B", "A"]);
+  });
+
+  it("removeRecentDirectory and agentScope deltas edit the server's current copy", async () => {
+    const work = (await spaces("post", "/", { body: { name: "Work" } })).body.space;
+    await spaces("patch", "/:id", {
+      params: { id: work.id },
+      body: { defaults: { recentDirectories: [{ path: "/a" }, { path: "/b" }] }, agentScope: { plugins: ["p1", "p2"] } },
+    });
+    // Another writer added /c since this tab loaded the list.
+    await spaces("patch", "/:id", { params: { id: work.id }, body: { defaults: { recentDirectories: [{ path: "/c" }, { path: "/a" }, { path: "/b" }] } } });
+    await spaces("patch", "/:id", {
+      params: { id: work.id },
+      body: { removeRecentDirectory: "/a", agentScopeRemove: { plugins: ["p1"] }, agentScopeAdd: { plugins: ["p3"] } },
+    });
+    const space = (await spaces("get", "/:id", { params: { id: work.id } })).body.space;
+    expect(space.defaults.recentDirectories.map((d: any) => d.path)).toEqual(["/c", "/b"]);
+    expect(space.agentScope.plugins).toEqual(["p2", "p3"]);
+  });
+
+  it("GET /of/:chatId flags an archived space", async () => {
+    const old = (await spaces("post", "/", { body: { name: "Old" } })).body.space;
+    const chat = makeChat("/repos/x", { spaceId: old.id });
+    await spaces("patch", "/:id", { params: { id: old.id }, body: { archived: true } });
+    const res = await spaces("get", "/of/:chatId", { params: { chatId: chat.id } as any });
+    expect(res.body).toMatchObject({ spaceId: old.id, archived: true });
+  });
+});
+
+describe("PATCH /api/cards/:id with spaceId is all-or-nothing", () => {
+  it("a field that fails validation leaves the tree where it was", async () => {
+    const work = (await spaces("post", "/", { body: { name: "Work" } })).body.space;
+    const root = makeChat("/repos/x");
+    const res = await cards("patch", "/:id", { params: { id: root.id }, body: { spaceId: work.id, title: "   " } });
+    expect(res.status).toBe(400);
+    expect(stampOf(root.id)).toBeUndefined();
+  });
+
+  it("an unknown target space is a 400 before anything is written", async () => {
+    const root = makeChat("/repos/x");
+    const res = await cards("patch", "/:id", { params: { id: root.id }, body: { spaceId: "sp_nope", title: "New title" } });
+    expect(res.status).toBe(400);
+    expect(JSON.parse(chatFileService.getChat(root.id)!.metadata).card).toBeUndefined();
   });
 });

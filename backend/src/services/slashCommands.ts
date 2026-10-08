@@ -5,6 +5,7 @@ import { getEnabledAppPlugins, readAppPluginCommandContent } from "./app-plugins
 import { customSkillsService, CUSTOM_SKILLS_PLUGIN_NAME } from "./custom-skills-service.js";
 import { DATA_DIR, ensureDataDir } from "../utils/paths.js";
 import type { SlashCommandContent } from "shared/types/slashCommand.js";
+import type { SpaceAgentScope } from "shared/types/space.js";
 
 const SLASH_COMMANDS_FILE = join(DATA_DIR, "slash-commands.json");
 
@@ -77,7 +78,7 @@ export function setSlashCommandsForDirectory(directory: string, commands: string
  * against CLI-reported commands) so they show up in autocomplete immediately,
  * before any session has run in the directory.
  */
-export function getCommandsAndPluginsForDirectory(directory: string): DirectoryCommandsAndPlugins {
+export function getCommandsAndPluginsForDirectory(directory: string, scope?: SpaceAgentScope): DirectoryCommandsAndPlugins {
   const slashCommands = new Set(getSlashCommandsForDirectory(directory));
   const plugins = getPluginsForDirectory(directory);
 
@@ -90,8 +91,36 @@ export function getCommandsAndPluginsForDirectory(directory: string): DirectoryC
   }
 
   return {
-    slashCommands: Array.from(slashCommands),
+    slashCommands: Array.from(slashCommands).filter(commandAllowedByScope(scope)),
     plugins,
+  };
+}
+
+/**
+ * A predicate over command names that drops what a space's agent scope keeps
+ * out of its chats: commands of an app plugin the scope does not name, and
+ * `callboard:<skill>` for a custom skill it does not name. The directory's
+ * command list is learned from CLI sessions and shared by every space working
+ * in that folder, so without this a command from a plugin one space excludes
+ * would still be offered there because another space's session reported it.
+ * No scope (or no list for a kind) admits everything.
+ */
+export function commandAllowedByScope(scope?: SpaceAgentScope): (name: string) => boolean {
+  if (!scope?.plugins && !scope?.skills) return () => true;
+  const excluded = new Set<string>();
+  if (scope.plugins) {
+    try {
+      for (const plugin of getEnabledAppPlugins()) if (!scope.plugins.includes(plugin.id)) excluded.add(plugin.manifest.name);
+    } catch {
+      /* unreadable plugin data: exclude nothing rather than everything */
+    }
+  }
+  return (name) => {
+    const colon = name.indexOf(":");
+    if (colon <= 0) return true;
+    const namespace = name.slice(0, colon);
+    if (namespace === CUSTOM_SKILLS_PLUGIN_NAME) return !scope.skills || scope.skills.includes(name.slice(colon + 1));
+    return !excluded.has(namespace);
   };
 }
 
@@ -122,11 +151,14 @@ export type { SlashCommandContent };
  * name that is merely unknown is a harness built-in: real, invocable, and with
  * no body Callboard can read.
  */
-export function resolveSlashCommandContent(directory: string, name: string, activePluginIds: string[] = []): SlashCommandContent | null {
+export function resolveSlashCommandContent(directory: string, name: string, activePluginIds: string[] = [], scope?: SpaceAgentScope): SlashCommandContent | null {
   // Gate before anything resolves a path: a command name is never a path.
   if (!name || /[/\\\0]/.test(name) || name.includes("..")) return null;
 
   const builtin: SlashCommandContent = { name, source: "builtin", description: null, content: null };
+  // Out of this space's scope: the chat will not have it loaded, so there is
+  // no body to show for it here.
+  if (!commandAllowedByScope(scope)(name)) return builtin;
 
   const colon = name.indexOf(":");
   if (colon <= 0) return builtin;
@@ -171,8 +203,8 @@ export function resolveSlashCommandContent(directory: string, name: string, acti
 /**
  * Get all available commands for a directory including plugin commands (for compatibility)
  */
-export function getAllCommandsForDirectory(directory: string, activePluginIds: string[] = []): string[] {
-  const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(directory);
+export function getAllCommandsForDirectory(directory: string, activePluginIds: string[] = [], scope?: SpaceAgentScope): string[] {
+  const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(directory, scope);
 
   // Start with regular slash commands, using a Set to avoid duplicates
   const allCommands = new Set(slashCommands);

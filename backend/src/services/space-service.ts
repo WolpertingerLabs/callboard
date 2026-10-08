@@ -5,10 +5,20 @@
  *
  * The listing-side rule (root's stamp wins, discovered sessions through folder
  * rules) lives in space-membership.ts; this module answers the same question
- * for one chat at a time, through chatFileService, for the write paths and the
- * session builder — never for a hot listing path.
+ * for one chat at a time, for the write paths and the session builder.
+ *
+ * ## Never `chatFileService.getChat(chatId)` in here
+ *
+ * Records are filed by SESSION id. `getChat` with a chat id that is not also
+ * the session id (forks, route-created chats, refiled records, deleted
+ * parents, temp `new-…` ids) misses the direct read and falls back to a
+ * readdir + stat of every record: ~10–27 ms on a 10k-chat data dir, on a
+ * synchronous handler. Measured before this rule: moving 500 such chats
+ * blocked the daemon for 9.4 s. Single lookups go through {@link readChat}
+ * (direct read, memoised chat-id → session-id, one snapshot pass on a miss);
+ * bulk operations take one snapshot and write through the record they hold.
  */
-import { DEFAULT_SPACE_ID, SPACE_INSTRUCTIONS_MAX, type Space } from "shared";
+import { DEFAULT_SPACE_ID, SPACE_INSTRUCTIONS_MAX, type Chat, type Space } from "shared";
 import { chatFileService } from "./chat-file-service.js";
 import { buildLineageIndex, walkToRootId } from "./chat-lineage.js";
 import { listChatsSnapshot } from "./chats-snapshot.js";
@@ -25,17 +35,63 @@ import { createLogger } from "../utils/logger.js";
 const log = createLogger("space-service");
 
 export class SpaceMoveError extends Error {}
+/** A move named a chat that does not exist — a 404, not a server fault. */
+export class SpaceMoveNotFoundError extends SpaceMoveError {}
+
+/** chat id → session id, learned from snapshot hits, so a later read is direct. */
+const sessionIdOf = new Map<string, string>();
+/** Ids no snapshot could find, and when — so a missing id is not rescanned per call. */
+const missingSince = new Map<string, number>();
+const MISSING_TTL_MS = 30_000;
+const MEMO_MAX = 20_000;
+
+/**
+ * One stored record by CHAT id, cheaply: a direct read by the memoised (or
+ * identical) session id, else one snapshot pass, whose answer is memoised.
+ * A miss is remembered for {@link MISSING_TTL_MS}. See the header for why
+ * this exists instead of `getChat`.
+ */
+export function readChat(id: string): Chat | null {
+  const direct = chatFileService.getChatBySessionId(sessionIdOf.get(id) ?? id);
+  if (direct && direct.id === id) return direct;
+  const missedAt = missingSince.get(id);
+  if (missedAt !== undefined && Date.now() - missedAt < MISSING_TTL_MS) return null;
+  if (sessionIdOf.size > MEMO_MAX) sessionIdOf.clear();
+  if (missingSince.size > MEMO_MAX) missingSince.clear();
+  // One full pass, memoising EVERY refiled id it sees, so the next lookup of
+  // any of them — this chat's parent, the next chat opened — is direct.
+  let found: Chat | null = null;
+  for (const chat of listChatsSnapshot()) {
+    if (chat.id !== chat.session_id) sessionIdOf.set(chat.id, chat.session_id);
+    if (chat.id === id) found = chat;
+  }
+  if (found) {
+    missingSince.delete(id);
+    return { ...found };
+  }
+  missingSince.set(id, Date.now());
+  return null;
+}
+
+/** Test seam. */
+export function _resetSpaceReadMemo(): void {
+  sessionIdOf.clear();
+  missingSince.clear();
+}
 
 /**
  * The space a chat's tree lives in, for one chat by id. Reads the root's
  * record; a chat with no record at all (discovered, never opened) resolves
- * through the folder rules.
+ * through the folder rules — unless `opts.ifUnknown` is given, which is
+ * returned instead without touching discovery (the session builder's hot path,
+ * where the chat's own record simply has not been written yet).
  */
-export function spaceOfChat(chatId: string | undefined | null): string {
-  if (!chatId) return DEFAULT_SPACE_ID;
-  const rootId = walkToRootId(chatId);
-  const root = chatFileService.getChat(rootId) ?? chatFileService.getChat(chatId);
+export function spaceOfChat(chatId: string | undefined | null, opts: { ifUnknown?: string } = {}): string {
+  if (!chatId) return opts.ifUnknown ?? DEFAULT_SPACE_ID;
+  const rootId = walkToRootId(chatId, readChat);
+  const root = readChat(rootId) ?? (rootId === chatId ? null : readChat(chatId));
   if (root) return normalizeSpaceId(spaceStampOf(parseChatMetadata(root.metadata)));
+  if (opts.ifUnknown !== undefined) return opts.ifUnknown;
   const discovered = findChat(chatId, false);
   return spaceForFolder(discovered?.folder);
 }
@@ -47,7 +103,7 @@ export function spaceOfChat(chatId: string | undefined | null): string {
  */
 export function resolveNewChatSpace(opts: { treeRootId?: string; requested?: string; folder?: string }): string {
   if (opts.treeRootId) {
-    const root = chatFileService.getChat(opts.treeRootId);
+    const root = readChat(opts.treeRootId);
     if (root) return normalizeSpaceId(spaceStampOf(parseChatMetadata(root.metadata)));
   }
   if (opts.requested) {
@@ -58,9 +114,12 @@ export function resolveNewChatSpace(opts: { treeRootId?: string; requested?: str
   return spaceForFolder(opts.folder);
 }
 
-/** Write one record's stamp. The default is written as absence. View-only: no updated_at bump. */
-function stamp(chatId: string, spaceId: string): boolean {
-  return chatFileService.updateChatMetadata(chatId, { spaceId: spaceId === DEFAULT_SPACE_ID ? undefined : spaceId }, { touch: false });
+/**
+ * Write one record's stamp, through the record already in hand (see header).
+ * The default is written as absence. View-only: no updated_at bump.
+ */
+function stamp(record: Pick<Chat, "id" | "session_id">, spaceId: string): boolean {
+  return chatFileService.updateChatMetadataForRecord(record, { spaceId: spaceId === DEFAULT_SPACE_ID ? undefined : spaceId }, { touch: false });
 }
 
 export interface SpaceMoveResult {
@@ -83,11 +142,12 @@ export function moveChatsToSpace(ids: string[], spaceId: string): SpaceMoveResul
   if (space.archived) throw new SpaceMoveError(`Space "${space.name}" is archived — unarchive it before moving chats into it`);
   const stored = listChatsSnapshot();
   const index = buildLineageIndex(stored);
-  const membersByRoot = new Map<string, string[]>();
+  const bySession = new Map(stored.map((chat) => [chat.session_id, chat]));
+  const membersByRoot = new Map<string, Chat[]>();
   for (const chat of stored) {
     const root = index.existingRootIdOf(chat.id);
     const list = membersByRoot.get(root) ?? [];
-    list.push(chat.id);
+    list.push(chat);
     membersByRoot.set(root, list);
   }
   const result: SpaceMoveResult = { movedRoots: [], chatCount: 0, failed: [] };
@@ -97,7 +157,7 @@ export function moveChatsToSpace(ids: string[], spaceId: string): SpaceMoveResul
       result.failed.push({ id: String(id), error: "Invalid chat id" });
       continue;
     }
-    const recordId = index.byId.has(id) ? id : chatFileService.getChatBySessionId(id)?.id;
+    const recordId = index.byId.has(id) ? id : bySession.get(id)?.id;
     if (!recordId) {
       // Discovered only: materialise a record carrying the stamp. It has no
       // tree (nothing can be parented to a chat with no record).
@@ -122,8 +182,8 @@ export function moveChatsToSpace(ids: string[], spaceId: string): SpaceMoveResul
     if (done.has(rootId)) continue;
     done.add(rootId);
     let ok = true;
-    for (const memberId of membersByRoot.get(rootId) ?? [recordId]) {
-      if (stamp(memberId, spaceId)) result.chatCount++;
+    for (const member of membersByRoot.get(rootId) ?? [index.byId.get(recordId)!]) {
+      if (stamp(member, spaceId)) result.chatCount++;
       else ok = false;
     }
     if (ok) result.movedRoots.push(rootId);
@@ -131,7 +191,9 @@ export function moveChatsToSpace(ids: string[], spaceId: string): SpaceMoveResul
   }
   if (result.chatCount > 0) {
     clearListCaches();
-    if (result.movedRoots[0]) sessionRegistry.notifyMetadata(result.movedRoots[0], { cardEvent: "updated" });
+    // One event per moved card: an open drawer or a card cached in another
+    // tab is keyed by its own id, and each needs to hear that it moved.
+    for (const rootId of result.movedRoots) sessionRegistry.notifyMetadata(rootId, { cardEvent: "updated" });
   }
   log.info(`Moved ${result.movedRoots.length} tree(s) / ${result.chatCount} chat(s) into space ${spaceId}`);
   return result;
@@ -203,7 +265,11 @@ export function folderGroups(fromSpace: string = DEFAULT_SPACE_ID): SpaceFolderG
   return [...groups.values()].sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
 }
 
-/** Stored chats per resolved space (tree root's), for the switcher and settings. */
+/**
+ * Stored chats per resolved space (tree root's), for settings. A pass over the
+ * whole corpus — callers ask for it explicitly (`includeCounts`), never on a
+ * poll or a write.
+ */
 export function chatCountsBySpace(): Map<string, number> {
   const stored = listChatsSnapshot();
   const index = buildLineageIndex(stored);
@@ -224,19 +290,48 @@ export function chatCountsBySpace(): Map<string, number> {
   return counts;
 }
 
-/** Stored records whose own stamp names `spaceId` — what DELETE must empty. */
-export function chatsStampedWith(spaceId: string): string[] {
-  return listChatsSnapshot()
-    .filter((chat) => spaceStampOf(parseChatMetadata(chat.metadata)) === spaceId)
-    .map((chat) => chat.id);
+/**
+ * What a space holds, by the SAME rule every listing and `chatCount` use: a
+ * chat is in the space its tree's root resolves to. `staleStamps` are member
+ * records whose own stamp still names the space while their root lives
+ * elsewhere (a half-finished move, a hand edit). They are not "in" the space —
+ * no view shows them there — so they never block a delete; it just cleans
+ * them up.
+ */
+export function spaceContents(spaceId: string): { members: Chat[]; staleStamps: Chat[] } {
+  const stored = listChatsSnapshot();
+  const index = buildLineageIndex(stored);
+  const known = knownSpaceIds();
+  const byId = new Map(stored.map((c) => [c.id, c]));
+  const rootSpace = new Map<string, string>();
+  const members: Chat[] = [];
+  const staleStamps: Chat[] = [];
+  for (const chat of stored) {
+    const rootId = index.existingRootIdOf(chat.id);
+    let space = rootSpace.get(rootId);
+    if (space === undefined) {
+      space = normalizeSpaceId(spaceStampOf(parseChatMetadata((byId.get(rootId) ?? chat).metadata)), known);
+      rootSpace.set(rootId, space);
+    }
+    if (space === spaceId) members.push(chat);
+    else if (spaceStampOf(parseChatMetadata(chat.metadata)) === spaceId) staleStamps.push(chat);
+  }
+  return { members, staleStamps };
 }
 
-/** Re-stamp every record carrying `fromSpace` with `toSpace`. */
-export function restampSpace(fromSpace: string, toSpace: string): number {
-  let n = 0;
-  for (const id of chatsStampedWith(fromSpace)) if (stamp(id, toSpace)) n++;
-  if (n) clearListCaches();
-  return n;
+/**
+ * Empty a space before it is deleted: every chat in it moves to `toSpace`
+ * (whole trees, by re-stamping each member) and every stale stamp is cleared
+ * back to what its own root says — one snapshot, record-addressed writes.
+ */
+export function emptySpace(fromSpace: string, toSpace: string): { moved: number; cleaned: number } {
+  const { members, staleStamps } = spaceContents(fromSpace);
+  let moved = 0;
+  let cleaned = 0;
+  for (const chat of members) if (stamp(chat, toSpace)) moved++;
+  for (const chat of staleStamps) if (chatFileService.updateChatMetadataForRecord(chat, { spaceId: undefined }, { touch: false })) cleaned++;
+  if (moved || cleaned) clearListCaches();
+  return { moved, cleaned };
 }
 
 // ── Session inputs ──────────────────────────────────────────────────

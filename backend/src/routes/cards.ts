@@ -28,6 +28,7 @@ import type { CardPatch, CardSummary } from "shared";
 import { createPinnedMemberLookup } from "../services/card-archive-unpin.js";
 import { cardSpaceScope, createCardContext } from "../services/card-context.js";
 import { moveChatsToSpace, SpaceMoveError } from "../services/space-service.js";
+import { getSpace } from "../services/space-store.js";
 import { patchCardFields, clearCardFieldsOn, CardFieldError } from "../services/card-fields.js";
 import { CARD_CATEGORY_MAX } from "shared";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
@@ -319,16 +320,24 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     const root = context.resolve(req.params.id);
     if (!root) return res.status(404).json({ error: "Card not found" });
     // Moving a card moves its whole tree — a tree never spans two spaces.
-    // Done first, so a move-only patch still answers with the fresh summary.
+    // Ordered so a refused request changes nothing: the target space is
+    // checked up front, the card fields (which validate as they write) go
+    // next, and the move — which can then only fail on I/O — goes last.
     if (typeof body.spaceId === "string") {
-      const moved = moveChatsToSpace([root.rootChatId], body.spaceId);
-      if (moved.failed.length) return res.status(500).json({ error: moved.failed[0].error });
-      const movedRoot = chatFileService.getChat(root.rootChatId);
-      if (movedRoot) context.replaceRoot(movedRoot);
+      const target = getSpace(body.spaceId);
+      if (!target) return res.status(400).json({ error: `Space "${body.spaceId}" not found` });
+      if (target.archived) return res.status(400).json({ error: `Space "${target.name}" is archived — unarchive it before moving chats into it` });
     }
     const card = Object.keys(patch).length
       ? patchCardFields(root.rootChatId, patch as CardPatch, { pinnedMembers: createPinnedMemberLookup(stored) })
       : { id: root.rootChatId };
+    if (card && typeof body.spaceId === "string") {
+      const moved = moveChatsToSpace([root.rootChatId], body.spaceId);
+      const failure = moved.failed[0];
+      if (failure) return res.status(failure.error === "Chat not found" ? 404 : 500).json({ error: failure.error });
+      const movedRoot = chatFileService.getChat(root.rootChatId);
+      if (movedRoot) context.replaceRoot(movedRoot);
+    }
     if (!card) return res.status(404).json({ error: "Card not found" });
     if (!context.isNativeTarget(req.params.id)) clearRedirectedMemberCard(req.params.id, root.rootChatId);
     // A lifecycle flip changes which chats the sidebar's cards-only filter

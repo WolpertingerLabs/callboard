@@ -57,8 +57,8 @@ import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
-import { resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
-import { spaceForFolder } from "./space-store.js";
+import { readChat, resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
+import { spaceForFolder, touchSpaceRecentDirectory } from "./space-store.js";
 import { DEFAULT_SPACE_ID } from "shared";
 import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
@@ -652,6 +652,12 @@ export interface SendMessageOptions {
    * falls through to the folder rules, then the default space.
    */
   spaceId?: string;
+  /**
+   * A folder to push onto the recent-folder list of the space this NEW chat
+   * lands in (which may not be `spaceId` — a tree's space wins). Set by the
+   * UI's new-chat route; automation leaves it unset. Archived spaces skip it.
+   */
+  recordRecentFolder?: string;
 }
 
 /**
@@ -908,11 +914,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     // caller's choice and then the folder rules. Absent means default, so the
     // default is never written.
     const spaceId = resolveNewChatSpace({
-      treeRootId: newChatRootId ?? (opts.jobContext?.rootChatId ? walkToRootId(opts.jobContext.rootChatId) : undefined),
+      treeRootId: newChatRootId ?? (opts.jobContext?.rootChatId ? walkToRootId(opts.jobContext.rootChatId, readChat) : undefined),
       requested: opts.spaceId,
       folder,
     });
     if (spaceId !== DEFAULT_SPACE_ID) initialMetadata.spaceId = spaceId;
+    if (opts.recordRecentFolder) {
+      try {
+        touchSpaceRecentDirectory(spaceId, opts.recordRecentFolder);
+      } catch (err: any) {
+        log.warn(`Could not record recent folder for space ${spaceId}: ${err?.message ?? err}`);
+      }
+    }
     // Record initial branch for drift detection on subsequent messages
     const gitInfo = getGitInfo(folder);
     if (gitInfo.branch) {
@@ -1183,8 +1196,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     ? typeof initialMetadata.spaceId === "string"
       ? initialMetadata.spaceId
       : DEFAULT_SPACE_ID
-    : spaceOfChat(opts.chatId);
-  const getSpaceId = (): string => (chatFileService.getChat(trackingId) ? spaceOfChat(trackingId) : initialSpaceId);
+    : spaceOfChat(opts.chatId, { ifUnknown: DEFAULT_SPACE_ID });
+  // Read live on every scoped tool call, so it must stay cheap: a temp
+  // tracking id has no record by construction, and spaceOfChat's reads are
+  // direct session-id reads (see space-service.ts — never `getChat`).
+  const getSpaceId = (): string => (trackingId.startsWith("new-") ? initialSpaceId : spaceOfChat(trackingId, { ifUnknown: initialSpaceId }));
   const space = spaceRecord(initialSpaceId);
 
   // Always build plugin options (includes app-wide plugins even when no per-directory plugins are active)

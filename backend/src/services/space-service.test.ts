@@ -95,3 +95,18 @@ describe("agent scope", () => {
     expect(customSkillsService.getPluginDir(["nonexistent"])).toBeNull();
   });
 });
+
+describe("slash commands respect agent scope", () => {
+  it("drops commands of excluded plugins and skills, and resolves no body for them", async () => {
+    const { commandAllowedByScope, resolveSlashCommandContent } = await import("./slashCommands.js");
+    appPlugins.plugins = [
+      { id: "p-slack", pluginPath: "/plugins/slack", manifest: { name: "slack" }, commands: [] },
+      { id: "p-git", pluginPath: "/plugins/git", manifest: { name: "git" }, commands: [] },
+    ];
+    const allowed = commandAllowedByScope({ plugins: ["p-git"], skills: ["beta"] });
+    expect(["slack:post", "git:commit", "callboard:alpha", "callboard:beta", "compact"].filter(allowed)).toEqual(["git:commit", "callboard:beta", "compact"]);
+    expect(commandAllowedByScope(undefined)("slack:post")).toBe(true);
+    expect(resolveSlashCommandContent("/tmp", "callboard:alpha", [], { skills: ["beta"] })).toMatchObject({ source: "builtin", content: null });
+    expect(resolveSlashCommandContent("/tmp", "callboard:beta", [], { skills: ["beta"] })).toMatchObject({ source: "custom-skill" });
+  });
+});

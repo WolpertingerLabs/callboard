@@ -320,6 +320,14 @@ export function applySpacePatch(space: Space, patch: SpacePatch): Space {
     else if (patch.instructions.trim()) next.instructions = patch.instructions.trim();
     else clear("instructions");
   }
+  if (patch.removeRecentDirectory !== undefined) {
+    if (typeof patch.removeRecentDirectory !== "string") throw new SpaceValidationError("removeRecentDirectory must be a path");
+    const remaining = (next.defaults?.recentDirectories ?? []).filter((d) => d.path !== patch.removeRecentDirectory);
+    const defaults: SpaceDefaults = { ...(next.defaults ?? {}), recentDirectories: remaining };
+    if (!remaining.length) delete defaults.recentDirectories;
+    if (Object.keys(defaults).length) next.defaults = defaults;
+    else clear("defaults");
+  }
   if (patch.agentScope !== undefined) {
     if (patch.agentScope === null) clear("agentScope");
     else {
@@ -334,6 +342,24 @@ export function applySpacePatch(space: Space, patch: SpacePatch): Space {
       if (Object.keys(scope).length) next.agentScope = scope;
       else clear("agentScope");
     }
+  }
+  for (const [op, add] of [
+    [patch.agentScopeAdd, true],
+    [patch.agentScopeRemove, false],
+  ] as const) {
+    if (op === undefined) continue;
+    if (!op || typeof op !== "object" || Array.isArray(op)) throw new SpaceValidationError("agentScope delta must be an object");
+    const scope: Record<string, string[]> = { ...(next.agentScope ?? {}) } as Record<string, string[]>;
+    for (const key of ["plugins", "skills"] as const) {
+      const entries = op[key];
+      if (entries === undefined) continue;
+      const items = validStringList(entries, `agentScope.${key}`, 200, 256);
+      // Unrestricted admits everything already: nothing to add, and removing
+      // from it would need the full list this delta deliberately does not carry.
+      if (!scope[key]) continue;
+      scope[key] = add ? [...new Set([...scope[key], ...items])] : scope[key].filter((x) => !items.includes(x));
+    }
+    if (Object.keys(scope).length) next.agentScope = scope;
   }
   return next;
 }
@@ -378,10 +404,30 @@ export function deleteSpaceRecord(id: string): boolean {
   return true;
 }
 
-/** Push a folder onto a space's recent-directory list (most recent first). */
+/**
+ * Rewrite `order` from a full or partial id list in one write pass: listed
+ * spaces take 0..n-1 in that order, everything unlisted follows in its current
+ * order. Unknown ids are ignored. Only records whose order changes are written.
+ */
+export function reorderSpaces(ids: string[]): void {
+  const all = readAll();
+  const listed = ids.map((id) => all.find((s) => s.id === id)).filter((s): s is Space => !!s);
+  const rest = all.filter((s) => !ids.includes(s.id));
+  const now = new Date().toISOString();
+  [...listed, ...rest].forEach((space, order) => {
+    if (space.order === order) return;
+    save({ ...space, order, updatedAt: now, ...(space.createdAt === EPOCH && { createdAt: now }) });
+  });
+}
+
+/**
+ * Push a folder onto a space's recent-directory list (most recent first).
+ * Skips archived spaces: nobody starts a chat in one on purpose, and a list
+ * that keeps growing there is noise when it is unarchived.
+ */
 export function touchSpaceRecentDirectory(id: string, path: string): void {
   const space = getSpace(id);
-  if (!space || !path.startsWith("/")) return;
+  if (!space || space.archived || !path.startsWith("/")) return;
   const existing = (space.defaults?.recentDirectories ?? []).filter((d) => d.path !== path);
   updateSpace(id, { defaults: { recentDirectories: [{ path, lastUsed: new Date().toISOString() }, ...existing] } });
 }

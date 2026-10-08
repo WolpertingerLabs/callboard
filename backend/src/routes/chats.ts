@@ -26,6 +26,8 @@ import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
 import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
 import { createSpaceResolver, parseSpaceScope, type SpaceResolver } from "../services/space-membership.js";
+import { spaceOfChat } from "../services/space-service.js";
+import { getSpace } from "../services/space-store.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -33,7 +35,7 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import { ALL_SPACES, normalizePermissions, type ParsedMessage, type Chat as SharedChat } from "shared/types/index.js";
+import { ALL_SPACES, normalizePermissions, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 // The chat-list cache lives in a standalone module so services can invalidate
@@ -183,14 +185,28 @@ type DiscoveredSession = {
  * folder or the scan fails — for responses that carry them as an extra, where
  * a broken plugin dir must not fail the request.
  */
-function commandsAndPluginsOrEmpty(folder: string | undefined | null): { slashCommands: any[]; plugins: any[] } {
+function commandsAndPluginsOrEmpty(folder: string | undefined | null, scope?: SpaceAgentScope): { slashCommands: any[]; plugins: any[] } {
   try {
     if (folder) {
-      const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(folder);
+      const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(folder, scope);
       return { slashCommands, plugins };
     }
   } catch {}
   return { slashCommands: [], plugins: [] };
+}
+
+/** The agent scope of the space a chat lives in — what its command listing must respect. */
+function scopeOfChat(chatId: string): SpaceAgentScope | undefined {
+  try {
+    return getSpace(spaceOfChat(chatId))?.agentScope;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The agent scope of a `?space=` a new-chat request names, if it is a real space. */
+function scopeOfQuery(raw: unknown): SpaceAgentScope | undefined {
+  return typeof raw === "string" && raw ? getSpace(raw)?.agentScope : undefined;
 }
 
 /**
@@ -1109,6 +1125,7 @@ chatsRouter.get("/new/info", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Get folder info for new chat'
   // #swagger.description = 'Returns git info, slash commands, and plugins available for a given folder — used before creating a new chat.'
+  /* #swagger.parameters['space'] = { in: 'query', type: 'string', description: 'Space the new chat is going into; its agent scope filters slash_commands' } */
   /* #swagger.parameters['folder'] = { in: 'query', type: 'string', required: true, description: 'Absolute path to the project folder' } */
   /* #swagger.responses[200] = { description: "Folder info with git status, slash commands, and plugins. `isDetached` is present and true only when HEAD points at a commit rather than a branch — `git_branch` still reports its \"main\" fallback in that case." } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
@@ -1133,7 +1150,7 @@ chatsRouter.get("/new/info", (req, res) => {
   const mainRepoPath = view.repoPath ?? folder;
 
   // Get slash commands and plugins for the folder
-  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(folder);
+  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(folder, scopeOfQuery(req.query.space));
 
   // Get app-wide plugins
   let appPluginsData;
@@ -2409,8 +2426,9 @@ chatsRouter.get("/:id", (req, res) => {
   const chat = findChat(req.params.id) as any;
   if (!chat) return res.status(404).json({ error: "Not found" });
 
-  // Include slash commands and plugins for the chat's folder
-  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(chat.folder);
+  // Include slash commands and plugins for the chat's folder, minus what its
+  // space's agent scope keeps out of the chat.
+  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(chat.folder, scopeOfChat(chat.id));
 
   // Get app-wide plugins
   let appPluginsData;
@@ -2467,7 +2485,8 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
   if (!chat) return res.status(404).json({ error: "Not found" });
 
   try {
-    const result = getCommandsAndPluginsForDirectory(chat.folder);
+    const scope = scopeOfChat(chat.id);
+    const result = getCommandsAndPluginsForDirectory(chat.folder, scope);
 
     // Check if activePlugins query param is provided
     const activePluginIds = req.query.activePlugins
@@ -2477,7 +2496,7 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
       : [];
 
     // Get all commands including active plugin commands
-    const allCommands = getAllCommandsForDirectory(chat.folder, activePluginIds);
+    const allCommands = getAllCommandsForDirectory(chat.folder, activePluginIds, scope);
 
     // Get app-wide plugins
     let appPluginsData;
@@ -2545,7 +2564,7 @@ chatsRouter.get("/new/slash-commands/content", (req, res) => {
   const name = typeof req.query.name === "string" ? req.query.name : "";
   if (!name) return res.status(400).json({ error: "name query parameter is required" });
 
-  const result = resolveSlashCommandContent(folder, name, parseActivePlugins(req));
+  const result = resolveSlashCommandContent(folder, name, parseActivePlugins(req), scopeOfQuery(req.query.space));
   if (!result) return res.status(400).json({ error: "Invalid command name" });
   res.json(result);
 });
@@ -2566,7 +2585,7 @@ chatsRouter.get("/:id/slash-commands/content", (req, res) => {
   const name = typeof req.query.name === "string" ? req.query.name : "";
   if (!name) return res.status(400).json({ error: "name query parameter is required" });
 
-  const result = resolveSlashCommandContent(chat.folder, name, parseActivePlugins(req));
+  const result = resolveSlashCommandContent(chat.folder, name, parseActivePlugins(req), scopeOfChat(chat.id));
   if (!result) return res.status(400).json({ error: "Invalid command name" });
   res.json(result);
 });
