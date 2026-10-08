@@ -82,7 +82,7 @@ describe("/api/spaces CRUD", () => {
     makeChat("/repos/x", { spaceId: id });
     makeChat("/repos/y");
 
-    const list = await spaces("get", "/");
+    const list = await spaces("get", "/", { query: { includeCounts: "true" } as any });
     expect(list.body.spaces.map((s: any) => [s.name, s.chatCount])).toEqual([
       ["General", 1],
       ["Work", 1],

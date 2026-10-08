@@ -1,6 +1,7 @@
 import { handshakeHeaders } from "shared/types/index.js";
 import type { ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
+import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
 import type {
   UiAgentProviderKind,
   UserContactAvailability,
@@ -335,6 +336,12 @@ export async function listChats(
    * exactly as it did.
    */
   includePinned?: boolean,
+  /**
+   * Scope the list to one space (an id) or every space ("all"). Omitted =
+   * unscoped, the request older daemons understand. Rows carry `spaceId`
+   * whenever this is sent.
+   */
+  space?: string,
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -346,12 +353,16 @@ export async function listChats(
   if (cardsOnly) params.append("cardsOnly", "true");
   if (cardLifecycle && cardLifecycle !== "all") params.append("cardLifecycle", cardLifecycle);
   if (includePinned) params.append("includePinned", "true");
+  if (space) params.append("space", space);
 
   return request(`/chats${query(params)}`, { error: "Failed to list chats" });
 }
 
-export async function getChatTree(id: string): Promise<ChatTreeResponse> {
-  return request(`/chats/${seg(id)}/tree`, { error: "Failed to get chat tree" });
+/** `space` (an id, not "all") makes a tree from another space 404 rather than leak into this one. */
+export async function getChatTree(id: string, space?: string): Promise<ChatTreeResponse> {
+  const params = new URLSearchParams();
+  if (space && space !== "all") params.set("space", space);
+  return request(`/chats/${seg(id)}/tree${query(params)}`, { error: "Failed to get chat tree" });
 }
 
 export async function searchChatContents(query: string): Promise<{ chatIds: string[] }> {
@@ -420,9 +431,20 @@ export async function dismissSummon(id: string): Promise<Chat> {
  * says "not archived" while `cardLifecycle=unarchived` withholds them for being
  * archived — the two halves out of step in the one way #440 set out to prevent.
  */
-export async function listCards(includeHidden?: boolean, archive: { closedLimit?: number; closedSince?: string } = {}): Promise<CardListResponse> {
+export async function listCards(
+  includeHidden?: boolean,
+  archive: { closedLimit?: number; closedSince?: string } = {},
+  /**
+   * `space` scopes the board (an id, or "all"); `crossSpaceNeedsYou` keeps
+   * other spaces' blocked cards in the response so the Needs-you bucket
+   * never hides one. Omitted = every space, as before.
+   */
+  scope: { space?: string; crossSpaceNeedsYou?: boolean } = {},
+): Promise<CardListResponse> {
   const params = new URLSearchParams();
   if (includeHidden) params.set("includeHidden", "true");
+  if (scope.space) params.set("space", scope.space);
+  if (scope.crossSpaceNeedsYou) params.set("crossSpaceNeedsYou", "true");
   if (archive.closedLimit !== undefined) params.set("closedLimit", String(archive.closedLimit));
   if (archive.closedSince !== undefined) params.set("closedSince", archive.closedSince);
   const query = params.toString();
@@ -455,6 +477,58 @@ export interface BulkLifecycleResponse {
 /** Open or close many cards at once; see BulkLifecycleResponse on partial failure. */
 export async function bulkSetCardLifecycle(ids: string[], lifecycle: "open" | "closed"): Promise<BulkLifecycleResponse> {
   return request("/cards/bulk-lifecycle", { method: "POST", json: { ids, lifecycle }, error: "Failed to update cards" });
+}
+
+// ── Spaces ──────────────────────────────────────────────────────────
+
+/** `includeCounts` costs a pass over every chat — settings only, never on a poll. */
+export async function listSpaces(opts: { includeArchived?: boolean; includeCounts?: boolean } = {}): Promise<SpaceListItem[]> {
+  const params = new URLSearchParams();
+  if (opts.includeArchived) params.set("includeArchived", "true");
+  if (opts.includeCounts) params.set("includeCounts", "true");
+  return requestField(`/spaces${query(params)}`, "spaces", { error: "Failed to list spaces" });
+}
+
+export async function createSpace(body: SpacePatch & { name: string }): Promise<SpaceListItem> {
+  return requestField("/spaces", "space", { method: "POST", json: body, error: "Failed to create space" });
+}
+
+/** A delta: only the keys present change, `null` clears. */
+export async function updateSpace(id: string, patch: SpacePatch): Promise<SpaceListItem> {
+  return requestField(`/spaces/${seg(id)}`, "space", { method: "PATCH", json: patch, error: "Failed to update space" });
+}
+
+/** Refused with "space_not_empty" unless `moveTo` names where its chats go. */
+export async function deleteSpace(id: string, moveTo?: string): Promise<{ movedChats: number; movedJobs: number }> {
+  const params = new URLSearchParams();
+  if (moveTo) params.set("moveTo", moveTo);
+  return request(`/spaces/${seg(id)}${query(params)}`, { method: "DELETE", error: "Failed to delete space" });
+}
+
+export interface SpaceMoveResult {
+  movedRoots: string[];
+  chatCount: number;
+  failed: { id: string; error: string }[];
+}
+
+/** Move whole trees into a space — by any member chat id, or every tree rooted in a folder. */
+export async function moveToSpace(spaceId: string, target: { chatIds?: string[]; folder?: string; fromSpace?: string }): Promise<SpaceMoveResult> {
+  return request(`/spaces/${seg(spaceId)}/move`, { method: "POST", json: target, error: "Failed to move to space" });
+}
+
+export async function getChatSpace(chatId: string): Promise<string> {
+  return requestField(`/spaces/of/${seg(chatId)}`, "spaceId", { error: "Failed to resolve the chat's space" });
+}
+
+export interface SpaceFolderGroup {
+  displayFolder: string;
+  rootCount: number;
+  chatCount: number;
+  lastActivityAt: string;
+}
+
+export async function getSpaceFolderGroups(from = "default"): Promise<SpaceFolderGroup[]> {
+  return requestField(`/spaces/folder-groups?from=${encodeURIComponent(from)}`, "groups", { error: "Failed to group chats" });
 }
 
 // No createCard / deleteCard / assignChatToCard: a card IS a lineage root

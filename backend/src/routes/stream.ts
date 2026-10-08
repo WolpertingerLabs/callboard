@@ -3,6 +3,7 @@ import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { assertReasoningEffort } from "../services/reasoning-capabilities.js";
 import { assertNativeAgentControllable, assertNativeAgentStoppable } from "../services/codex-native-agents.js";
 import { Router } from "express";
+import { touchSpaceRecentDirectory } from "../services/space-store.js";
 import { sendMessage, getActiveSession, stopSession, respondToPermission, hasPendingRequest, getPendingRequest } from "../services/claude.js";
 import { pendingRequestRequiresHuman } from "../services/pending-requests.js";
 import { controlOriginError } from "../auth.js";
@@ -63,6 +64,7 @@ streamRouter.post("/new/message", async (req, res) => {
             agentAlias: { type: "string", description: "Agent alias — injects Callboard agent tools MCP server into the session" },
             model: { type: "string", description: "Model for the provider of the chat. OpenRouter: a model slug (e.g. anthropic/claude-opus-4.7) or alias. Claude Code: an Anthropic model alias (opus, sonnet, haiku, opusplan) or full model ID (e.g. claude-sonnet-4-6). Omit to use the global default of the provider." },
             requireExplicitCompletion: { type: "boolean", description: "Require the session to call the objective_complete tool before it is considered done; if the stream ends without it, the session is re-prompted to continue (up to a cap). Persisted for the chat. Default: false." },
+            spaceId: { type: "string", description: "Space to file the new chat into. Ignored when parentChatId links it into an existing tree (a tree never spans two spaces); unknown or archived ids fall back to the folder rules, then the default space." },
             parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
             chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the tree node of the new chat, e.g. subagent, monitor, engine-switch. Only used with parentChatId." },
             cardId: { type: "string", description: "Deprecated no-op. Cards are derived from the chat lineage tree — a top-level chat is a card automatically and every child joins its root. Accepted (and ignored) so older clients keep working." },
@@ -106,6 +108,7 @@ streamRouter.post("/new/message", async (req, res) => {
     requireExplicitCompletion,
     parentChatId,
     chatRole,
+    spaceId,
     cardId,
     createCard,
     cardCategory,
@@ -321,7 +324,18 @@ streamRouter.post("/new/message", async (req, res) => {
           parentChatId,
           ...(typeof chatRole === "string" && chatRole && { chatRole }),
         }),
+      ...(typeof spaceId === "string" && spaceId && { spaceId: spaceId.slice(0, 128) }),
     });
+    // The space's own recent-folder list, so the new-chat panel can offer this
+    // folder first next time someone starts a chat in the same space. Keyed on
+    // the folder the user picked, not the worktree it may have become.
+    if (typeof spaceId === "string" && spaceId) {
+      try {
+        touchSpaceRecentDirectory(spaceId, folder);
+      } catch (err: any) {
+        log.warn(`Could not record recent folder for space ${spaceId}: ${err.message}`);
+      }
+    }
 
     // Opens the stream and answers the client's capability handshake with a
     // server_info frame. The returned session isn't consulted yet — every

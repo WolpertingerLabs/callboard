@@ -3,6 +3,8 @@ import { GitBranch, GitFork } from "lucide-react";
 import { getGitBranches, type BranchConfig, type CheckedOutBranch } from "../api";
 import { worktreeDirName } from "shared/types/index.js";
 import { getWorktreeByDefault, saveWorktreeByDefault } from "../utils/localStorage";
+import { useSpaces } from "../contexts/SpaceContext";
+import { updateSpace } from "../api";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /**
@@ -54,6 +56,12 @@ function Name({ children }: { children: ReactNode }) {
 
 interface BranchSelectorProps {
   folder: string;
+  /**
+   * The space the new chat is going into. Its `worktreeByDefault` seeds the
+   * toggle (falling back to this browser's global preference), and flipping
+   * the toggle writes back to it, so the default follows the space.
+   */
+  spaceId?: string;
   currentBranch: string;
   /**
    * This checkout is on no branch — `GET /chats/new/info`'s `isDetached`, which
@@ -98,7 +106,9 @@ interface BranchListing {
   checkedOut: CheckedOutBranch[];
 }
 
-export default function BranchSelector({ folder, currentBranch, isDetached, onChange }: BranchSelectorProps) {
+export default function BranchSelector({ folder, spaceId, currentBranch, isDetached, onChange }: BranchSelectorProps) {
+  const { enabled: spacesEnabled, spaceById } = useSpaces();
+  const spaceWorktreeDefault = spaceById(spaceId)?.defaults?.worktreeByDefault;
   /**
    * The branch this checkout is on, or `null` for "it is on none".
    *
@@ -122,7 +132,7 @@ export default function BranchSelector({ folder, currentBranch, isDetached, onCh
   // `HEAD` — this checkout's current commit, which is exactly what is wanted.
   const [baseBranch, setBaseBranch] = useState(onBranch ?? "");
   const [newBranch, setNewBranch] = useState("");
-  const [useWorktree, setUseWorktree] = useState(() => getWorktreeByDefault());
+  const [useWorktree, setUseWorktree] = useState(() => spaceWorktreeDefault ?? getWorktreeByDefault());
 
   // Fetch branches on mount, and again whenever the folder changes.
   //
@@ -212,10 +222,14 @@ export default function BranchSelector({ folder, currentBranch, isDetached, onCh
   }, [baseBranch, newBranch, useWorktree, propagateChange, branchError, onChange]);
 
   // Persist worktree preference — the toggle is the only sticky control here.
-  const handleWorktreeChange = useCallback((checked: boolean) => {
-    setUseWorktree(checked);
-    saveWorktreeByDefault(checked);
-  }, []);
+  const handleWorktreeChange = useCallback(
+    (checked: boolean) => {
+      setUseWorktree(checked);
+      saveWorktreeByDefault(checked);
+      if (spacesEnabled && spaceId) void updateSpace(spaceId, { defaults: { worktreeByDefault: checked } }).catch(() => {});
+    },
+    [spacesEnabled, spaceId],
+  );
 
   const isMobile = useIsMobile();
 

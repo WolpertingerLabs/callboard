@@ -99,6 +99,8 @@ import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
 import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
 import { sameActivityPayload } from "../utils/activitySnapshot";
 import { errorMessage } from "../utils/errorMessage";
+import { useSpaces } from "../contexts/SpaceContext";
+import { ALL_SPACES } from "shared/types/space.js";
 
 /**
  * How long an opened draft's images get to come back before the composer stops
@@ -286,6 +288,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // the new-chat request so the backend stamps parentChatId/rootChatId.
   const newChatParentId = routeState.parentChatId;
   const newChatRole = routeState.chatRole;
+  // The space a new chat goes into: the panel's pick, else this tab's active
+  // space ("all" picks none, and the server's folder rules decide).
+  const { enabled: spacesEnabled, activeSpaceId } = useSpaces();
+  const newChatSpaceId = routeState.spaceId ?? (spacesEnabled && activeSpaceId && activeSpaceId !== ALL_SPACES ? activeSpaceId : undefined);
 
   // When navigating from /chat/new → /chat/:id, the in-flight messages are
   // passed via router state so they survive the component remount.
@@ -2339,6 +2345,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatRequireCompletion === true) {
             requestBody.requireExplicitCompletion = true;
           }
+          if (newChatSpaceId) {
+            requestBody.spaceId = newChatSpaceId;
+          }
           if (newChatParentId) {
             requestBody.parentChatId = newChatParentId;
             if (newChatRole) {
@@ -2483,6 +2492,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatEffort,
       newChatModel,
       newChatRequireCompletion,
+      newChatSpaceId,
       pendingModel,
       pendingEffort,
       chatProvider,
@@ -3684,7 +3694,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               they were chosen in. The remount is also the *only* thing that
               re-emits — the propagate effect depends on none of the props a
               folder change touches. */}
-          <BranchSelector key={folder} folder={folder} currentBranch={info.git_branch || "main"} isDetached={info.isDetached} onChange={setBranchConfig} />
+          <BranchSelector key={folder} folder={folder} spaceId={newChatSpaceId} currentBranch={info.git_branch || "main"} isDetached={info.isDetached} onChange={setBranchConfig} />
         </div>
       )}
 

@@ -1,7 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ChevronDown, ChevronRight, Bot } from "lucide-react";
-import { listAgents, getAgentIdentityPrompt, cachedSystemInfo, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
+import { listAgents, getAgentIdentityPrompt, cachedSystemInfo, updateSpace, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
+import { useSpaces } from "../contexts/SpaceContext";
+import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
+import { normalizePermissions } from "shared/types/permissions.js";
+import { spaceLabel } from "./SpaceChip";
 import PermissionSettings from "./PermissionSettings";
 import { useSystemInfo } from "../hooks/useSystemInfo";
 import ConfirmModal from "./ConfirmModal";
@@ -227,7 +231,49 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const codexUseOpenRouter = Boolean((systemInfo ?? seed)?.codexUseOpenRouter);
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
-  const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
+  // ── Space ────────────────────────────────────────────────────────
+  // The new chat goes into the tab's active space unless the chip below says
+  // otherwise. The space's own new-chat defaults (provider, model, effort,
+  // permissions, recent folders) seed this panel, and anything a space does
+  // not set falls back to this browser's global values above — so a space
+  // with no defaults behaves exactly like the panel did before spaces.
+  const { enabled: spacesEnabled, spaces, activeSpaceId, spaceById, refreshSpaces } = useSpaces();
+  const [targetSpaceId, setTargetSpaceId] = useState<string>(() => (activeSpaceId && activeSpaceId !== ALL_SPACES ? activeSpaceId : DEFAULT_SPACE_ID));
+  const targetSpace = spaceById(targetSpaceId);
+  const spaceRecent = targetSpace?.defaults?.recentDirectories?.map((d) => d.path) ?? [];
+  const shownRecentDirs = spaceRecent.length > 0 ? spaceRecent : recentDirs;
+  // Seed from a space's defaults once per space picked, never again after:
+  // re-seeding on every refresh would overwrite what the user just chose.
+  const seededSpaceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!targetSpace || seededSpaceRef.current === targetSpace.id) return;
+    seededSpaceRef.current = targetSpace.id;
+    const d = targetSpace.defaults;
+    if (!d) return;
+    if (d.provider) setProvider(d.provider);
+    if (d.defaultPermissions) setDefaultPermissions(normalizePermissions(d.defaultPermissions));
+    if (d.effort) setEffort(d.effort);
+    if (d.model) {
+      const p = d.provider ?? providerRef.current;
+      if (p === "codex") setCodexModel(d.model);
+      else if (p === "acp") setAcpModel(d.model);
+      else if (p === "cline") setClineModel(d.model);
+      else if (p === "pi") setPiModel(d.model);
+      else setClaudeModel(d.model);
+    }
+  }, [targetSpace]);
+
+  /** Write this chat's choices back to its space, so they follow it across devices. */
+  const saveSpaceDefaults = (p: AgentProviderKind, model: string) => {
+    if (!spacesEnabled || !targetSpace) return;
+    void updateSpace(targetSpace.id, {
+      defaults: { provider: p, model: model || null, effort: effort ?? null, defaultPermissions: normalizePermissions(defaultPermissions) },
+    })
+      .then(() => refreshSpaces())
+      .catch(() => {});
+  };
+
+  const displayPath = folder.trim() || (shownRecentDirs.length > 0 ? shownRecentDirs[0] : "");
 
   const updateRecentDirs = () => {
     setRecentDirs(getRecentDirectories().map((r) => r.path));
@@ -258,6 +304,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     p === "codex" ? codexModel : p === "acp" ? acpModel : p === "cline" ? clineModel : p === "pi" ? piModel : claudeModel;
 
   const confirmRemoveRecentDir = () => {
+    // A space's list when the panel is showing one; this browser's otherwise.
+    if (spaceRecent.length > 0 && targetSpace) {
+      const remaining = (targetSpace.defaults?.recentDirectories ?? []).filter((d) => d.path !== confirmModal.path);
+      void updateSpace(targetSpace.id, { defaults: { recentDirectories: remaining } })
+        .then(() => refreshSpaces())
+        .catch(() => {});
+    }
     removeRecentDirectory(confirmModal.path);
     updateRecentDirs();
     setConfirmModal({ isOpen: false, path: "" });
@@ -303,11 +356,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // the effective provider. `effort` applies to the reasoning-capable
     // providers (codex, cline, pi).
     const trimmedModel = modelForProvider(effectiveProvider).trim();
+    saveSpaceDefaults(provider, modelForProvider(provider).trim());
 
     setFolder("");
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(target)}`, {
       state: {
+        ...(spacesEnabled && { spaceId: targetSpaceId }),
         defaultPermissions,
         provider: effectiveProvider,
         // The vendor travels with the kind — `provider: "acp"` alone does not
@@ -359,6 +414,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
       state: {
+        ...(spacesEnabled && { spaceId: targetSpaceId }),
         defaultPermissions: agentPermissions,
         systemPrompt,
         agentAlias: agent.alias,
@@ -459,6 +515,32 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
           background: "var(--bg-popout)",
         }}
       >
+        {spacesEnabled && spaces.length > 1 && (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 13, color: "var(--text-muted)" }}>
+            <span style={{ fontWeight: 600 }}>Space</span>
+            <select
+              aria-label="Space for the new chat"
+              value={targetSpaceId}
+              onChange={(e) => setTargetSpaceId(e.target.value)}
+              style={{
+                flex: 1,
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 13,
+              }}
+            >
+              {spaces.map((space) => (
+                <option key={space.id} value={space.id}>
+                  {spaceLabel(space)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         {/* Mode Toggle */}
         <div style={{ display: "flex", marginBottom: 12 }}>
           <button
@@ -625,10 +707,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
               {pathOpen && (
                 <>
-                  {recentDirs.length > 0 && (
+                  {shownRecentDirs.length > 0 && (
                     <div style={{ marginBottom: 10 }}>
                       <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Recent directories</div>
-                      {recentDirs.map((dir) => (
+                      {shownRecentDirs.map((dir) => (
                         <div
                           key={dir}
                           style={{

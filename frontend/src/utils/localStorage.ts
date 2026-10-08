@@ -48,6 +48,13 @@ interface LocalStorageData {
   autoCreateBranch?: boolean;
   /** BranchSelector's "New worktree" toggle, restored on the next new chat. */
   worktreeByDefault?: boolean;
+  /**
+   * The space this browser last had open (a space id, or "all"). Only the
+   * fallback for a tab that opens with no `?space=` and no per-tab choice of
+   * its own — the URL and the tab's sessionStorage win, so two tabs can sit
+   * in different spaces.
+   */
+  lastSpace?: string;
   showTriggeredChats?: boolean;
   /**
    * Whether the sidebar includes chats on an archived card — closed or hidden.
@@ -693,6 +700,15 @@ export function getBoardRowsExpanded(): boolean {
 
 export function saveBoardRowsExpanded(expanded: boolean): void {
   updateStorage({ boardRowsExpanded: expanded });
+}
+
+export function getLastSpace(): string | null {
+  const value = getStorageData().lastSpace;
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value) ? value : null;
+}
+
+export function saveLastSpace(spaceId: string): void {
+  updateStorage({ lastSpace: spaceId });
 }
 
 export function initializeSuggestedDirectories(chatDirectories: string[]): void {

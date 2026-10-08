@@ -1,4 +1,6 @@
 import type { CardSummary } from "../../api";
+import SpaceChip from "../SpaceChip";
+import type { SpaceListItem } from "shared/types/space.js";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { cardFolderSummary, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
 import CardFolderLine from "./CardFolderLine";
@@ -17,6 +19,8 @@ interface CardTileProps {
   onLongPress?: () => void;
   /** The board's "show paths" preference. Off by default, which is today's tile. */
   showPath?: boolean;
+  /** The card's space, when it is shown outside it (cross-space Needs you, the "All" view). */
+  spaceChip?: SpaceListItem;
 }
 
 export default function CardTile({
@@ -28,6 +32,7 @@ export default function CardTile({
   onToggleSelect,
   onLongPress,
   showPath = false,
+  spaceChip,
 }: CardTileProps) {
   const closed = card.lifecycle === "closed";
   const rollupColor = ROLLUP_COLORS[card.rollup];
@@ -162,6 +167,7 @@ export default function CardTile({
           >
             {card.title}
           </span>
+          {spaceChip && <SpaceChip space={spaceChip} />}
           {card.pinned && <Pin size={12} style={{ color: "var(--accent-text)", flexShrink: 0 }} />}
           {card.unread && (
             <span title="Unread activity" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--board-unread-dot)", flexShrink: 0 }} />

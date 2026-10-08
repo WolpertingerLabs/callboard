@@ -8,6 +8,7 @@ import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
 import { isChatPinned, sectionByPinned } from "../utils/chatSections";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
+import type { SpaceListItem } from "shared/types/space.js";
 
 /**
  * The sidebar chat list.
@@ -80,6 +81,10 @@ interface Props {
    * `selectionProps` in ChatList.
    */
   selectionFor?: (chat: Chat) => RowSelection;
+  /** The space chip a row carries, when the list shows rows outside their space ("All"). */
+  spaceChipFor?: (chat: Chat) => SpaceListItem | undefined;
+  /** "Move to space…" for a row; absent hides the menu entry. */
+  onMoveToSpace?: (chat: Chat) => void;
 }
 
 /** What one row is told about the selection it is part of. */
@@ -592,6 +597,8 @@ export default function ChatTreeList({
   sessionStatusFor,
   isDimmed,
   selectionFor,
+  spaceChipFor,
+  onMoveToSpace,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -727,6 +734,8 @@ export default function ChatTreeList({
           {...pinProps}
           onEditTitle={onEditTitle && (() => onEditTitle(chat))}
           cardMenu={cardMenuFor(chat)}
+          spaceChip={spaceChipFor?.(chat)}
+          onMoveToSpace={onMoveToSpace && (() => onMoveToSpace(chat))}
           sessionStatus={sessionStatusFor(chat.id)}
           dimmed={isDimmed?.(chat)}
           {...selectionFor?.(chat)}
@@ -803,6 +812,8 @@ export default function ChatTreeList({
               {...pinProps}
               onEditTitle={onEditTitle && (() => onEditTitle(chat))}
               cardMenu={cardMenuFor(chat)}
+              spaceChip={spaceChipFor?.(chat)}
+              onMoveToSpace={onMoveToSpace && (() => onMoveToSpace(chat))}
               sessionStatus={groupSessionStatus}
               // Identity above is the root's; the live-work signals are the
               // whole group's. See `RowActivity`.

@@ -21,6 +21,10 @@ import {
 } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
+import SpaceSwitcher from "../components/SpaceSwitcher";
+import MoveToSpaceModal from "../components/MoveToSpaceModal";
+import { useSpaces } from "../contexts/SpaceContext";
+import { ALL_SPACES } from "shared/types/space.js";
 import { type ChatCardMenu } from "../components/ChatListItem";
 import ChatTreeList, { buildRows } from "../components/ChatTreeList";
 import SelectionBar, { type SelectionAction } from "../components/SelectionBar";
@@ -115,6 +119,11 @@ export default function ChatList({
   onShowClaudeModal,
 }: ChatListProps) {
   const { activeSessions, metadataVersion } = useSessionContext();
+  const { enabled: spacesEnabled, activeSpaceId, spaces, spaceById } = useSpaces();
+  /** Search across every space, not just the active one. Session-only. */
+  const [searchAllSpaces, setSearchAllSpaces] = useState(false);
+  /** Chats whose tree the "Move to space…" dialog is moving, or null when closed. */
+  const [moveTarget, setMoveTarget] = useState<{ chatIds: string[]; subject: string } | null>(null);
   const isMobile = useIsMobile();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -314,6 +323,14 @@ export default function ChatList({
   const searching = submittedQuery.trim() !== "";
 
   /**
+   * The space the list requests: the active one, or every space while a
+   * search has "All spaces" ticked. Undefined without a space provider, which
+   * sends the unscoped request older daemons understand.
+   */
+  const listSpace = spacesEnabled ? (searching && searchAllSpaces ? ALL_SPACES : activeSpaceId) : undefined;
+  const showSpaceChips = listSpace === ALL_SPACES && spaces.length > 1;
+
+  /**
    * Fold pending pin changes into a response, and retire the ones it already
    * reflects.
    *
@@ -386,7 +403,18 @@ export default function ChatList({
     // a pinned chat nobody has touched in a week is outside that window too,
     // and a Pinned section that empties itself as its chats age is not a
     // feature. Both are appended beyond the page and neither moves `hasMore`.
-    const response = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, undefined, true, undefined, cardLifecycle, true);
+    const response = await listChats(
+      limit,
+      0,
+      bookmarked || undefined,
+      excludeTriggered || undefined,
+      undefined,
+      true,
+      undefined,
+      cardLifecycle,
+      true,
+      listSpace,
+    );
     if (superseded()) return;
     // Bump on commit as well as on claim — that is the edge an in-flight
     // `loadMore` watches for. Re-taken into `gen` so `superseded()` keeps
@@ -400,7 +428,18 @@ export default function ChatList({
     // If the response was stale (cached), immediately fetch fresh data
     if (response.stale) {
       pinEpoch = pinEpochRef.current;
-      const freshResponse = await listChats(limit, 0, bookmarked || undefined, excludeTriggered || undefined, false, true, undefined, cardLifecycle, true);
+      const freshResponse = await listChats(
+        limit,
+        0,
+        bookmarked || undefined,
+        excludeTriggered || undefined,
+        false,
+        true,
+        undefined,
+        cardLifecycle,
+        true,
+        listSpace,
+      );
       if (superseded()) return;
       gen = loadGenRef.current += 1;
       setListVersion((v) => v + 1);
@@ -419,7 +458,8 @@ export default function ChatList({
     // `searching` is a dependency, not just a read: submitting or clearing a
     // query changes the scope, and the effect below refetches only because
     // this callback is recreated.
-  }, [viewOptions, anyFilterActive, searching]);
+    // `listSpace` too: switching space is a scope change like any other.
+  }, [viewOptions, anyFilterActive, searching, listSpace]);
 
   const loadMore = async () => {
     if (isLoadingMore || !hasMore) return;
@@ -451,6 +491,7 @@ export default function ChatList({
         // in the list and the dedupe below drops them — cheaper than reasoning
         // about which page is allowed to carry them.
         true,
+        listSpace,
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
       // this page was in flight — its offset no longer lines up, so drop the
@@ -1188,6 +1229,15 @@ export default function ChatList({
           },
         ]
       : []),
+    ...(spacesEnabled && spaces.length > 1
+      ? [
+          {
+            key: "space",
+            label: "Move to space…",
+            onRun: () => setMoveTarget({ chatIds: [...selectedIds], subject: `${selectedIds.size} ${selectedIds.size === 1 ? "chat" : "chats"}` }),
+          },
+        ]
+      : []),
     {
       key: "delete",
       label: `Delete ${selectedIds.size} ${selectedIds.size === 1 ? "chat" : "chats"}`,
@@ -1425,6 +1475,7 @@ export default function ChatList({
         onShowClaudeModal={onShowClaudeModal}
         onToggleSidebar={onToggleSidebar}
       />
+      {spacesEnabled && <SpaceSwitcher cards={cards} />}
 
       {chatViewError && (
         <p role="alert" style={{ color: "var(--danger)" }}>
@@ -1440,6 +1491,12 @@ export default function ChatList({
         onSearchSubmit={handleSearchSubmit}
         isSearching={isSearching}
       />
+      {spacesEnabled && spaces.length > 1 && activeSpaceId !== ALL_SPACES && (searchQuery.trim() || searching) && (
+        <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 20px 6px", fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}>
+          <input type="checkbox" checked={searchAllSpaces} onChange={(e) => setSearchAllSpaces(e.target.checked)} />
+          Search all spaces
+        </label>
+      )}
 
       {showNew && <NewChatPanel onClose={() => setShowNew(false)} />}
 
@@ -1564,6 +1621,12 @@ export default function ChatList({
           // selection at all — the row kebab's own actions are unaffected,
           // which is the same way the dim degrades.)
           selectionFor={cardsLoaded ? selectionProps : undefined}
+          spaceChipFor={showSpaceChips ? (chat) => spaceById(chat.spaceId) : undefined}
+          onMoveToSpace={
+            spacesEnabled && spaces.length > 1
+              ? (chat) => setMoveTarget({ chatIds: [chat.id], subject: `“${chatMeta(chat).title || chatMeta(chat).preview || "This chat"}”`.slice(0, 80) })
+              : undefined
+          }
         />
 
         {viewOptions.showTriggered && triggeredCount > 0 && (
@@ -1654,6 +1717,20 @@ export default function ChatList({
        * page; the set itself is gone because nothing in a row fires a request
        * any more, but the constraint that made it necessary has not moved.
        */}
+      {moveTarget && (
+        <MoveToSpaceModal
+          chatIds={moveTarget.chatIds}
+          subject={moveTarget.subject}
+          currentSpaceId={listSpace === ALL_SPACES ? undefined : listSpace}
+          onClose={() => setMoveTarget(null)}
+          onMoved={() => {
+            exitSelection();
+            void load();
+            void loadCards();
+          }}
+        />
+      )}
+
       {editTitleFor && (
         <EditTitleModal
           chatId={editTitleFor.chatId}

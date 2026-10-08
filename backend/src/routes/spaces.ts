@@ -9,7 +9,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { DEFAULT_SPACE_ID, type SpaceListItem, type SpacePatch } from "shared";
-import { chatCountsBySpace, chatsStampedWith, folderGroups, moveChatsToSpace, restampSpace, rootsInFolder, SpaceMoveError } from "../services/space-service.js";
+import { spaceOfChat, chatCountsBySpace, chatsStampedWith, folderGroups, moveChatsToSpace, restampSpace, rootsInFolder, SpaceMoveError } from "../services/space-service.js";
 import { createSpace, deleteSpaceRecord, getSpace, isValidSpaceId, listSpaces, SpaceValidationError, updateSpace } from "../services/space-store.js";
 import { listJobs, updateJob } from "../services/job-store.js";
 import { clearListCaches } from "../services/list-caches.js";
@@ -35,10 +35,11 @@ function notifySpacesChanged(): void {
 spacesRouter.get("/", (req: Request, res: Response) => {
   // #swagger.tags = ['Spaces']
   // #swagger.summary = 'List spaces'
-  // #swagger.description = 'Every space in switcher order, with the number of stored chats whose tree resolves to it. The default space ("General") is always present. Archived spaces only with includeArchived=true.'
+  // #swagger.description = 'Every space in switcher order. The default space ("General") is always present. Archived spaces only with includeArchived=true. chatCount (stored chats whose tree resolves to the space) only with includeCounts=true — it is a pass over the whole chat corpus, and the switcher refetches this list on every metadata bump.'
   /* #swagger.parameters['includeArchived'] = { in: 'query', type: 'string', description: 'Include archived spaces' } */
+  /* #swagger.parameters['includeCounts'] = { in: 'query', type: 'string', description: 'Compute chatCount per space (otherwise 0)' } */
   try {
-    const counts = chatCountsBySpace();
+    const counts = req.query.includeCounts === "true" ? chatCountsBySpace() : new Map<string, number>();
     const spaces: SpaceListItem[] = listSpaces({ includeArchived: req.query.includeArchived === "true" }).map((space) => ({
       ...space,
       chatCount: counts.get(space.id) ?? 0,
@@ -73,6 +74,17 @@ spacesRouter.post("/", (req: Request, res: Response) => {
     res.status(201).json({ space: { ...space, chatCount: 0 } });
   } catch (err) {
     fail(res, err, "Failed to create space");
+  }
+});
+
+spacesRouter.get("/of/:chatId", (req: Request, res: Response) => {
+  // #swagger.tags = ['Spaces']
+  // #swagger.summary = "The space a chat's tree belongs to"
+  // #swagger.description = 'What the client asks when a chat is opened by URL, so it can switch to that chat's space. Cheap: a lineage walk over a handful of records, not a corpus scan.'
+  try {
+    res.json({ chatId: req.params.chatId, spaceId: spaceOfChat(req.params.chatId) });
+  } catch (err) {
+    fail(res, err, "Failed to resolve the chat's space");
   }
 });
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
-import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags, Braces, Database, AppWindow } from "lucide-react";
+import { ChevronLeft, SlidersHorizontal, Plug, Globe, Wifi, LogOut, Info, Key, Sparkles, Workflow, Tags, Braces, Database, AppWindow, Layers } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import GeneralSettings from "./settings/GeneralSettings";
 import PluginsSettings from "./settings/PluginsSettings";
@@ -15,9 +15,11 @@ import JobsSettings from "./settings/JobsSettings";
 import ModelAliasesSettings from "./settings/ModelAliasesSettings";
 import StorageSettings from "./settings/StorageSettings";
 import ArtifactsSettings from "./settings/ArtifactsSettings";
+import SpacesSettings from "./settings/SpacesSettings";
 
 const tabs = [
   { key: "general", label: "General", icon: SlidersHorizontal },
+  { key: "spaces", label: "Spaces", icon: Layers },
   { key: "api", label: "API", icon: Key },
   { key: "model-aliases", label: "Model Aliases", icon: Tags },
   { key: "skills", label: "Skills", icon: Sparkles },
@@ -157,6 +159,7 @@ export default function Settings({ onLogout }: SettingsProps) {
       {/* Content */}
       <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
         {activeTab === "general" && <GeneralSettings />}
+        {activeTab === "spaces" && <SpacesSettings />}
         {activeTab === "api" && <ApiSettings />}
         {activeTab === "model-aliases" && <ModelAliasesSettings />}
         {activeTab === "skills" && <SkillsSettings />}

@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import SpaceChip from "../SpaceChip";
+import type { SpaceListItem } from "shared/types/space.js";
 import type { CardSummary } from "../../api";
 import { formatRelativeTime } from "../../utils/dateFormat";
 import { cardFolderSummary, FOLDER_LIVE_COLORS, ROLLUP_COLORS, statusLine, useCardActivation, useCardCountdown } from "./cardFace";
@@ -21,6 +23,8 @@ interface CardRowProps {
   onLongPress?: () => void;
   /** The board's "show paths" preference. Off by default, which drops the folder column entirely. */
   showPath?: boolean;
+  /** The card's space, when it is shown outside it (cross-space Needs you, the "All" view). */
+  spaceChip?: SpaceListItem;
   /** Whether this row's folder breakdown is open. The board owns it — see Board.tsx's isExpanded. */
   expanded?: boolean;
   /** Absent means no chevron at all, exactly as an absent onToggleSelect means no checkbox. */
@@ -157,6 +161,7 @@ export default function CardRow({
   onToggleSelect,
   onLongPress,
   showPath = false,
+  spaceChip,
   expanded = false,
   onToggleExpand,
   onOpenFolder,
@@ -203,6 +208,7 @@ export default function CardRow({
       <span style={{ ...ellipsis, fontSize: 13, fontWeight: 600, color: "var(--board-tile-title-text)" }} title={card.title}>
         {card.title}
       </span>
+      {spaceChip && <SpaceChip space={spaceChip} />}
       {card.pinned && <Pin size={11} style={{ color: "var(--accent-text)", flexShrink: 0 }} />}
       {card.unread && (
         <span title="Unread activity" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--board-unread-dot)", flexShrink: 0 }} />
