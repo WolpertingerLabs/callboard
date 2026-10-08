@@ -97,7 +97,7 @@ interface Props {
    * a skill there is the single most common way a chip gets created.
    */
   folder?: string;
-  /** The space a NEW chat is going into (no chat id yet), for scoped command bodies. */
+  /** The space the chat is in (or a new chat is going into): part of the command-body cache key, and sent for a new chat. */
   space?: string;
   /** Per-directory plugin ids the user has switched on, as the listing uses. */
   activePlugins?: string[];

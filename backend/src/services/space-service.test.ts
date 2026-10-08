@@ -11,6 +11,11 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-space-service-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 
 vi.mock("./claude.js", () => ({ getActiveSession: () => undefined, hasPendingRequest: () => false, getPendingRequest: () => null }));
+/** Counts snapshot passes, so readChat's direct-vs-scan path is observable. */
+vi.mock("./chats-snapshot.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./chats-snapshot.js")>();
+  return { ...actual, listChatsSnapshot: vi.fn(actual.listChatsSnapshot) };
+});
 const appPlugins = vi.hoisted(() => ({
   plugins: [] as any[],
   servers: [] as any[],
@@ -20,7 +25,8 @@ vi.mock("./app-plugins.js", () => ({
   getEnabledMcpServers: () => appPlugins.servers,
 }));
 
-const { resolveNewChatSpace, spaceOfChat, spaceInstructionsPrompt } = await import("./space-service.js");
+const { resolveNewChatSpace, spaceOfChat, spaceInstructionsPrompt, readChat, _resetSpaceReadMemo } = await import("./space-service.js");
+const { listChatsSnapshot } = await import("./chats-snapshot.js");
 const { createSpace, updateSpace, getSpace } = await import("./space-store.js");
 const { chatFileService } = await import("./chat-file-service.js");
 const { buildPluginOptions, buildMcpServerOptions } = await import("./claude-session-options.js");
@@ -108,5 +114,57 @@ describe("slash commands respect agent scope", () => {
     expect(commandAllowedByScope(undefined)("slack:post")).toBe(true);
     expect(resolveSlashCommandContent("/tmp", "callboard:alpha", [], { skills: ["beta"] })).toMatchObject({ source: "builtin", content: null });
     expect(resolveSlashCommandContent("/tmp", "callboard:beta", [], { skills: ["beta"] })).toMatchObject({ source: "custom-skill" });
+  });
+});
+
+describe("readChat", () => {
+  const scans = () => vi.mocked(listChatsSnapshot).mock.calls.length;
+
+  it("finds a chat whose id is not its session id with one scan, then reads it directly", () => {
+    _resetSpaceReadMemo();
+    const chat = chatFileService.createChat("/a", "refiled-sess-1", "{}"); // createChat mints a fresh id
+    expect(chat.id).not.toBe(chat.session_id);
+    const before = scans();
+    expect(readChat(chat.id)?.session_id).toBe("refiled-sess-1");
+    expect(scans()).toBe(before + 1);
+    expect(readChat(chat.id)?.session_id).toBe("refiled-sess-1");
+    expect(scans()).toBe(before + 1); // memoised id → session id: direct read
+  });
+
+  it("recovers when the memoised session id goes stale (the record was refiled)", () => {
+    _resetSpaceReadMemo();
+    const chat = chatFileService.createChat("/a", "refiled-sess-2", "{}");
+    readChat(chat.id);
+    chatFileService.upsertChat(chat.id, chat.folder, "refiled-sess-2b", {});
+    const found = readChat(chat.id);
+    expect(found?.session_id).toBe("refiled-sess-2b");
+    const before = scans();
+    readChat(chat.id);
+    expect(scans()).toBe(before); // memo updated by the rescan
+  });
+
+  it("remembers a miss for 30 s instead of rescanning on every call", () => {
+    _resetSpaceReadMemo();
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const before = scans();
+      expect(readChat("no-such-chat")).toBeNull();
+      expect(readChat("no-such-chat")).toBeNull();
+      expect(scans()).toBe(before + 1);
+      clock.mockReturnValue(now + 31_000);
+      expect(readChat("no-such-chat")).toBeNull();
+      expect(scans()).toBe(before + 2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("an id equal to its session id is a direct read, never a scan", () => {
+    _resetSpaceReadMemo();
+    const record = chatFileService.upsertChat("same-id-1", "/a", "same-id-1", { metadata: "{}" });
+    const before = scans();
+    expect(readChat(record.id)?.id).toBe("same-id-1");
+    expect(scans()).toBe(before);
   });
 });

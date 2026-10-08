@@ -100,8 +100,8 @@ import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgrou
 import { sameActivityPayload } from "../utils/activitySnapshot";
 import { errorMessage } from "../utils/errorMessage";
 import { useSpaces } from "../contexts/SpaceContext";
-import { ALL_SPACES } from "shared/types/space.js";
-import { spaceHasOwnRecents } from "../utils/spaceDefaults";
+import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
+import { writesBrowserFallback } from "../utils/spaceDefaults";
 
 /**
  * How long an opened draft's images get to come back before the composer stops
@@ -291,7 +291,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const newChatRole = routeState.chatRole;
   // The space a new chat goes into: the panel's pick, else this tab's active
   // space ("all" picks none, and the server's folder rules decide).
-  const { enabled: spacesEnabled, activeSpaceId, spaceById } = useSpaces();
+  const { enabled: spacesEnabled, activeSpaceId, spaces } = useSpaces();
+  const liveSpaceCount = spaces.length;
   const newChatSpaceId = routeState.spaceId ?? (spacesEnabled && activeSpaceId && activeSpaceId !== ALL_SPACES ? activeSpaceId : undefined);
 
   // When navigating from /chat/new → /chat/:id, the in-flight messages are
@@ -2258,9 +2259,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
         if (!id) {
           // NEW CHAT MODE: POST to /api/chats/new/message
-          // The browser's recent list is only the fallback for spaces without
-          // their own; the server records the folder on the chat's space.
-          if (!spaceHasOwnRecents(spaceById(newChatSpaceId))) addRecentDirectory(folder);
+          // The browser's recent list belongs to General (the fallback); any
+          // other space's list is recorded server-side on the chat's space.
+          if (writesBrowserFallback({ enabled: spacesEnabled, spaceId: newChatSpaceId, liveSpaceCount })) addRecentDirectory(folder);
 
           // Stamp the compose screen this send came from before the first
           // await, so `chat_created` can tell "still waiting here" from "moved
@@ -2496,7 +2497,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatModel,
       newChatRequireCompletion,
       newChatSpaceId,
-      spaceById,
+      liveSpaceCount,
       pendingModel,
       pendingEffort,
       chatProvider,
@@ -3856,7 +3857,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // — the folder is what the lookup actually keys on server-side.
           folder={folder}
           // A new chat's command bodies follow its space's agent scope.
-          space={id ? undefined : newChatSpaceId}
+          // A new chat's space, or an existing chat's own: part of the
+          // command-body cache key, so a body cached before the chat moved to
+          // a space with a different agent scope is not shown after.
+          space={id ? (chatMeta.spaceId ?? DEFAULT_SPACE_ID) : newChatSpaceId}
           activePlugins={activePluginIds}
           menuItems={
             !streaming && composerProvider

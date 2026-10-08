@@ -5,7 +5,7 @@ import { worktreeDirName } from "shared/types/index.js";
 import { getWorktreeByDefault, saveWorktreeByDefault } from "../utils/localStorage";
 import { useSpaces } from "../contexts/SpaceContext";
 import { updateSpace } from "../api";
-import { spaceHasOwnDefaults } from "../utils/spaceDefaults";
+import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaults";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 /**
@@ -108,7 +108,7 @@ interface BranchListing {
 }
 
 export default function BranchSelector({ folder, spaceId, currentBranch, isDetached, onChange }: BranchSelectorProps) {
-  const { enabled: spacesEnabled, spaceById } = useSpaces();
+  const { enabled: spacesEnabled, spaces, spaceById } = useSpaces();
   const space = spaceById(spaceId);
   const spaceWorktreeDefault = space?.defaults?.worktreeByDefault;
   /**
@@ -224,18 +224,19 @@ export default function BranchSelector({ folder, spaceId, currentBranch, isDetac
   }, [baseBranch, newBranch, useWorktree, propagateChange, branchError, onChange]);
 
   // Persist worktree preference — the toggle is the only sticky control here.
-  // The toggle is a user choice, so it is written to the space it was made
-  // in. The browser-wide value is the fallback for spaces WITHOUT defaults,
-  // so it is only written when this space has none — a worktree preference
-  // set in one space must not leak into General.
-  const ownDefaults = spacesEnabled && spaceHasOwnDefaults(space);
+  // The toggle is a user choice. In General (or with spaces unused) it is the
+  // browser-wide fallback, as before spaces; in any other space it belongs to
+  // that space alone — never the fallback, or a worktree preference set in
+  // "Personal" would become General's. See writesBrowserFallback.
+  const fallback = writesBrowserFallback({ enabled: spacesEnabled, spaceId, liveSpaceCount: spaces.length });
+  const writeSpace = spacesEnabled && !!spaceId && (!fallback || spaceHasOwnDefaults(space));
   const handleWorktreeChange = useCallback(
     (checked: boolean) => {
       setUseWorktree(checked);
-      if (!ownDefaults) saveWorktreeByDefault(checked);
-      if (spacesEnabled && spaceId) void updateSpace(spaceId, { defaults: { worktreeByDefault: checked } }).catch(() => {});
+      if (fallback) saveWorktreeByDefault(checked);
+      if (writeSpace) void updateSpace(spaceId!, { defaults: { worktreeByDefault: checked } }).catch(() => {});
     },
-    [spacesEnabled, spaceId, ownDefaults],
+    [fallback, writeSpace, spaceId],
   );
 
   const isMobile = useIsMobile();

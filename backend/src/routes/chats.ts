@@ -204,6 +204,16 @@ function scopeOfChat(chatId: string): SpaceAgentScope | undefined {
   }
 }
 
+/**
+ * App plugins as a chat in this scope sees them: a plugin the space's agent
+ * scope leaves out is not loaded there, so it is not listed either (the UI
+ * builds command autocomplete from this list).
+ */
+function scopeAppPlugins<T extends { plugins: { id: string }[] }>(data: T, scope: SpaceAgentScope | undefined): T {
+  if (!scope?.plugins) return data;
+  return { ...data, plugins: data.plugins.filter((plugin) => scope.plugins!.includes(plugin.id)) };
+}
+
 /** The agent scope of a `?space=` a new-chat request names, if it is a real space. */
 function scopeOfQuery(raw: unknown): SpaceAgentScope | undefined {
   return typeof raw === "string" && raw ? getSpace(raw)?.agentScope : undefined;
@@ -1155,7 +1165,7 @@ chatsRouter.get("/new/info", (req, res) => {
   // Get app-wide plugins
   let appPluginsData;
   try {
-    appPluginsData = getAllAppPluginsData();
+    appPluginsData = scopeAppPlugins(getAllAppPluginsData(), scopeOfQuery(req.query.space));
   } catch {
     appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
   }
@@ -2433,7 +2443,7 @@ chatsRouter.get("/:id", (req, res) => {
   // Get app-wide plugins
   let appPluginsData;
   try {
-    appPluginsData = getAllAppPluginsData();
+    appPluginsData = scopeAppPlugins(getAllAppPluginsData(), scopeOfChat(chat.id));
   } catch {
     appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
   }
@@ -2501,7 +2511,7 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
     // Get app-wide plugins
     let appPluginsData;
     try {
-      appPluginsData = getAllAppPluginsData();
+      appPluginsData = scopeAppPlugins(getAllAppPluginsData(), scope);
     } catch {
       appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
     }

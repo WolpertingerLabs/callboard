@@ -104,6 +104,11 @@ export function getCommandsAndPluginsForDirectory(directory: string, scope?: Spa
  * in that folder, so without this a command from a plugin one space excludes
  * would still be offered there because another space's session reported it.
  * No scope (or no list for a kind) admits everything.
+ *
+ * Known limit: commands are matched to plugins by NAMESPACE (the manifest
+ * name), which is all a command string carries. A per-directory plugin that
+ * happens to share its name with an excluded app plugin is hidden too. Plugin
+ * names are unique in practice, so this is accepted rather than worked around.
  */
 export function commandAllowedByScope(scope?: SpaceAgentScope): (name: string) => boolean {
   if (!scope?.plugins && !scope?.skills) return () => true;

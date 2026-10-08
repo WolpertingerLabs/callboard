@@ -50,6 +50,20 @@ vi.mock("../utils/git.js", () => ({
   resolveBranch: () => ({ ok: true, folder: "/tmp/work" }),
   resolveWorktreeToMainRepoCached: (folder: string) => ({ mainRepoPath: folder, isWorktree: false }),
 }));
+vi.mock("../services/app-plugins.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/app-plugins.js")>()),
+  getAllAppPluginsData: () => ({
+    scanRoots: [],
+    plugins: [
+      { id: "p-slack", enabled: true, manifest: { name: "slack" }, commands: [] },
+      { id: "p-git", enabled: true, manifest: { name: "git" }, commands: [] },
+    ],
+  }),
+  getEnabledAppPlugins: () => [
+    { id: "p-slack", enabled: true, manifest: { name: "slack" }, commands: [] },
+    { id: "p-git", enabled: true, manifest: { name: "git" }, commands: [] },
+  ],
+}));
 vi.mock("../agents/factory.js", () => ({
   getSessionProviders: () => [
     {
@@ -84,6 +98,7 @@ const routeHandler = (path: string, method: "get") =>
   ) => void;
 const listHandler = routeHandler("/", "get");
 const treeHandler = routeHandler("/:id/tree", "get");
+const newInfoHandler = routeHandler("/new/info", "get");
 
 function invoke(handler: (req: Request, res: Response) => void, req: Partial<Request>): Promise<{ status: number; body: any }> {
   return new Promise((resolve) => {
@@ -206,3 +221,20 @@ describe("GET /api/chats/:id/tree?space=", () => {
     expect(all.status).toBe(200);
   });
 });
+
+describe("GET /api/chats/new/info?space=", () => {
+  it("lists only the app plugins and commands the space's agent scope admits", async () => {
+    const { setSlashCommandsForDirectory } = await import("../services/slashCommands.js");
+    const { updateSpace } = await import("../services/space-store.js");
+    setSlashCommandsForDirectory(tmpRoot, ["slack:post", "git:commit", "compact"]);
+    updateSpace(work.id, { agentScope: { plugins: ["p-git"] } });
+    const scoped = await invoke(newInfoHandler, { query: { folder: tmpRoot, space: work.id } as any });
+    expect(scoped.body.appPlugins.plugins.map((p: any) => p.id)).toEqual(["p-git"]);
+    expect(scoped.body.slash_commands).toEqual(expect.arrayContaining(["git:commit", "compact"]));
+    expect(scoped.body.slash_commands).not.toContain("slack:post");
+    const unscoped = await invoke(newInfoHandler, { query: { folder: tmpRoot } as any });
+    expect(unscoped.body.appPlugins.plugins).toHaveLength(2);
+    expect(unscoped.body.slash_commands).toContain("slack:post");
+  });
+});
+

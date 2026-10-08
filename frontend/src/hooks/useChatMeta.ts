@@ -23,6 +23,8 @@ export interface ChatMeta {
   defaultPermissions?: DefaultPermissions;
   /** The agent the chat was started from — agent chats run with the agent tool set. */
   agentAlias?: string;
+  /** The chat's own space stamp (absent = General). Moving the tree rewrites it. */
+  spaceId?: string;
 }
 
 const NO_META: ChatMeta = { provider: null };
@@ -50,6 +52,7 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
     effort: str(meta.effort) as EffortLevel | undefined,
     defaultPermissions: (meta.defaultPermissions || undefined) as DefaultPermissions | undefined,
     agentAlias: nonEmpty(meta.agentAlias),
+    spaceId: nonEmpty(meta.spaceId),
   };
 }
 

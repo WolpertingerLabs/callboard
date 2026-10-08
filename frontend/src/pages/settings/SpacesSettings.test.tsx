@@ -29,7 +29,8 @@ vi.mock("../../api", async (importOriginal) => {
     moveToSpace: vi.fn(async () => ({ movedRoots: [], chatCount: 0, failed: [] })),
   };
 });
-vi.mock("../../contexts/SessionContext", () => ({ useMetadataVersion: () => 0 }));
+const session = vi.hoisted(() => ({ version: 0 }));
+vi.mock("../../contexts/SessionContext", () => ({ useMetadataVersion: () => session.version }));
 
 const m = vi.mocked(api);
 let server: SpaceListItem[];
@@ -42,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  session.version = 0;
 });
 
 const renderPage = () =>
@@ -146,4 +148,22 @@ describe("SpacesSettings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Accent blue" }));
     await waitFor(() => expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("opus"));
   });
+
+  it("counts on mount, but a metadata bump reloads WITHOUT counts and keeps the last numbers", async () => {
+    server[0] = { ...server[0], chatCount: 7 };
+    const view = renderPage();
+    await screen.findByText("7 chats");
+    expect(m.listSpaces).toHaveBeenLastCalledWith({ includeArchived: true, includeCounts: true });
+    // An uncounted response reports 0; the page must not show that.
+    m.listSpaces.mockImplementation(async () => server.map((sp) => ({ ...sp, chatCount: 0, jobCount: undefined })));
+    session.version = 1;
+    view.rerender(
+      <MemoryRouter>
+        <SpacesSettings />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(m.listSpaces).toHaveBeenLastCalledWith({ includeArchived: true, includeCounts: false }), { timeout: 2000 });
+    expect(screen.getByText("7 chats")).toBeTruthy();
+  });
 });
+

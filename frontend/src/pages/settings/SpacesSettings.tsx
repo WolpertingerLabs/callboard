@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Layers, Plus, Trash2 } from "lucide-react";
 import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
 import { DEFAULT_SPACE_ID, SPACE_ACCENTS, SPACE_INSTRUCTIONS_MAX, UI_AGENT_PROVIDER_KINDS } from "shared/types/index.js";
@@ -65,17 +65,28 @@ export default function SpacesSettings() {
   const [deleting, setDeleting] = useState<SpaceListItem | null>(null);
   const [sorting, setSorting] = useState(false);
 
-  const load = useCallback(async () => {
+  /**
+   * Chat/job counts are a pass over the whole chat corpus server-side, so they
+   * are fetched on mount and after actions that move chats (create, delete,
+   * move, sort) — never on the metadata-bump reload, which fires on every
+   * title, status or summon change anywhere in the app. Between counted loads
+   * the last numbers are carried over.
+   */
+  const countsRef = useRef(new Map<string, { chatCount: number; jobCount?: number }>());
+  const load = useCallback(async (withCounts = false) => {
     try {
-      setSpaces(await listSpaces({ includeArchived: true, includeCounts: true }));
+      const list = await listSpaces({ includeArchived: true, includeCounts: withCounts });
+      if (withCounts) countsRef.current = new Map(list.map((s) => [s.id, { chatCount: s.chatCount, jobCount: s.jobCount }]));
+      setSpaces(withCounts ? list : list.map((s) => ({ ...s, ...(countsRef.current.get(s.id) ?? { chatCount: 0 }) })));
     } catch (err) {
       setError(errorMessage(err, "Failed to load spaces"));
     }
   }, []);
+  const loadCounted = useCallback(() => load(true), [load]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadCounted();
+  }, [loadCounted]);
 
   // Another tab, an agent, or this tab's own new-chat panel changed a space.
   useEffect(() => {
@@ -107,7 +118,7 @@ export default function SpacesSettings() {
       setNewName("");
       setNewEmoji("");
       setSelectedId(created.id);
-      await load();
+      await loadCounted();
       await refreshSwitcher();
       // The first extra space is when a flat history wants sorting: offer it once.
       if (liveBefore === 1) setSorting(true);
@@ -258,7 +269,7 @@ export default function SpacesSettings() {
           onDeleted={async () => {
             setDeleting(null);
             setSelectedId(DEFAULT_SPACE_ID);
-            await load();
+            await loadCounted();
             await refreshSwitcher();
           }}
         />
@@ -270,7 +281,7 @@ export default function SpacesSettings() {
           onClose={() => setSorting(false)}
           onDone={async () => {
             setSorting(false);
-            await load();
+            await loadCounted();
             await refreshSwitcher();
           }}
         />

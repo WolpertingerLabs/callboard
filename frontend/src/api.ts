@@ -904,7 +904,9 @@ export async function getSlashCommandContent(name: string, scope: SlashCommandSc
   const { chatId, folder, activePlugins = [], space } = scope;
   if (!chatId && !folder) throw new Error("Cannot resolve a command without a chat or a folder");
 
-  const key = `${chatId ?? `folder:${folder}|space:${space ?? ""}`}|${activePlugins.join(",")}|${name}`;
+  // The space is in the key for both doors: a space's agent scope decides
+  // whether a body is shown at all, and a chat can move between spaces.
+  const key = `${chatId ?? `folder:${folder}`}|space:${space ?? ""}|${activePlugins.join(",")}|${name}`;
   const cached = slashCommandContentCache.get(key);
   if (cached) return cached;
 

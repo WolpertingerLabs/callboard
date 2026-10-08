@@ -220,13 +220,21 @@ describe("DELETE /api/spaces/:id — one definition of empty", () => {
     rmSync(join(tmpRoot, "jobs", "definitions", "only-job.json"), { force: true });
   });
 
-  it("a stale member stamp does not block — no view shows it there — and is cleaned up", async () => {
+  it("a stale member stamp does not block — no view shows it there — and is rewritten to its root's space", async () => {
     const work = (await spaces("post", "/", { body: { name: "Work" } })).body.space;
-    const root = makeChat("/repos/x");
+    const home = (await spaces("post", "/", { body: { name: "Home" } })).body.space;
+    const root = makeChat("/repos/x", { spaceId: home.id });
     const child = makeChat("/repos/x", { parentChatId: root.id, rootChatId: root.id, spaceId: work.id });
     const res = await spaces("delete", "/:id", { params: { id: work.id } });
     expect(res.status).toBe(200);
-    expect(stampOf(child.id)).toBeUndefined();
+    // Not cleared to the default: rewritten to where its tree actually lives.
+    expect(stampOf(child.id)).toBe(home.id);
+    // The scenario that makes the difference: the root goes away later and the
+    // child becomes a root itself — it must stay in Home, not drop to General.
+    chatFileService.deleteChat(root.session_id);
+    const counts = await spaces("get", "/", { query: { includeCounts: "true" } as any });
+    expect(counts.body.spaces.find((s: any) => s.id === home.id).chatCount).toBe(1);
+    expect(counts.body.spaces.find((s: any) => s.id === "default").chatCount).toBe(0);
   });
 
   it("refuses an archived moveTo, as every other move does", async () => {
@@ -247,6 +255,18 @@ describe("spaces: counts are opt-in, order is one request, list edits are deltas
     expect((await spaces("patch", "/:id", { params: { id: work.id }, body: { emoji: "💼" } })).body.space.chatCount).toBe(0);
     expect((await spaces("get", "/:id", { params: { id: work.id } })).body.space.chatCount).toBe(0);
     expect((await spaces("get", "/:id", { params: { id: work.id }, query: { includeCounts: "true" } as any })).body.space.chatCount).toBe(1);
+  });
+
+  it("POST /order ignores a repeated id rather than leaving a gap", async () => {
+    const a = (await spaces("post", "/", { body: { name: "A" } })).body.space;
+    const b = (await spaces("post", "/", { body: { name: "B" } })).body.space;
+    await spaces("post", "/order", { body: { ids: [b.id, b.id, "default", a.id] } });
+    const orders = (await spaces("get", "/")).body.spaces.map((s: any) => [s.name, s.order]);
+    expect(orders).toEqual([
+      ["B", 0],
+      ["General", 1],
+      ["A", 2],
+    ]);
   });
 
   it("POST /order rewrites the order in one request", async () => {

@@ -296,16 +296,16 @@ export function chatCountsBySpace(): Map<string, number> {
  * records whose own stamp still names the space while their root lives
  * elsewhere (a half-finished move, a hand edit). They are not "in" the space —
  * no view shows them there — so they never block a delete; it just cleans
- * them up.
+ * them up. Each carries `rootSpace`, the space its tree actually resolves to.
  */
-export function spaceContents(spaceId: string): { members: Chat[]; staleStamps: Chat[] } {
+export function spaceContents(spaceId: string): { members: Chat[]; staleStamps: { chat: Chat; rootSpace: string }[] } {
   const stored = listChatsSnapshot();
   const index = buildLineageIndex(stored);
   const known = knownSpaceIds();
   const byId = new Map(stored.map((c) => [c.id, c]));
   const rootSpace = new Map<string, string>();
   const members: Chat[] = [];
-  const staleStamps: Chat[] = [];
+  const staleStamps: { chat: Chat; rootSpace: string }[] = [];
   for (const chat of stored) {
     const rootId = index.existingRootIdOf(chat.id);
     let space = rootSpace.get(rootId);
@@ -314,22 +314,24 @@ export function spaceContents(spaceId: string): { members: Chat[]; staleStamps: 
       rootSpace.set(rootId, space);
     }
     if (space === spaceId) members.push(chat);
-    else if (spaceStampOf(parseChatMetadata(chat.metadata)) === spaceId) staleStamps.push(chat);
+    else if (spaceStampOf(parseChatMetadata(chat.metadata)) === spaceId) staleStamps.push({ chat, rootSpace: space });
   }
   return { members, staleStamps };
 }
 
 /**
  * Empty a space before it is deleted: every chat in it moves to `toSpace`
- * (whole trees, by re-stamping each member) and every stale stamp is cleared
- * back to what its own root says — one snapshot, record-addressed writes.
+ * (whole trees, by re-stamping each member) and every stale stamp is
+ * rewritten to the space its root resolves to — not cleared to the default:
+ * if that root is later deleted the member becomes a root itself, and must
+ * stay in the space its tree was in. One snapshot, record-addressed writes.
  */
 export function emptySpace(fromSpace: string, toSpace: string): { moved: number; cleaned: number } {
   const { members, staleStamps } = spaceContents(fromSpace);
   let moved = 0;
   let cleaned = 0;
   for (const chat of members) if (stamp(chat, toSpace)) moved++;
-  for (const chat of staleStamps) if (chatFileService.updateChatMetadataForRecord(chat, { spaceId: undefined }, { touch: false })) cleaned++;
+  for (const { chat, rootSpace } of staleStamps) if (stamp(chat, rootSpace)) cleaned++;
   if (moved || cleaned) clearListCaches();
   return { moved, cleaned };
 }

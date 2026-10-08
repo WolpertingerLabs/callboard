@@ -160,11 +160,46 @@ describe("NewChatPanel — space defaults do not leak", () => {
     expect(globalsOf().defaultProvider).toBeUndefined();
   });
 
-  it("a space without defaults still writes the browser fallback, as before spaces", async () => {
+  it("a first choice in a space without defaults goes to that space only, never the browser fallback", async () => {
     renderLeaky("sp_home");
     fireEvent.click(screen.getAllByRole("button", { name: "Codex" })[0]);
     await createIn("/repo");
-    expect(globalsOf().defaultProvider).toBe("codex");
     expect(updateSpace).toHaveBeenCalledWith("sp_home", { defaults: { provider: "codex", model: null } });
+    expect(globalsOf().defaultProvider).toBeUndefined();
+    expect(globalsOf().recentDirectories).toBeUndefined();
+  });
+
+  it("live repro: picking Codex in a fresh space leaves General on its old provider", async () => {
+    localStorage.setItem("claude-code-settings", JSON.stringify({ defaultProvider: "claude-code" }));
+    renderLeaky("sp_home");
+    fireEvent.click(screen.getAllByRole("button", { name: "Codex" })[0]);
+    await createIn("/repo");
+    cleanup();
+    capture.landed = null;
+    renderLeaky("default");
+    const state = await createIn("/repo");
+    expect(state.spaceId).toBe("default");
+    expect(state.provider).toBe("claude-code");
+  });
+
+  it("choices made in General write the browser fallback, as before spaces", async () => {
+    renderLeaky("default");
+    fireEvent.click(screen.getAllByRole("button", { name: "Codex" })[0]);
+    await createIn("/repo");
+    expect(globalsOf().defaultProvider).toBe("codex");
+    expect(globalsOf().recentDirectories?.[0]?.path).toBe("/repo");
+    // General has no stored defaults of its own, so nothing is PATCHed.
+    expect(updateSpace).not.toHaveBeenCalled();
+  });
+
+  it("a field changed by hand survives switching the space picker; untouched ones re-seed", async () => {
+    renderLeaky("sp_home");
+    fireEvent.click(screen.getAllByRole("button", { name: "Codex" })[0]);
+    fireEvent.change(screen.getByLabelText("Space for the new chat"), { target: { value: "sp_work" } });
+    const state = await createIn("/repo");
+    expect(state.provider).toBe("codex");
+    // Work's permissions seeded, since the user never touched permissions.
+    expect(state.defaultPermissions).toMatchObject({ fileWrite: "allow" });
+    expect(updateSpace).toHaveBeenCalledWith("sp_work", { defaults: { provider: "codex", model: null } });
   });
 });

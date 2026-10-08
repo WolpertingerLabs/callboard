@@ -416,6 +416,8 @@ export function deleteSpaceRecord(id: string): boolean {
  * order. Unknown ids are ignored. Only records whose order changes are written.
  */
 export function reorderSpaces(ids: string[]): void {
+  // A repeated id would otherwise be placed twice and leave a gap.
+  ids = [...new Set(ids)];
   const all = readAll();
   const listed = ids.map((id) => all.find((s) => s.id === id)).filter((s): s is Space => !!s);
   const rest = all.filter((s) => !ids.includes(s.id));

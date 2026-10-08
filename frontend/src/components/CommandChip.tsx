@@ -11,7 +11,7 @@ interface Props {
   chatId?: string;
   /** Folder to resolve against when there is no chat id (the `/chat/new` case). */
   folder?: string;
-  /** With `folder` (no chat yet): the space the new chat goes into. */
+  /** The space the chat is in, or a new chat is going into (sent only with `folder`). */
   space?: string;
   /** Per-directory plugin ids the user has switched on. */
   activePlugins?: string[];

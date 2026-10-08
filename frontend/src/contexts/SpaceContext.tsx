@@ -229,7 +229,7 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
     const notice = !noticeFor
       ? null
       : noticeFor.kind === "archived"
-        ? `This chat is in the archived space ${name ? `“${name}”` : ""} — unarchive it in Settings → Spaces to see it in the sidebar.`.replace("  ", " ")
+        ? `This chat is in ${name ? `the archived space “${name}”` : "an archived space"} — unarchive it in Settings → Spaces to see it in the sidebar.`
         : `Switched to ${name ?? "this chat’s space"} — this chat lives there.`;
     return {
       enabled: true,

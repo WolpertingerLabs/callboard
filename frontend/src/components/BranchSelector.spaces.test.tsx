@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 /**
  * The "New worktree" toggle under a space: seeded from the space's own
- * default, written back to the space when flipped, and written to the
- * browser-wide fallback only when the space has no defaults of its own — so a
- * preference set in one space never leaks into General.
+ * default and written back to that space when flipped. The browser-wide
+ * fallback is General's, so only a flip made in General writes it — a
+ * preference set in any other space never leaks into General.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -53,9 +53,15 @@ describe("BranchSelector in a space", () => {
     expect(globalWorktree()).toBeUndefined();
   });
 
-  it("a flip in a space without defaults also updates the browser fallback", async () => {
+  it("a flip in a space without defaults goes to that space only, not the fallback", async () => {
     fireEvent.click(await open("sp_home"));
     expect(updateSpace).toHaveBeenCalledWith("sp_home", { defaults: { worktreeByDefault: true } });
+    expect(globalWorktree()).toBeUndefined();
+  });
+
+  it("a flip in General is the browser fallback, as before spaces", async () => {
+    fireEvent.click(await open("default"));
     expect(globalWorktree()).toBe(true);
+    expect(updateSpace).not.toHaveBeenCalled();
   });
 });

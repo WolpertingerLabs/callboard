@@ -6,7 +6,7 @@ import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import { spaceLabel } from "./SpaceChip";
-import { spaceHasOwnDefaults, spaceHasOwnRecents } from "../utils/spaceDefaults";
+import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaults";
 import PermissionSettings from "./PermissionSettings";
 import { useSystemInfo } from "../hooks/useSystemInfo";
 import ConfirmModal from "./ConfirmModal";
@@ -275,27 +275,33 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   useEffect(() => {
     if (!targetSpace || seededSpaceRef.current === targetSpace.id) return;
     seededSpaceRef.current = targetSpace.id;
-    touchedRef.current.clear();
+    // Fields the user already set by hand are their choice for THIS chat and
+    // survive a change of space; only the rest are re-seeded.
+    const touched = touchedRef.current;
     const d = targetSpace.defaults ?? {};
-    const p = d.provider ?? globals.provider;
-    setProvider(p);
-    setDefaultPermissions(d.defaultPermissions ? normalizePermissions(d.defaultPermissions) : globals.permissions);
-    setEffort(d.effort ?? globals.effort);
-    const model = (kind: AgentProviderKind) => (d.model && kind === p ? d.model : globals.models[kind]);
-    setClaudeModel(model("claude-code"));
-    setCodexModel(model("codex"));
-    setAcpModel(model("acp"));
-    setClineModel(model("cline"));
-    setPiModel(model("pi"));
+    const p = touched.has("provider") ? providerRef.current : (d.provider ?? globals.provider);
+    if (!touched.has("provider")) setProvider(p);
+    if (!touched.has("defaultPermissions")) setDefaultPermissions(d.defaultPermissions ? normalizePermissions(d.defaultPermissions) : globals.permissions);
+    if (!touched.has("effort")) setEffort(d.effort ?? globals.effort);
+    if (!touched.has("model")) {
+      const model = (kind: AgentProviderKind) => (d.model && kind === p ? d.model : globals.models[kind]);
+      setClaudeModel(model("claude-code"));
+      setCodexModel(model("codex"));
+      setAcpModel(model("acp"));
+      setClineModel(model("cline"));
+      setPiModel(model("pi"));
+    }
   }, [targetSpace, globals]);
 
   /**
-   * Persist this chat's choices. The browser-wide fallback is written only when
-   * the space has no defaults of its own (or there are no spaces); the space
-   * gets only the fields the user actually changed here.
+   * Persist this chat's choices — see writesBrowserFallback for where they go.
+   * A chat started in General (or with spaces unused) writes this browser's
+   * fallback, as before spaces. A chat started in any other space writes only
+   * the fields the user changed, and only to that space.
    */
+  const fallback = writesBrowserFallback({ enabled: spacesEnabled, spaceId: targetSpace?.id ?? targetSpaceId, liveSpaceCount: spaces.length });
   const persistChoices = () => {
-    if (!spacesEnabled || !targetSpace || !spaceHasOwnDefaults(targetSpace)) {
+    if (fallback) {
       saveDefaultPermissions(defaultPermissions);
       // Persist the user's INTENT (the toggle's current value) rather than the
       // runtime fallback. If Codex is selected but later unconfigured, we'd
@@ -313,6 +319,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     }
     const touched = touchedRef.current;
     if (!spacesEnabled || !targetSpace || touched.size === 0) return;
+    // General's stored defaults only exist if someone set them in Settings;
+    // otherwise General simply is the fallback written above.
+    if (fallback && !spaceHasOwnDefaults(targetSpace)) return;
     void updateSpace(targetSpace.id, {
       defaults: {
         ...(touched.has("provider") && { provider }),
@@ -396,9 +405,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     if (!target) return;
     if (refuseUnsupportedEffort(target)) return;
 
-    // The browser's recent list is the fallback for spaces without their own
-    // (the server records the folder on the space either way).
-    if (!spacesEnabled || !spaceHasOwnRecents(targetSpace)) {
+    // The browser's recent list is General's (the fallback); any other
+    // space's list is kept server-side, which records the folder itself.
+    if (fallback) {
       addRecentDirectory(target);
       updateRecentDirs();
     }
