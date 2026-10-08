@@ -29,6 +29,12 @@ export interface ChatRouteState {
   /** The harness's own model id. */
   model?: string;
   requireExplicitCompletion?: boolean;
+  /**
+   * The space a new chat is filed into, as picked on the New Chat panel.
+   * Absent falls back to the tab's active space. Ignored by the server when
+   * `parentChatId` links the chat into a tree (the tree's space wins).
+   */
+  spaceId?: string;
   /** Parentage-tree linkage, forwarded to the new-chat request. */
   parentChatId?: string;
   chatRole?: string;

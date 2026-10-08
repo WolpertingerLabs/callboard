@@ -1,7 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { X, ChevronDown, ChevronRight, Bot } from "lucide-react";
-import { listAgents, getAgentIdentityPrompt, cachedSystemInfo, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
+import { listAgents, getAgentIdentityPrompt, cachedSystemInfo, updateSpace, type DefaultPermissions, type AgentConfig, type AcpProviderInfo } from "../api";
+import { useSpaces } from "../contexts/SpaceContext";
+import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
+import { normalizePermissions } from "shared/types/permissions.js";
+import { spaceLabel } from "./SpaceChip";
+import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaults";
 import PermissionSettings from "./PermissionSettings";
 import { useSystemInfo } from "../hooks/useSystemInfo";
 import ConfirmModal from "./ConfirmModal";
@@ -227,7 +232,128 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const codexUseOpenRouter = Boolean((systemInfo ?? seed)?.codexUseOpenRouter);
   const agentsLoading = chatMode === "agent" && !agentsFetched;
 
-  const displayPath = folder.trim() || (recentDirs.length > 0 ? recentDirs[0] : "");
+  // ── Space ────────────────────────────────────────────────────────
+  // The new chat goes into the tab's active space unless the chip below says
+  // otherwise. Each field is seeded from the picked space's own default, and
+  // a field the space does not define is seeded from this browser's global
+  // value AS IT WAS WHEN THE PANEL OPENED — so switching the chip from a space
+  // with defaults to one without cannot carry the first space's choices over.
+  const { enabled: spacesEnabled, spaces, activeSpaceId, spaceById, refreshSpaces } = useSpaces();
+  const [targetSpaceId, setTargetSpaceId] = useState<string>(() => (activeSpaceId && activeSpaceId !== ALL_SPACES ? activeSpaceId : DEFAULT_SPACE_ID));
+  const targetSpace = spaceById(targetSpaceId);
+  // Where choices for this chat belong — see writesBrowserFallback. General's
+  // recent folders ARE the browser's list, so any server list written for it
+  // (by a daemon from before that rule) is ignored here.
+  const fallback = writesBrowserFallback({ enabled: spacesEnabled, spaceId: targetSpace?.id ?? targetSpaceId, liveSpaceCount: spaces.length });
+  const spaceRecent = fallback ? [] : (targetSpace?.defaults?.recentDirectories?.map((d) => d.path) ?? []);
+  const shownRecentDirs = spaceRecent.length > 0 ? spaceRecent : recentDirs;
+  /** This browser's global defaults at mount — the fallback for every field a space leaves unset. */
+  const [globals] = useState(() => ({
+    provider: getDefaultProvider(),
+    effort: getDefaultOpenRouterEffort(),
+    permissions: getDefaultPermissions(),
+    models: {
+      "claude-code": getDefaultClaudeModel(),
+      codex: getDefaultCodexModel(),
+      acp: getDefaultAcpModel(),
+      cline: getDefaultClineModel(),
+      pi: getDefaultPiModel(),
+    } as Record<AgentProviderKind, string>,
+  }));
+  /**
+   * Fields the user changed since the panel was last seeded. Only these are
+   * written back to the space — a value merely displayed (seeded from the
+   * fallback) is not a choice, and saving it would turn the fallback into the
+   * space's own default behind the user's back.
+   */
+  const touchedRef = useRef(new Set<"provider" | "model" | "effort" | "defaultPermissions">());
+  const touch =
+    <T,>(field: "provider" | "model" | "effort" | "defaultPermissions", set: (value: T) => void) =>
+    (value: T) => {
+      touchedRef.current.add(field);
+      set(value);
+    };
+  // Seed once per space picked, never again after: re-seeding on every space
+  // refresh would overwrite what the user just chose.
+  const seededSpaceRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!targetSpace || seededSpaceRef.current === targetSpace.id) return;
+    seededSpaceRef.current = targetSpace.id;
+    // Fields the user already set by hand are their choice for THIS chat and
+    // survive a change of space; only the rest are re-seeded.
+    const touched = touchedRef.current;
+    const d = targetSpace.defaults ?? {};
+    const p = touched.has("provider") ? providerRef.current : (d.provider ?? globals.provider);
+    // A model is chosen FOR an engine. If the new space switches the engine
+    // the user did not pick, a model they picked for the old one would ride
+    // along to the wrong engine — drop it and seed the new engine's instead.
+    if (touched.has("model") && !touched.has("provider") && p !== providerRef.current) touched.delete("model");
+    if (!touched.has("provider")) setProvider(p);
+    if (!touched.has("defaultPermissions")) setDefaultPermissions(d.defaultPermissions ? normalizePermissions(d.defaultPermissions) : globals.permissions);
+    if (!touched.has("effort")) setEffort(d.effort ?? globals.effort);
+    if (!touched.has("model")) {
+      const model = (kind: AgentProviderKind) => (d.model && kind === p ? d.model : globals.models[kind]);
+      setClaudeModel(model("claude-code"));
+      setCodexModel(model("codex"));
+      setAcpModel(model("acp"));
+      setClineModel(model("cline"));
+      setPiModel(model("pi"));
+    }
+  }, [targetSpace, globals]);
+
+  /**
+   * Persist this chat's choices — see writesBrowserFallback for where they go.
+   * A chat started in General (or with spaces unused) writes this browser's
+   * fallback, as before spaces. A chat started in any other space writes only
+   * the fields the user changed, and only to that space.
+   */
+  const persistChoices = () => {
+    if (fallback) {
+      saveDefaultPermissions(defaultPermissions);
+      // Persist the user's INTENT (the toggle's current value) rather than the
+      // runtime fallback. If Codex is selected but later unconfigured, we'd
+      // rather remember "user prefers Codex" so reconfiguring restores it, than
+      // silently overwrite their preference with claude-code. The runtime
+      // fallback is ephemeral.
+      saveDefaultProvider(provider);
+      saveDefaultOpenRouterEffort(effort);
+      saveDefaultClaudeModel(claudeModel);
+      saveDefaultCodexModel(codexModel);
+      saveDefaultAcpProviderId(acpProviderId);
+      saveDefaultAcpModel(acpModel);
+      saveDefaultClineModel(clineModel);
+      saveDefaultPiModel(piModel);
+    }
+    const touched = touchedRef.current;
+    if (!spacesEnabled || !targetSpace || touched.size === 0) return;
+    // General's stored defaults only exist if someone set them in Settings;
+    // otherwise General simply is the fallback written above.
+    if (fallback && !spaceHasOwnDefaults(targetSpace)) return;
+    void updateSpace(targetSpace.id, {
+      defaults: {
+        ...(touched.has("provider") && { provider }),
+        // The model is meaningful only with its engine, so a changed engine
+        // writes the model it now pairs with too.
+        ...((touched.has("model") || touched.has("provider")) && { model: modelForProvider(provider).trim() || null }),
+        ...(touched.has("effort") && { effort: effort ?? null }),
+        ...(touched.has("defaultPermissions") && { defaultPermissions: normalizePermissions(defaultPermissions) }),
+      },
+    })
+      .then(() => refreshSpaces())
+      .catch(() => {});
+  };
+
+  // UI-facing setters: each marks its field as the user's choice.
+  const userSetProvider = touch("provider", setProvider);
+  const userSetEffort = touch("effort", setEffort);
+  const userSetPermissions = touch("defaultPermissions", setDefaultPermissions);
+  const userSetClaudeModel = touch("model", setClaudeModel);
+  const userSetCodexModel = touch("model", setCodexModel);
+  const userSetAcpModel = touch("model", setAcpModel);
+  const userSetClineModel = touch("model", setClineModel);
+  const userSetPiModel = touch("model", setPiModel);
+
+  const displayPath = folder.trim() || (shownRecentDirs.length > 0 ? shownRecentDirs[0] : "");
 
   const updateRecentDirs = () => {
     setRecentDirs(getRecentDirectories().map((r) => r.path));
@@ -258,6 +384,14 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     p === "codex" ? codexModel : p === "acp" ? acpModel : p === "cline" ? clineModel : p === "pi" ? piModel : claudeModel;
 
   const confirmRemoveRecentDir = () => {
+    // A space's list when the panel is showing one — removed as a delta, so a
+    // folder the server added since this list was read survives — and this
+    // browser's otherwise.
+    if (spaceRecent.length > 0 && targetSpace) {
+      void updateSpace(targetSpace.id, { removeRecentDirectory: confirmModal.path })
+        .then(() => refreshSpaces())
+        .catch(() => {});
+    }
     removeRecentDirectory(confirmModal.path);
     updateRecentDirs();
     setConfirmModal({ isOpen: false, path: "" });
@@ -278,22 +412,13 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     if (!target) return;
     if (refuseUnsupportedEffort(target)) return;
 
-    saveDefaultPermissions(defaultPermissions);
-    addRecentDirectory(target);
-    updateRecentDirs();
-    // Persist the user's INTENT (the toggle's current value) rather than the
-    // runtime fallback. If Codex is selected but later unconfigured, we'd rather
-    // remember "user prefers Codex" so reconfiguring restores it, than silently
-    // overwrite their preference with claude-code. The runtime fallback is
-    // ephemeral.
-    saveDefaultProvider(provider);
-    saveDefaultOpenRouterEffort(effort);
-    saveDefaultClaudeModel(claudeModel);
-    saveDefaultCodexModel(codexModel);
-    saveDefaultAcpProviderId(acpProviderId);
-    saveDefaultAcpModel(acpModel);
-    saveDefaultClineModel(clineModel);
-    saveDefaultPiModel(piModel);
+    // The browser's recent list is General's (the fallback); any other
+    // space's list is kept server-side, which records the folder itself.
+    if (fallback) {
+      addRecentDirectory(target);
+      updateRecentDirs();
+    }
+    persistChoices();
     // Runtime guard: only downgrade to claude-code when we KNOW the chosen
     // provider is not configured. While still loading (null), trust the user's
     // choice — sendMessage rejects loudly if creds are missing, so we get a
@@ -308,6 +433,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(target)}`, {
       state: {
+        ...(spacesEnabled && { spaceId: targetSpaceId }),
         defaultPermissions,
         provider: effectiveProvider,
         // The vendor travels with the kind — `provider: "acp"` alone does not
@@ -327,14 +453,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     // Persist the provider/effort selection just like the folder path
     // (handleCreate) so the toggle remembers the user's choice regardless of
     // which path they created the chat from.
-    saveDefaultProvider(provider);
-    saveDefaultOpenRouterEffort(effort);
-    saveDefaultClaudeModel(claudeModel);
-    saveDefaultCodexModel(codexModel);
-    saveDefaultAcpProviderId(acpProviderId);
-    saveDefaultAcpModel(acpModel);
-    saveDefaultClineModel(clineModel);
-    saveDefaultPiModel(piModel);
+    persistChoices();
 
     const agentPermissions: DefaultPermissions = {
       fileRead: "allow",
@@ -359,6 +478,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     onClose();
     navigate(`/chat/new?folder=${encodeURIComponent(agent.workspacePath)}`, {
       state: {
+        ...(spacesEnabled && { spaceId: targetSpaceId }),
         defaultPermissions: agentPermissions,
         systemPrompt,
         agentAlias: agent.alias,
@@ -459,6 +579,32 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
           background: "var(--bg-popout)",
         }}
       >
+        {spacesEnabled && spaces.length > 1 && (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: 13, color: "var(--text-muted)" }}>
+            <span style={{ fontWeight: 600 }}>Space</span>
+            <select
+              aria-label="Space for the new chat"
+              value={targetSpaceId}
+              onChange={(e) => setTargetSpaceId(e.target.value)}
+              style={{
+                flex: 1,
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 13,
+              }}
+            >
+              {spaces.map((space) => (
+                <option key={space.id} value={space.id}>
+                  {spaceLabel(space)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         {/* Mode Toggle */}
         <div style={{ display: "flex", marginBottom: 12 }}>
           <button
@@ -505,24 +651,24 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
             <ProviderConfigPicker
               cwd={displayPath || undefined}
               provider={provider}
-              onProviderChange={setProvider}
+              onProviderChange={userSetProvider}
               acpProviders={acpProviders}
               acpProviderId={acpProviderId}
               onAcpProviderChange={setAcpProviderId}
               acpModel={acpModel}
-              onAcpModelChange={setAcpModel}
+              onAcpModelChange={userSetAcpModel}
               clineModel={clineModel}
-              onClineModelChange={setClineModel}
+              onClineModelChange={userSetClineModel}
               clineProviderId={clineProviderId}
               piModel={piModel}
-              onPiModelChange={setPiModel}
+              onPiModelChange={userSetPiModel}
               effort={effort}
-              onEffortChange={setEffort}
+              onEffortChange={userSetEffort}
               onEffortValidityChange={setEffortBlocked}
               claudeModel={claudeModel}
-              onClaudeModelChange={setClaudeModel}
+              onClaudeModelChange={userSetClaudeModel}
               codexModel={codexModel}
-              onCodexModelChange={setCodexModel}
+              onCodexModelChange={userSetCodexModel}
               codexConfigured={codexConfigured}
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}
@@ -551,7 +697,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                 {permissionsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 <span>Permissions: {getPermissionsSummary(defaultPermissions)}</span>
               </button>
-              {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={setDefaultPermissions} provider={provider} />}
+              {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={userSetPermissions} provider={provider} />}
             </div>
 
             {/* Behavior Section — collapsible, default closed */}
@@ -625,10 +771,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
               {pathOpen && (
                 <>
-                  {recentDirs.length > 0 && (
+                  {shownRecentDirs.length > 0 && (
                     <div style={{ marginBottom: 10 }}>
                       <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Recent directories</div>
-                      {recentDirs.map((dir) => (
+                      {shownRecentDirs.map((dir) => (
                         <div
                           key={dir}
                           style={{
@@ -721,24 +867,24 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                 visible and editable here too. */}
             <ProviderConfigPicker
               provider={provider}
-              onProviderChange={setProvider}
+              onProviderChange={userSetProvider}
               acpProviders={acpProviders}
               acpProviderId={acpProviderId}
               onAcpProviderChange={setAcpProviderId}
               acpModel={acpModel}
-              onAcpModelChange={setAcpModel}
+              onAcpModelChange={userSetAcpModel}
               clineModel={clineModel}
-              onClineModelChange={setClineModel}
+              onClineModelChange={userSetClineModel}
               clineProviderId={clineProviderId}
               piModel={piModel}
-              onPiModelChange={setPiModel}
+              onPiModelChange={userSetPiModel}
               effort={effort}
-              onEffortChange={setEffort}
+              onEffortChange={userSetEffort}
               onEffortValidityChange={setEffortBlocked}
               claudeModel={claudeModel}
-              onClaudeModelChange={setClaudeModel}
+              onClaudeModelChange={userSetClaudeModel}
               codexModel={codexModel}
-              onCodexModelChange={setCodexModel}
+              onCodexModelChange={userSetCodexModel}
               codexConfigured={codexConfigured}
               claudeCodeUseOpenRouter={claudeCodeUseOpenRouter}
               codexUseOpenRouter={codexUseOpenRouter}

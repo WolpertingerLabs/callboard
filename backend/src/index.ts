@@ -68,6 +68,7 @@ import { piRouter } from "./routes/pi.js";
 import { enginesRouter } from "./routes/engines.js";
 import { jobsRouter } from "./routes/jobs.js";
 import { cardsRouter } from "./routes/cards.js";
+import { spacesRouter } from "./routes/spaces.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
 import { loginHandler, logoutHandler, checkAuthHandler, requireAllowedIp, requireAuth, requireSessionAuth, changePasswordHandler } from "./auth.js";
 import { createLogger } from "./utils/logger.js";
@@ -244,6 +245,7 @@ app.use("/api/pi", piRouter);
 app.use("/api/engines", enginesRouter);
 app.use("/api/jobs", jobsRouter);
 app.use("/api/cards", cardsRouter);
+app.use("/api/spaces", spacesRouter);
 app.use("/api/api-keys", apiKeysRouter);
 
 // Instance name endpoints (requires auth)

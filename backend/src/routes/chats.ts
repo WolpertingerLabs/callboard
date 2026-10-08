@@ -24,7 +24,10 @@ import { getGitInfo, resolveWorktreeToMainRepoCached, type GitInfo } from "../ut
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { SessionRoutingError } from "../agents/ports/SessionProvider.js";
 import { readChatSessionMessages, withSessionProvider, withSessionProviderMeta, findChat } from "../utils/chat-lookup.js";
-import { buildChatTree, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
+import { buildChatTree, buildLineageIndex, paginateTreeRows, walkToRootId } from "../services/chat-lineage.js";
+import { createSpaceResolver, parseSpaceScope, type SpaceResolver } from "../services/space-membership.js";
+import { spaceOfChat } from "../services/space-service.js";
+import { getSpace } from "../services/space-store.js";
 import { getRun, latestRunChatId } from "../services/job-store.js";
 import { hasParkedApprovals } from "../services/job-approval-signal.js";
 import { sessionRegistry } from "../services/session-registry.js";
@@ -32,7 +35,7 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import { normalizePermissions, type ParsedMessage, type Chat as SharedChat } from "shared/types/index.js";
+import { ALL_SPACES, normalizePermissions, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 // The chat-list cache lives in a standalone module so services can invalidate
@@ -182,14 +185,38 @@ type DiscoveredSession = {
  * folder or the scan fails — for responses that carry them as an extra, where
  * a broken plugin dir must not fail the request.
  */
-function commandsAndPluginsOrEmpty(folder: string | undefined | null): { slashCommands: any[]; plugins: any[] } {
+function commandsAndPluginsOrEmpty(folder: string | undefined | null, scope?: SpaceAgentScope): { slashCommands: any[]; plugins: any[] } {
   try {
     if (folder) {
-      const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(folder);
+      const { slashCommands, plugins } = getCommandsAndPluginsForDirectory(folder, scope);
       return { slashCommands, plugins };
     }
   } catch {}
   return { slashCommands: [], plugins: [] };
+}
+
+/** The agent scope of the space a chat lives in — what its command listing must respect. */
+function scopeOfChat(chatId: string): SpaceAgentScope | undefined {
+  try {
+    return getSpace(spaceOfChat(chatId))?.agentScope;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * App plugins as a chat in this scope sees them: a plugin the space's agent
+ * scope leaves out is not loaded there, so it is not listed either (the UI
+ * builds command autocomplete from this list).
+ */
+function scopeAppPlugins<T extends { plugins: { id: string }[] }>(data: T, scope: SpaceAgentScope | undefined): T {
+  if (!scope?.plugins) return data;
+  return { ...data, plugins: data.plugins.filter((plugin) => scope.plugins!.includes(plugin.id)) };
+}
+
+/** The agent scope of a `?space=` a new-chat request names, if it is a real space. */
+function scopeOfQuery(raw: unknown): SpaceAgentScope | undefined {
+  return typeof raw === "string" && raw ? getSpace(raw)?.agentScope : undefined;
 }
 
 /**
@@ -278,13 +305,14 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), unarchived (everything EXCEPT archived trees — those of closed or hidden cards, and those whose non-card root (triggered, job-step) carries metadata.treeArchived; chats on no card are otherwise included, and a job step parked on an approval is admitted even from an archived tree; this is the scope the sidebar asks for when its Archived toggle is off), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement of active: chats on the tree of a CLOSED or hidden card, plus chats that are on no card at all). active/inactive are retained for client bundles older than the unarchived scope. Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record; a discovered session with no stored record is admitted by unarchived and by neither active nor inactive." } */
   /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'Back-compatible alias for cardLifecycle=active, kept for persisted prefs and older client bundles. Ignored when cardLifecycle is given.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
+  /* #swagger.parameters['space'] = { in: 'query', type: 'string', description: "Scope the list to one space (a space id) or every space (all). A chat's space is its lineage root's metadata.spaceId (default when absent); a discovered session with no record resolves through folder rules. Filtering happens before pagination, and every append pass (lineage, pinned) re-applies it. When given (including all), each row carries spaceId. Omitted = unscoped, the response older bundles have always had." } */
   /* #swagger.responses[200] = { description: "Paginated chat list with hasMore, total, windowRows, and stale fields. Each chat whose lineage root is archived (by card state or the chat-level metadata.treeArchived flag) carries archived: true, computed per response — only when the request also asked for includeLineage or a cardLifecycle scope, which is what builds the lineage the verdict needs." } */
   try {
     // Check cache (stale-while-revalidate)
     const bypassCache = req.query.cached === "false";
     // Every query param that changes the body belongs in here: an entry keyed
     // without one is served to requests that did send it, and vice versa.
-    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}:${req.query.cardLifecycle || ""}:${req.query.includePinned || ""}`;
+    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}:${req.query.cardLifecycle || ""}:${req.query.includePinned || ""}:${req.query.space || ""}`;
     const now = Date.now();
 
     if (!bypassCache) {
@@ -423,6 +451,27 @@ chatsRouter.get("/", (req, res) => {
     // One metadata parse per chat, memoized root resolution.
     const cardMembership = includeLineage || scopedByCardLifecycle ? createCardMembership(fileChats) : null;
     const lineageIndex = cardMembership?.index ?? null;
+    const fileChatsById = new Map(fileChats.map((chat) => [chat.id, chat]));
+
+    /**
+     * The space scope, and the resolver behind it. `space=all` still builds the
+     * resolver — rows carry `spaceId` so the "All" view can chip them — but
+     * filters nothing. A space's chats are those whose lineage ROOT resolves to
+     * it (see space-membership.ts), so the walk reuses the card lineage index
+     * when the request built one and builds a plain one otherwise.
+     */
+    const spaceScope = parseSpaceScope(req.query.space);
+    const spaceFiltering = spaceScope !== undefined && spaceScope !== ALL_SPACES;
+    let spaceResolver: SpaceResolver | null = null;
+    if (spaceScope !== undefined) {
+      const index = lineageIndex ?? buildLineageIndex(fileChats);
+      spaceResolver = createSpaceResolver({
+        existingRootIdOf: index.existingRootIdOf,
+        storedById: fileChatsById,
+        metaOf: (chat) => fileMetaByChat.get(chat),
+      });
+    }
+    const spaceAdmits = (chatId: string, folder?: string | null): boolean => !spaceFiltering || spaceResolver!.admits(spaceScope, chatId, folder);
 
     /**
      * Per-request memo of the job runs this response has had to open, keyed by
@@ -593,7 +642,7 @@ chatsRouter.get("/", (req, res) => {
     // needs the full session list so out-of-window tree relatives can be augmented,
     // and includePinned for the same reason: a pinned chat is appended precisely
     // when it is NOT in the window, so its session is never in a paged fetch.
-    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned;
+    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned || spaceFiltering;
     const fetchLimit = needsPostFilter ? Number.MAX_SAFE_INTEGER : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
@@ -601,17 +650,21 @@ chatsRouter.get("/", (req, res) => {
     // Root card eligibility comes from stored records; native descendants
     // inherit membership through the enriched lineage index. Filter before
     // replay/preview enrichment, including sessions with no persisted chat.
-    const paginatedSessions = cardScopeAdmits
-      ? discoveredSessions.filter((s) => {
-          const fileChat = fileChatsBySessionId.get(s.sessionId);
-          return cardScopeAdmits!(fileChat?.id ?? s.sessionId);
-        })
-      : discoveredSessions;
+    // The space filter runs here too, BEFORE pagination, so a page is filled
+    // from the space's own chats rather than thinned after the fact.
+    const paginatedSessions =
+      cardScopeAdmits || spaceFiltering
+        ? discoveredSessions.filter((s) => {
+            const fileChat = fileChatsBySessionId.get(s.sessionId);
+            const id = fileChat?.id ?? s.sessionId;
+            if (cardScopeAdmits && !cardScopeAdmits(id)) return false;
+            return spaceAdmits(id, fileChat?.folder ?? s.folder);
+          })
+        : discoveredSessions;
 
     // Which provider discovered each session log, so a deferred preview read
     // can go straight to its owner. Keyed by path because that is all a
     // finished row still carries by the time the preview is read.
-    const fileChatsById = new Map(fileChats.map((chat) => [chat.id, chat]));
     const providerKindByLogPath = new Map<string, string>();
     for (const s of discoveredSessions) providerKindByLogPath.set(s.filePath, s.providerKind);
 
@@ -905,7 +958,7 @@ chatsRouter.get("/", (req, res) => {
       // so the window is filled from what's left.
       const augmented = dropTriggered(paginatedSessions.map(augmentSession));
       ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
-    } else if (includeLineage || scopedByCardLifecycle || includePinned) {
+    } else if (includeLineage || scopedByCardLifecycle || includePinned || spaceFiltering) {
       // Sessions were over-fetched (for lineage lookup, so the lifecycle filter
       // could run across the whole list, or so the pinned append can find a
       // session for a chat outside the window) — paginate manually, by row for
@@ -975,6 +1028,9 @@ chatsRouter.get("/", (req, res) => {
     const appendableRow = (fc: any): any | null => {
       if (isIgnoredProjectFolder(fc.folder)) return null;
       if (cardScopeAdmits && !cardScopeAdmits(fc.id)) return null;
+      // A pinned chat in another space is the leak this guards: pins are
+      // collected corpus-wide above, before any scope applied.
+      if (!spaceAdmits(fc.id, fc.folder)) return null;
       if (bookmarkedFilter && !isBookmarked(fc)) return null;
       if (isRetiredProvider(readProvider(fc))) return null;
       const session = sessionByChatId.get(fc.id);
@@ -1061,7 +1117,8 @@ chatsRouter.get("/", (req, res) => {
         ...chat,
         metadata: refreshNativeMetadata(chat.session_log_path ?? "", chat.session_id, chat.metadata, lifecycleBudget),
       };
-      return attachArchived(attachJobNeedsYou(attachPreview(enriched)));
+      const row = attachArchived(attachJobNeedsYou(attachPreview(enriched)));
+      return spaceResolver ? { ...row, spaceId: spaceResolver.spaceOf(row.id, fileChatsById.get(row.id)?.folder ?? row.folder) } : row;
     });
 
     const responseData = { chats: chatsFromLogs, hasMore, total, windowRows };
@@ -1078,6 +1135,7 @@ chatsRouter.get("/new/info", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Get folder info for new chat'
   // #swagger.description = 'Returns git info, slash commands, and plugins available for a given folder — used before creating a new chat.'
+  /* #swagger.parameters['space'] = { in: 'query', type: 'string', description: 'Space the new chat is going into; its agent scope filters slash_commands' } */
   /* #swagger.parameters['folder'] = { in: 'query', type: 'string', required: true, description: 'Absolute path to the project folder' } */
   /* #swagger.responses[200] = { description: "Folder info with git status, slash commands, and plugins. `isDetached` is present and true only when HEAD points at a commit rather than a branch — `git_branch` still reports its \"main\" fallback in that case." } */
   /* #swagger.responses[400] = { description: "Missing or invalid folder" } */
@@ -1102,12 +1160,12 @@ chatsRouter.get("/new/info", (req, res) => {
   const mainRepoPath = view.repoPath ?? folder;
 
   // Get slash commands and plugins for the folder
-  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(folder);
+  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(folder, scopeOfQuery(req.query.space));
 
   // Get app-wide plugins
   let appPluginsData;
   try {
-    appPluginsData = getAllAppPluginsData();
+    appPluginsData = scopeAppPlugins(getAllAppPluginsData(), scopeOfQuery(req.query.space));
   } catch {
     appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
   }
@@ -1388,12 +1446,17 @@ chatsRouter.get("/:id/tree", (req, res) => {
   // #swagger.description = 'Returns the ancestors of this chat and the full tree of related chats spawned from the same root, across all engines. Nodes include chatId, title, role, provider, status, and folder.'
   /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
   /* #swagger.responses[200] = { description: "ChatTreeResponse: { targetChatId, rootChatId, ancestors, tree }" } */
+  /* #swagger.parameters['space'] = { in: 'query', type: 'string', description: "When given (a space id, not all), a tree that belongs to a different space answers 404 rather than leaking across spaces. The response always carries spaceId." } */
   /* #swagger.responses[404] = { description: "Chat not found or has no stored record" } */
   try {
     const chat = findChat(req.params.id, false);
     const result = buildChatTree(chat?.id ?? req.params.id);
     if (!result) {
       return res.status(404).json({ error: "Chat not found or has no stored record" });
+    }
+    const scope = parseSpaceScope(req.query.space);
+    if (scope !== undefined && scope !== ALL_SPACES && result.spaceId !== scope) {
+      return res.status(404).json({ error: "Chat is not in this space" });
     }
     res.json(result);
   } catch (err: any) {
@@ -2373,13 +2436,14 @@ chatsRouter.get("/:id", (req, res) => {
   const chat = findChat(req.params.id) as any;
   if (!chat) return res.status(404).json({ error: "Not found" });
 
-  // Include slash commands and plugins for the chat's folder
-  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(chat.folder);
+  // Include slash commands and plugins for the chat's folder, minus what its
+  // space's agent scope keeps out of the chat.
+  const { slashCommands, plugins } = commandsAndPluginsOrEmpty(chat.folder, scopeOfChat(chat.id));
 
   // Get app-wide plugins
   let appPluginsData;
   try {
-    appPluginsData = getAllAppPluginsData();
+    appPluginsData = scopeAppPlugins(getAllAppPluginsData(), scopeOfChat(chat.id));
   } catch {
     appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
   }
@@ -2431,7 +2495,8 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
   if (!chat) return res.status(404).json({ error: "Not found" });
 
   try {
-    const result = getCommandsAndPluginsForDirectory(chat.folder);
+    const scope = scopeOfChat(chat.id);
+    const result = getCommandsAndPluginsForDirectory(chat.folder, scope);
 
     // Check if activePlugins query param is provided
     const activePluginIds = req.query.activePlugins
@@ -2441,12 +2506,12 @@ chatsRouter.get("/:id/slash-commands", (req, res) => {
       : [];
 
     // Get all commands including active plugin commands
-    const allCommands = getAllCommandsForDirectory(chat.folder, activePluginIds);
+    const allCommands = getAllCommandsForDirectory(chat.folder, activePluginIds, scope);
 
     // Get app-wide plugins
     let appPluginsData;
     try {
-      appPluginsData = getAllAppPluginsData();
+      appPluginsData = scopeAppPlugins(getAllAppPluginsData(), scope);
     } catch {
       appPluginsData = { scanRoots: [], plugins: [], mcpServers: [] };
     }
@@ -2509,7 +2574,7 @@ chatsRouter.get("/new/slash-commands/content", (req, res) => {
   const name = typeof req.query.name === "string" ? req.query.name : "";
   if (!name) return res.status(400).json({ error: "name query parameter is required" });
 
-  const result = resolveSlashCommandContent(folder, name, parseActivePlugins(req));
+  const result = resolveSlashCommandContent(folder, name, parseActivePlugins(req), scopeOfQuery(req.query.space));
   if (!result) return res.status(400).json({ error: "Invalid command name" });
   res.json(result);
 });
@@ -2530,7 +2595,7 @@ chatsRouter.get("/:id/slash-commands/content", (req, res) => {
   const name = typeof req.query.name === "string" ? req.query.name : "";
   if (!name) return res.status(400).json({ error: "name query parameter is required" });
 
-  const result = resolveSlashCommandContent(chat.folder, name, parseActivePlugins(req));
+  const result = resolveSlashCommandContent(chat.folder, name, parseActivePlugins(req), scopeOfChat(chat.id));
   if (!result) return res.status(400).json({ error: "Invalid command name" });
   res.json(result);
 });

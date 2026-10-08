@@ -425,6 +425,29 @@ class ChatFileService {
     }
   }
 
+  /**
+   * {@link updateChatMetadata} for a caller that already holds the record —
+   * typically from a snapshot. Re-reads it by session id (the filename, so
+   * one stat + read) and merges into that fresh copy, instead of `getChat`'s
+   * by-chat-id lookup, whose miss path is a readdir + stat of every record:
+   * ~10–27 ms each, which a loop over hundreds of chats turns into seconds of
+   * blocked event loop. Falls back to the by-id path only when the record has
+   * been refiled under a different session id since the snapshot was taken.
+   */
+  updateChatMetadataForRecord(record: Pick<Chat, "id" | "session_id">, fields: Record<string, unknown>, opts?: { touch?: boolean }): boolean {
+    const fresh = this.getChatBySessionId(record.session_id);
+    if (!fresh || fresh.id !== record.id) return this.updateChatMetadata(record.id, fields, opts);
+    try {
+      fresh.metadata = JSON.stringify({ ...JSON.parse(fresh.metadata || "{}"), ...fields });
+      if (opts?.touch !== false) fresh.updated_at = new Date().toISOString();
+      this.saveChat(fresh);
+      return true;
+    } catch (error) {
+      log.error(`Error updating chat metadata for ${record.id}: ${error}`);
+      return false;
+    }
+  }
+
   // The chat's current per-chat model override, if any — a live read of
   // metadata.model, the field the model switcher rewrites mid-chat (and the
   // session-starting tools read to default a child onto the calling chat's

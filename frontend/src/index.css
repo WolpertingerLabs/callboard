@@ -258,6 +258,16 @@
   --board-drawer-bg: var(--bg);
   --board-item-bg: var(--surface);
   --board-item-border: var(--border);
+
+  /* Space accents — the tint a space may pick (shared/types/space.ts
+     SPACE_ACCENTS), shown as a stripe/dot beside its name. Derived from
+     existing tokens so every theme tints them; never painted under text. */
+  --space-accent-blue: var(--badge-info);
+  --space-accent-green: var(--status-green);
+  --space-accent-purple: var(--accent);
+  --space-accent-orange: var(--warning);
+  --space-accent-pink: var(--badge-provider-pi-bg);
+  --space-accent-teal: var(--badge-provider-codex-bg);
 }
 
 /* Light mode overrides (applied via data-theme attribute on <html>) */
@@ -491,6 +501,14 @@
   --board-drawer-bg: var(--bg);
   --board-item-bg: var(--surface);
   --board-item-border: var(--border);
+
+  /* Space accents — same derivation as dark. */
+  --space-accent-blue: var(--badge-info);
+  --space-accent-green: var(--status-green);
+  --space-accent-purple: var(--accent);
+  --space-accent-orange: var(--warning);
+  --space-accent-pink: var(--badge-provider-pi-bg);
+  --space-accent-teal: var(--badge-provider-codex-bg);
 }
 
 html,

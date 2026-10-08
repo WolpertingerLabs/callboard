@@ -99,6 +99,9 @@ import { groupToolMessages, type DisplayItem } from "../utils/toolGrouping";
 import { abandonedTaskMarker, pendingBackgroundTaskIds } from "../utils/backgroundTasks";
 import { sameActivityPayload } from "../utils/activitySnapshot";
 import { errorMessage } from "../utils/errorMessage";
+import { useSpaces } from "../contexts/SpaceContext";
+import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
+import { writesBrowserFallback } from "../utils/spaceDefaults";
 
 /**
  * How long an opened draft's images get to come back before the composer stops
@@ -286,6 +289,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // the new-chat request so the backend stamps parentChatId/rootChatId.
   const newChatParentId = routeState.parentChatId;
   const newChatRole = routeState.chatRole;
+  // The space a new chat goes into: the panel's pick, else this tab's active
+  // space ("all" picks none, and the server's folder rules decide).
+  const { enabled: spacesEnabled, activeSpaceId, spaces } = useSpaces();
+  const liveSpaceCount = spaces.length;
+  const newChatSpaceId = routeState.spaceId ?? (spacesEnabled && activeSpaceId && activeSpaceId !== ALL_SPACES ? activeSpaceId : undefined);
 
   // When navigating from /chat/new → /chat/:id, the in-flight messages are
   // passed via router state so they survive the component remount.
@@ -1721,7 +1729,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     // and not fixed by the reset. `BranchSelector` guards its own listing fetch
     // the same way and for the same reason.
     let current = true;
-    getNewChatInfo(folder)
+    getNewChatInfo(folder, newChatSpaceId)
       .then((data) => {
         if (!current) return;
         setInfo(data);
@@ -1742,7 +1750,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return () => {
       current = false;
     };
-  }, [folder, id]);
+  }, [folder, id, newChatSpaceId]);
 
   // Load existing chat data (only when id is available)
   useEffect(() => {
@@ -2251,7 +2259,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
         if (!id) {
           // NEW CHAT MODE: POST to /api/chats/new/message
-          addRecentDirectory(folder);
+          // The browser's recent list belongs to General (the fallback); any
+          // other space's list is recorded server-side on the chat's space.
+          if (writesBrowserFallback({ enabled: spacesEnabled, spaceId: newChatSpaceId, liveSpaceCount })) addRecentDirectory(folder);
 
           // Stamp the compose screen this send came from before the first
           // await, so `chat_created` can tell "still waiting here" from "moved
@@ -2338,6 +2348,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           }
           if (newChatRequireCompletion === true) {
             requestBody.requireExplicitCompletion = true;
+          }
+          if (newChatSpaceId) {
+            requestBody.spaceId = newChatSpaceId;
           }
           if (newChatParentId) {
             requestBody.parentChatId = newChatParentId;
@@ -2483,6 +2496,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatEffort,
       newChatModel,
       newChatRequireCompletion,
+      newChatSpaceId,
+      liveSpaceCount,
       pendingModel,
       pendingEffort,
       chatProvider,
@@ -3684,7 +3699,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               they were chosen in. The remount is also the *only* thing that
               re-emits — the propagate effect depends on none of the props a
               folder change touches. */}
-          <BranchSelector key={folder} folder={folder} currentBranch={info.git_branch || "main"} isDetached={info.isDetached} onChange={setBranchConfig} />
+          <BranchSelector key={folder} folder={folder} spaceId={newChatSpaceId} currentBranch={info.git_branch || "main"} isDetached={info.isDetached} onChange={setBranchConfig} />
         </div>
       )}
 
@@ -3841,6 +3856,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // New-chat mode has no id, and the chip popover still has to resolve
           // — the folder is what the lookup actually keys on server-side.
           folder={folder}
+          // A new chat's command bodies follow its space's agent scope.
+          // A new chat's space, or an existing chat's own: part of the
+          // command-body cache key, so a body cached before the chat moved to
+          // a space with a different agent scope is not shown after.
+          space={id ? (chatMeta.spaceId ?? DEFAULT_SPACE_ID) : newChatSpaceId}
           activePlugins={activePluginIds}
           menuItems={
             !streaming && composerProvider

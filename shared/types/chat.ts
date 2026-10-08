@@ -42,6 +42,14 @@ export interface Chat {
    * Absent means not archived — or not computed.
    */
   archived?: boolean;
+  /**
+   * The {@link import("./space.js").Space} this chat's tree resolves to: the
+   * lineage root's `metadata.spaceId`, else folder rules for a discovered
+   * session with no record, else `"default"`. Computed per `GET /api/chats`
+   * response, never stored on this record (the stored stamp lives in
+   * `metadata.spaceId` and the root's wins). Absent from older daemons.
+   */
+  spaceId?: string;
 }
 
 export interface ChatListResponse {
@@ -114,4 +122,6 @@ export interface ChatTreeResponse {
   ancestors: ChatTreeAncestor[];
   /** Full tree rooted at rootChatId. */
   tree: ChatTreeNode;
+  /** The space the whole tree belongs to (its root's). Absent from older daemons. */
+  spaceId?: string;
 }

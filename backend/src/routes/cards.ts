@@ -26,7 +26,9 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import type { CardPatch, CardSummary } from "shared";
 import { createPinnedMemberLookup } from "../services/card-archive-unpin.js";
-import { createCardContext } from "../services/card-context.js";
+import { cardSpaceScope, createCardContext } from "../services/card-context.js";
+import { moveChatsToSpace, SpaceMoveError } from "../services/space-service.js";
+import { getSpace } from "../services/space-store.js";
 import { patchCardFields, clearCardFieldsOn, CardFieldError } from "../services/card-fields.js";
 import { CARD_CATEGORY_MAX } from "shared";
 import { validateMetadataPatch } from "../services/card-metadata-args.js";
@@ -58,6 +60,8 @@ cardsRouter.get("/", (req: Request, res: Response) => {
   /* #swagger.parameters['includeHidden'] = { in: 'query', type: 'string', description: 'Include cards opted out of the board (metadata.card.hidden). Default false — the board never wants them. The sidebar does: its archived dim has to agree with GET /api/chats?cardLifecycle=unarchived, which counts a hidden card as archived, and a card the client cannot see reads as no card at all, and therefore as not archived.' } */
   /* #swagger.parameters['closedLimit'] = { in: 'query', type: 'integer', description: 'Return only the N most recently archived (lifecycle "closed") cards, by closedAt (else updatedAt); open cards are never limited. closedTotal still counts every archived card and categories still covers them all. Omitted (with closedSince) = every card, as before.' } */
   /* #swagger.parameters['closedSince'] = { in: 'query', type: 'string', description: 'ISO timestamp cursor: return every archived card whose closedAt (else updatedAt) is at or after it, uncapped. How a client refetches the window it already holds, so newly archived cards add on top instead of pushing older loaded ones out. With closedLimit, a card is returned if EITHER admits it.' } */
+  /* #swagger.parameters['space'] = { in: 'query', type: 'string', description: 'Only cards in this space (a space id), or all. closedTotal and categories describe the scoped set. Every card carries spaceId. Omitted = all.' } */
+  /* #swagger.parameters['crossSpaceNeedsYou'] = { in: 'query', type: 'string', description: "With space, also return OPEN cards from other spaces whose rollup is needs_you — separation must never hide a blocked chat. They carry their own spaceId so the board can chip them." } */
   const rawLimit = req.query.closedLimit;
   const closedLimit = typeof rawLimit === "string" && /^\d+$/.test(rawLimit) ? Number(rawLimit) : undefined;
   if (rawLimit !== undefined && closedLimit === undefined) {
@@ -69,7 +73,13 @@ cardsRouter.get("/", (req: Request, res: Response) => {
     return res.status(400).json({ error: "closedSince must be a timestamp" });
   }
   try {
-    const { cards, closedTotal, categories } = createCardContext().board(listRuns({ withRoot: true }), req.query.includeHidden === "true", { closedLimit, closedSince });
+    const space = typeof req.query.space === "string" && req.query.space ? req.query.space.slice(0, 128) : "all";
+    const { cards, closedTotal, categories } = createCardContext().board(
+      listRuns({ withRoot: true }),
+      req.query.includeHidden === "true",
+      { closedLimit, closedSince },
+      cardSpaceScope(space, req.query.crossSpaceNeedsYou === "true"),
+    );
     // Pinned first, then most recent activity.
     cards.sort((a, b) => (a.pinned === b.pinned ? b.lastActivityAt.localeCompare(a.lastActivityAt) : a.pinned ? -1 : 1));
     res.json({ cards, closedTotal, categories });
@@ -259,6 +269,9 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
   // #swagger.description = 'id is the card\'s root chat id (any member chat id resolves to the same card). The patch merges into the root chat\'s metadata.card as a view-only write (no updated_at bump). Archiving the card — lifecycle "closed" or hidden true — also clears metadata.pinned on the chats in its tree unless agent settings set unpinChatsOnArchive to false; unarchiving never restores a pin.'
   /* #swagger.responses[404] = { description: "Card not found" } */
   const body = req.body ?? {};
+  if (body.spaceId !== undefined && typeof body.spaceId !== "string") {
+    return res.status(400).json({ error: "spaceId must be a string" });
+  }
   const patch: Record<string, unknown> = {};
   for (const field of PATCHABLE_FIELDS) {
     if (field in body) patch[field] = body[field];
@@ -306,7 +319,25 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     const context = createCardContext(stored);
     const root = context.resolve(req.params.id);
     if (!root) return res.status(404).json({ error: "Card not found" });
-    const card = patchCardFields(root.rootChatId, patch as CardPatch, { pinnedMembers: createPinnedMemberLookup(stored) });
+    // Moving a card moves its whole tree — a tree never spans two spaces.
+    // Ordered so a refused request changes nothing: the target space is
+    // checked up front, the card fields (which validate as they write) go
+    // next, and the move — which can then only fail on I/O — goes last.
+    if (typeof body.spaceId === "string") {
+      const target = getSpace(body.spaceId);
+      if (!target) return res.status(400).json({ error: `Space "${body.spaceId}" not found` });
+      if (target.archived) return res.status(400).json({ error: `Space "${target.name}" is archived — unarchive it before moving chats into it` });
+    }
+    const card = Object.keys(patch).length
+      ? patchCardFields(root.rootChatId, patch as CardPatch, { pinnedMembers: createPinnedMemberLookup(stored) })
+      : { id: root.rootChatId };
+    if (card && typeof body.spaceId === "string") {
+      const moved = moveChatsToSpace([root.rootChatId], body.spaceId);
+      const failure = moved.failed[0];
+      if (failure) return res.status(failure.error === "Chat not found" ? 404 : 500).json({ error: failure.error });
+      const movedRoot = chatFileService.getChat(root.rootChatId);
+      if (movedRoot) context.replaceRoot(movedRoot);
+    }
     if (!card) return res.status(404).json({ error: "Card not found" });
     if (!context.isNativeTarget(req.params.id)) clearRedirectedMemberCard(req.params.id, root.rootChatId);
     // A lifecycle flip changes which chats the sidebar's cards-only filter
@@ -323,7 +354,7 @@ cardsRouter.patch("/:id", (req: Request, res: Response) => {
     if (!summary) throw new Error(`Updated card "${card.id}" was missing from the chat snapshot`);
     res.json({ card: summary });
   } catch (err: any) {
-    if (err instanceof CardFieldError) return res.status(400).json({ error: err.message });
+    if (err instanceof CardFieldError || err instanceof SpaceMoveError) return res.status(400).json({ error: err.message });
     if (/title/i.test(err.message ?? "")) return res.status(400).json({ error: err.message });
     log.error(`Error updating card: ${err}`);
     res.status(500).json({ error: "Failed to update card", details: err.message });

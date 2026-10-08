@@ -24,8 +24,9 @@
  * mock — `custom-skills.plugin-load.test.ts` for the Claude side and
  * `agents/adapters/pi/customSkills.test.ts` for pi's.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, renameSync, statSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, renameSync, statSync, symlinkSync } from "fs";
 import { join } from "path";
+import { createHash } from "node:crypto";
 import { DATA_DIR } from "../utils/paths.js";
 import { createLogger } from "../utils/logger.js";
 import type { CustomSkill, CustomSkillListItem } from "shared/types/index.js";
@@ -36,6 +37,12 @@ const PLUGIN_DIR = join(DATA_DIR, "custom-skills");
 const SKILLS_DIR = join(PLUGIN_DIR, "skills");
 const MANIFEST_DIR = join(PLUGIN_DIR, ".claude-plugin");
 const MANIFEST_FILE = join(MANIFEST_DIR, "plugin.json");
+/**
+ * Space-scoped views of the plugin: one directory per distinct skill subset,
+ * holding a copy of the manifest and symlinks to the selected skills. Same
+ * plugin name, same `callboard:<name>` invocations — just fewer of them.
+ */
+const SCOPED_ROOT = join(DATA_DIR, "custom-skills-scoped");
 
 /** Plugin name — skills surface as `callboard:<name>` in both chat paths. */
 export const CUSTOM_SKILLS_PLUGIN_NAME = "callboard";
@@ -230,7 +237,7 @@ class CustomSkillsService {
    * Plugin directory to inject into chat sessions, or null when no skills
    * exist (so empty installs add nothing to the plugin surface).
    */
-  getPluginDir(): string | null {
+  getPluginDir(allowed?: string[]): string | null {
     if (this.listSkills().length === 0) return null;
     try {
       ensurePluginManifest();
@@ -238,7 +245,47 @@ class CustomSkillsService {
       log.error(`Failed to ensure custom-skills plugin manifest: ${err.message}`);
       return null;
     }
-    return PLUGIN_DIR;
+    if (!allowed) return PLUGIN_DIR;
+    const scoped = this.scopedDir(allowed);
+    return scoped ? scoped.pluginDir : null;
+  }
+
+  /**
+   * A plugin directory exposing only `allowed` skills (a space's agent scope),
+   * or null when none of them exist. Keyed by the set of names that exist
+   * right now, so a skill created or deleted since lands in a different
+   * directory; the links point at the live skill dirs, so edits need nothing.
+   * Built in a temp dir and renamed in, so a concurrent session never sees a
+   * half-built plugin.
+   */
+  private scopedDir(allowed: string[]): { pluginDir: string; skillsDir: string } | null {
+    const names = this.listSkills()
+      .map((s) => s.name)
+      .filter((name) => allowed.includes(name))
+      .sort();
+    if (names.length === 0) return null;
+    const key = createHash("sha1").update(names.join("\n")).digest("hex").slice(0, 16);
+    const pluginDir = join(SCOPED_ROOT, key);
+    const skillsDir = join(pluginDir, "skills");
+    if (existsSync(join(pluginDir, ".claude-plugin", "plugin.json"))) return { pluginDir, skillsDir };
+    const tmp = `${pluginDir}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      mkdirSync(join(tmp, ".claude-plugin"), { recursive: true });
+      mkdirSync(join(tmp, "skills"), { recursive: true });
+      for (const name of names) symlinkSync(skillDir(name), join(tmp, "skills", name), "dir");
+      writeFileSync(join(tmp, ".claude-plugin", "plugin.json"), readFileSync(MANIFEST_FILE, "utf8"), "utf8");
+      try {
+        renameSync(tmp, pluginDir);
+      } catch {
+        // Lost a race to an identical build — theirs is as good as ours.
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    } catch (err: any) {
+      rmSync(tmp, { recursive: true, force: true });
+      log.error(`Failed to build scoped custom-skills plugin: ${err.message}`);
+      return null;
+    }
+    return { pluginDir, skillsDir };
   }
 
   /**
@@ -262,8 +309,15 @@ class CustomSkillsService {
    * {@link listSkills} already implies this directory exists and holds them, and
    * pi has no use for the Claude manifest that call would write.
    */
-  getSkillsDir(): string | null {
-    return this.listSkills().length === 0 ? null : SKILLS_DIR;
+  getSkillsDir(allowed?: string[]): string | null {
+    if (this.listSkills().length === 0) return null;
+    if (!allowed) return SKILLS_DIR;
+    try {
+      ensurePluginManifest();
+    } catch {
+      return null;
+    }
+    return this.scopedDir(allowed)?.skillsDir ?? null;
   }
 
   /** `callboard:<name>` invocation strings for slash-command listings. */

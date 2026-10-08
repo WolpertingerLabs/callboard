@@ -63,6 +63,7 @@ streamRouter.post("/new/message", async (req, res) => {
             agentAlias: { type: "string", description: "Agent alias — injects Callboard agent tools MCP server into the session" },
             model: { type: "string", description: "Model for the provider of the chat. OpenRouter: a model slug (e.g. anthropic/claude-opus-4.7) or alias. Claude Code: an Anthropic model alias (opus, sonnet, haiku, opusplan) or full model ID (e.g. claude-sonnet-4-6). Omit to use the global default of the provider." },
             requireExplicitCompletion: { type: "boolean", description: "Require the session to call the objective_complete tool before it is considered done; if the stream ends without it, the session is re-prompted to continue (up to a cap). Persisted for the chat. Default: false." },
+            spaceId: { type: "string", description: "Space to file the new chat into. Ignored when parentChatId links it into an existing tree (a tree never spans two spaces); unknown or archived ids fall back to the folder rules, then the default space." },
             parentChatId: { type: "string", description: "Chat ID of the chat that spawned this one — links the new chat into the cross-engine chat parentage tree. Ignored when the parent has no stored record." },
             chatRole: { type: "string", description: "Free-form role label (max 40 chars) for the tree node of the new chat, e.g. subagent, monitor, engine-switch. Only used with parentChatId." },
             cardId: { type: "string", description: "Deprecated no-op. Cards are derived from the chat lineage tree — a top-level chat is a card automatically and every child joins its root. Accepted (and ignored) so older clients keep working." },
@@ -106,6 +107,7 @@ streamRouter.post("/new/message", async (req, res) => {
     requireExplicitCompletion,
     parentChatId,
     chatRole,
+    spaceId,
     cardId,
     createCard,
     cardCategory,
@@ -321,6 +323,11 @@ streamRouter.post("/new/message", async (req, res) => {
           parentChatId,
           ...(typeof chatRole === "string" && chatRole && { chatRole }),
         }),
+      ...(typeof spaceId === "string" && spaceId && { spaceId: spaceId.slice(0, 128) }),
+      // Recorded on the space the chat actually lands in (a parent's tree can
+      // overrule the requested one) — keyed on the folder the user picked, not
+      // the worktree it may have become.
+      ...(typeof spaceId === "string" && spaceId && { recordRecentFolder: folder }),
     });
 
     // Opens the stream and answers the client's capability handshake with a

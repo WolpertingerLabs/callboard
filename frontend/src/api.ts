@@ -1,6 +1,7 @@
 import { handshakeHeaders } from "shared/types/index.js";
 import type { ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
+import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
 import type {
   UiAgentProviderKind,
   UserContactAvailability,
@@ -335,6 +336,12 @@ export async function listChats(
    * exactly as it did.
    */
   includePinned?: boolean,
+  /**
+   * Scope the list to one space (an id) or every space ("all"). Omitted =
+   * unscoped, the request older daemons understand. Rows carry `spaceId`
+   * whenever this is sent.
+   */
+  space?: string,
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -346,12 +353,16 @@ export async function listChats(
   if (cardsOnly) params.append("cardsOnly", "true");
   if (cardLifecycle && cardLifecycle !== "all") params.append("cardLifecycle", cardLifecycle);
   if (includePinned) params.append("includePinned", "true");
+  if (space) params.append("space", space);
 
   return request(`/chats${query(params)}`, { error: "Failed to list chats" });
 }
 
-export async function getChatTree(id: string): Promise<ChatTreeResponse> {
-  return request(`/chats/${seg(id)}/tree`, { error: "Failed to get chat tree" });
+/** `space` (an id, not "all") makes a tree from another space 404 rather than leak into this one. */
+export async function getChatTree(id: string, space?: string): Promise<ChatTreeResponse> {
+  const params = new URLSearchParams();
+  if (space && space !== "all") params.set("space", space);
+  return request(`/chats/${seg(id)}/tree${query(params)}`, { error: "Failed to get chat tree" });
 }
 
 export async function searchChatContents(query: string): Promise<{ chatIds: string[] }> {
@@ -420,9 +431,20 @@ export async function dismissSummon(id: string): Promise<Chat> {
  * says "not archived" while `cardLifecycle=unarchived` withholds them for being
  * archived — the two halves out of step in the one way #440 set out to prevent.
  */
-export async function listCards(includeHidden?: boolean, archive: { closedLimit?: number; closedSince?: string } = {}): Promise<CardListResponse> {
+export async function listCards(
+  includeHidden?: boolean,
+  archive: { closedLimit?: number; closedSince?: string } = {},
+  /**
+   * `space` scopes the board (an id, or "all"); `crossSpaceNeedsYou` keeps
+   * other spaces' blocked cards in the response so the Needs-you bucket
+   * never hides one. Omitted = every space, as before.
+   */
+  scope: { space?: string; crossSpaceNeedsYou?: boolean } = {},
+): Promise<CardListResponse> {
   const params = new URLSearchParams();
   if (includeHidden) params.set("includeHidden", "true");
+  if (scope.space) params.set("space", scope.space);
+  if (scope.crossSpaceNeedsYou) params.set("crossSpaceNeedsYou", "true");
   if (archive.closedLimit !== undefined) params.set("closedLimit", String(archive.closedLimit));
   if (archive.closedSince !== undefined) params.set("closedSince", archive.closedSince);
   const query = params.toString();
@@ -457,6 +479,81 @@ export async function bulkSetCardLifecycle(ids: string[], lifecycle: "open" | "c
   return request("/cards/bulk-lifecycle", { method: "POST", json: { ids, lifecycle }, error: "Failed to update cards" });
 }
 
+// ── Spaces ──────────────────────────────────────────────────────────
+
+/** `includeCounts` costs a pass over every chat — settings only, never on a poll. */
+export async function listSpaces(opts: { includeArchived?: boolean; includeCounts?: boolean } = {}): Promise<SpaceListItem[]> {
+  const params = new URLSearchParams();
+  if (opts.includeArchived) params.set("includeArchived", "true");
+  if (opts.includeCounts) params.set("includeCounts", "true");
+  return requestField(`/spaces${query(params)}`, "spaces", { error: "Failed to list spaces" });
+}
+
+export async function createSpace(body: SpacePatch & { name: string }): Promise<SpaceListItem> {
+  return requestField("/spaces", "space", { method: "POST", json: body, error: "Failed to create space" });
+}
+
+/** Rewrite the switcher order in one request (listed ids first, in this order). */
+export async function reorderSpaces(ids: string[]): Promise<void> {
+  await requestVoid("/spaces/order", { method: "POST", json: { ids }, error: "Failed to reorder spaces" });
+}
+
+/** A delta: only the keys present change, `null` clears. */
+export async function updateSpace(id: string, patch: SpacePatch): Promise<SpaceListItem> {
+  return requestField(`/spaces/${seg(id)}`, "space", { method: "PATCH", json: patch, error: "Failed to update space" });
+}
+
+/** A DELETE refused because the space still holds chats or jobs; carries the server's counts. */
+export class SpaceNotEmptyError extends Error {
+  constructor(
+    message: string,
+    readonly chatCount: number,
+    readonly jobCount: number,
+  ) {
+    super(message);
+  }
+}
+
+/** Refused with {@link SpaceNotEmptyError} unless `moveTo` names where its chats and jobs go. */
+export async function deleteSpace(id: string, moveTo?: string): Promise<{ movedChats: number; movedJobs: number }> {
+  const params = new URLSearchParams();
+  if (moveTo) params.set("moveTo", moveTo);
+  const res = await fetch(`${BASE}/spaces/${seg(id)}${query(params)}`, { method: "DELETE", credentials: "include" });
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({}));
+    throw new SpaceNotEmptyError(errorBodyMessage(body, "This space is not empty"), Number(body.chatCount) || 0, Number(body.jobCount) || 0);
+  }
+  await assertOk(res, "Failed to delete space");
+  return res.json();
+}
+
+export interface SpaceMoveResult {
+  movedRoots: string[];
+  chatCount: number;
+  failed: { id: string; error: string }[];
+}
+
+/** Move whole trees into a space — by any member chat id, or every tree rooted in a folder. */
+export async function moveToSpace(spaceId: string, target: { chatIds?: string[]; folder?: string; fromSpace?: string }): Promise<SpaceMoveResult> {
+  return request(`/spaces/${seg(spaceId)}/move`, { method: "POST", json: target, error: "Failed to move to space" });
+}
+
+/** The space a chat's tree lives in; `archived` when that space is archived. */
+export async function getChatSpace(chatId: string): Promise<{ spaceId: string; archived?: boolean }> {
+  return request(`/spaces/of/${seg(chatId)}`, { error: "Failed to resolve the chat's space" });
+}
+
+export interface SpaceFolderGroup {
+  displayFolder: string;
+  rootCount: number;
+  chatCount: number;
+  lastActivityAt: string;
+}
+
+export async function getSpaceFolderGroups(from = "default"): Promise<SpaceFolderGroup[]> {
+  return requestField(`/spaces/folder-groups?from=${encodeURIComponent(from)}`, "groups", { error: "Failed to group chats" });
+}
+
 // No createCard / deleteCard / assignChatToCard: a card IS a lineage root
 // chat. It is created by starting a top-level chat, deleted by deleting that
 // chat, and joined by being spawned from the tree. Edit card fields with
@@ -484,8 +581,11 @@ export interface NewChatInfo {
   appPlugins?: AppPluginsData;
 }
 
-export async function getNewChatInfo(folder: string): Promise<NewChatInfo> {
-  return request(`/chats/new/info?folder=${encodeURIComponent(folder)}`, { error: "Failed to get chat info" });
+/** `space` is the space the chat is going into: its agent scope filters `slash_commands`. */
+export async function getNewChatInfo(folder: string, space?: string): Promise<NewChatInfo> {
+  const params = new URLSearchParams({ folder });
+  if (space) params.set("space", space);
+  return request(`/chats/new/info?${params}`, { error: "Failed to get chat info" });
 }
 
 /**
@@ -780,6 +880,8 @@ export interface SlashCommandScope {
   folder?: string;
   /** Per-directory plugin ids the user has switched on. */
   activePlugins?: string[];
+  /** For a new chat (folder only): the space it is going into, whose agent scope applies. */
+  space?: string;
 }
 
 /**
@@ -799,10 +901,12 @@ export interface SlashCommandScope {
 const slashCommandContentCache = new Map<string, SlashCommandContent>();
 
 export async function getSlashCommandContent(name: string, scope: SlashCommandScope): Promise<SlashCommandContent> {
-  const { chatId, folder, activePlugins = [] } = scope;
+  const { chatId, folder, activePlugins = [], space } = scope;
   if (!chatId && !folder) throw new Error("Cannot resolve a command without a chat or a folder");
 
-  const key = `${chatId ?? `folder:${folder}`}|${activePlugins.join(",")}|${name}`;
+  // The space is in the key for both doors: a space's agent scope decides
+  // whether a body is shown at all, and a chat can move between spaces.
+  const key = `${chatId ?? `folder:${folder}`}|space:${space ?? ""}|${activePlugins.join(",")}|${name}`;
   const cached = slashCommandContentCache.get(key);
   if (cached) return cached;
 
@@ -814,6 +918,7 @@ export async function getSlashCommandContent(name: string, scope: SlashCommandSc
   } else {
     path = "/chats/new/slash-commands/content";
     params.set("folder", folder!);
+    if (space) params.set("space", space);
   }
 
   const data = await request<SlashCommandContent>(`${path}?${params.toString()}`, { error: "Failed to get command content" });

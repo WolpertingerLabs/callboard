@@ -7,6 +7,7 @@ import { ARTIFACT_STANDALONE_ROUTE } from "./components/artifactStandalone";
 import CodeLoginModal from "./components/CodeLoginModal";
 import StaleBundleBanner from "./components/StaleBundleBanner";
 import { SessionProvider } from "./contexts/SessionContext";
+import { SpaceProvider } from "./contexts/SpaceContext";
 import { useVisualViewportHeight } from "./hooks/useVisualViewportHeight";
 import { checkClaudeStatus, type ClaudeAuthStatus } from "./api";
 import { getThemeMode, getCustomThemeName } from "./utils/localStorage";
@@ -188,35 +189,47 @@ export default function App() {
   return (
     <SessionProvider>
       <BrowserRouter>
-        <Routes>
-          {/* Existing chat routes */}
-          <Route path="/" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
-          <Route path="/chat/new" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
-          <Route path="/chat/:id" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
-          <Route path="/settings" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
-          <Route
-            path="/settings/:tab"
-            element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
-          />
+        {/* Inside the router: the active space lives in ?space= and follows /chat/:id. */}
+        <SpaceProvider>
+          <Routes>
+            {/* Existing chat routes */}
+            <Route path="/" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+            <Route
+              path="/chat/new"
+              element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+            />
+            <Route
+              path="/chat/:id"
+              element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+            />
+            <Route
+              path="/settings"
+              element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+            />
+            <Route
+              path="/settings/:tab"
+              element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+            />
 
-          {/* Cards board - rendered inside SplitLayout */}
-          <Route path="/board" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+            {/* Cards board - rendered inside SplitLayout */}
+            <Route path="/board" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
 
-          {/* Agent routes - rendered inside SplitLayout */}
-          <Route path="/agents" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
-          <Route
-            path="/agents/new"
-            element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
-          />
-          <Route
-            path="/agents/:alias/*"
-            element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
-          />
+            {/* Agent routes - rendered inside SplitLayout */}
+            <Route path="/agents" element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />} />
+            <Route
+              path="/agents/new"
+              element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+            />
+            <Route
+              path="/agents/:alias/*"
+              element={<SplitLayout onLogout={handleLogout} claudeLoggedIn={claudeLoggedIn} onShowClaudeModal={handleShowClaudeModal} />}
+            />
 
-          {/* One artifact filling the window, outside the app chrome. Logged out, the
+            {/* One artifact filling the window, outside the app chrome. Logged out, the
               Login screen renders in place at this same URL, so signing in lands here. */}
-          <Route path={ARTIFACT_STANDALONE_ROUTE} element={<ArtifactPage />} />
-        </Routes>
+            <Route path={ARTIFACT_STANDALONE_ROUTE} element={<ArtifactPage />} />
+          </Routes>
+        </SpaceProvider>
       </BrowserRouter>
       <CodeLoginModal isOpen={showClaudeModal} onClose={handleCloseClaudeModal} onStatusChange={handleClaudeStatusChange} status={claudeStatus} />
       {/* Outside the router on purpose: the news that the daemon moved is not

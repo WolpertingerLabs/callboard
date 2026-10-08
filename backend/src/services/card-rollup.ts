@@ -32,6 +32,18 @@ import { isRetiredProvider } from "../agents/ports/AgentProvider.js";
 import { listActivities } from "./chat-activity.js";
 import { listPendingForParent } from "./session-callbacks.js";
 
+/**
+ * Space scoping for {@link buildCardBoard}. `normalize` maps a card's raw
+ * stamp to the space it means (unknown ids → default); `scope` is a space id
+ * or "all"; `crossSpaceNeedsYou` keeps other spaces' open cards whose rollup
+ * is needs_you, so the board's Needs-you bucket stays cross-space.
+ */
+export interface CardSpaceScope {
+  scope: string;
+  crossSpaceNeedsYou?: boolean;
+  normalize: (raw: string | undefined) => string;
+}
+
 export interface RollupDeps {
   nativeLifecycleOf?: (chat: Chat) => NonNullable<CardMemberChat["nativeAgent"]>["lifecycle"];
   isSessionActive: (chatId: string, sessionId: string) => boolean;
@@ -331,7 +343,7 @@ export function buildCardSummaries(
   chats: Chat[],
   allRuns: JobRunListItem[],
   deps: RollupDeps = ROLLUP_DEPS,
-  opts: { includeHidden?: boolean; lifecycle?: Card["lifecycle"] } = {},
+  opts: { includeHidden?: boolean; lifecycle?: Card["lifecycle"]; space?: CardSpaceScope } = {},
 ): CardSummary[] {
   return buildCardBoard(chats, allRuns, deps, opts).cards;
 }
@@ -366,9 +378,20 @@ export function buildCardBoard(
   chats: Chat[],
   allRuns: JobRunListItem[],
   deps: RollupDeps = ROLLUP_DEPS,
-  opts: { includeHidden?: boolean; lifecycle?: Card["lifecycle"]; closedLimit?: number; closedSince?: number } = {},
+  opts: {
+    includeHidden?: boolean;
+    lifecycle?: Card["lifecycle"];
+    closedLimit?: number;
+    closedSince?: number;
+    space?: CardSpaceScope;
+  } = {},
 ): { cards: CardSummary[]; closedTotal: number; categories: string[] } {
   const { existingRootIdOf } = buildLineageIndex(chats);
+  // Cards from other spaces that are kept only as needs-you candidates. They
+  // are rolled up like any other card and dropped afterwards unless their
+  // rollup really is needs_you, and they never count toward closedTotal or
+  // categories — those describe the space being looked at.
+  const foreignRoots = new Set<string>();
 
   // Find every lineage root that qualifies as a card, with its projected
   // fields. Hidden cards are opted out of the board (replacement for the
@@ -386,6 +409,18 @@ export function buildCardBoard(
     if (card.hidden && !opts.includeHidden) continue;
     // Select returned roots before member projection spends lifecycle IO.
     if (opts.lifecycle && card.lifecycle !== opts.lifecycle) continue;
+    if (opts.space) {
+      const stamp = parseChatMetadataRecord(chat.metadata).spaceId;
+      card.spaceId = opts.space.normalize(typeof stamp === "string" ? stamp : undefined);
+      if (opts.space.scope !== "all" && card.spaceId !== opts.space.scope) {
+        // A blocked chat must not be hidden by separation: an OPEN card from
+        // another space stays a candidate for the needs-you bucket.
+        if (!opts.space.crossSpaceNeedsYou || card.lifecycle !== "open" || card.hidden) continue;
+        foreignRoots.add(chat.id);
+        cardsByRoot.set(chat.id, card);
+        continue;
+      }
+    }
     if (card.category) categories.add(card.category);
     if (card.lifecycle === "closed") closedRoots.push([chat.id, card]);
     else cardsByRoot.set(chat.id, card);
@@ -443,9 +478,11 @@ export function buildCardBoard(
       if (runActivity > lastActivityAt) lastActivityAt = runActivity;
     }
 
+    const rollup = rollupState(memberChats, memberRuns);
+    if (foreignRoots.has(rootId) && rollup !== "needs_you") continue;
     summaries.push({
       ...card,
-      rollup: rollupState(memberChats, memberRuns),
+      rollup,
       lastActivityAt,
       chatCount: memberChats.length,
       unread: memberChats.some((c) => c.unread),

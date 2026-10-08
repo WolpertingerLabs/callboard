@@ -18,6 +18,9 @@ import CardTile from "../components/board/CardTile";
 import CardRow from "../components/board/CardRow";
 import SelectionBar from "../components/SelectionBar";
 import CardDrawer from "../components/board/CardDrawer";
+import MoveToSpaceModal from "../components/MoveToSpaceModal";
+import { useSpaces } from "../contexts/SpaceContext";
+import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { ChevronRight, ChevronDown, ChevronLeft, ChevronsUpDown, LayoutGrid, List, Folder } from "lucide-react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { usePolling } from "../hooks/usePolling";
@@ -162,6 +165,18 @@ export default function Board() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const metadataVersion = useMetadataVersion();
+  const { enabled: spacesEnabled, activeSpaceId, spaces, archivedSpaces, spaceById } = useSpaces();
+  /** The tree(s) the "Move to space…" dialog is moving, or null when closed. */
+  const [moveTarget, setMoveTarget] = useState<{ chatIds: string[]; subject: string } | null>(null);
+  /**
+   * The card's space when it shows outside it: another space's blocked card
+   * in Needs you, or any card in the "All" view.
+   */
+  const chipFor = (card: CardSummary) => {
+    if (!spacesEnabled || spaces.length + archivedSpaces.length < 2) return undefined;
+    const spaceId = card.spaceId ?? DEFAULT_SPACE_ID;
+    return activeSpaceId === ALL_SPACES || spaceId !== activeSpaceId ? spaceById(spaceId) : undefined;
+  };
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -247,16 +262,30 @@ export default function Board() {
   const requestSeq = useRef(0);
 
   /** `showUpTo` reaches past the cursor: "Show more" asks for that many. */
+  // The space the archive cursor below was taken in. A new space is a new
+  // archive: the cursor and any pending "Show more" describe the old one's.
+  const cursorScope = useRef(activeSpaceId);
   const loadCards = useCallback(async (showUpTo?: number) => {
+    if (cursorScope.current !== activeSpaceId) {
+      cursorScope.current = activeSpaceId;
+      closedCursor.current = null;
+      pendingShowUpTo.current = null;
+    }
     if (showUpTo !== undefined) pendingShowUpTo.current = Math.max(pendingShowUpTo.current ?? 0, showUpTo);
     const seq = ++requestSeq.current;
     const cursor = closedCursor.current ?? undefined;
     const requested = pendingShowUpTo.current;
     try {
-      const res = await listCards(false, {
+      const archive = {
         closedLimit: requested ?? (cursor ? undefined : ARCHIVE_PAGE_SIZE),
         closedSince: cursor,
-      });
+      };
+      // Scoped to the active space — but a card blocked on you in another
+      // space still comes back, so separation never hides one.
+      const res =
+        spacesEnabled && activeSpaceId
+          ? await listCards(false, archive, { space: activeSpaceId, crossSpaceNeedsYou: true })
+          : await listCards(false, archive);
       if (seq !== requestSeq.current) return;
       const closedCards = res.cards.filter((c) => c.lifecycle === "closed");
       setCards(res.cards);
@@ -275,7 +304,7 @@ export default function Board() {
         setLoaded(true);
       }
     }
-  }, []);
+  }, [spacesEnabled, activeSpaceId]);
 
   useEffect(() => {
     loadCards();
@@ -546,10 +575,11 @@ export default function Board() {
             expanded={isExpanded(card.id)}
             onToggleExpand={() => toggleExpanded(card.id)}
             onOpenFolder={(folder) => openDrawer(card.id, folder)}
+            spaceChip={chipFor(card)}
             {...selectionProps(card)}
           />
         ) : (
-          <CardTile key={card.id} card={card} onClick={() => openDrawer(card.id)} showPath={showPaths} {...selectionProps(card)} />
+          <CardTile key={card.id} card={card} onClick={() => openDrawer(card.id)} showPath={showPaths} spaceChip={chipFor(card)} {...selectionProps(card)} />
         ),
       )}
     </div>
@@ -810,6 +840,23 @@ export default function Board() {
           initialFolderFilter={openCardFolder}
           onPatch={(patch) => patchCard(openCard.id, patch)}
           onClose={closeDrawer}
+          onMoveToSpace={
+            spacesEnabled && spaces.length > 1 ? () => setMoveTarget({ chatIds: [openCard.id], subject: `“${openCard.title}”` }) : undefined
+          }
+        />
+      )}
+
+      {moveTarget && (
+        <MoveToSpaceModal
+          chatIds={moveTarget.chatIds}
+          subject={moveTarget.subject}
+          currentSpaceId={moveTarget.chatIds.length === 1 ? (cards.find((c) => c.id === moveTarget.chatIds[0])?.spaceId ?? undefined) : undefined}
+          onClose={() => setMoveTarget(null)}
+          onMoved={() => {
+            closeDrawer();
+            exitSelection();
+            void loadCards();
+          }}
         />
       )}
 
@@ -825,6 +872,9 @@ export default function Board() {
               label: selectionLifecycle === "open" ? `Archive ${selectedIds.size}` : `Unarchive ${selectedIds.size}`,
               onRun: runBulkLifecycle,
             },
+            ...(spacesEnabled && spaces.length > 1
+              ? [{ key: "space", label: "Move to space…", onRun: () => setMoveTarget({ chatIds: [...selectedIds], subject: `${selectedIds.size} cards` }) }]
+              : []),
           ]}
           onCancel={exitSelection}
           busy={bulkBusy}

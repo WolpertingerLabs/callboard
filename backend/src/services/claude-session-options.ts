@@ -10,7 +10,7 @@
 import { execFile } from "child_process";
 import { accessSync, constants as fsConstants, statSync } from "fs";
 import { resolve, isAbsolute, delimiter as pathDelimiter, join as pathJoin } from "path";
-import type { McpServerConfig } from "shared/types/index.js";
+import type { McpServerConfig, SpaceAgentScope } from "shared/types/index.js";
 import type { HookEvent, HookCallbackMatcher, HookCallback, HookInput, HookJSONOutput, SdkPluginConfig } from "../agents/adapters/claude-code/types.js";
 import { getPluginsForDirectory, type Plugin } from "./plugins.js";
 import { getEnabledAppPlugins, getEnabledMcpServers } from "./app-plugins.js";
@@ -33,7 +33,7 @@ export type PluginMcpServerConfig =
  * Merges per-directory plugins with enabled app-wide plugins.
  * Per-directory plugins take precedence over app-wide plugins with the same name.
  */
-export function buildPluginOptions(folder: string, activePluginIds?: string[]): PluginDescriptor[] {
+export function buildPluginOptions(folder: string, activePluginIds?: string[], scope?: SpaceAgentScope): PluginDescriptor[] {
   const sdkPlugins: PluginDescriptor[] = [];
   const includedNames = new Set<string>();
 
@@ -58,7 +58,10 @@ export function buildPluginOptions(folder: string, activePluginIds?: string[]): 
 
   // App-wide plugins (always included if enabled in settings)
   try {
-    const appPlugins = getEnabledAppPlugins();
+    // A space's agent scope is an allowlist over the app-wide set: a plugin it
+    // does not name stays off in that space's chats (per-directory plugins the
+    // user ticked for this chat are an explicit choice and are not filtered).
+    const appPlugins = getEnabledAppPlugins().filter((p) => !scope?.plugins || scope.plugins.includes(p.id));
     for (const appPlugin of appPlugins) {
       // Deduplicate: per-directory plugins take precedence
       if (!includedNames.has(appPlugin.manifest.name)) {
@@ -84,7 +87,7 @@ export function buildPluginOptions(folder: string, activePluginIds?: string[]): 
   // `additionalSkillPaths` (agents/adapters/pi/optionsAdapter.ts) — because it
   // has no plugin concept at all.
   try {
-    const customSkillsDir = customSkillsService.getPluginDir();
+    const customSkillsDir = customSkillsService.getPluginDir(scope?.skills);
     if (customSkillsDir && !includedNames.has(CUSTOM_SKILLS_PLUGIN_NAME)) {
       sdkPlugins.push({
         type: "local",
@@ -206,9 +209,13 @@ export function isCommandLaunchable(command: string, env: NodeJS.ProcessEnv = pr
   return pathEntries.some((dir) => isExecutableFile(pathJoin(dir, command)));
 }
 
-export function buildMcpServerOptions(): { mcpServers: Record<string, PluginMcpServerConfig>; allowedTools: string[]; resolvedEnvVars: Record<string, string> } | undefined {
+export function buildMcpServerOptions(
+  scope?: SpaceAgentScope,
+): { mcpServers: Record<string, PluginMcpServerConfig>; allowedTools: string[]; resolvedEnvVars: Record<string, string> } | undefined {
   try {
-    const mcpServers = getEnabledMcpServers();
+    // Same allowlist as buildPluginOptions: a plugin the space's scope leaves
+    // out contributes no MCP servers either (e.g. Slack off in "Personal").
+    const mcpServers = getEnabledMcpServers().filter((server) => !scope?.plugins || scope.plugins.includes(server.sourcePluginId));
     if (mcpServers.length === 0) return undefined;
 
     // Build a map of plugin ID → plugin path for resolving MCP server paths

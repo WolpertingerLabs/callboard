@@ -9,7 +9,7 @@ import { formatRelativeTime } from "../../utils/dateFormat";
 import { PENDING_CHIPS } from "./pendingLabels";
 import { getRecentDirectories } from "../../utils/localStorage";
 import type { ChatRouteState } from "../../types/chatRouteState";
-import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag, Folder } from "lucide-react";
+import { X, Pin, PinOff, Archive, ArchiveRestore, MessageSquarePlus, Pencil, Workflow, Plus, Tag, Folder, Layers } from "lucide-react";
 
 /** Mirrors the limits in backend/src/services/card-fields.ts. */
 const METADATA_KEY_MAX = 64;
@@ -21,6 +21,8 @@ interface CardDrawerProps {
   categories: string[];
   /** Resolves false when the patch was rejected — editors stay open so input isn't lost. */
   onPatch: (patch: CardPatch) => Promise<boolean>;
+  /** Opens the board's "Move to space…" dialog for this card's tree; absent hides the button. */
+  onMoveToSpace?: () => void;
   /** Close the drawer (card deletion is root-chat deletion in the chat UI). */
   onClose: () => void;
   /**
@@ -49,7 +51,7 @@ const ICON_BUTTON: React.CSSProperties = {
 };
 
 /** Right-hand drawer with the card's editable identity, members, and actions. */
-export default function CardDrawer({ card, categories, onPatch, onClose, initialFolderFilter }: CardDrawerProps) {
+export default function CardDrawer({ card, categories, onPatch, onClose, initialFolderFilter, onMoveToSpace }: CardDrawerProps) {
   const navigate = useNavigate();
   const [editingDescription, setEditingDescription] = useState(false);
   // Seeded from the prop and owned here after that, so clearing it is a local
@@ -377,6 +379,28 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
               New chat on card
             </button>
           )}
+          {onMoveToSpace && (
+            <button
+              onClick={onMoveToSpace}
+              title="Move this card and every chat in its tree to another space"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                marginLeft: "auto",
+                padding: "8px 12px",
+                borderRadius: 6,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              <Layers size={14} />
+              Move to space…
+            </button>
+          )}
           <button
             onClick={() => onPatch({ lifecycle: closed ? "open" : "closed" })}
             title={
@@ -388,7 +412,7 @@ export default function CardDrawer({ card, categories, onPatch, onClose, initial
               display: "flex",
               alignItems: "center",
               gap: 6,
-              marginLeft: "auto",
+              marginLeft: onMoveToSpace ? undefined : "auto",
               padding: "8px 12px",
               borderRadius: 6,
               border: "1px solid var(--border)",

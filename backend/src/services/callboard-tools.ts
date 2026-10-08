@@ -24,7 +24,9 @@ import { providerModelSchema, resolveProviderModelArgs } from "./tool-provider-a
 import { registerCompletionCallback, removeCallbacks } from "./session-callbacks.js";
 import { buildChatTree } from "./chat-lineage.js";
 import { patchCardFields, CARD_METADATA_VALUE_MAX, CARD_TITLE_MAX, CARD_STATUS_MAX } from "./card-fields.js";
-import { createCardContext } from "./card-context.js";
+import { cardSpaceScope, createCardContext } from "./card-context.js";
+import { spaceOfChat } from "./space-service.js";
+import { getSpace } from "./space-store.js";
 import { listRuns } from "./job-store.js";
 import { buildMetadataPatch } from "./card-metadata-args.js";
 import { CARD_CATEGORY_MAX, CONTACT_CHANNEL_CONNECTIONS } from "shared";
@@ -215,8 +217,21 @@ export function buildCallboardToolsSpec(
      * Absent means unknown, and unknown reads as `null`: ask on every axis.
      */
     getPermissions?: () => DefaultPermissions | null;
+    /**
+     * Live read of the calling chat's space. The default scope of the listing
+     * tools (list_cards, get_chat_tree, search_chats) and the space an
+     * `independent` spawn is filed into. Absent means unscoped — every space.
+     */
+    getSpace?: () => string;
   },
 ): ToolServerSpec {
+  /**
+   * The space a listing tool should scope to: the caller's explicit `space`
+   * argument ("all" or an id), else the calling chat's own space. Any chat may
+   * look across spaces — it just has to ask.
+   */
+  const scopeFor = (requested: string | undefined): string => requested ?? opts?.getSpace?.() ?? "all";
+  const spaceLabel = (spaceId: string) => getSpace(spaceId)?.name ?? spaceId;
   /**
    * Resolve the target card for a setter: an explicit card_id (any chat id
    * in a tree resolves to that tree's card — agents know member chat ids
@@ -465,15 +480,20 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "list_cards",
-        "List cards (tickets) with their lifecycle and narrative status. Includes archived cards by default — useful to check whether a topic was already handled. Filter with lifecycle: 'open' or 'closed' ('closed' is the stored value for what the UI calls archived).",
+        "List cards (tickets) with their lifecycle and narrative status. Includes archived cards by default — useful to check whether a topic was already handled. Filter with lifecycle: 'open' or 'closed' ('closed' is the stored value for what the UI calls archived). " +
+          "Scoped to THIS chat's space by default; pass space: \"all\" (or a space id) to look elsewhere. Each card reports its spaceId.",
         {
           lifecycle: z.enum(["open", "closed"]).optional().describe("Only cards in this lifecycle (default: all)"),
+          space: z.string().max(128).optional().describe('Space to list: a space id, or "all" for every space (default: this chat\'s space)'),
         },
         async (args) => {
-          const cards = cardSummaries(false, undefined, undefined, args.lifecycle)
+          const scope = scopeFor(args.space);
+          const cards = createCardContext()
+            .summaries(listRuns({ withRoot: true }), false, undefined, args.lifecycle, cardSpaceScope(scope))
             .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
             .map((c) => ({
               cardId: c.id,
+              ...(c.spaceId && { spaceId: c.spaceId }),
               chatCount: c.chatCount,
               rollup: c.rollup,
               title: c.title,
@@ -487,7 +507,7 @@ export function buildCallboardToolsSpec(
               ...(c.description && { description: c.description.length > 200 ? `${c.description.slice(0, 200)}…` : c.description }),
               updatedAt: c.updatedAt,
             }));
-          return jsonResult({ cards });
+          return jsonResult({ space: scope, cards });
         },
       ),
 
@@ -845,6 +865,7 @@ export function buildCallboardToolsSpec(
             }
 
             const effectiveFolder = branchResult.folder;
+            const childSpace = opts?.getSpace?.();
             // Record why the worktree exists while we still know — same single
             // write path the /new/message route uses (plans/workspace-object.md).
             const workspaceId = captureWorktreeWorkspace(branchResult);
@@ -890,6 +911,10 @@ export function buildCallboardToolsSpec(
               ...(args.requireExplicitCompletion === true && { requireExplicitCompletion: true }),
               ...(parentChat && !independent && { parentChatId: parentChat.id, ...(args.role && { chatRole: args.role }) }),
               ...(workspaceId && { workspaceId }),
+              // A child joins this chat's tree and so its space anyway; an
+              // independent spawn has no tree to inherit from, so it is told
+              // explicitly. Being parentless must not drop it into the default.
+              ...(childSpace && { spaceId: childSpace }),
             });
 
             // Listen for chat_created to get the chatId.
@@ -934,6 +959,7 @@ export function buildCallboardToolsSpec(
                 : parentChat && { parentChatId: parentChat.id, ...(args.role && { role: args.role }) }),
               permissions: childPermissions,
               ...(onComplete && { onComplete }),
+              spaceId: spaceOfChat(chatId),
             });
           } catch (err: any) {
             log.error(`start_chat_session failed: ${err.message}`);
@@ -1125,11 +1151,17 @@ export function buildCallboardToolsSpec(
             }
 
             const messages = allMessages.slice(-(args.limit || 50));
+            // Naming an id is deliberate, so this reads across spaces — but it
+            // says when the target lives in a different one than the caller.
+            const targetSpace = spaceOfChat(chat.id);
+            const callerSpace = opts?.getSpace?.();
+            const spaceNote =
+              callerSpace && targetSpace !== callerSpace ? `(Note: this chat is in the "${spaceLabel(targetSpace)}" space [${targetSpace}], not this chat's.)\n\n` : "";
             if (messages.length === 0) {
-              return textResult("No messages found in this session");
+              return textResult(`${spaceNote}No messages found in this session`);
             }
 
-            return textResult(messages.join("\n\n"));
+            return textResult(spaceNote + messages.join("\n\n"));
           } catch (err: any) {
             return textResult(`Error reading messages: ${err.message}`);
           }
@@ -1252,6 +1284,7 @@ export function buildCallboardToolsSpec(
             return jsonResult({
               chatId: args.chatId,
               status: "continued",
+              spaceId: spaceOfChat(args.chatId),
               ...(onComplete && { onComplete }),
             });
           } catch (err: any) {
@@ -1263,9 +1296,11 @@ export function buildCallboardToolsSpec(
 
       defineTool(
         "get_chat_tree",
-        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, cline, pi, acp). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats.",
+        "Get the parentage tree for a chat: its ancestors and the full tree of descendant chats spawned from the same root, across all engines (claude-code, codex, cline, pi, acp). Each node includes chatId, title, role, provider, status (ongoing/waiting/stopped), and folder. Defaults to THIS chat when chatId is omitted. Use with read_session_messages / continue_chat to inspect or cooperate with related chats. " +
+          "A tree belongs to exactly one space (reported as spaceId); a tree in another space than THIS chat's is refused unless you pass space: \"all\" or its space id.",
         {
           chatId: z.string().optional().describe("Chat ID to get the tree for (default: the current chat)"),
+          space: z.string().max(128).optional().describe('Space the tree must be in: a space id, or "all" (default: this chat\'s space)'),
         },
         async (args) => {
           try {
@@ -1278,6 +1313,12 @@ export function buildCallboardToolsSpec(
             const result = buildChatTree(chat?.id ?? requestedId);
             if (!result) {
               return error(`Chat "${requestedId}" not found or has no stored record`);
+            }
+            const scope = scopeFor(args.space);
+            if (scope !== "all" && result.spaceId && result.spaceId !== scope) {
+              return error(
+                `Chat "${requestedId}" is in the "${spaceLabel(result.spaceId)}" space (${result.spaceId}), not "${spaceLabel(scope)}". Pass space: "all" or space: "${result.spaceId}" to read it.`,
+              );
             }
             return jsonResult(result);
           } catch (err: any) {
@@ -1552,7 +1593,7 @@ export function buildCallboardToolsSpec(
       // the name, is not a third way in: it writes local records only and
       // refuses a worktree directory outright.
       ...buildWorkspaceTools(),
-      ...buildChatQueryTools(opts?.chatView),
+      ...buildChatQueryTools(opts?.chatView, opts?.getSpace),
 
       // ── Storage + artifacts: the key catalogue and reusable apps ────
       // Global. Storage keys are named buckets the user also browses in

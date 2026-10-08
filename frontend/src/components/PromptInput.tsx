@@ -97,6 +97,8 @@ interface Props {
    * a skill there is the single most common way a chip gets created.
    */
   folder?: string;
+  /** The space the chat is in (or a new chat is going into): part of the command-body cache key, and sent for a new chat. */
+  space?: string;
   /** Per-directory plugin ids the user has switched on, as the listing uses. */
   activePlugins?: string[];
   /**
@@ -148,6 +150,7 @@ export default function PromptInput({
   onSetValue,
   chatId,
   folder,
+  space,
   activePlugins,
   menuItems = [],
   keywords = [],
@@ -764,6 +767,7 @@ export default function PromptInput({
                 name={activeCommand}
                 chatId={chatId}
                 folder={folder}
+                space={space}
                 activePlugins={activePlugins}
                 description={commandDescriptions?.[activeCommand]}
                 onRemove={() => changeActiveCommand(null)}

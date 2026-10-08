@@ -57,6 +57,9 @@ import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
+import { readChat, resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
+import { spaceForFolder, touchSpaceRecentDirectory } from "./space-store.js";
+import { DEFAULT_SPACE_ID } from "shared";
 import { getGitInfo } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 import { toPromptIterable } from "./session-spawn.js";
@@ -641,6 +644,20 @@ export interface SendMessageOptions {
    * nothing may depend on its presence.
    */
   workspaceId?: string;
+  /**
+   * Space for a NEW chat that has no tree to inherit one from. Only honored
+   * for new chats, and only as the third choice: a chat spawned under a parent
+   * (`parentChatId`) or into a job run's tree (`jobContext.rootChatId`) always
+   * takes that tree's space, because a tree never spans two. Absent or unknown
+   * falls through to the folder rules, then the default space.
+   */
+  spaceId?: string;
+  /**
+   * A folder to push onto the recent-folder list of the space this NEW chat
+   * lands in (which may not be `spaceId` — a tree's space wins). Set by the
+   * UI's new-chat route; automation leaves it unset. Archived spaces skip it.
+   */
+  recordRecentFolder?: string;
 }
 
 /**
@@ -768,7 +785,12 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     assertChatContextUnchanged(expectedContext, chatFileService.getChat(chat.id));
     assertNativeAgentControllable(opts.chatId, ownershipExpectation);
     if (!storedChat) {
-      chat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: chat.metadata });
+      // First use of a discovered session: it gets a record now, and with it a
+      // space stamp — the folder-rule answer it has been listed under, so
+      // adopting it never moves it out of the space it appeared in.
+      const adoptedSpace = spaceForFolder(chat.folder);
+      const adoptedMeta = adoptedSpace !== DEFAULT_SPACE_ID ? JSON.stringify({ ...parseChatMetadata(chat.metadata), spaceId: adoptedSpace }) : chat.metadata;
+      chat = chatFileService.upsertChat(chat.id, chat.folder, chat.session_id, { metadata: adoptedMeta });
     }
     const routing: Record<string, unknown> = {};
     if (storedMetadata.provider == null && initialMetadata.provider != null) routing.provider = initialMetadata.provider;
@@ -885,6 +907,23 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // below — the chat record does not exist yet, so the root cannot be
         // walked to from the child's side.
         newChatRootId = lineage.rootChatId;
+      }
+    }
+    // File the new chat into a space. A tree never spans two, so a chat with
+    // a tree to join takes that tree's space; only a true root consults the
+    // caller's choice and then the folder rules. Absent means default, so the
+    // default is never written.
+    const spaceId = resolveNewChatSpace({
+      treeRootId: newChatRootId ?? (opts.jobContext?.rootChatId ? walkToRootId(opts.jobContext.rootChatId, readChat) : undefined),
+      requested: opts.spaceId,
+      folder,
+    });
+    if (spaceId !== DEFAULT_SPACE_ID) initialMetadata.spaceId = spaceId;
+    if (opts.recordRecentFolder) {
+      try {
+        touchSpaceRecentDirectory(spaceId, opts.recordRecentFolder);
+      } catch (err: any) {
+        log.warn(`Could not record recent folder for space ${spaceId}: ${err?.message ?? err}`);
       }
     }
     // Record initial branch for drift detection on subsequent messages
@@ -1150,9 +1189,23 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // this pass cannot see.
   const toolPermissionPolicy = new ToolPermissionPolicy(getToolCategorizer(providerKind), getDefaultPermissions);
 
+  // The space this chat is filed in, and its record. Read once for the
+  // session's static inputs (instructions, plugin scope); the tool getter
+  // below re-reads it live, since a tree can be moved mid-session.
+  const initialSpaceId: string = isNewChat
+    ? typeof initialMetadata.spaceId === "string"
+      ? initialMetadata.spaceId
+      : DEFAULT_SPACE_ID
+    : spaceOfChat(opts.chatId, { ifUnknown: DEFAULT_SPACE_ID });
+  // Read live on every scoped tool call, so it must stay cheap: a temp
+  // tracking id has no record by construction, and spaceOfChat's reads are
+  // direct session-id reads (see space-service.ts — never `getChat`).
+  const getSpaceId = (): string => (trackingId.startsWith("new-") ? initialSpaceId : spaceOfChat(trackingId, { ifUnknown: initialSpaceId }));
+  const space = spaceRecord(initialSpaceId);
+
   // Always build plugin options (includes app-wide plugins even when no per-directory plugins are active)
-  const plugins = buildPluginOptions(folder, activePlugins);
-  const mcpOpts = buildMcpServerOptions();
+  const plugins = buildPluginOptions(folder, activePlugins, space?.agentScope);
+  const mcpOpts = buildMcpServerOptions(space?.agentScope);
   // Shared state: when a PreToolUse hook returns permissionDecision "ask",
   // the reason is stashed here so canUseTool can skip auto-approval and
   // prompt the user instead.
@@ -1244,6 +1297,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           // These tools are pre-approved below, so the ceiling is what stops
           // them from handing out more than this chat has.
           getPermissions: getDefaultPermissions,
+          // The caller's space: the default scope of the listing tools
+          // (search_chats, list_cards, get_chat_tree) and the space a spawned
+          // root inherits. A getter, because a tree can be moved mid-session.
+          getSpace: getSpaceId,
         },
       ),
     "callboard-tools server",
@@ -1354,7 +1411,11 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
       (isJobStepSession ? "" : " (optionally with a summary message and structured result data)") +
       " as the last thing you do. If your turn ends without that call, you will be re-prompted to continue working."
     : "";
-  const systemPromptAppend = [opts.systemPrompt, completionInstruction].filter(Boolean).join("\n\n");
+  // Per-space instructions ride on regular chats only: an agent session's
+  // prompt is its persona's, compiled from its own workspace, and a space
+  // preamble on top would contradict it as often as help.
+  const spaceInstruction = opts.agentAlias ? "" : spaceInstructionsPrompt(space);
+  const systemPromptAppend = [opts.systemPrompt, spaceInstruction, completionInstruction].filter(Boolean).join("\n\n");
 
   // The per-chat model and effort as stored in chat metadata (new chats: just
   // written above; resumed chats: loaded from disk). Every harness reads them.

@@ -1125,6 +1125,9 @@ async function spawnStepSession(runId: string, stepId: string, prompt: string, o
     provider,
     ...(model && { model }),
     ...(sessionFields?.effort && { effort: sessionFields.effort }),
+    // Only consulted when the run has no root to inherit a space from — see
+    // sendMessage's space resolution.
+    ...(defaults.spaceId && { spaceId: defaults.spaceId }),
     jobContext: {
       runId,
       stepId,

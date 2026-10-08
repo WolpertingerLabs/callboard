@@ -17,6 +17,7 @@ import {
   Check,
   Pin,
   PinOff,
+  Layers,
 } from "lucide-react";
 import type { Chat } from "../api";
 import { chatMeta } from "../utils/chatMeta";
@@ -28,6 +29,8 @@ import { useSelectionActivation } from "../hooks/useSelectionActivation";
 import ProviderBadge from "./ProviderBadge";
 import FolderPathPill from "./FolderPathPill";
 import MenuRow from "./MenuRow";
+import SpaceChip from "./SpaceChip";
+import type { SpaceListItem } from "shared/types/space.js";
 
 /**
  * Every card (ticket) action for one chat. The sidebar row menu is the single
@@ -110,6 +113,13 @@ interface Props {
   onEditTitle?: () => void;
   /** Card actions for the row menu. Omit to render no card entries at all. */
   cardMenu?: ChatCardMenu;
+  /**
+   * The space this row lives in, when the list shows it outside that space
+   * (the "All spaces" view). Absent — the usual case — renders no chip.
+   */
+  spaceChip?: SpaceListItem;
+  /** Opens the list's "Move to space…" picker for this row's whole tree. */
+  onMoveToSpace?: () => void;
   sessionStatus?: { active: boolean; type: string };
   /**
    * The list's roll-up of live work across every chat this row stands for:
@@ -206,6 +216,8 @@ export default function ChatListItem({
   pinned,
   onEditTitle,
   cardMenu,
+  spaceChip,
+  onMoveToSpace,
   sessionStatus,
   activity,
   dimmed,
@@ -458,6 +470,7 @@ export default function ChatListItem({
           }}
         >
           <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>{time}</span>
+          {spaceChip && <SpaceChip space={spaceChip} />}
           {chat.git_branch && (
             <span
               title={chat.folder !== chat.displayFolder ? `Worktree: ${chat.git_branch}` : `Branch: ${chat.git_branch}`}
@@ -835,6 +848,17 @@ export default function ChatListItem({
                       onClick={() => {
                         setMenuPos(null);
                         cardMenu.onToggleLifecycle!();
+                      }}
+                    />
+                  )}
+                  {onMoveToSpace && (
+                    <MenuRow
+                      icon={<Layers size={16} />}
+                      label="Move to space…"
+                      title="Move this chat's whole tree to another space"
+                      onClick={() => {
+                        setMenuPos(null);
+                        onMoveToSpace();
                       }}
                     />
                   )}
