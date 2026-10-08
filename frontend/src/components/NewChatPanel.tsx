@@ -241,7 +241,11 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const { enabled: spacesEnabled, spaces, activeSpaceId, spaceById, refreshSpaces } = useSpaces();
   const [targetSpaceId, setTargetSpaceId] = useState<string>(() => (activeSpaceId && activeSpaceId !== ALL_SPACES ? activeSpaceId : DEFAULT_SPACE_ID));
   const targetSpace = spaceById(targetSpaceId);
-  const spaceRecent = targetSpace?.defaults?.recentDirectories?.map((d) => d.path) ?? [];
+  // Where choices for this chat belong — see writesBrowserFallback. General's
+  // recent folders ARE the browser's list, so any server list written for it
+  // (by a daemon from before that rule) is ignored here.
+  const fallback = writesBrowserFallback({ enabled: spacesEnabled, spaceId: targetSpace?.id ?? targetSpaceId, liveSpaceCount: spaces.length });
+  const spaceRecent = fallback ? [] : (targetSpace?.defaults?.recentDirectories?.map((d) => d.path) ?? []);
   const shownRecentDirs = spaceRecent.length > 0 ? spaceRecent : recentDirs;
   /** This browser's global defaults at mount — the fallback for every field a space leaves unset. */
   const [globals] = useState(() => ({
@@ -280,6 +284,10 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     const touched = touchedRef.current;
     const d = targetSpace.defaults ?? {};
     const p = touched.has("provider") ? providerRef.current : (d.provider ?? globals.provider);
+    // A model is chosen FOR an engine. If the new space switches the engine
+    // the user did not pick, a model they picked for the old one would ride
+    // along to the wrong engine — drop it and seed the new engine's instead.
+    if (touched.has("model") && !touched.has("provider") && p !== providerRef.current) touched.delete("model");
     if (!touched.has("provider")) setProvider(p);
     if (!touched.has("defaultPermissions")) setDefaultPermissions(d.defaultPermissions ? normalizePermissions(d.defaultPermissions) : globals.permissions);
     if (!touched.has("effort")) setEffort(d.effort ?? globals.effort);
@@ -299,7 +307,6 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
    * fallback, as before spaces. A chat started in any other space writes only
    * the fields the user changed, and only to that space.
    */
-  const fallback = writesBrowserFallback({ enabled: spacesEnabled, spaceId: targetSpace?.id ?? targetSpaceId, liveSpaceCount: spaces.length });
   const persistChoices = () => {
     if (fallback) {
       saveDefaultPermissions(defaultPermissions);

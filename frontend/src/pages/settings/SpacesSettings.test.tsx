@@ -165,5 +165,15 @@ describe("SpacesSettings", () => {
     await waitFor(() => expect(m.listSpaces).toHaveBeenLastCalledWith({ includeArchived: true, includeCounts: false }), { timeout: 2000 });
     expect(screen.getByText("7 chats")).toBeTruthy();
   });
+
+  it("does not present a server recent-folder list for General", async () => {
+    server[0] = { ...server[0], defaults: { recentDirectories: [{ path: "/server/only", lastUsed: "2026-02-01" }] } };
+    server[1] = { ...server[1], defaults: { recentDirectories: [{ path: "/work/repo", lastUsed: "2026-02-01" }] } };
+    renderPage();
+    await edit("General");
+    expect(screen.queryByText(/Recent folders:/)).toBeNull();
+    await edit("Work");
+    expect(screen.getByText(/Recent folders: \/work\/repo/)).toBeTruthy();
+  });
 });
 

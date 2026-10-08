@@ -79,6 +79,12 @@ describe("sendMessage — space assignment", () => {
     expect(getSpace(work.id)!.defaults?.recentDirectories?.[0].path).toBe(workDir);
   });
 
+  it("never records recent folders on General — its list is the browser's", async () => {
+    await run({ folder: workDir, spaceId: "default", recordRecentFolder: workDir });
+    await run({ folder: workDir, recordRecentFolder: workDir });
+    expect(getSpace("default")!.defaults?.recentDirectories).toBeUndefined();
+  });
+
   it("an independent spawn's explicit space is honoured (no tree to inherit from)", async () => {
     const id = await run({ folder: workDir, spaceId: home.id });
     expect(stampOf(id)).toBe(home.id);

@@ -432,8 +432,14 @@ export function reorderSpaces(ids: string[]): void {
  * Push a folder onto a space's recent-directory list (most recent first).
  * Skips archived spaces: nobody starts a chat in one on purpose, and a list
  * that keeps growing there is noise when it is unarchived.
+ *
+ * Skips General too: General's recent folders ARE the browser's list (it is
+ * the fallback — see the frontend's writesBrowserFallback). A server list for
+ * it would start empty at upgrade and, once non-empty, replace a user's whole
+ * pre-spaces history with only the folders used since.
  */
 export function touchSpaceRecentDirectory(id: string, path: string): void {
+  if (id === DEFAULT_SPACE_ID) return;
   const space = getSpace(id);
   if (!space || space.archived || !path.startsWith("/")) return;
   const existing = (space.defaults?.recentDirectories ?? []).filter((d) => d.path !== path);

@@ -202,4 +202,40 @@ describe("NewChatPanel — space defaults do not leak", () => {
     expect(state.defaultPermissions).toMatchObject({ fileWrite: "allow" });
     expect(updateSpace).toHaveBeenCalledWith("sp_work", { defaults: { provider: "codex", model: null } });
   });
+
+  it("a model picked for one engine is dropped when the next space switches the engine", async () => {
+    renderLeaky("sp_home");
+    fireEvent.change(document.getElementById("newChatClaudeModel")!, { target: { value: "opus" } });
+    // Work's default engine is Codex; the user never picked an engine.
+    fireEvent.change(screen.getByLabelText("Space for the new chat"), { target: { value: "sp_work" } });
+    const state = await createIn("/repo");
+    expect(state.provider).toBe("codex");
+    expect(state.model).toBeUndefined();
+    // Nothing the user picked survived, so nothing is written to Work.
+    expect(updateSpace).not.toHaveBeenCalled();
+  });
 });
+
+describe("NewChatPanel — General's recent folders are the browser's", () => {
+  it("ignores a server recent-folder list on General and shows the browser list", async () => {
+    localStorage.setItem("claude-code-settings", JSON.stringify({ recentDirectories: [{ path: "/old/a", lastUsed: "2026-01-01" }] }));
+    const spaces: SpaceListItem[] = [
+      { id: "default", name: "General", order: 0, chatCount: 0, createdAt: "", updatedAt: "", defaults: { recentDirectories: [{ path: "/server/only", lastUsed: "2026-02-01" }] } },
+      { id: "sp_work", name: "Work", order: 1, chatCount: 0, createdAt: "", updatedAt: "", defaults: { recentDirectories: [{ path: "/work/repo", lastUsed: "2026-01-01" }] } },
+    ];
+    render(
+      <MemoryRouter>
+        <SpaceContext.Provider value={makeSpaceContext(spaces, { activeSpaceId: "default" })}>
+          <NewChatPanel onClose={() => {}} />
+        </SpaceContext.Provider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByTitle("/old/a")).toBeTruthy();
+    expect(screen.queryByTitle("/server/only")).toBeNull();
+    // Another space still shows its own server list.
+    fireEvent.change(screen.getByLabelText("Space for the new chat"), { target: { value: "sp_work" } });
+    expect(await screen.findByTitle("/work/repo")).toBeTruthy();
+    expect(screen.queryByTitle("/old/a")).toBeNull();
+  });
+});
+

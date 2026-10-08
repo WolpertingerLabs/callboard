@@ -554,7 +554,8 @@ function SpaceEditor({
       ) : (
         <div style={{ ...helpStyle, marginBottom: 8 }}>Permissions: browser default (saved here when you change them while starting a chat in this space).</div>
       )}
-      {(defaults.recentDirectories?.length ?? 0) > 0 && (
+      {/* General's recent folders are this browser's list, not a server one. */}
+      {!isDefault && (defaults.recentDirectories?.length ?? 0) > 0 && (
         <div style={{ ...helpStyle, marginBottom: 8 }}>
           Recent folders: {defaults.recentDirectories!.map((d) => d.path).join(", ")}{" "}
           <button
