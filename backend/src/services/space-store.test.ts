@@ -72,6 +72,13 @@ describe("space store", () => {
     expect(() => store.deleteSpaceRecord("default")).toThrow(/default/);
   });
 
+  it("folderRulesAdd appends (deduped) without replacing rules written meanwhile", () => {
+    const s = store.createSpace({ name: "Work", folderRules: ["/a"] });
+    store.updateSpace(s.id, { folderRules: ["/a", "/b"] }); // another tab
+    store.updateSpace(s.id, { folderRulesAdd: ["/b", "/c"] });
+    expect(store.getSpace(s.id)!.folderRules).toEqual(["/a", "/b", "/c"]);
+  });
+
   it("lets the default space be renamed, materialising its file", () => {
     store.updateSpace("default", { name: "Inbox" });
     expect(store.listSpaces()[0]).toMatchObject({ id: "default", name: "Inbox" });
