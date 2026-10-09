@@ -59,6 +59,7 @@ import { chatFileService } from "./chat-file-service.js";
 import { listActivities, releaseActivity } from "./chat-activity.js";
 import { sessionRegistry } from "./session-registry.js";
 import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
+import { sanitizeToolName } from "./permission-review.js";
 import type { StreamEvent } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -146,6 +147,11 @@ export type ParentAnswerResult =
  * Answer a direct child's prompt on behalf of the calling chat. See the module
  * header for every check; each refusal names what failed.
  */
+function findKeyByRequestId(requestId: string): string | undefined {
+  for (const [key, entry] of pendingRequests) if (entry.requestId === requestId) return key;
+  return undefined;
+}
+
 export function respondAsParent(args: {
   callerChatId: string;
   callerPermissions: DefaultPermissions | null;
@@ -154,8 +160,14 @@ export function respondAsParent(args: {
   allow: boolean;
   reason: string;
 }): ParentAnswerResult {
-  const { callerChatId, chatId, requestId, allow } = args;
+  const { callerChatId, requestId, allow } = args;
   const reason = args.reason.trim().slice(0, 1000) || "(no reason given)";
+  // A brand-new child's prompt is listed under its temp tracking id
+  // (`new-…`) and moves to the real chat id when the session id arrives. A
+  // parent answering with the old id is still answering the same prompt:
+  // requestIds are UUIDs, so follow the prompt by its requestId instead of
+  // making the parent list again. Every check below runs on the resolved key.
+  const chatId = pendingRequests.has(args.chatId) ? args.chatId : (findKeyByRequestId(requestId) ?? args.chatId);
   const entry = pendingRequests.get(chatId);
   if (!entry) return { ok: false, error: "not_found", message: `Chat "${chatId}" has no open prompt. It may have been answered already — call list_pending_requests again.` };
   if (entry.requestId !== requestId) {
@@ -208,13 +220,23 @@ export function respondAsParent(args: {
 }
 
 /**
- * The parent's own effective policy, read from its stored record — the same
- * record its `getDefaultPermissions` re-reads (a parent always has one: a
- * child is only linked to a stored parent). Missing or unreadable reads as
- * `null`, i.e. ask on every axis, so it can never look more able than it is.
+ * The parent's own effective policy, read from its stored record (a parent
+ * always has one: a child is only linked to a stored parent). Missing or
+ * unreadable reads as `null`, i.e. ask on every axis, so it can never look
+ * more able than it is.
+ *
+ * Known gap: `respond_to_request` checks the parent's LIVE session getter
+ * (`getDefaultPermissions`), which during the parent's own FIRST run reads its
+ * creation options rather than the record (permission-ceiling.ts, "What is
+ * NOT covered"). The two differ only if the parent's permissions were edited
+ * mid-way through that first run, and then this decides only whether to WAKE
+ * the parent: at worst a needless wake (the parent's allow is then refused)
+ * or a missed one (the parent can still list the prompt). The authority check
+ * itself always uses the live getter, and the human can answer either way.
  */
 function parentPermissions(parentChatId: string): DefaultPermissions | null {
-  const chat = chatFileService.getChatBySessionId(parentChatId) ?? chatFileService.getChat(parentChatId);
+  // getChat tries the session-id filename first, so this is a direct read.
+  const chat = chatFileService.getChat(parentChatId);
   const raw = chat ? parseChatMetadataRecord(chat.metadata).defaultPermissions : undefined;
   return raw ? normalizePermissions(raw) : null;
 }
@@ -246,8 +268,10 @@ export function childPromptWaitNote(releasedBy: string | undefined): string | nu
   if (!releasedBy?.startsWith(CHILD_PROMPT_RELEASE_PREFIX)) return null;
   const rest = releasedBy.slice(CHILD_PROMPT_RELEASE_PREFIX.length);
   const split = rest.indexOf(":");
-  const childId = split >= 0 ? rest.slice(0, split) : rest;
-  const tool = split >= 0 ? rest.slice(split + 1) : "a tool";
+  const childId = (split >= 0 ? rest.slice(0, split) : rest).replace(/[^A-Za-z0-9_-]/g, "?").slice(0, 80);
+  // Both halves came through a free-form string; the tool name is engine-
+  // supplied (unvalidated on ACP), and this note goes into the parent's context.
+  const tool = split >= 0 ? sanitizeToolName(rest.slice(split + 1)) : "a tool";
   return (
     `This wait ended early because child chat ${childId} needs approval for ${tool}. Call list_pending_requests to see it, then ` +
     "respond_to_request to allow or deny it (you may only allow what this chat itself is allowed to do). The user can also answer it; whoever answers first wins."

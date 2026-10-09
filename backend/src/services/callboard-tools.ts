@@ -781,7 +781,8 @@ export function buildCallboardToolsSpec(
           "Where this chat asks, the child asks too — its prompts wait for the user on the board — and the result's `permissions` shows what the child got. " +
           "To review a child's calls yourself, pass `permissions` with \"ask\" on a category THIS chat allows (e.g. {codeExecution: \"ask\"}) together with `parentAnswers: true`: " +
           "the child's prompts in that category come to you (a wait you are in ends early) and you can approve or deny them with respond_to_request. " +
-          "You can only approve categories this chat itself allows — prompts in a category where this chat asks or denies stay with the user.",
+          "You can only approve categories this chat itself allows — prompts in a category where this chat asks or denies stay with the user. " +
+          "Parent answers (and model review) do not apply to Codex children: Codex has no per-call permission hook, so their asks are decided by its sandbox at thread start.",
         {
           prompt: z.string().describe("The task or message for the chat session"),
           folder: z.string().describe("Absolute path to the working directory for the session"),
@@ -840,7 +841,7 @@ export function buildCallboardToolsSpec(
             .boolean()
             .optional()
             .describe(
-              "If true, the spawned chat's tool-permission prompts are also offered to THIS chat: a wait you are blocked in ends early when one arrives, " +
+              "If true, the spawned chat's tool-permission prompts are also offered to THIS chat (not for a Codex child — no per-call hook): a wait you are blocked in ends early when one you could approve arrives, " +
                 "and you answer with list_pending_requests / respond_to_request (you may only allow what this chat itself is allowed). The user sees and can answer the same prompt; first answer wins. Default: false.",
             ),
           ...providerModelSchema,
