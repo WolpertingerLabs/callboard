@@ -233,3 +233,85 @@ describe("review settings are live during a new chat's first run", () => {
     expect(liveChatMetadataReader({ isNewChat: false, chatId: "c1", getTrackingId: () => "c1", initialMetadata: { modelReview: true }, store: broken })()).toEqual({ modelReview: true });
   });
 });
+
+describe("settings re-read and strict fallback", () => {
+  function chain(getSettings: () => PermissionReviewSettings, verdict: ReviewVerdict, onReview?: () => void) {
+    const emitter = new EventEmitter();
+    const events: StreamEvent[] = [];
+    emitter.on("event", (e: StreamEvent) => events.push(e));
+    const trackingId = `strict-${Math.random().toString(36).slice(2)}`;
+    const notifyParent = vi.fn();
+    const reviewer = vi.fn(async () => {
+      onReview?.();
+      return verdict;
+    });
+    const canUseTool = buildCanUseTool(emitter, new ToolPermissionPolicy(() => "codeExecution", () => FULL_ASK), () => trackingId, undefined, {
+      getSettings,
+      getParentChatId: () => "parent-1",
+      cwd: "/repo",
+      reviewer,
+      notifyParent,
+    });
+    return { events, trackingId, reviewer, notifyParent, call: () => canUseTool("Bash", { command: "npm test" }, { signal: new AbortController().signal }) };
+  }
+
+  it("model review turned OFF mid-review: an approve becomes escalate", async () => {
+    let settings: PermissionReviewSettings = { modelReview: true, parentAnswers: false };
+    const { call, events, trackingId } = chain(() => settings, { verdict: "approve", reason: "routine", source: "model" }, () => {
+      settings = { modelReview: false, parentAnswers: false };
+    });
+    void call();
+    await flush();
+    const prompt = events.find((e) => e.type === "permission_request")!;
+    expect(prompt).toMatchObject({ reviewerVerdict: "escalate" });
+    expect(prompt.reviewerNotes).toMatch(/turned off while it ran/);
+    pendingRequests.delete(trackingId);
+  });
+
+  it("parentAnswers turned on mid-review is honoured after the re-read", async () => {
+    let settings: PermissionReviewSettings = { modelReview: true, parentAnswers: false };
+    const { call, notifyParent, trackingId } = chain(() => settings, { verdict: "escalate", reason: "unsure", source: "model" }, () => {
+      settings = { modelReview: true, parentAnswers: true };
+    });
+    void call();
+    await flush();
+    expect(notifyParent).toHaveBeenCalledOnce();
+    pendingRequests.delete(trackingId);
+  });
+
+  it("an unreadable settings record: screen on, approve not honoured, parent not consulted", async () => {
+    const { call, reviewer, notifyParent, events, trackingId } = chain(
+      () => {
+        throw new Error("record unreadable");
+      },
+      { verdict: "approve", reason: "fine", source: "model" },
+    );
+    void call();
+    await flush();
+    expect(reviewer).toHaveBeenCalledOnce(); // the screen still runs
+    expect(notifyParent).not.toHaveBeenCalled();
+    const prompt = events.find((e) => e.type === "permission_request")!;
+    expect(prompt).toMatchObject({ reviewerVerdict: "escalate" });
+    expect(prompt.reviewerNotes).toMatch(/could not be read/);
+    pendingRequests.delete(trackingId);
+  });
+
+  it("an unreadable settings record still lets the reviewer deny", async () => {
+    const { call } = chain(
+      () => {
+        throw new Error("x");
+      },
+      { verdict: "deny", reason: "wrong dir", source: "model" },
+    );
+    await expect(call()).resolves.toMatchObject({ behavior: "deny", interrupt: false });
+  });
+
+  it("the strict reader throws on a missing record instead of falling back", async () => {
+    const { liveChatMetadataReader } = await import("./claude.js");
+    const store = { getChat: vi.fn(() => null), getChatBySessionId: vi.fn(() => null) };
+    const read = liveChatMetadataReader({ isNewChat: false, chatId: "gone", getTrackingId: () => "gone", initialMetadata: { modelReview: false }, store, strict: true });
+    expect(() => read()).toThrow();
+    const lenient = liveChatMetadataReader({ isNewChat: false, chatId: "gone", getTrackingId: () => "gone", initialMetadata: { modelReview: false }, store });
+    expect(lenient()).toEqual({ modelReview: false });
+  });
+});

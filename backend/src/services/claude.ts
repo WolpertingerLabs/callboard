@@ -413,6 +413,10 @@ function buildFormattedPrompt(
  * so neither answerer applies to Codex chats.
  */
 export interface PermissionReviewHooks {
+  /**
+   * Live settings. May throw when they cannot be read; the chain then uses
+   * {@link STRICT_REVIEW_FALLBACK}.
+   */
   getSettings: () => PermissionReviewSettings;
   /** The chat's direct parent (metadata `parentChatId`), if any. */
   getParentChatId: () => string | undefined;
@@ -424,6 +428,24 @@ export interface PermissionReviewHooks {
   /** Injected in tests; defaults to {@link notifyParentOfChildPrompt} (wakes the parent only if it could approve). */
   notifyParent?: (parentChatId: string, childChatId: string, toolName: string, category: string | null) => void;
 }
+
+/**
+ * The review settings to act on when they cannot be read — the strict side of
+ * BOTH settings at once, because each "on" means something different:
+ *
+ *  - the SCREEN stays on (hard-stop pre-check, reviewer deny/kill all apply),
+ *  - but a reviewer APPROVE is not honoured (`approveAllowed: false` — an
+ *    approve runs a call with nobody asked, which a chat that may have turned
+ *    review off must not get), and
+ *  - the parent is not consulted (`parentAnswers: false`).
+ *
+ * So a failed read can only add friction, never remove a human from the loop.
+ */
+export const STRICT_REVIEW_FALLBACK: PermissionReviewSettings & { approveAllowed: false } = {
+  modelReview: true,
+  parentAnswers: false,
+  approveAllowed: false,
+};
 
 /**
  * Build the canUseTool permission handler for the Claude SDK.
@@ -503,12 +525,15 @@ export function buildCanUseTool(
     let reviewerVerdict: "escalate" | "kill" | undefined;
     let offeredToParent: string | undefined;
     if (review && !hookOverrideReason && isReviewableTool(toolName)) {
-      let settings: PermissionReviewSettings = { modelReview: false, parentAnswers: false };
-      try {
-        settings = review.getSettings();
-      } catch (err) {
-        log.warn(`[PERM-DIAG] could not read review settings for ${getTrackingId()} — human only: ${err}`);
-      }
+      const readSettings = (): PermissionReviewSettings & { approveAllowed?: false } => {
+        try {
+          return review.getSettings();
+        } catch (err) {
+          log.warn(`[PERM-DIAG] could not read review settings for ${getTrackingId()} — strict fallback (screen on, no approve, no parent): ${err}`);
+          return STRICT_REVIEW_FALLBACK;
+        }
+      };
+      let settings = readSettings();
       if (settings.modelReview || settings.parentAnswers) {
         let verdict = detectHardStop(toolName, input);
         // A review costs a model call; don't spend it on a call that would be
@@ -521,8 +546,17 @@ export function buildCanUseTool(
           } catch {
             excerpt = undefined;
           }
+          const before = settings;
           verdict = await reviewer({ toolName, input, cwd: review.cwd, category, ...(excerpt && { taskExcerpt: excerpt }) }, { signal });
           if (signal.aborted) return { behavior: "deny", message: "Aborted" };
+          // The review can take up to a minute. Re-read: a user who turned
+          // model review OFF meanwhile did not consent to a model approving
+          // this call, and a toggle of parentAnswers should apply too.
+          settings = readSettings();
+          if (verdict.verdict === "approve" && (!settings.modelReview || settings.approveAllowed === false || before.approveAllowed === false)) {
+            const why = !settings.modelReview ? "model review was turned off while it ran" : "this chat's review settings could not be read";
+            verdict = { ...verdict, verdict: "escalate", reason: `Reviewer approved, but ${why}, so a person must decide. (Reviewer said: ${verdict.reason})` };
+          }
         }
         if (verdict) {
           const line = `[PERM-DIAG] review tool=${toolName}, chat=${getTrackingId()}, category=${category}, verdict=${verdict.verdict}, source=${verdict.source ?? "model"}${verdict.failure ? `, failure=${verdict.failure}` : ""}, reason=${verdict.reason.slice(0, 300)}`;
@@ -669,6 +703,12 @@ export function liveChatMetadataReader(ctx: {
   chatId?: string;
   initialMetadata: Record<string, unknown>;
   store?: Pick<typeof chatFileService, "getChat" | "getChatBySessionId">;
+  /**
+   * Throw instead of falling back when the record should exist but cannot be
+   * read (missing, unparseable). For decisions where a stale fallback is not
+   * acceptable — the caller substitutes its own strict default.
+   */
+  strict?: boolean;
 }): () => Record<string, unknown> {
   const store = ctx.store ?? chatFileService;
   return () => {
@@ -678,8 +718,10 @@ export function liveChatMetadataReader(ctx: {
     try {
       const fresh = ctx.isNewChat ? store.getChatBySessionId(liveId) : store.getChat(liveId);
       if (fresh) return JSON.parse(fresh.metadata || "{}");
+      if (ctx.strict) throw new Error(`no record for ${liveId}`);
     } catch (err) {
       log.error(`[PERM-DIAG] Error re-reading live metadata for ${liveId}: ${err}`);
+      if (ctx.strict) throw err;
     }
     return ctx.initialMetadata;
   };
@@ -1385,8 +1427,18 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // The current run's own prompt, when it is a plain string, plus the title —
   // the cheapest available "what is this chat doing" for the reviewer.
   const promptExcerpt = typeof prompt === "string" ? prompt.slice(0, 1500) : undefined;
+  // The settings themselves come from a STRICT reader: a failed read throws
+  // and buildCanUseTool acts on STRICT_REVIEW_FALLBACK instead of a possibly
+  // stale creation-time value. Title and parent tolerate the fallback.
+  const readLiveMetadataStrict = liveChatMetadataReader({
+    isNewChat,
+    getTrackingId: () => trackingId,
+    chatId: opts.chatId,
+    initialMetadata,
+    strict: true,
+  });
   const reviewHooks: PermissionReviewHooks = {
-    getSettings: () => normalizeReviewSettings(readLiveMetadata()),
+    getSettings: () => normalizeReviewSettings(readLiveMetadataStrict()),
     getParentChatId: () => {
       const parent = readLiveMetadata().parentChatId;
       return typeof parent === "string" && parent ? parent : undefined;
