@@ -38,6 +38,11 @@ export default function ChatPermissionsModal({
 }: ChatPermissionsModalProps) {
   const [localPermissions, setLocalPermissions] = useState<DefaultPermissions>(() => normalizePermissions(permissions));
   const [localReview, setLocalReview] = useState<PermissionReviewSettings>(review);
+  // What the modal opened with. Only flags that differ from this are sent:
+  // another tab (remote access makes two tabs the normal case) may have
+  // changed the other one since, and re-sending this tab's stale copy would
+  // silently flip it back.
+  const [openedReview, setOpenedReview] = useState<PermissionReviewSettings>(review);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,6 +51,7 @@ export default function ChatPermissionsModal({
     if (isOpen) {
       setLocalPermissions(normalizePermissions(permissions));
       setLocalReview(review);
+      setOpenedReview(review);
       setError(null);
     }
     // `review` is compared by value: a fresh object with the same flags must not reset edits.
@@ -61,7 +67,11 @@ export default function ChatPermissionsModal({
       // Existing chat: persist to backend
       setSaving(true);
       try {
-        await updateChatPermissions(chatId, localPermissions, localReview);
+        const reviewDelta: Partial<PermissionReviewSettings> = {
+          ...(localReview.modelReview !== openedReview.modelReview && { modelReview: localReview.modelReview }),
+          ...(localReview.parentAnswers !== openedReview.parentAnswers && { parentAnswers: localReview.parentAnswers }),
+        };
+        await updateChatPermissions(chatId, localPermissions, reviewDelta);
         onPermissionsChange(localPermissions);
         onReviewChange?.(localReview);
         onClose();
@@ -83,8 +93,8 @@ export default function ChatPermissionsModal({
     localPermissions.codeExecution !== permissions.codeExecution ||
     localPermissions.webAccess !== permissions.webAccess ||
     localPermissions.computerControl !== normalizePermissions(permissions).computerControl ||
-    localReview.modelReview !== review.modelReview ||
-    localReview.parentAnswers !== review.parentAnswers;
+    localReview.modelReview !== openedReview.modelReview ||
+    localReview.parentAnswers !== openedReview.parentAnswers;
 
   return (
     <ModalOverlay onClose={onClose}>
