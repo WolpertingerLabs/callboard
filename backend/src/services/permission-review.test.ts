@@ -494,3 +494,54 @@ describe("detectHardStop — round-4 nits", () => {
     expect(kill(command)).toBeNull();
   });
 });
+
+describe("detectHardStop — round-5 tidy-up", () => {
+  const kill = (command: string) => detectHardStop("Bash", { command })?.verdict ?? null;
+
+  it.each(["sudo -u rm -- rm -rf ~", "exec -a rm -- rm -rf ~", "sudo -u rm -- /bin/rm -rf /"])("a later rm re-opens flag parsing after `--` — %s", (command) => {
+    expect(kill(command)).toBe("kill");
+  });
+
+  it("`--` still ends flags for the rm it belongs to", () => {
+    expect(kill("rm -- -rf ~/x")).toBeNull();
+  });
+
+  it.each(['rm -rf "$HOME"/', "rm -rf ~/'.'", "rm -rf ~\\/", "rm -rf ~/./", "rm -rf ~//", "rm -rf //", "rm -rf /.", "rm -rf '/'", 'rm -rf "~/".git', "find -- ~ -delete", 'find "$HOME"/ -delete', "find //. -delete"])(
+    "unquoted and normalised targets — %s",
+    (command) => {
+      expect(kill(command)).toBe("kill");
+    },
+  );
+
+  it.each(["rm -rf ~/project/build", 'rm -rf "~/project/build"', "rm -rf ./build/.", "rm -rf ~/./project", "find -- ./build -delete"])("still not a hard stop — %s", (command) => {
+    expect(kill(command)).toBeNull();
+  });
+
+  it("target normalisation stays linear", () => {
+    const command = "rm -rf " + "/./".repeat(10_000) + "x";
+    const started = performance.now();
+    detectHardStop("Bash", { command });
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+});
+
+describe("detectHardStop — walk cap is exact", () => {
+  it("exactly the string limit, all examined, then a number: not oversized", () => {
+    expect(detectHardStop("Bash", { a: Array(2_000).fill("x"), b: 1 })).toBeNull();
+    expect(detectHardStop("Bash", { a: Array(2_000).fill("x"), b: null, c: true })).toBeNull();
+  });
+
+  it("one string past the limit is oversized", () => {
+    expect(detectHardStop("Bash", { a: Array(2_000).fill("x"), b: "y" })).toMatchObject({ failure: "oversized" });
+  });
+
+  it("a primitive one level past the depth cap does not trip it; a string there does", () => {
+    // Innermost object at depth 16 (the cap); its value at depth 17.
+    let deepNumber: unknown = 1;
+    for (let i = 0; i < 16; i++) deepNumber = { n: deepNumber };
+    expect(detectHardStop("Bash", { x: deepNumber, command: "ls" })).toBeNull();
+    let deepString: unknown = "rm -rf ~";
+    for (let i = 0; i < 16; i++) deepString = { command: deepString };
+    expect(detectHardStop("Bash", { x: deepString, command: "ls" })).toMatchObject({ failure: "oversized" });
+  });
+});

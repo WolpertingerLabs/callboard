@@ -456,7 +456,24 @@ function skipOptions(w: string[], start: number, step: (word: string) => number,
 }
 
 const gitOptionStep = (word: string): number => (word.startsWith("-") ? (GIT_VALUE_OPTIONS.has(word) ? 2 : 1) : 0);
-const findOptionStep = (word: string): number => (word === "-D" ? 2 : FIND_LEADING_OPTIONS.has(word) || /^-O\d$/.test(word) ? 1 : 0);
+const findOptionStep = (word: string): number => (word === "-D" ? 2 : word === "--" || FIND_LEADING_OPTIONS.has(word) || /^-O\d$/.test(word) ? 1 : 0);
+
+/**
+ * A path argument as the shell and the kernel would see it, for rm/find
+ * targets: quotes and backslashes removed like {@link program} (`"$HOME"/`,
+ * `~/'.'`, `~\/`), then repeated slashes collapsed and `.` segments dropped
+ * (`~/./`, `~//`, `//`, `/.` → `~`, `~`, `/`, `/`). `..` is kept — it is a
+ * different directory, and `~/..` is matched as a home target as such. One
+ * pass over the word plus a split/join: linear.
+ */
+function target(word: string): string {
+  let plain = "";
+  for (const c of word) if (c !== "\\" && c !== '"' && c !== "'") plain += c;
+  const absolute = plain.startsWith("/");
+  const kept = plain.split("/").filter((part) => part !== "" && part !== ".");
+  if (kept.length === 0) return absolute ? "/" : plain;
+  return (absolute ? "/" : "") + kept.join("/");
+}
 
 /** `out[k]` = some word at index ≥ k satisfies `test`. One pass, so callers stay linear. */
 function suffixHas(w: string[], test: (word: string) => boolean): boolean[] {
@@ -478,7 +495,10 @@ function suffixHas(w: string[], test: (word: string) => boolean): boolean[] {
  *
  * `rm`, `pkill`/`killall`, `dd` and `kill` look at all the words after them,
  * so their first occurrence already sees every later one — they are examined
- * once, which also keeps `rm rm rm …` linear.
+ * once, which also keeps `rm rm rm …` linear. For `rm` that needs one more
+ * rule: a later `rm` word starts a new argument list, so it re-opens flag
+ * parsing — otherwise an option value naming rm plus `--` would hide the real
+ * one (`sudo -u rm -- rm -rf ~`).
  */
 function commandHardStop(command: string): { effect: string; offending: string } | null {
   const w = words(command);
@@ -498,9 +518,10 @@ function commandHardStop(command: string): { effect: string; offending: string }
       const targets: string[] = [];
       for (let k = i + 1; k < w.length; k++) {
         const a = w[k];
-        if (!endOfFlags && a === "--") endOfFlags = true;
+        if (progs[k] === "rm") endOfFlags = false; // a new rm: its own flags follow
+        else if (!endOfFlags && a === "--") endOfFlags = true;
         else if (!endOfFlags && a.length > 1 && a[0] === "-") recursive ||= isRecursiveFlag(a);
-        else targets.push(a);
+        else targets.push(target(a));
       }
       for (const t of targets) {
         if (recursive && ROOT_OR_HOME_TARGET.test(t)) return { effect: "recursive deletion of the filesystem root or a home directory", offending: `rm … ${t}` };
@@ -510,7 +531,7 @@ function commandHardStop(command: string): { effect: string; offending: string }
     } else if (prog === "find") {
       findMemo ??= new Int32Array(w.length + 1).fill(-1);
       const j = skipOptions(w, i + 1, findOptionStep, findMemo);
-      const start = w[j];
+      const start = w[j] === undefined ? undefined : target(w[j]);
       deleteAfter ??= suffixHas(w, (a) => a === "-delete");
       if (start && ROOT_OR_HOME_TARGET.test(start) && deleteAfter[j + 1]) {
         return { effect: "mass deletion from the filesystem root or a home directory (find -delete)", offending: `find ${start} … -delete` };
@@ -611,7 +632,12 @@ function extract(input: unknown): Extracted {
   const out: Extracted = { commands: [], paths: [], strings: [], truncated: false };
   const visit = (value: unknown, key: string, depth: number, underCommand: boolean, underPath: boolean): void => {
     if (out.truncated) return;
-    if (depth > MAX_WALK_DEPTH || out.strings.length >= MAX_WALK_STRINGS) {
+    // Only trip a limit when something it guards would actually be skipped:
+    // a string past the string cap, or a string/array/object past the depth
+    // cap. Numbers, booleans and null carry no command or path.
+    const examinable = typeof value === "string" || (value !== null && typeof value === "object");
+    if (!examinable) return;
+    if (depth > MAX_WALK_DEPTH || (typeof value === "string" && out.strings.length >= MAX_WALK_STRINGS)) {
       out.truncated = true;
       return;
     }
