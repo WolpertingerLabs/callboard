@@ -405,3 +405,92 @@ describe("detectHardStop — round-3 probe matrix (tokenised)", () => {
     expect(kill(command)).toBeNull();
   });
 });
+
+describe("detectHardStop — round-4: no end-anchored backtracking", () => {
+  // Just under MAX_SCREEN_CHARS, so these are really screened. Each was
+  // ~0.75s at HEAD~ (end-anchored / unanchored `X+` followed by a failure).
+  const BUDGET_MS = 100;
+  const n = 32_000;
+  const shapes: [string, string][] = [
+    ["closing parens", "x " + ")".repeat(n) + "x"],
+    ["backticks", "x " + "`".repeat(n) + "x"],
+    ["single quotes", "x " + "'".repeat(n) + "x"],
+    ["double quotes", "x " + '"'.repeat(n) + "x"],
+    ["rm -r + slashes", "rm -r " + "/".repeat(n) + "x"],
+    ["rm + recursive-flag run", "rm -" + "r".repeat(n) + "1 ~"],
+    ["git push + force-flag run", "git push -" + "f".repeat(n) + "1"],
+    ["openers", "rm " + "$(".repeat(n / 2) + "x"],
+    ["redirect-free long word", "rm -rf " + "~".repeat(n) + "x"],
+    ["git -C chains", "git " + "-C git ".repeat(n / 7) + "push"],
+    ["find -L chains", "find " + "-L ".repeat(n / 3) + "/"],
+    ["find -D chains", "find " + "-D find ".repeat(n / 8) + "/"],
+    ["sudo -u git chains", "sudo " + "-u git ".repeat(n / 7) + "git push -f"],
+    ["program words with backslashes", "\\".repeat(n) + "rm -rf ~"],
+  ];
+  it.each(shapes)("%s finishes within budget", (_label, command) => {
+    expect(command.length).toBeLessThan(32_768);
+    const started = performance.now();
+    detectHardStop("Bash", { command });
+    expect(performance.now() - started).toBeLessThan(BUDGET_MS);
+  });
+});
+
+describe("detectHardStop — round-4 bypasses", () => {
+  const kill = (command: string) => detectHardStop("Bash", { command })?.verdict ?? null;
+
+  it.each(["\\rm -rf ~", "\\git push -f", "r\\m -rf ~", '"rm" -rf /', "'git' push --force", "\\\\rm -rf ~"])("a quoted or backslashed program name still runs that program — %s", (command) => {
+    expect(kill(command)).toBe("kill");
+  });
+
+  it.each([
+    "sudo -u git git push --force",
+    "env -C git git push -f",
+    "time -o git git push -f",
+    "sudo -u callboard callboard stop",
+    "sudo -u pm2 pm2 stop callboard",
+    "env -C find find ~ -delete",
+    "nice -n find find / -delete",
+  ])("an option value naming the program cannot hide the real command — %s", (command) => {
+    expect(kill(command)).toBe("kill");
+  });
+
+  it.each(["git status git push -f-not", "sudo -u git git status", "callboard status", "sudo -u callboard callboard logs"])("still not a hard stop — %s", (command) => {
+    expect(kill(command)).toBeNull();
+  });
+});
+
+describe("detectHardStop — walk limits escalate, never null", () => {
+  it("more strings than the walk examines: the hidden command escalates", () => {
+    const verdict = detectHardStop("run_commands", { commands: [...Array(2_000).fill("ls"), "rm -rf ~"] });
+    expect(verdict).toMatchObject({ verdict: "escalate", failure: "oversized", source: "precheck" });
+    expect(verdict?.reason).toMatch(/too large to screen/);
+  });
+
+  it("junk keys before `command`: escalates", () => {
+    const input: Record<string, unknown> = {};
+    for (let i = 0; i < 2_000; i++) input[`k${i}`] = "x";
+    input.command = "rm -rf ~";
+    expect(detectHardStop("Bash", input)).toMatchObject({ verdict: "escalate", failure: "oversized" });
+  });
+
+  it("nesting deeper than the walk: escalates", () => {
+    let input: Record<string, unknown> = { command: "rm -rf ~" };
+    for (let i = 0; i < 20; i++) input = { wrap: input };
+    expect(detectHardStop("Bash", input)).toMatchObject({ verdict: "escalate", failure: "oversized" });
+  });
+
+  it("an ordinary large input under the limits is still screened", () => {
+    expect(detectHardStop("run_commands", { commands: [...Array(500).fill("ls"), "rm -rf ~"] })?.verdict).toBe("kill");
+    expect(detectHardStop("run_commands", { commands: Array(500).fill("ls") })).toBeNull();
+  });
+});
+
+describe("detectHardStop — round-4 nits", () => {
+  const kill = (command: string) => detectHardStop("Bash", { command })?.verdict ?? null;
+  it.each(["rm -rf ~/.", "rm -rf ~/..", "rm -rf $HOME/..", "rm -rf ~>/dev/null", 'rm -rf ~/ 2>/dev/null', "find -L / -delete", "find -H -O3 ~ -delete", "find -D tree / -delete"])("hard stop: %s", (command) => {
+    expect(kill(command)).toBe("kill");
+  });
+  it.each(["rm -rf ~/.cache", "rm -rf ./x >/dev/null", "find -L . -delete", 'rm -rf "~"2>/dev/null'])("not a hard stop: %s", (command) => {
+    expect(kill(command)).toBeNull();
+  });
+});

@@ -293,13 +293,6 @@ export async function reviewToolCall(req: ReviewRequest, opts: ReviewOptions = {
 
 // ─── Deterministic hard-stop pre-check ───────────────────────────────
 
-/**
- * Conservative patterns for acts that are self-destructive whatever the task.
- * Each targets a destination that is never a working tree — the filesystem
- * root, the home directory, a `.git` directory, Callboard's data dir — or an
- * act that is never routine (killing the daemon, force-push). False positives
- * cost one human click; false negatives fall through to the model reviewer.
- */
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -346,101 +339,215 @@ const HOME_DIR_SOURCE = (() => {
 /** Command text longer than this is not screened: it escalates instead. */
 export const MAX_SCREEN_CHARS = 32_768;
 
-/** A deletion target that is the filesystem root or a home directory itself. */
-const ROOT_OR_HOME_TARGET = new RegExp(`^(?:\\/\\*?|${HOME_DIR_SOURCE}\\/?\\*?|\\/home\\/?|\\/Users\\/?)$`);
+// Every helper below is linear in its input. In particular there is NO
+// end-anchored or unanchored `X+` followed by something that can fail
+// (`/[)"']+$/`, `/\/+$/`, `-[a-z]*r[a-z]*$`): on a long run of X that does
+// not end the token, a backtracking engine retries the run from every start
+// position — O(n²), ~0.75s per call at 32k. Character runs are trimmed with
+// index loops, and flag clusters are checked character by character.
+
+/**
+ * A deletion target that is the filesystem root or a home directory itself
+ * (also `~/.` and `~/..`). Anchored at both ends, so one start position and a
+ * single linear backtrack at most.
+ */
+const ROOT_OR_HOME_TARGET = new RegExp(`^(?:\\/\\*?|${HOME_DIR_SOURCE}(?:\\/|\\/\\*|\\/\\.|\\/\\.\\.|\\/\\.\\.\\/)?|\\/home\\/?|\\/Users\\/?)$`);
+
+/** `s` without any trailing characters from `chars`. */
+function trimEnd(s: string, chars: string): string {
+  let end = s.length;
+  while (end > 0 && chars.includes(s[end - 1])) end--;
+  return s.slice(0, end);
+}
+
+/** `s` without leading `$(`, `(`, backtick and quote openers. */
+function trimOpeners(s: string): string {
+  let i = 0;
+  for (;;) {
+    if (s.startsWith("$(", i)) i += 2;
+    else if (i < s.length && "(`\"'".includes(s[i])) i++;
+    else return s.slice(i);
+  }
+}
+
 /** A path whose last component is `.git` (case-insensitive: `.GIT` is the same dir on macOS). */
 function isGitDir(token: string): boolean {
-  const parts = token.replace(/\/+$/, "").split("/");
-  return (parts[parts.length - 1] ?? "").toLowerCase() === ".git";
+  const path = trimEnd(token, "/");
+  return path.slice(path.lastIndexOf("/") + 1).toLowerCase() === ".git";
 }
-const RECURSIVE_FLAG = /^(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)$/;
+
+/** A short-flag cluster (`-rf`, `-uf`: one dash, letters only) containing any of `letters`. */
+function shortClusterHas(arg: string, letters: string): boolean {
+  if (arg.length < 2 || arg[0] !== "-" || arg[1] === "-") return false;
+  let has = false;
+  for (let i = 1; i < arg.length; i++) {
+    const c = arg.charCodeAt(i);
+    const isLetter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+    if (!isLetter) return false;
+    if (letters.includes(arg[i])) has = true;
+  }
+  return has;
+}
+
+const isRecursiveFlag = (a: string): boolean => a === "--recursive" || shortClusterHas(a, "rR");
+/** A force flag on `git push`: `--force`, or a short-flag cluster containing f (`-f`, `-uf`). Not `--force-with-lease`. */
+const isPushForceFlag = (a: string): boolean => a === "--force" || shortClusterHas(a, "f");
+
 /** git global options that take a value as the NEXT word (`git -C dir push`). */
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix", "--config-env"]);
-/** A force flag on `git push`: `--force`, or a short-flag cluster containing f (`-f`, `-uf`). Not `--force-with-lease`. */
-const PUSH_FORCE_FLAG = /^(?:--force|-[a-zA-Z]*f[a-zA-Z]*)$/;
+/** find's options that come BEFORE the start path (`find -L / -delete`); `-D` and `-O<n>` handled alongside. */
+const FIND_LEADING_OPTIONS = new Set(["-L", "-H", "-P"]);
 const CALLBOARD_WORD = /\bcallboard\b/i;
 const PID_LOOKUP = /(?:\$\(|`)\s{0,8}(?:pgrep|pidof)\b/i;
 
 /**
- * One command's words, with surrounding quotes, `$(`/`(`/backtick openers and
- * closing `)`/backticks stripped, so `"$HOME"`, `$(rm` and `~)` read as words.
+ * One command's words. Per word: a redirection is cut off (`~>/dev/null` →
+ * `~`; a bare `>/dev/null` word is dropped), then surrounding quotes,
+ * `$(`/`(`/backtick openers and closing `)`/backticks/quotes are stripped, so
+ * `"$HOME"`, `$(rm` and `~)` read as words.
  */
 function words(command: string): string[] {
-  return command
-    .trim()
-    .split(" ")
-    .map((w) => w.replace(/^(?:\$\(|[(`"'])+/, "").replace(/[)`"']+$/, ""))
-    .filter(Boolean);
+  const out: string[] = [];
+  for (const raw of command.trim().split(" ")) {
+    let cut = raw.length;
+    for (let i = 0; i < raw.length; i++) {
+      if (raw[i] === ">" || raw[i] === "<") {
+        cut = i;
+        break;
+      }
+    }
+    const word = trimEnd(trimOpeners(raw.slice(0, cut)), ")`\"'");
+    if (word) out.push(word);
+  }
+  return out;
 }
 
-/** The program a word names: `rm`, `/bin/rm`, `/usr/bin/git` → its basename, lower-cased. */
+/**
+ * The program a word names, as the shell would run it: backslashes and
+ * quotes removed (`\rm`, `r\m`, `"rm"` all run rm), then the basename
+ * (`/bin/rm`), lower-cased.
+ */
 function program(word: string): string {
-  const slash = word.lastIndexOf("/");
-  return (slash >= 0 ? word.slice(slash + 1) : word).toLowerCase();
+  let plain = "";
+  for (const c of word) if (c !== "\\" && c !== '"' && c !== "'") plain += c;
+  return plain.slice(plain.lastIndexOf("/") + 1).toLowerCase();
 }
 
-const SCREENED_PROGRAMS = new Set(["rm", "find", "git", "pkill", "killall", "kill", "callboard", "pm2", "mkfs", "dd"]);
+/**
+ * Where an option run starting at `start` ends: follow `step` (how far a word
+ * moves the scan — 0 to stop) until it stops. Memoised in `memo`, so over ALL
+ * starts every index is resolved once: option values can themselves look like
+ * the program (`git -C git -C git … push`), so without it each occurrence
+ * would re-walk the same chain — quadratic.
+ */
+function skipOptions(w: string[], start: number, step: (word: string) => number, memo: Int32Array): number {
+  const path: number[] = [];
+  let k = start;
+  while (k < w.length && memo[k] < 0) {
+    const n = step(w[k]);
+    if (n === 0) break;
+    path.push(k);
+    k += n;
+  }
+  const end = k < w.length && memo[k] >= 0 ? memo[k] : Math.min(k, w.length);
+  for (const p of path) memo[p] = end;
+  if (start < w.length && memo[start] < 0) memo[start] = end;
+  return end;
+}
 
-/** The hard-stop effect of ONE command (no separators inside), or null. */
+const gitOptionStep = (word: string): number => (word.startsWith("-") ? (GIT_VALUE_OPTIONS.has(word) ? 2 : 1) : 0);
+const findOptionStep = (word: string): number => (word === "-D" ? 2 : FIND_LEADING_OPTIONS.has(word) || /^-O\d$/.test(word) ? 1 : 0);
+
+/** `out[k]` = some word at index ≥ k satisfies `test`. One pass, so callers stay linear. */
+function suffixHas(w: string[], test: (word: string) => boolean): boolean[] {
+  const out = new Array<boolean>(w.length + 1).fill(false);
+  for (let k = w.length - 1; k >= 0; k--) out[k] = out[k + 1] || test(w[k]);
+  return out;
+}
+
+/**
+ * The hard-stop effect of ONE command (no separators inside), or null.
+ *
+ * EVERY occurrence of a program word is examined, because an option value can
+ * name a program before the real one does (`sudo -u git git push --force`,
+ * `env -C git git push -f`, `sudo -u callboard callboard stop`). It stays
+ * linear: "a force flag / -delete / callboard appears at or after index k"
+ * is precomputed once per command, and the git/find option-skipping walks are
+ * memoised ({@link skipOptions}) so each word is resolved once even when the
+ * walks overlap.
+ *
+ * `rm`, `pkill`/`killall`, `dd` and `kill` look at all the words after them,
+ * so their first occurrence already sees every later one — they are examined
+ * once, which also keeps `rm rm rm …` linear.
+ */
 function commandHardStop(command: string): { effect: string; offending: string } | null {
   const w = words(command);
-  // Each program kind is examined once per command, at its FIRST occurrence,
-  // with one linear pass over the words after it. Re-examining every
-  // occurrence would be quadratic in the word count (`dd dd dd …`).
-  const examined = new Set<string>();
+  const progs = w.map(program);
+  let forceAfter: boolean[] | undefined;
+  let deleteAfter: boolean[] | undefined;
+  let callboardAfter: boolean[] | undefined;
+  let gitMemo: Int32Array | undefined;
+  let findMemo: Int32Array | undefined;
+  const examinedOnce = new Set<string>();
   for (let i = 0; i < w.length; i++) {
-    const prog = program(w[i]);
-    const kind = /^mkfs(?:\.\w+)?$/.test(prog) ? "mkfs" : prog;
-    if (!SCREENED_PROGRAMS.has(kind) || examined.has(kind)) continue;
-    examined.add(kind);
-    if (prog === "rm") {
-      const args = w.slice(i + 1);
-      const flags: string[] = [];
-      const targets: string[] = [];
+    const prog = progs[i];
+    if (prog === "rm" && !examinedOnce.has("rm")) {
+      examinedOnce.add("rm");
       let endOfFlags = false;
-      for (const a of args) {
+      let recursive = false;
+      const targets: string[] = [];
+      for (let k = i + 1; k < w.length; k++) {
+        const a = w[k];
         if (!endOfFlags && a === "--") endOfFlags = true;
-        else if (!endOfFlags && a.startsWith("-") && a.length > 1) flags.push(a);
+        else if (!endOfFlags && a.length > 1 && a[0] === "-") recursive ||= isRecursiveFlag(a);
         else targets.push(a);
       }
-      const recursive = flags.some((f) => RECURSIVE_FLAG.test(f));
       for (const t of targets) {
         if (recursive && ROOT_OR_HOME_TARGET.test(t)) return { effect: "recursive deletion of the filesystem root or a home directory", offending: `rm … ${t}` };
         if (recursive && isGitDir(t)) return { effect: "deleting a git repository's .git directory", offending: `rm … ${t}` };
         if (CALLBOARD_DIR.test(t)) return { effect: "deleting Callboard's data directory", offending: `rm … ${t}` };
       }
     } else if (prog === "find") {
-      const start = w[i + 1];
-      if (start && ROOT_OR_HOME_TARGET.test(start) && w.slice(i + 2).includes("-delete")) {
+      findMemo ??= new Int32Array(w.length + 1).fill(-1);
+      const j = skipOptions(w, i + 1, findOptionStep, findMemo);
+      const start = w[j];
+      deleteAfter ??= suffixHas(w, (a) => a === "-delete");
+      if (start && ROOT_OR_HOME_TARGET.test(start) && deleteAfter[j + 1]) {
         return { effect: "mass deletion from the filesystem root or a home directory (find -delete)", offending: `find ${start} … -delete` };
       }
     } else if (prog === "git") {
       // The subcommand is the first word that is neither an option nor an
       // option's value — so `git -C ../x push -f` matches and
       // `git commit -m "push -f"` does not.
-      let j = i + 1;
-      while (j < w.length && w[j].startsWith("-")) j += GIT_VALUE_OPTIONS.has(w[j]) ? 2 : 1;
-      if (w[j] === "push") {
-        const force = w.slice(j + 1).find((a) => PUSH_FORCE_FLAG.test(a));
-        if (force) return { effect: "force-pushing (rewriting shared history)", offending: `git push ${force}` };
+      gitMemo ??= new Int32Array(w.length + 1).fill(-1);
+      const j = skipOptions(w, i + 1, gitOptionStep, gitMemo);
+      if (progs[j] === "push") {
+        forceAfter ??= suffixHas(w, isPushForceFlag);
+        if (forceAfter[j + 1]) return { effect: "force-pushing (rewriting shared history)", offending: "git push --force" };
       }
-    } else if (prog === "pkill" || prog === "killall") {
-      if (w.slice(i + 1).some((a) => CALLBOARD_WORD.test(a))) return { effect: "stopping the Callboard daemon", offending: `${prog} … callboard` };
-    } else if (prog === "kill") {
+    } else if ((prog === "pkill" || prog === "killall") && !examinedOnce.has("pkill")) {
+      examinedOnce.add("pkill");
+      callboardAfter ??= suffixHas(w, (a) => CALLBOARD_WORD.test(a));
+      if (callboardAfter[i + 1]) return { effect: "stopping the Callboard daemon", offending: `${prog} … callboard` };
+    } else if (prog === "kill" && !examinedOnce.has("kill")) {
+      examinedOnce.add("kill");
       if (PID_LOOKUP.test(command) && CALLBOARD_WORD.test(command)) return { effect: "stopping the Callboard daemon", offending: "kill $(pgrep … callboard)" };
     } else if (prog === "callboard") {
       const sub = w[i + 1]?.toLowerCase();
       if (sub === "stop" || sub === "restart") return { effect: "stopping the Callboard daemon", offending: `callboard ${sub}` };
     } else if (prog === "pm2") {
       const sub = w[i + 1]?.toLowerCase();
-      if ((sub === "stop" || sub === "delete" || sub === "kill") && w.slice(i + 2).some((a) => CALLBOARD_WORD.test(a))) {
-        return { effect: "stopping the Callboard daemon", offending: `pm2 ${sub} … callboard` };
+      if (sub === "stop" || sub === "delete" || sub === "kill") {
+        callboardAfter ??= suffixHas(w, (a) => CALLBOARD_WORD.test(a));
+        if (callboardAfter[i + 2]) return { effect: "stopping the Callboard daemon", offending: `pm2 ${sub} … callboard` };
       }
-    } else if (/^mkfs(?:\.\w+)?$/.test(prog)) {
+    } else if (prog.startsWith("mkfs") && /^mkfs(?:\.\w+)?$/.test(prog)) {
       return { effect: "overwriting a disk or filesystem", offending: w[i] };
-    } else if (prog === "dd") {
-      const of = w.slice(i + 1).find((a) => /^of=\/dev\/(?:sd|nvme|hd|disk)/.test(a));
-      if (of) return { effect: "overwriting a disk or filesystem", offending: `dd … ${of}` };
+    } else if (prog === "dd" && !examinedOnce.has("dd")) {
+      examinedOnce.add("dd");
+      for (let k = i + 1; k < w.length; k++) {
+        if (/^of=\/dev\/(?:sd|nvme|hd|disk)/.test(w[k])) return { effect: "overwriting a disk or filesystem", offending: `dd … ${w[k]}` };
+      }
     }
   }
   return null;
@@ -481,13 +588,16 @@ const COMMAND_KEY = /^(?:command|commands|cmd|cmds|script|scripts|shell|bash|cod
 const PATH_KEY = /^(?:file_?path|file_?paths|path|paths|notebook_?path|target_?file|target_?path|file_?name|file|files|dest|destination|new_?path)$/i;
 /** Tool names that write files — only these have their path fields checked (reading `.git` is fine). */
 const WRITE_LIKE_TOOL = /write|edit|patch|editor|create|replace|insert|notebook|move|rename/i;
-const MAX_WALK_DEPTH = 6;
-const MAX_WALK_STRINGS = 500;
+/** Bounds on the walk. Hitting either is not "nothing found": the input is too large to screen. */
+const MAX_WALK_DEPTH = 16;
+const MAX_WALK_STRINGS = 2_000;
 
 interface Extracted {
   commands: string[];
   paths: { key: string; value: string }[];
   strings: string[];
+  /** The walk stopped at a limit, so part of the input was never examined. */
+  truncated: boolean;
 }
 
 /** `{command: "rm", args: ["-rf", "/"]}` → `rm -rf /`. */
@@ -498,9 +608,13 @@ function structuredCommand(value: Record<string, unknown>): string | null {
 }
 
 function extract(input: unknown): Extracted {
-  const out: Extracted = { commands: [], paths: [], strings: [] };
+  const out: Extracted = { commands: [], paths: [], strings: [], truncated: false };
   const visit = (value: unknown, key: string, depth: number, underCommand: boolean, underPath: boolean): void => {
-    if (depth > MAX_WALK_DEPTH || out.strings.length >= MAX_WALK_STRINGS) return;
+    if (out.truncated) return;
+    if (depth > MAX_WALK_DEPTH || out.strings.length >= MAX_WALK_STRINGS) {
+      out.truncated = true;
+      return;
+    }
     if (typeof value === "string") {
       out.strings.push(value);
       if (underCommand) out.commands.push(value);
@@ -552,6 +666,10 @@ function patchPaths(text: string): string[] {
   return found;
 }
 
+function oversized(why: string): ReviewVerdict {
+  return { verdict: "escalate", reason: `Input too large to screen (${why}). A person must decide.`, failure: "oversized", source: "precheck" };
+}
+
 function hardStop(effect: string, offending: string): ReviewVerdict {
   return { verdict: "kill", reason: `Hard stop: ${effect}.`, evidence: `Destructive effect: ${effect}. Offending input: ${offending.trim().slice(0, 200)}`, source: "precheck" };
 }
@@ -570,19 +688,15 @@ function hardStop(effect: string, offending: string): ReviewVerdict {
 export function detectHardStop(toolName: string, input: Record<string, unknown>): ReviewVerdict | null {
   const found = extract(input);
   const text = found.commands.join("\n");
-  if (text.length > MAX_SCREEN_CHARS) {
-    // Too large to screen, and NOT truncated-and-passed: what lies past a cut
-    // is exactly what an attacker would hide there. Escalate instead — this
-    // verdict skips the model, is never auto-approved (the reviewer would see
-    // truncated input anyway — downgradeUnseenApprove), and is not offered to
-    // a parent, whose approval the screen exists to guard.
-    return {
-      verdict: "escalate",
-      reason: `Command text is too large to screen (${text.length} characters; limit ${MAX_SCREEN_CHARS}). A person must decide.`,
-      failure: "oversized",
-      source: "precheck",
-    };
-  }
+  // Too large to screen, and NOT truncated-and-passed: what lies past a cut
+  // is exactly what an attacker would hide there. Escalate instead — this
+  // verdict skips the model, is never auto-approved (the reviewer would see
+  // truncated input anyway — downgradeUnseenApprove), and is not offered to
+  // a parent, whose approval the screen exists to guard. The same holds when
+  // the WALK stopped early (too many strings, or nested too deep): the
+  // command could be in the part that was never looked at.
+  if (found.truncated) return oversized(`the input has more than ${MAX_WALK_STRINGS} strings or is nested deeper than ${MAX_WALK_DEPTH} levels`);
+  if (text.length > MAX_SCREEN_CHARS) return oversized(`${text.length} characters of command text; limit ${MAX_SCREEN_CHARS}`);
   for (const command of splitCommands(text)) {
     const hit = commandHardStop(command);
     if (hit) return hardStop(hit.effect, hit.offending);

@@ -340,3 +340,17 @@ describe("oversized input and the strict reader on a temp id", () => {
     expect(store.getChatBySessionId).not.toHaveBeenCalled();
   });
 });
+
+describe("walk-limit escalation in the chain", () => {
+  it("a command hidden past the walk limit: model not asked, parent not offered", async () => {
+    const { call, reviewer, notifyParent, events, trackingId } = setup({ settings: { modelReview: true, parentAnswers: true }, parent: "parent-1" });
+    void call("run_commands", { commands: [...Array(2_000).fill("ls"), "rm -rf ~"] });
+    await flush();
+    expect(reviewer).not.toHaveBeenCalled();
+    expect(notifyParent).not.toHaveBeenCalled();
+    const prompt = events.find((e) => e.type === "permission_request")!;
+    expect(prompt).toMatchObject({ reviewerVerdict: "escalate" });
+    expect(prompt.offeredToParent).toBeUndefined();
+    pendingRequests.delete(trackingId);
+  });
+});
