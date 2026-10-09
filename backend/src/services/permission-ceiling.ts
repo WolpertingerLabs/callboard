@@ -147,7 +147,7 @@ export function unattendedRefusal(toolName: string, getPermissions: (() => Defau
 }
 
 /**
- * Why an ancestor chat may NOT approve a child's permission prompt, or `null`.
+ * Why a parent chat may NOT approve its child's permission prompt, or `null`.
  *
  * The same ceiling as everything else in this file, applied to answering
  * instead of spawning: approving a child's call is doing that call through the

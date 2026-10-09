@@ -49,7 +49,7 @@ export interface PendingRequest {
   /**
    * Parent chat this prompt was also offered to (`parentAnswers` on, the
    * chat has a parent, not a hard stop). The human prompt is raised as usual;
-   * an ancestor may answer it through `respond_to_request` — first answer wins,
+   * that parent (and only it) may answer it through `respond_to_request` — first answer wins,
    * guarded by `requestId`. See parent-answers.ts.
    */
   offeredToParent?: string;

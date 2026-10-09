@@ -81,7 +81,7 @@ describe("buildCanUseTool — review chain", () => {
     expect(event.humanOnly).toBeUndefined();
     // Replayed by /pending too.
     expect(getPendingRequest(trackingId)?.eventData).toMatchObject({ reviewerNotes: expect.any(String), offeredToParent: "parent-1" });
-    expect(notifyParent).toHaveBeenCalledWith("parent-1", trackingId, "Bash");
+    expect(notifyParent).toHaveBeenCalledWith("parent-1", trackingId, "Bash", "codeExecution");
     expect(respondToPermission(trackingId, true).ok).toBe(true);
     await expect(promise).resolves.toMatchObject({ behavior: "allow" });
   });
@@ -205,5 +205,31 @@ describe("buildCanUseTool — review chain", () => {
     });
     await expect(canUseTool("Bash", { command: "rm -rf ~" }, { signal: new AbortController().signal })).resolves.toMatchObject({ behavior: "allow" });
     expect(reviewer).not.toHaveBeenCalled();
+  });
+});
+
+describe("review settings are live during a new chat's first run", () => {
+  it("reads creation metadata on a temp id, then the record once the session id is known", async () => {
+    const { liveChatMetadataReader } = await import("./claude.js");
+    let trackingId = "new-123";
+    let stored = JSON.stringify({ modelReview: true });
+    const store = { getChat: vi.fn(() => null), getChatBySessionId: vi.fn((id: string) => (id === "sess-1" ? ({ metadata: stored } as never) : null)) };
+    const read = liveChatMetadataReader({ isNewChat: true, getTrackingId: () => trackingId, initialMetadata: { modelReview: true }, store });
+
+    expect(read()).toEqual({ modelReview: true });
+    expect(store.getChatBySessionId).not.toHaveBeenCalled(); // temp id: no lookup at all
+
+    trackingId = "sess-1"; // chat_created: record written, tracking id migrated
+    stored = JSON.stringify({ modelReview: false, parentAnswers: true }); // user toggles mid-run
+    expect(read()).toEqual({ modelReview: false, parentAnswers: true });
+    expect(store.getChat).not.toHaveBeenCalled(); // direct read by session id, never the by-id scan
+  });
+
+  it("an existing chat reads its record; a failed read falls back", async () => {
+    const { liveChatMetadataReader } = await import("./claude.js");
+    const store = { getChat: vi.fn(() => ({ metadata: JSON.stringify({ parentAnswers: true }) }) as never), getChatBySessionId: vi.fn() };
+    expect(liveChatMetadataReader({ isNewChat: false, chatId: "c1", getTrackingId: () => "c1", initialMetadata: {}, store })()).toEqual({ parentAnswers: true });
+    const broken = { getChat: vi.fn(() => ({ metadata: "{not json" }) as never), getChatBySessionId: vi.fn() };
+    expect(liveChatMetadataReader({ isNewChat: false, chatId: "c1", getTrackingId: () => "c1", initialMetadata: { modelReview: true }, store: broken })()).toEqual({ modelReview: true });
   });
 });

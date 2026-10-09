@@ -421,8 +421,8 @@ export interface PermissionReviewHooks {
   getTaskExcerpt?: () => string | undefined;
   /** Injected in tests; defaults to {@link reviewToolCall}. */
   reviewer?: (req: ReviewRequest, opts: ReviewOptions) => Promise<ReviewVerdict>;
-  /** Injected in tests; defaults to {@link notifyParentOfChildPrompt}. */
-  notifyParent?: (parentChatId: string, childChatId: string, toolName: string) => void;
+  /** Injected in tests; defaults to {@link notifyParentOfChildPrompt} (wakes the parent only if it could approve). */
+  notifyParent?: (parentChatId: string, childChatId: string, toolName: string, category: string | null) => void;
 }
 
 /**
@@ -640,7 +640,7 @@ export function buildCanUseTool(
       pendingRequests.set(trackingId, entry);
       if (offeredToParent) {
         try {
-          (review?.notifyParent ?? notifyParentOfChildPrompt)(offeredToParent, trackingId, toolName);
+          (review?.notifyParent ?? notifyParentOfChildPrompt)(offeredToParent, trackingId, toolName, category);
         } catch (err) {
           log.warn(`[PERM-DIAG] could not notify parent ${offeredToParent} of ${toolName} prompt on ${trackingId}: ${err}`);
         }
@@ -653,6 +653,35 @@ export function buildCanUseTool(
         resolve({ behavior: "deny", message: "Aborted" });
       });
     });
+  };
+}
+
+/**
+ * A live reader of a chat's stored metadata for per-call decisions (the review
+ * chain). A new chat reads its creation metadata while still on a temp
+ * tracking id (`new-…`, no record — nothing can have toggled it), then its own
+ * record by session id once one exists. An existing chat reads its record.
+ * Falls back to the creation/initial metadata when a read fails.
+ */
+export function liveChatMetadataReader(ctx: {
+  isNewChat: boolean;
+  getTrackingId: () => string;
+  chatId?: string;
+  initialMetadata: Record<string, unknown>;
+  store?: Pick<typeof chatFileService, "getChat" | "getChatBySessionId">;
+}): () => Record<string, unknown> {
+  const store = ctx.store ?? chatFileService;
+  return () => {
+    const trackingId = ctx.getTrackingId();
+    const liveId = ctx.isNewChat ? (trackingId.startsWith("new-") ? null : trackingId) : ctx.chatId;
+    if (!liveId) return ctx.initialMetadata;
+    try {
+      const fresh = ctx.isNewChat ? store.getChatBySessionId(liveId) : store.getChat(liveId);
+      if (fresh) return JSON.parse(fresh.metadata || "{}");
+    } catch (err) {
+      log.error(`[PERM-DIAG] Error re-reading live metadata for ${liveId}: ${err}`);
+    }
+    return ctx.initialMetadata;
   };
 }
 
@@ -1337,19 +1366,22 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // this pass cannot see.
   const toolPermissionPolicy = new ToolPermissionPolicy(getToolCategorizer(providerKind), getDefaultPermissions);
 
-  // The review-chain settings and parent, read live like getDefaultPermissions:
-  // a new chat from its creation metadata (its record may still be on a temp
-  // id), an existing chat from the stored record so a toggle applies at once.
-  const readLiveMetadata = (): Record<string, unknown> => {
-    if (isNewChat) return initialMetadata;
-    try {
-      const fresh = chatFileService.getChat(opts.chatId!);
-      if (fresh) return JSON.parse(fresh.metadata || "{}");
-    } catch (err) {
-      log.error(`[PERM-DIAG] Error re-reading review settings for ${opts.chatId}: ${err}`);
-    }
-    return initialMetadata;
-  };
+  // The review-chain settings and parent, read live from the stored record on
+  // every ask, so a toggle applies to the next prompt — including during a
+  // brand-new chat's FIRST run, where spawned children spend most of their
+  // life. Until the record exists the chat is on a temp tracking id (`new-…`)
+  // and nothing can have toggled it yet, so its creation metadata is the
+  // truth; once the session id arrives, `trackingId` IS the record's session
+  // id, a direct read rather than getChat's by-id scan.
+  //
+  // (Unlike `getDefaultPermissions`, which keeps reading creation options for
+  // the whole first run — see permission-ceiling.ts "What is NOT covered".)
+  const readLiveMetadata = liveChatMetadataReader({
+    isNewChat,
+    getTrackingId: () => trackingId,
+    chatId: opts.chatId,
+    initialMetadata,
+  });
   // The current run's own prompt, when it is a plain string, plus the title —
   // the cheapest available "what is this chat doing" for the reviewer.
   const promptExcerpt = typeof prompt === "string" ? prompt.slice(0, 1500) : undefined;
