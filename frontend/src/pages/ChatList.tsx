@@ -22,7 +22,6 @@ import {
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
 import SpaceSwitcher, { SpaceNotice } from "../components/SpaceSwitcher";
-
 import MoveToSpaceModal from "../components/MoveToSpaceModal";
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES } from "shared/types/space.js";
@@ -1511,7 +1510,7 @@ export default function ChatList({
       />
       {spacesEnabled && isMobile && <SpaceNotice style={{ margin: `6px ${MOBILE_FILTER_INSET}px 0` }} />}
       {spacesEnabled && spaces.length > 1 && activeSpaceId !== ALL_SPACES && (searchQuery.trim() || searching) && (
-        <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 20px 6px", fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 ${isMobile ? MOBILE_FILTER_INSET : 20}px 6px`, fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}>
           <input type="checkbox" checked={searchAllSpaces} onChange={(e) => setSearchAllSpaces(e.target.checked)} />
           Search all spaces
         </label>

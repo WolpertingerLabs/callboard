@@ -63,7 +63,6 @@ function CountBadge({ n, title }: { n: number; title: string }) {
   );
 }
 
-/** The space picker at the top of the sidebar. */
 /** The "switched to this chat's space" notice, with its dismiss button. */
 export function SpaceNotice({ style }: { style?: React.CSSProperties }) {
   const { notice, dismissNotice } = useSpaces();
@@ -95,6 +94,7 @@ export function SpaceNotice({ style }: { style?: React.CSSProperties }) {
   );
 }
 
+/** The space picker at the top of the sidebar. */
 export default function SpaceSwitcher({ cards, compact = false, inset = 20 }: SpaceSwitcherProps) {
   const { spaces, activeSpaceId, activeSpace, setActiveSpace } = useSpaces();
   const navigate = useNavigate();

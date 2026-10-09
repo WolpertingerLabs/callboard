@@ -34,12 +34,12 @@ function blocked(id: string, spaceId: string): CardSummary {
   };
 }
 
-function renderSwitcher(setActiveSpace = vi.fn(), compact = false) {
+function renderSwitcher(setActiveSpace = vi.fn()) {
   const cards = [blocked("a", "sp_work"), blocked("b", "sp_home"), blocked("c", "sp_home"), blocked("d", "sp_old"), blocked("e", "default")];
   render(
     <MemoryRouter>
       <SpaceContext.Provider value={makeSpaceContext(SPACES, { activeSpaceId: "default", setActiveSpace })}>
-        <SpaceSwitcher cards={cards} compact={compact} />
+        <SpaceSwitcher cards={cards} />
       </SpaceContext.Provider>
     </MemoryRouter>,
   );
