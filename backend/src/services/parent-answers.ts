@@ -1,0 +1,280 @@
+/**
+ * "Parent can answer" — a chat's direct parent answering that chat's
+ * permission prompt.
+ *
+ * ## Design: offered, not hidden
+ *
+ * The prompt is raised for the human exactly as today (`buildCanUseTool`,
+ * claude.ts) and is visible and answerable the whole time. Offering it to the
+ * parent only adds a second answerer: the parent may answer through
+ * `respond_to_request`, and whichever answer lands first wins — both go
+ * through the same `pendingRequests` slot, and a stale `requestId` matches
+ * nothing. So there is no hidden prompt, no parent timeout and no timer race:
+ * a parent that never answers simply leaves the prompt with the human, who
+ * would have seen it anyway.
+ *
+ * ## Who may answer what
+ *
+ * {@link respondAsParent} refuses unless all of these hold:
+ *  - the prompt exists and `requestId` is the one currently open;
+ *  - it is an ordinary tool permission (`permission_request`) that was
+ *    offered (`offeredToParent` is set — so the child had `parentAnswers` on
+ *    when it was raised, and it was not a hard stop), and it is not
+ *    `humanOnly` (the computer-use gate and reviewer hard stops are for a
+ *    signed-in human only);
+ *  - the child still has `parentAnswers` on (re-read live, so turning it off
+ *    takes effect for prompts already open);
+ *  - the caller IS the child's direct parent (`offeredToParent`, the child's
+ *    `parentChatId` when the prompt was raised). Not a grandparent: the
+ *    setting is "parent can answer", and the user chose that parent;
+ *  - to APPROVE, the caller itself holds `allow` on the call's axis
+ *    (`parentApprovalRefusal`, permission-ceiling.ts). Denying is always open.
+ *
+ * For that last check to ever pass, the child must ask on an axis the parent
+ * allows. A plain `start_chat_session` child is capped at the parent's own
+ * policy, so it only asks where the parent asks too; a parent that wants to
+ * review a child's calls delegates deliberately with the tool's `permissions`
+ * argument (e.g. `codeExecution: "ask"` while it holds `allow` itself).
+ *
+ * `AskUserQuestion` / `ExitPlanMode` are never offered: they are questions for
+ * the user, and a parent answering them would be the agent talking to itself.
+ *
+ * ## Notification
+ *
+ * When a prompt is offered that the parent could APPROVE,
+ * {@link notifyParentOfChildPrompt} ends any interruptible `wait` the parent is
+ * blocked in, with a note telling it which child needs what and to call
+ * `list_pending_requests`. A prompt it could only deny does not wake it — that
+ * would turn every child ask into an interruption with nothing to do but
+ * refuse; it stays listed (`canApprove: false`) for a parent that looks. A parent that is busy
+ * with something else, idle or finished is NOT woken or resumed: auto-resuming
+ * a finished chat to answer prompts would start an unattended turn the user did
+ * not ask for, so in that case the prompt simply stays with the human.
+ */
+import type { DefaultPermissions } from "shared/types/index.js";
+import { normalizePermissions, normalizeReviewSettings } from "shared/types/index.js";
+import { pendingRequests, type PendingRequest } from "./pending-requests.js";
+import { parentApprovalRefusal } from "./permission-ceiling.js";
+import { chatFileService } from "./chat-file-service.js";
+import { listActivities, releaseActivity } from "./chat-activity.js";
+import { sessionRegistry } from "./session-registry.js";
+import { parseChatMetadataRecord } from "../utils/chat-metadata.js";
+import { sanitizeToolName } from "./permission-review.js";
+import type { StreamEvent } from "shared/types/index.js";
+import { createLogger } from "../utils/logger.js";
+
+const log = createLogger("parent-answers");
+
+/** Prefix of the `releasedBy` reason a child prompt ends a parent's `wait` with. */
+export const CHILD_PROMPT_RELEASE_PREFIX = "child_permission:";
+
+/**
+ * Stored metadata by chat id, from ONE `getAllChats` snapshot.
+ *
+ * Built lazily and at most once per tool call. A per-row `getChat` would be a
+ * full directory scan on every miss (~45ms) — and a brand-new child is always a
+ * miss: its prompt is keyed on a temp tracking id (`new-…`) with no record yet.
+ */
+function metadataIndex(): (chatId: string) => Record<string, unknown> | null {
+  let index: Map<string, Record<string, unknown>> | null = null;
+  return (chatId) => {
+    if (chatId.startsWith("new-")) return null; // a temp id never has a record
+    if (!index) {
+      index = new Map();
+      for (const chat of chatFileService.getAllChats()) {
+        const meta = parseChatMetadataRecord(chat.metadata);
+        index.set(chat.id, meta);
+        if (chat.session_id) index.set(chat.session_id, meta);
+      }
+    }
+    return index.get(chatId) ?? null;
+  };
+}
+
+/** Live `parentAnswers`. A still-temp child has no record yet; its offer stands. */
+function childStillOffers(meta: Record<string, unknown> | null): boolean {
+  return meta === null ? true : normalizeReviewSettings(meta).parentAnswers;
+}
+
+/** An offered ordinary permission prompt whose direct parent is `callerChatId`. */
+function isOfferedTo(entry: PendingRequest, callerChatId: string): boolean {
+  return entry.eventType === "permission_request" && !entry.humanOnly && entry.offeredToParent === callerChatId;
+}
+
+export interface AnswerableRequest {
+  chatId: string;
+  title: string | null;
+  requestId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  category: string | null;
+  /** False when the caller's own policy is not `allow` on this axis — it may only deny. */
+  canApprove: boolean;
+  reviewerNotes?: string;
+}
+
+/**
+ * Open prompts of `callerChatId`'s direct children that it may answer, each
+ * flagged with whether it could approve (or only deny) them.
+ */
+export function listAnswerableRequests(callerChatId: string, callerPermissions: DefaultPermissions | null): AnswerableRequest[] {
+  const rows: AnswerableRequest[] = [];
+  const metaOf = metadataIndex();
+  for (const [chatId, entry] of pendingRequests) {
+    if (!entry.requestId || !isOfferedTo(entry, callerChatId)) continue;
+    const meta = metaOf(chatId);
+    if (!childStillOffers(meta)) continue;
+    const title = meta?.title;
+    rows.push({
+      chatId,
+      title: typeof title === "string" ? title : null,
+      requestId: entry.requestId,
+      toolName: entry.toolName,
+      input: entry.input,
+      category: entry.category ?? null,
+      canApprove: parentApprovalRefusal(entry.category, callerPermissions) === null,
+      ...(entry.reviewerNotes && { reviewerNotes: entry.reviewerNotes }),
+    });
+  }
+  return rows;
+}
+
+export type ParentAnswerResult =
+  | { ok: true; chatId: string; requestId: string; toolName: string; allowed: boolean }
+  | { ok: false; error: string; message: string };
+
+/** The `pendingRequests` key currently holding the prompt with this (UUID) requestId. */
+function findKeyByRequestId(requestId: string): string | undefined {
+  for (const [key, entry] of pendingRequests) if (entry.requestId === requestId) return key;
+  return undefined;
+}
+
+/**
+ * Answer a direct child's prompt on behalf of the calling chat. See the module
+ * header for every check; each refusal names what failed.
+ */
+export function respondAsParent(args: {
+  callerChatId: string;
+  callerPermissions: DefaultPermissions | null;
+  chatId: string;
+  requestId: string;
+  allow: boolean;
+  reason: string;
+}): ParentAnswerResult {
+  const { callerChatId, requestId, allow } = args;
+  const reason = args.reason.trim().slice(0, 1000) || "(no reason given)";
+  // A brand-new child's prompt is listed under its temp tracking id
+  // (`new-…`) and moves to the real chat id when the session id arrives. A
+  // parent answering with the old id is still answering the same prompt:
+  // requestIds are UUIDs, so follow the prompt by its requestId instead of
+  // making the parent list again. Every check below runs on the resolved key.
+  const chatId = pendingRequests.has(args.chatId) ? args.chatId : (findKeyByRequestId(requestId) ?? args.chatId);
+  const entry = pendingRequests.get(chatId);
+  if (!entry) return { ok: false, error: "not_found", message: `Chat "${chatId}" has no open prompt. It may have been answered already — call list_pending_requests again.` };
+  if (entry.requestId !== requestId) {
+    return { ok: false, error: "stale_request", message: "That requestId is not the prompt currently open in that chat (it was answered or replaced). Call list_pending_requests again." };
+  }
+  if (entry.humanOnly) {
+    return {
+      ok: false,
+      error: "human_only",
+      message:
+        entry.reviewerVerdict === "kill"
+          ? "This prompt is a reviewer HARD STOP (suspected prompt injection or a self-destructive act). Only the signed-in user may answer it."
+          : "This prompt may be answered only by the signed-in user.",
+    };
+  }
+  if (entry.eventType !== "permission_request") return { ok: false, error: "not_a_permission", message: "Only tool-permission prompts can be answered by a parent chat; questions and plan reviews are for the user." };
+  if (!entry.offeredToParent || !childStillOffers(metadataIndex()(chatId))) {
+    return { ok: false, error: "parent_answers_off", message: `Chat "${chatId}" does not have "parent can answer" turned on, so its prompts are for the user only.` };
+  }
+  if (entry.offeredToParent !== callerChatId) {
+    return {
+      ok: false,
+      error: "not_parent",
+      message: `Chat "${chatId}" is not a direct child of this chat, so this chat may not answer its prompts — only its own parent (or the user) can.`,
+    };
+  }
+  if (allow) {
+    const refusal = parentApprovalRefusal(entry.category, args.callerPermissions);
+    if (refusal) return { ok: false, error: "permission_ceiling", message: refusal };
+  }
+
+  // First answer wins: the slot and the requestId were checked synchronously
+  // above, and deleting the entry here is what makes a later human click 409.
+  pendingRequests.delete(chatId);
+  if (allow) {
+    entry.resolve({ behavior: "allow", updatedInput: entry.input });
+  } else {
+    // Not an interrupt: the agent should read the reason and adapt, the same
+    // as a reviewer deny — not stop dead as on a human "deny".
+    entry.resolve({ behavior: "deny", message: `Denied by parent chat ${callerChatId}: ${reason}`, interrupt: false });
+  }
+  log.info(`[PERM-DIAG] tool=${entry.toolName} on ${chatId} answered by parent ${callerChatId} → ${allow ? "allow" : "deny"} (${reason.slice(0, 200)})`);
+  sessionRegistry.get(chatId)?.emitter?.emit("event", {
+    type: "tool_result",
+    content: "",
+    toolName: entry.toolName,
+    promptResolved: { requestId, allowed: allow, message: `${allow ? "Allowed" : "Denied"} by parent chat: ${reason}` },
+  } as StreamEvent);
+  return { ok: true, chatId, requestId, toolName: entry.toolName, allowed: allow };
+}
+
+/**
+ * The parent's own effective policy, read from its stored record (a parent
+ * always has one: a child is only linked to a stored parent). Missing or
+ * unreadable reads as `null`, i.e. ask on every axis, so it can never look
+ * more able than it is.
+ *
+ * Known gap: `respond_to_request` checks the parent's LIVE session getter
+ * (`getDefaultPermissions`), which during the parent's own FIRST run reads its
+ * creation options rather than the record (permission-ceiling.ts, "What is
+ * NOT covered"). The two differ only if the parent's permissions were edited
+ * mid-way through that first run, and then this decides only whether to WAKE
+ * the parent: at worst a needless wake (the parent's allow is then refused)
+ * or a missed one (the parent can still list the prompt). The authority check
+ * itself always uses the live getter, and the human can answer either way.
+ */
+function parentPermissions(parentChatId: string): DefaultPermissions | null {
+  // getChat tries the session-id filename first, so this is a direct read.
+  const chat = chatFileService.getChat(parentChatId);
+  const raw = chat ? parseChatMetadataRecord(chat.metadata).defaultPermissions : undefined;
+  return raw ? normalizePermissions(raw) : null;
+}
+
+/**
+ * Tell the parent a child prompt is waiting: end every interruptible `wait`
+ * it is blocked in — but only for a prompt it could APPROVE. Returns whether
+ * a wait was ended (false = not approvable, or the parent was not waiting; the
+ * prompt stays with the human either way).
+ */
+export function notifyParentOfChildPrompt(parentChatId: string, childChatId: string, toolName: string, category: string | null): boolean {
+  const refusal = parentApprovalRefusal(category, parentPermissions(parentChatId));
+  if (refusal) {
+    log.info(`[PERM-DIAG] ${toolName} prompt of ${childChatId} offered to parent ${parentChatId}, which may only deny it (${category ?? "no category"}) — not waking it`);
+    return false;
+  }
+  let released = false;
+  for (const activity of listActivities(parentChatId)) {
+    if (activity.kind !== "wait" || !activity.interruptible) continue;
+    const outcome = releaseActivity(parentChatId, activity.id, `${CHILD_PROMPT_RELEASE_PREFIX}${childChatId}:${toolName}`);
+    if (outcome.ok) released = true;
+  }
+  log.info(`[PERM-DIAG] offered ${toolName} prompt of ${childChatId} to parent ${parentChatId} (wait ${released ? "ended early" : "not active — prompt stays with the user"})`);
+  return released;
+}
+
+/** The `wait` note for a wait ended by {@link notifyParentOfChildPrompt}, or null for any other reason. */
+export function childPromptWaitNote(releasedBy: string | undefined): string | null {
+  if (!releasedBy?.startsWith(CHILD_PROMPT_RELEASE_PREFIX)) return null;
+  const rest = releasedBy.slice(CHILD_PROMPT_RELEASE_PREFIX.length);
+  const split = rest.indexOf(":");
+  const childId = (split >= 0 ? rest.slice(0, split) : rest).replace(/[^A-Za-z0-9_-]/g, "?").slice(0, 80);
+  // Both halves came through a free-form string; the tool name is engine-
+  // supplied (unvalidated on ACP), and this note goes into the parent's context.
+  const tool = split >= 0 ? sanitizeToolName(rest.slice(split + 1)) : "a tool";
+  return (
+    `This wait ended early because child chat ${childId} needs approval for ${tool}. Call list_pending_requests to see it, then ` +
+    "respond_to_request to allow or deny it (you may only allow what this chat itself is allowed to do). The user can also answer it; whoever answers first wins."
+  );
+}

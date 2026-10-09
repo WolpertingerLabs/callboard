@@ -11,15 +11,15 @@ import { isInternalProvider, isRetiredProvider, type AgentProviderKind, type Age
 import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult } from "../agents/adapters/claude-code/types.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
-import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy.js";
+import { ToolPermissionPolicy, type PermissionCategory } from "../agents/permissions/ToolPermissionPolicy.js";
 import { getToolCategorizer } from "../agents/permissions/categorizers.js";
 import { EventEmitter } from "events";
 import { chatFileService } from "./chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
 import { setSlashCommandsForDirectory } from "./slashCommands.js";
-import type { DefaultPermissions } from "shared/types/index.js";
+import type { DefaultPermissions, PermissionReviewSettings } from "shared/types/index.js";
 import type { StreamEvent, TaskListItem } from "shared/types/index.js";
-import { TASK_LIST_TOOLS, normalizePermissions } from "shared/types/index.js";
+import { TASK_LIST_TOOLS, normalizePermissions, normalizeReviewSettings } from "shared/types/index.js";
 import { buildPluginOptions, buildMcpServerOptions, buildHookOptions, type PluginDescriptor } from "./claude-session-options.js";
 import { buildAcpExtras, buildClineExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
@@ -56,6 +56,8 @@ import { archivedAfter, reopenArchivedRoot } from "./chat-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
+import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, type ReviewOptions, type ReviewRequest, type ReviewVerdict } from "./permission-review.js";
+import { notifyParentOfChildPrompt } from "./parent-answers.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { readChat, resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
 import { spaceForFolder, touchSpaceRecentDirectory } from "./space-store.js";
@@ -399,14 +401,83 @@ function buildFormattedPrompt(
 }
 
 /**
+ * What `buildCanUseTool` needs to route an "ask" through the automated
+ * answerers before (model review) or alongside (parent chat) the human.
+ * Absent = today's behaviour: every ask goes straight to the human.
+ *
+ * Every field is a live getter or a fixed fact of the session; the settings
+ * are re-read per call, like `getDefaultPermissions`, so toggling them
+ * mid-session applies to the next prompt.
+ *
+ * Codex never reaches here (no per-call hook — see codex/optionsAdapter.ts),
+ * so neither answerer applies to Codex chats.
+ */
+export interface PermissionReviewHooks {
+  /**
+   * Live settings. May throw when they cannot be read; the chain then uses
+   * {@link STRICT_REVIEW_FALLBACK}.
+   */
+  getSettings: () => PermissionReviewSettings;
+  /** The chat's direct parent (metadata `parentChatId`), if any. */
+  getParentChatId: () => string | undefined;
+  cwd: string;
+  /** Short excerpt of what the chat is doing, for the reviewer. Cheap or absent. */
+  getTaskExcerpt?: () => string | undefined;
+  /** Injected in tests; defaults to {@link reviewToolCall}. */
+  reviewer?: (req: ReviewRequest, opts: ReviewOptions) => Promise<ReviewVerdict>;
+  /** Injected in tests; defaults to {@link notifyParentOfChildPrompt} (wakes the parent only if it could approve). */
+  notifyParent?: (parentChatId: string, childChatId: string, toolName: string, category: string | null) => void;
+}
+
+/**
+ * The review settings to act on when they cannot be read — the strict side of
+ * BOTH settings at once, because each "on" means something different:
+ *
+ *  - the SCREEN stays on (hard-stop pre-check, reviewer deny/kill all apply),
+ *  - but a reviewer APPROVE is not honoured (`approveAllowed: false` — an
+ *    approve runs a call with nobody asked, which a chat that may have turned
+ *    review off must not get), and
+ *  - the parent is not consulted (`parentAnswers: false`).
+ *
+ * So a failed read can only add friction, never remove a human from the loop.
+ */
+export const STRICT_REVIEW_FALLBACK: PermissionReviewSettings & { approveAllowed: false } = {
+  modelReview: true,
+  parentAnswers: false,
+  approveAllowed: false,
+};
+
+/**
  * Build the canUseTool permission handler for the Claude SDK.
  * Uses a getter function for the tracking ID since it may change mid-session (new chat flow).
+ *
+ * The same callback serves pi, ACP and Cline (their permission adapters call
+ * it on "ask"), so the review chain below covers every engine except Codex.
+ *
+ * For an "ask", the chain is:
+ *
+ *   ask → [hard-stop pre-check + model review, if `modelReview`]
+ *       → [parent chat, if `parentAnswers` and the chat has a parent]
+ *       → human
+ *
+ * - The pre-check (`detectHardStop`) also runs when only `parentAnswers` is
+ *   on, so a parent can never approve an obviously self-destructive call.
+ * - Model `approve` is final; `deny` goes back to the agent (`interrupt:
+ *   false`); `escalate` passes on with its reasoning attached to the prompt.
+ *   Every reviewer failure is `escalate` (permission-review.ts).
+ * - `kill` (hard stop) skips the parent and raises a `humanOnly` prompt —
+ *   a signed-in human must decide; no parent, no API key.
+ * - The parent step does not hide anything: the human prompt is raised as
+ *   usual and the parent may also answer it (parent-answers.ts).
+ * - `AskUserQuestion` / `ExitPlanMode` and PreToolUse-hook asks skip both
+ *   answerers: they are explicitly for the user.
  */
 export function buildCanUseTool(
   emitter: EventEmitter,
   toolPermissionPolicy: ToolPermissionPolicy,
   getTrackingId: () => string,
   hookAskOverride?: { reason: string },
+  review?: PermissionReviewHooks,
 ) {
   return async (
     toolName: string,
@@ -416,13 +487,16 @@ export function buildCanUseTool(
     // If a PreToolUse hook flagged "ask", skip auto-approval and prompt the user
     // regardless of default permissions.
     const hookOverrideReason = hookAskOverride?.reason || "";
+    let category: PermissionCategory | null = null;
     if (hookOverrideReason) {
       hookAskOverride!.reason = ""; // reset for next tool call
       log.info(`[PERM-DIAG] Hook override ASK: tool=${toolName}, reason=${hookOverrideReason}`);
       // Fall through to the permission prompt below
     } else {
       try {
-        const { decision, category } = toolPermissionPolicy.decide(toolName);
+        const decided = toolPermissionPolicy.decide(toolName);
+        const { decision } = decided;
+        category = decided.category;
         log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, decision=${decision}`);
         // computerControl never decides "ask" here: a scoped grant/approval
         // belongs to the service, so `decidePermission` maps "ask" to allow
@@ -443,6 +517,71 @@ export function buildCanUseTool(
         // If lookup fails, fall through to normal permission flow
       }
     }
+
+    // ── Automated answerers (see the chain in the doc comment) ──
+    // Skipped entirely — no await, so the prompt is parked synchronously as
+    // before — unless a hook is wired and one of the settings is on.
+    let reviewerNotes: string | undefined;
+    let reviewerVerdict: "escalate" | "kill" | undefined;
+    let offeredToParent: string | undefined;
+    if (review && !hookOverrideReason && isReviewableTool(toolName)) {
+      const readSettings = (): PermissionReviewSettings & { approveAllowed?: false } => {
+        try {
+          return review.getSettings();
+        } catch (err) {
+          log.warn(`[PERM-DIAG] could not read review settings for ${getTrackingId()} — strict fallback (screen on, no approve, no parent): ${err}`);
+          return STRICT_REVIEW_FALLBACK;
+        }
+      };
+      let settings = readSettings();
+      if (settings.modelReview || settings.parentAnswers) {
+        let verdict = detectHardStop(toolName, input);
+        // A review costs a model call; don't spend it on a call that would be
+        // deferred anyway because the slot is taken.
+        if (!verdict && settings.modelReview && !pendingRequests.has(getTrackingId())) {
+          const reviewer = review.reviewer ?? reviewToolCall;
+          let excerpt: string | undefined;
+          try {
+            excerpt = review.getTaskExcerpt?.();
+          } catch {
+            excerpt = undefined;
+          }
+          const before = settings;
+          verdict = await reviewer({ toolName, input, cwd: review.cwd, category, ...(excerpt && { taskExcerpt: excerpt }) }, { signal });
+          if (signal.aborted) return { behavior: "deny", message: "Aborted" };
+          // The review can take up to a minute. Re-read: a user who turned
+          // model review OFF meanwhile did not consent to a model approving
+          // this call, and a toggle of parentAnswers should apply too.
+          settings = readSettings();
+          if (verdict.verdict === "approve" && (!settings.modelReview || settings.approveAllowed === false || before.approveAllowed === false)) {
+            const why = !settings.modelReview ? "model review was turned off while it ran" : "this chat's review settings could not be read";
+            verdict = { ...verdict, verdict: "escalate", reason: `Reviewer approved, but ${why}, so a person must decide. (Reviewer said: ${verdict.reason})` };
+          }
+        }
+        if (verdict) {
+          const line = `[PERM-DIAG] review tool=${toolName}, chat=${getTrackingId()}, category=${category}, verdict=${verdict.verdict}, source=${verdict.source ?? "model"}${verdict.failure ? `, failure=${verdict.failure}` : ""}, reason=${verdict.reason.slice(0, 300)}`;
+          if (verdict.verdict === "kill") log.warn(`${line}${verdict.evidence ? `, evidence=${verdict.evidence.slice(0, 300)}` : ""}`);
+          else log.info(line);
+          if (verdict.verdict === "approve") return { behavior: "allow", updatedInput: input };
+          if (verdict.verdict === "deny") {
+            return { behavior: "deny", message: `Denied by the model safety reviewer: ${verdict.reason}`, interrupt: false };
+          }
+          reviewerNotes = reviewerNotesFor(verdict);
+          reviewerVerdict = verdict.verdict;
+        }
+        // Not to the parent for a hard stop, nor for input too large to screen:
+        // the screen is what guards a parent's approval, and it could not run.
+        const unscreened = verdict?.failure === "oversized";
+        if (reviewerVerdict !== "kill" && !unscreened && settings.parentAnswers) {
+          try {
+            offeredToParent = review.getParentChatId();
+          } catch {
+            offeredToParent = undefined;
+          }
+        }
+      }
+    }
+    const hardStop = reviewerVerdict === "kill";
 
     // A chat has one prompt slot, and this used to overwrite whatever was in
     // it. Two tool calls in one assistant block (or a Task subagent, which
@@ -469,6 +608,16 @@ export function buildCanUseTool(
       };
     }
 
+    // Optional wire fields (stream.ts) — absent unless an answerer ran.
+    const reviewFields = {
+      ...(reviewerNotes && { reviewerNotes }),
+      ...(reviewerVerdict && { reviewerVerdict }),
+      ...(offeredToParent && { offeredToParent }),
+      // A hard stop is for a signed-in human only: the `/respond` route
+      // refuses an API key for it, and `respond_to_request` refuses a parent.
+      ...(hardStop && { humanOnly: true }),
+    };
+
     return new Promise<PermissionResult>((resolve) => {
       const requestId = randomUUID();
       if (toolName === "AskUserQuestion") {
@@ -492,6 +641,7 @@ export function buildCanUseTool(
           toolName,
           input,
           suggestions,
+          ...reviewFields,
         } as StreamEvent);
       }
 
@@ -505,13 +655,33 @@ export function buildCanUseTool(
         eventData = { content: JSON.stringify(input) };
       } else {
         eventType = "permission_request";
-        eventData = { toolName, input, suggestions };
+        eventData = { toolName, input, suggestions, ...reviewFields };
       }
 
       const trackingId = getTrackingId();
       eventData.requestId = requestId;
-      const entry: PendingRequest = { toolName, input, suggestions, eventType, eventData, resolve, requestId };
+      const entry: PendingRequest = {
+        toolName,
+        input,
+        suggestions,
+        eventType,
+        eventData,
+        resolve,
+        requestId,
+        category,
+        ...(reviewerNotes && { reviewerNotes }),
+        ...(reviewerVerdict && { reviewerVerdict }),
+        ...(offeredToParent && { offeredToParent }),
+        ...(hardStop && { humanOnly: true as const }),
+      };
       pendingRequests.set(trackingId, entry);
+      if (offeredToParent) {
+        try {
+          (review?.notifyParent ?? notifyParentOfChildPrompt)(offeredToParent, trackingId, toolName, category);
+        } catch (err) {
+          log.warn(`[PERM-DIAG] could not notify parent ${offeredToParent} of ${toolName} prompt on ${trackingId}: ${err}`);
+        }
+      }
 
       signal.addEventListener("abort", () => {
         // Only our own entry — the rekey path may have moved it, and a
@@ -520,6 +690,43 @@ export function buildCanUseTool(
         resolve({ behavior: "deny", message: "Aborted" });
       });
     });
+  };
+}
+
+/**
+ * A live reader of a chat's stored metadata for per-call decisions (the review
+ * chain). A new chat reads its creation metadata while still on a temp
+ * tracking id (`new-…`, no record — nothing can have toggled it), then its own
+ * record by session id once one exists. An existing chat reads its record.
+ * Falls back to the creation/initial metadata when a read fails.
+ */
+export function liveChatMetadataReader(ctx: {
+  isNewChat: boolean;
+  getTrackingId: () => string;
+  chatId?: string;
+  initialMetadata: Record<string, unknown>;
+  store?: Pick<typeof chatFileService, "getChat" | "getChatBySessionId">;
+  /**
+   * Throw instead of falling back when the record should exist but cannot be
+   * read (missing, unparseable). For decisions where a stale fallback is not
+   * acceptable — the caller substitutes its own strict default.
+   */
+  strict?: boolean;
+}): () => Record<string, unknown> {
+  const store = ctx.store ?? chatFileService;
+  return () => {
+    const trackingId = ctx.getTrackingId();
+    const liveId = ctx.isNewChat ? (trackingId.startsWith("new-") ? null : trackingId) : ctx.chatId;
+    if (!liveId) return ctx.initialMetadata;
+    try {
+      const fresh = ctx.isNewChat ? store.getChatBySessionId(liveId) : store.getChat(liveId);
+      if (fresh) return JSON.parse(fresh.metadata || "{}");
+      if (ctx.strict) throw new Error(`no record for ${liveId}`);
+    } catch (err) {
+      log.error(`[PERM-DIAG] Error re-reading live metadata for ${liveId}: ${err}`);
+      if (ctx.strict) throw err;
+    }
+    return ctx.initialMetadata;
   };
 }
 
@@ -534,6 +741,17 @@ export interface SendMessageOptions {
   folder?: string;
   /** For new chats: initial permission settings */
   defaultPermissions?: DefaultPermissions;
+  /**
+   * For new chats: run the model safety reviewer on every permission "ask"
+   * before it reaches a person. Pinned into metadata; existing chats read the
+   * stored value live. See {@link PermissionReviewHooks}. No effect on Codex.
+   */
+  modelReview?: boolean;
+  /**
+   * For new chats: offer permission prompts to the parent chat as well as the
+   * human (needs `parentChatId`). Pinned into metadata; read live afterwards.
+   */
+  parentAnswers?: boolean;
   /** Maximum number of agent turns before stopping (default: 200) */
   maxTurns?: number;
   /** Agent identity prompt — appended to Claude Code's preset system prompt */
@@ -821,6 +1039,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     await assertStoredReasoningEffort({ provider: opts.provider, model: opts.model, effort: opts.effort, cwd: folder, codexRoute });
     initialMetadata = {
       ...(defaultPermissions && { defaultPermissions }),
+      // Who besides the human may answer an "ask" — stored beside
+      // defaultPermissions, only when on (absent reads as off).
+      ...(opts.modelReview === true && { modelReview: true }),
+      ...(opts.parentAnswers === true && { parentAnswers: true }),
       ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
       ...(opts.triggered && { triggered: true }),
       ...(opts.triggeredBy && { triggeredBy: opts.triggeredBy }),
@@ -1189,6 +1411,48 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
   // this pass cannot see.
   const toolPermissionPolicy = new ToolPermissionPolicy(getToolCategorizer(providerKind), getDefaultPermissions);
 
+  // The review-chain settings and parent, read live from the stored record on
+  // every ask, so a toggle applies to the next prompt — including during a
+  // brand-new chat's FIRST run, where spawned children spend most of their
+  // life. Until the record exists the chat is on a temp tracking id (`new-…`)
+  // and nothing can have toggled it yet, so its creation metadata is the
+  // truth; once the session id arrives, `trackingId` IS the record's session
+  // id, a direct read rather than getChat's by-id scan.
+  //
+  // (Unlike `getDefaultPermissions`, which keeps reading creation options for
+  // the whole first run — see permission-ceiling.ts "What is NOT covered".)
+  const readLiveMetadata = liveChatMetadataReader({
+    isNewChat,
+    getTrackingId: () => trackingId,
+    chatId: opts.chatId,
+    initialMetadata,
+  });
+  // The current run's own prompt, when it is a plain string, plus the title —
+  // the cheapest available "what is this chat doing" for the reviewer.
+  const promptExcerpt = typeof prompt === "string" ? prompt.slice(0, 1500) : undefined;
+  // The settings themselves come from a STRICT reader: a failed read throws
+  // and buildCanUseTool acts on STRICT_REVIEW_FALLBACK instead of a possibly
+  // stale creation-time value. Title and parent tolerate the fallback.
+  const readLiveMetadataStrict = liveChatMetadataReader({
+    isNewChat,
+    getTrackingId: () => trackingId,
+    chatId: opts.chatId,
+    initialMetadata,
+    strict: true,
+  });
+  const reviewHooks: PermissionReviewHooks = {
+    getSettings: () => normalizeReviewSettings(readLiveMetadataStrict()),
+    getParentChatId: () => {
+      const parent = readLiveMetadata().parentChatId;
+      return typeof parent === "string" && parent ? parent : undefined;
+    },
+    cwd: folder,
+    getTaskExcerpt: () => {
+      const title = readLiveMetadata().title;
+      return [typeof title === "string" && title ? `Chat title: ${title}` : "", promptExcerpt ? `Current request: ${promptExcerpt}` : ""].filter(Boolean).join("\n") || undefined;
+    },
+  };
+
   // The space this chat is filed in, and its record. Read once for the
   // session's static inputs (instructions, plugin scope); the tool getter
   // below re-reads it live, since a tree can be moved mid-session.
@@ -1297,6 +1561,8 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
           // These tools are pre-approved below, so the ceiling is what stops
           // them from handing out more than this chat has.
           getPermissions: getDefaultPermissions,
+          // Children inherit modelReview as a minimum (start_chat_session).
+          getReviewSettings: reviewHooks.getSettings,
           // The caller's space: the default scope of the listing tools
           // (search_chats, list_cards, get_chat_tree) and the space a spawned
           // root inherits. A getter, because a tree can be moved mid-session.
@@ -1473,7 +1739,7 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
         // when the backend was started from within a Claude Code session
         CLAUDECODE: undefined,
       },
-      canUseTool: buildCanUseTool(emitter, toolPermissionPolicy, () => trackingId, hookAskOverride),
+      canUseTool: buildCanUseTool(emitter, toolPermissionPolicy, () => trackingId, hookAskOverride, reviewHooks),
       stderr: (data: string) => {
         log.warn(`[SDK stderr] ${data.trimEnd()}`);
       },

@@ -54,6 +54,11 @@ export interface SpaceDefaults {
   model?: string;
   effort?: EffortLevel;
   defaultPermissions?: DefaultPermissions;
+  /**
+   * Model safety review for new chats in this space. No `parentAnswers`
+   * counterpart: a chat started from the new-chat panel has no parent.
+   */
+  modelReview?: boolean;
   worktreeByDefault?: boolean;
   /** Most recent first; capped server-side. */
   recentDirectories?: SpaceRecentDirectory[];

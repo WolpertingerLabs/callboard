@@ -28,3 +28,64 @@ it("enables modal Save for a computer-control-only change", () => {
   fireEvent.click(within(row).getByRole("radio", { name: "Allow" }));
   expect(save.disabled).toBe(false);
 });
+it("renders the review toggles only when asked, and greys parent-can-answer without a parent", () => {
+  const onReview = vi.fn();
+  const { rerender } = render(<PermissionSettings permissions={normalizePermissions(undefined)} onChange={() => {}} />);
+  expect(screen.queryByTestId("permission-review-settings")).toBeNull();
+  rerender(
+    <PermissionSettings
+      permissions={normalizePermissions(undefined)}
+      onChange={() => {}}
+      review={{ value: { modelReview: false, parentAnswers: false }, onChange: onReview, parent: { available: false } }}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: /Model safety review/ }));
+  expect(onReview).toHaveBeenCalledWith({ modelReview: true, parentAnswers: false });
+  expect((screen.getByRole("checkbox", { name: /Parent can answer/ }) as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByText("This chat has no parent chat.")).toBeTruthy();
+});
+it("the chat modal saves the review toggles with the permissions", async () => {
+  const api = await import("../api");
+  const spy = vi.spyOn(api, "updateChatPermissions").mockResolvedValue({} as never);
+  const onReview = vi.fn();
+  render(
+    <ChatPermissionsModal
+      isOpen
+      onClose={() => {}}
+      chatId="c1"
+      permissions={normalizePermissions(undefined)}
+      onPermissionsChange={() => {}}
+      review={{ modelReview: false, parentAnswers: false }}
+      hasParent
+      onReviewChange={onReview}
+    />,
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: /Parent can answer/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(onReview).toHaveBeenCalledWith({ modelReview: false, parentAnswers: true }));
+  // Only the flag this tab changed is sent.
+  expect(spy).toHaveBeenCalledWith("c1", expect.anything(), { parentAnswers: true });
+  spy.mockRestore();
+});
+it("a stale tab changing only permissions sends no review flags, so it cannot flip one another tab set", async () => {
+  const api = await import("../api");
+  const spy = vi.spyOn(api, "updateChatPermissions").mockResolvedValue({} as never);
+  // This tab opened when model review was off; another tab has since turned it on server-side.
+  render(
+    <ChatPermissionsModal
+      isOpen
+      onClose={() => {}}
+      chatId="c1"
+      permissions={normalizePermissions(undefined)}
+      onPermissionsChange={() => {}}
+      review={{ modelReview: false, parentAnswers: false }}
+      hasParent
+    />,
+  );
+  const row = screen.getByText("File Read").parentElement!.parentElement!;
+  fireEvent.click(within(row).getByRole("radio", { name: "Allow" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await vi.waitFor(() => expect(spy).toHaveBeenCalled());
+  expect(spy.mock.calls[0][2]).toEqual({});
+  spy.mockRestore();
+});

@@ -57,6 +57,7 @@ const FOUR = { fileRead: "allow", fileWrite: "ask", codeExecution: "ask", webAcc
 function patch(
   defaultPermissions: Record<string, unknown>,
   actor: { authMethod?: "session" | "bearer"; origin?: string | null; host?: string; secFetchSite?: string } = { authMethod: "session" },
+  extra: Record<string, unknown> = {},
 ): Promise<{ code: number; body: any }> {
   return new Promise((resolve) => {
     const headers: Record<string, string> = {};
@@ -65,7 +66,7 @@ function patch(
     if (actor.secFetchSite) headers["sec-fetch-site"] = actor.secFetchSite;
     const req = {
       params: { id: "chat-1" },
-      body: { defaultPermissions },
+      body: { defaultPermissions, ...extra },
       get: (name: string) => headers[name.toLowerCase()],
     } as unknown as Request;
     const res = {
@@ -175,6 +176,29 @@ describe("PATCH /api/chats/:id/permissions — the computerControl axis", () => 
 
   it("still validates the axis before anything else", async () => {
     const result = await patch({ ...FOUR, computerControl: "sometimes" }, { authMethod: "bearer" });
+    expect(result.code).toBe(400);
+    expect(updateChatMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/chats/:id/permissions — review-chain toggles", () => {
+  const fields = () => updateChatMetadata.mock.calls.at(-1)?.[1] as Record<string, unknown> | undefined;
+
+  it("stores modelReview / parentAnswers when on, clears them when off", async () => {
+    expect((await patch({ ...FOUR, computerControl: "ask" }, { authMethod: "bearer" }, { modelReview: true, parentAnswers: true })).code).toBe(200);
+    expect(fields()).toMatchObject({ modelReview: true, parentAnswers: true });
+    expect((await patch({ ...FOUR, computerControl: "ask" }, { authMethod: "session" }, { modelReview: false })).code).toBe(200);
+    expect(fields()).toMatchObject({ modelReview: null });
+  });
+
+  it("leaves them alone when omitted", async () => {
+    chat.metadata = JSON.stringify({ ...JSON.parse(chat.metadata), modelReview: true });
+    await patch({ ...FOUR, computerControl: "ask" });
+    expect(fields()).toMatchObject({ modelReview: true });
+  });
+
+  it("rejects a non-boolean", async () => {
+    const result = await patch({ ...FOUR, computerControl: "ask" }, { authMethod: "session" }, { parentAnswers: "yes" });
     expect(result.code).toBe(400);
     expect(updateChatMetadata).not.toHaveBeenCalled();
   });

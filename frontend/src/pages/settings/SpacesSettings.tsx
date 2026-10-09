@@ -540,6 +540,14 @@ function SpaceEditor({
         />
         New worktree by default
       </label>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8 }}>
+        <input
+          type="checkbox"
+          checked={defaults.modelReview === true}
+          onChange={(e) => void onPatch(space.id, { defaults: { modelReview: e.target.checked } })}
+        />
+        Model safety review for new chats
+      </label>
       {defaults.defaultPermissions ? (
         <div style={{ marginBottom: 8 }}>
           <PermissionSettings

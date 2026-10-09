@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { NativeCodexAgent } from "shared/types/chat.js";
-import type { DefaultPermissions, EffortLevel, UiAgentProviderKind } from "shared/types/index.js";
+import type { DefaultPermissions, EffortLevel, PermissionReviewSettings, UiAgentProviderKind } from "shared/types/index.js";
 
 /**
  * The fields the Chat page reads off a chat's `metadata` JSON string, each
@@ -21,6 +21,8 @@ export interface ChatMeta {
   effort?: EffortLevel;
   /** Present when truthy; still to be run through `normalizePermissions`. */
   defaultPermissions?: DefaultPermissions;
+  /** Who besides the human may answer a permission ask. Absent when both are off. */
+  review?: PermissionReviewSettings;
   /** The agent the chat was started from — agent chats run with the agent tool set. */
   agentAlias?: string;
   /** The chat's own space stamp (absent = General). Moving the tree rewrites it. */
@@ -51,6 +53,7 @@ export function parseChatMeta(metadata: string | null | undefined): ChatMeta {
     model: str(meta.model),
     effort: str(meta.effort) as EffortLevel | undefined,
     defaultPermissions: (meta.defaultPermissions || undefined) as DefaultPermissions | undefined,
+    review: meta.modelReview === true || meta.parentAnswers === true ? { modelReview: meta.modelReview === true, parentAnswers: meta.parentAnswers === true } : undefined,
     agentAlias: nonEmpty(meta.agentAlias),
     spaceId: nonEmpty(meta.spaceId),
   };

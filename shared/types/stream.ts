@@ -150,4 +150,34 @@ export interface StreamEvent {
    * does not know and goes on rendering exactly as it does today.
    */
   abandonedBackgroundTaskIds?: string[];
+  /**
+   * The model reviewer's reasoning, attached to a `permission_request` it
+   * escalated rather than decided (the chat has model safety review on). Shown
+   * with the prompt so the human — and a parent chat answering it — see what
+   * the reviewer was unsure about. Absent when no reviewer ran.
+   */
+  reviewerNotes?: string;
+  /**
+   * The reviewer verdict that sent this `permission_request` to a person:
+   * "escalate" (unsure — a parent or the human decides) or "kill" (a hard
+   * stop — suspected prompt injection or a self-destructive act). A "kill"
+   * prompt is also `humanOnly`: never answerable by a parent chat or an API
+   * key. Rendered distinctly; an old client shows it as an ordinary prompt.
+   */
+  reviewerVerdict?: "escalate" | "kill";
+  /**
+   * Chat id of the parent chat this `permission_request` was also offered to
+   * (the chat has "parent can answer" on). The human prompt is raised as
+   * usual; the parent may answer it too, and whichever answer lands first
+   * wins. Absent when the prompt is for the human only.
+   */
+  offeredToParent?: string;
+  /**
+   * A prompt was answered by someone other than this tab's human — today only
+   * the parent chat, through `respond_to_request`. Forwarded on
+   * `message_update` so an open tab can drop the now-stale panel for
+   * `requestId` and say who answered. An optional field rather than a new
+   * event type: an old tab ignores it and finds out on its next answer (409).
+   */
+  promptResolved?: { requestId: string; allowed: boolean; message: string };
 }

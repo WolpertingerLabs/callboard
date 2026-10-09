@@ -145,3 +145,31 @@ export function unattendedRefusal(toolName: string, getPermissions: (() => Defau
       "Refused so it cannot reach more than it has. Ask the user to do this, or to allow those categories for this chat.",
   });
 }
+
+/**
+ * Why a parent chat may NOT approve its child's permission prompt, or `null`.
+ *
+ * The same ceiling as everything else in this file, applied to answering
+ * instead of spawning: approving a child's call is doing that call through the
+ * child, so the answerer must itself hold `allow` on the call's axis. A parent
+ * whose own axis is "ask" would have had to ask the human for the very same
+ * thing; one on "deny" could not do it at all. Either way it may still DENY —
+ * refusing never grants authority — which is why only `allow` is checked.
+ *
+ * A call with no category (an unknown tool) has no axis to compare, and so no
+ * proof the parent holds the authority: refused. Computer control never
+ * reaches a prompt (`decidePermission` maps its "ask" to the service's own
+ * gate), but would be refused here regardless unless the parent allows it.
+ */
+export function parentApprovalRefusal(category: string | null | undefined, parentPermissions: DefaultPermissions | null | undefined): string | null {
+  if (!category || !(AXES as readonly string[]).includes(category)) {
+    return "This call has no permission category (an unknown tool), so there is no axis on which this chat could hold the authority to approve it. You may deny it; otherwise leave it for the user.";
+  }
+  const axis = category as (typeof AXES)[number];
+  const own = normalizePermissions(parentPermissions)[axis];
+  if (own === "allow") return null;
+  return (
+    `This chat's own ${axis} permission is "${own}", not "allow", so it cannot approve a ${axis} call for a child — that would do through the child what ` +
+    `this chat ${own === "ask" ? "would have to ask the user for" : "is denied"}. You may deny it; otherwise leave it for the user.`
+  );
+}
