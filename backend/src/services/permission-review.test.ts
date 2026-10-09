@@ -332,3 +332,76 @@ describe("header sanitising", () => {
     expect(prompt.match(/<\s*\/?\s*tool_input\b[^>]*>/gi)).toEqual(["<tool_input>", "</tool_input>"]);
   });
 });
+
+describe("detectHardStop — linear time on pathological input", () => {
+  // The pre-check runs synchronously on the daemon's event loop, on text an
+  // agent chose. These shapes took ~33s / ~4s / ~0.8s with the old regexes.
+  // 100ms is generous for CI (~2.3x slower than a dev machine); they run in
+  // well under 5ms locally.
+  const BUDGET_MS = 100;
+  const N = 100_000;
+  const under = 30_000; // just below MAX_SCREEN_CHARS, so the screen really runs
+  const shapes: [string, string][] = [
+    ["rm + spaces", "rm " + " ".repeat(N) + "x"],
+    ["git push×", "git " + "push ".repeat(N / 5)],
+    ["dd×", "dd ".repeat(N / 3)],
+    ["rm×", "rm ".repeat(N / 3)],
+    ["find + spaces", "find / " + " ".repeat(N) + "-name x"],
+    ["kill $( ×", "kill " + "$(".repeat(N / 2)],
+    ["tabs", "rm\t" + "\t".repeat(N) + "-rf x"],
+    ["continuations", "rm \\\n".repeat(N / 4)],
+    ["screened: rm + spaces", "rm " + " ".repeat(under) + "x"],
+    ["screened: git push×", "git " + "push ".repeat(under / 5)],
+    ["screened: dd×", "dd ".repeat(under / 3)],
+    ["screened: rm×", "rm ".repeat(under / 3)],
+    ["screened: git -C×", "git " + "-C x ".repeat(under / 5) + "push"],
+    ["screened: pkill×", "pkill ".repeat(under / 6)],
+  ];
+  it.each(shapes)("%s finishes within budget", (_label, command) => {
+    const started = performance.now();
+    detectHardStop("Bash", { command });
+    expect(performance.now() - started).toBeLessThan(BUDGET_MS);
+  });
+
+  it("patch bodies and paths are linear too", () => {
+    const body = "--- a" + " ".repeat(N) + "x\n" + "*** Update File: " + " ".repeat(N) + "y";
+    const started = performance.now();
+    detectHardStop("apply_patch", { input: body, path: "/" + "a/".repeat(N / 2) });
+    expect(performance.now() - started).toBeLessThan(BUDGET_MS);
+  });
+});
+
+describe("detectHardStop — oversized command text", () => {
+  it("is not truncated-and-passed: it escalates, flagged oversized", () => {
+    const command = "echo " + "a".repeat(40_000) + " && rm -rf ~";
+    const verdict = detectHardStop("Bash", { command });
+    expect(verdict).toMatchObject({ verdict: "escalate", failure: "oversized", source: "precheck" });
+    expect(verdict?.reason).toMatch(/too large to screen/);
+  });
+
+  it("just under the cap is still screened", () => {
+    expect(detectHardStop("Bash", { command: "echo " + "a".repeat(30_000) + " && rm -rf ~" })?.verdict).toBe("kill");
+  });
+
+  it("a model would never get to approve it either", async () => {
+    const command = "echo " + "a".repeat(40_000);
+    await expect(reviewToolCall({ ...REQ, input: { command } }, { complete: answering('{"verdict":"approve","reason":"ok"}') })).resolves.toMatchObject({ verdict: "escalate" });
+  });
+
+  it("the cap is measured on the raw text, so padding cannot squeeze a command under it", () => {
+    expect(detectHardStop("Bash", { command: "rm -rf" + " ".repeat(40_000) + "~" })?.failure).toBe("oversized");
+  });
+});
+
+describe("detectHardStop — round-3 probe matrix (tokenised)", () => {
+  const kill = (command: string) => detectHardStop("Bash", { command })?.verdict ?? null;
+  it.each(["rm -rf build .git", "rm -rf /tmp/x ~", "rm foo -r ~", "git -C ../x push -f", "git push -uf origin x", "kill $(pgrep -f callboard)", "find ~ -delete", "sudo /bin/rm -rf /", 'bash -c "rm -rf ~"', "dd if=/dev/zero of=/dev/sda", "mkfs.ext4 /dev/sdb1"])(
+    "hard stop: %s",
+    (command) => {
+      expect(kill(command)).toBe("kill");
+    },
+  );
+  it.each(["git push --force-with-lease", "rm -rf node_modules dist", "find . -delete", 'git commit -m "push -f later"', "rm -- -rf ~/x", "echo rm -rf"])("not a hard stop: %s", (command) => {
+    expect(kill(command)).toBeNull();
+  });
+});

@@ -46,7 +46,7 @@ export interface ReviewVerdict {
   /** Short reason. For a failure, says what failed — never an invented judgement. */
   reason: string;
   /** Set when the verdict is a fail-to-escalate rather than the reviewer's answer. */
-  failure?: "timeout" | "aborted" | "error" | "unparseable";
+  failure?: "timeout" | "aborted" | "error" | "unparseable" | "oversized";
   /** For `kill`: the suspected injection source or destructive effect, and the offending excerpt. */
   evidence?: string;
   /** Who reached the verdict — the model, or the deterministic pre-check. */
@@ -316,23 +316,8 @@ const HOME_DIR_SOURCE = (() => {
   return `(?:${forms.join("|")})`;
 })();
 
-/** Characters that stay within ONE shell command (no newline or separator). */
-const SAME_CMD = String.raw`[^\n;&|]`;
 /**
- * `rm` with a recursive flag ANYWHERE among its arguments (`-r`, `-R`, `-rf`,
- * `-fr`, `-r -f`, `--recursive`, or after a path as GNU allows), followed by
- * any other arguments before the protected target — `rm -rf /tmp/x ~` and
- * `rm -rf build .git` match. Everything stays within one command.
- */
-const RM_RECURSIVE =
-  String.raw`\brm\s+` +
-  String.raw`(?=(?:${SAME_CMD}*\s)?(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?=\s|$|[;&|]))` +
-  String.raw`(?:${SAME_CMD}*?\s)?(?:--\s+)?`;
-/** Ends a shell word: whitespace, end, a separator, or a closing quote. */
-const WORD_END = String.raw`["']?(?=\s|$|;|&|\||\))`;
-
-/**
- * Conservative patterns for acts that are self-destructive whatever the task.
+ * Conservative checks for acts that are self-destructive whatever the task.
  * Each targets a destination that is never a working tree — the filesystem
  * root, a home directory itself, a `.git` directory, Callboard's data dir — or
  * an act that is never routine (killing the daemon, force-push). A path BELOW
@@ -345,41 +330,133 @@ const WORD_END = String.raw`["']?(?=\s|$|;|&|\||\))`;
  * and a `+refspec` push (`git push origin +main`) — rarer, scoped to one ref,
  * and impossible to tell from a legitimate force-update of a private branch
  * without the model. Both still reach the reviewer.
+ *
+ * ## Linear time, by construction
+ *
+ * This runs synchronously on the daemon's event loop, on input an agent — a
+ * possibly prompt-injected one — chose. An earlier version used regexes with
+ * lazy `[^\n;&|]*` scans between alternations; `"rm " + 100k spaces + "x"`
+ * took ~33s and `"git " + "push "×25000` ~4s, a daemon freeze on demand. So
+ * commands are now TOKENISED: split into single commands on the shell's
+ * separators, split into words on spaces, and every regex below is anchored
+ * and applied to ONE token. Nothing scans across a command, and command text
+ * past {@link MAX_SCREEN_CHARS} is not screened at all (see detectHardStop).
  */
-const HARD_STOP_PATTERNS: { pattern: RegExp; effect: string }[] = [
-  {
-    pattern: new RegExp(`${RM_RECURSIVE}["']?(?:\\/\\*?|${HOME_DIR_SOURCE}\\/?\\*?|\\/home\\/?|\\/Users\\/?)${WORD_END}`),
-    effect: "recursive deletion of the filesystem root or a home directory",
-  },
-  // `.git` matched case-insensitively: on case-insensitive filesystems (macOS
-  // default) `.GIT` is the same directory.
-  { pattern: new RegExp(`${RM_RECURSIVE}["']?(?:[^\\s;&|"']*\\/)?\\.git\\/?${WORD_END}`, "i"), effect: "deleting a git repository's .git directory" },
-  { pattern: new RegExp(`\\brm\\s+${SAME_CMD}*?${HOME_DIR_SOURCE}\\/\\.callboard\\b`), effect: "deleting Callboard's data directory" },
-  {
-    pattern: new RegExp(`\\bfind\\s+["']?(?:\\/|${HOME_DIR_SOURCE}\\/?|\\/home\\/?|\\/Users\\/?)["']?\\s(?:${SAME_CMD}*\\s)?-delete\\b`),
-    effect: "mass deletion from the filesystem root or a home directory (find -delete)",
-  },
-  {
-    pattern: new RegExp(
-      [
-        String.raw`\b(?:pkill|killall)\b${SAME_CMD}*\bcallboard\b`,
-        String.raw`\bcallboard\s+(?:stop|restart)\b`,
-        String.raw`\bpm2\s+(?:stop|delete|kill)\b${SAME_CMD}*\bcallboard\b`,
-        // kill $(pgrep -f callboard) / kill \`pidof callboard\`
-        String.raw`\bkill\b${SAME_CMD}*(?:\$\(|\`)\s*(?:pgrep|pidof)\b[^)\`\n]*\bcallboard\b`,
-      ].join("|"),
-      "i",
-    ),
-    effect: "stopping the Callboard daemon",
-  },
-  {
-    // `git [-C dir …] push … --force | -f | -uf …` — any short-flag cluster
-    // containing f. Not --force-with-lease / --force-if-includes (see above).
-    pattern: new RegExp(String.raw`\bgit\b${SAME_CMD}*\bpush\b${SAME_CMD}*(?:\s--force(?![-\w])|\s-[a-zA-Z]*f[a-zA-Z]*(?=\s|$|[;&|]))`),
-    effect: "force-pushing (rewriting shared history)",
-  },
-  { pattern: /\bmkfs(?:\.\w+)?\b|\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|hd|disk)/, effect: "overwriting a disk or filesystem" },
-];
+
+/** Command text longer than this is not screened: it escalates instead. */
+export const MAX_SCREEN_CHARS = 32_768;
+
+/** A deletion target that is the filesystem root or a home directory itself. */
+const ROOT_OR_HOME_TARGET = new RegExp(`^(?:\\/\\*?|${HOME_DIR_SOURCE}\\/?\\*?|\\/home\\/?|\\/Users\\/?)$`);
+/** A path whose last component is `.git` (case-insensitive: `.GIT` is the same dir on macOS). */
+function isGitDir(token: string): boolean {
+  const parts = token.replace(/\/+$/, "").split("/");
+  return (parts[parts.length - 1] ?? "").toLowerCase() === ".git";
+}
+const RECURSIVE_FLAG = /^(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)$/;
+/** git global options that take a value as the NEXT word (`git -C dir push`). */
+const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--super-prefix", "--config-env"]);
+/** A force flag on `git push`: `--force`, or a short-flag cluster containing f (`-f`, `-uf`). Not `--force-with-lease`. */
+const PUSH_FORCE_FLAG = /^(?:--force|-[a-zA-Z]*f[a-zA-Z]*)$/;
+const CALLBOARD_WORD = /\bcallboard\b/i;
+const PID_LOOKUP = /(?:\$\(|`)\s{0,8}(?:pgrep|pidof)\b/i;
+
+/**
+ * One command's words, with surrounding quotes, `$(`/`(`/backtick openers and
+ * closing `)`/backticks stripped, so `"$HOME"`, `$(rm` and `~)` read as words.
+ */
+function words(command: string): string[] {
+  return command
+    .trim()
+    .split(" ")
+    .map((w) => w.replace(/^(?:\$\(|[(`"'])+/, "").replace(/[)`"']+$/, ""))
+    .filter(Boolean);
+}
+
+/** The program a word names: `rm`, `/bin/rm`, `/usr/bin/git` → its basename, lower-cased. */
+function program(word: string): string {
+  const slash = word.lastIndexOf("/");
+  return (slash >= 0 ? word.slice(slash + 1) : word).toLowerCase();
+}
+
+const SCREENED_PROGRAMS = new Set(["rm", "find", "git", "pkill", "killall", "kill", "callboard", "pm2", "mkfs", "dd"]);
+
+/** The hard-stop effect of ONE command (no separators inside), or null. */
+function commandHardStop(command: string): { effect: string; offending: string } | null {
+  const w = words(command);
+  // Each program kind is examined once per command, at its FIRST occurrence,
+  // with one linear pass over the words after it. Re-examining every
+  // occurrence would be quadratic in the word count (`dd dd dd …`).
+  const examined = new Set<string>();
+  for (let i = 0; i < w.length; i++) {
+    const prog = program(w[i]);
+    const kind = /^mkfs(?:\.\w+)?$/.test(prog) ? "mkfs" : prog;
+    if (!SCREENED_PROGRAMS.has(kind) || examined.has(kind)) continue;
+    examined.add(kind);
+    if (prog === "rm") {
+      const args = w.slice(i + 1);
+      const flags: string[] = [];
+      const targets: string[] = [];
+      let endOfFlags = false;
+      for (const a of args) {
+        if (!endOfFlags && a === "--") endOfFlags = true;
+        else if (!endOfFlags && a.startsWith("-") && a.length > 1) flags.push(a);
+        else targets.push(a);
+      }
+      const recursive = flags.some((f) => RECURSIVE_FLAG.test(f));
+      for (const t of targets) {
+        if (recursive && ROOT_OR_HOME_TARGET.test(t)) return { effect: "recursive deletion of the filesystem root or a home directory", offending: `rm … ${t}` };
+        if (recursive && isGitDir(t)) return { effect: "deleting a git repository's .git directory", offending: `rm … ${t}` };
+        if (CALLBOARD_DIR.test(t)) return { effect: "deleting Callboard's data directory", offending: `rm … ${t}` };
+      }
+    } else if (prog === "find") {
+      const start = w[i + 1];
+      if (start && ROOT_OR_HOME_TARGET.test(start) && w.slice(i + 2).includes("-delete")) {
+        return { effect: "mass deletion from the filesystem root or a home directory (find -delete)", offending: `find ${start} … -delete` };
+      }
+    } else if (prog === "git") {
+      // The subcommand is the first word that is neither an option nor an
+      // option's value — so `git -C ../x push -f` matches and
+      // `git commit -m "push -f"` does not.
+      let j = i + 1;
+      while (j < w.length && w[j].startsWith("-")) j += GIT_VALUE_OPTIONS.has(w[j]) ? 2 : 1;
+      if (w[j] === "push") {
+        const force = w.slice(j + 1).find((a) => PUSH_FORCE_FLAG.test(a));
+        if (force) return { effect: "force-pushing (rewriting shared history)", offending: `git push ${force}` };
+      }
+    } else if (prog === "pkill" || prog === "killall") {
+      if (w.slice(i + 1).some((a) => CALLBOARD_WORD.test(a))) return { effect: "stopping the Callboard daemon", offending: `${prog} … callboard` };
+    } else if (prog === "kill") {
+      if (PID_LOOKUP.test(command) && CALLBOARD_WORD.test(command)) return { effect: "stopping the Callboard daemon", offending: "kill $(pgrep … callboard)" };
+    } else if (prog === "callboard") {
+      const sub = w[i + 1]?.toLowerCase();
+      if (sub === "stop" || sub === "restart") return { effect: "stopping the Callboard daemon", offending: `callboard ${sub}` };
+    } else if (prog === "pm2") {
+      const sub = w[i + 1]?.toLowerCase();
+      if ((sub === "stop" || sub === "delete" || sub === "kill") && w.slice(i + 2).some((a) => CALLBOARD_WORD.test(a))) {
+        return { effect: "stopping the Callboard daemon", offending: `pm2 ${sub} … callboard` };
+      }
+    } else if (/^mkfs(?:\.\w+)?$/.test(prog)) {
+      return { effect: "overwriting a disk or filesystem", offending: w[i] };
+    } else if (prog === "dd") {
+      const of = w.slice(i + 1).find((a) => /^of=\/dev\/(?:sd|nvme|hd|disk)/.test(a));
+      if (of) return { effect: "overwriting a disk or filesystem", offending: `dd … ${of}` };
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalise command text for screening: join backslash-newline continuations
+ * (one command to the shell), collapse runs of spaces/tabs, then split into
+ * single commands on `;`, `&&`, `||`, `|`, `&` and newlines. All linear.
+ */
+export function splitCommands(text: string): string[] {
+  return text
+    .replace(/\\\r?\n/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .split(/\r?\n|&&|\|\||[;|&]/);
+}
 
 const CALLBOARD_DIR = new RegExp(`^${HOME_DIR_SOURCE}\\/\\.callboard(?:\\/|$)`);
 
@@ -454,12 +531,24 @@ function extract(input: unknown): Extracted {
   return out;
 }
 
-/** File paths named in a patch body: apply_patch markers and unified-diff headers. */
-const PATCH_PATH = /^(?:\*\*\*\s+(?:Add|Update|Delete)\s+File:|\*\*\*\s+Move\s+to:|\+\+\+|---)\s+(?:[ab]\/)?(\S[^\t\n]*?)\s*$|^diff --git a\/(\S+) b\/(\S+)/gm;
+const PATCH_MARKERS = ["*** Add File:", "*** Update File:", "*** Delete File:", "*** Move to:", "+++ ", "--- "];
 
+/**
+ * File paths named in a patch body: apply_patch markers and unified-diff
+ * headers. Line-by-line with plain string ops — linear in the body's size.
+ */
 function patchPaths(text: string): string[] {
   const found: string[] = [];
-  for (const m of text.matchAll(PATCH_PATH)) for (const p of [m[1], m[2], m[3]]) if (p && p !== "/dev/null") found.push(p);
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      for (const part of line.slice("diff --git ".length).split(" ")) if (part) found.push(part.replace(/^[ab]\//, ""));
+      continue;
+    }
+    const marker = PATCH_MARKERS.find((m) => line.startsWith(m));
+    if (!marker) continue;
+    const path = line.slice(marker.length).trim().split("\t")[0].replace(/^[ab]\//, "");
+    if (path && path !== "/dev/null") found.push(path);
+  }
   return found;
 }
 
@@ -480,14 +569,23 @@ function hardStop(effect: string, offending: string): ReviewVerdict {
  */
 export function detectHardStop(toolName: string, input: Record<string, unknown>): ReviewVerdict | null {
   const found = extract(input);
-  // A backslash-newline continuation is one command to the shell — join it
-  // so `rm -rf \⏎ ~` cannot slip past the one-command bound.
-  const command = found.commands.join("\n").replace(/\\\r?\n/g, " ");
-  if (command) {
-    for (const { pattern, effect } of HARD_STOP_PATTERNS) {
-      const match = command.match(pattern);
-      if (match) return hardStop(effect, match[0]);
-    }
+  const text = found.commands.join("\n");
+  if (text.length > MAX_SCREEN_CHARS) {
+    // Too large to screen, and NOT truncated-and-passed: what lies past a cut
+    // is exactly what an attacker would hide there. Escalate instead — this
+    // verdict skips the model, is never auto-approved (the reviewer would see
+    // truncated input anyway — downgradeUnseenApprove), and is not offered to
+    // a parent, whose approval the screen exists to guard.
+    return {
+      verdict: "escalate",
+      reason: `Command text is too large to screen (${text.length} characters; limit ${MAX_SCREEN_CHARS}). A person must decide.`,
+      failure: "oversized",
+      source: "precheck",
+    };
+  }
+  for (const command of splitCommands(text)) {
+    const hit = commandHardStop(command);
+    if (hit) return hardStop(hit.effect, hit.offending);
   }
   if (WRITE_LIKE_TOOL.test(toolName)) {
     for (const { key, value } of found.paths) {

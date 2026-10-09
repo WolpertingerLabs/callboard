@@ -569,7 +569,10 @@ export function buildCanUseTool(
           reviewerNotes = reviewerNotesFor(verdict);
           reviewerVerdict = verdict.verdict;
         }
-        if (reviewerVerdict !== "kill" && settings.parentAnswers) {
+        // Not to the parent for a hard stop, nor for input too large to screen:
+        // the screen is what guards a parent's approval, and it could not run.
+        const unscreened = verdict?.failure === "oversized";
+        if (reviewerVerdict !== "kill" && !unscreened && settings.parentAnswers) {
           try {
             offeredToParent = review.getParentChatId();
           } catch {

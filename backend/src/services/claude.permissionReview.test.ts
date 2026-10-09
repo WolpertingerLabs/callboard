@@ -315,3 +315,28 @@ describe("settings re-read and strict fallback", () => {
     expect(lenient()).toEqual({ modelReview: false });
   });
 });
+
+describe("oversized input and the strict reader on a temp id", () => {
+  it("command text too large to screen: model not asked, parent not offered, human sees why", async () => {
+    const { call, reviewer, notifyParent, events, trackingId } = setup({ settings: { modelReview: true, parentAnswers: true }, parent: "parent-1" });
+    void call("Bash", { command: "echo " + "a".repeat(40_000) + " && rm -rf ~" });
+    await flush();
+    expect(reviewer).not.toHaveBeenCalled();
+    expect(notifyParent).not.toHaveBeenCalled();
+    const prompt = events.find((e) => e.type === "permission_request")!;
+    expect(prompt).toMatchObject({ reviewerVerdict: "escalate" });
+    expect(prompt.offeredToParent).toBeUndefined();
+    expect(prompt.reviewerNotes).toMatch(/too large to screen/);
+    pendingRequests.delete(trackingId);
+  });
+
+  it("the strict reader on a brand-new chat's temp id returns the creation metadata without throwing", async () => {
+    const { liveChatMetadataReader } = await import("./claude.js");
+    const store = { getChat: vi.fn(() => null), getChatBySessionId: vi.fn(() => null) };
+    const read = liveChatMetadataReader({ isNewChat: true, getTrackingId: () => "new-abc", initialMetadata: { modelReview: true, parentAnswers: true }, store, strict: true });
+    expect(() => read()).not.toThrow();
+    expect(read()).toEqual({ modelReview: true, parentAnswers: true });
+    expect(store.getChat).not.toHaveBeenCalled();
+    expect(store.getChatBySessionId).not.toHaveBeenCalled();
+  });
+});
