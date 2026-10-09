@@ -147,7 +147,14 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
   );
 
   return (
-    <div ref={rootRef} style={{ position: "relative", padding: "8px 12px 0" }} data-testid="space-switcher">
+    <div
+      ref={rootRef}
+      // 20px sides to line up with SidebarHeader and the ChatFilterBar row below.
+      // The -2px bottom margin trims the filter row's 8px top padding to a 6px
+      // gap, so the switcher and the filters read as one group.
+      style={{ position: "relative", padding: "8px 20px 0", marginBottom: -2 }}
+      data-testid="space-switcher"
+    >
       <button
         ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
@@ -190,8 +197,8 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
           onKeyDown={onMenuKeyDown}
           style={{
             position: "absolute",
-            left: 12,
-            right: 12,
+            left: 20,
+            right: 20,
             top: "calc(100% + 4px)",
             zIndex: 50,
             padding: 6,
