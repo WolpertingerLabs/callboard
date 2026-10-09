@@ -158,6 +158,17 @@ export function sanitizeToolName(name: string): string {
   return clean === name ? clean : `${clean} (sanitized)`;
 }
 
+/**
+ * A value interpolated into the trusted header must stay one line of plain
+ * text. A folder name is user/agent-chosen (a worktree path can be anything),
+ * so control characters — newlines above all — are replaced, tags are
+ * neutralised and the length is capped.
+ */
+export function sanitizeHeaderValue(value: string, max = 512): string {
+  // eslint-disable-next-line no-control-regex
+  return neutraliseTags(String(value).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "?")).slice(0, max);
+}
+
 export function buildReviewPrompt(req: ReviewRequest): string {
   // A closing tag inside the input must not end the delimited block early.
   const { text, truncated, empty } = describeToolInput(req.input);
@@ -168,7 +179,7 @@ export function buildReviewPrompt(req: ReviewRequest): string {
     ...(truncated ? ["NOTE: the tool input below is TRUNCATED — you are not seeing the whole call."] : []),
     ...(empty ? ["NOTE: the tool input is EMPTY — the engine did not report what this call will do."] : []),
     `Permission category: ${req.category ?? "uncategorized (unknown tool)"}`,
-    `Working directory: ${req.cwd}`,
+    `Working directory: ${sanitizeHeaderValue(req.cwd)}`,
     "",
     "Task excerpt (untrusted):",
     task,
@@ -305,8 +316,18 @@ const HOME_DIR_SOURCE = (() => {
   return `(?:${forms.join("|")})`;
 })();
 
-/** `rm` with a recursive flag (`-r`, `-R`, `-rf`, `-fr`, `-r -f`, `--recursive`). */
-const RM_RECURSIVE = String.raw`\brm\s+(?:-[a-zA-Z-]+\s+)*?(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\s+(?:-[a-zA-Z-]+\s+)*(?:--\s+)?`;
+/** Characters that stay within ONE shell command (no newline or separator). */
+const SAME_CMD = String.raw`[^\n;&|]`;
+/**
+ * `rm` with a recursive flag ANYWHERE among its arguments (`-r`, `-R`, `-rf`,
+ * `-fr`, `-r -f`, `--recursive`, or after a path as GNU allows), followed by
+ * any other arguments before the protected target — `rm -rf /tmp/x ~` and
+ * `rm -rf build .git` match. Everything stays within one command.
+ */
+const RM_RECURSIVE =
+  String.raw`\brm\s+` +
+  String.raw`(?=(?:${SAME_CMD}*\s)?(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?=\s|$|[;&|]))` +
+  String.raw`(?:${SAME_CMD}*?\s)?(?:--\s+)?`;
 /** Ends a shell word: whitespace, end, a separator, or a closing quote. */
 const WORD_END = String.raw`["']?(?=\s|$|;|&|\||\))`;
 
@@ -318,16 +339,45 @@ const WORD_END = String.raw`["']?(?=\s|$|;|&|\||\))`;
  * a home directory (`rm -rf ~/projects/x/node_modules`) does not match.
  * False positives cost one human click; false negatives fall through to the
  * model reviewer.
+ *
+ * Deliberately NOT hard stops: `git push --force-with-lease` (and
+ * `--force-if-includes`), which refuse to clobber work they have not seen,
+ * and a `+refspec` push (`git push origin +main`) — rarer, scoped to one ref,
+ * and impossible to tell from a legitimate force-update of a private branch
+ * without the model. Both still reach the reviewer.
  */
 const HARD_STOP_PATTERNS: { pattern: RegExp; effect: string }[] = [
   {
     pattern: new RegExp(`${RM_RECURSIVE}["']?(?:\\/\\*?|${HOME_DIR_SOURCE}\\/?\\*?|\\/home\\/?|\\/Users\\/?)${WORD_END}`),
     effect: "recursive deletion of the filesystem root or a home directory",
   },
-  { pattern: new RegExp(`${RM_RECURSIVE}["']?(?:[^\\s;&|"']*\\/)?\\.git\\/?${WORD_END}`), effect: "deleting a git repository's .git directory" },
-  { pattern: new RegExp(`\\brm\\s+[^\\n;&|]*?${HOME_DIR_SOURCE}\\/\\.callboard\\b`), effect: "deleting Callboard's data directory" },
-  { pattern: /\b(?:pkill|killall)\b[^\n;&|]*\bcallboard\b|\bcallboard\s+(?:stop|restart)\b|\bpm2\s+(?:stop|delete|kill)\b[^\n;&|]*\bcallboard\b/, effect: "stopping the Callboard daemon" },
-  { pattern: /\bgit\s+push\b[^\n;&|]*(?:\s--force(?!-with-lease)\b|\s-f\b)/, effect: "force-pushing (rewriting shared history)" },
+  // `.git` matched case-insensitively: on case-insensitive filesystems (macOS
+  // default) `.GIT` is the same directory.
+  { pattern: new RegExp(`${RM_RECURSIVE}["']?(?:[^\\s;&|"']*\\/)?\\.git\\/?${WORD_END}`, "i"), effect: "deleting a git repository's .git directory" },
+  { pattern: new RegExp(`\\brm\\s+${SAME_CMD}*?${HOME_DIR_SOURCE}\\/\\.callboard\\b`), effect: "deleting Callboard's data directory" },
+  {
+    pattern: new RegExp(`\\bfind\\s+["']?(?:\\/|${HOME_DIR_SOURCE}\\/?|\\/home\\/?|\\/Users\\/?)["']?\\s(?:${SAME_CMD}*\\s)?-delete\\b`),
+    effect: "mass deletion from the filesystem root or a home directory (find -delete)",
+  },
+  {
+    pattern: new RegExp(
+      [
+        String.raw`\b(?:pkill|killall)\b${SAME_CMD}*\bcallboard\b`,
+        String.raw`\bcallboard\s+(?:stop|restart)\b`,
+        String.raw`\bpm2\s+(?:stop|delete|kill)\b${SAME_CMD}*\bcallboard\b`,
+        // kill $(pgrep -f callboard) / kill \`pidof callboard\`
+        String.raw`\bkill\b${SAME_CMD}*(?:\$\(|\`)\s*(?:pgrep|pidof)\b[^)\`\n]*\bcallboard\b`,
+      ].join("|"),
+      "i",
+    ),
+    effect: "stopping the Callboard daemon",
+  },
+  {
+    // `git [-C dir …] push … --force | -f | -uf …` — any short-flag cluster
+    // containing f. Not --force-with-lease / --force-if-includes (see above).
+    pattern: new RegExp(String.raw`\bgit\b${SAME_CMD}*\bpush\b${SAME_CMD}*(?:\s--force(?![-\w])|\s-[a-zA-Z]*f[a-zA-Z]*(?=\s|$|[;&|]))`),
+    effect: "force-pushing (rewriting shared history)",
+  },
   { pattern: /\bmkfs(?:\.\w+)?\b|\bdd\b[^\n]*\bof=\/dev\/(?:sd|nvme|hd|disk)/, effect: "overwriting a disk or filesystem" },
 ];
 
@@ -336,7 +386,7 @@ const CALLBOARD_DIR = new RegExp(`^${HOME_DIR_SOURCE}\\/\\.callboard(?:\\/|$)`);
 /** Paths a file-writing tool must never target. */
 function isProtectedWriteTarget(p: string): string | null {
   const norm = p.trim().replace(/\\/g, "/");
-  if (/(?:^|\/)\.git(?:\/|$)/.test(norm)) return "writing inside a .git directory";
+  if (/(?:^|\/)\.git(?:\/|$)/i.test(norm)) return "writing inside a .git directory";
   if (CALLBOARD_DIR.test(norm)) return "writing into Callboard's data directory";
   return null;
 }
@@ -430,7 +480,9 @@ function hardStop(effect: string, offending: string): ReviewVerdict {
  */
 export function detectHardStop(toolName: string, input: Record<string, unknown>): ReviewVerdict | null {
   const found = extract(input);
-  const command = found.commands.join("\n");
+  // A backslash-newline continuation is one command to the shell — join it
+  // so `rm -rf \⏎ ~` cannot slip past the one-command bound.
+  const command = found.commands.join("\n").replace(/\\\r?\n/g, " ");
   if (command) {
     for (const { pattern, effect } of HARD_STOP_PATTERNS) {
       const match = command.match(pattern);
