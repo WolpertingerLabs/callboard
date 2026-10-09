@@ -8,6 +8,7 @@ import { normalizePermissions } from "shared/types/permissions.js";
 import { spaceLabel } from "./SpaceChip";
 import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaults";
 import PermissionSettings from "./PermissionSettings";
+import "./NewChatPanel.css";
 import { useSystemInfo } from "../hooks/useSystemInfo";
 import ConfirmModal from "./ConfirmModal";
 import FolderSelector from "./FolderSelector";
@@ -583,9 +584,11 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
 
   return (
     <>
+      {/* Layout (bounded height, internal scroll) lives in NewChatPanel.css. */}
       <div
+        className="new-chat-panel"
+        data-testid="new-chat-panel"
         style={{
-          padding: "12px 20px",
           borderBottom: "1px solid var(--chatlist-header-border)",
           background: "var(--bg-popout)",
         }}

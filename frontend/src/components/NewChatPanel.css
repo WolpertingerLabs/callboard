@@ -1,0 +1,24 @@
+/*
+ * The New Chat panel sits in the sidebar column — ChatList's root, a
+ * fixed-height flex column — above the chat list. It used to be a plain flex
+ * item: `min-height: auto` kept it from shrinking below its content, and it
+ * was not a scroll container, so once its content outgrew the column (a phone,
+ * with Permissions or Behavior expanded) the overflow spilled into an
+ * `overflow: hidden` layout ancestor. No touch or wheel could reach the
+ * bottom (the Create button), and the browser's focus scrolling moved that
+ * hidden ancestor instead, pushing the sidebar header — and the panel's own
+ * toggle — off-screen with no way back.
+ *
+ * So the panel is the scroller: it may shrink to whatever the column has
+ * left (the chat list below is `flex: 1` and gives way first) and scrolls
+ * within it, never past it. The bottom padding clears the home-indicator
+ * safe area so the last control is not under it.
+ */
+.new-chat-panel {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 20px calc(12px + var(--safe-bottom));
+}
