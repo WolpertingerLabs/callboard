@@ -22,7 +22,7 @@ import { assertChatContextUnchanged, chatContextFingerprint, ChatContextChangedE
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { findChatForStatus, withSessionProvider } from "../utils/chat-lookup.js";
 import { createStreamSession } from "../services/stream-session.js";
-import { beginSSE, requiresPromptReload, HUMAN_PROMPT_RELOAD, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
+import { beginSSE, requiresPromptReload, humanPromptReloadMessage, sendSSE, createSSEHandler, startSSEHeartbeat } from "../utils/sse.js";
 import { createLogger } from "../utils/logger.js";
 import { generateBranchName } from "../services/quick-completion.js";
 import { captureWorktreeWorkspace } from "../services/workspace-store.js";
@@ -739,7 +739,7 @@ streamRouter.get("/:id/pending", (req, res) => {
     // Old browser chat views also attach SSE and see the persistent reload
     // message there. REST-only consumers get explicit migration guidance, not
     // an answerable placeholder that could redeem an unrelated replacement.
-    return res.json({ pending: null, reloadRequired: HUMAN_PROMPT_RELOAD });
+    return res.json({ pending: null, reloadRequired: humanPromptReloadMessage(pending.eventData) });
   }
   res.json({ pending: { type: pending.eventType, ...pending.eventData } });
 });

@@ -329,3 +329,27 @@ it("legacy cu_action clients receive visible reload guidance, never a confirmabl
     expect(f.ended).toBe(false); // migration did not cancel the agent/prompt
   }
 });
+
+it("a legacy client gets hard-stop reload guidance for a reviewer hard stop, not 'confirm computer control'", async () => {
+  const { HARD_STOP_PROMPT_RELOAD, HUMAN_PROMPT_RELOAD, GENERIC_HUMAN_PROMPT_RELOAD, humanPromptReloadMessage } = await import("./sse.js");
+  const f = fakeResponse();
+  beginSSE(fakeRequest({}), f.res);
+  createSSEHandler(f.res, new EventEmitter())({
+    type: "permission_request",
+    content: "",
+    toolName: "Bash",
+    humanOnly: true,
+    requestId: "hs-1",
+    reviewerVerdict: "kill",
+    reviewerNotes: "Safety pre-check — HARD STOP",
+    input: { command: "rm -rf ~" },
+  });
+  const frames = parseAsFrontend(f.chunks);
+  expect(frames.filter((e) => e.type === "permission_request")).toEqual([]);
+  const errors = frames.filter((e) => e.type === "message_error").map((e) => e.content);
+  expect(errors).toEqual([HARD_STOP_PROMPT_RELOAD]);
+  expect(String(errors[0])).not.toMatch(/computer control/);
+  // The other cases keep (or get) a message that names them.
+  expect(humanPromptReloadMessage({ toolName: "mcp__computer_use__cu_action", humanOnly: true })).toBe(HUMAN_PROMPT_RELOAD);
+  expect(humanPromptReloadMessage({ toolName: "SomethingNew", humanOnly: true })).toBe(GENERIC_HUMAN_PROMPT_RELOAD);
+});

@@ -9,6 +9,20 @@ const log = createLogger("sse");
 const streamClients = new WeakMap<Response, StreamSession>();
 export const HUMAN_PROMPT_RELOAD =
   "Reload this Callboard tab to confirm computer control. This browser bundle cannot safely identify the pending confirmation. No action has been approved. After reloading, answer the current prompt; if it expired, ask the agent to request it again.";
+/** A reviewer hard stop (`reviewerVerdict: "kill"`) is humanOnly too, but is not a computer-control confirmation. */
+export const HARD_STOP_PROMPT_RELOAD =
+  "Reload this Callboard tab to review a blocked tool call. The safety review stopped it as a suspected prompt injection or self-destructive action, and this browser bundle cannot safely answer it. Nothing has run. After reloading, allow or deny it in the prompt panel.";
+/** Any other human-only prompt a future producer raises. */
+export const GENERIC_HUMAN_PROMPT_RELOAD =
+  "Reload this Callboard tab to answer the pending confirmation. This browser bundle cannot safely identify it. No action has been approved. After reloading, answer the current prompt.";
+
+/** The reload guidance that names what is actually waiting, rather than always "computer control". */
+export function humanPromptReloadMessage(data: Record<string, unknown>): string {
+  if (data.reviewerVerdict === "kill") return HARD_STOP_PROMPT_RELOAD;
+  const tool = typeof data.toolName === "string" ? data.toolName : "";
+  if (data.controlRequest === true || tool.startsWith("mcp__computer_use__")) return HUMAN_PROMPT_RELOAD;
+  return GENERIC_HUMAN_PROMPT_RELOAD;
+}
 /** Old browsers already render message_error in the transcript. Never send
  * them an actionable consent card: their optimistic ID-less reply is unsafe.
  * The server keeps the real prompt pending for a reloaded capable client.
@@ -17,7 +31,7 @@ export function requiresPromptReload(data: Record<string, unknown>, client: Stre
   return data.humanOnly === true && !client?.supports(CLIENT_CAPS.humanPromptIdentity);
 }
 function presentPendingPrompt(data: Record<string, unknown>, client: StreamSession | undefined): Record<string, unknown> {
-  return requiresPromptReload(data, client) ? { type: "message_error", content: HUMAN_PROMPT_RELOAD } : data;
+  return requiresPromptReload(data, client) ? { type: "message_error", content: humanPromptReloadMessage(data) } : data;
 }
 
 /**
