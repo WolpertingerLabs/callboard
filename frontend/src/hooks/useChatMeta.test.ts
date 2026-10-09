@@ -61,6 +61,12 @@ describe("parseChatMeta", () => {
     expect(meta.agentAlias).toBeUndefined();
   });
 
+  it("reads the review-chain toggles only as explicit true, and omits them when both are off", () => {
+    expect(parseChatMeta(JSON.stringify({ modelReview: true })).review).toEqual({ modelReview: true, parentAnswers: false });
+    expect(parseChatMeta(JSON.stringify({ parentAnswers: true, modelReview: "yes" })).review).toEqual({ modelReview: false, parentAnswers: true });
+    expect(parseChatMeta(JSON.stringify({ modelReview: null })).review).toBeUndefined();
+  });
+
   it("drops fields of the wrong type rather than passing them on", () => {
     const meta = parseChatMeta(JSON.stringify({ provider: 7, jobRunId: 1, parentChatId: {}, acpProviderId: false, model: null, effort: 3, agentAlias: [] }));
     expect(meta).toEqual(parseChatMeta("{}"));

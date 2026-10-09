@@ -1,5 +1,6 @@
 import { originatingChatView } from "../utils/chat-view.js";
 import { normalizePermissions } from "shared/types/permissions.js";
+import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import ComputerUseHeader from "../components/ComputerUseHeader";
 import { usePendingFeedback } from "../hooks/usePendingFeedback";
 import { useComputerUseController } from "../hooks/useComputerUseController";
@@ -284,6 +285,10 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // honored on creation — persisted into chat metadata, so follow-up messages
   // inherit it server-side without re-threading.
   const newChatRequireCompletion = routeState.requireExplicitCompletion;
+  // Who besides the human may answer a permission ask, for NEW chats. Only
+  // honored on creation; the chat's permissions modal edits it afterwards.
+  const newChatModelReview = routeState.modelReview;
+  const newChatParentAnswers = routeState.parentAnswers;
   // Parentage-tree linkage for new chats spawned from an existing chat
   // (e.g. the "New linked chat" action in ChatTreeIndicator). Forwarded to
   // the new-chat request so the backend stamps parentChatId/rootChatId.
@@ -463,6 +468,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   const [showMobileActions, setShowMobileActions] = useState(false);
   const [showPermissionsModal, setShowPermissionsModal] = useState(false);
   const [chatPermissions, setChatPermissions] = useState<DefaultPermissions | null>(null);
+  // Saved from the permissions modal; overrides the (possibly stale) chat record until navigation.
+  const [chatReview, setChatReview] = useState<PermissionReviewSettings | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -672,6 +679,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
   // Reset chatPermissions when navigating to a different chat
   useEffect(() => {
     setChatPermissions(null);
+    setChatReview(null);
     // Reset per-run cost too. The next message_complete on this chat will
     // repopulate; without the reset, switching chats would show the prior
     // chat's spend until a new run completes.
@@ -1126,6 +1134,13 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 if (result.requestId) setPendingAction((value) => (value?.requestId === result.requestId ? null : value));
               }
 
+              // A parent chat answered the prompt this tab may be showing.
+              if (event.promptResolved) {
+                const resolved = event.promptResolved;
+                setControlNotice(resolved.message);
+                setPendingAction((value) => (value?.requestId === resolved.requestId ? null : value));
+              }
+
               if (event.type === "message_complete") {
                 if (currentIdRef.current !== streamChatId) return;
                 runEnded = true;
@@ -1347,6 +1362,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                     questions: event.questions,
                     suggestions: event.suggestions,
                     content: event.content,
+                    reviewerNotes: event.reviewerNotes,
+                    reviewerVerdict: event.reviewerVerdict,
+                    offeredToParent: event.offeredToParent,
                   },
                   true,
                 );
@@ -2349,6 +2367,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           if (newChatRequireCompletion === true) {
             requestBody.requireExplicitCompletion = true;
           }
+          if (newChatModelReview === true) {
+            requestBody.modelReview = true;
+          }
           if (newChatSpaceId) {
             requestBody.spaceId = newChatSpaceId;
           }
@@ -2356,6 +2377,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             requestBody.parentChatId = newChatParentId;
             if (newChatRole) {
               requestBody.chatRole = newChatRole;
+            }
+            if (newChatParentAnswers === true) {
+              requestBody.parentAnswers = true;
             }
           }
           res = await fetch("/api/chats/new/message", {
@@ -2496,6 +2520,8 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       newChatEffort,
       newChatModel,
       newChatRequireCompletion,
+      newChatModelReview,
+      newChatParentAnswers,
       newChatSpaceId,
       liveSpaceCount,
       pendingModel,
@@ -3934,6 +3960,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
         permissions={effectivePermissions}
         onPermissionsChange={setChatPermissions}
         provider={chatProvider}
+        review={chatReview ?? chatMeta.review}
+        hasParent={!!chatMeta.parentChatId}
+        onReviewChange={setChatReview}
       />
 
       <ForkHandoffModal

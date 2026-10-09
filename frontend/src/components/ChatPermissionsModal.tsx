@@ -4,6 +4,7 @@ import { Shield, X } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import PermissionSettings from "./PermissionSettings";
 import type { DefaultPermissions } from "../api";
+import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import { updateChatPermissions } from "../api";
 import { errorMessage } from "../utils/errorMessage";
 
@@ -15,10 +16,28 @@ interface ChatPermissionsModalProps {
   onPermissionsChange: (permissions: DefaultPermissions) => void;
   /** The chat's harness, so an axis it does not use can say so. */
   provider?: string;
+  /** The chat's stored review-chain settings; the toggles render only for an existing chat. */
+  review?: PermissionReviewSettings;
+  /** Whether the chat has a parent — "Parent can answer" is greyed without one. */
+  hasParent?: boolean;
+  onReviewChange?: (review: PermissionReviewSettings) => void;
 }
 
-export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissions, onPermissionsChange, provider }: ChatPermissionsModalProps) {
+const REVIEW_OFF: PermissionReviewSettings = { modelReview: false, parentAnswers: false };
+
+export default function ChatPermissionsModal({
+  isOpen,
+  onClose,
+  chatId,
+  permissions,
+  onPermissionsChange,
+  provider,
+  review = REVIEW_OFF,
+  hasParent = false,
+  onReviewChange,
+}: ChatPermissionsModalProps) {
   const [localPermissions, setLocalPermissions] = useState<DefaultPermissions>(() => normalizePermissions(permissions));
+  const [localReview, setLocalReview] = useState<PermissionReviewSettings>(review);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,9 +45,12 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
   useEffect(() => {
     if (isOpen) {
       setLocalPermissions(normalizePermissions(permissions));
+      setLocalReview(review);
       setError(null);
     }
-  }, [isOpen, permissions]);
+    // `review` is compared by value: a fresh object with the same flags must not reset edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, permissions, review.modelReview, review.parentAnswers]);
 
   if (!isOpen) return null;
 
@@ -39,8 +61,9 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
       // Existing chat: persist to backend
       setSaving(true);
       try {
-        await updateChatPermissions(chatId, localPermissions);
+        await updateChatPermissions(chatId, localPermissions, localReview);
         onPermissionsChange(localPermissions);
+        onReviewChange?.(localReview);
         onClose();
       } catch (err: unknown) {
         setError(errorMessage(err, "Failed to save permissions"));
@@ -59,7 +82,9 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
     localPermissions.fileWrite !== permissions.fileWrite ||
     localPermissions.codeExecution !== permissions.codeExecution ||
     localPermissions.webAccess !== permissions.webAccess ||
-    localPermissions.computerControl !== normalizePermissions(permissions).computerControl;
+    localPermissions.computerControl !== normalizePermissions(permissions).computerControl ||
+    localReview.modelReview !== review.modelReview ||
+    localReview.parentAnswers !== review.parentAnswers;
 
   return (
     <ModalOverlay onClose={onClose}>
@@ -102,6 +127,7 @@ export default function ChatPermissionsModal({ isOpen, onClose, chatId, permissi
           onChange={setLocalPermissions}
           title={chatId ? "Permissions for This Chat" : "Default Permissions for New Chat"}
           provider={provider}
+          {...(chatId && { review: { value: localReview, onChange: setLocalReview, parent: { available: hasParent || localReview.parentAnswers } } })}
         />
 
         {/* Info text */}

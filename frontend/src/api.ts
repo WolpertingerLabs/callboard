@@ -1,5 +1,5 @@
 import { handshakeHeaders } from "shared/types/index.js";
-import type { ReasoningCapability } from "shared/types/index.js";
+import type { PermissionReviewSettings, ReasoningCapability } from "shared/types/index.js";
 import { normalizePermissions } from "shared/types/permissions.js";
 import type { SpaceListItem, SpacePatch } from "shared/types/space.js";
 import type {
@@ -403,10 +403,10 @@ export async function regenerateChatTitle(id: string): Promise<{ title: string }
   return request(`/chats/${seg(id)}/regenerate-title`, { method: "POST", error: "Failed to regenerate chat title" });
 }
 
-export async function updateChatPermissions(id: string, permissions: DefaultPermissions): Promise<Chat> {
+export async function updateChatPermissions(id: string, permissions: DefaultPermissions, review?: Partial<PermissionReviewSettings>): Promise<Chat> {
   return request(`/chats/${seg(id)}/permissions`, {
     method: "PATCH",
-    json: { defaultPermissions: normalizePermissions(permissions) },
+    json: { defaultPermissions: normalizePermissions(permissions), ...review },
     error: "Failed to update chat permissions",
   });
 }
@@ -710,6 +710,12 @@ export interface PendingAction {
   questions?: any[];
   suggestions?: any[];
   content?: string;
+  /** The model reviewer's (or safety pre-check's) reasoning, when one ran and passed the prompt on. */
+  reviewerNotes?: string;
+  /** "kill" = a reviewer hard stop: suspected prompt injection or a self-destructive act. */
+  reviewerVerdict?: "escalate" | "kill";
+  /** Parent chat this prompt was also offered to; first answer wins. */
+  offeredToParent?: string;
   /** True when reconstructed from message history (no live backend session) */
   stale?: boolean;
 }

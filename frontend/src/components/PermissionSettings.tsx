@@ -1,4 +1,5 @@
 import { normalizePermissions } from "shared/types/permissions.js";
+import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import { DefaultPermissions, PermissionLevel } from "../api";
 
 interface PermissionSettingsProps {
@@ -14,6 +15,57 @@ interface PermissionSettingsProps {
    * costume when the control is real and the tool behind it is absent.
    */
   provider?: string;
+  /**
+   * The "When a tool asks" toggles — who besides the human may answer an ask.
+   * Omitted where they do not apply (e.g. agent chats).
+   */
+  review?: {
+    value: PermissionReviewSettings;
+    onChange: (next: PermissionReviewSettings) => void;
+    /**
+     * Render "Parent can answer". `available: false` greys it with a hint
+     * (an existing chat with no parent). Omit entirely where no chat can have
+     * a parent — a new chat from the New Chat panel never does.
+     */
+    parent?: { available: boolean };
+  };
+}
+
+function ToggleRow({
+  label,
+  description,
+  checked,
+  disabled,
+  hint,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  disabled?: boolean;
+  hint?: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        padding: "8px 0",
+        borderBottom: "1px solid var(--border-light)",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.55 : 1,
+      }}
+    >
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} style={{ margin: "3px 0 0" }} />
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 500, fontSize: 14 }}>{label}</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{description}</div>
+        {hint && <div style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic", marginTop: 2 }}>{hint}</div>}
+      </div>
+    </label>
+  );
 }
 
 function PermissionRow({
@@ -77,7 +129,7 @@ function PermissionRow({
   );
 }
 
-export default function PermissionSettings({ permissions, onChange, title, provider }: PermissionSettingsProps) {
+export default function PermissionSettings({ permissions, onChange, title, provider, review }: PermissionSettingsProps) {
   permissions = normalizePermissions(permissions);
   const updatePermission = (category: keyof DefaultPermissions, level: PermissionLevel) => {
     onChange({
@@ -157,6 +209,29 @@ export default function PermissionSettings({ permissions, onChange, title, provi
         permissions={permissions}
         onUpdate={updatePermission}
       />
+
+      {review && (
+        <div data-testid="permission-review-settings" style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 2 }}>When a tool asks</div>
+          <ToggleRow
+            label="Model safety review"
+            description="A reviewer model checks each ask for safety and correctness first: it can allow, deny with a reason, or pass it on with notes. Suspected prompt injection or self-destructive actions become a hard stop for you."
+            checked={review.value.modelReview}
+            onChange={(modelReview) => review.onChange({ ...review.value, modelReview })}
+            hint={provider === "codex" ? "Not used by Codex — it has no per-call permission hook." : undefined}
+          />
+          {review.parent && (
+            <ToggleRow
+              label="Parent can answer"
+              description="The chat that started this one may also answer its prompts, but only allow what it is itself allowed. You can still answer; first answer wins."
+              checked={review.value.parentAnswers}
+              disabled={!review.parent.available}
+              hint={!review.parent.available ? "This chat has no parent chat." : provider === "codex" ? "Not used by Codex." : undefined}
+              onChange={(parentAnswers) => review.onChange({ ...review.value, parentAnswers })}
+            />
+          )}
+        </div>
+      )}
 
       <div
         style={{

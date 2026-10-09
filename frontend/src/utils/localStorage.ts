@@ -28,6 +28,8 @@ export type ChatSectionKey = "pinned" | "recent";
 
 interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;
+  /** Model safety review for new chats (shared/types/permissions.ts). Absent = off. */
+  defaultModelReview?: boolean;
   recentDirectories?: RecentDirectory[];
   maxTurns?: number;
   /**
@@ -260,6 +262,14 @@ export function getDefaultPermissions(): DefaultPermissions {
 
 export function saveDefaultPermissions(permissions: DefaultPermissions): void {
   updateStorage({ defaultPermissions: normalizePermissions(permissions) });
+}
+
+export function getDefaultModelReview(): boolean {
+  return getStorageData().defaultModelReview === true;
+}
+
+export function saveDefaultModelReview(on: boolean): void {
+  updateStorage({ defaultModelReview: on });
 }
 
 const KNOWN_PROVIDERS: ReadonlySet<AgentProviderKind> = new Set(UI_AGENT_PROVIDER_KINDS);

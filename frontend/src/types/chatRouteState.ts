@@ -29,6 +29,10 @@ export interface ChatRouteState {
   /** The harness's own model id. */
   model?: string;
   requireExplicitCompletion?: boolean;
+  /** Model safety review for a new chat (shared/types/permissions.ts). */
+  modelReview?: boolean;
+  /** Offer a new linked chat's permission prompts to its parent too. Only meaningful with `parentChatId`. */
+  parentAnswers?: boolean;
   /**
    * The space a new chat is filed into, as picked on the New Chat panel.
    * Absent falls back to the tab's active space. Ignored by the server when

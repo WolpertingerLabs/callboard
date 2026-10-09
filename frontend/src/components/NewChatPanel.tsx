@@ -16,6 +16,8 @@ import type { ChatRouteState } from "../types/chatRouteState";
 import {
   getDefaultPermissions,
   saveDefaultPermissions,
+  getDefaultModelReview,
+  saveDefaultModelReview,
   getRecentDirectories,
   addRecentDirectory,
   removeRecentDirectory,
@@ -88,6 +90,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const [seed] = useState(cachedSystemInfo);
   const [folder, setFolder] = useState("");
   const [defaultPermissions, setDefaultPermissions] = useState<DefaultPermissions>(getDefaultPermissions());
+  // Model safety review for the new chat. No "parent can answer" here: a chat
+  // started from this panel never has a parent.
+  const [modelReview, setModelReview] = useState<boolean>(getDefaultModelReview);
   const [recentDirs, setRecentDirs] = useState(() => getRecentDirectories().map((r) => r.path));
   const [chatMode, setChatMode] = useState<"claude-code" | "agent">("claude-code");
   const [permissionsOpen, setPermissionsOpen] = useState(false);
@@ -252,6 +257,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     provider: getDefaultProvider(),
     effort: getDefaultOpenRouterEffort(),
     permissions: getDefaultPermissions(),
+    modelReview: getDefaultModelReview(),
     models: {
       "claude-code": getDefaultClaudeModel(),
       codex: getDefaultCodexModel(),
@@ -266,9 +272,9 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
    * fallback) is not a choice, and saving it would turn the fallback into the
    * space's own default behind the user's back.
    */
-  const touchedRef = useRef(new Set<"provider" | "model" | "effort" | "defaultPermissions">());
+  const touchedRef = useRef(new Set<"provider" | "model" | "effort" | "defaultPermissions" | "modelReview">());
   const touch =
-    <T,>(field: "provider" | "model" | "effort" | "defaultPermissions", set: (value: T) => void) =>
+    <T,>(field: "provider" | "model" | "effort" | "defaultPermissions" | "modelReview", set: (value: T) => void) =>
     (value: T) => {
       touchedRef.current.add(field);
       set(value);
@@ -290,6 +296,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
     if (touched.has("model") && !touched.has("provider") && p !== providerRef.current) touched.delete("model");
     if (!touched.has("provider")) setProvider(p);
     if (!touched.has("defaultPermissions")) setDefaultPermissions(d.defaultPermissions ? normalizePermissions(d.defaultPermissions) : globals.permissions);
+    if (!touched.has("modelReview")) setModelReview(d.modelReview ?? globals.modelReview);
     if (!touched.has("effort")) setEffort(d.effort ?? globals.effort);
     if (!touched.has("model")) {
       const model = (kind: AgentProviderKind) => (d.model && kind === p ? d.model : globals.models[kind]);
@@ -310,6 +317,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const persistChoices = () => {
     if (fallback) {
       saveDefaultPermissions(defaultPermissions);
+      saveDefaultModelReview(modelReview);
       // Persist the user's INTENT (the toggle's current value) rather than the
       // runtime fallback. If Codex is selected but later unconfigured, we'd
       // rather remember "user prefers Codex" so reconfiguring restores it, than
@@ -337,6 +345,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
         ...((touched.has("model") || touched.has("provider")) && { model: modelForProvider(provider).trim() || null }),
         ...(touched.has("effort") && { effort: effort ?? null }),
         ...(touched.has("defaultPermissions") && { defaultPermissions: normalizePermissions(defaultPermissions) }),
+        ...(touched.has("modelReview") && { modelReview }),
       },
     })
       .then(() => refreshSpaces())
@@ -347,6 +356,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
   const userSetProvider = touch("provider", setProvider);
   const userSetEffort = touch("effort", setEffort);
   const userSetPermissions = touch("defaultPermissions", setDefaultPermissions);
+  const userSetModelReview = touch("modelReview", setModelReview);
   const userSetClaudeModel = touch("model", setClaudeModel);
   const userSetCodexModel = touch("model", setCodexModel);
   const userSetAcpModel = touch("model", setAcpModel);
@@ -435,6 +445,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
       state: {
         ...(spacesEnabled && { spaceId: targetSpaceId }),
         defaultPermissions,
+        ...(modelReview && { modelReview: true }),
         provider: effectiveProvider,
         // The vendor travels with the kind — `provider: "acp"` alone does not
         // say which harness runs the chat, and the route rejects it without this.
@@ -695,9 +706,19 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                 }}
               >
                 {permissionsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                <span>Permissions: {getPermissionsSummary(defaultPermissions)}</span>
+                <span>
+                  Permissions: {getPermissionsSummary(defaultPermissions)}
+                  {modelReview && " · model review"}
+                </span>
               </button>
-              {permissionsOpen && <PermissionSettings permissions={defaultPermissions} onChange={userSetPermissions} provider={provider} />}
+              {permissionsOpen && (
+                <PermissionSettings
+                  permissions={defaultPermissions}
+                  onChange={userSetPermissions}
+                  provider={provider}
+                  review={{ value: { modelReview, parentAnswers: false }, onChange: (next) => userSetModelReview(next.modelReview) }}
+                />
+              )}
             </div>
 
             {/* Behavior Section — collapsible, default closed */}

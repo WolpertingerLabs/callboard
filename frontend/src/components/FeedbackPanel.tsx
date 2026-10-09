@@ -79,11 +79,31 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
 
   if (action.type === "permission_request") {
     const guiAction = isComputerUseAction(action.toolName);
+    // A reviewer hard stop: suspected prompt injection or a self-destructive
+    // act. Only a signed-in human may answer it, so it must look different.
+    const hardStop = action.reviewerVerdict === "kill";
     return (
-      <div style={panelStyle}>
-        <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>{guiAction ? "Confirm this GUI action" : "Permission requested"}</div>
+      <div style={hardStop ? hardStopPanelStyle : panelStyle} data-testid={hardStop ? "hard-stop-prompt" : undefined} role={hardStop ? "alert" : undefined}>
+        <div style={{ fontSize: 13, color: hardStop ? "var(--danger)" : "var(--text-muted)", marginBottom: 4, fontWeight: hardStop ? 600 : undefined }}>
+          {hardStop ? "Hard stop — safety review blocked this call" : guiAction ? "Confirm this GUI action" : "Permission requested"}
+        </div>
         <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>{guiAction ? "Computer control" : action.toolName}</div>
+        {action.reviewerNotes && (
+          <div data-testid="reviewer-notes" style={hardStop ? hardStopNotesStyle : notesStyle}>
+            {action.reviewerNotes}
+          </div>
+        )}
+        {action.offeredToParent && (
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
+            Also offered to the parent chat — it may answer within its own permissions. Whoever answers first wins.
+          </div>
+        )}
         {action.input && <pre style={preStyle}>{formatInput(action.toolName!, action.input)}</pre>}
+        {hardStop && (
+          <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
+            The call stays blocked until you decide. Only allow it if you are sure this is what you asked for.
+          </p>
+        )}
         {guiAction && (
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 0, marginBottom: 10 }}>
             This chat asks before every GUI action: a pixel action may transmit data, change files or execute code.
@@ -254,6 +274,30 @@ const panelStyle: React.CSSProperties = {
   borderTop: "1px solid var(--border)",
   background: "var(--surface)",
   flexShrink: 0,
+};
+
+const hardStopPanelStyle: React.CSSProperties = {
+  ...panelStyle,
+  borderTop: "2px solid var(--danger)",
+  background: "var(--danger-bg)",
+};
+
+const notesStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: "var(--text-muted)",
+  background: "var(--bg)",
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  padding: "6px 10px",
+  marginBottom: 8,
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+};
+
+const hardStopNotesStyle: React.CSSProperties = {
+  ...notesStyle,
+  color: "var(--text)",
+  border: "1px solid var(--danger-border)",
 };
 
 const questionPanelStyle: React.CSSProperties = {
