@@ -1,5 +1,5 @@
 import { chatSearchValidationError } from "shared/types/chat-filters.js";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { SlidersHorizontal, Search, Loader2, Archive, Bookmark, Zap } from "lucide-react";
 import ChatFilterModal from "./ChatFilterModal";
 import { HEADER_BUTTON_STYLE, HEADER_ROW_GAP } from "./headerButtonStyle";
@@ -18,6 +18,14 @@ interface ChatFilterBarProps {
   onSearchChange: (query: string) => void;
   onSearchSubmit: () => void;
   isSearching: boolean;
+  /**
+   * Rendered at the start of the row — the compact space picker on mobile.
+   * The row becomes `position: relative` so a dropdown inside it can anchor to
+   * the whole row and span its full width.
+   */
+  leading?: ReactNode;
+  /** Side padding of the row. 20 matches SidebarHeader; mobile trims it to make room for `leading`. */
+  inset?: number;
 }
 
 /**
@@ -100,7 +108,7 @@ const SCOPE_TOGGLES: {
  * good at kept: telling you at a glance that the list is narrowed by something
  * you cannot see from here.
  */
-export default function ChatFilterBar({ filters, viewOptions, onApply, searchQuery, onSearchChange, onSearchSubmit, isSearching }: ChatFilterBarProps) {
+export default function ChatFilterBar({ filters, viewOptions, onApply, searchQuery, onSearchChange, onSearchSubmit, isSearching, leading, inset = 20 }: ChatFilterBarProps) {
   const [filterModalOpen, setFilterModalOpen] = useState(false);
   const searchError = chatSearchValidationError(searchQuery);
   const submitSearch = () => {
@@ -133,13 +141,16 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
           // the horizontal room this row was wasting turned out to be INSIDE
           // it (34px buttons, 8px gaps, and a search field that paid its left
           // inset twice) rather than at its margins.
-          padding: "8px 20px",
+          padding: `8px ${inset}px`,
+          ...(leading ? { position: "relative" as const } : {}),
           borderBottom: "1px solid var(--border)",
           display: "flex",
           alignItems: "center",
           gap: HEADER_ROW_GAP,
         }}
       >
+        {leading}
+
         {/* Filters. Standalone, and deliberately not folded into the group
             beside it: it opens a dialog rather than setting a scope, and a
             segmented group says its members answer one question. */}
@@ -288,7 +299,7 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search chat contents..."
+            placeholder={leading ? "Search…" : "Search chat contents..."}
             style={{
               flex: 1,
               padding: "0 8px",

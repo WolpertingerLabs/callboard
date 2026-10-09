@@ -80,4 +80,21 @@ describe("SpaceSwitcher", () => {
     expect(setActiveSpace).toHaveBeenCalledWith("sp_work");
     expect(document.activeElement).toBe(screen.getByTitle("Switch space"));
   });
+
+  it("compact: the closed trigger is the name alone, the menu still lists every space and All", () => {
+    render(
+      <MemoryRouter>
+        <SpaceContext.Provider
+          value={makeSpaceContext([testSpace("default", "General"), testSpace("sp_work", "Work", { emoji: "💼", color: "blue" })], { activeSpaceId: "sp_work" })}
+        >
+          <SpaceSwitcher cards={[]} compact />
+        </SpaceContext.Provider>
+      </MemoryRouter>,
+    );
+    const trigger = screen.getByTitle("Space: Work — switch space");
+    expect(trigger.textContent).toBe("Work");
+    fireEvent.click(trigger);
+    const items = screen.getAllByRole("menuitemradio").map((el) => el.textContent);
+    expect(items).toEqual(["General", "💼 Work", "All spaces"]);
+  });
 });

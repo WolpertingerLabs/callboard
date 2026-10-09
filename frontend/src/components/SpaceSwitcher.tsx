@@ -5,6 +5,7 @@ import type { CardSummary } from "shared/types/index.js";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
 import { useSpaces } from "../contexts/SpaceContext";
 import { SpaceDot, spaceLabel } from "./SpaceChip";
+import { HEADER_BUTTON_STYLE } from "./headerButtonStyle";
 
 interface SpaceSwitcherProps {
   /**
@@ -14,6 +15,16 @@ interface SpaceSwitcherProps {
    * extra request.
    */
   cards: CardSummary[];
+  /**
+   * Mobile: a one-line trigger that sits at the start of the filter row
+   * instead of a full-width row of its own. The root is unpositioned, so the
+   * menu anchors to the filter row (which is `position: relative`) and still
+   * spans the sidebar's full width. The notice is not rendered here — the
+   * caller places a `SpaceNotice` below the row, where it has room.
+   */
+  compact?: boolean;
+  /** Inset of the anchoring row, so a compact menu lines up with its edges. */
+  inset?: number;
 }
 
 /** Open cards whose rollup is needs_you, by space. */
@@ -52,9 +63,40 @@ function CountBadge({ n, title }: { n: number; title: string }) {
   );
 }
 
+/** The "switched to this chat's space" notice, with its dismiss button. */
+export function SpaceNotice({ style }: { style?: React.CSSProperties }) {
+  const { notice, dismissNotice } = useSpaces();
+  if (!notice) return null;
+  return (
+    <div
+      role="status"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 10px",
+        borderRadius: 8,
+        background: "var(--info-bg)",
+        color: "var(--text)",
+        fontSize: 12,
+        ...style,
+      }}
+    >
+      <span style={{ flex: 1 }}>{notice}</span>
+      <button
+        onClick={dismissNotice}
+        aria-label="Dismiss"
+        style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 2, display: "flex" }}
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
 /** The space picker at the top of the sidebar. */
-export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
-  const { spaces, activeSpaceId, activeSpace, setActiveSpace, notice, dismissNotice } = useSpaces();
+export default function SpaceSwitcher({ cards, compact = false, inset = 20 }: SpaceSwitcherProps) {
+  const { spaces, activeSpaceId, activeSpace, setActiveSpace } = useSpaces();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -115,7 +157,7 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
   };
 
   const isAll = activeSpaceId === ALL_SPACES;
-  const current = isAll ? "All spaces" : spaceLabel(activeSpace) || "General";
+  const current = isAll ? (compact ? "All" : "All spaces") : (compact ? activeSpace?.name : spaceLabel(activeSpace)) || "General";
 
   const row = (key: string, selected: boolean, onClick: () => void, children: React.ReactNode) => (
     <button
@@ -149,10 +191,12 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
   return (
     <div
       ref={rootRef}
-      // 20px sides to line up with SidebarHeader and the ChatFilterBar row below.
-      // The -2px bottom margin trims the filter row's 8px top padding to a 6px
-      // gap, so the switcher and the filters read as one group.
-      style={{ position: "relative", padding: "8px 20px 0", marginBottom: -2 }}
+      // Full: 20px sides to line up with SidebarHeader and the ChatFilterBar
+      // row below; the -2px bottom margin trims the filter row's 8px top
+      // padding to a 6px gap, so the switcher and the filters read as one group.
+      // Compact: a flex item in the filter row, deliberately unpositioned so the
+      // menu anchors to the row rather than to this narrow trigger.
+      style={compact ? { display: "flex", flex: "0 1 auto", minWidth: 0, maxWidth: 112 } : { position: "relative", padding: "8px 20px 0", marginBottom: -2 }}
       data-testid="space-switcher"
     >
       <button
@@ -166,14 +210,15 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
         }}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Switch space"
+        title={compact ? `Space: ${current} — switch space` : "Switch space"}
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          gap: compact ? 5 : 8,
           width: "100%",
-          padding: "6px 10px",
-          borderRadius: 8,
+          minWidth: 0,
+          ...(compact ? { height: HEADER_BUTTON_STYLE.height, boxSizing: "border-box" as const, padding: "0 6px 0 8px" } : { padding: "6px 10px" }),
+          borderRadius: compact ? 6 : 8,
           border: "1px solid var(--chatlist-item-border)",
           background: "var(--bg-secondary)",
           color: "var(--text)",
@@ -182,11 +227,14 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
           cursor: "pointer",
         }}
       >
-        {isAll ? <Layers size={14} color="var(--text-muted)" /> : <SpaceDot space={activeSpace} />}
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{current}</span>
-        <span style={{ flex: 1 }} />
+        {/* Compact (mobile, closed) is the name alone — no dot, emoji or icon.
+            The room goes to the name and the search field; the open menu and
+            the desktop trigger still show both. */}
+        {!compact && (isAll ? <Layers size={14} color="var(--text-muted)" /> : <SpaceDot space={activeSpace} />)}
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{current}</span>
+        {!compact && <span style={{ flex: 1 }} />}
         <CountBadge n={elsewhere} title={`${elsewhere} card${elsewhere === 1 ? "" : "s"} in other spaces need you`} />
-        <ChevronDown size={14} color="var(--text-muted)" />
+        <ChevronDown size={14} color="var(--text-muted)" style={{ flexShrink: 0 }} />
       </button>
 
       {open && (
@@ -197,8 +245,8 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
           onKeyDown={onMenuKeyDown}
           style={{
             position: "absolute",
-            left: 20,
-            right: 20,
+            left: compact ? inset : 20,
+            right: compact ? inset : 20,
             top: "calc(100% + 4px)",
             zIndex: 50,
             padding: 6,
@@ -259,31 +307,7 @@ export default function SpaceSwitcher({ cards }: SpaceSwitcherProps) {
         </div>
       )}
 
-      {notice && (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            marginTop: 6,
-            padding: "6px 10px",
-            borderRadius: 8,
-            background: "var(--info-bg)",
-            color: "var(--text)",
-            fontSize: 12,
-          }}
-        >
-          <span style={{ flex: 1 }}>{notice}</span>
-          <button
-            onClick={dismissNotice}
-            aria-label="Dismiss"
-            style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 2, display: "flex" }}
-          >
-            <X size={12} />
-          </button>
-        </div>
-      )}
+      {!compact && <SpaceNotice style={{ marginTop: 6 }} />}
     </div>
   );
 }
