@@ -51,6 +51,14 @@
             "optional": true,
             "type": "boolean"
           },
+          "offeredToParent": {
+            "optional": true,
+            "type": "string"
+          },
+          "promptResolved": {
+            "optional": true,
+            "type": "{ requestId: string; allowed: boolean; message: string }"
+          },
           "questions": {
             "optional": true,
             "type": "unknown[]"
@@ -62,6 +70,17 @@
           "requestId": {
             "optional": true,
             "type": "string"
+          },
+          "reviewerNotes": {
+            "optional": true,
+            "type": "string"
+          },
+          "reviewerVerdict": {
+            "optional": true,
+            "type": [
+              "escalate",
+              "kill"
+            ]
           },
           "suggestions": {
             "optional": true,
