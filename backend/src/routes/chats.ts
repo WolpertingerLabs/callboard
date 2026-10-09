@@ -1421,6 +1421,10 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     // (parentChatId/rootChatId above), so its card membership — the root's
     // card — is derived from the tree by every reader.
     ...(meta.defaultPermissions && { defaultPermissions: meta.defaultPermissions }),
+    // The reviewer screen carries over like the permissions it guards. Not
+    // parentAnswers: a fork's parent is the original chat, which the user
+    // never chose as an answerer.
+    ...(meta.modelReview === true && { modelReview: true }),
     ...(meta.agentAlias && { agentAlias: meta.agentAlias }),
     ...(meta.lastBranch && { lastBranch: meta.lastBranch }),
   };
@@ -1849,7 +1853,9 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
                 codeExecution: { type: "string", enum: ["allow", "ask", "deny"] },
                 webAccess: { type: "string", enum: ["allow", "ask", "deny"] }
               }
-            }
+            },
+            modelReview: { type: "boolean", description: "Screen permission asks with the model safety reviewer before a person sees them. Omit to keep the stored value." },
+            parentAnswers: { type: "boolean", description: "Also offer permission prompts to the parent chat. Omit to keep the stored value." }
           }
         }
       }
@@ -1874,6 +1880,13 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
 
   if (Object.hasOwn(defaultPermissions, "computerControl") && !validLevels.includes(defaultPermissions.computerControl)) {
     return res.status(400).json({ error: "computerControl must be one of: allow, ask, deny" });
+  }
+  // Who else may answer an "ask" (shared/types/permissions.ts). Same actors as
+  // the four axes: an API key that may set an axis to "allow" gains nothing
+  // by letting a reviewer or a parent (capped at its own policy) answer.
+  const { modelReview, parentAnswers } = req.body;
+  for (const [key, value] of [["modelReview", modelReview], ["parentAnswers", parentAnswers]] as const) {
+    if (value !== undefined && typeof value !== "boolean") return res.status(400).json({ error: `${key} must be a boolean` });
   }
 
   try {
@@ -1919,7 +1932,11 @@ chatsRouter.patch("/:id/permissions", (req, res) => {
     // record's updated_at to notice the change: the permission check re-reads
     // the record from disk on every tool call (getDefaultPermissions in
     // services/claude.ts), and the list caches are cleared below.
-    const fields = { ...meta, defaultPermissions: { ...normalizePermissions(defaultPermissions), computerControl: requestedControl } };
+    const fields: Record<string, any> = { ...meta, defaultPermissions: { ...normalizePermissions(defaultPermissions), computerControl: requestedControl } };
+    // Stored only when on; turning one off clears the key (absent = off).
+    for (const [key, value] of [["modelReview", modelReview], ["parentAnswers", parentAnswers]] as const) {
+      if (value !== undefined) fields[key] = value ? true : null;
+    }
     if (writeQuietMetadata(chat, fields) === "unwritten") {
       return res.status(500).json({ error: "Failed to update permissions" });
     }

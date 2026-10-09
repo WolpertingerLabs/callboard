@@ -267,6 +267,12 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
         required: false,
       },
       {
+        name: "parentAnswers",
+        type: "boolean",
+        description: "Offer the child's permission prompts to this chat too (answer with respond_to_request); the user can still answer first",
+        required: false,
+      },
+      {
         name: "provider",
         type: "enum",
         description:
@@ -472,6 +478,29 @@ const CALLBOARD_TOOLS: McpToolDefinition[] = [
     parameters: [
       { name: "chatId", type: "string", description: "Chat ID to get the tree for (default: the current chat)", required: false },
       { name: "space", type: "string", description: 'Space the tree must be in: a space id, or "all" (default: this chat\'s space)', required: false },
+    ],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "list_pending_requests",
+    qualifiedName: "mcp__callboard-tools__list_pending_requests",
+    description: 'List open tool-permission prompts of descendant chats that have "parent can answer" on.',
+    parameters: [],
+    serverName: "callboard-tools",
+    serverLabel: "Callboard Tools",
+    category: "platform",
+  },
+  {
+    name: "respond_to_request",
+    qualifiedName: "mcp__callboard-tools__respond_to_request",
+    description: "Allow or deny a descendant chat's open permission prompt. Allow only where this chat itself allows the category; hard stops are for the user only.",
+    parameters: [
+      { name: "chatId", type: "string", description: "The descendant chat whose prompt to answer", required: true },
+      { name: "requestId", type: "string", description: "The open prompt's requestId", required: true },
+      { name: "allow", type: "boolean", description: "Allow (true) or deny (false)", required: true },
+      { name: "reason", type: "string", description: "Why — shown to the user, and to the child on a deny", required: true },
     ],
     serverName: "callboard-tools",
     serverLabel: "Callboard Tools",

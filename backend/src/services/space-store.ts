@@ -248,6 +248,10 @@ function applyDefaults(current: SpaceDefaults | undefined, patch: NonNullable<Sp
         if (typeof value !== "object" || Array.isArray(value)) throw new SpaceValidationError("defaults.defaultPermissions must be an object");
         next.defaultPermissions = normalizePermissions(value);
         break;
+      case "modelReview":
+        if (typeof value !== "boolean") throw new SpaceValidationError("defaults.modelReview must be a boolean");
+        next.modelReview = value;
+        break;
       case "worktreeByDefault":
         if (typeof value !== "boolean") throw new SpaceValidationError("defaults.worktreeByDefault must be a boolean");
         next.worktreeByDefault = value;

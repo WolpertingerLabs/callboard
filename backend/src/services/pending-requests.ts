@@ -46,6 +46,18 @@ export interface PendingRequest {
    */
   humanOnly?: true;
   requestId?: string;
+  /**
+   * Parent chat this prompt was also offered to (`parentAnswers` on, the
+   * chat has a parent, not a hard stop). The human prompt is raised as usual;
+   * an ancestor may answer it through `respond_to_request` — first answer wins,
+   * guarded by `requestId`. See parent-answers.ts.
+   */
+  offeredToParent?: string;
+  /** Permission category the policy assigned, for the parent's authority ceiling. */
+  category?: string | null;
+  /** The model reviewer's (or pre-check's) reasoning, when one ran and passed the call on. */
+  reviewerNotes?: string;
+  reviewerVerdict?: "escalate" | "kill";
   /** Host startup result; never serialized into the replay or SSE payload. */
   completion?: Promise<ApprovalCompletion>;
 }

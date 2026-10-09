@@ -56,6 +56,8 @@ streamRouter.post("/new/message", async (req, res) => {
             folder: { type: "string", description: "Absolute path to the project folder" },
             prompt: { type: "string", description: "The user message to send" },
             defaultPermissions: { type: "object", description: "Default tool permissions (fileRead, fileWrite, codeExecution, webAccess — each one of allow, deny, or ask)" },
+            modelReview: { type: "boolean", description: "Screen every permission ask with a one-shot model safety reviewer before it reaches a person (approve is final, deny returns to the agent, escalate passes on). Not applied to Codex. Persisted for the chat. Default: false." },
+            parentAnswers: { type: "boolean", description: "Also offer permission prompts to the parent chat (needs parentChatId); it may answer within its own permissions, first answer wins. Persisted for the chat. Default: false." },
             imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image IDs to attach" },
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
@@ -105,6 +107,8 @@ streamRouter.post("/new/message", async (req, res) => {
     effort,
     model,
     requireExplicitCompletion,
+    modelReview,
+    parentAnswers,
     parentChatId,
     chatRole,
     spaceId,
@@ -314,6 +318,8 @@ streamRouter.post("/new/message", async (req, res) => {
       // Boolean-validated at the route boundary; anything else is dropped
       // (same outcome as omitting — the default behavior).
       ...(requireExplicitCompletion === true && { requireExplicitCompletion: true }),
+      ...(modelReview === true && { modelReview: true }),
+      ...(parentAnswers === true && { parentAnswers: true }),
       // Parentage-tree linkage — sendMessage skips it silently when the
       // parent has no stored record. This is also what makes the new chat a
       // member of its root's card: membership is lineage, so nothing else

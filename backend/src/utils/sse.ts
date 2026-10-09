@@ -154,7 +154,12 @@ export function createSSEHandler(res: Response, emitter: EventEmitter, options: 
         ...(typeof event.maxBudgetUsd === "number" && { maxBudgetUsd: event.maxBudgetUsd }),
       });
     } else {
-      sendSSE(res, { type: "message_update", ...(event.controlRequestResult && { controlRequestResult: event.controlRequestResult }) });
+      sendSSE(res, {
+        type: "message_update",
+        ...(event.controlRequestResult && { controlRequestResult: event.controlRequestResult }),
+        // A parent chat answered a prompt this tab may be showing (parent-answers.ts).
+        ...(event.promptResolved && { promptResolved: event.promptResolved }),
+      });
     }
   };
 
