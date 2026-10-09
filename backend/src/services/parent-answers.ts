@@ -143,15 +143,16 @@ export type ParentAnswerResult =
   | { ok: true; chatId: string; requestId: string; toolName: string; allowed: boolean }
   | { ok: false; error: string; message: string };
 
-/**
- * Answer a direct child's prompt on behalf of the calling chat. See the module
- * header for every check; each refusal names what failed.
- */
+/** The `pendingRequests` key currently holding the prompt with this (UUID) requestId. */
 function findKeyByRequestId(requestId: string): string | undefined {
   for (const [key, entry] of pendingRequests) if (entry.requestId === requestId) return key;
   return undefined;
 }
 
+/**
+ * Answer a direct child's prompt on behalf of the calling chat. See the module
+ * header for every check; each refusal names what failed.
+ */
 export function respondAsParent(args: {
   callerChatId: string;
   callerPermissions: DefaultPermissions | null;
