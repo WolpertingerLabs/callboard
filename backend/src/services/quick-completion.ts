@@ -60,6 +60,11 @@ export interface QuickCompletionOptions {
   tools?: string[];
   /** Effort level for reasoning. Default: "low". */
   effort?: "low" | "medium" | "high";
+  /**
+   * Caller cancellation. OpenRouter composes it onto its request timeout; the
+   * Claude Code branch aborts the SDK subprocess. A cancelled call rejects.
+   */
+  signal?: AbortSignal;
 }
 
 export interface QuickCompletionResult {
@@ -126,13 +131,14 @@ const RETURN_RESULT_INSTRUCTION =
  * For interactive agent sessions, use claude.ts / sendMessage() instead.
  */
 export async function quickCompletion(opts: QuickCompletionOptions): Promise<QuickCompletionResult> {
-  const { prompt, systemPrompt, model = "haiku", tools = [], effort = "low" } = opts;
+  const { prompt, systemPrompt, model = "haiku", tools = [], effort = "low", signal } = opts;
 
   if (isOpenRouterUtilityCompletionEnabled()) {
     const orModel = resolveUtilityModel(model);
     log.debug(`quickCompletion — backend=openrouter, model=${orModel}, effort=${effort}`);
-    return runOpenRouterCompletion({ prompt, systemPrompt, model: orModel, effort });
+    return runOpenRouterCompletion({ prompt, systemPrompt, model: orModel, effort, ...(signal && { signal }) });
   }
+  if (signal?.aborted) throw new Error("quickCompletion cancelled before it started");
 
   const agentProvider = getAgentProvider("claude-code");
 
@@ -179,6 +185,11 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   // arrives as text instead.
   let assistantText = "";
 
+  // Forward the caller's cancellation to the SDK, which kills the subprocess.
+  const abortController = new AbortController();
+  const onAbort = () => abortController.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+
   try {
     const claudeExecutable = await getClaudeCodeExecutablePath();
 
@@ -186,6 +197,7 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
       prompt: promptGenerator,
       options: {
         model,
+        abortController,
         cwd: tmpdir(), // Explicit throwaway cwd — no tools use it, but avoids polluting the project directory
         ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
         tools: [], // No built-in Claude Code tools
@@ -256,6 +268,8 @@ export async function quickCompletion(opts: QuickCompletionOptions): Promise<Qui
   } catch (err: any) {
     log.error(`quickCompletion failed: ${err.message}`);
     throw err;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 
