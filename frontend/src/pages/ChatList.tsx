@@ -56,8 +56,12 @@ import { errorMessage } from "../utils/errorMessage";
 import { chatMeta, withChatMeta } from "../utils/chatMeta";
 import type { ChatRouteState } from "../types/chatRouteState";
 
-/** Side padding of the mobile filter row, trimmed from 20 to fit the space picker. */
-const MOBILE_FILTER_INSET = 12;
+/**
+ * Side padding of the space switcher, filter row and the notices under them —
+ * trimmed from SidebarHeader's 20 to fit the mobile space picker, and used on
+ * desktop too so the two layouts match.
+ */
+const FILTER_INSET = 12;
 
 interface ChatListProps {
   activeChatId?: string;
@@ -1491,7 +1495,7 @@ export default function ChatList({
       {/* Desktop: the switcher is its own full-width row. Mobile: a one-line
           trigger at the start of the filter row (see ChatFilterBar's leading
           slot), with the notice moved below the row where it has room. */}
-      {spacesEnabled && !isMobile && <SpaceSwitcher cards={cards} />}
+      {spacesEnabled && !isMobile && <SpaceSwitcher cards={cards} inset={FILTER_INSET} />}
 
       {chatViewError && (
         <p role="alert" style={{ color: "var(--danger)" }}>
@@ -1506,11 +1510,12 @@ export default function ChatList({
         onSearchChange={setSearchQuery}
         onSearchSubmit={handleSearchSubmit}
         isSearching={isSearching}
-        {...(spacesEnabled && isMobile && { leading: <SpaceSwitcher cards={cards} compact inset={MOBILE_FILTER_INSET} />, inset: MOBILE_FILTER_INSET })}
+        inset={FILTER_INSET}
+        {...(spacesEnabled && isMobile && { leading: <SpaceSwitcher cards={cards} compact inset={FILTER_INSET} /> })}
       />
-      {spacesEnabled && isMobile && <SpaceNotice style={{ margin: `6px ${MOBILE_FILTER_INSET}px 0` }} />}
+      {spacesEnabled && isMobile && <SpaceNotice style={{ margin: `6px ${FILTER_INSET}px 0` }} />}
       {spacesEnabled && spaces.length > 1 && activeSpaceId !== ALL_SPACES && (searchQuery.trim() || searching) && (
-        <label style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 ${isMobile ? MOBILE_FILTER_INSET : 20}px 6px`, fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 ${FILTER_INSET}px 6px`, fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}>
           <input type="checkbox" checked={searchAllSpaces} onChange={(e) => setSearchAllSpaces(e.target.checked)} />
           Search all spaces
         </label>
