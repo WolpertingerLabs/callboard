@@ -23,7 +23,7 @@ interface SpaceSwitcherProps {
    * caller places a `SpaceNotice` below the row, where it has room.
    */
   compact?: boolean;
-  /** Inset of the anchoring row, so a compact menu lines up with its edges. */
+  /** Side inset: the full row's padding, or (compact) the anchoring row's, so the menu lines up with its edges. */
   inset?: number;
 }
 
@@ -191,12 +191,11 @@ export default function SpaceSwitcher({ cards, compact = false, inset = 20 }: Sp
   return (
     <div
       ref={rootRef}
-      // Full: 20px sides to line up with SidebarHeader and the ChatFilterBar
-      // row below; the -2px bottom margin trims the filter row's 8px top
+      // Full: `inset` sides to line up with the ChatFilterBar row below; the -2px bottom margin trims the filter row's 8px top
       // padding to a 6px gap, so the switcher and the filters read as one group.
       // Compact: a flex item in the filter row, deliberately unpositioned so the
       // menu anchors to the row rather than to this narrow trigger.
-      style={compact ? { display: "flex", flex: "0 1 auto", minWidth: 0, maxWidth: 112 } : { position: "relative", padding: "8px 20px 0", marginBottom: -2 }}
+      style={compact ? { display: "flex", flex: "0 1 auto", minWidth: 0, maxWidth: 112 } : { position: "relative", padding: `8px ${inset}px 0`, marginBottom: -2 }}
       data-testid="space-switcher"
     >
       <button
@@ -245,8 +244,8 @@ export default function SpaceSwitcher({ cards, compact = false, inset = 20 }: Sp
           onKeyDown={onMenuKeyDown}
           style={{
             position: "absolute",
-            left: compact ? inset : 20,
-            right: compact ? inset : 20,
+            left: inset,
+            right: inset,
             top: "calc(100% + 4px)",
             zIndex: 50,
             padding: 6,
