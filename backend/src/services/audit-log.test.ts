@@ -600,11 +600,20 @@ describe("report retries run on their own timer", () => {
    * and each caller has its own fake hub. `refuseReports` makes a caller's hub
    * refuse loss reports (as a drained byte budget does) and store all else.
    */
-  function timedHubs(aliasNames: string[]) {
+  function timedHubs(aliasNames: string[], opts: { realSleep?: boolean } = {}) {
     vi.useFakeTimers({ now: 1_760_000_000_000 });
     const hubs = new Map<
       string,
-      { refuseReports: boolean; hangReports?: boolean; reportLatencyMs?: number; unsupportedDataOnce?: boolean; calls: IngestLogsInput[]; stored: OtlpLogRecord[] }
+      {
+        refuseReports: boolean;
+        hangReports?: boolean;
+        reportLatencyMs?: number;
+        unsupportedDataOnce?: boolean;
+        failData?: boolean;
+        dataLatencyMs?: number;
+        calls: IngestLogsInput[];
+        stored: OtlpLogRecord[];
+      }
     >();
     for (const a of aliasNames) hubs.set(a, { refuseReports: false, calls: [], stored: [] });
     __resetAuditLogForTests({
@@ -615,6 +624,8 @@ describe("report retries run on their own timer", () => {
           hub.calls.push(body);
           if (hub.hangReports && isReportCall(body)) return new Promise(() => {});
           if (hub.reportLatencyMs && isReportCall(body)) await new Promise((r) => setTimeout(r, hub.reportLatencyMs));
+          if (hub.dataLatencyMs && !isReportCall(body)) await new Promise((r) => setTimeout(r, hub.dataLatencyMs));
+          if (hub.failData && !isReportCall(body)) throw new Error("fetch failed");
           if (hub.unsupportedDataOnce && !isReportCall(body)) {
             hub.unsupportedDataOnce = false;
             throw new Error("Unknown tool: ingest_logs"); // e.g. the hub was rolled back, then forward again
@@ -624,7 +635,8 @@ describe("report retries run on their own timer", () => {
           return {};
         },
       }),
-      sleep,
+      // Real backoff sleeps (on vitest's fake timers) where a test needs them.
+      ...(!opts.realSleep && { sleep }),
     });
     return hubs;
   }
@@ -755,6 +767,67 @@ describe("report retries run on their own timer", () => {
     const atReturn = hub.calls.length;
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(hub.calls).toHaveLength(atReturn);
+  });
+
+  it("a batch asleep in backoff at shutdown gets its last attempt inside the bound, and nothing is sent after (review round 5, NIT 4 / NIT 1)", async () => {
+    const hubs = timedHubs(["a"], { realSleep: true });
+    const hub = hubs.get("a")!;
+    hub.failData = true;
+    emitAuditRecord("a", rec(1));
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS); // attempt 1 fails; asleep for 2 s
+    expect(dataCalls(hub.calls)).toHaveLength(1);
+    hub.failData = false; // the hub is back while the batch sleeps
+    const shutdown = shutdownAuditLog(500);
+    await vi.advanceTimersByTimeAsync(500);
+    await shutdown;
+    expect(hub.stored.filter((r) => r.eventName === "test.event").map((r) => attr(r, "n"))).toEqual([{ intValue: "1" }]);
+    const atReturn = hub.calls.length;
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(hub.calls).toHaveLength(atReturn);
+  });
+
+  it("no batch for the next caller starts after shutdown has returned (review round 5, NIT 2)", async () => {
+    const hubs = timedHubs(["a", "b"], { realSleep: true });
+    const a = hubs.get("a")!;
+    a.failData = true;
+    a.dataLatencyMs = 2_000; // a's attempt outlasts the shutdown bound
+    emitAuditRecord("a", rec(1));
+    emitAuditRecord("b", rec(2)); // queued behind a's batch
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS); // a's attempt 1 is out
+    const shutdown = shutdownAuditLog(500);
+    await vi.advanceTimersByTimeAsync(500);
+    await shutdown; // timed out with a's attempt still out
+    await vi.advanceTimersByTimeAsync(60 * 60_000); // a's attempt fails and drops; b must not start
+    expect(hubs.get("b")!.calls).toHaveLength(0);
+    expect(__auditQueueLength()).toBe(1);
+  });
+
+  it("a report attempt still out when shutdown returns is not followed by another (review round 5, NIT 1)", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    hub.reportLatencyMs = 2_000; // outlasts the shutdown bound
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1); // attempt 1 is out
+    const shutdown = shutdownAuditLog(500);
+    await vi.advanceTimersByTimeAsync(500);
+    await shutdown;
+    await vi.advanceTimersByTimeAsync(60 * 60_000); // attempt 1 is refused after return
+    expect(hub.calls.filter(isReportCall)).toHaveLength(1);
+  });
+
+  it("a large backward wall-clock step does not hold a backing-off report (review round 5, NIT 3)", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1); // refused; retry in 2 s
+    hub.refuseReports = false;
+    vi.setSystemTime(Date.now() - 24 * 60 * 60_000); // a day back
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(storedDropsIn(hub.stored)).toEqual({ count: 1, build_failed: 1 });
   });
 
   it("shutdown gives a report that is backing off its last try (review round 3, S2)", async () => {

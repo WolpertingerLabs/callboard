@@ -296,14 +296,27 @@ let reportTimer: ReturnType<typeof setTimeout> | null = null;
 let reportTimerDue = Infinity;
 const reportChains = new Map<string, Promise<void>>();
 let stopped = false;
-/** Set when shutdownAuditLog returns: from then on no send or report attempt starts. */
+/**
+ * Set when shutdownAuditLog returns: from then on no batch or report attempt
+ * starts (checked in flushAll's loop and the report chains). A batch asleep in
+ * backoff never outlives `stopped` — shutdown wakes it for its last attempt.
+ */
 let closed = false;
+/** Wakes batches asleep in backoff, so shutdown can give each its last attempt. */
+const sleepers = new Set<() => void>();
 /** Records in the batch being sent right now (for the shutdown "unsent" count). */
 let inFlightRecords = 0;
 
 export interface AuditLogDeps {
   getProxy: (alias: string) => ProxyLike | null;
+  /** Wall clock: record timestamps and loss windows. */
   now: () => number;
+  /**
+   * Monotonic clock: retry and disable DEADLINES only. A wall-clock step (NTP,
+   * suspend/resume) must not move them — a 24 h step back would otherwise hold
+   * a backing-off report for 24 h.
+   */
+  monotonic: () => number;
   sleep: (ms: number) => Promise<void>;
 }
 
@@ -312,6 +325,7 @@ const defaultDeps: AuditLogDeps = {
   // proxy-singleton without `getProxy` must still be able to import this.
   getProxy: (alias) => getProxy(alias),
   now: () => Date.now(),
+  monotonic: () => performance.now(),
   sleep: (ms) => new Promise((r) => setTimeout(r, ms).unref?.()),
 };
 let deps: AuditLogDeps = defaultDeps;
@@ -401,7 +415,7 @@ export function emitAuditRecord(alias: string | undefined, build: () => AuditRec
     if (!alias || stopped || !isAuditLogEnabled()) return;
     const now = deps.now();
     const s = aliasState(alias);
-    if (s.disabledUntil > now) {
+    if (s.disabledUntil > deps.monotonic()) {
       countDropped(alias, "hub_unsupported", 1, now);
       return;
     }
@@ -452,11 +466,13 @@ function runFlush(): Promise<void> {
 /** Send everything queued, one alias at a time, in batches. Audit records only — loss reports run separately. */
 async function flushAll(): Promise<void> {
   while (queue.length > 0) {
+    // Shutdown has returned: start no new batch. What is left stays queued
+    // (and was counted in the shutdown's "unsent").
+    if (closed) break;
     const alias = queue[0].alias;
-    const now = deps.now();
     const s = aliasState(alias);
     // Disabled since these were queued: count them, keep the rest moving.
-    if (s.disabledUntil > now) {
+    if (s.disabledUntil > deps.monotonic()) {
       const lost = takeForAlias(alias, Infinity);
       const w = windowOf(lost);
       countDropped(alias, "hub_unsupported", lost.length, w.firstMs, w.lastMs);
@@ -495,7 +511,7 @@ function scheduleReports(): void {
       reportTimerDue = Infinity;
       void runReports();
     },
-    Math.max(0, next - deps.now()),
+    Math.max(0, next - deps.monotonic()),
   );
   reportTimer.unref?.();
 }
@@ -507,7 +523,7 @@ function scheduleReports(): void {
  */
 function runReports(): Promise<void> {
   for (const [alias, s] of aliases) {
-    if (reportChains.has(alias) || reportDueAt(s) > deps.now()) continue;
+    if (reportChains.has(alias) || reportDueAt(s) > deps.monotonic()) continue;
     const chain = (async () => {
       try {
         // A settled report can leave a remainder (counted while it was out),
@@ -516,7 +532,7 @@ function runReports(): Promise<void> {
         // Once shutdown begins, at most one attempt STARTS (the last try); one
         // already out may finish. Once it has returned, none starts at all.
         let startedAfterStop = false;
-        for (let n = 0; n < MAX_REPORTS_PER_FLUSH && reportDueAt(s) <= deps.now(); n++) {
+        for (let n = 0; n < MAX_REPORTS_PER_FLUSH && reportDueAt(s) <= deps.monotonic(); n++) {
           if (closed || (stopped && startedAfterStop)) break;
           if (stopped) startedAfterStop = true;
           await reportDropped(alias, s);
@@ -531,9 +547,9 @@ function runReports(): Promise<void> {
     reportChains.set(alias, chain);
   }
   // Re-arm for whatever is not running now. The timer can fire with nothing
-  // due — the alias was disabled after it was set, or the wall clock stepped
-  // back (setTimeout is monotonic, Date.now is not) — and must not strand a
-  // report until some new loss happens to schedule one.
+  // due — e.g. the alias was disabled after it was set — and must not strand
+  // a report until some new loss happens to schedule one. (Deadlines are on
+  // the monotonic clock, so a wall-clock step does not move them.)
   scheduleReports();
   return Promise.all(reportChains.values()).then(() => undefined);
 }
@@ -574,7 +590,7 @@ async function reportDropped(alias: string, s: AliasState): Promise<void> {
     failure = err instanceof Error ? err.message : String(err);
   }
   report.attempts++;
-  report.retryAt = deps.now() + Math.min(RETRY_BASE_MS * 2 ** (report.attempts - 1), MAX_REPORT_BACKOFF_MS);
+  report.retryAt = deps.monotonic() + Math.min(RETRY_BASE_MS * 2 ** (report.attempts - 1), MAX_REPORT_BACKOFF_MS);
   const line = `[${alias}] loss report (${report.snapshot.count} record(s)) not stored, attempt ${report.attempts} — kept for retry: ${failure}`;
   if (report.attempts === 1) log.warn(line);
   else log.debug(line);
@@ -599,7 +615,7 @@ function noteSupported(alias: string, s: AliasState): void {
 }
 
 function markUnsupported(alias: string, s: AliasState): void {
-  s.disabledUntil = deps.now() + REPROBE_INTERVAL_MS;
+  s.disabledUntil = deps.monotonic() + REPROBE_INTERVAL_MS;
   if (!s.loggedUnsupported) {
     log.info(`[${alias}] drawlatch has no ingest_logs — audit log disabled for this caller, re-probing every ${REPROBE_INTERVAL_MS / 60_000} min`);
     s.loggedUnsupported = true;
@@ -733,13 +749,25 @@ async function sendBuiltBatch(alias: string, taken: QueuedRecord[]): Promise<voi
       return;
     }
     log.debug(`[${alias}] audit send failed (attempt ${attempt}/${MAX_SEND_ATTEMPTS}): ${err instanceof Error ? err.message : String(err)}`);
-    await deps.sleep(RETRY_BASE_MS * 2 ** (attempt - 1));
-    if (closed) {
-      // Shutdown returned while this batch slept: start nothing more.
-      countDropped(alias, "send_failed", records.length, batchWindow.firstMs, batchWindow.lastMs);
-      return;
-    }
+    // Shutdown cuts the backoff short: the next attempt is this batch's last
+    // try (a failure once `stopped` drops it, above), inside the shutdown bound.
+    // (No `closed` check needed after it: shutdown wakes a sleeper before it
+    // can return, and a failure once `stopped` drops instead of sleeping.)
+    await backoff(RETRY_BASE_MS * 2 ** (attempt - 1));
   }
+}
+
+/** Sleep `ms`, or until shutdown begins, whichever is first. */
+function backoff(ms: number): Promise<void> {
+  if (stopped) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const wake = () => {
+      sleepers.delete(wake);
+      resolve();
+    };
+    sleepers.add(wake);
+    deps.sleep(ms).then(wake, wake);
+  });
 }
 
 function safeGetProxy(alias: string): ProxyLike | null {
@@ -766,9 +794,11 @@ export async function shutdownAuditLog(timeoutMs = 3000): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const flushed = (async () => {
-      // An in-flight flush may be sleeping on a backoff; mark stopped so its
-      // next failure drops instead of retrying, then drain what is left.
+      // An in-flight flush may be sleeping on a backoff: mark stopped and wake
+      // it, so it makes its last attempt now (and drops if that fails), then
+      // drain what is left.
       stopped = true;
+      for (const wake of [...sleepers]) wake();
       if (inFlight) await inFlight;
       await runFlush();
       // A pending loss report gets its last try, backoff or not (reportDueAt).
@@ -818,10 +848,13 @@ export function __resetAuditLogForTests(overrides: Partial<AuditLogDeps> = {}): 
   inFlightRecords = 0;
   stopped = false;
   closed = false;
+  sleepers.clear();
   queue.length = 0;
   aliases.clear();
   cachedResource = undefined;
   deps = { ...defaultDeps, ...overrides };
+  // A test that drives a fake wall clock drives the deadlines with it.
+  if (overrides.now && !overrides.monotonic) deps.monotonic = overrides.now;
 }
 
 /** Test-only: which of this module's timers are armed. */
