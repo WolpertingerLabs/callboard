@@ -101,14 +101,79 @@ describe("serializeInput", () => {
     expect((out.json.match(/"d"/g) ?? []).length).toBeLessThanOrEqual(MAX_INPUT_DEPTH);
   });
 
-  it("survives a getter that throws", () => {
+  it("a throwing getter is replaced and the copy flagged as not exact", () => {
     const input = {
       ok: 1,
       get bad(): never {
         throw new Error("no");
       },
     };
-    expect(JSON.parse(serializeInput(input).json)).toEqual({ ok: 1, bad: "[unreadable]" });
+    const out = serializeInput(input);
+    expect(JSON.parse(out.json)).toEqual({ ok: 1, bad: "[unreadable]" });
+    expect(out.truncated).toBe(true);
+    expect(out.bytes).toBeUndefined();
+  });
+
+  it("a throwing toJSON is replaced and the copy flagged as not exact", () => {
+    const out = serializeInput({
+      when: {
+        toJSON() {
+          throw new Error("no");
+        },
+      },
+    });
+    expect(JSON.parse(out.json)).toEqual({ when: "[unreadable]" });
+    expect(out.truncated).toBe(true);
+  });
+
+  it("an object past the key cap is cut and flagged", () => {
+    const input: Record<string, number> = {};
+    for (let i = 0; i < MAX_INPUT_ENTRIES + 1; i++) input[`k${i}`] = i;
+    const out = serializeInput(input);
+    expect(out.truncated).toBe(true);
+    expect(out.bytes).toBeUndefined();
+    const parsed = JSON.parse(out.json) as Record<string, unknown>;
+    expect(Object.keys(parsed)).toHaveLength(MAX_INPUT_ENTRIES + 1); // 256 keys + the cut marker
+    expect(parsed).not.toHaveProperty(`k${MAX_INPUT_ENTRIES}`);
+  });
+
+  it("an object exactly at the key cap is whole", () => {
+    const input: Record<string, number> = {};
+    for (let i = 0; i < MAX_INPUT_ENTRIES; i++) input[`k${i}`] = i;
+    expect(serializeInput(input)).toEqual({ json: JSON.stringify(input), bytes: JSON.stringify(input).length, truncated: false });
+  });
+
+  it("keys JSON drops are skipped without a false cut — past the key cap or past the budget", () => {
+    const atCap: Record<string, unknown> = {};
+    for (let i = 0; i < MAX_INPUT_ENTRIES; i++) atCap[`k${i}`] = i;
+    atCap.u = undefined;
+    atCap.f = () => 1;
+    expect(serializeInput(atCap)).toEqual({ json: JSON.stringify(atCap), bytes: JSON.stringify(atCap).length, truncated: false });
+
+    // A string that spends the whole budget without being cut, then a function.
+    const budget = MAX_STRING_BYTES - 1024 - ("a".length + 4);
+    const spent = { a: "x".repeat(budget), f: () => 1, s: Symbol("x") };
+    const out = serializeInput(spent);
+    expect(out.truncated).toBe(false);
+    expect(out.json).toBe(JSON.stringify(spent));
+  });
+
+  it("never visits inherited keys", () => {
+    let reads = 0;
+    const proto: Record<string, unknown> = {};
+    for (let i = 0; i < 1000; i++) {
+      Object.defineProperty(proto, `p${i}`, {
+        enumerable: true,
+        get: () => {
+          reads++;
+          return i;
+        },
+      });
+    }
+    const input = Object.create(proto) as Record<string, unknown>;
+    input.own = 1;
+    expect(serializeInput(input)).toEqual({ json: '{"own":1}', bytes: 9, truncated: false });
+    expect(reads).toBe(0);
   });
 
   it("stays within the byte limit when escaping and multi-byte characters inflate it", () => {

@@ -140,10 +140,19 @@ export const MAX_INPUT_ENTRIES = 256;
 /**
  * Copy `input` to at most ~MAX_STRING_BYTES of JSON without serializing the
  * whole of it. This runs on the decision path, so its cost must not grow with
- * the input: strings are sliced to the remaining budget, arrays and objects
- * stop at MAX_INPUT_ENTRIES or when the budget runs out, nesting stops at
- * MAX_INPUT_DEPTH. Anything cut sets `truncated`; then `bytes` (the full size)
- * is unknown and omitted rather than paid for.
+ * the input's bytes: strings are sliced to the remaining budget, arrays and
+ * objects stop at MAX_INPUT_ENTRIES or when the budget runs out, nesting stops
+ * at MAX_INPUT_DEPTH.
+ *
+ * One cost is NOT bounded: listing an object's keys. JavaScript has no lazy
+ * own-key iterator — `Object.keys` and `for..in` both build the full key list
+ * first — so an object with a million keys costs a million-key enumeration
+ * (~0.25 s), though never more than that key list, and the copy itself stays
+ * capped. Tool inputs are parsed model output, so such widths are not expected.
+ *
+ * `truncated` means the copy is not exact — something was cut, or replaced
+ * (a throwing getter or `toJSON` becomes "[unreadable]"); then `bytes` (the
+ * full size) is unknown and omitted rather than paid for.
  */
 export function serializeInput(input: unknown): { json: string; bytes?: number; truncated: boolean } {
   // Headroom under the hard limit for JSON punctuation and the cut marker, so
@@ -204,6 +213,7 @@ function boundedCopy(value: unknown, budget: { left: number; truncated: boolean 
     try {
       return boundedCopy(obj.toJSON(), budget, depth + 1);
     } catch {
+      budget.truncated = true; // replaced, so not exact
       return "[unreadable]";
     }
   }
@@ -222,19 +232,23 @@ function boundedCopy(value: unknown, budget: { left: number; truncated: boolean 
   }
   const out: Record<string, unknown> = {};
   let kept = 0;
-  // for..in, not Object.keys: stops early on a huge object instead of listing every key first.
-  for (const key in value as Record<string, unknown>) {
-    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-    if (kept >= MAX_INPUT_ENTRIES || budget.left <= 0) {
-      budget.truncated = true;
-      out[CUT] = true;
-      break;
-    }
+  // Own enumerable string keys, exactly what JSON.stringify serializes (so an
+  // inherited key is never visited). See the cost note on serializeInput.
+  for (const key of Object.keys(value as object)) {
     let child: unknown;
     try {
       child = (value as Record<string, unknown>)[key];
     } catch {
+      budget.truncated = true; // replaced, so not exact
       child = "[unreadable]";
+    }
+    // JSON.stringify drops these keys, so skipping one is exact — even past
+    // the cap, where it must not be mistaken for a cut.
+    if (child === undefined || typeof child === "function" || typeof child === "symbol") continue;
+    if (kept >= MAX_INPUT_ENTRIES || budget.left <= 0) {
+      budget.truncated = true;
+      out[CUT] = true;
+      break;
     }
     budget.left -= key.length + 4;
     const copied = boundedCopy(child, budget, depth + 1);
