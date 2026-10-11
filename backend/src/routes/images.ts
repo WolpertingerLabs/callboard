@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import multer from "multer";
 import { MULTIPART_FIELD_LIMITS, withUploadErrors } from "../utils/multipart-limits.js";
 import { ImageStorageService, type StoredImage } from "../services/image-storage.js";
@@ -7,33 +7,44 @@ import { updateChatWithImages } from "../services/image-metadata.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { createLogger } from "../utils/logger.js";
 import { setSandboxedContentHeaders } from "../utils/served-content.js";
+import { MAX_FILE_ATTACHMENT_BYTES, MAX_IMAGE_ATTACHMENT_BYTES, isImageAttachmentType, maxAttachmentBytes } from "shared/types/index.js";
 
 const log = createLogger("images");
 
 export const imagesRouter = Router();
 
-// Configure multer for memory storage
+// Configure multer for memory storage. Any type is accepted: images are sent
+// to the model as images, everything else as a file attachment (see
+// shared/types/attachment.ts). This is the ceiling for the larger, non-image
+// limit; storeImage enforces the per-type one.
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
+    fileSize: MAX_FILE_ATTACHMENT_BYTES,
     files: 10, // Max 10 files per request
     ...MULTIPART_FIELD_LIMITS,
   },
-  fileFilter: (_req, file, cb) => {
-    const allowedTypes = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Invalid file type: ${file.mimetype}`));
-    }
-  },
 });
 
-const uploadImages = withUploadErrors(upload.array("images", 10), {
-  tooLarge: "Image too large; the limit is 10MB per image",
-  tooMany: { field: "images", message: "Too many images; at most 10 per upload" },
+const TOO_LARGE = `File too large; the limit is ${MAX_IMAGE_ATTACHMENT_BYTES / 1024 / 1024}MB per image and ${MAX_FILE_ATTACHMENT_BYTES / 1024 / 1024}MB per other file`;
+
+const parseUploads = withUploadErrors(upload.array("images", 10), {
+  tooLarge: TOO_LARGE,
+  tooMany: { field: "images", message: "Too many files; at most 10 per upload" },
 });
+
+// multer only knows the larger ceiling. Images are held to theirs here, so an
+// oversized one is the same 413 it always was rather than a 200 listing an
+// error, and nothing in the request is stored.
+const uploadImages: RequestHandler = (req, res, next) =>
+  parseUploads(req, res, () => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    if (files.some((file) => file.size > maxAttachmentBytes(file.mimetype))) {
+      res.status(413).json({ error: TOO_LARGE, code: "LIMIT_FILE_SIZE" });
+      return;
+    }
+    next();
+  });
 
 /**
  * Upload images for a chat
@@ -42,7 +53,7 @@ const uploadImages = withUploadErrors(upload.array("images", 10), {
 imagesRouter.post("/:chatId/images", uploadImages, async (req, res) => {
   // #swagger.tags = ['Images']
   // #swagger.summary = 'Upload images for a chat'
-  // #swagger.description = 'Upload up to 10 images (max 10MB each) for a chat. Accepts PNG, JPEG, GIF, and WebP. Uses multipart/form-data with field name "images".'
+  // #swagger.description = 'Upload up to 10 files for a chat: PNG, JPEG, GIF and WebP images (max 10MB each, sent to the model as images) or any other file (max 25MB each, inlined into the prompt when small text, otherwise referenced by its stored path). Uses multipart/form-data with field name "images".'
   /* #swagger.parameters['chatId'] = { in: 'path', required: true, type: 'string', description: 'Chat ID' } */
   /* #swagger.requestBody = {
     required: true,
@@ -107,7 +118,7 @@ imagesRouter.post("/:chatId/images", uploadImages, async (req, res) => {
 imagesRouter.post("/upload", uploadImages, async (req, res) => {
   // #swagger.tags = ['Images']
   // #swagger.summary = 'Upload images (no chat required)'
-  // #swagger.description = 'Upload up to 10 images (max 10MB each) without associating them to a chat. Returns image IDs that can be passed to /new/message. Accepts PNG, JPEG, GIF, and WebP via multipart/form-data with field name "images".'
+  // #swagger.description = 'Upload up to 10 files without associating them to a chat. Returns IDs that can be passed to /new/message as imageIds. Images (PNG, JPEG, GIF, WebP; max 10MB) are sent as images, any other file (max 25MB) as a file attachment. Uses multipart/form-data with field name "images".'
   /* #swagger.requestBody = {
     required: true,
     content: {
@@ -187,6 +198,10 @@ imagesRouter.get("/:imageId", (req, res) => {
     res.setHeader("Cache-Control", "private, max-age=86400");
     res.setHeader("ETag", `"${image.sha256}"`);
     setSandboxedContentHeaders(res);
+    // A file attachment is for saving, not viewing on the app origin.
+    if (!isImageAttachmentType(image.mimeType)) {
+      res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(image.originalName)}`);
+    }
 
     // Check if client has cached version
     const clientETag = req.headers["if-none-match"];

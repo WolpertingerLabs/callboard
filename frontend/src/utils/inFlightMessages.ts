@@ -9,6 +9,7 @@
  * and are where the "a message vanished" bugs come from.
  */
 import type { ParsedMessage } from "../api";
+import { splitAttachmentBlocks } from "shared/types/index.js";
 
 /**
  * A user message rendered before the server's transcript accounts for it.
@@ -19,6 +20,8 @@ export interface InFlightMessage {
   key: string;
   text: string;
   imageUrls: string[];
+  /** Names of attached files that are not images, which have no preview. */
+  fileNames?: string[];
 }
 
 let keySeq = 0;
@@ -74,7 +77,9 @@ function userEntries(messages: ParsedMessage[]): UserEntry[] {
   return messages
     .filter((m) => m.role === "user" && m.type === "text")
     .map((m) => {
-      const text = (m.content ?? "").trim();
+      // The transcript carries non-image attachments as blocks after the
+      // typed text; the optimistic bubble only ever had the typed text.
+      const text = splitAttachmentBlocks(m.content ?? "").text.trim();
       return { text, command: m.isBuiltInCommand ? collapsed(text) : null };
     });
 }

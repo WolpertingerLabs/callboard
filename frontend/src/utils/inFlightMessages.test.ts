@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ParsedMessage } from "../api";
+import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
 import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightList, visibleInFlight, type InFlightMessage } from "./inFlightMessages";
 
 const pending = (...texts: string[]): InFlightMessage[] => texts.map((text) => ({ key: nextInFlightKey(), text, imageUrls: [] }));
@@ -167,5 +168,14 @@ describe("endsWithInterruptMarker", () => {
   it("is false for an empty or uninterrupted transcript", () => {
     expect(endsWithInterruptMarker([])).toBe(false);
     expect(endsWithInterruptMarker([user("hi"), assistant("done")])).toBe(false);
+  });
+});
+
+describe("file attachments", () => {
+  it("settles a message once the transcript shows it with its attachment blocks appended", () => {
+    const sent = appendAttachmentBlocks("see attached", [
+      formatAttachmentBlock({ id: "a", name: "a.txt", path: "/x/a.txt", size: 1, mimeType: "text/plain" }, { content: "a" }),
+    ]);
+    expect(visibleInFlight(pending("see attached"), [user(sent)])).toEqual([]);
   });
 });

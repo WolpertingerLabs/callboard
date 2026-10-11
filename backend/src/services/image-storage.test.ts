@@ -74,3 +74,44 @@ describe("storeBase64Image", () => {
     expect(vi.mocked(fs.readFileSync)).not.toHaveBeenCalled();
   });
 });
+
+describe("file attachments", () => {
+  it("stores a non-image under its name and loads it back as a named attachment", async () => {
+    const result = await ImageStorageService.storeImage(Buffer.from("a,b\n1,2\n"), "my report (v2).csv", "text/csv");
+    expect(result.success).toBe(true);
+    const id = result.image!.id;
+    expect(fileFor(id)).toBe(`${id}_my_report_v2_.csv`);
+
+    const [loaded] = ImageStorageService.loadImageBuffers([id]);
+    expect(loaded).toMatchObject({ id, name: "my_report_v2_.csv", mimeType: "text/csv", storagePath: join(imagesDir, `${id}_my_report_v2_.csv`) });
+    expect(ImageStorageService.getImage(id)!.image.originalName).toBe("my_report_v2_.csv");
+  });
+
+  it("never reads a file attachment back as an image, whatever its extension", async () => {
+    const result = await ImageStorageService.storeImage(Buffer.from("not really"), "fake.png", "application/octet-stream");
+    const [loaded] = ImageStorageService.loadImageBuffers([result.image!.id]);
+    expect(loaded.name).toBe("fake.png");
+    expect(loaded.mimeType).toBe("application/octet-stream");
+  });
+
+  it("keeps images as they were: no name, image type", async () => {
+    const result = await ImageStorageService.storeImage(Buffer.from("png-bytes"), "shot.png", "image/png");
+    const [loaded] = ImageStorageService.loadImageBuffers([result.image!.id]);
+    expect(loaded.name).toBeUndefined();
+    expect(loaded.mimeType).toBe("image/png");
+  });
+
+  it("holds images to 10MB but other files to 25MB", async () => {
+    const elevenMb = Buffer.alloc(11 * 1024 * 1024);
+    expect((await ImageStorageService.storeImage(elevenMb, "big.png", "image/png")).success).toBe(false);
+    expect((await ImageStorageService.storeImage(elevenMb, "big.bin", "application/octet-stream")).success).toBe(true);
+    expect((await ImageStorageService.storeImage(Buffer.alloc(26 * 1024 * 1024), "huge.bin", "application/octet-stream")).success).toBe(false);
+  });
+
+  it("does not dedup a base64 image onto a file attachment with the same bytes", async () => {
+    const file = await ImageStorageService.storeImage(Buffer.from("shared-bytes"), "same.txt", "text/plain");
+    const imageId = storeBase64Image(b64("shared-bytes"), "image/png");
+    expect(imageId).not.toBe(file.image!.id);
+    expect(fileFor(imageId!)).toBe(`${imageId}.png`);
+  });
+});

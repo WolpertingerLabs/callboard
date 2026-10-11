@@ -58,7 +58,7 @@ streamRouter.post("/new/message", async (req, res) => {
             defaultPermissions: { type: "object", description: "Default tool permissions (fileRead, fileWrite, codeExecution, webAccess — each one of allow, deny, or ask)" },
             modelReview: { type: "boolean", description: "Screen every permission ask with a one-shot model safety reviewer before it reaches a person (approve is final, deny returns to the agent, escalate passes on). Not applied to Codex. Persisted for the chat. Default: false." },
             parentAnswers: { type: "boolean", description: "Also offer permission prompts to the parent chat (needs parentChatId); it may answer within its own permissions, first answer wins. Persisted for the chat. Default: false." },
-            imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image IDs to attach" },
+            imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image/file IDs to attach. Images are sent as images; other files are inlined into the prompt when small text, otherwise referenced by their stored path" },
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             systemPrompt: { type: "string", description: "Custom system prompt appended to the Claude Code preset system prompt" },
@@ -375,7 +375,7 @@ streamRouter.post("/:id/message", async (req, res) => {
           required: ["prompt"],
           properties: {
             prompt: { type: "string", description: "The user message to send" },
-            imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image IDs to attach" },
+            imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image/file IDs to attach. Images are sent as images; other files are inlined into the prompt when small text, otherwise referenced by their stored path" },
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
             acknowledgeBranchDrift: { type: "boolean", description: "Acknowledge and proceed despite branch drift (branch changed since last message)" },
