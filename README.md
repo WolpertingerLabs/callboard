@@ -216,6 +216,12 @@ Both modes use the same encrypted, signed protocol.
 
   Enrolled callers are listed on the same page with their fingerprints and bound agents, and can be deleted there.
 
+### Audit log
+
+Callboard ships a record of every model safety review to Drawlatch's `ingest_logs` tool (OTLP log data model, JSON encoding): `permission.review.requested` when a screen takes a permission ask, and `permission.review.result` with the verdict and what happened next. The two share a trace id. Records go out as the chat's own caller (an agent's caller, else the default caller), in batches about once a second. Drawlatch stores them append-only, so an agent on this machine can add records but cannot erase or rewrite ones already sent. Lost records (queue overflow, a hub that stayed down, records the hub rejected) are counted and reported in a `callboard.audit.dropped` record on the next batch. Records still queued in memory when Callboard dies are lost.
+
+An older Drawlatch without `ingest_logs` disables the audit log for that caller and re-probes every 10 minutes. Set `CALLBOARD_AUDIT_LOG=off` to turn it off. It is on whenever a proxy is configured, and no agent-facing tool can reach `ingest_logs`.
+
 ## CLI
 
 ```
@@ -247,6 +253,7 @@ Callboard reads `~/.callboard/.env`. If the package root also has a `.env`, its 
 | `CALLBOARD_DATA_DIR`               | `~/.callboard`                         | All stored data. Process environment only                                                |
 | `CALLBOARD_WORKSPACES_DIR`         | `$CALLBOARD_DATA_DIR/agent-workspaces` | Where agent workspaces live. Process environment only                                    |
 | `CALLBOARD_MAX_BACKGROUND_HOLD_MS` | `900000` (15 min)                      | How long a finished turn waits on its backgrounded shell tasks. Process environment only |
+| `CALLBOARD_AUDIT_LOG`              | on                                     | `off` (or `0`/`false`) stops shipping review records to Drawlatch (see Audit log)        |
 
 Variables marked **process environment only** must be set in the daemon's environment (for example `SESSION_COOKIE_NAME=x callboard start`); a value in `.env` is ignored. `CALLBOARD_DATA_DIR` decides which `.env` is read, so it can't be set inside one. The others are read while the server's modules load, before `.env` is applied. The data directory holds everything: chats, agents, jobs, workspaces, storage, artifacts, settings (`agent-settings.json`), API keys, themes, logs and the PID file.
 

@@ -248,7 +248,9 @@ export interface AuditLogDeps {
 }
 
 const defaultDeps: AuditLogDeps = {
-  getProxy,
+  // Looked up per call, not captured at import: a test that mocks
+  // proxy-singleton without `getProxy` must still be able to import this.
+  getProxy: (alias) => getProxy(alias),
   now: () => Date.now(),
   sleep: (ms) => new Promise((r) => setTimeout(r, ms).unref?.()),
 };
