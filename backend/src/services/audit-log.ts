@@ -112,6 +112,12 @@ export type AttrValue = string | number | boolean | null | undefined;
 
 /** What a record factory produces. Ids/time are filled from the emit call when absent. */
 export interface AuditRecordInput {
+  /**
+   * When the event happened (ms since epoch). Defaults to when it was queued.
+   * A caller that hands records over asynchronously sets it so the record
+   * carries the decision's time, not the hand-over's.
+   */
+  timeMs?: number;
   eventName: string;
   severity: "INFO" | "WARN";
   body: string;
@@ -220,12 +226,25 @@ interface QueuedRecord {
 
 type DropReason = "overflow" | "send_failed" | "build_failed" | "rejected" | "hub_unsupported";
 
-interface DropTally {
-  count: number;
-  reasons: Partial<Record<DropReason, number>>;
+/** When the lost records were emitted. */
+interface DropWindow {
   firstMs: number;
   lastMs: number;
 }
+
+interface DropTally extends DropWindow {
+  count: number;
+  reasons: Partial<Record<DropReason, number>>;
+  /**
+   * The window of drops counted since the in-flight batch snapshotted this
+   * tally. When that batch succeeds and its snapshot is subtracted, whatever
+   * count remains was counted in exactly this window.
+   */
+  sinceSnapshot: DropWindow | null;
+}
+
+/** The counts one batch reports — frozen when the batch is built. */
+type DropSnapshot = Pick<DropTally, "count" | "reasons" | "firstMs" | "lastMs">;
 
 interface AliasState {
   /** While set and in the future, the hub lacks ingest_logs: records are dropped, not queued. */
@@ -240,6 +259,8 @@ const aliases = new Map<string, AliasState>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight: Promise<void> | null = null;
 let stopped = false;
+/** Records in the batch being sent right now (for the shutdown "unsent" count). */
+let inFlightRecords = 0;
 
 export interface AuditLogDeps {
   getProxy: (alias: string) => ProxyLike | null;
@@ -271,14 +292,59 @@ function aliasState(alias: string): AliasState {
   return s;
 }
 
-function countDropped(alias: string, reason: DropReason, n: number, atMs: number): void {
+/** Count `n` lost records for `alias`, emitted between `firstMs` and `lastMs`. */
+function countDropped(alias: string, reason: DropReason, n: number, firstMs: number, lastMs = firstMs): void {
   if (n <= 0) return;
   const s = aliasState(alias);
-  const d = (s.dropped ??= { count: 0, reasons: {}, firstMs: atMs, lastMs: atMs });
+  const d = (s.dropped ??= { count: 0, reasons: {}, firstMs, lastMs, sinceSnapshot: null });
   d.count += n;
   d.reasons[reason] = (d.reasons[reason] ?? 0) + n;
-  d.firstMs = Math.min(d.firstMs, atMs);
-  d.lastMs = Math.max(d.lastMs, atMs);
+  d.firstMs = Math.min(d.firstMs, firstMs);
+  d.lastMs = Math.max(d.lastMs, lastMs);
+  d.sinceSnapshot = d.sinceSnapshot ? { firstMs: Math.min(d.sinceSnapshot.firstMs, firstMs), lastMs: Math.max(d.sinceSnapshot.lastMs, lastMs) } : { firstMs, lastMs };
+}
+
+/** Freeze the counts a batch reports, and start tracking what is counted after. */
+function snapshotDropped(s: AliasState): DropSnapshot | null {
+  const d = s.dropped;
+  if (!d) return null;
+  d.sinceSnapshot = null;
+  return { count: d.count, reasons: { ...d.reasons }, firstMs: d.firstMs, lastMs: d.lastMs };
+}
+
+/**
+ * The batch carrying `sent` was stored: subtract exactly those counts. Any
+ * remainder was counted while the batch was in flight, so its window is
+ * `sinceSnapshot`.
+ */
+function settleDropped(s: AliasState, sent: DropSnapshot): void {
+  const d = s.dropped;
+  if (!d) return;
+  d.count -= sent.count;
+  for (const [reason, n] of Object.entries(sent.reasons) as [DropReason, number][]) {
+    const left = (d.reasons[reason] ?? 0) - n;
+    if (left > 0) d.reasons[reason] = left;
+    else delete d.reasons[reason];
+  }
+  if (d.count <= 0) {
+    s.dropped = null;
+    return;
+  }
+  if (d.sinceSnapshot) {
+    d.firstMs = d.sinceSnapshot.firstMs;
+    d.lastMs = d.sinceSnapshot.lastMs;
+  }
+}
+
+/** Earliest and latest emit time of some queued records. */
+function windowOf(records: readonly { timeMs: number }[]): DropWindow {
+  let firstMs = Infinity;
+  let lastMs = -Infinity;
+  for (const r of records) {
+    firstMs = Math.min(firstMs, r.timeMs);
+    lastMs = Math.max(lastMs, r.timeMs);
+  }
+  return { firstMs, lastMs };
 }
 
 // ── Emit ────────────────────────────────────────────────────────────
@@ -351,8 +417,9 @@ async function flushAll(): Promise<void> {
     const s = aliasState(alias);
     // Disabled since these were queued: count them, keep the rest moving.
     if (s.disabledUntil > now) {
-      const n = takeForAlias(alias, Infinity).length;
-      countDropped(alias, "hub_unsupported", n, now);
+      const lost = takeForAlias(alias, Infinity);
+      const w = windowOf(lost);
+      countDropped(alias, "hub_unsupported", lost.length, w.firstMs, w.lastMs);
       continue;
     }
     const taken = takeForAlias(alias, MAX_BATCH);
@@ -370,13 +437,17 @@ function takeForAlias(alias: string, max: number): QueuedRecord[] {
   return taken;
 }
 
-function buildRecords(alias: string, taken: QueuedRecord[], observedMs: number): OtlpLogRecord[] {
-  const records: OtlpLogRecord[] = [];
+/** Build the batch's records. Each comes back with its event time, for loss windows. */
+function buildRecords(alias: string, taken: QueuedRecord[], observedMs: number): { record: OtlpLogRecord; timeMs: number }[] {
+  const records: { record: OtlpLogRecord; timeMs: number }[] = [];
   let bytes = 0;
   for (let i = 0; i < taken.length; i++) {
     let record: OtlpLogRecord;
+    let timeMs = taken[i].timeMs;
     try {
-      record = toOtlpRecord(taken[i].build(), taken[i].timeMs, observedMs);
+      const input = taken[i].build();
+      if (typeof input.timeMs === "number" && Number.isFinite(input.timeMs)) timeMs = input.timeMs;
+      record = toOtlpRecord(input, timeMs, observedMs);
     } catch (err) {
       log.warn(`audit record for ${alias} could not be built: ${err}`);
       countDropped(alias, "build_failed", 1, taken[i].timeMs);
@@ -389,12 +460,12 @@ function buildRecords(alias: string, taken: QueuedRecord[], observedMs: number):
       break;
     }
     bytes += size;
-    records.push(record);
+    records.push({ record, timeMs });
   }
   return records;
 }
 
-function droppedRecord(d: DropTally, observedMs: number): OtlpLogRecord {
+function droppedRecord(d: DropSnapshot, observedMs: number): OtlpLogRecord {
   const attributes: Record<string, AttrValue> = {
     "callboard.audit.dropped.count": d.count,
     "callboard.audit.dropped.window_start_unix_ms": d.firstMs,
@@ -426,11 +497,25 @@ function rejectedCount(result: unknown): { rejected: number; message?: string } 
 }
 
 async function sendBatch(alias: string, taken: QueuedRecord[]): Promise<void> {
+  inFlightRecords = taken.length;
+  try {
+    await sendBuiltBatch(alias, taken);
+  } finally {
+    inFlightRecords = 0;
+  }
+}
+
+async function sendBuiltBatch(alias: string, taken: QueuedRecord[]): Promise<void> {
   const observedMs = deps.now();
-  const records = buildRecords(alias, taken, observedMs);
+  const built = buildRecords(alias, taken, observedMs);
+  const records = built.map((b) => b.record);
+  // When this batch's records were emitted: the loss window if it is lost.
+  const batchWindow = windowOf(built);
   const s = aliasState(alias);
-  // The dropped tally travels with this batch; it is cleared only on success.
-  const dropped = s.dropped;
+  // The batch reports a frozen snapshot of the losses so far. Losses counted
+  // while it is in flight go on the live tally; success subtracts exactly the
+  // snapshot, so they are reported by the next batch, not erased.
+  const dropped = snapshotDropped(s);
   if (records.length === 0 && !dropped) return;
   const sentRecords = dropped ? [droppedRecord(dropped, observedMs), ...records] : records;
   const body: IngestLogsInput = {
@@ -448,9 +533,7 @@ async function sendBatch(alias: string, taken: QueuedRecord[]): Promise<void> {
     if (proxy) {
       try {
         const result = await proxy.callTool("ingest_logs", body as unknown as Record<string, unknown>, { signal: AbortSignal.timeout(SEND_TIMEOUT_MS) });
-        // Success. Anything counted while this was in flight stays for the next batch.
-        if (dropped && s.dropped === dropped) s.dropped = null;
-        else if (dropped && s.dropped) subtractTally(s.dropped, dropped);
+        if (dropped) settleDropped(s, dropped);
         if (s.loggedUnsupported) {
           log.info(`[${alias}] drawlatch accepts ingest_logs again — audit log re-enabled`);
           s.loggedUnsupported = false;
@@ -458,7 +541,8 @@ async function sendBatch(alias: string, taken: QueuedRecord[]): Promise<void> {
         const { rejected, message } = rejectedCount(result);
         if (rejected > 0) {
           log.warn(`[${alias}] drawlatch rejected ${rejected} audit record(s): ${message ?? "no reason given"}`);
-          countDropped(alias, "rejected", rejected, observedMs);
+          // drawlatch does not say which ones, so the window is the whole batch's.
+          countDropped(alias, "rejected", rejected, batchWindow.firstMs, batchWindow.lastMs);
         }
         return;
       } catch (e) {
@@ -476,24 +560,16 @@ async function sendBatch(alias: string, taken: QueuedRecord[]): Promise<void> {
       } else {
         log.debug(`[${alias}] re-probe: drawlatch still has no ingest_logs`);
       }
-      countDropped(alias, "hub_unsupported", records.length, observedMs);
+      countDropped(alias, "hub_unsupported", records.length, batchWindow.firstMs, batchWindow.lastMs);
       return;
     }
     if (attempt === MAX_SEND_ATTEMPTS || stopped) {
       log.warn(`[${alias}] audit batch of ${records.length} record(s) dropped after ${attempt} attempt(s): ${err instanceof Error ? err.message : String(err)}`);
-      countDropped(alias, "send_failed", records.length, observedMs);
+      countDropped(alias, "send_failed", records.length, batchWindow.firstMs, batchWindow.lastMs);
       return;
     }
     log.debug(`[${alias}] audit send failed (attempt ${attempt}/${MAX_SEND_ATTEMPTS}): ${err instanceof Error ? err.message : String(err)}`);
     await deps.sleep(RETRY_BASE_MS * 2 ** (attempt - 1));
-  }
-}
-
-function subtractTally(current: DropTally, sent: DropTally): void {
-  current.count -= sent.count;
-  for (const [reason, n] of Object.entries(sent.reasons) as [DropReason, number][]) {
-    current.reasons[reason] = (current.reasons[reason] ?? 0) - n;
-    if (!current.reasons[reason]) delete current.reasons[reason];
   }
 }
 
@@ -527,13 +603,18 @@ export async function shutdownAuditLog(timeoutMs = 3000): Promise<void> {
       if (queue.length > 0) await runFlush();
     })();
     const timedOut = await Promise.race([flushed.then(() => false), new Promise<boolean>((r) => (timer = setTimeout(() => r(true), timeoutMs)))]);
-    if (timedOut) log.warn(`audit log shutdown: gave up after ${timeoutMs}ms with ${queue.length} record(s) unsent`);
+    if (timedOut) log.warn(`audit log shutdown: gave up after ${timeoutMs}ms with ${unsentCount()} record(s) unsent`);
     else if (pending > 0) log.info(`audit log shutdown: flushed ${pending} queued record(s)`);
   } catch (err) {
     log.warn(`audit log shutdown flush failed: ${err}`);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** Records not yet stored: queued, plus the batch being sent. */
+export function unsentCount(): number {
+  return queue.length + inFlightRecords;
 }
 
 /** Flush now and wait for it. For tests and the shutdown path. */
@@ -551,6 +632,7 @@ export function __resetAuditLogForTests(overrides: Partial<AuditLogDeps> = {}): 
   if (flushTimer) clearTimeout(flushTimer);
   flushTimer = null;
   inFlight = null;
+  inFlightRecords = 0;
   stopped = false;
   queue.length = 0;
   aliases.clear();

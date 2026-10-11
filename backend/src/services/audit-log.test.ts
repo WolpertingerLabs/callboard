@@ -20,6 +20,7 @@ import {
   RETRY_BASE_MS,
   shutdownAuditLog,
   truncateUtf8,
+  unsentCount,
   type AuditRecordInput,
   type IngestLogsInput,
   type OtlpLogRecord,
@@ -178,6 +179,54 @@ describe("emit never throws and never blocks", () => {
 });
 
 describe("loss is visible downstream", () => {
+  /** Sum of every dropped count drawlatch received, per reason. */
+  function deliveredDrops(calls: IngestLogsInput[]): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const r of calls.flatMap(recordsOf).filter((x) => x.eventName === AUDIT_DROPPED_EVENT)) {
+      for (const a of r.attributes) {
+        const m = /^callboard\.audit\.dropped\.(count|overflow|send_failed|build_failed|rejected|hub_unsupported)$/.exec(a.key);
+        if (m) out[m[1]] = (out[m[1]] ?? 0) + Number((a.value as { intValue: string }).intValue);
+      }
+    }
+    return out;
+  }
+
+  it("drops counted while a tally-carrying batch is in flight survive that batch's success (review B1)", async () => {
+    // 1. Hub down: the first batch exhausts its retries → send_failed=1.
+    // 2. Hub back but slow: the next batch carries that tally and hangs.
+    // 3. Meanwhile the queue fills and 7 records overflow.
+    // 4. The slow batch succeeds. All 8 losses must reach drawlatch.
+    let mode: "down" | "slow" | "up" = "down";
+    let releaseSlow!: () => void;
+    const delivered: IngestLogsInput[] = [];
+    setup(async (input) => {
+      if (mode === "down") throw new Error("fetch failed");
+      if (mode === "slow") await new Promise<void>((r) => (releaseSlow = r));
+      delivered.push(input);
+      return {};
+    });
+    emitAuditRecord("alice", rec(1));
+    await flushAuditLog();
+
+    mode = "slow";
+    emitAuditRecord("alice", rec(2));
+    const slowFlush = flushAuditLog();
+    await vi.waitFor(() => expect(releaseSlow).toBeTypeOf("function"));
+    for (let i = 0; i < MAX_QUEUE + 7; i++) emitAuditRecord("alice", rec(100 + i));
+    expect(__auditQueueLength()).toBe(MAX_QUEUE);
+
+    mode = "up";
+    releaseSlow();
+    await slowFlush;
+    await flushAuditLog();
+
+    expect(deliveredDrops(delivered)).toEqual({ count: 8, send_failed: 1, overflow: 7 });
+    // ...and each loss is reported exactly once: nothing is left to report.
+    emitAuditRecord("alice", rec(9999));
+    await flushAuditLog();
+    expect(recordsOf(delivered.at(-1)!).map((r) => r.eventName)).toEqual(["test.event"]);
+  });
+
   it("overflow drops new records and the next successful batch carries a dropped record with count and window", async () => {
     const { calls } = setup();
     for (let i = 0; i < MAX_QUEUE; i++) emitAuditRecord("alice", rec(i));
@@ -202,6 +251,89 @@ describe("loss is visible downstream", () => {
     emitAuditRecord("alice", rec(1));
     await flushAuditLog();
     expect(recordsOf(calls.at(-1)!).map((r) => r.eventName)).toEqual(["test.event"]);
+  });
+
+  it("a delivered snapshot is subtracted exactly: in-flight losses are reported next, with their own window", async () => {
+    let mode: "down" | "slow" | "up" = "down";
+    let releaseSlow!: () => void;
+    const delivered: IngestLogsInput[] = [];
+    setup(async (input) => {
+      if (mode === "down") throw new Error("fetch failed");
+      if (mode === "slow") await new Promise<void>((r) => (releaseSlow = r));
+      delivered.push(input);
+      return {};
+    });
+    const t0 = now;
+    emitAuditRecord("alice", rec(1)); // lost to send_failed, emitted at t0
+    await flushAuditLog();
+
+    now = t0 + 60_000;
+    mode = "slow";
+    emitAuditRecord("alice", rec(2));
+    const slowFlush = flushAuditLog();
+    await vi.waitFor(() => expect(releaseSlow).toBeTypeOf("function"));
+    // Two overflow losses while the batch carrying send_failed=1 is in flight.
+    for (let i = 0; i < MAX_QUEUE; i++) emitAuditRecord("alice", rec(100 + i));
+    now = t0 + 70_000;
+    emitAuditRecord("alice", rec(-1));
+    now = t0 + 80_000;
+    emitAuditRecord("alice", rec(-2));
+    mode = "up";
+    releaseSlow();
+    await slowFlush;
+    await flushAuditLog();
+
+    const reports = delivered.flatMap(recordsOf).filter((r) => r.eventName === AUDIT_DROPPED_EVENT);
+    expect(reports).toHaveLength(2);
+    const [first, second] = reports;
+    expect(attr(first, "callboard.audit.dropped.count")).toEqual({ intValue: "1" });
+    expect(attr(first, "callboard.audit.dropped.send_failed")).toEqual({ intValue: "1" });
+    expect(attr(first, "callboard.audit.dropped.window_start_unix_ms")).toEqual({ intValue: String(t0) });
+    // Only the in-flight losses remain: send_failed subtracted, window is theirs alone.
+    expect(attr(second, "callboard.audit.dropped.count")).toEqual({ intValue: "2" });
+    expect(attr(second, "callboard.audit.dropped.overflow")).toEqual({ intValue: "2" });
+    expect(attr(second, "callboard.audit.dropped.send_failed")).toBeUndefined();
+    expect(attr(second, "callboard.audit.dropped.window_start_unix_ms")).toEqual({ intValue: String(t0 + 70_000) });
+    expect(attr(second, "callboard.audit.dropped.window_end_unix_ms")).toEqual({ intValue: String(t0 + 80_000) });
+  });
+
+  it("the window of a failed batch is when its records were emitted, not when it was sent", async () => {
+    let down = true;
+    const { calls } = setup(async () => {
+      if (down) throw new Error("fetch failed");
+      return {};
+    });
+    const t0 = now;
+    emitAuditRecord("alice", rec(1));
+    now = t0 + 5_000;
+    emitAuditRecord("alice", rec(2));
+    now = t0 + 30_000; // queued behind a long retry storm before this batch goes out
+    await flushAuditLog();
+    down = false;
+    emitAuditRecord("alice", rec(3));
+    await flushAuditLog();
+    const d = recordsOf(calls.at(-1)!)[0];
+    expect(attr(d, "callboard.audit.dropped.send_failed")).toEqual({ intValue: "2" });
+    expect(attr(d, "callboard.audit.dropped.window_start_unix_ms")).toEqual({ intValue: String(t0) });
+    expect(attr(d, "callboard.audit.dropped.window_end_unix_ms")).toEqual({ intValue: String(t0 + 5_000) });
+  });
+
+  it("a record's own timeMs is its event time and its loss window", async () => {
+    let down = true;
+    const { calls } = setup(async () => {
+      if (down) throw new Error("fetch failed");
+      return {};
+    });
+    const decidedAt = now - 2_000;
+    emitAuditRecord("alice", rec(1, { timeMs: decidedAt }));
+    await flushAuditLog();
+    down = false;
+    emitAuditRecord("alice", rec(2, { timeMs: decidedAt + 1 }));
+    await flushAuditLog();
+    const [d, r] = recordsOf(calls.at(-1)!);
+    expect(attr(d, "callboard.audit.dropped.window_start_unix_ms")).toEqual({ intValue: String(decidedAt) });
+    expect(r.timeUnixNano).toBe(`${decidedAt + 1}000000`);
+    expect(r).not.toHaveProperty("timeMs");
   });
 
   it("retries a failed send with exponential backoff, then succeeds without loss", async () => {
@@ -322,6 +454,31 @@ describe("shutdown", () => {
     expect(calls).toHaveLength(1);
     emitAuditRecord("alice", rec(2)); // ignored after shutdown
     expect(__auditQueueLength()).toBe(0);
+  });
+
+  it("counts the batch in flight as unsent, not just the queue", async () => {
+    setup(() => new Promise(() => {}));
+    emitAuditRecord("alice", rec(1));
+    emitAuditRecord("alice", rec(2));
+    void flushAuditLog();
+    await vi.waitFor(() => expect(__auditQueueLength()).toBe(0));
+    expect(unsentCount()).toBe(2);
+  });
+
+  it("a shutdown during backoff drops the batch at its next failure instead of retrying on", async () => {
+    let shutdown: Promise<void> | undefined;
+    sleep.mockImplementationOnce(async () => {
+      shutdown = shutdownAuditLog(1000); // marks stopped synchronously
+    });
+    const { callTool, calls } = setup(async () => {
+      throw new Error("fetch failed");
+    });
+    emitAuditRecord("alice", rec(1));
+    await flushAuditLog();
+    await shutdown;
+    expect(callTool).toHaveBeenCalledTimes(2); // not MAX_SEND_ATTEMPTS
+    expect(calls).toHaveLength(2);
+    expect(MAX_SEND_ATTEMPTS).toBeGreaterThan(2);
   });
 
   it("gives up after the bounded wait when the hub never answers", async () => {
