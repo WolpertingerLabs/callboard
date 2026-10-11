@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __auditQueueLength,
+  __auditTimersArmed,
   __resetAuditLogForTests,
   AUDIT_DROPPED_EVENT,
   AUDIT_SCOPE_NAME,
@@ -470,6 +471,26 @@ describe("loss is visible downstream", () => {
     expect(recordsOf(callTool.mock.calls.at(-1)![1] as never).map((r: OtlpLogRecord) => r.eventName)).toEqual(["test.event"]);
   });
 
+  it("a restarting hub ('server shutting down; retry after restart') is retried for 30 s — not lost, not unsupported (review round 4, NIT 3)", async () => {
+    let failures = MAX_SEND_ATTEMPTS - 1; // fails every attempt but the last
+    const { calls } = setup(async () => {
+      if (failures-- > 0) throw new Error("ingest_logs: server shutting down; retry after restart");
+      return {};
+    });
+    emitAuditRecord("alice", rec(1));
+    await flushAuditLog();
+    const waits = sleep.mock.calls.map(([ms]) => ms);
+    expect(waits).toEqual([RETRY_BASE_MS, RETRY_BASE_MS * 2, RETRY_BASE_MS * 4, RETRY_BASE_MS * 8]);
+    expect(waits.reduce((a, b) => a + b, 0)).toBe(30_000); // covers drawlatch's ~15 s stop + start
+    expect(dataCalls(calls)).toHaveLength(MAX_SEND_ATTEMPTS);
+    expect(reportsIn(calls)).toEqual([]); // nothing was lost
+    // The normal retry path, not the "Unknown tool" one: the caller is not disabled.
+    emitAuditRecord("alice", rec(2));
+    expect(__auditQueueLength()).toBe(1);
+    await flushAuditLog();
+    expect(recordsOf(calls.at(-1)!).map((r) => attr(r, "n"))).toEqual([{ intValue: "2" }]);
+  });
+
   it("a batch that exhausts its retries is dropped and reported on the next success", async () => {
     let down = true;
     const { calls } = setup(async () => {
@@ -581,7 +602,10 @@ describe("report retries run on their own timer", () => {
    */
   function timedHubs(aliasNames: string[]) {
     vi.useFakeTimers({ now: 1_760_000_000_000 });
-    const hubs = new Map<string, { refuseReports: boolean; hangReports?: boolean; calls: IngestLogsInput[]; stored: OtlpLogRecord[] }>();
+    const hubs = new Map<
+      string,
+      { refuseReports: boolean; hangReports?: boolean; reportLatencyMs?: number; unsupportedDataOnce?: boolean; calls: IngestLogsInput[]; stored: OtlpLogRecord[] }
+    >();
     for (const a of aliasNames) hubs.set(a, { refuseReports: false, calls: [], stored: [] });
     __resetAuditLogForTests({
       getProxy: (alias) => ({
@@ -590,6 +614,11 @@ describe("report retries run on their own timer", () => {
           const body = input as unknown as IngestLogsInput;
           hub.calls.push(body);
           if (hub.hangReports && isReportCall(body)) return new Promise(() => {});
+          if (hub.reportLatencyMs && isReportCall(body)) await new Promise((r) => setTimeout(r, hub.reportLatencyMs));
+          if (hub.unsupportedDataOnce && !isReportCall(body)) {
+            hub.unsupportedDataOnce = false;
+            throw new Error("Unknown tool: ingest_logs"); // e.g. the hub was rolled back, then forward again
+          }
           if (hub.refuseReports && isReportCall(body)) return { partialSuccess: { rejectedLogRecords: 1, errorMessage: "rejected: audit byte budget exhausted" } };
           hub.stored.push(...recordsOf(body));
           return {};
@@ -663,6 +692,69 @@ describe("report retries run on their own timer", () => {
     hub.refuseReports = false;
     await vi.advanceTimersByTimeAsync(RETRY_BASE_MS); // the scheduled retry, no emit, no flush call
     expect(storedDropsIn(hub.stored)).toEqual({ count: 1, build_failed: 1 });
+  });
+
+  it("a report timer that fires before its alias is due re-arms: alias disabled after the timer was set (review round 4, S1a)", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1); // report refused; its retry timer is armed for +2 s
+    hub.refuseReports = false;
+    hub.unsupportedDataOnce = true;
+    emitAuditRecord("a", rec(1));
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS); // that batch hits "Unknown tool": a disabled for 10 min
+    expect(hub.calls.filter(isReportCall)).toHaveLength(1);
+    // The +2 s timer fires with nothing due. Nothing new is emitted after this.
+    await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS + 5_000);
+    expect(storedDropsIn(hub.stored)).toEqual({ count: 2, build_failed: 1, hub_unsupported: 1 });
+  });
+
+  it("a report timer that fires before its alias is due re-arms: wall clock stepped back (review round 4, S1b)", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1); // refused; retryAt = now + 2 s by the wall clock
+    hub.refuseReports = false;
+    vi.setSystemTime(Date.now() - 5_000); // NTP step back; timers keep monotonic time
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(storedDropsIn(hub.stored)).toEqual({ count: 1, build_failed: 1 });
+  });
+
+  it("an in-flight report chain makes at most one more attempt once shutdown begins, and none after it returns (review round 4, NIT 1)", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    hub.reportLatencyMs = 400;
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1); // attempt 1 is out (400 ms)
+    expect(hub.calls.filter(isReportCall)).toHaveLength(1);
+    const shutdown = shutdownAuditLog(1000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await shutdown;
+    const atReturn = hub.calls.filter(isReportCall).length;
+    expect(atReturn).toBeLessThanOrEqual(2); // the in-flight one + one last try
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(hub.calls.filter(isReportCall)).toHaveLength(atReturn);
+  });
+
+  it("nothing is left scheduled after shutdown, and nothing fires in the hour after (review round 4, NIT 2)", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1); // refused; the report timer is armed for its retry
+    expect(__auditTimersArmed()).toEqual({ flush: false, report: true });
+    await shutdownAuditLog(1000); // its last try is refused too
+    expect(__auditTimersArmed()).toEqual({ flush: false, report: false });
+    const atReturn = hub.calls.length;
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(hub.calls).toHaveLength(atReturn);
   });
 
   it("shutdown gives a report that is backing off its last try (review round 3, S2)", async () => {

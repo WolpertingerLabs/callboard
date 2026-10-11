@@ -65,9 +65,15 @@ export const MAX_BATCH = 100;
 export const MAX_BATCH_BYTES = 1024 * 1024;
 /** A flush runs at most this long after the first queued record. */
 export const FLUSH_INTERVAL_MS = 1000;
-/** Send attempts for one batch before it is dropped. ProxyClient already retries transport errors inside each. */
-export const MAX_SEND_ATTEMPTS = 4;
-/** Backoff before attempt n+1 is BASE * 2^(n-1): 2s, 4s, 8s. */
+/**
+ * Send attempts for one batch before it is dropped. ProxyClient already
+ * retries transport errors inside each. Five attempts wait 2+4+8+16 = 30 s in
+ * all — longer than a drawlatch restart (its stop can take ~15 s, answering
+ * "server shutting down; retry after restart" meanwhile), so a normal hub
+ * restart is not a loss.
+ */
+export const MAX_SEND_ATTEMPTS = 5;
+/** Backoff before attempt n+1 is BASE * 2^(n-1): 2s, 4s, 8s, 16s. */
 export const RETRY_BASE_MS = 2000;
 /** Loss-report attempts per alias in one run (a guard against a spin, not a policy). */
 const MAX_REPORTS_PER_FLUSH = 4;
@@ -290,6 +296,8 @@ let reportTimer: ReturnType<typeof setTimeout> | null = null;
 let reportTimerDue = Infinity;
 const reportChains = new Map<string, Promise<void>>();
 let stopped = false;
+/** Set when shutdownAuditLog returns: from then on no send or report attempt starts. */
+let closed = false;
 /** Records in the batch being sent right now (for the shutdown "unsent" count). */
 let inFlightRecords = 0;
 
@@ -505,8 +513,14 @@ function runReports(): Promise<void> {
         // A settled report can leave a remainder (counted while it was out),
         // due at once. Each attempt settles or backs off, so the cap only
         // turns a spin — if that ever stopped holding — into a deferred retry.
-        const cap = stopped ? 1 : MAX_REPORTS_PER_FLUSH;
-        for (let n = 0; n < cap && reportDueAt(s) <= deps.now(); n++) await reportDropped(alias, s);
+        // Once shutdown begins, at most one attempt STARTS (the last try); one
+        // already out may finish. Once it has returned, none starts at all.
+        let startedAfterStop = false;
+        for (let n = 0; n < MAX_REPORTS_PER_FLUSH && reportDueAt(s) <= deps.now(); n++) {
+          if (closed || (stopped && startedAfterStop)) break;
+          if (stopped) startedAfterStop = true;
+          await reportDropped(alias, s);
+        }
       } catch (err) {
         log.warn(`[${alias}] loss report failed: ${err}`);
       } finally {
@@ -516,6 +530,11 @@ function runReports(): Promise<void> {
     })();
     reportChains.set(alias, chain);
   }
+  // Re-arm for whatever is not running now. The timer can fire with nothing
+  // due — the alias was disabled after it was set, or the wall clock stepped
+  // back (setTimeout is monotonic, Date.now is not) — and must not strand a
+  // report until some new loss happens to schedule one.
+  scheduleReports();
   return Promise.all(reportChains.values()).then(() => undefined);
 }
 
@@ -715,6 +734,11 @@ async function sendBuiltBatch(alias: string, taken: QueuedRecord[]): Promise<voi
     }
     log.debug(`[${alias}] audit send failed (attempt ${attempt}/${MAX_SEND_ATTEMPTS}): ${err instanceof Error ? err.message : String(err)}`);
     await deps.sleep(RETRY_BASE_MS * 2 ** (attempt - 1));
+    if (closed) {
+      // Shutdown returned while this batch slept: start nothing more.
+      countDropped(alias, "send_failed", records.length, batchWindow.firstMs, batchWindow.lastMs);
+      return;
+    }
   }
 }
 
@@ -757,6 +781,7 @@ export async function shutdownAuditLog(timeoutMs = 3000): Promise<void> {
     log.warn(`audit log shutdown flush failed: ${err}`);
   } finally {
     if (timer) clearTimeout(timer);
+    closed = true;
   }
 }
 
@@ -792,11 +817,15 @@ export function __resetAuditLogForTests(overrides: Partial<AuditLogDeps> = {}): 
   inFlight = null;
   inFlightRecords = 0;
   stopped = false;
+  closed = false;
   queue.length = 0;
   aliases.clear();
   cachedResource = undefined;
   deps = { ...defaultDeps, ...overrides };
 }
+
+/** Test-only: which of this module's timers are armed. */
+export const __auditTimersArmed = (): { flush: boolean; report: boolean } => ({ flush: flushTimer !== null, report: reportTimer !== null });
 
 /** Test-only: queue length. */
 export const __auditQueueLength = (): number => queue.length;
