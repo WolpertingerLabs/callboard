@@ -26,7 +26,7 @@
  */
 import type { PermissionCategory } from "../agents/permissions/ToolPermissionPolicy.js";
 import { createLogger } from "../utils/logger.js";
-import { emitAuditRecord, newSpanId, newTraceId, truncateUtf8, type AttrValue, type AuditRecordInput } from "./audit-log.js";
+import { emitAuditRecord, MAX_STRING_BYTES, newSpanId, newTraceId, truncateUtf8, type AttrValue, type AuditRecordInput } from "./audit-log.js";
 import type { ReviewVerdict } from "./permission-review.js";
 
 const log = createLogger("permission-review-audit");
@@ -132,15 +132,116 @@ function lateAttributes(hooks: PermissionAuditHooks): Record<string, AttrValue> 
   }
 }
 
-function serializeInput(input: unknown): { json: string; bytes: number; truncated: boolean } {
+/** Nesting kept in a copied input; deeper values become a marker. */
+export const MAX_INPUT_DEPTH = 8;
+/** Array items / object keys kept per level of a copied input. */
+export const MAX_INPUT_ENTRIES = 256;
+
+/**
+ * Copy `input` to at most ~MAX_STRING_BYTES of JSON without serializing the
+ * whole of it. This runs on the decision path, so its cost must not grow with
+ * the input: strings are sliced to the remaining budget, arrays and objects
+ * stop at MAX_INPUT_ENTRIES or when the budget runs out, nesting stops at
+ * MAX_INPUT_DEPTH. Anything cut sets `truncated`; then `bytes` (the full size)
+ * is unknown and omitted rather than paid for.
+ */
+export function serializeInput(input: unknown): { json: string; bytes?: number; truncated: boolean } {
+  // Headroom under the hard limit for JSON punctuation and the cut marker, so
+  // the final byte guard rarely has to cut (and so the marker survives).
+  const budget = { left: MAX_STRING_BYTES - 1024, truncated: false };
   let json: string;
   try {
-    json = JSON.stringify(input) ?? "null";
+    json = JSON.stringify(boundedCopy(input, budget, 0)) ?? "null";
   } catch (err) {
     json = JSON.stringify({ unserializable: String(err) });
   }
+  // Escaping and multi-byte characters can still push past the byte limit.
   const { value, truncated } = truncateUtf8(json);
-  return { json: value, bytes: Buffer.byteLength(json, "utf8"), truncated };
+  const cut = budget.truncated || truncated;
+  return { json: value, truncated: cut, ...(!cut && { bytes: Buffer.byteLength(value, "utf8") }) };
+}
+
+const CUT = "…[truncated]";
+
+function boundedCopy(value: unknown, budget: { left: number; truncated: boolean }, depth: number): unknown {
+  if (budget.left <= 0) {
+    budget.truncated = true;
+    return CUT;
+  }
+  switch (typeof value) {
+    case "string": {
+      if (value.length <= budget.left) {
+        budget.left -= value.length + 2;
+        return value;
+      }
+      budget.truncated = true;
+      const kept = value.slice(0, budget.left);
+      budget.left = 0;
+      return kept + CUT;
+    }
+    case "number":
+    case "boolean":
+      budget.left -= 8;
+      return value;
+    case "bigint":
+      budget.left -= 8;
+      return String(value);
+    case "undefined":
+    case "function":
+    case "symbol":
+      return undefined; // as JSON.stringify drops them
+  }
+  if (value === null) {
+    budget.left -= 4;
+    return null;
+  }
+  if (depth >= MAX_INPUT_DEPTH) {
+    budget.truncated = true;
+    return CUT;
+  }
+  const obj = value as { toJSON?: () => unknown };
+  if (typeof obj.toJSON === "function") {
+    try {
+      return boundedCopy(obj.toJSON(), budget, depth + 1);
+    } catch {
+      return "[unreadable]";
+    }
+  }
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    const n = Math.min(value.length, MAX_INPUT_ENTRIES);
+    for (let i = 0; i < n && budget.left > 0; i++) {
+      budget.left -= 1;
+      out.push(boundedCopy(value[i], budget, depth + 1) ?? null);
+    }
+    if (out.length < value.length) {
+      budget.truncated = true;
+      out.push(CUT);
+    }
+    return out;
+  }
+  const out: Record<string, unknown> = {};
+  let kept = 0;
+  // for..in, not Object.keys: stops early on a huge object instead of listing every key first.
+  for (const key in value as Record<string, unknown>) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    if (kept >= MAX_INPUT_ENTRIES || budget.left <= 0) {
+      budget.truncated = true;
+      out[CUT] = true;
+      break;
+    }
+    let child: unknown;
+    try {
+      child = (value as Record<string, unknown>)[key];
+    } catch {
+      child = "[unreadable]";
+    }
+    budget.left -= key.length + 4;
+    const copied = boundedCopy(child, budget, depth + 1);
+    if (copied !== undefined) out[key] = copied;
+    kept++;
+  }
+  return out;
 }
 
 /**
@@ -177,6 +278,7 @@ export function startReviewAudit(start: ReviewAuditStart): ReviewAuditTrace {
           ...common(),
           "permission.review.screen": start.screen,
           "tool.input": input.json,
+          // The full serialized size, when the copy is whole; absent when cut.
           "tool.input.bytes": input.bytes,
           "tool.input.truncated": input.truncated || undefined,
           "process.cwd": start.cwd,
