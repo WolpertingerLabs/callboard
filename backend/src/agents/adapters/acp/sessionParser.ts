@@ -389,7 +389,8 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
       // place in order — the line was appended just before its own prompt went
       // out, so its position in the file IS its position in the conversation.
       flush();
-      messages.push({ role: "user", type: "text", content: line.content, timestamp: line.timestamp });
+      const imageIds = Array.isArray(line.imageIds) ? line.imageIds.filter((id): id is string => typeof id === "string") : [];
+      messages.push({ role: "user", type: "text", content: line.content, timestamp: line.timestamp, ...(imageIds.length > 0 && { imageIds }) });
       continue;
     }
     if (line.type !== "event") continue;

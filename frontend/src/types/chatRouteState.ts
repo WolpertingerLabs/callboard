@@ -1,5 +1,13 @@
 import type { DefaultPermissions, EffortLevel, QueueItemImage, UiAgentProviderKind } from "shared/types/index.js";
 
+/** An optimistic message with attached files, as carried in router state. */
+export interface InFlightHandoff {
+  text: string;
+  fileNames: string[];
+  /** Images attached; their previews cannot cross the redirect. */
+  imageCount?: number;
+}
+
 /** A staged draft opened from the chat list, prefilled into the composer. */
 export interface ChatRouteDraft {
   id: string;
@@ -45,9 +53,10 @@ export interface ChatRouteState {
   /**
    * Optimistic user messages carried across the /chat/new → /chat/:id
    * redirect. A history entry written before this was a list holds a bare
-   * string.
+   * string. An entry with attached files is an object, so a message that is
+   * only files (empty text) still has something to show.
    */
-  inFlightMessage?: string[] | string;
+  inFlightMessage?: (string | InFlightHandoff)[] | string;
   draft?: ChatRouteDraft;
 }
 

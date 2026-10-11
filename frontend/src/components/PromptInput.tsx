@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces } from "lucide-react";
-import ImageUpload, { ALLOWED_IMAGE_TYPES, validateImageFiles } from "./ImageUpload";
+import ImageUpload, { validateAttachmentFiles } from "./ImageUpload";
 import SlashCommandAutocomplete from "./SlashCommandAutocomplete";
 import KeywordAutocomplete from "./KeywordAutocomplete";
 import SaveKeywordModal from "./SaveKeywordModal";
@@ -433,7 +433,7 @@ export default function PromptInput({
 
       const files = e.dataTransfer.files;
       if (files) {
-        const validFiles = validateImageFiles(files);
+        const validFiles = validateAttachmentFiles(files);
         if (validFiles.length > 0) {
           setImages((prev) => [...prev, ...validFiles]);
         }
@@ -466,7 +466,7 @@ export default function PromptInput({
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      const validFiles = validateImageFiles(e.target.files);
+      const validFiles = validateAttachmentFiles(e.target.files);
       if (validFiles.length > 0) {
         setImages((prev) => [...prev, ...validFiles]);
       }
@@ -701,14 +701,13 @@ export default function PromptInput({
       <input
         ref={fileInputRef}
         type="file"
-        accept={ALLOWED_IMAGE_TYPES.join(",")}
         multiple
         onChange={handleFileInput}
         style={{ display: "none" }}
         disabled={disabled}
       />
 
-      {/* Image previews */}
+      {/* Attachment previews */}
       <ImageUpload images={images} onImagesChange={setImages} />
 
       {/* Message input area */}
@@ -860,11 +859,11 @@ export default function PromptInput({
               }}
             >
               <ImageIcon size={16} />
-              Drop images here
+              Drop files here
             </div>
           )}
 
-          {/* Image attachment button */}
+          {/* Attachment button */}
           <button
             onClick={openFilePicker}
             disabled={disabled}
@@ -887,7 +886,7 @@ export default function PromptInput({
               transition: "all 0.2s ease",
               zIndex: 6,
             }}
-            title="Upload images"
+            title="Attach images or files"
           >
             <Paperclip size={14} />
           </button>
@@ -1028,7 +1027,7 @@ export default function PromptInput({
         </button>
       </div>
 
-      {/* Image count indicator */}
+      {/* Attachment count indicator */}
       {images.length > 0 && (
         <div
           style={{
@@ -1038,7 +1037,7 @@ export default function PromptInput({
             textAlign: "center" as const,
           }}
         >
-          {images.length} image{images.length === 1 ? "" : "s"} selected
+          {images.length} file{images.length === 1 ? "" : "s"} attached
         </div>
       )}
 

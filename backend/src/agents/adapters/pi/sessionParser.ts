@@ -39,7 +39,9 @@ import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { parseSessionEntries, type FileEntry, type SessionEntry, type SessionHeader } from "@earendil-works/pi-coding-agent";
 import type { ParsedMessage } from "shared/types/index.js";
+import { attachmentPreviewText } from "shared/types/index.js";
 import { createLogger } from "../../../utils/logger.js";
+import { storeBase64Image } from "../../../services/image-storage.js";
 import { resolvePiSessionsRoot } from "./paths.js";
 
 const log = createLogger("pi-session-parser");
@@ -389,7 +391,11 @@ function projectMessage(message: PiAgentMessage, timestamp: string, generationKe
   switch (message?.role) {
     case "user": {
       const text = extractText(message.content);
-      return text ? [{ role: "user", type: "text", content: text, timestamp }] : [];
+      // A turn sent with only images has no text, and used to be dropped: the
+      // user's message was missing from the transcript for good.
+      const imageIds = internImages(message.content);
+      if (!text && imageIds.length === 0) return [];
+      return [{ role: "user", type: "text", content: text, timestamp, ...(imageIds.length > 0 && { imageIds }) }];
     }
 
     case "assistant": {
@@ -500,6 +506,22 @@ export function extractText(content: unknown): string {
     .join("");
 }
 
+/**
+ * pi's `ImageContent` blocks (`{ type: "image", data, mimeType }`) interned
+ * into the image store, as the Claude Code parser does. The store dedups by
+ * hash, so an image the user uploaded comes back as its upload id.
+ */
+function internImages(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const ids: string[] = [];
+  for (const block of content as { type?: unknown; data?: unknown; mimeType?: unknown }[]) {
+    if (block?.type !== "image" || typeof block.data !== "string" || !block.data || typeof block.mimeType !== "string") continue;
+    const id = storeBase64Image(block.data, block.mimeType);
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
 function renderJson(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
@@ -524,7 +546,7 @@ export function derivePreview(filePath: string): string | null {
     if (entry.type !== "message") continue;
     const message = entry.message as PiAgentMessage;
     if (message?.role !== "user") continue;
-    const text = extractText(message.content).trim();
+    const text = attachmentPreviewText(extractText(message.content).trim());
     if (text) return text;
   }
   return null;

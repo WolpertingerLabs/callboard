@@ -116,8 +116,14 @@ export interface AcpTranscriptEntry {
 export interface AcpTranscriptUserMessage {
   type: "user_message";
   timestamp: string;
-  /** Flattened prompt text, non-text blocks summarized (`[image image/png]`). */
+  /**
+   * Flattened prompt text. Images are not in it (see `imageIds`); any other
+   * non-text block is summarized ahead of the text (`[audio audio/wav]`), so
+   * attachment blocks at the end of the text stay at the end.
+   */
   content: string;
+  /** The prompt's images, as image-store ids. Absent on lines written before. */
+  imageIds?: string[];
 }
 
 export type AcpTranscriptLine = AcpTranscriptHeader | AcpTranscriptEntry | AcpTranscriptUserMessage;
@@ -187,9 +193,9 @@ export class AcpTranscriptWriter {
    * noise, and `resolveAcpPrompt` synthesizes one empty text block when a
    * prompt flattens to nothing.
    */
-  writeUserMessage(content: string): void {
-    if (!content.trim()) return;
-    this.append({ type: "user_message", timestamp: new Date().toISOString(), content });
+  writeUserMessage(content: string, imageIds: string[] = []): void {
+    if (!content.trim() && imageIds.length === 0) return;
+    this.append({ type: "user_message", timestamp: new Date().toISOString(), content, ...(imageIds.length > 0 && { imageIds }) });
   }
 
   private append(line: AcpTranscriptLine): void {

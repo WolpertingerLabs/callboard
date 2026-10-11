@@ -83,6 +83,23 @@ export type { TaskListItem } from "./taskList.js";
 export { TASK_LIST_TOOLS, parseTaskList, isTaskListTool } from "./taskList.js";
 
 export type { StoredImage, ImageUploadResult } from "./image.js";
+export type { AttachedFile, AttachmentReferenceReason } from "./attachment.js";
+export {
+  IMAGE_ATTACHMENT_TYPES,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_FILE_ATTACHMENT_BYTES,
+  INLINE_ATTACHMENT_MAX_BYTES,
+  INLINE_ATTACHMENT_BUDGET_BYTES,
+  ATTACHMENT_TAG,
+  isImageAttachmentType,
+  maxAttachmentBytes,
+  canInlineAttachmentText,
+  formatAttachmentBlock,
+  appendAttachmentBlocks,
+  splitAttachmentBlocks,
+  attachmentPreviewText,
+  safeFileName,
+} from "./attachment.js";
 
 export type { QueueItem, QueueItemImage } from "./queue.js";
 

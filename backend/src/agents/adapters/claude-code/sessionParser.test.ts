@@ -6,6 +6,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { parseMessages } from "./sessionParser.js";
+import { appendAttachmentBlocks, formatAttachmentBlock, splitAttachmentBlocks } from "shared/types/index.js";
 
 vi.mock("../../../services/image-storage.js", () => ({
   storeBase64Image: vi.fn((data: string, mimeType: string) => `img-${mimeType.split("/")[1]}-${data.length}`),
@@ -360,6 +361,14 @@ describe("parseMessages — slash-command envelopes", () => {
     });
   });
 
+  it("keeps attachment blocks riding in the arguments, for the bubble to split into chips", () => {
+    const block = formatAttachmentBlock({ id: "f1", name: "notes.md", path: "/d/f1_notes.md", size: 2, mimeType: "text/markdown" }, { content: "hi" });
+    const args = appendAttachmentBlocks("the auth module", [block]);
+    const [msg] = parseMessages([userLine(`<command-name>/review</command-name>\n<command-message>review</command-message>\n<command-args>${args}</command-args>`)]);
+    expect(msg).toMatchObject({ role: "user", type: "text", isBuiltInCommand: true });
+    expect(splitAttachmentBlocks(msg.content)).toMatchObject({ text: "/review the auth module", files: [{ id: "f1", name: "notes.md" }] });
+  });
+
   it("drops the expanded body the CLI writes after the envelope", () => {
     // The skill's prompt text arrives as a separate isMeta entry. Rendering
     // both would show the command twice, once as prose nobody wrote.
@@ -459,5 +468,13 @@ describe("parseMessages — command recognition is bounded work", () => {
     const [msg] = parseMessages([userLine(degenerate)]);
     expect(msg.content).toBe(degenerate);
     expect(msg.isBuiltInCommand).toBeUndefined();
+  });
+});
+
+describe("parseMessages — a user turn that is only images", () => {
+  it("still yields a user message, with empty text, carrying the images", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
+    const parsed = parseMessages([{ type: "user", message: { role: "user", content: [image] }, timestamp: "2026-01-01T10:00:00.000Z" }]);
+    expect(parsed).toEqual([expect.objectContaining({ role: "user", type: "text", content: "", imageIds: ["img-png-12"] })]);
   });
 });

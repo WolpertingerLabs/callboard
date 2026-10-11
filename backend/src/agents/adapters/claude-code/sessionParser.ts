@@ -12,6 +12,7 @@
  */
 import { readFileSync } from "fs";
 import type { ParsedMessage } from "shared/types/index.js";
+import { attachmentPreviewText } from "shared/types/index.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
 import { scanJsonlLines } from "../../../utils/jsonl-scan.js";
 
@@ -303,15 +304,17 @@ export function getFirstUserMessage(filePath: string, maxLength: number = 200): 
       // XML. Projected exactly as the transcript projects it, off the same
       // whole-entry text, so the two cannot disagree about what is a command.
       const command = projectCommandEntry(content);
-      if (command) return command.substring(0, maxLength);
+      if (command) return attachmentPreviewText(command).substring(0, maxLength);
       // `""` is deliberately returned rather than skipped: it is a hit, and the
       // whole-file loop this replaced stopped on it too. Every caller treats an
       // empty preview and a null one identically, so preserving it keeps the
       // scan from running past the entry the old loop would have stopped at.
-      if (typeof content === "string") return content.substring(0, maxLength);
+      // File attachments ride in the text as blocks; preview the typed text,
+      // or the file names when there is none.
+      if (typeof content === "string") return attachmentPreviewText(content).substring(0, maxLength);
       if (Array.isArray(content)) {
         const textBlock = content.find((b: any) => b?.type === "text");
-        if (typeof textBlock?.text === "string" && textBlock.text) return textBlock.text.substring(0, maxLength);
+        if (typeof textBlock?.text === "string" && textBlock.text) return attachmentPreviewText(textBlock.text).substring(0, maxLength);
       }
       return undefined;
     } catch {
@@ -657,11 +660,19 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
 
     // Attach image IDs to the last text message from this entry
     if (entryImageIds.length > 0) {
+      let attached = false;
       for (let i = result.length - 1; i >= 0; i--) {
         if (result[i].type === "text" && result[i].timestamp === timestamp) {
           result[i].imageIds = entryImageIds;
+          attached = true;
           break;
         }
+      }
+      // A message sent with only images has no text block to carry them.
+      // Without a message of its own it would vanish from the transcript, and
+      // the optimistic bubble (empty text) would never be matched.
+      if (!attached && role === "user") {
+        result.push({ role, type: "text", content: "", timestamp, imageIds: entryImageIds, ...(teamName && { teamName }), ...meta });
       }
     }
   }

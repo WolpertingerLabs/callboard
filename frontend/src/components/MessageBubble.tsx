@@ -1,12 +1,13 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
-import { Check, GitFork, RotateCw, Square, X } from "lucide-react";
+import { Check, FileText, GitFork, RotateCw, Square, X } from "lucide-react";
 import type { ForkProvider, ParsedMessage } from "../api";
-import { parseTaskList, type TaskListItem } from "shared/types/index.js";
+import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CopyButton from "./CopyButton";
 import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
 import { copyToClipboard } from "../utils/clipboard";
+import { formatBytes } from "../utils/formatBytes";
 import { getToolSummary, getToolDisplayName } from "./toolFormatting";
 
 /**
@@ -386,6 +387,52 @@ export function ImageThumbnails({ imageIds }: { imageIds: string[] }) {
         ))}
       </div>
     </>
+  );
+}
+
+/**
+ * Non-image files attached to a user message. Each links to its stored copy;
+ * the tooltip says whether the agent got the contents or only the path.
+ * `files` from the in-flight bubble have only a name.
+ */
+export function AttachedFileChips({ files }: { files: (Partial<AttachedFile> & { name: string })[] }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+      {files.map((file, i) => {
+        const title = file.path
+          ? `${file.path}\n${file.inline ? "Contents included in the message" : "Referenced by path; the agent reads it if needed"}`
+          : file.name;
+        const chip = (
+          <>
+            <FileText size={14} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.name}</span>
+            {file.size !== undefined && <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>{formatBytes(file.size)}</span>}
+          </>
+        );
+        const style: CSSProperties = {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          maxWidth: 280,
+          padding: "4px 8px",
+          borderRadius: 6,
+          border: "1px solid var(--border)",
+          background: "var(--surface)",
+          color: "var(--text)",
+          fontSize: 12,
+          textDecoration: "none",
+        };
+        return file.id ? (
+          <a key={`${file.id}-${i}`} href={`/api/images/${encodeURIComponent(file.id)}`} download={file.name} title={title} style={style}>
+            {chip}
+          </a>
+        ) : (
+          <span key={`${file.name}-${i}`} title={title} style={style}>
+            {chip}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
@@ -819,6 +866,11 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
     );
   }
 
+  // Non-image attachments ride in a user message's text as blocks; show the
+  // typed text, and the files as chips. A slash command is no exception: the
+  // blocks arrive inside its arguments.
+  const { text: bodyText, files: attachedFiles } = isUser ? splitAttachmentBlocks(message.content) : { text: message.content, files: [] };
+
   return (
     <div
       style={{
@@ -847,11 +899,12 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
           }),
         }}
       >
-        <MessageCopyButton text={message.content} />
+        <MessageCopyButton text={bodyText} />
         {onFork && message.timestamp && (
           <ForkButton onFork={(provider) => onFork(message.timestamp!, provider)} currentProvider={forkCurrentProvider} />
         )}
-        {message.isBuiltInCommand ? message.content : <MarkdownRenderer content={message.content} className="message-markdown" />}
+        {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
+        {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>
       <MessageMetadata message={message} align={isUser ? "right" : "left"} />

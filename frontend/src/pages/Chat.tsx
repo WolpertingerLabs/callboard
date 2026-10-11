@@ -68,8 +68,16 @@ import { useChatCommands } from "../hooks/useChatCommands";
 import ThinkingIndicator from "../components/ThinkingIndicator";
 import { useIsSessionActive, useMetadataVersion } from "../contexts/SessionContext";
 import { newChatTrackingId } from "../utils/ids";
-import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightList, visibleInFlight, type InFlightMessage } from "../utils/inFlightMessages";
-import MessageBubble, { TEAM_COLORS } from "../components/MessageBubble";
+import {
+  endsWithInterruptMarker,
+  nextInFlightKey,
+  settleInFlight,
+  toInFlightHandoff,
+  toInFlightList,
+  visibleInFlight,
+  type InFlightMessage,
+} from "../utils/inFlightMessages";
+import MessageBubble, { AttachedFileChips, TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
 import ChatTreeIndicator from "../components/ChatTreeIndicator";
 import ToolCallBubble from "../components/ToolCallBubble";
@@ -102,6 +110,7 @@ import { sameActivityPayload } from "../utils/activitySnapshot";
 import { errorMessage } from "../utils/errorMessage";
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES, DEFAULT_SPACE_ID } from "shared/types/space.js";
+import { isImageAttachmentType } from "shared/types/attachment.js";
 import { writesBrowserFallback } from "../utils/spaceDefaults";
 
 /**
@@ -237,6 +246,15 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
             }}
           >
             {message.text}
+            {message.fileNames && message.fileNames.length > 0 && (
+              <AttachedFileChips files={message.fileNames.map((name) => ({ name }))} />
+            )}
+            {/* Carried across the new-chat redirect: the count came, the previews could not. */}
+            {message.imageUrls.length === 0 && !!message.imageCount && (
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                {message.imageCount} image{message.imageCount === 1 ? "" : "s"}
+              </div>
+            )}
             {message.imageUrls.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                 {message.imageUrls.map((url) => (
@@ -1116,7 +1134,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 navigateRef.current(`/chat/${event.chatId}`, {
                   replace: true,
                   state: {
-                    inFlightMessage: inFlightMessagesRef.current.map((m) => m.text),
+                    inFlightMessage: toInFlightHandoff(inFlightMessagesRef.current),
                     ...(newChatProvider && { provider: newChatProvider }),
                   } satisfies ChatRouteState,
                 });
@@ -2254,7 +2272,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       // erase the message that started the run.
       setInFlightMessages((prev) => [
         ...prev,
-        { key: nextInFlightKey(), text: prompt, imageUrls: images?.length ? images.map((f) => URL.createObjectURL(f)) : [] },
+        {
+          key: nextInFlightKey(),
+          text: prompt,
+          imageUrls: (images ?? []).filter((f) => isImageAttachmentType(f.type)).map((f) => URL.createObjectURL(f)),
+          fileNames: (images ?? []).filter((f) => !isImageAttachmentType(f.type)).map((f) => f.name),
+        },
       ]);
       setNetworkError(null); // Clear any previous network errors
       streamCompletedRef.current = false; // Reset so new message can stream

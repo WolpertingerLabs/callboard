@@ -1,20 +1,18 @@
-import { X } from "lucide-react";
+import { FileText, X } from "lucide-react";
+import { isImageAttachmentType, maxAttachmentBytes } from "shared/types/index.js";
 
-const MAX_IMAGE_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-export const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
-
-export function validateImageFiles(fileList: FileList | File[]): File[] {
+/**
+ * The files the composer will attach: any type, within its size limit.
+ * Images go to the model as images; anything else is saved and either inlined
+ * or referenced by path (shared/types/attachment.ts).
+ */
+export function validateAttachmentFiles(fileList: FileList | File[]): File[] {
   const files = Array.from(fileList);
   const validFiles: File[] = [];
 
   for (const file of files) {
-    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-      console.warn(`Invalid file type: ${file.type}`);
-      continue;
-    }
-
-    if (file.size > MAX_IMAGE_FILE_SIZE) {
-      console.warn(`File too large: ${file.size} bytes`);
+    if (file.size > maxAttachmentBytes(file.type)) {
+      console.warn(`File too large: ${file.name} (${file.size} bytes)`);
       continue;
     }
 
@@ -68,18 +66,48 @@ export default function ImageUpload({ images, onImagesChange }: Props) {
             border: "1px solid var(--border)",
           }}
         >
-          <img
-            src={URL.createObjectURL(image)}
-            alt={image.name}
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-            }}
-            onLoad={(e) => {
-              URL.revokeObjectURL((e.target as HTMLImageElement).src);
-            }}
-          />
+          {isImageAttachmentType(image.type) ? (
+            <img
+              src={URL.createObjectURL(image)}
+              alt={image.name}
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+              }}
+              onLoad={(e) => {
+                URL.revokeObjectURL((e.target as HTMLImageElement).src);
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                height: "100%",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+                padding: "4px 4px 18px",
+                color: "var(--text-muted)",
+              }}
+            >
+              <FileText size={22} />
+              <div
+                style={{
+                  fontSize: 10,
+                  width: "100%",
+                  textAlign: "center",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  color: "var(--text)",
+                }}
+              >
+                {image.name}
+              </div>
+            </div>
+          )}
           <button
             onClick={() => removeImage(index)}
             style={{
@@ -98,7 +126,7 @@ export default function ImageUpload({ images, onImagesChange }: Props) {
               cursor: "pointer",
               color: "var(--text-muted)",
             }}
-            title="Remove image"
+            title={isImageAttachmentType(image.type) ? "Remove image" : "Remove file"}
           >
             <X size={14} />
           </button>

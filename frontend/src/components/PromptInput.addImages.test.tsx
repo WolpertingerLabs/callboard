@@ -36,7 +36,7 @@ describe("PromptInput onAddImages", () => {
     const restored = [new File(["a"], "diagram.png", { type: "image/png" }), new File(["b"], "chart.png", { type: "image/png" })];
     act(() => addImages!(restored));
 
-    expect(screen.getByText("2 images selected")).toBeTruthy();
+    expect(screen.getByText("2 files attached")).toBeTruthy();
 
     const textarea = screen.getByPlaceholderText("Add a message (optional)...");
     fireEvent.change(textarea, { target: { value: "from the draft" } });

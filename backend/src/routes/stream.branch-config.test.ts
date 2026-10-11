@@ -43,12 +43,15 @@ vi.mock("../services/session-registry.js", () => ({ sessionRegistry: { notifyMet
 // What the stubbed generator returns, per test. `vi.hoisted` because `vi.mock`
 // is hoisted above every other statement in the file and the factory closes
 // over this.
-const generator = vi.hoisted(() => ({ result: null as string | null }));
+const generator = vi.hoisted(() => ({ result: null as string | null, requests: [] as string[] }));
 // Only the generator is replaced; the rest of the module stays real, since
 // other things in this import graph use it.
 vi.mock("../services/quick-completion.js", async (importActual) => ({
   ...(await importActual<typeof import("../services/quick-completion.js")>()),
-  generateBranchName: async () => generator.result,
+  generateBranchName: async (request: string) => {
+    generator.requests.push(request);
+    return generator.result;
+  },
 }));
 
 const { streamRouter } = await import("./stream.js");
@@ -89,7 +92,7 @@ interface Answered {
  * the status and body for one the route answered outright — which is the whole
  * question for the failure cases: an unanswered request writes nothing at all.
  */
-async function postNewMessage(folder: string, branchConfig: Record<string, unknown>): Promise<Answered> {
+async function postNewMessage(folder: string, branchConfig: Record<string, unknown>, body: Record<string, unknown> = {}): Promise<Answered> {
   lastSendOptions = undefined;
   const answered: Answered = {};
   const res = {
@@ -111,7 +114,7 @@ async function postNewMessage(folder: string, branchConfig: Record<string, unkno
       return this;
     },
   } as unknown as Response;
-  const req = { headers: {}, body: { folder, prompt: "add a dark mode toggle", branchConfig }, on: () => {} } as unknown as Request;
+  const req = { headers: {}, body: { folder, prompt: "add a dark mode toggle", branchConfig, ...body }, on: () => {} } as unknown as Request;
 
   await newMessageHandler(req, res);
   // Close the stream so no heartbeat outlives the test.
@@ -130,6 +133,46 @@ afterAll(() => {
  * and minting `chat/<date>-<hex>` in someone's working checkout as a *failure*
  * response would be more invasive than doing nothing.
  */
+describe("POST /new/message — autoCreateBranch for a message with no typed text", () => {
+  beforeEach(() => {
+    generator.result = null;
+    generator.requests = [];
+  });
+
+  it("names the branch from the attached file names", async () => {
+    const { ImageStorageService } = await import("../services/image-storage.js");
+    const { image } = await ImageStorageService.storeImage(Buffer.from("x"), "auth-notes.md", "text/markdown");
+    generator.result = "docs/auth-notes";
+
+    await postNewMessage(makeRepo("files-only"), { autoCreateBranch: true, baseBranch: "main" }, { prompt: "", imageIds: [image!.id] });
+
+    expect(generator.requests).toEqual(["Attached files: auth-notes.md"]);
+  });
+
+  it("refuses an empty prompt whose uploads do not exist before creating anything", async () => {
+    const repoDir = makeRepo("bogus-upload");
+
+    const answered = await postNewMessage(repoDir, { autoCreateBranch: true, baseBranch: "main", useWorktree: true }, { prompt: "", imageIds: ["bogus"] });
+
+    expect(answered).toEqual({ status: 400, body: { error: "prompt is required" } });
+    expect(generator.requests).toEqual([]);
+    expect(localBranches(repoDir)).toEqual(["main"]);
+    expect(lastSendOptions).toBeUndefined();
+  });
+
+  it("does not ask the generator to name an image-only message", async () => {
+    const { ImageStorageService } = await import("../services/image-storage.js");
+    const { image } = await ImageStorageService.storeImage(Buffer.from("png"), "shot.png", "image/png");
+    const repoDir = makeRepo("image-only");
+
+    await postNewMessage(repoDir, { autoCreateBranch: true, baseBranch: "main" }, { prompt: "", imageIds: [image!.id] });
+
+    expect(generator.requests).toEqual([]);
+    expect(localBranches(repoDir)).toEqual(["main"]);
+    expect(lastSendOptions?.folder).toBe(repoDir);
+  });
+});
+
 describe("POST /new/message — autoCreateBranch when generation returns null", () => {
   beforeEach(() => {
     generator.result = null;

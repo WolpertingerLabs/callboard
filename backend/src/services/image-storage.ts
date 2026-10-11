@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync, readdir
 import { join, extname } from "path";
 import crypto from "crypto";
 import type { StoredImage, ImageUploadResult } from "shared/types/index.js";
+import { isImageAttachmentType, maxAttachmentBytes, safeFileName } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 
 export type { StoredImage, ImageUploadResult };
@@ -19,29 +20,76 @@ export function isValidImageId(imageId: string): boolean {
   return UUID_REGEX.test(imageId);
 }
 
-const ALLOWED_MIME_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
+/**
+ * Stored name of a non-image attachment: `<id>_<name>`. Images are stored as
+ * `<id><ext>`; the `_` straight after the id is what tells the two apart on
+ * read. The name is kept so the path an agent is handed still says what the
+ * file is, and reduced to characters that need no quoting in a shell.
+ */
+const FILE_NAME_SEPARATOR = "_";
+const UUID_LENGTH = 36;
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+// The name itself is reduced by `safeFileName` in shared/types/attachment.ts,
+// which the UI also uses to recognise its own uploads in a transcript.
+export { safeFileName };
+
+/** The original-ish name of a non-image attachment's stored file, or null for an image. */
+function attachmentNameOf(storedAs: string): string | null {
+  return storedAs[UUID_LENGTH] === FILE_NAME_SEPARATOR ? storedAs.slice(UUID_LENGTH + 1) : null;
+}
+
+/**
+ * Names of the file attachments among `imageIds`, in order, from the stored
+ * file names alone: one directory listing, no file read. Images and unknown
+ * ids contribute nothing.
+ */
+export function attachmentNamesOf(imageIds: string[]): string[] {
+  return storedFilesOf(imageIds).flatMap((file) => {
+    const name = attachmentNameOf(file);
+    return name === null ? [] : [name];
+  });
+}
+
+/** Whether any of `imageIds` is a stored upload. One directory listing, no file read. */
+export function anyUploadExists(imageIds: string[]): boolean {
+  return storedFilesOf(imageIds).length > 0;
+}
+
+/** The stored file of each id that has one, in order. */
+function storedFilesOf(imageIds: string[]): string[] {
+  try {
+    const files = readdirSync(IMAGES_DIR);
+    return imageIds.flatMap((id) => {
+      const file = typeof id === "string" && isValidImageId(id) ? files.find((f) => f.startsWith(id)) : undefined;
+      return file === undefined ? [] : [file];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** One stored upload, ready for the prompt. `name` is set only for non-image attachments. */
+export interface LoadedUpload {
+  id: string;
+  buffer: Buffer;
+  mimeType: string;
+  storagePath: string;
+  name?: string;
+}
 
 export class ImageStorageService {
   /**
-   * Store an uploaded image file
+   * Store an uploaded file. Images become image content blocks when sent; any
+   * other type is stored under its name and attached to the prompt as text
+   * (see shared/types/attachment.ts).
    */
   static async storeImage(buffer: Buffer, originalName: string, mimeType: string): Promise<ImageUploadResult> {
     try {
-      // Validate file type
-      if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
+      const maxBytes = maxAttachmentBytes(mimeType);
+      if (buffer.length > maxBytes) {
         return {
           success: false,
-          error: `Invalid file type: ${mimeType}. Allowed types: ${ALLOWED_MIME_TYPES.join(", ")}`,
-        };
-      }
-
-      // Validate file size
-      if (buffer.length > MAX_FILE_SIZE) {
-        return {
-          success: false,
-          error: `File size exceeds ${MAX_FILE_SIZE / 1024 / 1024}MB limit`,
+          error: `${originalName} exceeds the ${maxBytes / 1024 / 1024}MB limit`,
         };
       }
 
@@ -50,8 +98,9 @@ export class ImageStorageService {
 
       // Generate unique filename
       const id = randomUUID();
-      const ext = extname(originalName) || this.getExtensionFromMimeType(mimeType);
-      const storedAs = `${id}${ext}`;
+      const storedAs = isImageAttachmentType(mimeType)
+        ? `${id}${extname(originalName) || this.getExtensionFromMimeType(mimeType)}`
+        : `${id}${FILE_NAME_SEPARATOR}${safeFileName(originalName)}`;
       const storagePath = join(IMAGES_DIR, storedAs);
 
       // Check for existing file with same hash (optional deduplication)
@@ -109,12 +158,15 @@ export class ImageStorageService {
       const stats = statSync(imagePath);
 
       // Reconstruct image metadata (in production, store this in DB)
+      const attachmentName = attachmentNameOf(imageFile);
       const image: StoredImage = {
         id: imageId,
         filename: imageFile,
-        originalName: imageFile,
+        originalName: attachmentName ?? imageFile,
         storedAs: imageFile,
-        mimeType: this.getMimeTypeFromExtension(extname(imageFile)),
+        // A file attachment never reads back as an image, whatever its
+        // extension: it was not one of the image types when it was uploaded.
+        mimeType: attachmentName === null ? this.getMimeTypeFromExtension(extname(imageFile)) : this.getFileMimeTypeFromExtension(extname(imageFile)),
         size: stats.size,
         sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
         uploadedAt: stats.birthtime.toISOString(),
@@ -155,20 +207,22 @@ export class ImageStorageService {
   }
 
   /**
-   * Load image buffers for a list of image IDs.
-   * Returns an array of { buffer, mimeType, storagePath } for successfully loaded images.
+   * Load stored uploads — images and file attachments alike — for a list of IDs.
    * Logs errors for individual failures without throwing.
    */
-  static loadImageBuffers(imageIds: string[]): { buffer: Buffer; mimeType: string; storagePath: string }[] {
-    const results: { buffer: Buffer; mimeType: string; storagePath: string }[] = [];
+  static loadImageBuffers(imageIds: string[]): LoadedUpload[] {
+    const results: LoadedUpload[] = [];
     for (const imageId of imageIds) {
       try {
         const result = ImageStorageService.getImage(imageId);
         if (result) {
+          const name = attachmentNameOf(result.image.filename);
           results.push({
+            id: imageId,
             buffer: result.buffer,
             mimeType: result.image.mimeType,
             storagePath: result.image.storagePath || join(IMAGES_DIR, result.image.storedAs || result.image.filename),
+            ...(name !== null && { name }),
           });
         }
       } catch (error) {
@@ -205,6 +259,46 @@ export class ImageStorageService {
     };
     return mapping[ext.toLowerCase()] || "application/octet-stream";
   }
+
+  /**
+   * MIME type of a non-image attachment, for the prompt's description of it
+   * and the GET route's Content-Type. Never an image type, and never a type a
+   * browser renders or executes: `.html`, `.svg`, `.js`, `.css` and the like
+   * are plain text, so an upload cannot pass for a same-origin page, script
+   * or stylesheet. (The route also sends nosniff, a sandbox CSP and an
+   * attachment disposition.)
+   */
+  private static getFileMimeTypeFromExtension(ext: string): string {
+    const mapping: Record<string, string> = {
+      ".txt": "text/plain",
+      ".log": "text/plain",
+      ".md": "text/markdown",
+      ".csv": "text/csv",
+      ".tsv": "text/tab-separated-values",
+      ".json": "application/json",
+      ".yaml": "application/yaml",
+      ".yml": "application/yaml",
+      ".toml": "application/toml",
+      ".xml": "text/plain",
+      ".html": "text/plain",
+      ".htm": "text/plain",
+      ".svg": "text/plain",
+      ".js": "text/plain",
+      ".mjs": "text/plain",
+      ".ts": "text/plain",
+      ".tsx": "text/plain",
+      ".jsx": "text/plain",
+      ".py": "text/x-python",
+      ".sh": "application/x-sh",
+      ".css": "text/plain",
+      ".pdf": "application/pdf",
+      ".zip": "application/zip",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    };
+    return mapping[ext.toLowerCase()] || "application/octet-stream";
+  }
 }
 
 // sha256 → files in IMAGES_DIR with those bytes, in readdir order (then write
@@ -236,6 +330,10 @@ function buildHashIndex(): Map<string, string[]> {
   fileHashes.clear();
   if (existsSync(IMAGES_DIR)) {
     for (const file of readdirSync(IMAGES_DIR)) {
+      // findImageByHash skips file attachments, so there is no point reading
+      // and hashing them (up to 25 MB each). Ones stored later are still
+      // indexed by storeImage, and skipped on lookup.
+      if (attachmentNameOf(file) !== null) continue;
       try {
         indexImage(crypto.createHash("sha256").update(readFileSync(join(IMAGES_DIR, file))).digest("hex"), file);
       } catch {}
@@ -244,10 +342,14 @@ function buildHashIndex(): Map<string, string[]> {
   return hashIndex;
 }
 
-/** The first indexed file with these bytes that is still on disk. */
+/**
+ * The first indexed image with these bytes that is still on disk. File
+ * attachments are skipped: an id found here goes into a transcript as an image.
+ */
 function findImageByHash(sha256: string): string | undefined {
   const files = (hashIndex ?? buildHashIndex()).get(sha256) ?? [];
   for (const file of [...files]) {
+    if (attachmentNameOf(file) !== null) continue;
     if (existsSync(join(IMAGES_DIR, file))) return file;
     unindexImage(file); // Removed behind our back.
   }

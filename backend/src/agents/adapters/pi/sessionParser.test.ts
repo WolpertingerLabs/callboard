@@ -7,9 +7,10 @@
  * testing the thing that ships.
  */
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
 
 // Before anything reads `paths.ts` — #302.
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-parser-"));
@@ -512,6 +513,24 @@ describe("parsePiSession", () => {
   });
 });
 
+describe("parsePiSession — a user turn that is only images", () => {
+  it("keeps the turn, with empty text and the images interned", () => {
+    const path = writeSession("s1", [
+      {
+        type: "message",
+        id: "e1",
+        parentId: null,
+        timestamp: TS,
+        message: { role: "user", content: [{ type: "image", data: "aGk=", mimeType: "image/png" }], timestamp: MS },
+      },
+    ]);
+    const [turn] = parsePiSession(path);
+    expect(turn).toMatchObject({ role: "user", type: "text", content: "" });
+    expect(turn.imageIds).toHaveLength(1);
+    expect(readdirSync(join(tmpRoot, "images")).some((f) => f.startsWith(turn.imageIds![0]))).toBe(true);
+  });
+});
+
 describe("derivePreview — SessionInfo.firstMessage, re-derived", () => {
   it("returns the first user message", () => {
     expect(derivePreview(writeSession("s1", conversationEntries()))).toBe("read the readme please");
@@ -535,6 +554,14 @@ describe("derivePreview — SessionInfo.firstMessage, re-derived", () => {
 
   it("returns null for a session with no user message at all", () => {
     expect(derivePreview(writeSession("s1", []))).toBeNull();
+  });
+
+  it("previews the attached file names, not the blocks, for a message that is only attachments", () => {
+    const prompt = appendAttachmentBlocks("", [
+      formatAttachmentBlock({ id: "a", name: "notes.md", path: "/d/a_notes.md", size: 2, mimeType: "text/markdown" }, { content: "hi" }),
+    ]);
+    const path = writeSession("s1", [{ type: "message", id: "e1", parentId: null, timestamp: TS, message: userMessage(prompt) }]);
+    expect(derivePreview(path)).toBe("📎 notes.md");
   });
 });
 

@@ -19,7 +19,8 @@ import { findChat } from "../utils/chat-lookup.js";
 import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions, PermissionReviewSettings } from "shared/types/index.js";
 import type { StreamEvent, TaskListItem } from "shared/types/index.js";
-import { TASK_LIST_TOOLS, normalizePermissions, normalizeReviewSettings } from "shared/types/index.js";
+import { TASK_LIST_TOOLS, normalizePermissions, normalizeReviewSettings, appendAttachmentBlocks } from "shared/types/index.js";
+import { buildAttachmentBlocks, titleSourceFor, type FileAttachment } from "./file-attachments.js";
 import { buildPluginOptions, buildMcpServerOptions, buildHookOptions, type PluginDescriptor } from "./claude-session-options.js";
 import { buildAcpExtras, buildClineExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
@@ -345,12 +346,17 @@ export function taskListStreamEvent(items: TaskListItem[]): StreamEvent {
 }
 
 /**
- * Build the SDK prompt from text and optional images.
+ * Build the SDK prompt from text and optional uploads.
  * Returns either a plain string or an AsyncIterable<SDKUserMessage> for multimodal content.
+ *
+ * Uploads that are not images (`name` set, see `loadImageBuffers`) never
+ * become content blocks: they are appended to the text, inlined or referenced
+ * by path (see file-attachments.ts). So a message with only file attachments
+ * is still a plain string, which every harness accepts.
  */
-type PromptImageMetadata = { buffer: Buffer; mimeType: string; storagePath?: string };
+type PromptImageMetadata = { buffer: Buffer; mimeType: string; storagePath?: string; id?: string; name?: string };
 
-function buildFormattedPrompt(
+export function buildFormattedPrompt(
   prompt: string | AsyncIterable<unknown>,
   imageMetadata?: PromptImageMetadata[],
   providerKind: AgentProviderKind = "claude-code",
@@ -359,19 +365,31 @@ function buildFormattedPrompt(
     return prompt;
   }
 
-  // Build content array for multimodal message (Anthropic API format)
-  const content: any[] = [];
-
-  // Images only ever arrive with a text prompt (the composer path); an
+  // Uploads only ever arrive with a text prompt (the composer path); an
   // already-structured iterable prompt has nothing to merge them into.
   if (typeof prompt !== "string") {
     throw new Error("buildFormattedPrompt: images cannot be attached to an AsyncIterable prompt");
   }
-  if (prompt.trim()) {
-    content.push({ type: "text", text: prompt.trim() });
+
+  const files: FileAttachment[] = [];
+  const images: PromptImageMetadata[] = [];
+  for (const upload of imageMetadata) {
+    if (upload.name !== undefined && upload.id && upload.storagePath) {
+      files.push({ id: upload.id, name: upload.name, buffer: upload.buffer, mimeType: upload.mimeType, storagePath: upload.storagePath });
+    } else {
+      images.push(upload);
+    }
+  }
+  const text = appendAttachmentBlocks(prompt, buildAttachmentBlocks(files));
+  if (images.length === 0) return text;
+
+  // Build content array for multimodal message (Anthropic API format)
+  const content: any[] = [];
+  if (text.trim()) {
+    content.push({ type: "text", text: text.trim() });
   }
 
-  for (const { buffer, mimeType, storagePath } of imageMetadata) {
+  for (const { buffer, mimeType, storagePath } of images) {
     if (providerKind === "codex" && storagePath) {
       // Codex consumes images as `local_image` paths. Keep the durable
       // callboard image-store path in the intermediate block so the Codex
@@ -2197,10 +2215,16 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
                 // Generate a title for new manual (non-triggered) chats
                 if (!opts.triggered) {
-                  const promptText = typeof prompt === "string" ? prompt : null;
-                  if (promptText) {
+                  const titleSource =
+                    typeof prompt === "string"
+                      ? titleSourceFor(
+                          prompt,
+                          (imageMetadata ?? []).flatMap((upload) => (upload.name !== undefined ? [upload.name] : [])),
+                        )
+                      : null;
+                  if (titleSource) {
                     const chatId = trackingId;
-                    generateChatTitle(promptText)
+                    generateChatTitle(titleSource)
                       .then((title) => {
                         if (title) {
                           chatFileService.updateChatMetadata(chatId, { title });

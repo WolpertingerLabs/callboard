@@ -125,6 +125,8 @@ export interface ClineTranscriptUserMessage {
   type: "user_message";
   timestamp: string;
   content: string;
+  /** The prompt's images, as image-store ids. Absent on lines written before. */
+  imageIds?: string[];
 }
 
 export type ClineTranscriptLine = ClineTranscriptHeader | ClineTranscriptEntry | ClineTranscriptUserMessage;
@@ -179,8 +181,8 @@ export class ClineTranscriptWriter {
     });
   }
 
-  writeUserMessage(content: string): void {
-    this.append({ type: "user_message", timestamp: new Date().toISOString(), content });
+  writeUserMessage(content: string, imageIds: string[] = []): void {
+    this.append({ type: "user_message", timestamp: new Date().toISOString(), content, ...(imageIds.length > 0 && { imageIds }) });
   }
 
   writeEvent(event: AgentEvent): void {
