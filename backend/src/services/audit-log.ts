@@ -69,6 +69,8 @@ export const FLUSH_INTERVAL_MS = 1000;
 export const MAX_SEND_ATTEMPTS = 4;
 /** Backoff before attempt n+1 is BASE * 2^(n-1): 2s, 4s, 8s. */
 export const RETRY_BASE_MS = 2000;
+/** Loss-report attempts per alias in one flush (a guard against a spin, not a policy). */
+const MAX_REPORTS_PER_FLUSH = 4;
 /** A loss report is never given up on; its retry backoff stops growing here. */
 export const MAX_REPORT_BACKOFF_MS = 60_000;
 /** One `ingest_logs` call may not take longer than this. */
@@ -432,6 +434,15 @@ function runFlush(): Promise<void> {
 
 /** Send everything queued, one alias at a time, in batches. */
 async function flushAll(): Promise<void> {
+  // Loss-report attempts per alias in this flush. Each attempt settles or backs
+  // off, so this cap only matters if that ever stopped holding — then it turns
+  // a spin into a deferred retry.
+  const reportAttempts = new Map<string, number>();
+  const mayReport = (alias: string, s: AliasState): boolean => {
+    if (!reportDue(s) || (reportAttempts.get(alias) ?? 0) >= MAX_REPORTS_PER_FLUSH) return false;
+    reportAttempts.set(alias, (reportAttempts.get(alias) ?? 0) + 1);
+    return true;
+  };
   while (queue.length > 0) {
     const alias = queue[0].alias;
     const now = deps.now();
@@ -446,7 +457,7 @@ async function flushAll(): Promise<void> {
     // Report losses first, so the report precedes later records in the hub's
     // file. Then re-check from the top: the report may have found the hub
     // unsupported (it doubles as the re-probe).
-    if (reportDue(s)) {
+    if (mayReport(alias, s)) {
       await reportDropped(alias, s);
       continue;
     }
@@ -455,9 +466,9 @@ async function flushAll(): Promise<void> {
   }
   // Losses with nothing queued behind them (or counted by this flush) still go out.
   // Repeats while due: a settled report can leave a remainder (counted while it
-  // was in flight). Ends because each attempt either settles or backs off.
+  // was in flight).
   for (const [alias, s] of aliases) {
-    while (reportDue(s)) await reportDropped(alias, s);
+    while (mayReport(alias, s)) await reportDropped(alias, s);
   }
 }
 
