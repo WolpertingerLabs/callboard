@@ -25,6 +25,7 @@ vi.mock("../../../services/image-storage.js", () => ({
 }));
 
 const { getFirstUserMessage } = await import("./sessionParser.js");
+const { appendAttachmentBlocks, formatAttachmentBlock } = await import("shared/types/index.js");
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-preview-"));
 let seq = 0;
@@ -43,6 +44,23 @@ function transcript(lines: any[]): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const userLine = (content: any) => ({ type: "user", message: { role: "user", content } });
 const assistantLine = (text: string) => ({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+
+const attached = (prompt: string) =>
+  appendAttachmentBlocks(prompt, [
+    formatAttachmentBlock({ id: "a", name: "notes.md", path: "/d/a_notes.md", size: 3, mimeType: "text/markdown" }, { content: "hi" }),
+    formatAttachmentBlock({ id: "b", name: "data.csv", path: "/d/b_data.csv", size: 9e6, mimeType: "text/csv" }, { reason: "too-large" }),
+  ]);
+
+describe("getFirstUserMessage — file attachments", () => {
+  it("previews the typed text, not the attachment blocks", () => {
+    expect(getFirstUserMessage(transcript([userLine(attached("look at these"))]))).toBe("look at these");
+    expect(getFirstUserMessage(transcript([userLine([{ type: "text", text: attached("with an image") }, { type: "image" }])]))).toBe("with an image");
+  });
+
+  it("previews the file names when the message is only attachments", () => {
+    expect(getFirstUserMessage(transcript([userLine(attached(""))]))).toBe("📎 notes.md, data.csv");
+  });
+});
 
 describe("getFirstUserMessage", () => {
   it("returns string content from the first user turn", () => {

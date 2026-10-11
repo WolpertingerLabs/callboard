@@ -33,21 +33,30 @@ export function decodeTextAttachment(buffer: Buffer): string | null {
   }
 }
 
+/** Bytes sniffed for a NUL when a file is too large to decode. */
+const BINARY_SNIFF_BYTES = 8 * 1024;
+
 /**
  * One block per file, in order. Text files are inlined while they fit both
  * the per-file cap and what is left of the per-message budget; the rest are
  * referenced by path.
+ *
+ * Size is checked before decoding, so a 25 MB upload is never decoded just to
+ * be refused. Such a file is only sniffed: a NUL in its head makes it
+ * "binary", anything else "too-large".
  */
 export function buildAttachmentBlocks(files: FileAttachment[]): string[] {
   let budget = INLINE_ATTACHMENT_BUDGET_BYTES;
   return files.map((file) => {
     const meta = { id: file.id, name: file.name, path: file.storagePath, size: file.buffer.length, mimeType: file.mimeType };
+    const reference = (reason: AttachmentReferenceReason) => formatAttachmentBlock(meta, { reason });
+    if (file.buffer.length > INLINE_ATTACHMENT_MAX_BYTES) {
+      return reference(file.buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0) ? "binary" : "too-large");
+    }
     const text = decodeTextAttachment(file.buffer);
-    let reason: AttachmentReferenceReason | null = null;
-    if (text === null || !canInlineAttachmentText(text)) reason = "binary";
-    else if (file.buffer.length > INLINE_ATTACHMENT_MAX_BYTES) reason = "too-large";
-    else if (file.buffer.length > budget) reason = "budget";
-    if (reason !== null || text === null) return formatAttachmentBlock(meta, { reason: reason ?? "binary" });
+    if (text === null) return reference("binary");
+    if (!canInlineAttachmentText(text)) return reference("unsafe-text");
+    if (file.buffer.length > budget) return reference("budget");
     budget -= file.buffer.length;
     return formatAttachmentBlock(meta, { content: text });
   });

@@ -22,6 +22,7 @@ import type { AgentEvent as ClineAgentEvent } from "@cline/sdk";
 import { ClineSessionProvider } from "./ClineSessionProvider.js";
 import { ClineTranscriptWriter, clineSeedPath, readSeededMessages } from "./transcript.js";
 import { parseClineTranscript, namespaceFinishReason } from "./sessionParser.js";
+import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
 import { translateClineEvent } from "./messageAdapter.js";
 import type { AgentEvent } from "../../ports/events.js";
 
@@ -276,6 +277,18 @@ describe("discovery and search", () => {
     const resolved = provider.resolveSession("sess1");
     expect(resolved).not.toBeNull();
     expect(provider.getSessionPreview(resolved!.logPath)).toBe("first question");
+  });
+
+  it("previews the attached file names for a prompt that is only attachments", () => {
+    const w = new ClineTranscriptWriter("sess-files", "/repo");
+    w.writeHeader({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });
+    w.writeUserMessage(
+      appendAttachmentBlocks("", [
+        formatAttachmentBlock({ id: "a", name: "notes.md", path: "/d/a_notes.md", size: 2, mimeType: "text/markdown" }, { content: "hi" }),
+        formatAttachmentBlock({ id: "b", name: "data.csv", path: "/d/b_data.csv", size: 9, mimeType: "text/csv" }, { content: "a,b" }),
+      ]),
+    );
+    expect(provider.getSessionPreview(provider.resolveSession("sess-files")!.logPath)).toBe("📎 notes.md, data.csv");
   });
 });
 

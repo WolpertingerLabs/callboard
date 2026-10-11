@@ -356,6 +356,18 @@ export function taskListStreamEvent(items: TaskListItem[]): StreamEvent {
  */
 type PromptImageMetadata = { buffer: Buffer; mimeType: string; storagePath?: string; id?: string; name?: string };
 
+/**
+ * What a new chat is titled from: the typed prompt, or the attached files'
+ * names when the message is only files. Null when there is neither, or when
+ * the prompt is already structured.
+ */
+export function titleSourceFor(prompt: string | AsyncIterable<unknown>, imageMetadata?: PromptImageMetadata[]): string | null {
+  if (typeof prompt !== "string") return null;
+  if (prompt.trim()) return prompt;
+  const names = (imageMetadata ?? []).flatMap((upload) => (upload.name !== undefined ? [upload.name] : []));
+  return names.length > 0 ? `Attached files: ${names.join(", ")}` : null;
+}
+
 export function buildFormattedPrompt(
   prompt: string | AsyncIterable<unknown>,
   imageMetadata?: PromptImageMetadata[],
@@ -2215,10 +2227,10 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
                 // Generate a title for new manual (non-triggered) chats
                 if (!opts.triggered) {
-                  const promptText = typeof prompt === "string" ? prompt : null;
-                  if (promptText) {
+                  const titleSource = titleSourceFor(prompt, imageMetadata);
+                  if (titleSource) {
                     const chatId = trackingId;
-                    generateChatTitle(promptText)
+                    generateChatTitle(titleSource)
                       .then((title) => {
                         if (title) {
                           chatFileService.updateChatMetadata(chatId, { title });

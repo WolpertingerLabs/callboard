@@ -30,9 +30,28 @@ const FILE_NAME_SEPARATOR = "_";
 const UUID_LENGTH = 36;
 const MAX_STORED_NAME_LENGTH = 120;
 
-function safeFileName(originalName: string): string {
-  const base = (originalName.split(/[/\\]/).pop() ?? "").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "");
-  return base.slice(-MAX_STORED_NAME_LENGTH) || "file";
+const MAX_EXTENSION_LENGTH = 16;
+
+/**
+ * The stem and extension are reduced separately, so the extension survives a
+ * stem with nothing shell-safe in it: `契約.pdf` → `file.pdf`. Only the stem
+ * loses leading dots and underscores. A dotfile has no extension (`extname`),
+ * so `.env` → `env` and `.env.local` → `env.local`: the dot goes, so the
+ * stored copy is not hidden, and the name still says what it is. An
+ * extension with no safe characters left is dropped. Over-long names lose
+ * the end of the stem, never the extension.
+ */
+export function safeFileName(originalName: string): string {
+  const base = originalName.split(/[/\\]/).pop() ?? "";
+  const rawExt = extname(base);
+  const ext = rawExt.slice(1).replace(/[^A-Za-z0-9]+/g, "").slice(0, MAX_EXTENSION_LENGTH);
+  const stem =
+    base
+      .slice(0, base.length - rawExt.length)
+      .replace(/[^A-Za-z0-9._-]+/g, "_")
+      .replace(/^[._]+/, "") || "file";
+  const suffix = ext ? `.${ext}` : "";
+  return stem.slice(0, MAX_STORED_NAME_LENGTH - suffix.length) + suffix;
 }
 
 /** The original-ish name of a non-image attachment's stored file, or null for an image. */
@@ -232,15 +251,42 @@ export class ImageStorageService {
     return mapping[ext.toLowerCase()] || "application/octet-stream";
   }
 
-  /** MIME type of a non-image attachment, for the prompt's description of it. Never an image type. */
+  /**
+   * MIME type of a non-image attachment, for the prompt's description of it
+   * and the GET route's Content-Type. Never an image type, and never a type a
+   * browser renders or executes: `.html`, `.svg`, `.js`, `.css` and the like
+   * are plain text, so an upload cannot pass for a same-origin page, script
+   * or stylesheet. (The route also sends nosniff, a sandbox CSP and an
+   * attachment disposition.)
+   */
   private static getFileMimeTypeFromExtension(ext: string): string {
     const mapping: Record<string, string> = {
       ".txt": "text/plain",
+      ".log": "text/plain",
       ".md": "text/markdown",
       ".csv": "text/csv",
+      ".tsv": "text/tab-separated-values",
       ".json": "application/json",
+      ".yaml": "application/yaml",
+      ".yml": "application/yaml",
+      ".toml": "application/toml",
+      ".xml": "text/plain",
+      ".html": "text/plain",
+      ".htm": "text/plain",
+      ".svg": "text/plain",
+      ".js": "text/plain",
+      ".mjs": "text/plain",
+      ".ts": "text/plain",
+      ".tsx": "text/plain",
+      ".jsx": "text/plain",
+      ".py": "text/x-python",
+      ".sh": "application/x-sh",
+      ".css": "text/plain",
       ".pdf": "application/pdf",
       ".zip": "application/zip",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     };
     return mapping[ext.toLowerCase()] || "application/octet-stream";
   }

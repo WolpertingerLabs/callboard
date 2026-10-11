@@ -97,6 +97,7 @@ export {
   formatAttachmentBlock,
   appendAttachmentBlocks,
   splitAttachmentBlocks,
+  attachmentPreviewText,
 } from "./attachment.js";
 
 export type { QueueItem, QueueItemImage } from "./queue.js";

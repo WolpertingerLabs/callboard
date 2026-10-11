@@ -17,7 +17,7 @@ vi.mock("fs", async (importOriginal) => {
   return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
 });
 const fs = await import("fs");
-const { ImageStorageService, storeBase64Image } = await import("./image-storage.js");
+const { ImageStorageService, safeFileName, storeBase64Image } = await import("./image-storage.js");
 
 const imagesDir = join(tmpRoot, "images");
 const b64 = (s: string) => Buffer.from(s).toString("base64");
@@ -75,6 +75,33 @@ describe("storeBase64Image", () => {
   });
 });
 
+describe("safeFileName", () => {
+  it("keeps the extension when the stem has nothing shell-safe in it", () => {
+    expect(safeFileName("契約.pdf")).toBe("file.pdf");
+    expect(safeFileName("résumé.pdf")).toBe("r_sum_.pdf");
+    expect(safeFileName("../../etc/passwd")).toBe("passwd");
+    expect(safeFileName("C:\\Users\\me\\notes.TXT")).toBe("notes.TXT");
+  });
+
+  it("turns a dotfile into a visible name that still says what it is", () => {
+    expect(safeFileName(".env")).toBe("env");
+    expect(safeFileName(".env.local")).toBe("env.local");
+    expect(safeFileName("__init__.py")).toBe("init__.py");
+  });
+
+  it("drops an extension with no safe characters, and falls back to `file`", () => {
+    expect(safeFileName("报告.文档")).toBe("file");
+    expect(safeFileName("")).toBe("file");
+    expect(safeFileName("name.")).toBe("name");
+  });
+
+  it("caps the length by trimming the stem, never the extension", () => {
+    const name = safeFileName(`${"a".repeat(300)}.json`);
+    expect(name).toHaveLength(120);
+    expect(name.endsWith("a.json")).toBe(true);
+  });
+});
+
 describe("file attachments", () => {
   it("stores a non-image under its name and loads it back as a named attachment", async () => {
     const result = await ImageStorageService.storeImage(Buffer.from("a,b\n1,2\n"), "my report (v2).csv", "text/csv");
@@ -92,6 +119,18 @@ describe("file attachments", () => {
     const [loaded] = ImageStorageService.loadImageBuffers([result.image!.id]);
     expect(loaded.name).toBe("fake.png");
     expect(loaded.mimeType).toBe("application/octet-stream");
+  });
+
+  it("types attachments by extension, never as a type the browser renders or runs", async () => {
+    const typeOf = async (name: string) => {
+      const id = (await ImageStorageService.storeImage(Buffer.from("x"), name, "application/octet-stream")).image!.id;
+      return ImageStorageService.getImage(id)!.image.mimeType;
+    };
+    expect(await typeOf("main.py")).toBe("text/x-python");
+    expect(await typeOf("conf.yml")).toBe("application/yaml");
+    expect(await typeOf("deck.pptx")).toBe("application/vnd.openxmlformats-officedocument.presentationml.presentation");
+    for (const name of ["page.html", "page.htm", "icon.svg", "feed.xml", "app.js", "style.css"]) expect(await typeOf(name)).toBe("text/plain");
+    expect(await typeOf("契約.pdf")).toBe("application/pdf");
   });
 
   it("keeps images as they were: no name, image type", async () => {

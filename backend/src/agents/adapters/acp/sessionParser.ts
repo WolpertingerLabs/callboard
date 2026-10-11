@@ -17,6 +17,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
+import { attachmentPreviewText } from "shared/types/index.js";
 import { TASK_LIST_TOOLS } from "shared/types/index.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { SessionRoutingError } from "../../ports/SessionProvider.js";
@@ -499,7 +500,7 @@ export function parseAcpTranscript(filePath: string): ParsedMessage[] {
 export function readAcpTranscriptPreview(filePath: string): string | null {
   const lines = readAcpTranscriptLines(filePath);
   for (const line of lines) {
-    if (line.type === "user_message" && line.content.trim()) return line.content.trim();
+    if (line.type === "user_message" && line.content.trim()) return attachmentPreviewText(line.content.trim());
   }
   for (const line of lines) {
     if (line.type !== "event") continue;

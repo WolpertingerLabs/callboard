@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { INLINE_ATTACHMENT_BUDGET_BYTES, INLINE_ATTACHMENT_MAX_BYTES, splitAttachmentBlocks } from "shared/types/index.js";
 import { buildAttachmentBlocks, decodeTextAttachment, type FileAttachment } from "./file-attachments.js";
 
@@ -54,5 +54,23 @@ describe("buildAttachmentBlocks", () => {
       ["t.xml", false],
       ["after.txt", true],
     ]);
+    // It is text, and the note says so rather than calling it binary.
+    const [block] = buildAttachmentBlocks([tricky]);
+    expect(block).toContain("Not inlined: this text file contains the </callboard-attachment> marker that ends this block.");
+    expect(block).not.toContain("not a text file");
+  });
+
+  it("does not decode a file over the per-file cap, and still tells binary from text by its head", () => {
+    const decode = vi.spyOn(TextDecoder.prototype, "decode");
+    try {
+      const bigText = file("big.txt", "z".repeat(INLINE_ATTACHMENT_MAX_BYTES * 4));
+      const bigBinary = file("big.bin", Buffer.concat([Buffer.from([0x00, 0x01]), Buffer.alloc(INLINE_ATTACHMENT_MAX_BYTES * 4, 0x41)]));
+      const [text, binary] = buildAttachmentBlocks([bigText, bigBinary]);
+      expect(decode).not.toHaveBeenCalled();
+      expect(text).toContain("too large");
+      expect(binary).toContain("not a text file");
+    } finally {
+      decode.mockRestore();
+    }
   });
 });

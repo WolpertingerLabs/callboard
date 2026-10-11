@@ -10,6 +10,7 @@ import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
 
 // Before anything reads `paths.ts` — #302.
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-pi-parser-"));
@@ -535,6 +536,14 @@ describe("derivePreview — SessionInfo.firstMessage, re-derived", () => {
 
   it("returns null for a session with no user message at all", () => {
     expect(derivePreview(writeSession("s1", []))).toBeNull();
+  });
+
+  it("previews the attached file names, not the blocks, for a message that is only attachments", () => {
+    const prompt = appendAttachmentBlocks("", [
+      formatAttachmentBlock({ id: "a", name: "notes.md", path: "/d/a_notes.md", size: 2, mimeType: "text/markdown" }, { content: "hi" }),
+    ]);
+    const path = writeSession("s1", [{ type: "message", id: "e1", parentId: null, timestamp: TS, message: userMessage(prompt) }]);
+    expect(derivePreview(path)).toBe("📎 notes.md");
   });
 });
 

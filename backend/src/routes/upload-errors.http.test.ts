@@ -113,6 +113,19 @@ describe("refused multipart uploads are a JSON 4xx naming the limit", () => {
     expect(res.body.error).toMatch(/25MB/);
   });
 
+  it("serves a stored non-image as a download, never as text/html", async () => {
+    const form = new FormData();
+    form.append("images", new Blob(["<script>alert(1)</script>"], { type: "text/html" }), "page.html");
+    const upload = await fetch(server.origin + "/api/images/upload", { method: "POST", body: form });
+    const { images } = (await upload.json()) as { images: { id: string }[] };
+
+    const res = await fetch(`${server.origin}/api/images/${images[0].id}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename\*=UTF-8''page\.html$/);
+    expect(res.headers.get("content-type")).not.toMatch(/html/);
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
   it("storage keeps its own over-limit message and 413", async () => {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(26 * 1024 * 1024)]), "big.bin");

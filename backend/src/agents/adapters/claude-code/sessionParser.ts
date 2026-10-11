@@ -12,6 +12,7 @@
  */
 import { readFileSync } from "fs";
 import type { ParsedMessage } from "shared/types/index.js";
+import { attachmentPreviewText } from "shared/types/index.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
 import { scanJsonlLines } from "../../../utils/jsonl-scan.js";
 
@@ -308,10 +309,12 @@ export function getFirstUserMessage(filePath: string, maxLength: number = 200): 
       // whole-file loop this replaced stopped on it too. Every caller treats an
       // empty preview and a null one identically, so preserving it keeps the
       // scan from running past the entry the old loop would have stopped at.
-      if (typeof content === "string") return content.substring(0, maxLength);
+      // File attachments ride in the text as blocks; preview the typed text,
+      // or the file names when there is none.
+      if (typeof content === "string") return attachmentPreviewText(content).substring(0, maxLength);
       if (Array.isArray(content)) {
         const textBlock = content.find((b: any) => b?.type === "text");
-        if (typeof textBlock?.text === "string" && textBlock.text) return textBlock.text.substring(0, maxLength);
+        if (typeof textBlock?.text === "string" && textBlock.text) return attachmentPreviewText(textBlock.text).substring(0, maxLength);
       }
       return undefined;
     } catch {

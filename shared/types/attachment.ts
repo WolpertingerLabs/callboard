@@ -45,20 +45,31 @@ export function maxAttachmentBytes(mimeType: string): number {
   return isImageAttachmentType(mimeType) ? MAX_IMAGE_ATTACHMENT_BYTES : MAX_FILE_ATTACHMENT_BYTES;
 }
 
-/** Why a file was referenced by path rather than inlined. */
-export type AttachmentReferenceReason = "binary" | "too-large" | "budget";
+/**
+ * Why a file was referenced by path rather than inlined. `unsafe-text` is a
+ * text file that contains the block's own closing tag, so inlining it would
+ * end its block early.
+ */
+export type AttachmentReferenceReason = "binary" | "too-large" | "budget" | "unsafe-text";
 
 /** One file block, as written into the prompt and read back out of the transcript. */
 export interface AttachedFile {
   /** Upload id; the stored bytes are served from GET /api/images/:id. */
   id: string;
-  /** The name the user's file had. */
+  /**
+   * The stored copy's name: the user's file name reduced to shell-safe
+   * characters (`safeFileName` in the backend's image-storage.ts), so
+   * `契約.pdf` arrives as `file.pdf`.
+   */
   name: string;
   /** Absolute path of the stored copy on the daemon's machine. */
   path: string;
   /** Size in bytes. */
   size: number;
-  /** MIME type as the browser reported it; may be `application/octet-stream`. */
+  /**
+   * MIME type derived from the stored name's extension, not the browser's
+   * report; `application/octet-stream` for anything unrecognised.
+   */
   mimeType: string;
   /** Whether the block carries the file's contents. */
   inline: boolean;
@@ -69,6 +80,7 @@ const REFERENCE_NOTES: Record<AttachmentReferenceReason, string> = {
   "too-large": "Not inlined: this file is too large to include in the message. It is saved at the path above; read it from there if you need it.",
   budget:
     "Not inlined: this message's other attachments already used the inline budget. It is saved at the path above; read it from there if you need it.",
+  "unsafe-text": `Not inlined: this text file contains the </${ATTACHMENT_TAG}> marker that ends this block. It is saved at the path above; read it from there if you need it.`,
 };
 
 function escapeAttr(value: string): string {
@@ -105,25 +117,52 @@ export function appendAttachmentBlocks(prompt: string, blocks: string[]): string
 const BLOCK_RE = new RegExp(`\\s*<${ATTACHMENT_TAG}((?:\\s+[a-z]+="[^"]*")*)>\\n[\\s\\S]*?\\n</${ATTACHMENT_TAG}>`, "g");
 const ATTR_RE = /([a-z]+)="([^"]*)"/g;
 
+function parseAttachedFile(rawAttrs: string): AttachedFile {
+  const attrs: Record<string, string> = {};
+  for (const [, key, value] of rawAttrs.matchAll(ATTR_RE)) attrs[key] = unescapeAttr(value);
+  return {
+    id: attrs.id ?? "",
+    name: attrs.name ?? "",
+    path: attrs.path ?? "",
+    size: Number(attrs.size) || 0,
+    mimeType: attrs.type ?? "application/octet-stream",
+    inline: attrs.inline === "true",
+  };
+}
+
 /**
  * The inverse of {@link appendAttachmentBlocks}: the text the user typed, and
  * the files appended to it. Text without blocks comes back unchanged.
+ *
+ * Only the unbroken run of blocks at the very end counts, because that is the
+ * only place `appendAttachmentBlocks` puts them. A block-shaped string with
+ * anything but whitespace after it is something the user typed, and stays text.
  */
 export function splitAttachmentBlocks(content: string): { text: string; files: AttachedFile[] } {
   if (!content.includes(`<${ATTACHMENT_TAG} `)) return { text: content, files: [] };
-  const files: AttachedFile[] = [];
-  const text = content.replace(BLOCK_RE, (_match, rawAttrs: string) => {
-    const attrs: Record<string, string> = {};
-    for (const [, key, value] of rawAttrs.matchAll(ATTR_RE)) attrs[key] = unescapeAttr(value);
-    files.push({
-      id: attrs.id ?? "",
-      name: attrs.name ?? "",
-      path: attrs.path ?? "",
-      size: Number(attrs.size) || 0,
-      mimeType: attrs.type ?? "application/octet-stream",
-      inline: attrs.inline === "true",
-    });
-    return "";
-  });
-  return { text: text.trim(), files };
+  let files: AttachedFile[] = [];
+  let runStart = -1;
+  let runEnd = -1;
+  for (const match of content.matchAll(BLOCK_RE)) {
+    // Each match swallows the whitespace before it, so a block that does not
+    // start where the last one ended has text between them: start a new run.
+    if (match.index !== runEnd) {
+      files = [];
+      runStart = match.index;
+    }
+    files.push(parseAttachedFile(match[1]));
+    runEnd = match.index + match[0].length;
+  }
+  if (runStart < 0 || content.slice(runEnd).trim()) return { text: content, files: [] };
+  return { text: content.slice(0, runStart).trim(), files };
+}
+
+/**
+ * A user message as a one-line preview (chat list, titles): the typed text,
+ * or the attached files' names when the message is only attachments.
+ */
+export function attachmentPreviewText(content: string): string {
+  const { text, files } = splitAttachmentBlocks(content);
+  if (text || files.length === 0) return text;
+  return `📎 ${files.map((file) => file.name).join(", ")}`;
 }

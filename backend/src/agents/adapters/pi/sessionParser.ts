@@ -39,6 +39,7 @@ import { readFileSync, readdirSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { parseSessionEntries, type FileEntry, type SessionEntry, type SessionHeader } from "@earendil-works/pi-coding-agent";
 import type { ParsedMessage } from "shared/types/index.js";
+import { attachmentPreviewText } from "shared/types/index.js";
 import { createLogger } from "../../../utils/logger.js";
 import { resolvePiSessionsRoot } from "./paths.js";
 
@@ -524,7 +525,7 @@ export function derivePreview(filePath: string): string | null {
     if (entry.type !== "message") continue;
     const message = entry.message as PiAgentMessage;
     if (message?.role !== "user") continue;
-    const text = extractText(message.content).trim();
+    const text = attachmentPreviewText(extractText(message.content).trim());
     if (text) return text;
   }
   return null;
