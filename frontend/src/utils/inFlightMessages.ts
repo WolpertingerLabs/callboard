@@ -138,12 +138,18 @@ function userEntries(messages: ParsedMessage[]): UserEntry[] {
  * True when an entry with no typed text is this attachment-only message.
  * Text cannot tell two of them apart, so the attachments have to: the file
  * names (as the backend stores them, hence {@link safeFileName}) and the
- * number of images, whose names the transcript does not keep.
+ * images, whose names the transcript does not keep. Images are compared by
+ * count, and loosely: parsers drop an image repeated within one message, so
+ * the entry may have fewer than were attached, never more.
  */
 function sameAttachments(message: InFlightMessage, entry: UserEntry): boolean {
   const names = (message.fileNames ?? []).map(safeFileName);
+  const images = inFlightImageCount(message);
   return (
-    entry.imageCount === inFlightImageCount(message) && entry.fileNames.length === names.length && entry.fileNames.every((name, i) => name === names[i])
+    entry.imageCount > 0 === images > 0 &&
+    entry.imageCount <= images &&
+    entry.fileNames.length === names.length &&
+    entry.fileNames.every((name, i) => name === names[i])
   );
 }
 

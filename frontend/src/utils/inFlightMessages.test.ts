@@ -228,6 +228,9 @@ describe("file attachments", () => {
     // Not by a files-only turn, nor by a turn with a different number of images.
     expect(visibleInFlight([imageOnly], [user(appendAttachmentBlocks("", [fileBlock("a", "a.txt")]))])).toHaveLength(1);
     expect(visibleInFlight([imageOnly], [{ ...withImage, imageIds: ["i1", "i2"] }])).toHaveLength(1);
+    // The same image attached twice comes back once: parsers dedup within a message.
+    expect(visibleInFlight([{ key: nextInFlightKey(), text: "", imageUrls: ["blob:a", "blob:b"] }], [withImage])).toEqual([]);
+    expect(settleInFlight([{ key: nextInFlightKey(), text: "", imageUrls: ["blob:a", "blob:b"] }], [withImage])).toEqual([]);
     // A handed-off message has no previews, only the count.
     expect(visibleInFlight([{ key: nextInFlightKey(), text: "", imageUrls: [], imageCount: 1 }], [withImage])).toEqual([]);
   });
