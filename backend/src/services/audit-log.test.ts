@@ -14,6 +14,7 @@ import {
   flushAuditLog,
   MAX_BATCH,
   MAX_QUEUE,
+  MAX_REPORT_BACKOFF_MS,
   MAX_SEND_ATTEMPTS,
   MAX_STRING_BYTES,
   REPROBE_INTERVAL_MS,
@@ -51,6 +52,31 @@ function fakeProxy(impl: (input: IngestLogsInput) => Promise<unknown>) {
 }
 
 const recordsOf = (input: IngestLogsInput): OtlpLogRecord[] => input.resourceLogs.flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords));
+/** Loss reports go in their own calls; these split a hub's traffic accordingly. */
+const isReportCall = (input: IngestLogsInput) => recordsOf(input).some((r) => r.eventName === AUDIT_DROPPED_EVENT);
+const reportsIn = (calls: IngestLogsInput[]) => calls.flatMap(recordsOf).filter((r) => r.eventName === AUDIT_DROPPED_EVENT);
+const dataCalls = (calls: IngestLogsInput[]) => calls.filter((c) => !isReportCall(c));
+/** Sum of every dropped count drawlatch received, per reason. */
+function deliveredDropsOf(calls: IngestLogsInput[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  // Deduped by spanId, as a reader would: a retried report reuses its ids.
+  const seen = new Set<string>();
+  for (const r of calls.flatMap(recordsOf).filter((x) => x.eventName === AUDIT_DROPPED_EVENT)) {
+    if (r.spanId && seen.has(r.spanId)) continue;
+    if (r.spanId) seen.add(r.spanId);
+    for (const a of r.attributes) {
+      const m = /^callboard\.audit\.dropped\.(count|overflow|send_failed|build_failed|rejected|hub_unsupported)$/.exec(a.key);
+      if (m) out[m[1]] = (out[m[1]] ?? 0) + Number((a.value as { intValue: string }).intValue);
+    }
+  }
+  return out;
+}
+
+/** Let any report backoff expire, then flush. */
+async function flushAfterBackoff() {
+  now += MAX_REPORT_BACKOFF_MS;
+  await flushAuditLog();
+}
 const attr = (r: OtlpLogRecord, key: string) => r.attributes.find((a) => a.key === key)?.value;
 
 function setup(impl: (input: IngestLogsInput) => Promise<unknown> = async () => ({})) {
@@ -170,30 +196,20 @@ describe("emit never throws and never blocks", () => {
     });
     emitAuditRecord("alice", rec(2));
     await flushAuditLog();
-    // Counted while building, so reported in the same batch.
-    const [dropped, kept] = recordsOf(calls[0]);
+    // The batch goes; the loss is reported in its own call right after.
+    expect(recordsOf(calls[0]).map((r) => attr(r, "n"))).toEqual([{ intValue: "2" }]);
+    const [dropped] = recordsOf(calls[1]);
     expect(dropped.eventName).toBe(AUDIT_DROPPED_EVENT);
     expect(attr(dropped, "callboard.audit.dropped.build_failed")).toEqual({ intValue: "1" });
-    expect(attr(kept, "n")).toEqual({ intValue: "2" });
   });
 });
 
 describe("loss is visible downstream", () => {
-  /** Sum of every dropped count drawlatch received, per reason. */
-  function deliveredDrops(calls: IngestLogsInput[]): Record<string, number> {
-    const out: Record<string, number> = {};
-    for (const r of calls.flatMap(recordsOf).filter((x) => x.eventName === AUDIT_DROPPED_EVENT)) {
-      for (const a of r.attributes) {
-        const m = /^callboard\.audit\.dropped\.(count|overflow|send_failed|build_failed|rejected|hub_unsupported)$/.exec(a.key);
-        if (m) out[m[1]] = (out[m[1]] ?? 0) + Number((a.value as { intValue: string }).intValue);
-      }
-    }
-    return out;
-  }
 
   it("drops counted while a tally-carrying batch is in flight survive that batch's success (review B1)", async () => {
-    // 1. Hub down: the first batch exhausts its retries → send_failed=1.
-    // 2. Hub back but slow: the next batch carries that tally and hangs.
+    // 1. Hub down: the first batch exhausts its retries → send_failed=1 (its
+    //    report fails too and backs off).
+    // 2. Hub back but slow: the next batch hangs.
     // 3. Meanwhile the queue fills and 7 records overflow.
     // 4. The slow batch succeeds. All 8 losses must reach drawlatch.
     let mode: "down" | "slow" | "up" = "down";
@@ -218,13 +234,109 @@ describe("loss is visible downstream", () => {
     mode = "up";
     releaseSlow();
     await slowFlush;
-    await flushAuditLog();
+    await flushAfterBackoff();
 
-    expect(deliveredDrops(delivered)).toEqual({ count: 8, send_failed: 1, overflow: 7 });
+    expect(deliveredDropsOf(delivered)).toEqual({ count: 8, send_failed: 1, overflow: 7 });
     // ...and each loss is reported exactly once: nothing is left to report.
     emitAuditRecord("alice", rec(9999));
     await flushAuditLog();
     expect(recordsOf(delivered.at(-1)!).map((r) => r.eventName)).toEqual(["test.event"]);
+  });
+
+  /**
+   * A hub whose byte budget refuses exactly the dropped (meta) record while
+   * `refuseDropped` is set, and stores everything else — drawlatch#46 refuses
+   * per record and does not say which (`partialSuccess` carries only a count).
+   */
+  function budgetHub() {
+    const hub = { refuseDropped: true, stored: [] as OtlpLogRecord[] };
+    const fake = setup(async (input) => {
+      const records = recordsOf(input);
+      const refused = hub.refuseDropped ? records.filter((r) => r.eventName === AUDIT_DROPPED_EVENT) : [];
+      hub.stored.push(...records.filter((r) => !refused.includes(r)));
+      return refused.length ? { partialSuccess: { rejectedLogRecords: refused.length, errorMessage: "rejected: audit byte budget exhausted for this caller; retry later" } } : {};
+    });
+    return { hub, ...fake };
+  }
+
+  function storedDrops(stored: OtlpLogRecord[]): Record<string, number> {
+    return deliveredDropsOf([{ resourceLogs: [{ resource: { attributes: [] }, scopeLogs: [{ scope: { name: "", version: "" }, logRecords: stored }] }] }]);
+  }
+
+  it("a dropped record the hub refuses keeps its counts until one is stored (review round 2, B1)", async () => {
+    const { hub } = budgetHub();
+    for (let i = 0; i < MAX_QUEUE + 7; i++) emitAuditRecord("alice", rec(i)); // 7 overflow
+    await flushAuditLog();
+    // Budget exhausted: the report was refused, the audit records were stored.
+    expect(hub.stored.filter((r) => r.eventName === "test.event")).toHaveLength(MAX_QUEUE);
+    expect(storedDrops(hub.stored)).toEqual({});
+
+    // Budget refills; the next try lands with the original counts, exactly once.
+    hub.refuseDropped = false;
+    now += 10 * 60_000;
+    emitAuditRecord("alice", rec(-1));
+    await flushAuditLog();
+    expect(storedDrops(hub.stored)).toEqual({ count: 7, overflow: 7 });
+  });
+
+  it("a loss report travels alone, keeps its ids across retries, and backs off between them", async () => {
+    const { hub, calls } = budgetHub();
+    for (let i = 0; i < MAX_QUEUE + 3; i++) emitAuditRecord("alice", rec(i)); // 3 overflow
+    await flushAuditLog();
+    const reportCalls = () => calls.filter(isReportCall);
+    expect(reportCalls()).toHaveLength(1);
+    for (const c of reportCalls()) expect(recordsOf(c)).toHaveLength(1); // nothing else in the call
+    const [first] = reportsIn(calls);
+    expect(first.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(first.spanId).toMatch(/^[0-9a-f]{16}$/);
+
+    // Not retried before its backoff (2s), then retried with the SAME ids.
+    now += RETRY_BASE_MS - 1;
+    await flushAuditLog();
+    expect(reportCalls()).toHaveLength(1);
+    now += 1;
+    await flushAuditLog();
+    expect(reportCalls()).toHaveLength(2);
+    now += RETRY_BASE_MS * 2; // the next backoff doubles
+    await flushAuditLog();
+    expect(reportCalls()).toHaveLength(3);
+    const ids = reportsIn(calls).map((r) => `${r.traceId}/${r.spanId}`);
+    expect(new Set(ids).size).toBe(1);
+
+    hub.refuseDropped = false;
+    await flushAfterBackoff();
+    expect(storedDrops(hub.stored)).toEqual({ count: 3, overflow: 3 });
+    expect(hub.stored.filter((r) => r.eventName === AUDIT_DROPPED_EVENT).map((r) => r.spanId)).toEqual([first.spanId]);
+  });
+
+  it("under sustained budget exhaustion, losses accumulate and are reported once it refills — counts and windows intact", async () => {
+    const { hub } = budgetHub();
+    const t0 = now;
+    for (let i = 0; i < MAX_QUEUE + 2; i++) emitAuditRecord("alice", rec(i)); // 2 overflow at t0
+    await flushAuditLog(); // report A (overflow=2) refused
+
+    // Minutes of refusals; more losses keep arriving behind the pending report.
+    for (let round = 1; round <= 5; round++) {
+      now = t0 + round * MAX_REPORT_BACKOFF_MS;
+      for (let i = 0; i < MAX_QUEUE + 1; i++) emitAuditRecord("alice", rec(i)); // 1 overflow per round
+      await flushAuditLog();
+    }
+    expect(storedDrops(hub.stored)).toEqual({});
+
+    hub.refuseDropped = false;
+    await flushAfterBackoff();
+    const stored = hub.stored.filter((r) => r.eventName === AUDIT_DROPPED_EVENT);
+    // Report A as first snapshotted, then one report for everything after it.
+    expect(stored).toHaveLength(2);
+    expect(attr(stored[0], "callboard.audit.dropped.count")).toEqual({ intValue: "2" });
+    expect(attr(stored[0], "callboard.audit.dropped.window_start_unix_ms")).toEqual({ intValue: String(t0) });
+    expect(attr(stored[0], "callboard.audit.dropped.window_end_unix_ms")).toEqual({ intValue: String(t0) });
+    expect(attr(stored[1], "callboard.audit.dropped.count")).toEqual({ intValue: "5" });
+    expect(attr(stored[1], "callboard.audit.dropped.window_start_unix_ms")).toEqual({ intValue: String(t0 + MAX_REPORT_BACKOFF_MS) });
+    expect(attr(stored[1], "callboard.audit.dropped.window_end_unix_ms")).toEqual({ intValue: String(t0 + 5 * MAX_REPORT_BACKOFF_MS) });
+    // Refused reports are not themselves counted as lost audit records (no `rejected`).
+    expect(storedDrops(hub.stored)).toEqual({ count: 7, overflow: 7 });
+    expect(hub.stored.filter((r) => r.eventName === "test.event")).toHaveLength(6 * MAX_QUEUE);
   });
 
   it("overflow drops new records and the next successful batch carries a dropped record with count and window", async () => {
@@ -240,7 +352,7 @@ describe("loss is visible downstream", () => {
     const droppedRecords = all.filter((r) => r.eventName === AUDIT_DROPPED_EVENT);
     expect(droppedRecords).toHaveLength(1);
     const d = droppedRecords[0];
-    expect(recordsOf(calls[0])[0]).toBe(d); // first record of the first batch
+    expect(recordsOf(calls[0])).toEqual([d]); // in its own call, before the batches
     expect(d.severityText).toBe("WARN");
     expect(attr(d, "callboard.audit.dropped.count")).toEqual({ intValue: "2" });
     expect(attr(d, "callboard.audit.dropped.overflow")).toEqual({ intValue: "2" });
@@ -272,8 +384,9 @@ describe("loss is visible downstream", () => {
     emitAuditRecord("alice", rec(2));
     const slowFlush = flushAuditLog();
     await vi.waitFor(() => expect(releaseSlow).toBeTypeOf("function"));
-    // Two overflow losses while the batch carrying send_failed=1 is in flight.
-    for (let i = 0; i < MAX_QUEUE; i++) emitAuditRecord("alice", rec(100 + i));
+    // Two overflow losses while the report carrying send_failed=1 is in flight
+    // (it goes first; record 2 is still queued, so MAX_QUEUE - 1 fill it).
+    for (let i = 0; i < MAX_QUEUE - 1; i++) emitAuditRecord("alice", rec(100 + i));
     now = t0 + 70_000;
     emitAuditRecord("alice", rec(-1));
     now = t0 + 80_000;
@@ -311,8 +424,8 @@ describe("loss is visible downstream", () => {
     await flushAuditLog();
     down = false;
     emitAuditRecord("alice", rec(3));
-    await flushAuditLog();
-    const d = recordsOf(calls.at(-1)!)[0];
+    await flushAfterBackoff();
+    const [d] = reportsIn(calls);
     expect(attr(d, "callboard.audit.dropped.send_failed")).toEqual({ intValue: "2" });
     expect(attr(d, "callboard.audit.dropped.window_start_unix_ms")).toEqual({ intValue: String(t0) });
     expect(attr(d, "callboard.audit.dropped.window_end_unix_ms")).toEqual({ intValue: String(t0 + 5_000) });
@@ -329,8 +442,9 @@ describe("loss is visible downstream", () => {
     await flushAuditLog();
     down = false;
     emitAuditRecord("alice", rec(2, { timeMs: decidedAt + 1 }));
-    await flushAuditLog();
-    const [d, r] = recordsOf(calls.at(-1)!);
+    await flushAfterBackoff();
+    const [d] = reportsIn(calls);
+    const [r] = recordsOf(dataCalls(calls).at(-1)!);
     expect(attr(d, "callboard.audit.dropped.window_start_unix_ms")).toEqual({ intValue: String(decidedAt) });
     expect(r.timeUnixNano).toBe(`${decidedAt + 1}000000`);
     expect(r).not.toHaveProperty("timeMs");
@@ -360,14 +474,13 @@ describe("loss is visible downstream", () => {
     emitAuditRecord("alice", rec(1));
     emitAuditRecord("alice", rec(2));
     await flushAuditLog();
-    expect(calls).toHaveLength(MAX_SEND_ATTEMPTS);
+    expect(dataCalls(calls)).toHaveLength(MAX_SEND_ATTEMPTS);
     down = false;
     emitAuditRecord("alice", rec(3));
-    await flushAuditLog();
-    const [d, r] = recordsOf(calls.at(-1)!);
-    expect(d.eventName).toBe(AUDIT_DROPPED_EVENT);
+    await flushAfterBackoff();
+    const [d] = reportsIn(calls);
     expect(attr(d, "callboard.audit.dropped.send_failed")).toEqual({ intValue: "2" });
-    expect(attr(r, "n")).toEqual({ intValue: "3" });
+    expect(recordsOf(calls.at(-1)!).map((r) => attr(r, "n"))).toEqual([{ intValue: "3" }]);
   });
 
   it("records drawlatch rejects (partialSuccess) are counted and reported", async () => {
@@ -433,18 +546,16 @@ describe("hub without ingest_logs", () => {
     now += REPROBE_INTERVAL_MS;
     emitAuditRecord("alice", rec(20));
     await flushAuditLog();
-    expect(callTool).toHaveBeenCalledTimes(2); // the re-probe — still unsupported
+    expect(callTool).toHaveBeenCalledTimes(2); // the re-probe (the loss report) — still unsupported
     expect(__auditQueueLength()).toBe(0);
 
-    // Hub upgraded: the next probe succeeds and carries every record lost meanwhile.
+    // Hub upgraded: the re-probe succeeds and every record lost meanwhile is reported.
     supported = true;
     now += REPROBE_INTERVAL_MS;
     emitAuditRecord("alice", rec(30));
     await flushAuditLog();
-    const [d, r] = recordsOf(calls.at(-1)!);
-    expect(d.eventName).toBe(AUDIT_DROPPED_EVENT);
-    expect(attr(d, "callboard.audit.dropped.hub_unsupported")).toEqual({ intValue: "7" }); // 1 + 5 + 1
-    expect(attr(r, "n")).toEqual({ intValue: "30" });
+    expect(deliveredDropsOf(calls)).toEqual({ count: 7, hub_unsupported: 7 }); // 1 + 5 + 1
+    expect(recordsOf(calls.at(-1)!).map((r) => attr(r, "n"))).toEqual([{ intValue: "30" }]);
   });
 
   it("only an exact 'Unknown tool: ingest_logs' disables; other errors retry", async () => {
@@ -453,7 +564,7 @@ describe("hub without ingest_logs", () => {
     });
     emitAuditRecord("alice", rec(1));
     await flushAuditLog();
-    expect(callTool).toHaveBeenCalledTimes(MAX_SEND_ATTEMPTS);
+    expect(dataCalls(callTool.mock.calls.map((c) => (c as unknown[])[1] as IngestLogsInput))).toHaveLength(MAX_SEND_ATTEMPTS);
   });
 });
 
@@ -487,8 +598,8 @@ describe("shutdown", () => {
     emitAuditRecord("alice", rec(1));
     await flushAuditLog();
     await shutdown;
-    expect(callTool).toHaveBeenCalledTimes(2); // not MAX_SEND_ATTEMPTS
-    expect(calls).toHaveLength(2);
+    expect(dataCalls(calls)).toHaveLength(2); // not MAX_SEND_ATTEMPTS
+    expect(callTool.mock.calls.length - dataCalls(calls).length).toBeLessThanOrEqual(1); // at most one loss report
     expect(MAX_SEND_ATTEMPTS).toBeGreaterThan(2);
   });
 

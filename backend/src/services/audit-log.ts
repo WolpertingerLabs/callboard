@@ -27,9 +27,17 @@
  *
  * Overflow, a batch that exhausts its retries, a factory that throws, a record
  * drawlatch rejects, and records refused while the hub lacks `ingest_logs` all
- * count as dropped, per caller alias. The next batch that alias sends carries
- * one `callboard.audit.dropped` record with the counts and the window, so a gap
- * shows up in drawlatch, not just in callboard's own (agent-writable) log.
+ * count as dropped, per caller alias. A `callboard.audit.dropped` record then
+ * reports the counts and the window, so a gap shows up in drawlatch, not just
+ * in callboard's own (agent-writable) log.
+ *
+ * That report goes in its OWN `ingest_logs` call. drawlatch refuses records
+ * one by one (a per-caller byte budget) and only says how many, so a report
+ * riding in a batch could be refused while the call "succeeds". Alone, a
+ * refusal is unambiguous: the counts stay and the same report — same ids, so a
+ * reader can dedupe a retried one — is retried with backoff until it is
+ * stored. Losses counted meanwhile wait for the next report; reports never
+ * overlap. A refused report is not itself counted as a loss.
  *
  * ## Old hubs
  *
@@ -61,6 +69,8 @@ export const FLUSH_INTERVAL_MS = 1000;
 export const MAX_SEND_ATTEMPTS = 4;
 /** Backoff before attempt n+1 is BASE * 2^(n-1): 2s, 4s, 8s. */
 export const RETRY_BASE_MS = 2000;
+/** A loss report is never given up on; its retry backoff stops growing here. */
+export const MAX_REPORT_BACKOFF_MS = 60_000;
 /** One `ingest_logs` call may not take longer than this. */
 export const SEND_TIMEOUT_MS = 15_000;
 /** How long an alias whose hub lacks `ingest_logs` stays disabled before the next batch re-probes. */
@@ -246,12 +256,22 @@ interface DropTally extends DropWindow {
 /** The counts one batch reports — frozen when the batch is built. */
 type DropSnapshot = Pick<DropTally, "count" | "reasons" | "firstMs" | "lastMs">;
 
+/** A loss report in flight or awaiting retry. Its counts are fixed; its ids are reused on every retry. */
+interface PendingReport {
+  snapshot: DropSnapshot;
+  traceId: string;
+  spanId: string;
+  attempts: number;
+  retryAt: number;
+}
+
 interface AliasState {
   /** While set and in the future, the hub lacks ingest_logs: records are dropped, not queued. */
   disabledUntil: number;
   /** "Unknown tool" already logged at info for this alias; re-probe failures log at debug. */
   loggedUnsupported: boolean;
   dropped: DropTally | null;
+  report: PendingReport | null;
 }
 
 const queue: QueuedRecord[] = [];
@@ -286,7 +306,7 @@ export function isAuditLogEnabled(): boolean {
 function aliasState(alias: string): AliasState {
   let s = aliases.get(alias);
   if (!s) {
-    s = { disabledUntil: 0, loggedUnsupported: false, dropped: null };
+    s = { disabledUntil: 0, loggedUnsupported: false, dropped: null, report: null };
     aliases.set(alias, s);
   }
   return s;
@@ -404,6 +424,7 @@ function runFlush(): Promise<void> {
     } finally {
       inFlight = null;
       if (queue.length > 0) scheduleFlush(FLUSH_INTERVAL_MS);
+      else scheduleReportRetry();
     }
   })();
   return inFlight;
@@ -422,8 +443,108 @@ async function flushAll(): Promise<void> {
       countDropped(alias, "hub_unsupported", lost.length, w.firstMs, w.lastMs);
       continue;
     }
+    // Report losses first, so the report precedes later records in the hub's
+    // file. Then re-check from the top: the report may have found the hub
+    // unsupported (it doubles as the re-probe).
+    if (reportDue(s)) {
+      await reportDropped(alias, s);
+      continue;
+    }
     const taken = takeForAlias(alias, MAX_BATCH);
     await sendBatch(alias, taken);
+  }
+  // Losses with nothing queued behind them (or counted by this flush) still go out.
+  // Repeats while due: a settled report can leave a remainder (counted while it
+  // was in flight). Ends because each attempt either settles or backs off.
+  for (const [alias, s] of aliases) {
+    while (reportDue(s)) await reportDropped(alias, s);
+  }
+}
+
+function reportDue(s: AliasState): boolean {
+  const now = deps.now();
+  return s.dropped !== null && s.disabledUntil <= now && (!s.report || s.report.retryAt <= now);
+}
+
+/** Wake up for the earliest pending report retry, if nothing else will. */
+function scheduleReportRetry(): void {
+  if (stopped) return;
+  let next = Infinity;
+  for (const s of aliases.values()) {
+    if (!s.dropped) continue;
+    next = Math.min(next, Math.max(s.disabledUntil, s.report?.retryAt ?? 0));
+  }
+  if (next === Infinity) return;
+  scheduleFlush(Math.max(FLUSH_INTERVAL_MS, next - deps.now()));
+}
+
+/**
+ * Send this alias's loss report in its own call. Settles (subtracts its
+ * snapshot) only when drawlatch stored it — no error and no rejected record.
+ * Otherwise keeps it for a retry with backoff. Never counts a loss itself.
+ */
+async function reportDropped(alias: string, s: AliasState): Promise<void> {
+  if (!s.report) {
+    const snapshot = snapshotDropped(s);
+    if (!snapshot) return;
+    s.report = { snapshot, traceId: newTraceId(), spanId: newSpanId(), attempts: 0, retryAt: 0 };
+  }
+  const report = s.report;
+  const observedMs = deps.now();
+  let failure: string | undefined;
+  try {
+    const proxy = safeGetProxy(alias);
+    if (!proxy) throw new Error(`no drawlatch client for caller "${alias}"`);
+    const result = await proxy.callTool("ingest_logs", ingestBody([droppedRecord(report.snapshot, observedMs, report)]) as unknown as Record<string, unknown>, {
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+    });
+    const { rejected, message } = rejectedCount(result);
+    if (rejected === 0) {
+      settleDropped(s, report.snapshot);
+      s.report = null;
+      noteSupported(alias, s);
+      return;
+    }
+    failure = `refused: ${message ?? "no reason given"}`;
+  } catch (err) {
+    if (isUnsupported(err)) {
+      markUnsupported(alias, s);
+      return; // kept; re-probed with the next batch after the interval
+    }
+    failure = err instanceof Error ? err.message : String(err);
+  }
+  report.attempts++;
+  report.retryAt = deps.now() + Math.min(RETRY_BASE_MS * 2 ** (report.attempts - 1), MAX_REPORT_BACKOFF_MS);
+  const line = `[${alias}] loss report (${report.snapshot.count} record(s)) not stored, attempt ${report.attempts} — kept for retry: ${failure}`;
+  if (report.attempts === 1) log.warn(line);
+  else log.debug(line);
+}
+
+function ingestBody(records: OtlpLogRecord[]): IngestLogsInput {
+  return {
+    resourceLogs: [
+      {
+        resource: { attributes: resourceAttributes() },
+        scopeLogs: [{ scope: { name: AUDIT_SCOPE_NAME, version: "1" }, logRecords: records }],
+      },
+    ],
+  };
+}
+
+function noteSupported(alias: string, s: AliasState): void {
+  if (s.loggedUnsupported) {
+    log.info(`[${alias}] drawlatch accepts ingest_logs again — audit log re-enabled`);
+    s.loggedUnsupported = false;
+  }
+}
+
+function markUnsupported(alias: string, s: AliasState): void {
+  s.disabledUntil = deps.now() + REPROBE_INTERVAL_MS;
+  if (!s.loggedUnsupported) {
+    log.info(`[${alias}] drawlatch has no ingest_logs — audit log disabled for this caller, re-probing every ${REPROBE_INTERVAL_MS / 60_000} min`);
+    s.loggedUnsupported = true;
+  } else {
+    log.debug(`[${alias}] re-probe: drawlatch still has no ingest_logs`);
   }
 }
 
@@ -465,7 +586,7 @@ function buildRecords(alias: string, taken: QueuedRecord[], observedMs: number):
   return records;
 }
 
-function droppedRecord(d: DropSnapshot, observedMs: number): OtlpLogRecord {
+function droppedRecord(d: DropSnapshot, observedMs: number, ids: { traceId: string; spanId: string }): OtlpLogRecord {
   const attributes: Record<string, AttrValue> = {
     "callboard.audit.dropped.count": d.count,
     "callboard.audit.dropped.window_start_unix_ms": d.firstMs,
@@ -478,6 +599,9 @@ function droppedRecord(d: DropSnapshot, observedMs: number): OtlpLogRecord {
       severity: "WARN",
       body: `callboard dropped ${d.count} audit record(s) between ${new Date(d.firstMs).toISOString()} and ${new Date(d.lastMs).toISOString()}`,
       attributes,
+      // Stable across retries of this report: a reader dedupes on spanId.
+      traceId: ids.traceId,
+      spanId: ids.spanId,
     },
     observedMs,
     observedMs,
@@ -512,20 +636,10 @@ async function sendBuiltBatch(alias: string, taken: QueuedRecord[]): Promise<voi
   // When this batch's records were emitted: the loss window if it is lost.
   const batchWindow = windowOf(built);
   const s = aliasState(alias);
-  // The batch reports a frozen snapshot of the losses so far. Losses counted
-  // while it is in flight go on the live tally; success subtracts exactly the
-  // snapshot, so they are reported by the next batch, not erased.
-  const dropped = snapshotDropped(s);
-  if (records.length === 0 && !dropped) return;
-  const sentRecords = dropped ? [droppedRecord(dropped, observedMs), ...records] : records;
-  const body: IngestLogsInput = {
-    resourceLogs: [
-      {
-        resource: { attributes: resourceAttributes() },
-        scopeLogs: [{ scope: { name: AUDIT_SCOPE_NAME, version: "1" }, logRecords: sentRecords }],
-      },
-    ],
-  };
+  // Audit records only: losses are reported in their own call (reportDropped),
+  // so every `rejected` counted below is an audit record, never the report.
+  if (records.length === 0) return;
+  const body = ingestBody(records);
 
   for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt++) {
     const proxy = safeGetProxy(alias);
@@ -533,11 +647,7 @@ async function sendBuiltBatch(alias: string, taken: QueuedRecord[]): Promise<voi
     if (proxy) {
       try {
         const result = await proxy.callTool("ingest_logs", body as unknown as Record<string, unknown>, { signal: AbortSignal.timeout(SEND_TIMEOUT_MS) });
-        if (dropped) settleDropped(s, dropped);
-        if (s.loggedUnsupported) {
-          log.info(`[${alias}] drawlatch accepts ingest_logs again — audit log re-enabled`);
-          s.loggedUnsupported = false;
-        }
+        noteSupported(alias, s);
         const { rejected, message } = rejectedCount(result);
         if (rejected > 0) {
           log.warn(`[${alias}] drawlatch rejected ${rejected} audit record(s): ${message ?? "no reason given"}`);
@@ -553,13 +663,7 @@ async function sendBuiltBatch(alias: string, taken: QueuedRecord[]): Promise<voi
     }
 
     if (isUnsupported(err)) {
-      s.disabledUntil = deps.now() + REPROBE_INTERVAL_MS;
-      if (!s.loggedUnsupported) {
-        log.info(`[${alias}] drawlatch has no ingest_logs — audit log disabled for this caller, re-probing every ${REPROBE_INTERVAL_MS / 60_000} min`);
-        s.loggedUnsupported = true;
-      } else {
-        log.debug(`[${alias}] re-probe: drawlatch still has no ingest_logs`);
-      }
+      markUnsupported(alias, s);
       countDropped(alias, "hub_unsupported", records.length, batchWindow.firstMs, batchWindow.lastMs);
       return;
     }
@@ -600,7 +704,8 @@ export async function shutdownAuditLog(timeoutMs = 3000): Promise<void> {
       // next failure drops instead of retrying, then drain what is left.
       stopped = true;
       if (inFlight) await inFlight;
-      if (queue.length > 0) await runFlush();
+      // Also with nothing queued: a pending loss report gets its last try.
+      await runFlush();
     })();
     const timedOut = await Promise.race([flushed.then(() => false), new Promise<boolean>((r) => (timer = setTimeout(() => r(true), timeoutMs)))]);
     if (timedOut) log.warn(`audit log shutdown: gave up after ${timeoutMs}ms with ${unsentCount()} record(s) unsent`);
@@ -624,7 +729,7 @@ export async function flushAuditLog(): Promise<void> {
     flushTimer = null;
   }
   if (inFlight) await inFlight;
-  if (queue.length > 0) await runFlush();
+  await runFlush();
 }
 
 /** Test-only: reset all state and swap the dependencies. */
