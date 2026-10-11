@@ -78,6 +78,7 @@ import { initScheduler, shutdownScheduler } from "./services/cron-scheduler.js";
 import { initJobRunner, shutdownJobRunner } from "./services/job-runner.js";
 import { migrateCardsToMetadata, repairStrandedCardFields } from "./services/card-migration.js";
 import { initEventWatchers, shutdownEventWatchers } from "./services/event-watcher.js";
+import { shutdownAuditLog } from "./services/audit-log.js";
 import { shutdownDebounce } from "./services/trigger-debounce.js";
 import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
 import { getAgentSettings, migrateDrawlatchDirs, migrateDrawlatchKeyLayouts } from "./services/agent-settings.js";
@@ -584,6 +585,10 @@ async function gracefulShutdown(signal: string) {
   shutdownEventWatchers();
   shutdownCliWatcher();
   stopOpenRouterModelsRefresh();
+
+  // Best-effort, bounded: send queued audit records while drawlatch (in local
+  // mode, the daemon stopped just below) can still receive them.
+  await shutdownAuditLog(3000);
 
   // Stop the callboard-managed drawlatch daemon (no-op in remote mode).
   try {
