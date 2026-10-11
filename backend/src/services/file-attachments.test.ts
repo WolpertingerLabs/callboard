@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { INLINE_ATTACHMENT_BUDGET_BYTES, INLINE_ATTACHMENT_MAX_BYTES, splitAttachmentBlocks } from "shared/types/index.js";
-import { buildAttachmentBlocks, decodeTextAttachment, type FileAttachment } from "./file-attachments.js";
+import { buildAttachmentBlocks, decodeTextAttachment, titleSourceFor, type FileAttachment } from "./file-attachments.js";
 
 const file = (name: string, content: string | Buffer, mimeType = "application/octet-stream"): FileAttachment => ({
   id: `id-${name}`,
@@ -72,5 +72,19 @@ describe("buildAttachmentBlocks", () => {
     } finally {
       decode.mockRestore();
     }
+  });
+});
+
+describe("titleSourceFor — the title and branch-name source", () => {
+  it("uses the typed prompt when there is one", () => {
+    expect(titleSourceFor("fix the build", ["notes.md"])).toBe("fix the build");
+  });
+
+  it("uses the attached file names when the prompt is empty", () => {
+    expect(titleSourceFor("  ", ["notes.md", "data.csv"])).toBe("Attached files: notes.md, data.csv");
+  });
+
+  it("is null with neither text nor files, so no model is asked to name nothing", () => {
+    expect(titleSourceFor("", [])).toBeNull();
   });
 });

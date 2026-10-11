@@ -41,6 +41,7 @@ import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Message } from "@cline/sdk";
 import type { ParsedMessage } from "shared/types/index.js";
+import { attachmentPreviewText } from "shared/types/index.js";
 import type {
   DiscoverResult,
   ResolvedSession,
@@ -125,7 +126,10 @@ export class ClineSessionProvider implements SessionProvider {
   }
 
   getSessionPreview(logPath: string, maxLength = 100): string | null {
-    const preview = readClineTranscriptPreview(logPath);
+    // The raw prompt also feeds search, which should see inlined file
+    // contents; only the preview drops the attachment blocks.
+    const raw = readClineTranscriptPreview(logPath);
+    const preview = raw && attachmentPreviewText(raw);
     if (!preview) return null;
     return preview.length > maxLength ? `${preview.slice(0, maxLength)}…` : preview;
   }

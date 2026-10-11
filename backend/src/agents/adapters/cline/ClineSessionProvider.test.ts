@@ -289,6 +289,8 @@ describe("discovery and search", () => {
       ]),
     );
     expect(provider.getSessionPreview(provider.resolveSession("sess-files")!.logPath)).toBe("📎 notes.md, data.csv");
+    // Search reads the raw prompt, so inlined contents stay findable.
+    expect(provider.searchSessions({ folder: "", grep: "a,b" }).chats.map((c) => c.sessionId)).toEqual(["sess-files"]);
   });
 });
 

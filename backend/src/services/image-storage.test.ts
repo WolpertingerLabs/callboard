@@ -154,3 +154,21 @@ describe("file attachments", () => {
     expect(fileFor(imageId!)).toBe(`${imageId}.png`);
   });
 });
+
+describe("hash index build", () => {
+  it("reads and hashes images only, not file attachments", async () => {
+    const attachment = (await ImageStorageService.storeImage(Buffer.from("attachment-bytes"), "big.log", "text/plain")).image!;
+    const image = (await ImageStorageService.storeImage(Buffer.from("image-bytes"), "pic.png", "image/png")).image!;
+
+    // A fresh module has no index yet, so the next lookup builds it.
+    vi.resetModules();
+    const freshFs = await import("fs");
+    const fresh = await import("./image-storage.js");
+    vi.mocked(freshFs.readFileSync).mockClear();
+    fresh.storeBase64Image(b64("build-the-index"), "image/png");
+
+    const read = vi.mocked(freshFs.readFileSync).mock.calls.map(([path]) => String(path));
+    expect(read.some((path) => path.includes(image.id))).toBe(true);
+    expect(read.some((path) => path.includes(attachment.id))).toBe(false);
+  });
+});

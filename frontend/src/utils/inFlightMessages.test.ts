@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import type { ParsedMessage } from "../api";
 import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
-import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightList, visibleInFlight, type InFlightMessage } from "./inFlightMessages";
+import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightHandoff, toInFlightList, visibleInFlight, type InFlightMessage } from "./inFlightMessages";
 
 const pending = (...texts: string[]): InFlightMessage[] => texts.map((text) => ({ key: nextInFlightKey(), text, imageUrls: [] }));
 const user = (content: string): ParsedMessage => ({ role: "user", type: "text", content });
@@ -144,6 +144,20 @@ describe("toInFlightList", () => {
     expect(toInFlightList({ nope: true })).toEqual([]);
   });
 
+  it("carries a message that is only files across the redirect, with its file names", () => {
+    const sent: InFlightMessage[] = [
+      { key: "k1", text: "", imageUrls: ["blob:x"], fileNames: ["notes.md"] },
+      { key: "k2", text: "plain", imageUrls: [] },
+    ];
+    const handoff = toInFlightHandoff(sent);
+    expect(handoff).toEqual([{ text: "", fileNames: ["notes.md"] }, "plain"]);
+    expect(toInFlightList(JSON.parse(JSON.stringify(handoff))).map(({ text, fileNames, imageUrls }) => ({ text, fileNames, imageUrls }))).toEqual([
+      { text: "", fileNames: ["notes.md"], imageUrls: [] },
+      { text: "plain", fileNames: undefined, imageUrls: [] },
+    ]);
+    expect(toInFlightList([{ text: "", fileNames: [] }, { text: 1, fileNames: [] }])).toEqual([]);
+  });
+
   it("assigns distinct keys", () => {
     const [a, b] = toInFlightList(["same", "same"]);
     expect(a.key).not.toBe(b.key);
@@ -177,5 +191,15 @@ describe("file attachments", () => {
       formatAttachmentBlock({ id: "a", name: "a.txt", path: "/x/a.txt", size: 1, mimeType: "text/plain" }, { content: "a" }),
     ]);
     expect(visibleInFlight(pending("see attached"), [user(sent)])).toEqual([]);
+  });
+
+  it("settles a message with no typed text against a transcript turn that is only blocks", () => {
+    const sent = appendAttachmentBlocks("", [
+      formatAttachmentBlock({ id: "a", name: "a.txt", path: "/x/a.txt", size: 1, mimeType: "text/plain" }, { content: "a" }),
+    ]);
+    expect(visibleInFlight(pending(""), [user("earlier"), assistant("ok"), user(sent)])).toEqual([]);
+    expect(settleInFlight(pending(""), [user(sent)])).toEqual([]);
+    // Not before the transcript has it.
+    expect(visibleInFlight(pending(""), [user("earlier"), assistant("ok")])).toHaveLength(1);
   });
 });

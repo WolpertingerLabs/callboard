@@ -49,4 +49,13 @@ describe("MessageBubble with file attachments", () => {
     fireEvent.click(screen.getByTitle("Copy message"));
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith("please review these"));
   });
+
+  it("splits a built-in command's blocks out too, showing the command line literally", () => {
+    const command = { ...message, content: appendAttachmentBlocks("/review the auth module", [content.slice(content.indexOf("<callboard-attachment"))]), isBuiltInCommand: true } as ParsedMessage;
+    const { container } = render(<MessageBubble message={command} />);
+    expect(screen.getByText("/review the auth module")).toBeTruthy();
+    expect(container.textContent).not.toContain("callboard-attachment");
+    expect(container.textContent).not.toContain("secret notes body");
+    expect([...container.querySelectorAll("a[download]")].map((a) => a.getAttribute("download"))).toEqual(["notes.md", "data.pdf"]);
+  });
 });

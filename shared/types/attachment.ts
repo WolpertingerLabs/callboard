@@ -114,7 +114,8 @@ export function appendAttachmentBlocks(prompt: string, blocks: string[]): string
   return [...(text ? [text] : []), ...blocks].join("\n\n");
 }
 
-const BLOCK_RE = new RegExp(`\\s*<${ATTACHMENT_TAG}((?:\\s+[a-z]+="[^"]*")*)>\\n[\\s\\S]*?\\n</${ATTACHMENT_TAG}>`, "g");
+// `\r?\n` so a transcript that came back with CRLF line endings still splits.
+const BLOCK_RE = new RegExp(`\\s*<${ATTACHMENT_TAG}((?:\\s+[a-z]+="[^"]*")*)>\\r?\\n[\\s\\S]*?\\r?\\n</${ATTACHMENT_TAG}>`, "g");
 const ATTR_RE = /([a-z]+)="([^"]*)"/g;
 
 function parseAttachedFile(rawAttrs: string): AttachedFile {

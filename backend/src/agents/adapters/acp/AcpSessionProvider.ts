@@ -21,6 +21,7 @@
  */
 import { unlinkSync } from "node:fs";
 import type { ParsedMessage } from "shared/types/index.js";
+import { attachmentPreviewText } from "shared/types/index.js";
 import type {
   DiscoverResult,
   SessionRouting,
@@ -104,7 +105,10 @@ export class AcpSessionProvider implements SessionProvider {
   }
 
   getSessionPreview(logPath: string, maxLength = 100): string | null {
-    const preview = readAcpTranscriptPreview(logPath);
+    // The raw prompt also feeds search, which should see inlined file
+    // contents; only the preview drops the attachment blocks.
+    const raw = readAcpTranscriptPreview(logPath);
+    const preview = raw && attachmentPreviewText(raw);
     if (!preview) return null;
     return preview.length > maxLength ? `${preview.slice(0, maxLength)}…` : preview;
   }

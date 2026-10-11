@@ -61,3 +61,14 @@ export function buildAttachmentBlocks(files: FileAttachment[]): string[] {
     return formatAttachmentBlock(meta, { content: text });
   });
 }
+
+/**
+ * What a new chat's title and auto-created branch name are generated from:
+ * the typed prompt, or the attached files' names when the message is only
+ * files. Null when there is neither (an image-only message), so the caller
+ * skips the model call rather than sending it an empty request.
+ */
+export function titleSourceFor(prompt: string, fileNames: string[]): string | null {
+  if (prompt.trim()) return prompt;
+  return fileNames.length > 0 ? `Attached files: ${fileNames.join(", ")}` : null;
+}

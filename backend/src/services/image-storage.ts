@@ -59,6 +59,24 @@ function attachmentNameOf(storedAs: string): string | null {
   return storedAs[UUID_LENGTH] === FILE_NAME_SEPARATOR ? storedAs.slice(UUID_LENGTH + 1) : null;
 }
 
+/**
+ * Names of the file attachments among `imageIds`, in order, from the stored
+ * file names alone: one directory listing, no file read. Images and unknown
+ * ids contribute nothing.
+ */
+export function attachmentNamesOf(imageIds: string[]): string[] {
+  try {
+    const files = readdirSync(IMAGES_DIR);
+    return imageIds.flatMap((id) => {
+      const file = isValidImageId(id) ? files.find((f) => f.startsWith(id)) : undefined;
+      const name = file === undefined ? null : attachmentNameOf(file);
+      return name === null ? [] : [name];
+    });
+  } catch {
+    return [];
+  }
+}
+
 /** One stored upload, ready for the prompt. `name` is set only for non-image attachments. */
 export interface LoadedUpload {
   id: string;
@@ -321,6 +339,10 @@ function buildHashIndex(): Map<string, string[]> {
   fileHashes.clear();
   if (existsSync(IMAGES_DIR)) {
     for (const file of readdirSync(IMAGES_DIR)) {
+      // findImageByHash skips file attachments, so there is no point reading
+      // and hashing them (up to 25 MB each). Ones stored later are still
+      // indexed by storeImage, and skipped on lookup.
+      if (attachmentNameOf(file) !== null) continue;
       try {
         indexImage(crypto.createHash("sha256").update(readFileSync(join(IMAGES_DIR, file))).digest("hex"), file);
       } catch {}

@@ -18,7 +18,6 @@
 import { existsSync, readdirSync, readFileSync, statSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
-import { attachmentPreviewText } from "shared/types/index.js";
 import type { AgentEvent } from "../../ports/events.js";
 import { CumulativeCounter } from "../cumulativeCounter.js";
 import { isSafePathSegment, resolveClineSessionsRoot, type ClineTranscriptEntry, type ClineTranscriptHeader, type ClineTranscriptLine } from "./transcript.js";
@@ -352,7 +351,7 @@ function readModelFromLines(lines: ClineTranscriptLine[]): string | undefined {
 export function readClineTranscriptPreview(filePath: string): string | null {
   const lines = readClineTranscriptLines(filePath);
   for (const line of lines) {
-    if (line.type === "user_message" && line.content.trim()) return attachmentPreviewText(line.content.trim());
+    if (line.type === "user_message" && line.content.trim()) return line.content.trim();
   }
   for (const line of lines) {
     if (line.type !== "event") continue;

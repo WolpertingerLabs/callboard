@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { AcpTranscriptWriter, acpTranscriptPath, isSafePathSegment, resolveAcpSessionsRoot } from "./transcript.js";
 import { findAcpTranscript, listAcpTranscripts, parseAcpTranscript, readAcpTranscriptCwd, readAcpTranscriptPreview } from "./sessionParser.js";
 import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
+import { AcpSessionProvider } from "./AcpSessionProvider.js";
 
 let dataDir: string;
 let original: string | undefined;
@@ -212,7 +213,7 @@ describe("reading transcripts back", () => {
     expect(readAcpTranscriptPreview(findAcpTranscript("s6")!.filePath)).toBe("what does this do?");
   });
 
-  it("previews the typed text of a prompt with file attachments, or their names when it has none", () => {
+  it("previews the typed text of a prompt with file attachments, or their names; the raw read keeps the blocks for search", () => {
     const block = formatAttachmentBlock({ id: "a", name: "notes.md", path: "/d/a_notes.md", size: 2, mimeType: "text/markdown" }, { content: "hi" });
     for (const [id, typed, preview] of [
       ["s7", "explain this", "explain this"],
@@ -221,7 +222,9 @@ describe("reading transcripts back", () => {
       const writer = new AcpTranscriptWriter("opencode", id, "/work");
       writer.writeHeader(null);
       writer.writeUserMessage(appendAttachmentBlocks(typed, [block]));
-      expect(readAcpTranscriptPreview(findAcpTranscript(id)!.filePath)).toBe(preview);
+      const { filePath } = findAcpTranscript(id)!;
+      expect(readAcpTranscriptPreview(filePath)).toContain("<callboard-attachment ");
+      expect(new AcpSessionProvider().getSessionPreview(filePath)).toBe(preview);
     }
   });
 

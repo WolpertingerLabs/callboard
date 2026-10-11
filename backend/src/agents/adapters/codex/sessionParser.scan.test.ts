@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
 import { clearCodexSessionMetaCache, readCodexSessionMeta, readFirstUserPrompt } from "./sessionParser.js";
+import { CodexSessionProvider } from "./CodexSessionProvider.js";
 
 const THREAD_ID = "019ec7f2-cd5d-7823-b2d1-6683c42bfe32";
 /** The reader's read size — the boundary this file aims characters at. */
@@ -67,7 +68,7 @@ function padFor(target: number): number {
   return probe + (target - promptOffsetOf(rollout(probe)));
 }
 
-describe("readFirstUserPrompt — file attachments", () => {
+describe("first user prompt with file attachments — raw for search, stripped for the preview", () => {
   const write = (prompt: string) => {
     const meta = JSON.stringify({ type: "session_meta", payload: { id: THREAD_ID, timestamp: "2026-06-14T17:03:58.000Z", cwd: "/p/x", cli_version: "0.139.0" } });
     const user = JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: prompt } });
@@ -75,12 +76,18 @@ describe("readFirstUserPrompt — file attachments", () => {
   };
   const block = formatAttachmentBlock({ id: "a", name: "notes.md", path: "/d/a_notes.md", size: 2, mimeType: "text/markdown" }, { content: "hi" });
 
-  it("previews the typed text, or the file names when there is none", () => {
+  it("keeps the blocks in the raw prompt, so search sees inlined contents", () => {
     write(appendAttachmentBlocks("summarise this", [block]));
-    expect(readFirstUserPrompt(filePath)).toBe("summarise this");
+    expect(readFirstUserPrompt(filePath)).toBe(appendAttachmentBlocks("summarise this", [block]));
+  });
+
+  it("previews the typed text, or the file names when there is none", () => {
+    const provider = new CodexSessionProvider();
+    write(appendAttachmentBlocks("summarise this", [block]));
+    expect(provider.getSessionPreview(filePath)).toBe("summarise this");
     clearCodexSessionMetaCache();
     write(appendAttachmentBlocks("", [block]));
-    expect(readFirstUserPrompt(filePath)).toBe("📎 notes.md");
+    expect(provider.getSessionPreview(filePath)).toBe("📎 notes.md");
   });
 });
 

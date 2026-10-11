@@ -9,6 +9,7 @@
  * and are where the "a message vanished" bugs come from.
  */
 import type { ParsedMessage } from "../api";
+import type { InFlightHandoff } from "../types/chatRouteState";
 import { splitAttachmentBlocks } from "shared/types/index.js";
 
 /**
@@ -32,15 +33,32 @@ export function nextInFlightKey(): string {
 }
 
 /**
+ * The router-state form of in-flight messages: the bare text, or an object
+ * when files are attached, so a message that is only files survives the trip.
+ */
+export function toInFlightHandoff(messages: InFlightMessage[]): (string | InFlightHandoff)[] {
+  return messages.map((m) => (m.fileNames?.length ? { text: m.text, fileNames: m.fileNames } : m.text));
+}
+
+function isHandoff(value: unknown): value is InFlightHandoff {
+  const v = value as InFlightHandoff | null;
+  return typeof v === "object" && v !== null && typeof v.text === "string" && Array.isArray(v.fileNames) && v.fileNames.every((n) => typeof n === "string");
+}
+
+/**
  * Normalize the /chat/new → /chat/:id router-state handoff. Accepts the
  * current list form, and the bare string a history entry from an older build
  * may still hold. Image previews are not carried across: their object URLs
- * belong to the previous document.
+ * belong to the previous document. File names are, since they need no blob.
  */
 export function toInFlightList(value: unknown): InFlightMessage[] {
   if (typeof value === "string") return value ? [{ key: nextInFlightKey(), text: value, imageUrls: [] }] : [];
   if (!Array.isArray(value)) return [];
-  return value.filter((v): v is string => typeof v === "string" && v.length > 0).map((text) => ({ key: nextInFlightKey(), text, imageUrls: [] }));
+  return value.flatMap((v): InFlightMessage[] => {
+    if (typeof v === "string") return v ? [{ key: nextInFlightKey(), text: v, imageUrls: [] }] : [];
+    if (isHandoff(v) && (v.text || v.fileNames.length > 0)) return [{ key: nextInFlightKey(), text: v.text, imageUrls: [], fileNames: v.fileNames }];
+    return [];
+  });
 }
 
 /**

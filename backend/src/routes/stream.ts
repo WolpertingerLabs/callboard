@@ -12,7 +12,8 @@ import { sendRetiredProviderError } from "../utils/route-errors.js";
 import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp/vendors.js";
 import type { EffortLevel } from "shared/types/index.js";
 import { sessionRegistry } from "../services/session-registry.js";
-import { loadImageBuffers } from "../services/image-storage.js";
+import { attachmentNamesOf, loadImageBuffers } from "../services/image-storage.js";
+import { titleSourceFor } from "../services/file-attachments.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
 import { fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "../utils/git.js";
@@ -40,6 +41,14 @@ const log = createLogger("stream");
 
 export const streamRouter = Router();
 
+/**
+ * A message may be only attachments: the composer enables Send with files and
+ * no text. Files then carry the message as blocks, images as image content.
+ */
+function hasAttachments(imageIds: unknown): imageIds is string[] {
+  return Array.isArray(imageIds) && imageIds.length > 0;
+}
+
 // Send first message to create a new chat (no existing chat ID required)
 streamRouter.post("/new/message", async (req, res) => {
   // #swagger.tags = ['Stream']
@@ -54,7 +63,7 @@ streamRouter.post("/new/message", async (req, res) => {
           required: ["folder", "prompt"],
           properties: {
             folder: { type: "string", description: "Absolute path to the project folder" },
-            prompt: { type: "string", description: "The user message to send" },
+            prompt: { type: "string", description: "The user message to send. May be empty when imageIds is non-empty" },
             defaultPermissions: { type: "object", description: "Default tool permissions (fileRead, fileWrite, codeExecution, webAccess — each one of allow, deny, or ask)" },
             modelReview: { type: "boolean", description: "Screen every permission ask with a one-shot model safety reviewer before it reaches a person (approve is final, deny returns to the agent, escalate passes on). Not applied to Codex. Persisted for the chat. Default: false." },
             parentAnswers: { type: "boolean", description: "Also offer permission prompts to the parent chat (needs parentChatId); it may answer within its own permissions, first answer wins. Persisted for the chat. Default: false." },
@@ -94,7 +103,7 @@ streamRouter.post("/new/message", async (req, res) => {
   /* #swagger.responses[500] = { description: "Branch or worktree preparation failed — git's own message is in error." } */
   const {
     folder,
-    prompt,
+    prompt: rawPrompt,
     defaultPermissions,
     imageIds,
     activePlugins,
@@ -118,10 +127,11 @@ streamRouter.post("/new/message", async (req, res) => {
     clientTrackingId,
   } = req.body;
   log.debug(
-    `POST /new/message — folder=${folder}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
+    `POST /new/message — folder=${folder}, promptLen=${rawPrompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
   );
   if (!folder) return res.status(400).json({ error: "folder is required" });
-  if (!prompt) return res.status(400).json({ error: "prompt is required" });
+  if (!rawPrompt && !hasAttachments(imageIds)) return res.status(400).json({ error: "prompt is required" });
+  const prompt: string = rawPrompt || "";
   // Validate the optional browser context before branch/workspace/adoption,
   // metadata or image writes. Old clients still omit it.
   let chatView: ReturnType<typeof bindChatView>;
@@ -171,7 +181,11 @@ streamRouter.post("/new/message", async (req, res) => {
       if (autoCreateBranch && !newBranch) {
         let generated: string | null = null;
         try {
-          generated = await generateBranchName(prompt);
+          // A message that is only files is named after them; one that is only
+          // images has nothing to name it from, so the generator is skipped
+          // and the fallback below applies.
+          const source = titleSourceFor(prompt, hasAttachments(imageIds) ? attachmentNamesOf(imageIds) : []);
+          if (source) generated = await generateBranchName(source);
         } catch (err: any) {
           log.warn(`Auto-generate branch name failed: ${err.message}`);
         }
@@ -374,7 +388,7 @@ streamRouter.post("/:id/message", async (req, res) => {
           type: "object",
           required: ["prompt"],
           properties: {
-            prompt: { type: "string", description: "The user message to send" },
+            prompt: { type: "string", description: "The user message to send. May be empty when imageIds is non-empty" },
             imageIds: { type: "array", items: { type: "string" }, description: "Previously uploaded image/file IDs to attach. Images are sent as images; other files are inlined into the prompt when small text, otherwise referenced by their stored path" },
             activePlugins: { type: "array", items: { type: "string" }, description: "Active plugin IDs" },
             maxTurns: { type: "number", description: "Maximum agentic turns before stopping (default: 200)" },
@@ -388,10 +402,11 @@ streamRouter.post("/:id/message", async (req, res) => {
     }
   } */
   /* #swagger.responses[200] = { description: "SSE stream opening with a server_info frame, then message_update, permission_request, message_complete, and message_error events" } */
-  /* #swagger.responses[400] = { description: "Missing prompt" } */
-  const { prompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort, requireExplicitCompletion } = req.body;
-  log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${prompt?.length || 0}, images=${imageIds?.length || 0}`);
-  if (!prompt) return res.status(400).json({ error: "prompt is required" });
+  /* #swagger.responses[400] = { description: "Missing prompt (and no imageIds)" } */
+  const { prompt: rawPrompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort, requireExplicitCompletion } = req.body;
+  log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${rawPrompt?.length || 0}, images=${imageIds?.length || 0}`);
+  if (!rawPrompt && !hasAttachments(imageIds)) return res.status(400).json({ error: "prompt is required" });
+  const prompt: string = rawPrompt || "";
   // Validate the optional browser context before branch/workspace/adoption,
   // metadata or image writes. Old clients still omit it.
   let chatView: ReturnType<typeof bindChatView>;

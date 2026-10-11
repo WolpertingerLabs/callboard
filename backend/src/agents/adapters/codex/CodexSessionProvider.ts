@@ -25,6 +25,7 @@
 import { mkdirSync, opendirSync, lstatSync, statSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
+import { attachmentPreviewText } from "shared/types/index.js";
 import type { HandoffTurn } from "../../handoff.js";
 import type {
   DiscoverResult,
@@ -460,7 +461,10 @@ export class CodexSessionProvider implements SessionProvider {
   // ── Preview ─────────────────────────────────────────────────────────
 
   getSessionPreview(logPath: string, maxLength = 100): string | null {
-    const prompt = readFirstUserPrompt(logPath);
+    // The raw prompt also feeds search, which should see inlined file
+    // contents; only the preview drops the attachment blocks.
+    const raw = readFirstUserPrompt(logPath);
+    const prompt = raw && attachmentPreviewText(raw);
     if (!prompt) return null;
     return prompt.length > maxLength ? `${prompt.slice(0, maxLength)}…` : prompt;
   }

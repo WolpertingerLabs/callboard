@@ -20,7 +20,7 @@ import { setSlashCommandsForDirectory } from "./slashCommands.js";
 import type { DefaultPermissions, PermissionReviewSettings } from "shared/types/index.js";
 import type { StreamEvent, TaskListItem } from "shared/types/index.js";
 import { TASK_LIST_TOOLS, normalizePermissions, normalizeReviewSettings, appendAttachmentBlocks } from "shared/types/index.js";
-import { buildAttachmentBlocks, type FileAttachment } from "./file-attachments.js";
+import { buildAttachmentBlocks, titleSourceFor, type FileAttachment } from "./file-attachments.js";
 import { buildPluginOptions, buildMcpServerOptions, buildHookOptions, type PluginDescriptor } from "./claude-session-options.js";
 import { buildAcpExtras, buildClineExtras, buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
@@ -355,18 +355,6 @@ export function taskListStreamEvent(items: TaskListItem[]): StreamEvent {
  * is still a plain string, which every harness accepts.
  */
 type PromptImageMetadata = { buffer: Buffer; mimeType: string; storagePath?: string; id?: string; name?: string };
-
-/**
- * What a new chat is titled from: the typed prompt, or the attached files'
- * names when the message is only files. Null when there is neither, or when
- * the prompt is already structured.
- */
-export function titleSourceFor(prompt: string | AsyncIterable<unknown>, imageMetadata?: PromptImageMetadata[]): string | null {
-  if (typeof prompt !== "string") return null;
-  if (prompt.trim()) return prompt;
-  const names = (imageMetadata ?? []).flatMap((upload) => (upload.name !== undefined ? [upload.name] : []));
-  return names.length > 0 ? `Attached files: ${names.join(", ")}` : null;
-}
 
 export function buildFormattedPrompt(
   prompt: string | AsyncIterable<unknown>,
@@ -2227,7 +2215,13 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
 
                 // Generate a title for new manual (non-triggered) chats
                 if (!opts.triggered) {
-                  const titleSource = titleSourceFor(prompt, imageMetadata);
+                  const titleSource =
+                    typeof prompt === "string"
+                      ? titleSourceFor(
+                          prompt,
+                          (imageMetadata ?? []).flatMap((upload) => (upload.name !== undefined ? [upload.name] : [])),
+                        )
+                      : null;
                   if (titleSource) {
                     const chatId = trackingId;
                     generateChatTitle(titleSource)

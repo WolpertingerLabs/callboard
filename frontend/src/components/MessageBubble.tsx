@@ -867,9 +867,9 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
   }
 
   // Non-image attachments ride in a user message's text as blocks; show the
-  // typed text, and the files as chips.
-  const { text: bodyText, files: attachedFiles } =
-    isUser && !message.isBuiltInCommand ? splitAttachmentBlocks(message.content) : { text: message.content, files: [] };
+  // typed text, and the files as chips. A slash command is no exception: the
+  // blocks arrive inside its arguments.
+  const { text: bodyText, files: attachedFiles } = isUser ? splitAttachmentBlocks(message.content) : { text: message.content, files: [] };
 
   return (
     <div
@@ -903,7 +903,7 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
         {onFork && message.timestamp && (
           <ForkButton onFork={(provider) => onFork(message.timestamp!, provider)} currentProvider={forkCurrentProvider} />
         )}
-        {message.isBuiltInCommand ? message.content : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
+        {message.isBuiltInCommand ? bodyText : bodyText && <MarkdownRenderer content={bodyText} className="message-markdown" />}
         {attachedFiles.length > 0 && <AttachedFileChips files={attachedFiles} />}
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>

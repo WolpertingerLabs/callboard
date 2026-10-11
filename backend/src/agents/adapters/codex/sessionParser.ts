@@ -48,7 +48,6 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } fro
 import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import type { ParsedMessage } from "shared/types/index.js";
-import { attachmentPreviewText } from "shared/types/index.js";
 import { getAgentSettings } from "../../../services/agent-settings.js";
 import { storeBase64Image } from "../../../services/image-storage.js";
 import { scanJsonlLines } from "../../../utils/jsonl-scan.js";
@@ -969,7 +968,7 @@ export function readFirstUserPrompt(filePath: string): string | null {
       if (!content) return undefined;
       const head = content.trimStart().toLowerCase();
       if (SYNTHETIC_MESSAGE_PREFIXES.some((pre) => head.startsWith(pre))) return undefined;
-      return attachmentPreviewText(content);
+      return content;
     }) ?? null
   );
 }

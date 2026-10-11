@@ -60,6 +60,13 @@ describe("getFirstUserMessage — file attachments", () => {
   it("previews the file names when the message is only attachments", () => {
     expect(getFirstUserMessage(transcript([userLine(attached(""))]))).toBe("📎 notes.md, data.csv");
   });
+
+  it("previews a slash command whose arguments end in attachment blocks as the command alone", () => {
+    const envelope = (args: string) =>
+      `<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>${args}</command-args>`;
+    expect(getFirstUserMessage(transcript([userLine(envelope(attached("the auth module")))]))).toBe("/review the auth module");
+    expect(getFirstUserMessage(transcript([userLine(envelope(attached("")))]))).toBe("/review");
+  });
 });
 
 describe("getFirstUserMessage", () => {

@@ -68,7 +68,15 @@ import { useChatCommands } from "../hooks/useChatCommands";
 import ThinkingIndicator from "../components/ThinkingIndicator";
 import { useIsSessionActive, useMetadataVersion } from "../contexts/SessionContext";
 import { newChatTrackingId } from "../utils/ids";
-import { endsWithInterruptMarker, nextInFlightKey, settleInFlight, toInFlightList, visibleInFlight, type InFlightMessage } from "../utils/inFlightMessages";
+import {
+  endsWithInterruptMarker,
+  nextInFlightKey,
+  settleInFlight,
+  toInFlightHandoff,
+  toInFlightList,
+  visibleInFlight,
+  type InFlightMessage,
+} from "../utils/inFlightMessages";
 import MessageBubble, { AttachedFileChips, TEAM_COLORS } from "../components/MessageBubble";
 import ProviderBadge from "../components/ProviderBadge";
 import ChatTreeIndicator from "../components/ChatTreeIndicator";
@@ -1120,7 +1128,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                 navigateRef.current(`/chat/${event.chatId}`, {
                   replace: true,
                   state: {
-                    inFlightMessage: inFlightMessagesRef.current.map((m) => m.text),
+                    inFlightMessage: toInFlightHandoff(inFlightMessagesRef.current),
                     ...(newChatProvider && { provider: newChatProvider }),
                   } satisfies ChatRouteState,
                 });

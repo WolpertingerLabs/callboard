@@ -39,6 +39,20 @@ describe("attachment blocks", () => {
     expect(attachmentPreviewText("plain")).toBe("plain");
   });
 
+  it("splits a transcript that came back with CRLF line endings", () => {
+    const prompt = appendAttachmentBlocks("hello\nthere", [
+      formatAttachmentBlock(meta, { content: "line one\nline two\n" }),
+      formatAttachmentBlock({ ...meta, id: "def" }, { reason: "binary" }),
+    ]).replace(/\n/g, "\r\n");
+    expect(splitAttachmentBlocks(prompt)).toEqual({
+      text: "hello\r\nthere",
+      files: [
+        { ...meta, inline: true },
+        { ...meta, id: "def", inline: false },
+      ],
+    });
+  });
+
   it("leaves text without blocks exactly as it was", () => {
     expect(splitAttachmentBlocks("  <b>bold</b>  ")).toEqual({ text: "  <b>bold</b>  ", files: [] });
     expect(appendAttachmentBlocks("  same  ", [])).toBe("  same  ");
