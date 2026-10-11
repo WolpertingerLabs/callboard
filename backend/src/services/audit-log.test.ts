@@ -388,6 +388,17 @@ describe("loss is visible downstream", () => {
     expect(attr(d, "callboard.audit.dropped.rejected")).toEqual({ intValue: "1" });
   });
 
+  it("partialSuccess with rejectedLogRecords: 0 (drawlatch's lenient 'kept' warnings) is a clean success", async () => {
+    const { calls, callTool } = setup(async () => ({ partialSuccess: { rejectedLogRecords: 0, errorMessage: "kept: record 0 has unknown field 'x' (stored under extra)" } }));
+    emitAuditRecord("alice", rec(1));
+    await flushAuditLog();
+    expect(callTool).toHaveBeenCalledTimes(1); // no retry
+    expect(sleep).not.toHaveBeenCalled();
+    emitAuditRecord("alice", rec(2));
+    await flushAuditLog();
+    expect(recordsOf(calls.at(-1)!).map((r) => r.eventName)).toEqual(["test.event"]); // no dropped record
+  });
+
   it("drops are tallied per alias and reported to that alias's caller", async () => {
     const { calls } = setup(async (input) => {
       if (recordsOf(input).some((r) => (attr(r, "n") as { intValue?: string } | undefined)?.intValue === "1")) throw new Error("fetch failed");
