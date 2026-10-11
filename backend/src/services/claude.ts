@@ -57,6 +57,7 @@ import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, type PendingRequest } from "./pending-requests.js";
 import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, type ReviewOptions, type ReviewRequest, type ReviewVerdict } from "./permission-review.js";
+import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, type ReviewAuditTrace } from "./permission-review-audit.js";
 import { notifyParentOfChildPrompt } from "./parent-answers.js";
 import { resolveParentage, walkToRootId } from "./chat-lineage.js";
 import { readChat, resolveNewChatSpace, spaceInstructionsPrompt, spaceOfChat, spaceRecord } from "./space-service.js";
@@ -427,6 +428,11 @@ export interface PermissionReviewHooks {
   reviewer?: (req: ReviewRequest, opts: ReviewOptions) => Promise<ReviewVerdict>;
   /** Injected in tests; defaults to {@link notifyParentOfChildPrompt} (wakes the parent only if it could approve). */
   notifyParent?: (parentChatId: string, childChatId: string, toolName: string, category: string | null) => void;
+  /**
+   * Ship each screened ask to drawlatch's audit log (permission-review-audit.ts).
+   * Absent = no audit records. Never changes or delays a decision.
+   */
+  audit?: PermissionAuditHooks;
 }
 
 /**
@@ -482,7 +488,9 @@ export function buildCanUseTool(
   return async (
     toolName: string,
     input: Record<string, unknown>,
-    { signal, suggestions }: { signal: AbortSignal; suggestions?: readonly unknown[] },
+    // `toolUseID` is passed by the Claude Agent SDK only; pi, ACP and Cline call
+    // this with just `{ signal }`, so their audit records carry no tool-use id.
+    { signal, suggestions, toolUseID }: { signal: AbortSignal; suggestions?: readonly unknown[]; toolUseID?: string },
   ): Promise<PermissionResult> => {
     // If a PreToolUse hook flagged "ask", skip auto-approval and prompt the user
     // regardless of default permissions.
@@ -524,18 +532,60 @@ export function buildCanUseTool(
     let reviewerNotes: string | undefined;
     let reviewerVerdict: "escalate" | "kill" | undefined;
     let offeredToParent: string | undefined;
+    // The audit trace of a screened ask (permission-review-audit.ts) and the
+    // verdict it reports. Every exit after a screen ran reports its outcome
+    // through `audited`/`reportAudit`, which return nothing the chain reads
+    // and cannot throw — the decision is the same with or without them.
+    let auditTrace: ReviewAuditTrace | undefined;
+    let auditVerdict: ReviewVerdict | undefined;
+    let auditDowngrade: ReviewAuditResult["downgrade"];
+    const reportAudit = (outcome: ReviewAuditResult["outcome"], requestId?: string): void => {
+      if (auditTrace && auditVerdict) auditTrace.result({ verdict: auditVerdict, outcome, ...(requestId && { requestId }), ...(auditDowngrade && { downgrade: auditDowngrade }) });
+    };
+    const audited = (result: PermissionResult, outcome: ReviewAuditResult["outcome"]): PermissionResult => {
+      reportAudit(outcome);
+      return result;
+    };
     if (review && !hookOverrideReason && isReviewableTool(toolName)) {
+      let settingsFallback = false;
       const readSettings = (): PermissionReviewSettings & { approveAllowed?: false } => {
         try {
           return review.getSettings();
         } catch (err) {
           log.warn(`[PERM-DIAG] could not read review settings for ${getTrackingId()} — strict fallback (screen on, no approve, no parent): ${err}`);
+          settingsFallback = true;
           return STRICT_REVIEW_FALLBACK;
         }
       };
       let settings = readSettings();
       if (settings.modelReview || settings.parentAnswers) {
         let verdict = detectHardStop(toolName, input);
+        const beginAudit = (screen: "model" | "hardstop", taskExcerpt?: string) => {
+          if (!review.audit) return undefined;
+          // The model path passes the excerpt its reviewer saw; a hard stop
+          // reads it now, at the decision, not when the record is flushed.
+          if (screen === "hardstop") {
+            try {
+              taskExcerpt = review.getTaskExcerpt?.();
+            } catch {
+              taskExcerpt = undefined;
+            }
+          }
+          return startReviewAudit({
+            hooks: review.audit,
+            screen,
+            chatId: getTrackingId(),
+            toolName,
+            toolUseId: toolUseID,
+            input,
+            category,
+            cwd: review.cwd,
+            ...(taskExcerpt && { taskExcerpt }),
+            settings,
+            settingsFallback,
+          });
+        };
+        if (verdict) auditTrace = beginAudit("hardstop");
         // A review costs a model call; don't spend it on a call that would be
         // deferred anyway because the slot is taken.
         if (!verdict && settings.modelReview && !pendingRequests.has(getTrackingId())) {
@@ -547,8 +597,10 @@ export function buildCanUseTool(
             excerpt = undefined;
           }
           const before = settings;
+          auditTrace = beginAudit("model", excerpt);
           verdict = await reviewer({ toolName, input, cwd: review.cwd, category, ...(excerpt && { taskExcerpt: excerpt }) }, { signal });
-          if (signal.aborted) return { behavior: "deny", message: "Aborted" };
+          auditVerdict = verdict;
+          if (signal.aborted) return audited({ behavior: "deny", message: "Aborted" }, "aborted");
           // The review can take up to a minute. Re-read: a user who turned
           // model review OFF meanwhile did not consent to a model approving
           // this call, and a toggle of parentAnswers should apply too.
@@ -556,15 +608,17 @@ export function buildCanUseTool(
           if (verdict.verdict === "approve" && (!settings.modelReview || settings.approveAllowed === false || before.approveAllowed === false)) {
             const why = !settings.modelReview ? "model review was turned off while it ran" : "this chat's review settings could not be read";
             verdict = { ...verdict, verdict: "escalate", reason: `Reviewer approved, but ${why}, so a person must decide. (Reviewer said: ${verdict.reason})` };
+            auditDowngrade = { from: "approve", reason: !settings.modelReview ? "review_turned_off" : "settings_unreadable" };
           }
         }
         if (verdict) {
+          auditVerdict = verdict;
           const line = `[PERM-DIAG] review tool=${toolName}, chat=${getTrackingId()}, category=${category}, verdict=${verdict.verdict}, source=${verdict.source ?? "model"}${verdict.failure ? `, failure=${verdict.failure}` : ""}, reason=${verdict.reason.slice(0, 300)}`;
           if (verdict.verdict === "kill") log.warn(`${line}${verdict.evidence ? `, evidence=${verdict.evidence.slice(0, 300)}` : ""}`);
           else log.info(line);
-          if (verdict.verdict === "approve") return { behavior: "allow", updatedInput: input };
+          if (verdict.verdict === "approve") return audited({ behavior: "allow", updatedInput: input }, "allowed");
           if (verdict.verdict === "deny") {
-            return { behavior: "deny", message: `Denied by the model safety reviewer: ${verdict.reason}`, interrupt: false };
+            return audited({ behavior: "deny", message: `Denied by the model safety reviewer: ${verdict.reason}`, interrupt: false }, "denied_to_agent");
           }
           reviewerNotes = reviewerNotesFor(verdict);
           reviewerVerdict = verdict.verdict;
@@ -601,11 +655,14 @@ export function buildCanUseTool(
     // behaviour a parallel tool block wants.
     if (pendingRequests.has(getTrackingId())) {
       log.info(`[PERM-DIAG] tool=${toolName} deferred: ${getTrackingId()} is already awaiting an answer`);
-      return {
-        behavior: "deny",
-        message: "The user is already being asked about something else in this chat, so this call was not run. Request it again once they have answered.",
-        interrupt: false,
-      };
+      return audited(
+        {
+          behavior: "deny",
+          message: "The user is already being asked about something else in this chat, so this call was not run. Request it again once they have answered.",
+          interrupt: false,
+        },
+        "deferred",
+      );
     }
 
     // Optional wire fields (stream.ts) — absent unless an answerer ran.
@@ -675,6 +732,7 @@ export function buildCanUseTool(
         ...(hardStop && { humanOnly: true as const }),
       };
       pendingRequests.set(trackingId, entry);
+      reportAudit(hardStop ? "human_only" : offeredToParent ? "offered_to_parent" : "escalated_to_human", requestId);
       if (offeredToParent) {
         try {
           (review?.notifyParent ?? notifyParentOfChildPrompt)(offeredToParent, trackingId, toolName, category);
@@ -1613,6 +1671,24 @@ export async function sendMessage(opts: SendMessageOptions): Promise<EventEmitte
     inject("mcp-proxy", () => buildProxyToolsSpec(proxyKeyAlias), "proxy tools server", `Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`);
   } else if (opts.agentAlias && !proxyKeyAlias) {
     log.info(`Agent "${opts.agentAlias}" has no caller alias assigned — proxy tools not injected`);
+  }
+
+  // Audit records for the review chain go to drawlatch as this chat's own
+  // caller, so drawlatch's authenticated caller IS the chat's identity; an
+  // agent with no caller of its own falls back to the default caller. The
+  // agent itself never gets `ingest_logs` (proxy-tools.ts) — only callboard
+  // sends, so the fallback lends the agent no access.
+  if (agentSettings.proxyMode) {
+    const auditCallerAlias = proxyKeyAlias ?? resolveDefaultCaller();
+    reviewHooks.audit = {
+      getCallerAlias: () => auditCallerAlias,
+      ...(opts.agentAlias && { agentAlias: opts.agentAlias }),
+      // Read at flush time, off the decision path (a metadata read can miss to a full scan).
+      getLateAttributes: () => {
+        const parent = readLiveMetadata().parentChatId;
+        return { "callboard.chat.parent_id": typeof parent === "string" && parent ? parent : undefined, "callboard.space.id": getSpaceId() };
+      },
+    };
   }
 
   // Use the agent's MCP key alias for proxy identity.
