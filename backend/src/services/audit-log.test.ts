@@ -13,6 +13,7 @@ import {
   encodeAttributes,
   flushAuditLog,
   MAX_BATCH,
+  FLUSH_INTERVAL_MS,
   MAX_QUEUE,
   MAX_REPORT_BACKOFF_MS,
   MAX_SEND_ATTEMPTS,
@@ -71,6 +72,10 @@ function deliveredDropsOf(calls: IngestLogsInput[]): Record<string, number> {
   }
   return out;
 }
+
+/** Sum of the loss reports a hub stored (deduped by spanId). */
+const storedDropsIn = (stored: OtlpLogRecord[]) =>
+  deliveredDropsOf([{ resourceLogs: [{ resource: { attributes: [] }, scopeLogs: [{ scope: { name: "", version: "" }, logRecords: stored }] }] }]);
 
 /** Let any report backoff expire, then flush. */
 async function flushAfterBackoff() {
@@ -352,7 +357,7 @@ describe("loss is visible downstream", () => {
     const droppedRecords = all.filter((r) => r.eventName === AUDIT_DROPPED_EVENT);
     expect(droppedRecords).toHaveLength(1);
     const d = droppedRecords[0];
-    expect(recordsOf(calls[0])).toEqual([d]); // in its own call, before the batches
+    expect(calls.filter(isReportCall).map(recordsOf)).toEqual([[d]]); // in its own call
     expect(d.severityText).toBe("WARN");
     expect(attr(d, "callboard.audit.dropped.count")).toEqual({ intValue: "2" });
     expect(attr(d, "callboard.audit.dropped.overflow")).toEqual({ intValue: "2" });
@@ -384,9 +389,9 @@ describe("loss is visible downstream", () => {
     emitAuditRecord("alice", rec(2));
     const slowFlush = flushAuditLog();
     await vi.waitFor(() => expect(releaseSlow).toBeTypeOf("function"));
-    // Two overflow losses while the report carrying send_failed=1 is in flight
-    // (it goes first; record 2 is still queued, so MAX_QUEUE - 1 fill it).
-    for (let i = 0; i < MAX_QUEUE - 1; i++) emitAuditRecord("alice", rec(100 + i));
+    // Two overflow losses while record 2's batch is in flight and the report
+    // carrying send_failed=1 is still pending.
+    for (let i = 0; i < MAX_QUEUE; i++) emitAuditRecord("alice", rec(100 + i));
     now = t0 + 70_000;
     emitAuditRecord("alice", rec(-1));
     now = t0 + 80_000;
@@ -480,7 +485,7 @@ describe("loss is visible downstream", () => {
     await flushAfterBackoff();
     const [d] = reportsIn(calls);
     expect(attr(d, "callboard.audit.dropped.send_failed")).toEqual({ intValue: "2" });
-    expect(recordsOf(calls.at(-1)!).map((r) => attr(r, "n"))).toEqual([{ intValue: "3" }]);
+    expect(recordsOf(dataCalls(calls).at(-1)!).map((r) => attr(r, "n"))).toEqual([{ intValue: "3" }]);
   });
 
   it("records drawlatch rejects (partialSuccess) are counted and reported", async () => {
@@ -555,7 +560,7 @@ describe("hub without ingest_logs", () => {
     emitAuditRecord("alice", rec(30));
     await flushAuditLog();
     expect(deliveredDropsOf(calls)).toEqual({ count: 7, hub_unsupported: 7 }); // 1 + 5 + 1
-    expect(recordsOf(calls.at(-1)!).map((r) => attr(r, "n"))).toEqual([{ intValue: "30" }]);
+    expect(recordsOf(dataCalls(calls).at(-1)!).map((r) => attr(r, "n"))).toEqual([{ intValue: "30" }]);
   });
 
   it("only an exact 'Unknown tool: ingest_logs' disables; other errors retry", async () => {
@@ -565,6 +570,114 @@ describe("hub without ingest_logs", () => {
     emitAuditRecord("alice", rec(1));
     await flushAuditLog();
     expect(dataCalls(callTool.mock.calls.map((c) => (c as unknown[])[1] as IngestLogsInput))).toHaveLength(MAX_SEND_ATTEMPTS);
+  });
+});
+
+describe("report retries run on their own timer", () => {
+  /**
+   * Real module timing under vitest fake timers: `now` is the faked Date.now,
+   * and each caller has its own fake hub. `refuseReports` makes a caller's hub
+   * refuse loss reports (as a drained byte budget does) and store all else.
+   */
+  function timedHubs(aliasNames: string[]) {
+    vi.useFakeTimers({ now: 1_760_000_000_000 });
+    const hubs = new Map<string, { refuseReports: boolean; hangReports?: boolean; calls: IngestLogsInput[]; stored: OtlpLogRecord[] }>();
+    for (const a of aliasNames) hubs.set(a, { refuseReports: false, calls: [], stored: [] });
+    __resetAuditLogForTests({
+      getProxy: (alias) => ({
+        callTool: async (_tool: string, input?: Record<string, unknown>) => {
+          const hub = hubs.get(alias)!;
+          const body = input as unknown as IngestLogsInput;
+          hub.calls.push(body);
+          if (hub.hangReports && isReportCall(body)) return new Promise(() => {});
+          if (hub.refuseReports && isReportCall(body)) return { partialSuccess: { rejectedLogRecords: 1, errorMessage: "rejected: audit byte budget exhausted" } };
+          hub.stored.push(...recordsOf(body));
+          return {};
+        },
+      }),
+      sleep,
+    });
+    return hubs;
+  }
+  const lose = (alias: string) =>
+    emitAuditRecord(alias, () => {
+      throw new Error("lost");
+    });
+
+  /** Drive caller `a`'s refused report into a long (>=16 s) backoff. */
+  async function backOffReports(hub: { calls: IngestLogsInput[] }) {
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS); // the data flush counts the loss...
+    await vi.advanceTimersByTimeAsync(1); // ...and the report timer it armed fires: refused, retry in 2 s
+    for (const ms of [2000, 4000, 8000]) await vi.advanceTimersByTimeAsync(ms); // refused again each time
+    expect(hub.calls.filter(isReportCall).length).toBeGreaterThanOrEqual(4);
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("another caller's record goes out at the normal cadence while one caller's report backs off (review round 3, S1)", async () => {
+    const hubs = timedHubs(["a", "b"]);
+    hubs.get("a")!.refuseReports = true;
+    await backOffReports(hubs.get("a")!);
+
+    emitAuditRecord("b", rec(1));
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    expect(hubs.get("b")!.stored.map((r) => attr(r, "n"))).toEqual([{ intValue: "1" }]);
+  });
+
+  it("the same caller's new records go out at the normal cadence while its report backs off", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    await backOffReports(hub);
+
+    emitAuditRecord("a", rec(7));
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    expect(hub.stored.filter((r) => r.eventName === "test.event").map((r) => attr(r, "n"))).toEqual([{ intValue: "7" }]);
+  });
+
+  it("one caller's report that never returns does not hold another caller's report or records", async () => {
+    const hubs = timedHubs(["a", "b"]);
+    hubs.get("a")!.hangReports = true;
+    lose("a");
+    lose("b");
+    emitAuditRecord("b", rec(5));
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hubs.get("a")!.calls.filter(isReportCall)).toHaveLength(1); // out, never answered
+    const b = hubs.get("b")!;
+    expect(storedDropsIn(b.stored)).toEqual({ count: 1, build_failed: 1 });
+    expect(b.stored.filter((r) => r.eventName === "test.event").map((r) => attr(r, "n"))).toEqual([{ intValue: "5" }]);
+  });
+
+  it("a loss with nothing queued behind it is retried on its own timer and lands without any new record", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1); // first report refused
+    expect(hub.calls.filter(isReportCall)).toHaveLength(1);
+    hub.refuseReports = false;
+    await vi.advanceTimersByTimeAsync(RETRY_BASE_MS); // the scheduled retry, no emit, no flush call
+    expect(storedDropsIn(hub.stored)).toEqual({ count: 1, build_failed: 1 });
+  });
+
+  it("shutdown gives a report that is backing off its last try (review round 3, S2)", async () => {
+    const hubs = timedHubs(["a"]);
+    const hub = hubs.get("a")!;
+    hub.refuseReports = true;
+    lose("a");
+    await vi.advanceTimersByTimeAsync(FLUSH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(1); // refused; retry due in 2 s
+    expect(hub.calls.filter(isReportCall)).toHaveLength(1);
+    hub.refuseReports = false; // the hub is back — but the retry is not due yet
+    const before = hub.calls.length;
+    await shutdownAuditLog(1000);
+    expect(hub.calls.length).toBe(before + 1);
+    expect(storedDropsIn(hub.stored)).toEqual({ count: 1, build_failed: 1 });
   });
 });
 

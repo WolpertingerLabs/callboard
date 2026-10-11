@@ -44,8 +44,8 @@
  * A hub without the tool answers "Unknown tool: ingest_logs" — same as the
  * `wait_for_events` fallback in event-watcher.ts. The alias is then disabled
  * for {@link REPROBE_INTERVAL_MS}; records emitted meanwhile are counted as
- * dropped rather than queued, and the first batch after the interval (which
- * carries the dropped record) is the re-probe. Logged once, not per batch.
+ * dropped rather than queued; after the interval the loss report (or the next
+ * batch, whichever comes first) is the re-probe. Logged once, not per batch.
  */
 import { randomBytes } from "crypto";
 import { readFileSync } from "fs";
@@ -69,13 +69,13 @@ export const FLUSH_INTERVAL_MS = 1000;
 export const MAX_SEND_ATTEMPTS = 4;
 /** Backoff before attempt n+1 is BASE * 2^(n-1): 2s, 4s, 8s. */
 export const RETRY_BASE_MS = 2000;
-/** Loss-report attempts per alias in one flush (a guard against a spin, not a policy). */
+/** Loss-report attempts per alias in one run (a guard against a spin, not a policy). */
 const MAX_REPORTS_PER_FLUSH = 4;
 /** A loss report is never given up on; its retry backoff stops growing here. */
 export const MAX_REPORT_BACKOFF_MS = 60_000;
 /** One `ingest_logs` call may not take longer than this. */
 export const SEND_TIMEOUT_MS = 15_000;
-/** How long an alias whose hub lacks `ingest_logs` stays disabled before the next batch re-probes. */
+/** How long an alias whose hub lacks `ingest_logs` stays disabled before it is re-probed. */
 export const REPROBE_INTERVAL_MS = 10 * 60_000;
 /** Client-side cap on one string value. Matches drawlatch's own truncation, so nothing is shipped only to be cut. */
 export const MAX_STRING_BYTES = 16 * 1024;
@@ -278,8 +278,17 @@ interface AliasState {
 
 const queue: QueuedRecord[] = [];
 const aliases = new Map<string, AliasState>();
+/** The DATA flush timer: armed only for queued records, always at the flush interval. */
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight: Promise<void> | null = null;
+/**
+ * Loss reports run on their own timer and their own per-alias chains, so a
+ * report backing off (up to a minute) or hanging never holds a data flush —
+ * of its own caller or any other.
+ */
+let reportTimer: ReturnType<typeof setTimeout> | null = null;
+let reportTimerDue = Infinity;
+const reportChains = new Map<string, Promise<void>>();
 let stopped = false;
 /** Records in the batch being sent right now (for the shutdown "unsent" count). */
 let inFlightRecords = 0;
@@ -324,6 +333,7 @@ function countDropped(alias: string, reason: DropReason, n: number, firstMs: num
   d.firstMs = Math.min(d.firstMs, firstMs);
   d.lastMs = Math.max(d.lastMs, lastMs);
   d.sinceSnapshot = d.sinceSnapshot ? { firstMs: Math.min(d.sinceSnapshot.firstMs, firstMs), lastMs: Math.max(d.sinceSnapshot.lastMs, lastMs) } : { firstMs, lastMs };
+  scheduleReports();
 }
 
 /** Freeze the counts a batch reports, and start tracking what is counted after. */
@@ -426,23 +436,13 @@ function runFlush(): Promise<void> {
     } finally {
       inFlight = null;
       if (queue.length > 0) scheduleFlush(FLUSH_INTERVAL_MS);
-      else scheduleReportRetry();
     }
   })();
   return inFlight;
 }
 
-/** Send everything queued, one alias at a time, in batches. */
+/** Send everything queued, one alias at a time, in batches. Audit records only — loss reports run separately. */
 async function flushAll(): Promise<void> {
-  // Loss-report attempts per alias in this flush. Each attempt settles or backs
-  // off, so this cap only matters if that ever stopped holding — then it turns
-  // a spin into a deferred retry.
-  const reportAttempts = new Map<string, number>();
-  const mayReport = (alias: string, s: AliasState): boolean => {
-    if (!reportDue(s) || (reportAttempts.get(alias) ?? 0) >= MAX_REPORTS_PER_FLUSH) return false;
-    reportAttempts.set(alias, (reportAttempts.get(alias) ?? 0) + 1);
-    return true;
-  };
   while (queue.length > 0) {
     const alias = queue[0].alias;
     const now = deps.now();
@@ -454,39 +454,69 @@ async function flushAll(): Promise<void> {
       countDropped(alias, "hub_unsupported", lost.length, w.firstMs, w.lastMs);
       continue;
     }
-    // Report losses first, so the report precedes later records in the hub's
-    // file. Then re-check from the top: the report may have found the hub
-    // unsupported (it doubles as the re-probe).
-    if (mayReport(alias, s)) {
-      await reportDropped(alias, s);
-      continue;
-    }
     const taken = takeForAlias(alias, MAX_BATCH);
     await sendBatch(alias, taken);
   }
-  // Losses with nothing queued behind them (or counted by this flush) still go out.
-  // Repeats while due: a settled report can leave a remainder (counted while it
-  // was in flight).
-  for (const [alias, s] of aliases) {
-    while (mayReport(alias, s)) await reportDropped(alias, s);
-  }
 }
 
-function reportDue(s: AliasState): boolean {
-  const now = deps.now();
-  return s.dropped !== null && s.disabledUntil <= now && (!s.report || s.report.retryAt <= now);
+// ── Loss reports ────────────────────────────────────────────────────
+
+/**
+ * When this alias's report may next be attempted: a new report at once (the
+ * timer fires after the current tick, so a burst of losses is one report), a
+ * pending one after its backoff. Once shutting down, backoff is ignored: this
+ * is the last try.
+ */
+function reportDueAt(s: AliasState): number {
+  if (!s.dropped) return Infinity;
+  const wait = stopped || !s.report ? 0 : s.report.retryAt;
+  return Math.max(s.disabledUntil, wait);
 }
 
-/** Wake up for the earliest pending report retry, if nothing else will. */
-function scheduleReportRetry(): void {
+/** Arm the report timer for the earliest due report not already being sent. */
+function scheduleReports(): void {
   if (stopped) return;
   let next = Infinity;
-  for (const s of aliases.values()) {
-    if (!s.dropped) continue;
-    next = Math.min(next, Math.max(s.disabledUntil, s.report?.retryAt ?? 0));
+  for (const [alias, s] of aliases) if (!reportChains.has(alias)) next = Math.min(next, reportDueAt(s));
+  if (next === Infinity || next >= reportTimerDue) return;
+  if (reportTimer) clearTimeout(reportTimer);
+  reportTimerDue = next;
+  reportTimer = setTimeout(
+    () => {
+      reportTimer = null;
+      reportTimerDue = Infinity;
+      void runReports();
+    },
+    Math.max(0, next - deps.now()),
+  );
+  reportTimer.unref?.();
+}
+
+/**
+ * Start a report chain for every alias whose report is due, and wait for all
+ * chains (new and already running). Each chain is one alias, sequential: one
+ * report outstanding per alias, and a slow alias never holds another.
+ */
+function runReports(): Promise<void> {
+  for (const [alias, s] of aliases) {
+    if (reportChains.has(alias) || reportDueAt(s) > deps.now()) continue;
+    const chain = (async () => {
+      try {
+        // A settled report can leave a remainder (counted while it was out),
+        // due at once. Each attempt settles or backs off, so the cap only
+        // turns a spin — if that ever stopped holding — into a deferred retry.
+        const cap = stopped ? 1 : MAX_REPORTS_PER_FLUSH;
+        for (let n = 0; n < cap && reportDueAt(s) <= deps.now(); n++) await reportDropped(alias, s);
+      } catch (err) {
+        log.warn(`[${alias}] loss report failed: ${err}`);
+      } finally {
+        reportChains.delete(alias);
+        scheduleReports();
+      }
+    })();
+    reportChains.set(alias, chain);
   }
-  if (next === Infinity) return;
-  scheduleFlush(Math.max(FLUSH_INTERVAL_MS, next - deps.now()));
+  return Promise.all(reportChains.values()).then(() => undefined);
 }
 
 /**
@@ -520,7 +550,7 @@ async function reportDropped(alias: string, s: AliasState): Promise<void> {
   } catch (err) {
     if (isUnsupported(err)) {
       markUnsupported(alias, s);
-      return; // kept; re-probed with the next batch after the interval
+      return; // kept; retried (as the re-probe) once the interval is over
     }
     failure = err instanceof Error ? err.message : String(err);
   }
@@ -707,6 +737,7 @@ export async function shutdownAuditLog(timeoutMs = 3000): Promise<void> {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
+  clearReportTimer();
   const pending = queue.length;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -715,8 +746,9 @@ export async function shutdownAuditLog(timeoutMs = 3000): Promise<void> {
       // next failure drops instead of retrying, then drain what is left.
       stopped = true;
       if (inFlight) await inFlight;
-      // Also with nothing queued: a pending loss report gets its last try.
       await runFlush();
+      // A pending loss report gets its last try, backoff or not (reportDueAt).
+      await runReports();
     })();
     const timedOut = await Promise.race([flushed.then(() => false), new Promise<boolean>((r) => (timer = setTimeout(() => r(true), timeoutMs)))]);
     if (timedOut) log.warn(`audit log shutdown: gave up after ${timeoutMs}ms with ${unsentCount()} record(s) unsent`);
@@ -741,12 +773,22 @@ export async function flushAuditLog(): Promise<void> {
   }
   if (inFlight) await inFlight;
   await runFlush();
+  // Reports that are due; one backing off keeps its backoff.
+  await runReports();
+}
+
+function clearReportTimer(): void {
+  if (reportTimer) clearTimeout(reportTimer);
+  reportTimer = null;
+  reportTimerDue = Infinity;
 }
 
 /** Test-only: reset all state and swap the dependencies. */
 export function __resetAuditLogForTests(overrides: Partial<AuditLogDeps> = {}): void {
   if (flushTimer) clearTimeout(flushTimer);
   flushTimer = null;
+  clearReportTimer();
+  reportChains.clear();
   inFlight = null;
   inFlightRecords = 0;
   stopped = false;
