@@ -11,13 +11,14 @@ import { ToolPermissionPolicy } from "../agents/permissions/ToolPermissionPolicy
 import { buildCanUseTool, type PermissionReviewHooks } from "./claude.js";
 import { pendingRequests } from "./pending-requests.js";
 import type { ReviewVerdict } from "./permission-review.js";
-import { REVIEW_REQUESTED_EVENT, REVIEW_RESULT_EVENT, type PermissionAuditHooks } from "./permission-review-audit.js";
+import { REVIEW_REQUESTED_EVENT, REVIEW_RESULT_EVENT, startReviewAudit, type PermissionAuditHooks } from "./permission-review-audit.js";
 import { __auditQueueLength, __resetAuditLogForTests, emitAuditRecord, type AuditRecordInput } from "./audit-log.js";
 
 const FULL_ASK: DefaultPermissions = { fileRead: "ask", fileWrite: "ask", codeExecution: "ask", webAccess: "ask", computerControl: "deny" };
 
 /** Let the awaited reviewer settle and the prompt be parked. */
-const flush = () => new Promise((r) => setTimeout(r, 0));
+/** One macrotask turn, then the check phase: the reviewer settles, the prompt parks, deferred emits run. */
+const flush = () => new Promise((r) => setTimeout(r, 0)).then(() => new Promise((r) => setImmediate(r)));
 
 interface Scenario {
   name: string;
@@ -120,8 +121,14 @@ function auditHooksFor(variant: AuditVariant, captured: Captured[]): PermissionA
   }
 }
 
+/** Where the chain was when an emitter was called (the "ordering" probe). */
+interface EmitMoment {
+  settled: boolean;
+  parked: boolean;
+}
+
 /** Run one scenario and capture everything the chain does that anyone can observe. */
-async function run(s: Scenario, variant: AuditVariant) {
+async function run(s: Scenario, variant: AuditVariant | "ordering", opts: { input?: Record<string, unknown>; excerpt?: () => string } = {}) {
   const emitter = new EventEmitter();
   const events: StreamEvent[] = [];
   emitter.on("event", (e: StreamEvent) => events.push(e));
@@ -134,7 +141,16 @@ async function run(s: Scenario, variant: AuditVariant) {
     return s.verdict ?? { verdict: "escalate" as const, reason: "unsure", source: "model" as const };
   });
   const notifyParent = vi.fn();
-  const audit = auditHooksFor(variant, captured);
+  const moments: EmitMoment[] = [];
+  const audit =
+    variant === "ordering"
+      ? {
+          getCallerAlias: () => "chat-caller",
+          // A blocking emitter: it records where the chain was when it ran. It
+          // must find the decision already returned (or the prompt parked).
+          emit: () => void moments.push({ settled: settled !== undefined, parked: pendingRequests.has(trackingId) }),
+        }
+      : auditHooksFor(variant, captured);
   const hooks: PermissionReviewHooks = {
     getSettings: () => {
       if (settings === "throws") throw new Error("unreadable");
@@ -142,14 +158,14 @@ async function run(s: Scenario, variant: AuditVariant) {
     },
     getParentChatId: () => s.parent,
     cwd: "/repo",
-    getTaskExcerpt: () => "Chat title: fix the build",
+    getTaskExcerpt: opts.excerpt ?? (() => "Chat title: fix the build"),
     reviewer,
     notifyParent,
     ...(audit && { audit }),
   };
   const canUseTool = buildCanUseTool(emitter, new ToolPermissionPolicy(() => "codeExecution", () => FULL_ASK), () => trackingId, undefined, hooks);
   let settled: { value: unknown } | undefined;
-  void canUseTool("Bash", { command: s.command ?? "npm test" }, { signal: controller.signal, toolUseID: "toolu_01ABC" }).then(
+  void canUseTool("Bash", opts.input ?? { command: s.command ?? "npm test" }, { signal: controller.signal, toolUseID: "toolu_01ABC" }).then(
     (value) => (settled = { value }),
     (error) => (settled = { value: `rejected: ${error}` }),
   );
@@ -167,7 +183,7 @@ async function run(s: Scenario, variant: AuditVariant) {
   };
   const requestId = pending?.requestId;
   pendingRequests.delete(trackingId);
-  return { observation, captured, requestId };
+  return { observation, captured, requestId, moments };
 }
 
 beforeEach(() => {
@@ -186,6 +202,16 @@ describe("audit logging never changes the review chain", () => {
       expect({ variant, ...observation }).toEqual({ variant, ...baseline });
     }
   });
+
+  it.each(SCENARIOS.filter((s) => s.expectedOutcome).map((s) => [s.name, s] as const))(
+    "%s: every emitter call comes after the decision is returned or parked",
+    async (_name, s) => {
+      const { moments, observation } = await run(s, "ordering");
+      expect(moments).toHaveLength(2); // requested + result both still delivered
+      const decided = observation.settled !== "pending";
+      for (const m of moments) expect(decided ? m.settled : m.parked).toBe(true);
+    },
+  );
 
   it("the real logger only queues on the decision path — nothing is sent synchronously", async () => {
     const callTool = vi.fn(() => new Promise(() => {}));
@@ -267,9 +293,42 @@ describe("audit records of a screened ask", () => {
     expect(requested.attributes["tool.use_id"]).toBeUndefined();
     release({ verdict: "deny", reason: "nope", source: "model" });
     await promise;
+    expect(captured).toHaveLength(1); // the result is handed over after the decision returns
+    await flush();
     expect(captured).toHaveLength(2);
     expect(captured[1].build().attributes).toMatchObject({ "permission.review.verdict": "deny", "permission.review.source": "model", "permission.review.reason": "nope" });
     expect(captured[1].build().attributes["permission.review.latency_ms"]).toEqual(expect.any(Number));
+  });
+
+  it("the requested record holds the input as decided on, even if the caller's object changes later", async () => {
+    // pi hands canUseTool its live input object, then executes with it.
+    const input: Record<string, unknown> = { command: "npm test", env: { CI: "1" } };
+    const { captured, observation } = await run(SCENARIOS[0], "recording", { input });
+    expect(observation.settled).toMatchObject({ behavior: "allow" });
+    input.command = "MUTATED-AFTER-DECISION";
+    (input.env as Record<string, string>).CI = "0";
+    input.extra = true;
+    const requested = captured[0].build();
+    expect(requested.attributes["tool.input"]).toBe(JSON.stringify({ command: "npm test", env: { CI: "1" } }));
+    expect(requested.attributes["tool.input.bytes"]).toBe(JSON.stringify({ command: "npm test", env: { CI: "1" } }).length);
+  });
+
+  it("the requested record's time is the decision's, not the emitter's", async () => {
+    const before = Date.now();
+    const { captured } = await run(SCENARIOS[0], "recording");
+    const after = Date.now();
+    const [requested, result] = captured.map((c) => c.build());
+    expect(requested.timeMs).toBeGreaterThanOrEqual(before);
+    expect(requested.timeMs).toBeLessThanOrEqual(after);
+    expect(result.timeMs).toBeGreaterThanOrEqual(requested.timeMs!);
+  });
+
+  it("a hard stop's task excerpt is read at the decision, not at flush", async () => {
+    let excerpt = "Chat title: fix the build";
+    const s = SCENARIOS.find((x) => x.name === "hard stop pre-empts the model")!;
+    const { captured } = await run(s, "recording", { excerpt: () => excerpt });
+    excerpt = "Chat title: something later";
+    expect(captured[0].build().attributes["callboard.task.excerpt"]).toBe("Chat title: fix the build");
   });
 
   it("the hard-stop screen reports its evidence and source", async () => {
@@ -297,4 +356,30 @@ describe("audit records of a screened ask", () => {
     }
   });
 
+});
+
+describe("startReviewAudit", () => {
+  it("a trace reports its result once, however often result() is called", async () => {
+    const captured: Captured[] = [];
+    const trace = startReviewAudit({
+      hooks: { getCallerAlias: () => "c", emit: (alias, build) => void captured.push({ alias, build }) },
+      screen: "model",
+      chatId: "chat-1",
+      toolName: "Bash",
+      toolUseId: undefined,
+      input: { command: "npm test" },
+      category: "codeExecution",
+      cwd: "/repo",
+      settings: { modelReview: true, parentAnswers: false },
+      settingsFallback: false,
+    });
+    const verdict: ReviewVerdict = { verdict: "deny", reason: "nope", source: "model" };
+    trace.result({ verdict, outcome: "denied_to_agent" });
+    trace.result({ verdict, outcome: "allowed" });
+    trace.result({ verdict: { ...verdict, verdict: "approve" }, outcome: "allowed" });
+    await flush();
+    const events = captured.map((c) => c.build());
+    expect(events.map((e) => e.eventName)).toEqual([REVIEW_REQUESTED_EVENT, REVIEW_RESULT_EVENT]);
+    expect(events[1].attributes["permission.outcome"]).toBe("denied_to_agent");
+  });
 });

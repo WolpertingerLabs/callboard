@@ -11,8 +11,18 @@
  *
  * Every method here is a no-throw, no-await wrapper around `emitAuditRecord`:
  * the chain in `buildCanUseTool` calls them inline and must behave exactly as
- * if they were not there. Anything costly (serializing the tool input, reading
- * chat metadata) happens in the record factory, at flush time.
+ * if they were not there.
+ *
+ * What is captured, and when:
+ *  - At decision time, synchronously: ids, timestamps, and a SNAPSHOT of the
+ *    tool input (JSON, truncated like every record string). The input object
+ *    is not ours — pi hands over the live object it then executes with — and
+ *    the record must show what the screen decided on, not what the object
+ *    holds a second later.
+ *  - After the decision, on `setImmediate`: the emitter itself (alias lookup,
+ *    `emitAuditRecord` or an injected double). However slow or blocking an
+ *    emitter is, the decision has already been returned or parked.
+ *  - At flush time: the metadata reads (`getLateAttributes`).
  */
 import type { PermissionCategory } from "../agents/permissions/ToolPermissionPolicy.js";
 import { createLogger } from "../utils/logger.js";
@@ -61,7 +71,8 @@ export interface ReviewAuditStart {
   input: Record<string, unknown>;
   category: PermissionCategory | null;
   cwd: string;
-  taskExcerpt?: string | (() => string | undefined);
+  /** Read by the caller at decision time — the excerpt the screen saw. */
+  taskExcerpt?: string;
   settings: { modelReview: boolean; parentAnswers: boolean; approveAllowed?: false };
   settingsFallback: boolean;
 }
@@ -81,19 +92,35 @@ export interface ReviewAuditTrace {
 
 const NOOP_TRACE: ReviewAuditTrace = { result: () => {} };
 
+/**
+ * Hand a record to the emitter after the current decision has run its course:
+ * `setImmediate` runs once the chain's synchronous code and its promise
+ * resolutions are done, so no emitter — blocking, slow or throwing — can sit
+ * between an ask and its answer.
+ */
 function safeEmit(hooks: PermissionAuditHooks, build: () => AuditRecordInput): void {
   try {
-    const alias = hooks.getCallerAlias();
-    const emit = hooks.emit ?? emitAuditRecord;
-    const ret: unknown = emit(alias, build);
-    // A test double (or a future emitter) might be async: never await it, never let it reject unhandled.
-    if (ret && typeof (ret as Promise<unknown>).then === "function") (ret as Promise<unknown>).then(undefined, () => {});
+    setImmediate(() => {
+      try {
+        const alias = hooks.getCallerAlias();
+        const emit = hooks.emit ?? emitAuditRecord;
+        const ret: unknown = emit(alias, build);
+        // A test double (or a future emitter) might be async: never await it, never let it reject unhandled.
+        if (ret && typeof (ret as Promise<unknown>).then === "function") (ret as Promise<unknown>).then(undefined, () => {});
+      } catch (err) {
+        warn(`[PERM-DIAG] audit emit failed (decision unaffected): ${err}`);
+      }
+    });
   } catch (err) {
-    try {
-      log.warn(`[PERM-DIAG] audit emit failed (decision unaffected): ${err}`);
-    } catch {
-      /* ignore */
-    }
+    warn(`[PERM-DIAG] audit emit could not be scheduled (decision unaffected): ${err}`);
+  }
+}
+
+function warn(message: string): void {
+  try {
+    log.warn(message);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -126,6 +153,8 @@ export function startReviewAudit(start: ReviewAuditStart): ReviewAuditTrace {
     const requestedSpanId = newSpanId();
     const startedMs = Date.now();
     const { hooks } = start;
+    // Snapshot now: what the screen decides on is the input as it is NOW.
+    const input = serializeInput(start.input);
     const common = (): Record<string, AttrValue> => ({
       "callboard.chat.id": start.chatId,
       "callboard.agent.alias": hooks.agentAlias,
@@ -137,9 +166,8 @@ export function startReviewAudit(start: ReviewAuditStart): ReviewAuditTrace {
     });
 
     safeEmit(hooks, () => {
-      const input = serializeInput(start.input);
-      const excerpt = typeof start.taskExcerpt === "function" ? safeCall(start.taskExcerpt) : start.taskExcerpt;
       return {
+        timeMs: startedMs,
         eventName: REVIEW_REQUESTED_EVENT,
         severity: "INFO",
         body: `permission review requested: ${start.toolName} (${start.screen})`,
@@ -152,7 +180,7 @@ export function startReviewAudit(start: ReviewAuditStart): ReviewAuditTrace {
           "tool.input.bytes": input.bytes,
           "tool.input.truncated": input.truncated || undefined,
           "process.cwd": start.cwd,
-          "callboard.task.excerpt": excerpt,
+          "callboard.task.excerpt": start.taskExcerpt,
           "permission.review.settings.model_review": start.settings.modelReview,
           "permission.review.settings.parent_answers": start.settings.parentAnswers,
           "permission.review.settings.approve_allowed": start.settings.approveAllowed !== false,
@@ -166,8 +194,10 @@ export function startReviewAudit(start: ReviewAuditStart): ReviewAuditTrace {
       result(r) {
         if (done) return;
         done = true;
-        const latencyMs = Date.now() - startedMs;
+        const resultMs = Date.now();
+        const latencyMs = resultMs - startedMs;
         safeEmit(hooks, () => ({
+          timeMs: resultMs,
           eventName: REVIEW_RESULT_EVENT,
           severity: r.verdict.verdict === "kill" ? "WARN" : "INFO",
           body: `permission review ${r.verdict.verdict} → ${r.outcome}: ${start.toolName}`,
@@ -204,14 +234,6 @@ export function startReviewAudit(start: ReviewAuditStart): ReviewAuditTrace {
 function safeAlias(hooks: PermissionAuditHooks): string | undefined {
   try {
     return hooks.getCallerAlias();
-  } catch {
-    return undefined;
-  }
-}
-
-function safeCall<T>(fn: () => T): T | undefined {
-  try {
-    return fn();
   } catch {
     return undefined;
   }

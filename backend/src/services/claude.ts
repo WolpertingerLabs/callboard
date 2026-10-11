@@ -562,6 +562,15 @@ export function buildCanUseTool(
         let verdict = detectHardStop(toolName, input);
         const beginAudit = (screen: "model" | "hardstop", taskExcerpt?: string) => {
           if (!review.audit) return undefined;
+          // The model path passes the excerpt its reviewer saw; a hard stop
+          // reads it now, at the decision, not when the record is flushed.
+          if (screen === "hardstop") {
+            try {
+              taskExcerpt = review.getTaskExcerpt?.();
+            } catch {
+              taskExcerpt = undefined;
+            }
+          }
           return startReviewAudit({
             hooks: review.audit,
             screen,
@@ -571,7 +580,7 @@ export function buildCanUseTool(
             input,
             category,
             cwd: review.cwd,
-            taskExcerpt: taskExcerpt ?? review.getTaskExcerpt,
+            ...(taskExcerpt && { taskExcerpt }),
             settings,
             settingsFallback,
           });
