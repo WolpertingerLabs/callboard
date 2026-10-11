@@ -249,6 +249,12 @@ function InFlightBubbles({ messages }: { messages: InFlightMessage[] }) {
             {message.fileNames && message.fileNames.length > 0 && (
               <AttachedFileChips files={message.fileNames.map((name) => ({ name }))} />
             )}
+            {/* Carried across the new-chat redirect: the count came, the previews could not. */}
+            {message.imageUrls.length === 0 && !!message.imageCount && (
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                {message.imageCount} image{message.imageCount === 1 ? "" : "s"}
+              </div>
+            )}
             {message.imageUrls.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                 {message.imageUrls.map((url) => (

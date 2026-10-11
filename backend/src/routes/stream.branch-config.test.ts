@@ -149,6 +149,17 @@ describe("POST /new/message — autoCreateBranch for a message with no typed tex
     expect(generator.requests).toEqual(["Attached files: auth-notes.md"]);
   });
 
+  it("refuses an empty prompt whose uploads do not exist before creating anything", async () => {
+    const repoDir = makeRepo("bogus-upload");
+
+    const answered = await postNewMessage(repoDir, { autoCreateBranch: true, baseBranch: "main", useWorktree: true }, { prompt: "", imageIds: ["bogus"] });
+
+    expect(answered).toEqual({ status: 400, body: { error: "prompt is required" } });
+    expect(generator.requests).toEqual([]);
+    expect(localBranches(repoDir)).toEqual(["main"]);
+    expect(lastSendOptions).toBeUndefined();
+  });
+
   it("does not ask the generator to name an image-only message", async () => {
     const { ImageStorageService } = await import("../services/image-storage.js");
     const { image } = await ImageStorageService.storeImage(Buffer.from("png"), "shot.png", "image/png");

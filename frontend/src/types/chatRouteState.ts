@@ -4,6 +4,8 @@ import type { DefaultPermissions, EffortLevel, QueueItemImage, UiAgentProviderKi
 export interface InFlightHandoff {
   text: string;
   fileNames: string[];
+  /** Images attached; their previews cannot cross the redirect. */
+  imageCount?: number;
 }
 
 /** A staged draft opened from the chat list, prefilled into the composer. */

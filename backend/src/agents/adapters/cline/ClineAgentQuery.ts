@@ -66,6 +66,7 @@ import { resolveClinePrompt } from "./promptAdapter.js";
 import { buildClineTools } from "./toolAdapter.js";
 import type { ToolServerSpec } from "../../ports/tools.js";
 import { createLogger } from "../../../utils/logger.js";
+import { storeBase64Image } from "../../../services/image-storage.js";
 
 const log = createLogger("cline-query");
 
@@ -229,7 +230,9 @@ export class ClineAgentQuery implements AgentQuery {
     transcript.writeHeader({ providerId: this.opts.cline.providerId, modelId: this.opts.cline.model });
     // Before the turn, not after: this is the message the turn is answering, and
     // the reader relies on wire order to pair the two.
-    transcript.writeUserMessage(prompt);
+    // Images by image-store id (deduped by hash, so an upload comes back as
+    // its own id), so a turn sent with only images still shows them.
+    transcript.writeUserMessage(prompt, internDataUris(userImages));
 
     // Every callboard tool, and the policy entries that gate them, are derived
     // from ONE list. Splitting the two — building tools here and policies from a
@@ -369,4 +372,15 @@ export class ClineAgentQuery implements AgentQuery {
       log.warn(`stopping Cline session ${this.opts.sessionId} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+}
+
+/** `data:<mime>;base64,<data>` URIs (from `resolveClinePrompt`) as image-store ids. */
+export function internDataUris(uris: string[]): string[] {
+  const ids: string[] = [];
+  for (const uri of uris) {
+    const match = /^data:([^;,]+);base64,(.+)$/s.exec(uri);
+    const id = match ? storeBase64Image(match[2], match[1]) : null;
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
 }

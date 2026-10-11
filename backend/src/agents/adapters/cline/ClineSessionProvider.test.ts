@@ -279,6 +279,14 @@ describe("discovery and search", () => {
     expect(provider.getSessionPreview(resolved!.logPath)).toBe("first question");
   });
 
+  it("keeps an image-only turn, with its image ids, in the transcript", () => {
+    const w = new ClineTranscriptWriter("sess-images", "/repo");
+    w.writeHeader({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });
+    w.writeUserMessage("", ["11111111-1111-4111-8111-111111111111"]);
+    const [turn] = parseClineTranscript(provider.resolveSession("sess-images")!.logPath);
+    expect(turn).toMatchObject({ role: "user", type: "text", content: "", imageIds: ["11111111-1111-4111-8111-111111111111"] });
+  });
+
   it("previews the attached file names for a prompt that is only attachments", () => {
     const w = new ClineTranscriptWriter("sess-files", "/repo");
     w.writeHeader({ providerId: "anthropic", modelId: "claude-sonnet-4-6" });

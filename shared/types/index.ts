@@ -98,6 +98,7 @@ export {
   appendAttachmentBlocks,
   splitAttachmentBlocks,
   attachmentPreviewText,
+  safeFileName,
 } from "./attachment.js";
 
 export type { QueueItem, QueueItemImage } from "./queue.js";

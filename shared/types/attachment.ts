@@ -37,6 +37,37 @@ export const INLINE_ATTACHMENT_BUDGET_BYTES = 128 * 1024;
 
 export const ATTACHMENT_TAG = "callboard-attachment";
 
+const MAX_STORED_NAME_LENGTH = 120;
+const MAX_EXTENSION_LENGTH = 16;
+
+/**
+ * The name a non-image upload is stored (and named in its block) under.
+ * Lives here rather than in the backend's image store because the UI also
+ * needs it: an optimistic bubble only has the browser's file names, and has
+ * to recognise the same files in the transcript.
+ *
+ * The stem and extension are reduced separately, so the extension survives a
+ * stem with nothing shell-safe in it: `契約.pdf` → `file.pdf`. Only the stem
+ * loses leading dots and underscores. A dotfile has no extension (as with
+ * Node's `extname`), so `.env` → `env` and `.env.local` → `env.local`: the dot
+ * goes, so the stored copy is not hidden, and the name still says what it
+ * is. An extension with no safe characters left is dropped. Over-long names
+ * lose the end of the stem, never the extension.
+ */
+export function safeFileName(originalName: string): string {
+  const base = originalName.split(/[/\\]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  const rawExt = dot > 0 ? base.slice(dot) : "";
+  const ext = rawExt.slice(1).replace(/[^A-Za-z0-9]+/g, "").slice(0, MAX_EXTENSION_LENGTH);
+  const stem =
+    base
+      .slice(0, base.length - rawExt.length)
+      .replace(/[^A-Za-z0-9._-]+/g, "_")
+      .replace(/^[._]+/, "") || "file";
+  const suffix = ext ? `.${ext}` : "";
+  return stem.slice(0, MAX_STORED_NAME_LENGTH - suffix.length) + suffix;
+}
+
 export function isImageAttachmentType(mimeType: string): boolean {
   return IMAGE_ATTACHMENT_TYPES.includes(mimeType);
 }
@@ -58,8 +89,7 @@ export interface AttachedFile {
   id: string;
   /**
    * The stored copy's name: the user's file name reduced to shell-safe
-   * characters (`safeFileName` in the backend's image-storage.ts), so
-   * `契約.pdf` arrives as `file.pdf`.
+   * characters by {@link safeFileName}, so `契約.pdf` arrives as `file.pdf`.
    */
   name: string;
   /** Absolute path of the stored copy on the daemon's machine. */

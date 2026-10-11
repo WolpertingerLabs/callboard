@@ -48,6 +48,7 @@ import { acpModelConfigId, extractAcpModels, recordAcpModels } from "./modelCata
 import type { CanUseToolFn } from "./permissionAdapter.js";
 import type { AcpToolServerHandle } from "./toolAdapter.js";
 import { AcpTranscriptWriter } from "./transcript.js";
+import { storeBase64Image } from "../../../services/image-storage.js";
 import type { AcpVendorPreset } from "./vendors.js";
 
 const log = createLogger("acp-query");
@@ -224,7 +225,8 @@ export class AcpAgentQuery implements AgentQuery {
       // yielded: the composer already shows this message live, and re-emitting
       // it would render it twice — the same reason `messageAdapter` drops the
       // agent's `user_message_chunk` echo.
-      transcript.writeUserMessage(blocks.map(contentBlockToText).filter(Boolean).join("\n"));
+      const user = userMessageOf(blocks);
+      transcript.writeUserMessage(user.content, user.imageIds);
 
       client.startPrompt(session.sessionId, blocks);
 
@@ -414,4 +416,31 @@ function toAcpImageBlock(block: unknown): ContentBlock | null {
   if (typed.type !== "base64" || typeof typed.data !== "string" || !typed.data) return null;
   const mimeType = typeof typed.media_type === "string" ? typed.media_type : "application/octet-stream";
   return { type: "image", data: typed.data, mimeType };
+}
+
+/**
+ * The user's turn as the transcript records it. Images become image-store ids
+ * (deduped by hash, so an uploaded image comes back as its upload id) rather
+ * than `[image …]` markers, and any other non-text block is summarized ahead
+ * of the text. Either way the text ends as the composer sent it, so attachment
+ * blocks at its end are still the trailing run `splitAttachmentBlocks` reads.
+ */
+export function userMessageOf(blocks: ContentBlock[]): { content: string; imageIds: string[] } {
+  const imageIds: string[] = [];
+  const markers: string[] = [];
+  const texts: string[] = [];
+  for (const block of blocks) {
+    if (block?.type === "image") {
+      const id = typeof block.data === "string" && block.data ? storeBase64Image(block.data, block.mimeType) : null;
+      if (id) {
+        if (!imageIds.includes(id)) imageIds.push(id);
+        continue;
+      }
+    }
+    const text = contentBlockToText(block);
+    if (!text) continue;
+    if (block?.type === "text") texts.push(text);
+    else markers.push(text);
+  }
+  return { content: [...markers, ...texts].join("\n"), imageIds };
 }

@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync, readdir
 import { join, extname } from "path";
 import crypto from "crypto";
 import type { StoredImage, ImageUploadResult } from "shared/types/index.js";
-import { isImageAttachmentType, maxAttachmentBytes } from "shared/types/index.js";
+import { isImageAttachmentType, maxAttachmentBytes, safeFileName } from "shared/types/index.js";
 import { DATA_DIR } from "../utils/paths.js";
 
 export type { StoredImage, ImageUploadResult };
@@ -28,31 +28,10 @@ export function isValidImageId(imageId: string): boolean {
  */
 const FILE_NAME_SEPARATOR = "_";
 const UUID_LENGTH = 36;
-const MAX_STORED_NAME_LENGTH = 120;
 
-const MAX_EXTENSION_LENGTH = 16;
-
-/**
- * The stem and extension are reduced separately, so the extension survives a
- * stem with nothing shell-safe in it: `契約.pdf` → `file.pdf`. Only the stem
- * loses leading dots and underscores. A dotfile has no extension (`extname`),
- * so `.env` → `env` and `.env.local` → `env.local`: the dot goes, so the
- * stored copy is not hidden, and the name still says what it is. An
- * extension with no safe characters left is dropped. Over-long names lose
- * the end of the stem, never the extension.
- */
-export function safeFileName(originalName: string): string {
-  const base = originalName.split(/[/\\]/).pop() ?? "";
-  const rawExt = extname(base);
-  const ext = rawExt.slice(1).replace(/[^A-Za-z0-9]+/g, "").slice(0, MAX_EXTENSION_LENGTH);
-  const stem =
-    base
-      .slice(0, base.length - rawExt.length)
-      .replace(/[^A-Za-z0-9._-]+/g, "_")
-      .replace(/^[._]+/, "") || "file";
-  const suffix = ext ? `.${ext}` : "";
-  return stem.slice(0, MAX_STORED_NAME_LENGTH - suffix.length) + suffix;
-}
+// The name itself is reduced by `safeFileName` in shared/types/attachment.ts,
+// which the UI also uses to recognise its own uploads in a transcript.
+export { safeFileName };
 
 /** The original-ish name of a non-image attachment's stored file, or null for an image. */
 function attachmentNameOf(storedAs: string): string | null {
@@ -65,12 +44,24 @@ function attachmentNameOf(storedAs: string): string | null {
  * ids contribute nothing.
  */
 export function attachmentNamesOf(imageIds: string[]): string[] {
+  return storedFilesOf(imageIds).flatMap((file) => {
+    const name = attachmentNameOf(file);
+    return name === null ? [] : [name];
+  });
+}
+
+/** Whether any of `imageIds` is a stored upload. One directory listing, no file read. */
+export function anyUploadExists(imageIds: string[]): boolean {
+  return storedFilesOf(imageIds).length > 0;
+}
+
+/** The stored file of each id that has one, in order. */
+function storedFilesOf(imageIds: string[]): string[] {
   try {
     const files = readdirSync(IMAGES_DIR);
     return imageIds.flatMap((id) => {
-      const file = isValidImageId(id) ? files.find((f) => f.startsWith(id)) : undefined;
-      const name = file === undefined ? null : attachmentNameOf(file);
-      return name === null ? [] : [name];
+      const file = typeof id === "string" && isValidImageId(id) ? files.find((f) => f.startsWith(id)) : undefined;
+      return file === undefined ? [] : [file];
     });
   } catch {
     return [];

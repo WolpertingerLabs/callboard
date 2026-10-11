@@ -7,7 +7,7 @@
  * testing the thing that ships.
  */
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendAttachmentBlocks, formatAttachmentBlock } from "shared/types/index.js";
@@ -510,6 +510,24 @@ describe("parsePiSession", () => {
       { type: "message", id: "e3", parentId: "c1", timestamp: TS, message: userMessage("abandoned branch") },
     ]);
     expect(parsePiSession(path).map((m) => m.content)).toEqual(["first branch", "summary", "after compaction", "abandoned branch"]);
+  });
+});
+
+describe("parsePiSession — a user turn that is only images", () => {
+  it("keeps the turn, with empty text and the images interned", () => {
+    const path = writeSession("s1", [
+      {
+        type: "message",
+        id: "e1",
+        parentId: null,
+        timestamp: TS,
+        message: { role: "user", content: [{ type: "image", data: "aGk=", mimeType: "image/png" }], timestamp: MS },
+      },
+    ]);
+    const [turn] = parsePiSession(path);
+    expect(turn).toMatchObject({ role: "user", type: "text", content: "" });
+    expect(turn.imageIds).toHaveLength(1);
+    expect(readdirSync(join(tmpRoot, "images")).some((f) => f.startsWith(turn.imageIds![0]))).toBe(true);
   });
 });
 

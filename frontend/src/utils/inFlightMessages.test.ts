@@ -150,12 +150,21 @@ describe("toInFlightList", () => {
       { key: "k2", text: "plain", imageUrls: [] },
     ];
     const handoff = toInFlightHandoff(sent);
-    expect(handoff).toEqual([{ text: "", fileNames: ["notes.md"] }, "plain"]);
-    expect(toInFlightList(JSON.parse(JSON.stringify(handoff))).map(({ text, fileNames, imageUrls }) => ({ text, fileNames, imageUrls }))).toEqual([
-      { text: "", fileNames: ["notes.md"], imageUrls: [] },
-      { text: "plain", fileNames: undefined, imageUrls: [] },
+    expect(handoff).toEqual([{ text: "", fileNames: ["notes.md"], imageCount: 1 }, "plain"]);
+    expect(
+      toInFlightList(JSON.parse(JSON.stringify(handoff))).map(({ text, fileNames, imageUrls, imageCount }) => ({ text, fileNames, imageUrls, imageCount })),
+    ).toEqual([
+      { text: "", fileNames: ["notes.md"], imageUrls: [], imageCount: 1 },
+      { text: "plain", fileNames: undefined, imageUrls: [], imageCount: undefined },
     ]);
     expect(toInFlightList([{ text: "", fileNames: [] }, { text: 1, fileNames: [] }])).toEqual([]);
+  });
+
+  it("carries an image-only message across the redirect as an image count", () => {
+    const handoff = toInFlightHandoff([{ key: "k", text: "", imageUrls: ["blob:a", "blob:b"] }]);
+    expect(handoff).toEqual([{ text: "", fileNames: [], imageCount: 2 }]);
+    expect(toInFlightList(JSON.parse(JSON.stringify(handoff)))).toMatchObject([{ text: "", imageUrls: [], fileNames: [], imageCount: 2 }]);
+    expect(toInFlightList([{ text: "", fileNames: [], imageCount: -1 }])).toEqual([]);
   });
 
   it("assigns distinct keys", () => {
@@ -193,13 +202,43 @@ describe("file attachments", () => {
     expect(visibleInFlight(pending("see attached"), [user(sent)])).toEqual([]);
   });
 
+  const fileBlock = (id: string, name: string) =>
+    formatAttachmentBlock({ id, name, path: `/x/${id}_${name}`, size: 1, mimeType: "text/plain" }, { content: "a" });
+  const filesOnly = (...names: string[]): InFlightMessage => ({ key: nextInFlightKey(), text: "", imageUrls: [], fileNames: names });
+
+  it("does not let one files-only message hide the next, different one", () => {
+    const transcript = [user(appendAttachmentBlocks("", [fileBlock("a", "a.txt")])), assistant("got it")];
+    // A has persisted; B is in flight. Text alone ("" vs "") would match.
+    expect(visibleInFlight([filesOnly("b.csv")], transcript)).toHaveLength(1);
+    expect(settleInFlight([filesOnly("b.csv")], transcript)).toHaveLength(1);
+    // Once B persists it settles, matched by its stored name.
+    const withB = [...transcript, user(appendAttachmentBlocks("", [fileBlock("b", "b.csv")]))];
+    expect(visibleInFlight([filesOnly("b.csv")], withB)).toEqual([]);
+  });
+
+  it("matches the stored name, not the browser's, for a files-only message", () => {
+    const stored = user(appendAttachmentBlocks("", [fileBlock("c", "file.pdf")]));
+    expect(visibleInFlight([filesOnly("契約.pdf")], [stored])).toEqual([]);
+  });
+
+  it("matches an image-only message by image count", () => {
+    const imageOnly: InFlightMessage = { key: nextInFlightKey(), text: "", imageUrls: ["blob:a"] };
+    const withImage: ParsedMessage = { role: "user", type: "text", content: "", imageIds: ["i1"] };
+    expect(visibleInFlight([imageOnly], [withImage])).toEqual([]);
+    // Not by a files-only turn, nor by a turn with a different number of images.
+    expect(visibleInFlight([imageOnly], [user(appendAttachmentBlocks("", [fileBlock("a", "a.txt")]))])).toHaveLength(1);
+    expect(visibleInFlight([imageOnly], [{ ...withImage, imageIds: ["i1", "i2"] }])).toHaveLength(1);
+    // A handed-off message has no previews, only the count.
+    expect(visibleInFlight([{ key: nextInFlightKey(), text: "", imageUrls: [], imageCount: 1 }], [withImage])).toEqual([]);
+  });
+
   it("settles a message with no typed text against a transcript turn that is only blocks", () => {
     const sent = appendAttachmentBlocks("", [
       formatAttachmentBlock({ id: "a", name: "a.txt", path: "/x/a.txt", size: 1, mimeType: "text/plain" }, { content: "a" }),
     ]);
-    expect(visibleInFlight(pending(""), [user("earlier"), assistant("ok"), user(sent)])).toEqual([]);
-    expect(settleInFlight(pending(""), [user(sent)])).toEqual([]);
+    expect(visibleInFlight([filesOnly("a.txt")], [user("earlier"), assistant("ok"), user(sent)])).toEqual([]);
+    expect(settleInFlight([filesOnly("a.txt")], [user(sent)])).toEqual([]);
     // Not before the transcript has it.
-    expect(visibleInFlight(pending(""), [user("earlier"), assistant("ok")])).toHaveLength(1);
+    expect(visibleInFlight([filesOnly("a.txt")], [user("earlier"), assistant("ok")])).toHaveLength(1);
   });
 });

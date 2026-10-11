@@ -5,7 +5,8 @@
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Request, Response } from "express";
@@ -91,10 +92,25 @@ describe("POST /:id/message with only attachments", () => {
     expect(calls.execute.mock.calls[0][0].prompt).toBe("");
   });
 
-  it.each([{ prompt: "" }, { prompt: "", imageIds: [] }, { imageIds: "not-an-array" }])("still refuses a message with nothing in it: %j", async (body) => {
+  it.each([
+    { prompt: "" },
+    { prompt: "", imageIds: [] },
+    { imageIds: "not-an-array" },
+    { prompt: "", imageIds: ["bogus"] },
+    { prompt: "", imageIds: ["00000000-0000-4000-8000-000000000000"] },
+  ])("still refuses a message with nothing in it: %j", async (body) => {
     const response = await post(body);
     expect(response.status).toBe(400);
     expect(response.body).toEqual({ error: "prompt is required" });
+    expect(calls.execute).not.toHaveBeenCalled();
+  });
+
+  it("refuses an upload that is listed but cannot be loaded, rather than sending an empty prompt", async () => {
+    // A directory under an upload's name: the listing finds it, reading it fails.
+    const id = randomUUID();
+    mkdirSync(join(dir, "images", `${id}_unreadable`), { recursive: true });
+    const response = await post({ prompt: "", imageIds: [id] });
+    expect(response.status).toBe(400);
     expect(calls.execute).not.toHaveBeenCalled();
   });
 });

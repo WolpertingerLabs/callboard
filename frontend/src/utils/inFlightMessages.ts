@@ -10,7 +10,7 @@
  */
 import type { ParsedMessage } from "../api";
 import type { InFlightHandoff } from "../types/chatRouteState";
-import { splitAttachmentBlocks } from "shared/types/index.js";
+import { safeFileName, splitAttachmentBlocks } from "shared/types/index.js";
 
 /**
  * A user message rendered before the server's transcript accounts for it.
@@ -23,6 +23,16 @@ export interface InFlightMessage {
   imageUrls: string[];
   /** Names of attached files that are not images, which have no preview. */
   fileNames?: string[];
+  /**
+   * Images attached, when their previews could not come along (a message
+   * carried across the new-chat redirect). Otherwise `imageUrls.length`.
+   */
+  imageCount?: number;
+}
+
+/** How many images an optimistic message carries, previews or not. */
+export function inFlightImageCount(message: InFlightMessage): number {
+  return message.imageUrls.length || message.imageCount || 0;
 }
 
 let keySeq = 0;
@@ -37,12 +47,23 @@ export function nextInFlightKey(): string {
  * when files are attached, so a message that is only files survives the trip.
  */
 export function toInFlightHandoff(messages: InFlightMessage[]): (string | InFlightHandoff)[] {
-  return messages.map((m) => (m.fileNames?.length ? { text: m.text, fileNames: m.fileNames } : m.text));
+  return messages.map((m) => {
+    const imageCount = inFlightImageCount(m);
+    if (!m.fileNames?.length && imageCount === 0) return m.text;
+    return { text: m.text, fileNames: m.fileNames ?? [], ...(imageCount > 0 && { imageCount }) };
+  });
 }
 
 function isHandoff(value: unknown): value is InFlightHandoff {
   const v = value as InFlightHandoff | null;
-  return typeof v === "object" && v !== null && typeof v.text === "string" && Array.isArray(v.fileNames) && v.fileNames.every((n) => typeof n === "string");
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof v.text === "string" &&
+    Array.isArray(v.fileNames) &&
+    v.fileNames.every((n) => typeof n === "string") &&
+    (v.imageCount === undefined || (Number.isInteger(v.imageCount) && v.imageCount >= 0))
+  );
 }
 
 /**
@@ -56,7 +77,9 @@ export function toInFlightList(value: unknown): InFlightMessage[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((v): InFlightMessage[] => {
     if (typeof v === "string") return v ? [{ key: nextInFlightKey(), text: v, imageUrls: [] }] : [];
-    if (isHandoff(v) && (v.text || v.fileNames.length > 0)) return [{ key: nextInFlightKey(), text: v.text, imageUrls: [], fileNames: v.fileNames }];
+    if (isHandoff(v) && (v.text || v.fileNames.length > 0 || v.imageCount)) {
+      return [{ key: nextInFlightKey(), text: v.text, imageUrls: [], fileNames: v.fileNames, ...(v.imageCount && { imageCount: v.imageCount }) }];
+    }
     return [];
   });
 }
@@ -88,6 +111,9 @@ interface UserEntry {
   text: string;
   /** Collapsed text, set only for the commands that need the looser compare. */
   command: string | null;
+  /** Stored names of the attached files, in order. */
+  fileNames: string[];
+  imageCount: number;
 }
 
 /** The user messages in `messages`, newest last. */
@@ -97,14 +123,36 @@ function userEntries(messages: ParsedMessage[]): UserEntry[] {
     .map((m) => {
       // The transcript carries non-image attachments as blocks after the
       // typed text; the optimistic bubble only ever had the typed text.
-      const text = splitAttachmentBlocks(m.content ?? "").text.trim();
-      return { text, command: m.isBuiltInCommand ? collapsed(text) : null };
+      const { text: typed, files } = splitAttachmentBlocks(m.content ?? "");
+      const text = typed.trim();
+      return {
+        text,
+        command: m.isBuiltInCommand ? collapsed(text) : null,
+        fileNames: files.map((f) => f.name),
+        imageCount: m.imageIds?.length ?? 0,
+      };
     });
 }
 
-/** True when `entries` already account for an optimistic message's text. */
-function accountedFor(text: string, entries: UserEntry[]): boolean {
-  const trimmed = text.trim();
+/**
+ * True when an entry with no typed text is this attachment-only message.
+ * Text cannot tell two of them apart, so the attachments have to: the file
+ * names (as the backend stores them, hence {@link safeFileName}) and the
+ * number of images, whose names the transcript does not keep.
+ */
+function sameAttachments(message: InFlightMessage, entry: UserEntry): boolean {
+  const names = (message.fileNames ?? []).map(safeFileName);
+  return (
+    entry.imageCount === inFlightImageCount(message) && entry.fileNames.length === names.length && entry.fileNames.every((name, i) => name === names[i])
+  );
+}
+
+/** True when `entries` already account for an optimistic message. */
+function accountedFor(message: InFlightMessage, entries: UserEntry[]): boolean {
+  const trimmed = message.text.trim();
+  // Every attachment-only message has the same (empty) text, so text alone
+  // would let an earlier one hide the next.
+  if (!trimmed) return entries.some((e) => e.text === "" && sameAttachments(message, e));
   if (entries.some((e) => e.text === trimmed)) return true;
   // Only a command can come back re-spelled, and only against a transcript
   // entry that is itself a command.
@@ -126,7 +174,7 @@ function accountedFor(text: string, entries: UserEntry[]): boolean {
 export function visibleInFlight(pending: InFlightMessage[], messages: ParsedMessage[]): InFlightMessage[] {
   if (pending.length === 0) return pending;
   const tail = userEntries(messages).slice(-pending.length);
-  return pending.filter((m) => !accountedFor(m.text, tail));
+  return pending.filter((m) => !accountedFor(m, tail));
 }
 
 /**
@@ -142,7 +190,7 @@ export function settleInFlight(pending: InFlightMessage[], fetched: ParsedMessag
   if (pending.length === 0) return pending;
   const persisted = userEntries(fetched);
   if (persisted.length === 0) return pending;
-  const keep = pending.filter((m) => !accountedFor(m.text, persisted));
+  const keep = pending.filter((m) => !accountedFor(m, persisted));
   return keep.length === pending.length ? pending : keep;
 }
 

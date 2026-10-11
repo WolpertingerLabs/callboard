@@ -12,7 +12,7 @@ import { sendRetiredProviderError } from "../utils/route-errors.js";
 import { listAcpVendorIds, resolveAcpVendorPreset } from "../agents/adapters/acp/vendors.js";
 import type { EffortLevel } from "shared/types/index.js";
 import { sessionRegistry } from "../services/session-registry.js";
-import { attachmentNamesOf, loadImageBuffers } from "../services/image-storage.js";
+import { anyUploadExists, attachmentNamesOf, loadImageBuffers } from "../services/image-storage.js";
 import { titleSourceFor } from "../services/file-attachments.js";
 import { statSync, existsSync, readdirSync, watchFile, unwatchFile, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
@@ -48,6 +48,21 @@ export const streamRouter = Router();
 function hasAttachments(imageIds: unknown): imageIds is string[] {
   return Array.isArray(imageIds) && imageIds.length > 0;
 }
+
+/**
+ * The 400 for a message with nothing to send: no text, and no attachment
+ * that resolves. Checked from the directory listing before anything else
+ * happens, so a bogus id makes no branch, worktree or metadata write; and
+ * again after loading (`loaded`), so an upload deleted in between still does
+ * not send the harness an empty prompt.
+ */
+function nothingToSend(prompt: string, imageIds: unknown, loaded?: unknown[]): boolean {
+  if (prompt) return false;
+  if (loaded) return loaded.length === 0;
+  return !hasAttachments(imageIds) || !anyUploadExists(imageIds);
+}
+
+const NOTHING_TO_SEND = { error: "prompt is required" };
 
 // Send first message to create a new chat (no existing chat ID required)
 streamRouter.post("/new/message", async (req, res) => {
@@ -130,8 +145,8 @@ streamRouter.post("/new/message", async (req, res) => {
     `POST /new/message — folder=${folder}, promptLen=${rawPrompt?.length || 0}, images=${imageIds?.length || 0}, plugins=${activePlugins?.length || 0}, branchConfig=${JSON.stringify(branchConfig || null)}`,
   );
   if (!folder) return res.status(400).json({ error: "folder is required" });
-  if (!rawPrompt && !hasAttachments(imageIds)) return res.status(400).json({ error: "prompt is required" });
   const prompt: string = rawPrompt || "";
+  if (nothingToSend(prompt, imageIds)) return res.status(400).json(NOTHING_TO_SEND);
   // Validate the optional browser context before branch/workspace/adoption,
   // metadata or image writes. Old clients still omit it.
   let chatView: ReturnType<typeof bindChatView>;
@@ -259,6 +274,7 @@ streamRouter.post("/new/message", async (req, res) => {
 
   try {
     const imageMetadata = imageIds?.length ? loadImageBuffers(imageIds) : [];
+    if (nothingToSend(prompt, imageIds, imageMetadata)) return res.status(400).json(NOTHING_TO_SEND);
 
     // Validate provider at the route boundary rather than relying on
     // resolveProviderKind's warn-and-fallback path. Anything not in the
@@ -405,8 +421,8 @@ streamRouter.post("/:id/message", async (req, res) => {
   /* #swagger.responses[400] = { description: "Missing prompt (and no imageIds)" } */
   const { prompt: rawPrompt, imageIds, activePlugins, maxTurns, acknowledgeBranchDrift, model, effort, requireExplicitCompletion } = req.body;
   log.debug(`POST /${req.params.id}/message — chatId=${req.params.id}, promptLen=${rawPrompt?.length || 0}, images=${imageIds?.length || 0}`);
-  if (!rawPrompt && !hasAttachments(imageIds)) return res.status(400).json({ error: "prompt is required" });
   const prompt: string = rawPrompt || "";
+  if (nothingToSend(prompt, imageIds)) return res.status(400).json(NOTHING_TO_SEND);
   // Validate the optional browser context before branch/workspace/adoption,
   // metadata or image writes. Old clients still omit it.
   let chatView: ReturnType<typeof bindChatView>;
@@ -513,6 +529,7 @@ streamRouter.post("/:id/message", async (req, res) => {
     // ── End branch drift guard ──────────────────────────────────
 
     const imageMetadata = imageIds?.length ? loadImageBuffers(imageIds) : [];
+    if (nothingToSend(prompt, imageIds, imageMetadata)) return res.status(400).json(NOTHING_TO_SEND);
 
     const emitter = await sendMessage({
       chatView,
