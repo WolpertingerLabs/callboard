@@ -4,7 +4,7 @@
  * `/api/files/serve?url=` proxy types by extension and refuses non-public
  * destinations on every hop.
  *
- * Upstream fixtures listen on 127.0.0.2. The production address policy refuses
+ * Upstream fixtures listen on 127.0.0.2 (::1 where that can't be bound). The production address policy refuses
  * all of 127/8, so the tests that need a reachable upstream use a router whose
  * policy admits exactly that one address — every other address, 127.0.0.1
  * included, still goes through the production check.
@@ -31,8 +31,23 @@ const { createCanvas } = await import("../services/canvas-service.js");
 const { ImageStorageService } = await import("../services/image-storage.js");
 const { isPublicAddress } = await import("../utils/public-url-fetch.js");
 
+/**
+ * Linux routes all of 127/8 to lo; macOS binds only 127.0.0.1 there, so fall
+ * back to ::1 — another loopback address the production policy refuses.
+ */
+async function pickUpstreamIp(): Promise<string> {
+  const server = http.createServer();
+  const bindable = await new Promise<boolean>((resolve) => {
+    server.once("error", () => resolve(false));
+    server.listen(0, "127.0.0.2", () => resolve(true));
+  });
+  if (bindable) await new Promise<void>((resolve) => server.close(() => resolve()));
+  return bindable ? "127.0.0.2" : "::1";
+}
+
 const SANDBOX_CSP = "default-src 'none'; sandbox";
-const UPSTREAM_IP = "127.0.0.2";
+const UPSTREAM_IP = await pickUpstreamIp();
+const UPSTREAM_FAMILY = UPSTREAM_IP.includes(":") ? 6 : 4;
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/api/agent-settings")</script></svg>';
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/58BAAMBAQAY3Y2wAAAAAElFTkSuQmCC", "base64");
 
@@ -49,7 +64,7 @@ async function listenUpstream(host: string, routes: Record<string, (res: http.Se
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const { port } = server.address() as AddressInfo;
   return {
-    origin: `http://${host}:${port}`,
+    origin: `http://${host.includes(":") ? `[${host}]` : host}:${port}`,
     port,
     hits,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
@@ -101,7 +116,7 @@ beforeAll(async () => {
       // media.test → the fixture upstream; everything else through real DNS.
       lookup: (hostname, options, callback) => {
         lookupCalls.push(hostname);
-        if (hostname === "media.test") return callback(null, [{ address: UPSTREAM_IP, family: 4 }]);
+        if (hostname === "media.test") return callback(null, [{ address: UPSTREAM_IP, family: UPSTREAM_FAMILY }]);
         if (hostname === "rebind.test")
           return callback(null, [
             { address: "93.184.215.14", family: 4 },
