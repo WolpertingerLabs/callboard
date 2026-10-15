@@ -23,6 +23,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { CardSummary, Chat, ChatListResponse } from "../api";
 import { listChats, listCards, getDrafts, bulkArchiveChats, bulkDeleteChats, searchChatContents } from "../api";
 import ChatList from "./ChatList";
+import { resetChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 
 vi.mock("../api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api")>()),
@@ -205,6 +206,9 @@ function actionLabels() {
 
 beforeEach(() => {
   localStorage.clear();
+  // The fold store caches a module-level snapshot; a folder collapsed in one
+  // test would otherwise arrive collapsed in the next.
+  resetChatSectionExpansion();
   vi.mocked(getDrafts).mockResolvedValue([]);
   vi.mocked(searchChatContents).mockResolvedValue({ chatIds: [] } as Awaited<ReturnType<typeof searchChatContents>>);
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
@@ -323,6 +327,52 @@ describe("shift+click ranges", () => {
 
     expect(selectedPreviews()).toEqual(["chat one", "chat two", "chat three"]);
     expect(count()).toBe("3 chats selected");
+  });
+
+  /*
+   * Folders section the list, so render order is no longer recency order. The
+   * fixtures below are in RECENCY order a, b, c, d with b and d filed in
+   * "Work", which renders as  WORK: b, d  /  RECENT: a, c.  A range read off
+   * recency would sweep up whatever sits between its ends by date.
+   */
+  const FOLDERED = [
+    makeChat("a", "chat a"),
+    makeChat("b", "chat b", { sidebarFolder: "Work" }),
+    makeChat("c", "chat c"),
+    makeChat("d", "chat d", { sidebarFolder: "Work" }),
+  ];
+
+  it("ranges within a folder in the order the folder renders, not by recency", async () => {
+    await mount(FOLDERED, []);
+    fireEvent.click(row("chat b"), { metaKey: true });
+    fireEvent.click(row("chat d"), { shiftKey: true });
+
+    // `c` sits between b and d by date, but renders in Recent.
+    expect(selectedPreviews()).toEqual(["chat b", "chat d"]);
+    expect(count()).toBe("2 chats selected");
+  });
+
+  it("never sweeps a row folded away under a collapsed folder header", async () => {
+    await mount(FOLDERED.slice(0, 3), []);
+    fireEvent.click(screen.getByRole("button", { name: /^Work \(1\)$/ }));
+    expect(screen.queryByText("chat b")).toBeNull();
+
+    fireEvent.click(row("chat a"), { metaKey: true });
+    fireEvent.click(row("chat c"), { shiftKey: true });
+
+    // `b` is between a and c by recency, and hidden: a bulk delete over this
+    // selection must not reach it.
+    expect(count()).toBe("2 chats selected");
+    expect(selectedPreviews()).toEqual(["chat a", "chat c"]);
+  });
+
+  it("select-all skips rows under a collapsed folder header too", async () => {
+    await mount(FOLDERED.slice(0, 3), []);
+    fireEvent.click(screen.getByRole("button", { name: /^Work \(1\)$/ }));
+    fireEvent.click(row("chat a"), { metaKey: true });
+    fireEvent.keyDown(row("chat a"), { key: "a", ctrlKey: true });
+
+    expect(count()).toBe("2 chats selected");
   });
 });
 

@@ -35,7 +35,7 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
+import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, sameSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 // The chat-list cache lives in a standalone module so services can invalidate
@@ -1628,6 +1628,36 @@ chatsRouter.patch("/:id/pin", (req, res) => {
  * is a seat at the top of the list that archived work should give up, while a
  * folder is where the work is kept, archived or not.
  */
+/**
+ * The spelling to store a folder name under: an existing folder's, when any
+ * other root chat record — archived, in another space, off every page —
+ * already names one equal ignoring case; otherwise the name as given.
+ *
+ * Server-side because only the server sees every record. The dialog can only
+ * match against the chats it has loaded, so without this, typing "work" while
+ * "Work" holds only archived chats would mint a second folder, and the two
+ * would render as identical WORK headers the moment both are on screen.
+ *
+ * The chat being filed is skipped, so a folder's only member can be recased.
+ * When several spellings already exist (written before this check), the first
+ * in sort order wins, so the answer is stable. One snapshot scan per PATCH.
+ */
+function canonicalSidebarFolder(name: string, chatId: string): string {
+  const spellings: string[] = [];
+  for (const record of listChatsSnapshot()) {
+    if (record.id === chatId) continue;
+    const meta = parseChatMetadata(record.metadata);
+    const existing = readSidebarFolder(meta);
+    if (existing === undefined || !sameSidebarFolder(existing, name)) continue;
+    if (!isSidebarFolderEligible(meta, record.id)) continue;
+    // The exact spelling already exists: that is the folder being asked for.
+    if (existing === name) return name;
+    spellings.push(existing);
+  }
+  if (spellings.length === 0) return name;
+  return spellings.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))[0];
+}
+
 chatsRouter.patch("/:id/sidebar-folder", (req, res) => {
   // #swagger.tags = ['Chats']
   // #swagger.summary = 'Set or clear the sidebar folder of a chat'
@@ -1661,13 +1691,26 @@ chatsRouter.patch("/:id/sidebar-folder", (req, res) => {
     const chat = findChat(req.params.id, false) as any;
     if (!chat) return res.status(404).json({ error: "Chat not found" });
 
+    // Eligibility reads the ENRICHED metadata findChat returns, on purpose: a
+    // native Codex child's parent is inferred at read time and never stored,
+    // and it is still a child.
     const meta = parseChatMetadata(chat.metadata);
     if (parsed.value !== null && !isSidebarFolderEligible(meta, chat.id)) {
       return res.status(400).json({ error: "Only a root chat can be filed into a folder; its tree goes with it" });
     }
 
-    // A label, not activity: quiet, like the pin above.
-    if (writeQuietMetadata(chat, { ...meta, sidebarFolder: parsed.value }) === "unwritten") {
+    // Nothing stored means nothing to clear — and materializing a record just
+    // to write `null` into it would be a write with no meaning.
+    if (parsed.value === null && chat._from_filesystem) return res.json(chat);
+
+    const folder = parsed.value === null ? null : canonicalSidebarFolder(parsed.value, chat.id);
+
+    // Only the one key. `chat.metadata` is the enriched read model (native
+    // lifecycle, evidence, inferred parents) and must not be written back
+    // over the stored record; the store merges. A record-less chat is
+    // materialized from its read model — which for an eligible chat is just
+    // its session ids and provider, since enrichment only adds to children.
+    if (writeQuietMetadata(chat, { sidebarFolder: folder }) === "unwritten") {
       return res.status(500).json({ error: "Failed to set folder" });
     }
 

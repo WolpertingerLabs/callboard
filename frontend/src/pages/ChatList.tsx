@@ -29,7 +29,8 @@ import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebar
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES } from "shared/types/space.js";
 import { type ChatCardMenu } from "../components/ChatListItem";
-import ChatTreeList, { buildRows } from "../components/ChatTreeList";
+import ChatTreeList, { buildRows, rowsInRenderOrder } from "../components/ChatTreeList";
+import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import SelectionBar, { type SelectionAction } from "../components/SelectionBar";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { usePolling } from "../hooks/usePolling";
@@ -120,6 +121,13 @@ type ChatScope = "open" | "archived";
  */
 const SELECTION_BAR_FALLBACK_CLEARANCE = 120;
 
+/** A pending metadata write on one chat, per field, each stamped with its own epoch. See `pinOverridesRef`. */
+interface OverrideFields {
+  pinned?: { value: boolean; epoch: number };
+  sidebarFolder?: { value: string | null; epoch: number };
+}
+const OVERRIDE_FIELDS = ["pinned", "sidebarFolder"] as const;
+
 export default function ChatList({
   activeChatId,
   onRefresh,
@@ -135,7 +143,7 @@ export default function ChatList({
   /** Chats whose tree the "Move to space…" dialog is moving, or null when closed. */
   const [moveTarget, setMoveTarget] = useState<{ chatIds: string[]; subject: string; currentSpaceId?: string } | null>(null);
   /** The row whose "Move to folder" dialog is open: its root chat, and the folder it is in now. */
-  const [folderTarget, setFolderTarget] = useState<{ chatId: string; subject: string; currentFolder?: string } | null>(null);
+  const [folderTarget, setFolderTarget] = useState<{ chatId: string; subject: string; currentFolder?: string; pinned: boolean } | null>(null);
   const isMobile = useIsMobile();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -183,11 +191,14 @@ export default function ChatList({
    * fighting a pin some other tab removed later: a stale override is never
    * re-applied, because it is dropped rather than kept.
    */
-  // Folder moves ride the same map and the same epoch: they are the same kind
-  // of write (one quiet metadata key on known ids, decided after the server
-  // took it), racing the same in-flight loads. `fields` merges per id, so a
-  // pin and a folder move on one chat in quick succession both survive.
-  const pinOverridesRef = useRef(new Map<string, { fields: { pinned?: boolean; sidebarFolder?: string | null }; epoch: number }>());
+  // Folder moves ride the same map and the same epoch counter: they are the
+  // same kind of write (one quiet metadata key on known ids, decided after the
+  // server took it), racing the same in-flight loads. Each FIELD carries its
+  // own epoch, so a pin and a folder move on one chat are retired
+  // independently — a shared per-id epoch would let a newer folder move
+  // carry an older pin past the response that already reflects it, and
+  // re-apply a pin some other tab has since removed.
+  const pinOverridesRef = useRef(new Map<string, OverrideFields>());
   /** Bumped once per committed pin or folder move; see {@link pinOverridesRef}. */
   const pinEpochRef = useRef(0);
   // Same signal as loadGenRef, but as state so the tree view can react to it:
@@ -368,10 +379,17 @@ export default function ChatList({
   const applyPinOverrides = (incoming: Chat[], epochAtRequest: number): Chat[] => {
     const overrides = pinOverridesRef.current;
     if (overrides.size === 0) return incoming;
-    const fresh = new Map<string, { pinned?: boolean; sidebarFolder?: string | null }>();
+    const fresh = new Map<string, Record<string, unknown>>();
     for (const [id, override] of overrides) {
-      if (override.epoch > epochAtRequest) fresh.set(id, override.fields);
-      else overrides.delete(id);
+      const live: Record<string, unknown> = {};
+      for (const field of OVERRIDE_FIELDS) {
+        const entry = override[field];
+        if (!entry) continue;
+        if (entry.epoch > epochAtRequest) live[field] = entry.value;
+        else delete override[field];
+      }
+      if (Object.keys(live).length > 0) fresh.set(id, live);
+      if (OVERRIDE_FIELDS.every((field) => !override[field])) overrides.delete(id);
     }
     if (fresh.size === 0) return incoming;
     return incoming.map((chat) => {
@@ -430,6 +448,8 @@ export default function ChatList({
     // a pinned chat nobody has touched in a week is outside that window too,
     // and a Pinned section that empties itself as its chats age is not a
     // feature. Both are appended beyond the page and neither moves `hasMore`.
+    // includeFoldered likewise, for folder sections — sent from here (offset 0,
+    // which every refresh and poll goes through) but not from `loadMore`.
     const response = await listChats(
       limit,
       0,
@@ -523,8 +543,11 @@ export default function ChatList({
         // about which page is allowed to carry them.
         true,
         listSpace,
-        // includeFoldered: includePinned's twin, for the folder sections.
-        true,
+        // No includeFoldered on later pages: the first page (and every
+        // refresh, which re-requests from offset 0 via `load`) already
+        // carried every filed tree, so re-appending them here would only
+        // ship trees the dedupe below throws away.
+        false,
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
       // this page was in flight — its offset no longer lines up, so drop the
@@ -715,10 +738,16 @@ export default function ChatList({
    * moves down into Recent, and if that was the last pin the headers go with
    * it.
    */
-  /** Merge into a pending override rather than replace it; see {@link pinOverridesRef}. */
+  /**
+   * Record a committed write as a pending override, stamping only the fields it
+   * wrote. Other fields pending on the same chat keep their own epochs; see
+   * {@link pinOverridesRef}.
+   */
   const recordOverride = (id: string, fields: { pinned?: boolean; sidebarFolder?: string | null }, epoch: number) => {
-    const prev = pinOverridesRef.current.get(id);
-    pinOverridesRef.current.set(id, { fields: { ...prev?.fields, ...fields }, epoch });
+    const override: OverrideFields = { ...pinOverridesRef.current.get(id) };
+    if (fields.pinned !== undefined) override.pinned = { value: fields.pinned, epoch };
+    if ("sidebarFolder" in fields) override.sidebarFolder = { value: fields.sidebarFolder ?? null, epoch };
+    pinOverridesRef.current.set(id, override);
   };
 
   /**
@@ -983,9 +1012,9 @@ export default function ChatList({
   // ---------------------------------------------------------------------------
 
   /**
-   * The rows on screen, in the order they render: the same function
-   * `ChatTreeList` maps over, given the same array. See `buildRows` there for
-   * why it is a shared function rather than a second derivation.
+   * The rows, built by the same function `ChatTreeList` maps over, given the
+   * same array. See `buildRows` there for why it is a shared function rather
+   * than a second derivation.
    *
    * One entry per VISIBLE row, so a lineage group is one entry and not one per
    * member — a folded member has no row of its own to check, and a shift+click
@@ -995,7 +1024,23 @@ export default function ChatList({
    */
   const rows = useMemo(() => buildRows(filteredChats), [filteredChats]);
   const rowChats = useMemo(() => new Map(rows.map((row) => [row.chat.id, row.chat])), [rows]);
-  const orderedIds = useMemo(() => rows.map((row) => row.chat.id), [rows]);
+  /**
+   * Row ids in the order they RENDER — sectioned (Pinned, folders, Recent) by
+   * `rowsInRenderOrder`, the same helper ChatTreeList renders through, so the
+   * two cannot drift. Recency order is not render order once anything is
+   * pinned or filed: a range from one row in a folder to another would
+   * otherwise sweep up the Recent rows that sit between them by date.
+   *
+   * `visibleOrderedIds` additionally drops rows under a collapsed section
+   * header. Ranges and select-all walk that one — a bulk delete must never
+   * reach a chat the user cannot see. `orderedIds` keeps every row, so a chat
+   * selected before its section was folded still goes out, in order, with
+   * the bulk request it is counted in.
+   */
+  const sectionExpansion = useChatSectionExpansion();
+  const orderedIds = useMemo(() => rowsInRenderOrder(rows).map((row) => row.chat.id), [rows]);
+  const visibleRows = useMemo(() => rowsInRenderOrder(rows, sectionExpansion.isExpanded), [rows, sectionExpansion.isExpanded]);
+  const visibleOrderedIds = useMemo(() => visibleRows.map((row) => row.chat.id), [visibleRows]);
 
   /**
    * A row's archive scope — see {@link ChatScope}. The dim's verdict exactly,
@@ -1039,7 +1084,8 @@ export default function ChatList({
   // raw set behind it is cleared by the reaper below; the derivation alone
   // only HIDES the bar, and a hidden selection is one that can come back.
   const selectionMode = selectionScope !== null && selectedIds.size > 0;
-  const selectionScopeCount = rows.filter((row) => scopeOf(row.chat) === selectionScope).length;
+  // Over visible rows, matching what select-all selects, so "all selected" can be reached.
+  const selectionScopeCount = visibleRows.filter((row) => scopeOf(row.chat) === selectionScope).length;
 
   /** Forget the selection itself, leaving any message about it standing. */
   const resetSelection = useCallback(() => {
@@ -1094,19 +1140,19 @@ export default function ChatList({
   };
 
   const toggleSelect = (chat: Chat, e: React.MouseEvent) => {
-    const anchorIndex = anchorId ? orderedIds.indexOf(anchorId) : -1;
-    const targetIndex = orderedIds.indexOf(chat.id);
+    const anchorIndex = anchorId ? visibleOrderedIds.indexOf(anchorId) : -1;
+    const targetIndex = visibleOrderedIds.indexOf(chat.id);
     if (e.shiftKey && anchorIndex !== -1 && targetIndex !== -1) {
       const [lo, hi] = anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
       // The slice IS filtered by scope here, unlike the board's — and the
       // difference is in the data, not the intent. The board lists every open
       // card before every closed one, so nothing out of scope can lie between
-      // two cards that are both in it. This list is ordered by recency and
-      // mixes the scopes freely, so a range from one open row to another can
+      // two cards that are both in it. This list is ordered by recency within
+      // each section and mixes the scopes freely, so a range from one open row to another can
       // step straight over an archived one. Both ENDS are
       // still guaranteed in scope by the inert row: an out-of-scope row never
       // receives the click.
-      const inRange = orderedIds.slice(lo, hi + 1).filter((id) => {
+      const inRange = visibleOrderedIds.slice(lo, hi + 1).filter((id) => {
         const row = rowChats.get(id);
         return row !== undefined && scopeOf(row) === scopeOf(chat);
       });
@@ -1141,8 +1187,10 @@ export default function ChatList({
 
   const selectAllInScope = useCallback(() => {
     if (selectionScope === null) return;
-    setSelectedIds(new Set(rows.filter((row) => scopeOf(row.chat) === selectionScope).map((row) => row.chat.id)));
-  }, [rows, scopeOf, selectionScope]);
+    // Visible rows only, for the same reason ranges are: never select a chat
+    // folded away under a collapsed section header.
+    setSelectedIds(new Set(visibleRows.filter((row) => scopeOf(row.chat) === selectionScope).map((row) => row.chat.id)));
+  }, [visibleRows, scopeOf, selectionScope]);
 
   /**
    * The selection's keyboard shortcuts, bound to the LIST — not to the
@@ -1709,11 +1757,12 @@ export default function ChatList({
           // which is the same way the dim degrades.)
           selectionFor={cardsLoaded ? selectionProps : undefined}
           spaceChipFor={showSpaceChips ? (chat) => spaceById(chat.spaceId) : undefined}
-          onMoveToFolder={(chat, currentFolder) =>
+          onMoveToFolder={(chat, currentFolder, pinned) =>
             setFolderTarget({
               chatId: chat.id,
               subject: `“${chatMeta(chat).title || chatMeta(chat).preview || "This chat"}”`.slice(0, 80),
               currentFolder,
+              pinned,
             })
           }
           onMoveToSpace={
@@ -1835,6 +1884,7 @@ export default function ChatList({
         <MoveToFolderModal
           subject={folderTarget.subject}
           currentFolder={folderTarget.currentFolder}
+          pinned={folderTarget.pinned}
           existingFolders={existingSidebarFolders}
           onSubmit={(folder) => handleSetFolder(folderTarget.chatId, folder)}
           onClose={() => setFolderTarget(null)}

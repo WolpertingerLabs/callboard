@@ -81,4 +81,36 @@ describe("MoveToFolderModal", () => {
     expect((await screen.findByRole("alert")).textContent).toMatch(/root chat/);
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it("closes on Escape", () => {
+    const { onClose } = renderModal();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("cannot be closed by Escape, Cancel or the backdrop while a save is in flight", async () => {
+    let settle: () => void = () => {};
+    const onSubmit = vi.fn(() => new Promise<void>((resolve) => (settle = resolve)));
+    const { onClose } = renderModal({ onSubmit });
+    fireEvent.click(screen.getByText("Alpha"));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect((screen.getByText("Cancel") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByText("Cancel"));
+    // The backdrop: ModalOverlay's outermost element.
+    fireEvent.click(screen.getByRole("dialog").parentElement!);
+    expect(onClose).not.toHaveBeenCalled();
+
+    settle();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it("says a pinned row stays under Pinned, and says nothing otherwise", () => {
+    renderModal({ pinned: true });
+    expect(screen.getByText(/stays under Pinned/)).toBeTruthy();
+    cleanup();
+    renderModal();
+    expect(screen.queryByText(/stays under Pinned/)).toBeNull();
+  });
 });

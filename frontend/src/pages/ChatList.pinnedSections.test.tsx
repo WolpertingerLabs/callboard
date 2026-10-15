@@ -145,7 +145,11 @@ describe("sections appear only once something is pinned", () => {
     mockListChats.mockResolvedValue(listResponse([LOOSE, PINNED]));
     await renderList();
 
-    const rendered = screen.getAllByText(/pinned chat|loose chat|^(Pinned|Recent) \(\d+\)$/).map((el) => el.textContent);
+    // Section headers (whose label and count are separate spans) and row
+    // previews, in document order.
+    const rendered = [...document.body.querySelectorAll("button[aria-expanded], span, div")]
+      .filter((el) => el.matches("button[aria-expanded]") || (el.children.length === 0 && /^(pinned chat|loose chat)$/.test(el.textContent ?? "")))
+      .map((el) => el.textContent);
     expect(rendered).toEqual(["Pinned (1)", "pinned chat", "Recent (1)", "loose chat"]);
   });
 
@@ -433,7 +437,7 @@ describe("folding a section", () => {
     mockListChats.mockResolvedValue(listResponse([LOOSE, PINNED]));
     await renderList();
 
-    fireEvent.click(screen.getByText("Pinned (1)"));
+    fireEvent.click(screen.getByRole("button", { name: "Pinned (1)" }));
 
     expect(screen.queryByText("pinned chat")).toBeNull();
     expect(screen.getByText("loose chat")).toBeTruthy();
@@ -444,7 +448,7 @@ describe("folding a section", () => {
   it("persists the fold across a remount", async () => {
     mockListChats.mockResolvedValue(listResponse([LOOSE, PINNED]));
     await renderList();
-    fireEvent.click(screen.getByText("Recent (1)"));
+    fireEvent.click(screen.getByRole("button", { name: "Recent (1)" }));
     expect(screen.queryByText("loose chat")).toBeNull();
 
     // A page reload: nothing cached in memory, everything read back from

@@ -51,10 +51,28 @@ export function parseSidebarFolder(input: unknown): SidebarFolderParse {
  * group, so a child naming a folder would either split its tree across two
  * sections or drag the tree somewhere its root never asked to go; the folder is
  * the root's, and a child's is ignored.
+ *
+ * Known limitation — orphaned trees: when a filed root is deleted, its
+ * surviving children still carry `parentChatId`, so they stay ineligible and
+ * the tree drops back to Recent with no way to re-file it. Deliberately not
+ * "no surviving parent": the sidebar cannot tell a deleted parent from one the
+ * current filters merely left unloaded (a hidden triggered parent, say), so
+ * offering the action there would either file a child whose root still exists
+ * or be refused by the server. Re-parenting is the remedy.
  */
 export function isSidebarFolderEligible(meta: { parentChatId?: unknown; forkedFrom?: unknown; rootChatId?: unknown }, chatId: string): boolean {
   if (meta.parentChatId || meta.forkedFrom) return false;
   return !meta.rootChatId || meta.rootChatId === chatId;
+}
+
+/**
+ * Whether two folder names are the same folder as a user reads them: equal
+ * ignoring case (accents still count). Section headers render in capitals, so
+ * "Work" and "work" filed separately would be two identical-looking sections —
+ * the route stores a new name under any existing spelling this matches.
+ */
+export function sameSidebarFolder(a: string, b: string): boolean {
+  return a.localeCompare(b, undefined, { sensitivity: "accent" }) === 0;
 }
 
 /** The folder a parsed metadata object names, or undefined for none. */

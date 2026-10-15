@@ -6,7 +6,8 @@ import { chatMeta } from "../utils/chatMeta";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
-import { isChatPinned, sectionChatRows } from "../utils/chatSections";
+import { isChatPinned, sectionChatRows, type ChatSection } from "../utils/chatSections";
+import type { ChatSectionKey } from "../utils/localStorage";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
 import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
@@ -91,7 +92,7 @@ interface Props {
    * the row is filed in now. Offered only on rows fronted by a lineage root —
    * see `Row.canFile` — and absent hides the menu entry everywhere.
    */
-  onMoveToFolder?: (chat: Chat, currentFolder: string | undefined) => void;
+  onMoveToFolder?: (chat: Chat, currentFolder: string | undefined, pinned: boolean) => void;
 }
 
 /** What one row is told about the selection it is part of. */
@@ -414,6 +415,36 @@ export function buildRows(chats: Chat[]): Row[] {
 }
 
 /**
+ * The sidebar's sections over `rows`: Pinned, folders, Recent — or `null` for
+ * the flat, headerless list. Each row is filed once: pinned if any member is,
+ * otherwise by its root's folder.
+ *
+ * Exported for the same reason {@link buildRows} is: ChatList's shift+click
+ * ranges must walk the order this component RENDERS, and the only way to keep
+ * the two from drifting is to make them one function.
+ */
+export function sectionRows(rows: Row[]): ChatSection<Row>[] | null {
+  return sectionChatRows(rows, {
+    isPinned: (row) => row.pinnedMembers.length > 0,
+    folderOf: (row) => row.sidebarFolder,
+    countOf: (row) => row.size,
+  });
+}
+
+/**
+ * The rows in the order they render, section by section — every row, folded
+ * sections included. With `isExpanded`, rows under a collapsed section header
+ * are left out: what is actually on screen, which is the only order a
+ * shift+click range may sweep (a range must never select a row the user cannot
+ * see).
+ */
+export function rowsInRenderOrder(rows: Row[], isExpanded?: (key: ChatSectionKey) => boolean): Row[] {
+  const sections = sectionRows(rows);
+  if (!sections) return rows;
+  return sections.flatMap((section) => (!isExpanded || isExpanded(section.key) ? section.items : []));
+}
+
+/**
  * The group's live work, as one row's worth of signals.
  *
  * Every rule here is "the loudest member wins", never "the front chat's", and
@@ -718,15 +749,9 @@ export default function ChatTreeList({
 
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
 
-  // Each group is filed as one row — pinned if any member is, otherwise by its
-  // root's folder — so a group whose members straddle buckets still appears
-  // exactly once. Cheap enough to redo per render; `rows` above is the
-  // memoized part.
-  const sections = sectionChatRows(rows, {
-    isPinned: (row) => row.pinnedMembers.length > 0,
-    folderOf: (row) => row.sidebarFolder,
-    countOf: (row) => row.size,
-  });
+  // Each group is filed as one row — see `sectionRows`. Cheap enough to redo
+  // per render; `rows` above is the memoized part.
+  const sections = sectionRows(rows);
 
   /** Collapse state for those headers, persisted via localStorage. */
   const sectionExpansion = useChatSectionExpansion();
@@ -747,7 +772,7 @@ export default function ChatTreeList({
     /** Same in both branches, for the same reason. Root-fronted rows only. */
     const folderProps = {
       sidebarFolder,
-      onMoveToFolder: onMoveToFolder && canFile ? () => onMoveToFolder(chat, sidebarFolder) : undefined,
+      onMoveToFolder: onMoveToFolder && canFile ? () => onMoveToFolder(chat, sidebarFolder, pinnedMembers.length > 0) : undefined,
     };
 
     if (!isGroup) {
@@ -879,6 +904,7 @@ export default function ChatTreeList({
               count={section.count}
               expanded={sectionExpansion.isExpanded(section.key)}
               onToggle={() => sectionExpansion.toggle(section.key)}
+              isFolder={section.key.startsWith("folder:")}
             />
             {sectionExpansion.isExpanded(section.key) && section.items.map(renderRow)}
           </Fragment>

@@ -33,7 +33,7 @@ export { CARD_CATEGORY_MAX } from "./card.js";
 
 export type { ActivityKind, ActivityCondition, ChatActivity, ConditionWatch, ChatActivityResponse } from "./activity.js";
 export { WORKSPACE_NAME_MAX } from "./workspace.js";
-export { SIDEBAR_FOLDER_MAX, parseSidebarFolder, readSidebarFolder, isSidebarFolderEligible } from "./sidebarFolder.js";
+export { SIDEBAR_FOLDER_MAX, parseSidebarFolder, readSidebarFolder, isSidebarFolderEligible, sameSidebarFolder } from "./sidebarFolder.js";
 export type { SidebarFolderParse } from "./sidebarFolder.js";
 
 export type { Space, SpacePatch, SpaceDefaults, SpaceAgentScope, SpaceAccent, SpaceListItem, SpaceListResponse, SpaceRecentDirectory, SpaceScope } from "./space.js";

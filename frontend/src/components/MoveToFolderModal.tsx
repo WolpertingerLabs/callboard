@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Folder } from "lucide-react";
-import { SIDEBAR_FOLDER_MAX, parseSidebarFolder } from "shared/types/sidebarFolder.js";
+import { SIDEBAR_FOLDER_MAX, parseSidebarFolder, sameSidebarFolder } from "shared/types/sidebarFolder.js";
 import { compareSidebarFolders } from "../utils/chatSections";
 import ModalOverlay from "./ModalOverlay";
 
@@ -14,6 +14,12 @@ interface MoveToFolderModalProps {
    * There is no folder registry: a folder exists because a chat names it.
    */
   existingFolders: readonly string[];
+  /**
+   * Whether the row is pinned (any member of its group). A pinned row stays
+   * under Pinned whatever its folder — pinned wins — so the dialog says so
+   * rather than let the move look like it did nothing.
+   */
+  pinned?: boolean;
   /** Persist the choice — a name, or `null` to take the chat out of its folder. Rejects with a user-facing message. */
   onSubmit: (folder: string | null) => Promise<void>;
   onClose: () => void;
@@ -29,10 +35,28 @@ interface MoveToFolderModalProps {
  * headers render in capitals, so "Work" and "work" would otherwise be two
  * sections that read as one.
  */
-export default function MoveToFolderModal({ subject, currentFolder, existingFolders, onSubmit, onClose }: MoveToFolderModalProps) {
+export default function MoveToFolderModal({ subject, currentFolder, existingFolders, pinned = false, onSubmit, onClose }: MoveToFolderModalProps) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Escape closes, from `document` — `EditTitleModal`'s shape and reason: the
+   * buttons disable while a save is in flight, the browser blurs a disabled
+   * focused element, and a panel-scoped handler would stop hearing keys.
+   * Held while busy, like Cancel and the backdrop: closing over a save in
+   * flight discards the only place its error can be read.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, busy]);
+  const closeUnlessBusy = () => {
+    if (!busy) onClose();
+  };
   const folders = [...new Set(existingFolders)].sort(compareSidebarFolders);
 
   const submit = async (folder: string | null) => {
@@ -58,7 +82,9 @@ export default function MoveToFolderModal({ subject, currentFolder, existingFold
       return;
     }
     const typed = parsed.value;
-    const existing = folders.find((f) => f.localeCompare(typed, undefined, { sensitivity: "base" }) === 0);
+    // Exact match first; the daemon applies the same rule across every record,
+    // including ones this list has not loaded.
+    const existing = folders.find((f) => f === typed) ?? folders.find((f) => sameSidebarFolder(f, typed));
     void submit(existing ?? typed);
   };
 
@@ -78,7 +104,7 @@ export default function MoveToFolderModal({ subject, currentFolder, existingFold
     }) as const;
 
   return (
-    <ModalOverlay onClose={onClose} onBackdropClick={onClose}>
+    <ModalOverlay onClose={onClose} onBackdropClick={closeUnlessBusy}>
       <div
         role="dialog"
         aria-label="Move to folder"
@@ -86,6 +112,11 @@ export default function MoveToFolderModal({ subject, currentFolder, existingFold
       >
         <h2 style={{ margin: "0 0 6px", fontSize: 17 }}>Move to folder</h2>
         <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.4 }}>{subject} — with every chat in its tree.</p>
+        {pinned && (
+          <p style={{ margin: "-6px 0 14px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.4 }}>
+            This chat is pinned, so it stays under Pinned until you unpin it.
+          </p>
+        )}
 
         {folders.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 14, maxHeight: 240, overflowY: "auto" }}>
@@ -185,13 +216,14 @@ export default function MoveToFolderModal({ subject, currentFolder, existingFold
           <button
             type="button"
             onClick={onClose}
+            disabled={busy}
             style={{
               padding: "6px 14px",
               borderRadius: 6,
               border: "1px solid var(--border)",
               background: "var(--bg-secondary)",
               color: "var(--text)",
-              cursor: "pointer",
+              cursor: busy ? "default" : "pointer",
             }}
           >
             Cancel

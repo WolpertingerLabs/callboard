@@ -1067,7 +1067,7 @@ describe("sidebar folders", () => {
   it("collapses a folder section independently, and remembers it", () => {
     renderFolders([makeChat("w", { sidebarFolder: "Work" }), makeChat("loose")]);
     expect(screen.getByText("chat w")).toBeTruthy();
-    fireEvent.click(screen.getByText("Work (1)"));
+    fireEvent.click(screen.getByRole("button", { name: "Work (1)" }));
     expect(screen.queryByText("chat w")).toBeNull();
     expect(screen.getByText("chat loose")).toBeTruthy();
     expect(JSON.parse(localStorage.getItem("claude-code-settings")!).chatSectionsExpanded["folder:Work"]).toBe(false);
@@ -1083,11 +1083,18 @@ describe("sidebar folders", () => {
     const onMove = renderFolders([makeChat("w", { sidebarFolder: "Work" }), makeChat("loose")]);
     openMenu("chat w");
     fireEvent.click(screen.getByText("Move to folder…"));
-    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "w" }), "Work");
+    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "w" }), "Work", false);
 
     openMenu("chat loose");
     fireEvent.click(screen.getByText("Add to folder…"));
-    expect(onMove).toHaveBeenLastCalledWith(expect.objectContaining({ id: "loose" }), undefined);
+    expect(onMove).toHaveBeenLastCalledWith(expect.objectContaining({ id: "loose" }), undefined, false);
+  });
+
+  it("tells the handler a row is pinned when ANY member of its group is", () => {
+    const onMove = renderFolders([makeChat("kid", { parentChatId: "root", rootChatId: "root", pinned: true }), makeChat("root", { sidebarFolder: "Work" })]);
+    openMenu("chat root");
+    fireEvent.click(screen.getByText("Move to folder…"));
+    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "root" }), "Work", true);
   });
 
   it("does not offer it on a row fronted by a child (root not loaded)", () => {
