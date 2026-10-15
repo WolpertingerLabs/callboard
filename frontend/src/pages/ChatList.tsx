@@ -1109,13 +1109,38 @@ export default function ChatList({
    * actually folded away, and it cannot loop: after it runs, no folded id
    * remains to key on.
    *
-   * Ids ABSENT from the loaded rows are left alone on purpose. That is a
-   * search or filter narrowing the list, which the derivation above hides and
-   * the reaper below forgets only once nothing at all is left — clearing a
-   * search brings a still-selected row back, as it always has.
+   * Precisely, an id is reaped when it is (1) a row in the filtered view,
+   * (2) not visible there, and (3) not visible in the UNFILTERED view either —
+   * every loaded chat, sectioned and folded the same way. (3) is what keeps a
+   * search or a client-side filter from reaping anything: `buildRows` reads
+   * `pinnedMembers` off the members that survive filtering, so a filter that
+   * hides a group's only pinned member moves the group from Pinned into
+   * Recent — a still-listed row re-sectioned by the filter, not by the user.
+   * If Recent is collapsed the row is folded only while the filter is up; the
+   * derivation above hides it meanwhile, and clearing the filter brings it
+   * back, still checked.
+   *
+   * Ids ABSENT from the filtered rows are left alone for the same reason: a
+   * search or filter narrowing the list, which the derivation hides and the
+   * reaper below forgets only once nothing at all is left.
+   *
+   * What remains is narrowing done SERVER-side, which changes `chats` itself
+   * rather than filtering it — switching space or toggling "Show archived" can
+   * load a different set of a group's members and so re-section a row that
+   * stays listed. A selected row folded that way is reaped. That needs a
+   * selection held across a scope switch, over a group whose pin or folder
+   * the switch changes, with the destination section collapsed; it is left.
    */
+  // Every loaded chat's rows, unfiltered, visible-under-the-folds. Equal
+  // lengths mean no chat was filtered out (filteredChats ⊆ chats), so the
+  // filtered view's own set is the answer and nothing is rebuilt — the
+  // ordinary, unfiltered render pays nothing for this.
+  const unfilteredVisibleIds = useMemo(() => {
+    if (filteredChats.length === chats.length) return null;
+    return new Set(rowsInRenderOrder(buildRows(chats), sectionExpansion.isExpanded).map((row) => row.chat.id));
+  }, [chats, filteredChats.length, sectionExpansion.isExpanded]);
   const foldedSelectedKey = [...rawSelectedIds]
-    .filter((id) => rowChats.has(id) && !visibleRowChats.has(id))
+    .filter((id) => rowChats.has(id) && !visibleRowChats.has(id) && !(unfilteredVisibleIds?.has(id) ?? false))
     .sort()
     .join("\n");
   useEffect(() => {

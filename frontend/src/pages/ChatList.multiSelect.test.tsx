@@ -691,6 +691,74 @@ describe("rows folded away by a refresh or a stored collapse leave the selection
   });
 });
 
+/*
+ * A search or client-side filter can re-section a row that stays listed:
+ * `buildRows` reads `pinnedMembers` off the members that survive filtering,
+ * so hiding a group's only pinned member drops the group from Pinned into
+ * Recent. With Recent collapsed that row is folded only while the filter is
+ * up — it must come back still checked, not be reaped.
+ *
+ * Fixture: `p` pinned; root `r` with child `c`, and `c` pinned (so the r-group
+ * renders under Pinned); `x` loose. Recent stored collapsed.
+ */
+describe("a filter that re-sections a selected row does not reap it", () => {
+  const SCRATCH = "/home/cybil/projects/scratch";
+  const CHATS_PRC = [
+    makeChat("p", "chat p", { pinned: true }),
+    makeChat("r", "chat r"),
+    { ...makeChat("c", "chat c", { parentChatId: "r", rootChatId: "r", pinned: true }), folder: SCRATCH, displayFolder: SCRATCH },
+    makeChat("x", "chat x"),
+  ];
+  const STORED = { chatSectionsExpanded: { recent: false } };
+
+  async function selectPandR() {
+    await mount(CHATS_PRC, [], STORED);
+    expect(screen.queryByText("chat x")).toBeNull();
+    fireEvent.click(row("chat p"), { metaKey: true });
+    fireEvent.click(row("chat r"));
+    expect(count()).toBe("2 chats selected");
+  }
+
+  it("content search", async () => {
+    await selectPandR();
+    const input = screen.getByPlaceholderText(/Search chat contents/);
+    vi.mocked(searchChatContents).mockResolvedValue({ chatIds: ["p", "r"] } as Awaited<ReturnType<typeof searchChatContents>>);
+    fireEvent.change(input, { target: { value: "p or r" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    // `c` no longer matches, so the r-group reads unpinned and falls into
+    // collapsed Recent: hidden from the selection while the search is up.
+    await waitFor(() => expect(screen.queryByText("chat r")).toBeNull());
+    expect(count()).toBe("1 chat selected");
+
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText("chat r")).toBeTruthy());
+    expect(count()).toBe("2 chats selected");
+    expect(selectedPreviews()).toEqual(["chat p", "chat r"]);
+  });
+
+  it("client-side filters (filterChatRows)", async () => {
+    await selectPandR();
+    const setExclude = (on: boolean) => {
+      fireEvent.click(screen.getByTitle(/^Filters/));
+      const exclude = screen.getByPlaceholderText("e.g. node_modules|\\.tmp");
+      fireEvent.change(exclude, { target: { value: "scratch" } });
+      const toggle = exclude.parentElement!.querySelector("button")!;
+      if ((toggle.textContent === "On") !== on) fireEvent.click(toggle);
+      fireEvent.click(screen.getByText("Apply"));
+    };
+
+    setExclude(true);
+    await waitFor(() => expect(screen.queryByText("chat r")).toBeNull());
+    expect(count()).toBe("1 chat selected");
+
+    setExclude(false);
+    await waitFor(() => expect(screen.getByText("chat r")).toBeTruthy());
+    expect(count()).toBe("2 chats selected");
+    expect(selectedPreviews()).toEqual(["chat p", "chat r"]);
+  });
+});
+
 describe("bulk archive", () => {
   it("sends the selected chat ids, not card ids", async () => {
     await mount();
