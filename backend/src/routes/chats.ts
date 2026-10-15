@@ -35,7 +35,7 @@ import { getSessionProviders } from "../agents/factory.js";
 import { isInternalProvider, isRetiredProvider, isRoutableProvider, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
 import { buildHandoffTurns, providerLabel, truncateAtCutoff } from "../agents/handoff.js";
 import { generateChatTitleFromTranscript } from "../services/quick-completion.js";
-import { ALL_SPACES, normalizePermissions, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
+import { ALL_SPACES, normalizePermissions, isSidebarFolderEligible, parseSidebarFolder, readSidebarFolder, type ParsedMessage, type Chat as SharedChat, type SpaceAgentScope } from "shared/types/index.js";
 import { createLogger } from "../utils/logger.js";
 import { buildWorkspaceIndex, viewForDirectory } from "../services/workspace-views.js";
 // The chat-list cache lives in a standalone module so services can invalidate
@@ -302,6 +302,7 @@ chatsRouter.get("/", (req, res) => {
   /* #swagger.parameters['excludeTriggered'] = { in: 'query', type: 'string', description: 'Exclude triggered/agent chats from results when set to true. Native Codex children (subagents a parent Codex thread spawned; read-only in Callboard) are excluded too. Returns LIMIT non-triggered chats so the list always has content.' } */
   /* #swagger.parameters['includeLineage'] = { in: 'query', type: 'string', description: 'When true, limit/offset count sidebar tree rows (chats sharing a parentage root fold into one row, every member of a windowed row is returned) so the tree view always gets a full page of visible rows. Tree relatives without a session in the window are appended flagged with _lineage_appended; they do not count toward pagination.' } */
   /* #swagger.parameters['includePinned'] = { in: 'query', type: 'string', description: "When true, chats whose metadata carries pinned:true are appended even when they fall outside the pagination window, flagged with _pinned_appended; like lineage relatives they do not count toward pagination or hasMore. Purely additive — every other filter on the request still applies, so a pinned chat the cardLifecycle scope, excludeTriggered or bookmarked drops stays dropped. A pinned chat already on the page is not appended a second time." } */
+  /* #swagger.parameters['includeFoldered'] = { in: 'query', type: 'string', description: "When true, root chats whose metadata names a sidebar folder (metadata.sidebarFolder) are appended even when they fall outside the pagination window, flagged with _folder_appended, so a sidebar folder section shows its whole membership. Appended before the lineage pass, so with includeLineage each appended root brings its tree. Like includePinned: purely additive, every other filter still applies, rows already returned are not appended twice, and nothing appended moves pagination or hasMore. Child chats are never appended for their folder." } */
   /* #swagger.parameters['cardLifecycle'] = { in: 'query', type: 'string', description: "Scope the list by the lifecycle of the card each chat belongs to: all (default, no scoping), unarchived (everything EXCEPT archived trees — those of closed or hidden cards, and those whose non-card root (triggered, job-step) carries metadata.treeArchived; chats on no card are otherwise included, and a job step parked on an approval is admitted even from an archived tree; this is the scope the sidebar asks for when its Archived toggle is off), active (only chats whose lineage root is an OPEN, visible card, plus every chat in those trees) or inactive (the complement of active: chats on the tree of a CLOSED or hidden card, plus chats that are on no card at all). active/inactive are retained for client bundles older than the unarchived scope. Native Codex descendants inherit card membership through discovered lineage without requiring their own stored record; a discovered session with no stored record is admitted by unarchived and by neither active nor inactive." } */
   /* #swagger.parameters['cardsOnly'] = { in: 'query', type: 'string', description: 'Back-compatible alias for cardLifecycle=active, kept for persisted prefs and older client bundles. Ignored when cardLifecycle is given.' } */
   /* #swagger.parameters['cached'] = { in: 'query', type: 'string', description: 'Set to false to bypass cache and force fresh data' } */
@@ -312,7 +313,7 @@ chatsRouter.get("/", (req, res) => {
     const bypassCache = req.query.cached === "false";
     // Every query param that changes the body belongs in here: an entry keyed
     // without one is served to requests that did send it, and vice versa.
-    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}:${req.query.cardLifecycle || ""}:${req.query.includePinned || ""}:${req.query.space || ""}`;
+    const cacheKey = `${req.query.limit || ""}:${req.query.offset || ""}:${req.query.bookmarked || ""}:${req.query.excludeTriggered || ""}:${req.query.includeLineage || ""}:${req.query.cardsOnly || ""}:${req.query.cardLifecycle || ""}:${req.query.includePinned || ""}:${req.query.space || ""}:${req.query.includeFoldered || ""}`;
     const now = Date.now();
 
     if (!bypassCache) {
@@ -351,6 +352,13 @@ chatsRouter.get("/", (req, res) => {
      */
     const pinnedFileChats: any[] = [];
     /**
+     * Root records filed into a sidebar folder, collected in the same pass and
+     * for the same reason as {@link pinnedFileChats}. Roots only: a child's
+     * folder is ignored for grouping, so appending it would fetch a row the
+     * sidebar files nowhere in particular.
+     */
+    const folderedFileChats: any[] = [];
+    /**
      * Each record's parsed metadata, from the one parse this loop already
      * does. augmentSession runs per discovered session — every session, on
      * the sidebar's over-fetching default — and reuses it rather than
@@ -380,6 +388,7 @@ chatsRouter.get("/", (req, res) => {
         }
       }
       if (meta.pinned === true && chat?.id) pinnedFileChats.push(chat);
+      if (chat?.id && readSidebarFolder(meta) !== undefined && isSidebarFolderEligible(meta, chat.id)) folderedFileChats.push(chat);
       fileMetaByChat.set(chat, meta);
       if (typeof meta.jobRunId === "string" && meta.jobRunId && chat?.id) jobStepChats.push([chat.id, meta.jobRunId]);
     }
@@ -413,6 +422,14 @@ chatsRouter.get("/", (req, res) => {
      * that it has none.
      */
     const includePinned = req.query.includePinned === "true";
+    /**
+     * Append root chats filed into a sidebar folder from outside the window —
+     * {@link includePinned}'s reasoning, applied to folders. A folder section
+     * is a place the user put chats, and one that loses members as they age
+     * past the first page is not a place. Additive and re-guarded exactly as
+     * the pinned append is (see {@link appendableRow}).
+     */
+    const includeFoldered = req.query.includeFoldered === "true";
     /**
      * The lifecycle scope this request asks for.
      *
@@ -642,7 +659,7 @@ chatsRouter.get("/", (req, res) => {
     // needs the full session list so out-of-window tree relatives can be augmented,
     // and includePinned for the same reason: a pinned chat is appended precisely
     // when it is NOT in the window, so its session is never in a paged fetch.
-    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned || spaceFiltering;
+    const needsPostFilter = bookmarkedFilter || excludeTriggered || includeLineage || scopedByCardLifecycle || includePinned || includeFoldered || spaceFiltering;
     const fetchLimit = needsPostFilter ? Number.MAX_SAFE_INTEGER : limit;
     const fetchOffset = needsPostFilter ? 0 : offset;
     const { sessions: discoveredSessions, total: rawTotal } = discoverSessionsPaginated(fetchLimit, fetchOffset);
@@ -958,7 +975,7 @@ chatsRouter.get("/", (req, res) => {
       // so the window is filled from what's left.
       const augmented = dropTriggered(paginatedSessions.map(augmentSession));
       ({ page: chatsFromLogs, total, windowRows } = paginateWindow(augmented, (c) => c.id));
-    } else if (includeLineage || scopedByCardLifecycle || includePinned || spaceFiltering) {
+    } else if (includeLineage || scopedByCardLifecycle || includePinned || includeFoldered || spaceFiltering) {
       // Sessions were over-fetched (for lineage lookup, so the lifecycle filter
       // could run across the whole list, or so the pinned append can find a
       // session for a chat outside the window) — paginate manually, by row for
@@ -984,7 +1001,7 @@ chatsRouter.get("/", (req, res) => {
     // outside the pagination window. Shared by both append passes so a chat
     // reached by either one is built from the same session.
     const sessionByChatId = new Map<string, (typeof paginatedSessions)[0]>();
-    if (includeLineage || includePinned) {
+    if (includeLineage || includePinned || includeFoldered) {
       for (const s of paginatedSessions) {
         const fileChat = fileChatsBySessionId.get(s.sessionId);
         if (fileChat && !sessionByChatId.has(fileChat.id)) sessionByChatId.set(fileChat.id, s);
@@ -1038,6 +1055,28 @@ chatsRouter.get("/", (req, res) => {
       if (excludeTriggered && !survivesTriggered(augmented)) return null;
       return augmented;
     };
+
+    /**
+     * Foldered roots the page did not already contain.
+     *
+     * Runs BEFORE the lineage pass, unlike the pinned append, so that pass
+     * treats an appended root as on the page and brings its tree with it: a
+     * folder holds whole trees, and a root appended alone would render as a
+     * lone row and miscount its section until something else loaded its
+     * children. Sorted by recency, as the pinned append is.
+     */
+    if (includeFoldered && folderedFileChats.length > 0) {
+      const alreadyReturned = new Set(chatsFromLogs.map((c: any) => c.id));
+      const foldered: any[] = [];
+      for (const fc of folderedFileChats) {
+        if (alreadyReturned.has(fc.id)) continue;
+        const augmented = appendableRow(fc);
+        if (!augmented) continue;
+        foldered.push({ ...augmented, _folder_appended: true });
+      }
+      foldered.sort((a, b) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime());
+      chatsFromLogs = [...chatsFromLogs, ...foldered];
+    }
 
     // When the page touches a parentage tree, append the tree's remaining
     // members (ancestors and descendants outside the pagination window) so
@@ -1571,6 +1610,73 @@ chatsRouter.patch("/:id/pin", (req, res) => {
   } catch (err: any) {
     log.error(`Error toggling pin: ${err}`);
     res.status(500).json({ error: "Failed to toggle pin", details: err.message });
+  }
+});
+
+/**
+ * File a chat into a sidebar folder, move it to another, or take it out.
+ *
+ * `metadata.sidebarFolder`, never `folder`: a chat's `folder` is its working
+ * directory, and this is a label the user chose. See shared/types/sidebarFolder.ts.
+ *
+ * Roots only. A sidebar row is a whole lineage group, filed by its root, so a
+ * folder on a child would be a value nothing reads; refusing it says so rather
+ * than storing it. Clearing is always allowed, so a stray child folder written
+ * by hand can still be removed.
+ *
+ * Archiving does not touch this, unlike the pin (card-archive-unpin.ts): a pin
+ * is a seat at the top of the list that archived work should give up, while a
+ * folder is where the work is kept, archived or not.
+ */
+chatsRouter.patch("/:id/sidebar-folder", (req, res) => {
+  // #swagger.tags = ['Chats']
+  // #swagger.summary = 'Set or clear the sidebar folder of a chat'
+  // #swagger.description = 'Writes metadata.sidebarFolder, which files a root chat (and the tree under it) into its own sidebar section. The name is trimmed; empty or null removes the chat from its folder (stored as null). Max 64 characters; control and invisible characters are rejected. Only root chats (no parentChatId/forkedFrom) can be filed. Archiving never clears it. Returned by GET /api/chats?includeFoldered=true even outside the pagination window. Creates a file storage record if the chat only exists on the filesystem. View-only: updated_at is not bumped.'
+  /* #swagger.parameters['id'] = { in: 'path', required: true, type: 'string', description: 'Chat ID or session ID' } */
+  /* #swagger.requestBody = {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          required: ["sidebarFolder"],
+          properties: {
+            sidebarFolder: { type: ["string", "null"], description: "Folder name, or null/empty to remove from its folder" }
+          }
+        }
+      }
+    }
+  } */
+  /* #swagger.responses[200] = { description: "Updated chat" } */
+  /* #swagger.responses[400] = { description: "Invalid folder name, or the chat is not a root chat" } */
+  /* #swagger.responses[404] = { description: "Chat not found" } */
+  const body = req.body ?? {};
+  if (!("sidebarFolder" in body)) {
+    return res.status(400).json({ error: "sidebarFolder is required (a string, or null to clear)" });
+  }
+  const parsed = parseSidebarFolder(body.sidebarFolder);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+  try {
+    const chat = findChat(req.params.id, false) as any;
+    if (!chat) return res.status(404).json({ error: "Chat not found" });
+
+    const meta = parseChatMetadata(chat.metadata);
+    if (parsed.value !== null && !isSidebarFolderEligible(meta, chat.id)) {
+      return res.status(400).json({ error: "Only a root chat can be filed into a folder; its tree goes with it" });
+    }
+
+    // A label, not activity: quiet, like the pin above.
+    if (writeQuietMetadata(chat, { ...meta, sidebarFolder: parsed.value }) === "unwritten") {
+      return res.status(500).json({ error: "Failed to set folder" });
+    }
+
+    // Like the pin, the folder decides which rows a list response carries.
+    clearListCaches();
+    res.json(findChat(chat.id, false) ?? chat);
+  } catch (err: any) {
+    log.error(`Error setting sidebar folder: ${err}`);
+    res.status(500).json({ error: "Failed to set folder", details: err.message });
   }
 });
 

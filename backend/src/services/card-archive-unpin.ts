@@ -42,6 +42,14 @@
  * cases apart. A reopened chat can be re-pinned with the same one click that
  * pinned it originally.
  *
+ * ## Sidebar folders are deliberately left alone
+ *
+ * `metadata.sidebarFolder` is NOT cleared here, and must not be. A pin is a
+ * seat at the top of the list that archived work should give up; a folder is
+ * where the work is kept, and archiving work you have filed is not a request
+ * to unfile it. Only `pinned` is written below, so the folder survives by
+ * construction — `cards.archive-keeps-sidebar-folder.test.ts` holds that.
+ *
  * ## Two things this module costs, said plainly
  *
  * **It puts card-fields.ts inside an import cycle.** `card-fields` now imports
