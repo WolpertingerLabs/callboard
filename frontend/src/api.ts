@@ -342,6 +342,13 @@ export async function listChats(
    * whenever this is sent.
    */
   space?: string,
+  /**
+   * Append root chats filed into a sidebar folder from outside the pagination
+   * window, with their trees when `includeLineage` is on — `includePinned`'s
+   * twin, so a folder section shows its whole membership. Same additivity:
+   * every other argument still applies to them.
+   */
+  includeFoldered?: boolean,
 ): Promise<ChatListResponse> {
   const params = new URLSearchParams();
   if (limit !== undefined) params.append("limit", limit.toString());
@@ -354,6 +361,7 @@ export async function listChats(
   if (cardLifecycle && cardLifecycle !== "all") params.append("cardLifecycle", cardLifecycle);
   if (includePinned) params.append("includePinned", "true");
   if (space) params.append("space", space);
+  if (includeFoldered) params.append("includeFoldered", "true");
 
   return request(`/chats${query(params)}`, { error: "Failed to list chats" });
 }
@@ -383,6 +391,17 @@ export async function toggleBookmark(id: string, bookmarked: boolean): Promise<C
  */
 export async function togglePin(id: string, pinned: boolean): Promise<Chat> {
   return request(`/chats/${seg(id)}/pin`, { method: "PATCH", json: { pinned }, error: "Failed to toggle pin" });
+}
+
+/**
+ * File a root chat (and its tree) into a sidebar folder, move it to another,
+ * or — with `null` or an empty name — take it out. Stored as
+ * `metadata.sidebarFolder`; `chat.folder` is the working directory and is
+ * untouched. The daemon trims and validates the name (see
+ * shared/types/sidebarFolder.ts) and refuses to file a child chat.
+ */
+export async function setChatSidebarFolder(id: string, sidebarFolder: string | null): Promise<Chat> {
+  return request(`/chats/${seg(id)}/sidebar-folder`, { method: "PATCH", json: { sidebarFolder }, error: "Failed to set folder" });
 }
 
 /**

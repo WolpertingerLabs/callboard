@@ -6,9 +6,10 @@ import { chatMeta } from "../utils/chatMeta";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
-import { isChatPinned, sectionByPinned } from "../utils/chatSections";
+import { isChatPinned, sectionChatRows } from "../utils/chatSections";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
 import type { SpaceListItem } from "shared/types/space.js";
+import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
 
 /**
  * The sidebar chat list.
@@ -85,6 +86,12 @@ interface Props {
   spaceChipFor?: (chat: Chat) => SpaceListItem | undefined;
   /** "Move to space…" for a row; absent hides the menu entry. */
   onMoveToSpace?: (chat: Chat) => void;
+  /**
+   * "Move to folder…" for a row, given the chat that fronts it and the folder
+   * the row is filed in now. Offered only on rows fronted by a lineage root —
+   * see `Row.canFile` — and absent hides the menu entry everywhere.
+   */
+  onMoveToFolder?: (chat: Chat, currentFolder: string | undefined) => void;
 }
 
 /** What one row is told about the selection it is part of. */
@@ -251,6 +258,21 @@ export interface Row {
    * and clearable again.
    */
   pinnedMembers: Chat[];
+  /**
+   * Whether `chat` is a lineage root, and so whether this row can be filed
+   * into a sidebar folder at all. False for a group whose root is not loaded
+   * and is fronted by a member instead — filing that member would set a
+   * folder nothing reads.
+   */
+  canFile: boolean;
+  /**
+   * The sidebar folder this row is filed in: the ROOT's `metadata.sidebarFolder`
+   * and nothing else. Unlike the pin, a folder is not a group-wide "any
+   * member" verdict — a child's folder is ignored, so a tree is never split
+   * across sections and never dragged into one by a subagent. Undefined when
+   * `canFile` is false.
+   */
+  sidebarFolder?: string;
 }
 
 /** Shared empty bucket, so an unpinned row allocates nothing per render. */
@@ -374,6 +396,8 @@ export function buildRows(chats: Chat[]): Row[] {
     // against the row ChatList's selection expects to find it in.
     const root = byId.get(rootKey);
     const front = isGroup && root && infoById.get(root.id)!.rootKey === rootKey ? root : chat;
+    const frontMeta = chatMeta(front);
+    const canFile = isSidebarFolderEligible(frontMeta, front.id);
     result.push({
       chat: front,
       rootKey,
@@ -382,6 +406,8 @@ export function buildRows(chats: Chat[]): Row[] {
       activity: rollUpActivity(members),
       size,
       pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS,
+      canFile,
+      sidebarFolder: canFile ? readSidebarFolder(frontMeta) : undefined,
     });
   }
   return result;
@@ -599,6 +625,7 @@ export default function ChatTreeList({
   selectionFor,
   spaceChipFor,
   onMoveToSpace,
+  onMoveToFolder,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -691,20 +718,20 @@ export default function ChatTreeList({
 
   const handleNavigate = useCallback((chatId: string) => navigate(`/chat/${chatId}`), [navigate]);
 
-  // Each group is filed by its header row's chat — the one actually rendered
-  // and labelled — so a group whose members straddle both buckets still
-  // appears exactly once. Cheap enough to redo per render; `rows` above is the
+  // Each group is filed as one row — pinned if any member is, otherwise by its
+  // root's folder — so a group whose members straddle buckets still appears
+  // exactly once. Cheap enough to redo per render; `rows` above is the
   // memoized part.
-  const sections = sectionByPinned(
-    rows,
-    (row) => row.pinnedMembers.length > 0,
-    (row) => row.size,
-  );
+  const sections = sectionChatRows(rows, {
+    isPinned: (row) => row.pinnedMembers.length > 0,
+    folderOf: (row) => row.sidebarFolder,
+    countOf: (row) => row.size,
+  });
 
   /** Collapse state for those headers, persisted via localStorage. */
   const sectionExpansion = useChatSectionExpansion();
 
-  const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers }: Row) => {
+  const renderRow = ({ chat, rootKey, isGroup, members, activity, pinnedMembers, canFile, sidebarFolder }: Row) => {
     /**
      * Pin the chat this row is labelled with; unpin every member holding a pin.
      *
@@ -716,6 +743,11 @@ export default function ChatTreeList({
     const pinProps = {
       pinned: pinnedMembers.length > 0,
       onTogglePin: (next: boolean) => onTogglePin(next ? [chat] : pinnedMembers, next),
+    };
+    /** Same in both branches, for the same reason. Root-fronted rows only. */
+    const folderProps = {
+      sidebarFolder,
+      onMoveToFolder: onMoveToFolder && canFile ? () => onMoveToFolder(chat, sidebarFolder) : undefined,
     };
 
     if (!isGroup) {
@@ -732,6 +764,7 @@ export default function ChatTreeList({
           onDelete={() => onDelete(chat)}
           onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
           {...pinProps}
+          {...folderProps}
           onEditTitle={onEditTitle && (() => onEditTitle(chat))}
           cardMenu={cardMenuFor(chat)}
           spaceChip={spaceChipFor?.(chat)}
@@ -810,6 +843,7 @@ export default function ChatTreeList({
               onDelete={() => onDelete(chat)}
               onToggleBookmark={(bookmarked) => onToggleBookmark(chat, bookmarked)}
               {...pinProps}
+              {...folderProps}
               onEditTitle={onEditTitle && (() => onEditTitle(chat))}
               cardMenu={cardMenuFor(chat)}
               spaceChip={spaceChipFor?.(chat)}
@@ -832,9 +866,9 @@ export default function ChatTreeList({
     );
   };
 
-  // `null` is the ordinary case — nothing pinned — and renders the flat list
-  // with no headers at all, byte for byte what this component rendered before
-  // pinning existed.
+  // `null` is the ordinary case — nothing pinned, nothing filed — and renders
+  // the flat list with no headers at all, byte for byte what this component
+  // rendered before pinning existed.
   if (sections) {
     return (
       <>

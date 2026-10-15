@@ -145,3 +145,40 @@ describe("getChatSectionExpanded", () => {
     expect(getChatSectionExpanded("recent")).toBe(true);
   });
 });
+
+describe("useChatSectionExpansion — folder sections", () => {
+  function FolderConsumer() {
+    const { isExpanded, toggle } = useChatSectionExpansion();
+    return (
+      <div>
+        <span data-testid="work">{String(isExpanded("folder:Work"))}</span>
+        <span data-testid="home">{String(isExpanded("folder:Home"))}</span>
+        <button onClick={() => toggle("folder:Work")}>toggle work</button>
+      </div>
+    );
+  }
+
+  it("defaults a never-seen folder to expanded, and persists a fold per folder", () => {
+    const { unmount } = render(<FolderConsumer />);
+    expect(screen.getByTestId("work").textContent).toBe("true");
+
+    fireEvent.click(screen.getByText("toggle work"));
+    expect(screen.getByTestId("work").textContent).toBe("false");
+    expect(screen.getByTestId("home").textContent).toBe("true");
+    expect(getChatSectionExpanded("folder:Work")).toBe(false);
+    // The built-in keys are untouched by a folder's fold.
+    expect(getChatSectionExpanded("recent")).toBe(true);
+
+    // Survives a remount with the in-memory snapshot dropped.
+    unmount();
+    resetChatSectionExpansion();
+    render(<FolderConsumer />);
+    expect(screen.getByTestId("work").textContent).toBe("false");
+  });
+
+  it("reads a folder fold stored before the hook first asked for it", () => {
+    saveChatSectionExpanded("folder:Home", false);
+    render(<FolderConsumer />);
+    expect(screen.getByTestId("home").textContent).toBe("false");
+  });
+});

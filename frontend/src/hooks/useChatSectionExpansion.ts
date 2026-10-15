@@ -1,8 +1,9 @@
 /**
- * Expand/collapse state for the sidebar's Pinned/Recent sections.
+ * Expand/collapse state for the sidebar's sections — Pinned, Recent, and one
+ * per sidebar folder.
  *
- * Keyed `pinned`/`recent` because the keys are persisted; the headers above
- * them are free to read otherwise.
+ * Keyed `pinned`/`recent`/`folder:<name>` because the keys are persisted; the
+ * headers above them are free to read otherwise.
  *
  * One module-level store rather than `useState` per caller. `ChatTreeList` is
  * currently the only consumer, but the store is the point: this is a stored
@@ -19,22 +20,32 @@
  * snapshot, so it is cached rather than re-read per render — which is why
  * tests that clear storage must also call {@link resetChatSectionExpansion}.
  *
- * Both sections default to expanded: sections only exist once something is
- * pinned, so collapsing by default would hide chats the user never asked to
- * hide — starting with the one they just pinned.
+ * Every section defaults to expanded: sections only exist once something is
+ * pinned or filed, so collapsing by default would hide chats the user never
+ * asked to hide — starting with the one they just pinned or filed.
+ *
+ * Folder keys are open-ended, so the snapshot cannot be read up front. It
+ * fills lazily: a key not in it yet is read from storage on first ask and
+ * memoised into the same object. That keeps the snapshot referentially stable
+ * (the read is idempotent — storage only changes through {@link toggle}, which
+ * replaces the snapshot), as `useSyncExternalStore` requires.
  */
 
 import { useCallback, useSyncExternalStore } from "react";
 import { getChatSectionExpanded, saveChatSectionExpanded, type ChatSectionKey } from "../utils/localStorage";
 
-type Expansion = Record<ChatSectionKey, boolean>;
+type Expansion = Partial<Record<ChatSectionKey, boolean>>;
 
 let snapshot: Expansion | null = null;
 const listeners = new Set<() => void>();
 
 function getSnapshot(): Expansion {
-  snapshot ??= { pinned: getChatSectionExpanded("pinned"), recent: getChatSectionExpanded("recent") };
+  snapshot ??= {};
   return snapshot;
+}
+
+function read(expansion: Expansion, key: ChatSectionKey): boolean {
+  return (expansion[key] ??= getChatSectionExpanded(key));
 }
 
 function subscribe(listener: () => void): () => void {
@@ -58,10 +69,10 @@ export interface ChatSectionExpansion {
 export function useChatSectionExpansion(): ChatSectionExpansion {
   const expansion = useSyncExternalStore(subscribe, getSnapshot);
 
-  const isExpanded = useCallback((key: ChatSectionKey) => expansion[key], [expansion]);
+  const isExpanded = useCallback((key: ChatSectionKey) => read(expansion, key), [expansion]);
 
   const toggle = useCallback((key: ChatSectionKey) => {
-    const next = !getSnapshot()[key];
+    const next = !read(getSnapshot(), key);
     saveChatSectionExpanded(key, next);
     snapshot = { ...getSnapshot(), [key]: next };
     for (const listener of listeners) listener();

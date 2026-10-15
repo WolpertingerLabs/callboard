@@ -10,6 +10,7 @@ import {
   bulkArchiveChats,
   toggleBookmark,
   togglePin,
+  setChatSidebarFolder,
   getDrafts,
   deleteDraft,
   listCards,
@@ -23,6 +24,8 @@ import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
 import SpaceSwitcher, { SpaceNotice } from "../components/SpaceSwitcher";
 import MoveToSpaceModal from "../components/MoveToSpaceModal";
+import MoveToFolderModal from "../components/MoveToFolderModal";
+import { isSidebarFolderEligible, readSidebarFolder } from "shared/types/sidebarFolder.js";
 import { useSpaces } from "../contexts/SpaceContext";
 import { ALL_SPACES } from "shared/types/space.js";
 import { type ChatCardMenu } from "../components/ChatListItem";
@@ -131,6 +134,8 @@ export default function ChatList({
   const [searchAllSpaces, setSearchAllSpaces] = useState(false);
   /** Chats whose tree the "Move to space…" dialog is moving, or null when closed. */
   const [moveTarget, setMoveTarget] = useState<{ chatIds: string[]; subject: string; currentSpaceId?: string } | null>(null);
+  /** The row whose "Move to folder" dialog is open: its root chat, and the folder it is in now. */
+  const [folderTarget, setFolderTarget] = useState<{ chatId: string; subject: string; currentFolder?: string } | null>(null);
   const isMobile = useIsMobile();
   const [chats, setChats] = useState<Chat[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -178,8 +183,12 @@ export default function ChatList({
    * fighting a pin some other tab removed later: a stale override is never
    * re-applied, because it is dropped rather than kept.
    */
-  const pinOverridesRef = useRef(new Map<string, { pinned: boolean; epoch: number }>());
-  /** Bumped once per committed pin; see {@link pinOverridesRef}. */
+  // Folder moves ride the same map and the same epoch: they are the same kind
+  // of write (one quiet metadata key on known ids, decided after the server
+  // took it), racing the same in-flight loads. `fields` merges per id, so a
+  // pin and a folder move on one chat in quick succession both survive.
+  const pinOverridesRef = useRef(new Map<string, { fields: { pinned?: boolean; sidebarFolder?: string | null }; epoch: number }>());
+  /** Bumped once per committed pin or folder move; see {@link pinOverridesRef}. */
   const pinEpochRef = useRef(0);
   // Same signal as loadGenRef, but as state so the tree view can react to it:
   // fetched subtrees are snapshots and go stale when the list refreshes.
@@ -359,16 +368,17 @@ export default function ChatList({
   const applyPinOverrides = (incoming: Chat[], epochAtRequest: number): Chat[] => {
     const overrides = pinOverridesRef.current;
     if (overrides.size === 0) return incoming;
-    const fresh = new Map<string, boolean>();
+    const fresh = new Map<string, { pinned?: boolean; sidebarFolder?: string | null }>();
     for (const [id, override] of overrides) {
-      if (override.epoch > epochAtRequest) fresh.set(id, override.pinned);
+      if (override.epoch > epochAtRequest) fresh.set(id, override.fields);
       else overrides.delete(id);
     }
     if (fresh.size === 0) return incoming;
     return incoming.map((chat) => {
-      if (!fresh.has(chat.id)) return chat;
+      const fields = fresh.get(chat.id);
+      if (!fields) return chat;
       return withChatMeta(chat, (meta) => {
-        meta.pinned = fresh.get(chat.id);
+        Object.assign(meta, fields);
       });
     });
   };
@@ -431,6 +441,8 @@ export default function ChatList({
       cardLifecycle,
       true,
       listSpace,
+      // includeFoldered: includePinned's twin, for the folder sections.
+      true,
     );
     if (superseded()) return;
     // Bump on commit as well as on claim — that is the edge an in-flight
@@ -456,6 +468,8 @@ export default function ChatList({
         cardLifecycle,
         true,
         listSpace,
+        // includeFoldered: includePinned's twin, for the folder sections.
+        true,
       );
       if (superseded()) return;
       gen = loadGenRef.current += 1;
@@ -509,6 +523,8 @@ export default function ChatList({
         // about which page is allowed to carry them.
         true,
         listSpace,
+        // includeFoldered: includePinned's twin, for the folder sections.
+        true,
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
       // this page was in flight — its offset no longer lines up, so drop the
@@ -699,6 +715,54 @@ export default function ChatList({
    * moves down into Recent, and if that was the last pin the headers go with
    * it.
    */
+  /** Merge into a pending override rather than replace it; see {@link pinOverridesRef}. */
+  const recordOverride = (id: string, fields: { pinned?: boolean; sidebarFolder?: string | null }, epoch: number) => {
+    const prev = pinOverridesRef.current.get(id);
+    pinOverridesRef.current.set(id, { fields: { ...prev?.fields, ...fields }, epoch });
+  };
+
+  /**
+   * File a root chat into a sidebar folder, move it, or (`null`) take it out —
+   * then patch the row in place, exactly as {@link handleTogglePin} does and
+   * for the same reasons: written only after the server has taken it, and
+   * recorded as an override so an in-flight `load` does not paint the old
+   * folder back. One chat, never a group: the folder is the root's alone.
+   *
+   * Throws on failure so the dialog can show the server's message (a bad name
+   * or a child chat) and stay open.
+   */
+  const handleSetFolder = async (chatId: string, folder: string | null) => {
+    const updated = await setChatSidebarFolder(chatId, folder);
+    // The server trims; take its spelling rather than echoing ours.
+    const stored = readSidebarFolder(chatMeta(updated)) ?? null;
+    const epoch = (pinEpochRef.current += 1);
+    recordOverride(chatId, { sidebarFolder: stored }, epoch);
+    setChats((prev) =>
+      prev.map((c) =>
+        c.id !== chatId
+          ? c
+          : withChatMeta(c, (meta) => {
+              meta.sidebarFolder = stored;
+            }),
+      ),
+    );
+  };
+
+  /**
+   * The folder names the dialog offers: every folder a loaded root chat names.
+   * There is no registry — a folder exists because a chat names it — so this
+   * is the whole list, and an emptied folder drops out of it by itself.
+   */
+  const existingSidebarFolders = useMemo(() => {
+    const names = new Set<string>();
+    for (const chat of chats) {
+      const meta = chatMeta(chat);
+      const folder = readSidebarFolder(meta);
+      if (folder !== undefined && isSidebarFolderEligible(meta, chat.id)) names.add(folder);
+    }
+    return [...names];
+  }, [chats]);
+
   const handleTogglePin = async (targets: Chat[], pinned: boolean) => {
     if (targets.length === 0) return;
     const results = await Promise.allSettled(targets.map((target) => togglePin(target.id, pinned)));
@@ -710,7 +774,7 @@ export default function ChatList({
     if (written.size === 0) return;
 
     const epoch = (pinEpochRef.current += 1);
-    for (const id of written) pinOverridesRef.current.set(id, { pinned, epoch });
+    for (const id of written) recordOverride(id, { pinned }, epoch);
 
     setChats((prev) =>
       prev.map((c) => {
@@ -1645,6 +1709,13 @@ export default function ChatList({
           // which is the same way the dim degrades.)
           selectionFor={cardsLoaded ? selectionProps : undefined}
           spaceChipFor={showSpaceChips ? (chat) => spaceById(chat.spaceId) : undefined}
+          onMoveToFolder={(chat, currentFolder) =>
+            setFolderTarget({
+              chatId: chat.id,
+              subject: `“${chatMeta(chat).title || chatMeta(chat).preview || "This chat"}”`.slice(0, 80),
+              currentFolder,
+            })
+          }
           onMoveToSpace={
             spacesEnabled && spaces.length > 1
               ? (chat) =>
@@ -1757,6 +1828,16 @@ export default function ChatList({
             void load();
             void loadCards();
           }}
+        />
+      )}
+
+      {folderTarget && (
+        <MoveToFolderModal
+          subject={folderTarget.subject}
+          currentFolder={folderTarget.currentFolder}
+          existingFolders={existingSidebarFolders}
+          onSubmit={(folder) => handleSetFolder(folderTarget.chatId, folder)}
+          onClose={() => setFolderTarget(null)}
         />
       )}
 
