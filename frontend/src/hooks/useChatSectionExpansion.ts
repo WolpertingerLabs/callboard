@@ -5,8 +5,11 @@
  * Keyed `pinned`/`recent`/`folder:<name>` because the keys are persisted; the
  * headers above them are free to read otherwise.
  *
- * One module-level store rather than `useState` per caller. `ChatTreeList` is
- * currently the only consumer, but the store is the point: this is a stored
+ * One module-level store rather than `useState` per caller. There are two
+ * consumers, mounted together: `ChatTreeList`, which renders and toggles the
+ * sections, and `ChatList`, which reads the same folds so its shift+click
+ * ranges, select-all and selection skip collapsed rows. The store is the
+ * point: this is a stored
  * *preference*, and every component that reads it must see the same value the
  * moment any one of them changes it. When the sidebar still had a flat layout
  * beside the tree, both lists called this hook while mounted together and

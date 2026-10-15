@@ -131,12 +131,13 @@ function listResponse(chats: Chat[], hasMore = false): ChatListResponse {
 /** Refresh handle the page hands out, so a test can make the list reload. */
 let refreshList: () => void = () => {};
 
-async function mount(chats: Chat[] = CHATS, cards: CardSummary[] = CARDS) {
+async function mount(chats: Chat[] = CHATS, cards: CardSummary[] = CARDS, storage: Record<string, unknown> = {}) {
   mockListChats.mockResolvedValue(listResponse(chats));
   vi.mocked(listCards).mockResolvedValue({ cards });
   // "Archived" on, so the archived row is in scope and renders — the fixture
-  // needs it on screen to be selectable at all.
-  localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true }));
+  // needs it on screen to be selectable at all. `storage` adds stored prefs
+  // (a stored section collapse, say) on top.
+  localStorage.setItem(KEY, JSON.stringify({ chatsShowArchived: true, ...storage }));
   const view = render(
     <MemoryRouter>
       <ChatList
@@ -607,6 +608,86 @@ describe("collapsing a section drops its rows from the selection", () => {
       fireEvent.click(screen.getByRole("button", { name: /^Archive 2 chats/ }));
     });
     expect(mockBulkArchive).toHaveBeenCalledWith(["a", "c"], true);
+  });
+});
+
+/*
+ * The same rule when the fold does NOT come from a header click: a refresh
+ * moves a selected row under a collapsed header, sectioning appears over a
+ * stored collapse, or the page mounts with one. The row must leave the
+ * selection for good — not merely be hidden and come back checked later.
+ */
+describe("rows folded away by a refresh or a stored collapse leave the selection", () => {
+  async function refreshWith(chats: Chat[]) {
+    mockListChats.mockResolvedValue(listResponse(chats));
+    await act(async () => refreshList());
+  }
+
+  it("a refresh files a selected row into a collapsed folder; expanding it does not re-check it", async () => {
+    const before = [makeChat("a", "chat a"), makeChat("b", "chat b", { sidebarFolder: "Work" }), makeChat("c", "chat c")];
+    await mount(before, [], { chatSectionsExpanded: { "folder:Work": false } });
+    expect(screen.queryByText("chat b")).toBeNull();
+
+    fireEvent.click(row("chat a"), { metaKey: true });
+    fireEvent.click(row("chat c"));
+    expect(count()).toBe("2 chats selected");
+
+    await refreshWith([before[0], before[1], makeChat("c", "chat c", { sidebarFolder: "Work" })]);
+    await waitFor(() => expect(screen.queryByText("chat c")).toBeNull());
+    expect(count()).toBe("1 chat selected");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Work \(2\)$/ }));
+    expect(screen.getByText("chat c")).toBeTruthy();
+    expect(count()).toBe("1 chat selected");
+    expect(selectedPreviews()).toEqual(["chat a"]);
+  });
+
+  it("sectioning appearing over a stored Recent collapse drops the hidden rows, and they stay dropped when it goes", async () => {
+    const flat = [makeChat("a", "chat a"), makeChat("b", "chat b"), makeChat("c", "chat c")];
+    await mount(flat, [], { chatSectionsExpanded: { recent: false } });
+    // Flat: nothing pinned or filed, so no headers and the stored fold is moot.
+    fireEvent.click(row("chat b"), { metaKey: true });
+    fireEvent.click(row("chat c"));
+    expect(count()).toBe("2 chats selected");
+
+    // Filing `b` brings the sections in — and Recent, holding `c`, is collapsed.
+    await refreshWith([flat[0], makeChat("b", "chat b", { sidebarFolder: "Work" }), flat[2]]);
+    await waitFor(() => expect(screen.queryByText("chat c")).toBeNull());
+    expect(count()).toBe("1 chat selected");
+
+    // Unfiling it takes the sections away and `c` is back on screen — unchecked.
+    await refreshWith(flat);
+    await waitFor(() => expect(screen.getByText("chat c")).toBeTruthy());
+    expect(count()).toBe("1 chat selected");
+    expect(selectedPreviews()).toEqual(["chat b"]);
+  });
+
+  it("mounted with a stored collapse: select-all takes only visible rows, and expanding adds none", async () => {
+    const chats = [makeChat("a", "chat a"), makeChat("b", "chat b", { sidebarFolder: "Work" }), makeChat("c", "chat c")];
+    await mount(chats, [], { chatSectionsExpanded: { "folder:Work": false } });
+    fireEvent.click(row("chat a"), { metaKey: true });
+    fireEvent.keyDown(row("chat a"), { key: "a", ctrlKey: true });
+    expect(count()).toBe("2 chats selected");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Work \(1\)$/ }));
+    expect(count()).toBe("2 chats selected");
+    expect(selectedPreviews()).toEqual(["chat a", "chat c"]);
+  });
+
+  it("drops the shift+click anchor with its row, so a later range cannot start from it", async () => {
+    const before = [makeChat("a", "chat a"), makeChat("c", "chat c"), makeChat("d", "chat d"), makeChat("w", "chat w", { sidebarFolder: "Work" })];
+    await mount(before, [], { chatSectionsExpanded: { "folder:Work": false } });
+    fireEvent.click(row("chat a"), { metaKey: true });
+    fireEvent.click(row("chat c")); // the anchor moves to `c`
+
+    await refreshWith([before[0], makeChat("c", "chat c", { sidebarFolder: "Work" }), before[2], before[3]]);
+    await waitFor(() => expect(screen.queryByText("chat c")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: /^Work \(2\)$/ }));
+
+    // Renders WORK: c, w / RECENT: a, d. A stale anchor at `c` would make this
+    // shift+click a range c…d that re-checks `c` and sweeps `w`.
+    fireEvent.click(row("chat d"), { shiftKey: true });
+    expect(selectedPreviews()).toEqual(["chat a", "chat d"]);
   });
 });
 

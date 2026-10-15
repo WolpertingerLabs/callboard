@@ -1034,8 +1034,8 @@ export default function ChatList({
    *
    * Rows under a collapsed section header are left out, and that is the
    * selection's one rule about folds: **a collapsed section's rows are not in
-   * the selection.** Collapsing a header drops them (see
-   * `handleSectionCollapsed`), the derived `selectedIds` below only ever
+   * the selection.** However a row comes to be folded away, the fold reaper
+   * drops it (see `foldedSelectedKey`), the derived `selectedIds` below only ever
    * holds visible rows, and ranges and select-all walk only visible rows. So a
    * bulk action never reaches a chat the user cannot see, and "N selected",
    * the bar's verbs and "all selected" always describe the same set of
@@ -1076,9 +1076,10 @@ export default function ChatList({
    * dead id is gone the moment the response lands, and it can never reach a
    * bulk call.
    */
-  // Checked against the VISIBLE rows, not every row — see `visibleRows`.
-  // Collapsing already removes a section's rows from the raw set; this keeps
-  // the invariant in every render regardless of how a fold came about.
+  // Checked against the VISIBLE rows, not every row — see `visibleRows`. A
+  // selected row that is loaded but folded away is hidden from this set in
+  // the same render it disappears, and then dropped from the raw set for good
+  // by the fold reaper below.
   const visibleRowChats = new Map(visibleRows.map((row) => [row.chat.id, row.chat]));
   const selectedIds = new Set(
     [...rawSelectedIds].filter((id) => {
@@ -1096,16 +1097,35 @@ export default function ChatList({
   const allSelected = visibleInScope.length > 0 && visibleInScope.every((row) => selectedIds.has(row.chat.id));
 
   /**
-   * A header was collapsed: forget its rows' selection, permanently — they do
-   * not come back checked when the section is reopened. Leaves selection mode
-   * by derivation if that was everything (the reaper clears the rest).
+   * The fold reaper: a selected row that is still LOADED but no longer
+   * VISIBLE is dropped from the raw set for good, so it does not come back
+   * checked when its section reopens.
+   *
+   * One rule for every way a row can end up under a collapsed header —
+   * clicking the header, a refresh that files the row into a collapsed folder
+   * or pins it under a collapsed Pinned, sectioning appearing (first pin or
+   * folder) over a stored collapse, a mount with a stored collapse. Keyed on
+   * the folded ids themselves, so it only sets state when something was
+   * actually folded away, and it cannot loop: after it runs, no folded id
+   * remains to key on.
+   *
+   * Ids ABSENT from the loaded rows are left alone on purpose. That is a
+   * search or filter narrowing the list, which the derivation above hides and
+   * the reaper below forgets only once nothing at all is left — clearing a
+   * search brings a still-selected row back, as it always has.
    */
-  const handleSectionCollapsed = (hidden: { chat: Chat }[]) => {
-    if (rawSelectedIds.size === 0) return;
-    const next = new Set(rawSelectedIds);
-    for (const row of hidden) next.delete(row.chat.id);
-    if (next.size !== rawSelectedIds.size) setSelectedIds(next);
-  };
+  const foldedSelectedKey = [...rawSelectedIds]
+    .filter((id) => rowChats.has(id) && !visibleRowChats.has(id))
+    .sort()
+    .join("\n");
+  useEffect(() => {
+    if (!foldedSelectedKey) return;
+    const folded = new Set(foldedSelectedKey.split("\n"));
+    setSelectedIds((prev) => new Set([...prev].filter((id) => !folded.has(id))));
+    // A dropped anchor would make the next shift+click range from a row the
+    // user can no longer see.
+    setAnchorId((prev) => (prev !== null && folded.has(prev) ? null : prev));
+  }, [foldedSelectedKey]);
 
   /** Forget the selection itself, leaving any message about it standing. */
   const resetSelection = useCallback(() => {
@@ -1776,7 +1796,6 @@ export default function ChatList({
           // which is the same way the dim degrades.)
           selectionFor={cardsLoaded ? selectionProps : undefined}
           spaceChipFor={showSpaceChips ? (chat) => spaceById(chat.spaceId) : undefined}
-          onSectionCollapsed={handleSectionCollapsed}
           onMoveToFolder={(chat, currentFolder, pinned) =>
             setFolderTarget({
               chatId: chat.id,
