@@ -16,6 +16,8 @@ export interface SidebarChatMeta {
   preview?: string;
   bookmarked?: boolean;
   pinned?: boolean;
+  /** The user's sidebar folder — NOT the working directory. Null once cleared; read via `readSidebarFolder`. */
+  sidebarFolder?: string | null;
   agentAlias?: string;
   triggered?: boolean;
   nativeAgent?: NativeCodexAgent;

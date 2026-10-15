@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { Chat } from "../api";
-import { isChatPinned, sectionByPinned } from "./chatSections";
+import { compareSidebarFolders, isChatPinned, sectionByPinned, sectionChatRows } from "./chatSections";
 
 const chat = (id: string, meta: Record<string, unknown> = {}): Pick<Chat, "id" | "metadata"> => ({
   id,
@@ -154,5 +154,81 @@ describe("isChatPinned", () => {
   it("answers false for unparseable metadata rather than throwing", () => {
     expect(isChatPinned({ metadata: "{not json" } as Pick<Chat, "metadata">)).toBe(false);
     expect(isChatPinned({ metadata: null } as unknown as Pick<Chat, "metadata">)).toBe(false);
+  });
+});
+
+describe("sectionChatRows — folders", () => {
+  type Item = { id: string; pinned?: boolean; folder?: string; size?: number };
+  const opts = {
+    isPinned: (i: Item) => i.pinned === true,
+    folderOf: (i: Item) => i.folder,
+    countOf: (i: Item) => i.size ?? 1,
+  };
+  const keys = (sections: { key: string }[] | null) => sections?.map((s) => s.key);
+
+  it("orders Pinned, then folders alphabetically (case-insensitive), then Recent", () => {
+    // Deliberately scrambled: Recent first, folders out of order, pin last.
+    const items: Item[] = [
+      { id: "loose" },
+      { id: "w1", folder: "work" },
+      { id: "a1", folder: "Alpha" },
+      { id: "z1", folder: "zeta" },
+      { id: "B1", folder: "beta" },
+      { id: "p1", pinned: true },
+    ];
+    const sections = sectionChatRows(items, opts)!;
+    expect(keys(sections)).toEqual(["pinned", "folder:Alpha", "folder:beta", "folder:work", "folder:zeta", "recent"]);
+    expect(sections.map((s) => s.label)).toEqual(["Pinned", "Alpha", "beta", "work", "zeta", "Recent"]);
+  });
+
+  it("preserves incoming order within a folder", () => {
+    const items: Item[] = [{ id: "a", folder: "F" }, { id: "x" }, { id: "b", folder: "F" }, { id: "c", folder: "F" }];
+    const sections = sectionChatRows(items, opts)!;
+    expect(sections.find((s) => s.key === "folder:F")!.items.map((i) => i.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("returns null only when nothing is pinned AND nothing is in a folder", () => {
+    expect(sectionChatRows<Item>([{ id: "a" }, { id: "b" }], opts)).toBeNull();
+    expect(sectionChatRows<Item>([], opts)).toBeNull();
+    // A folder alone is enough to section, with no Pinned header.
+    expect(keys(sectionChatRows<Item>([{ id: "a", folder: "F" }, { id: "b" }], opts))).toEqual(["folder:F", "recent"]);
+  });
+
+  it("never emits an empty (0) section: a folder exists only while a row is in it", () => {
+    const sections = sectionChatRows<Item>([{ id: "a", folder: "F" }], opts)!;
+    expect(keys(sections)).toEqual(["folder:F"]);
+    expect(sections.every((s) => s.items.length > 0 && s.count > 0)).toBe(true);
+  });
+
+  it("files a pinned row under Pinned only, even when it names a folder", () => {
+    const sections = sectionChatRows<Item>([{ id: "both", pinned: true, folder: "F" }, { id: "other", folder: "F" }], opts)!;
+    expect(keys(sections)).toEqual(["pinned", "folder:F"]);
+    expect(sections.flatMap((s) => s.items.map((i) => i.id))).toEqual(["both", "other"]);
+    // A pinned row that is the folder's only member leaves no folder section behind.
+    expect(keys(sectionChatRows<Item>([{ id: "both", pinned: true, folder: "F" }, { id: "x" }], opts))).toEqual(["pinned", "recent"]);
+  });
+
+  it("counts chats, not rows, per folder", () => {
+    const sections = sectionChatRows<Item>([{ id: "group", folder: "F", size: 4 }, { id: "lone", folder: "F" }, { id: "r" }], opts)!;
+    expect(sections.map((s) => [s.key, s.count])).toEqual([
+      ["folder:F", 5],
+      ["recent", 1],
+    ]);
+  });
+
+  it("keys a folder named like a built-in section distinctly", () => {
+    const sections = sectionChatRows<Item>([{ id: "a", folder: "pinned" }, { id: "b", folder: "Recent" }, { id: "p", pinned: true }], opts)!;
+    expect(keys(sections)).toEqual(["pinned", "folder:pinned", "folder:Recent"]);
+  });
+
+  it("is what sectionByPinned does when there are no folders", () => {
+    const items: Item[] = [{ id: "a" }, { id: "p", pinned: true }];
+    expect(sectionByPinned(items, opts.isPinned)).toEqual(sectionChatRows(items, { isPinned: opts.isPinned }));
+  });
+});
+
+describe("compareSidebarFolders", () => {
+  it("is case-insensitive first, then exact, so the order is total", () => {
+    expect(["b", "B", "a", "A"].sort(compareSidebarFolders)).toEqual(["A", "a", "B", "b"]);
   });
 });

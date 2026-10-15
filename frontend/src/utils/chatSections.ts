@@ -1,5 +1,5 @@
 /**
- * The Pinned/Recent split.
+ * The Pinned / folders / Recent split.
  *
  * The sidebar sections **rows**, not chats — a parentage group collapses into
  * one row and its members can disagree about the pin, so it must be filed
@@ -15,13 +15,15 @@
  */
 
 import type { Chat } from "../api";
+import type { ChatSectionKey } from "./localStorage";
 
 export interface ChatSection<T> {
   /**
    * Persisted — the expand/collapse preference is stored under it — so the
-   * keys stay `pinned`/`recent` however the headers above them read.
+   * keys stay `pinned`/`recent`/`folder:<name>` however the headers above
+   * them read.
    */
-  key: "pinned" | "recent";
+  key: ChatSectionKey;
   label: string;
   items: T[];
   /**
@@ -51,29 +53,8 @@ export function isChatPinned(chat: Pick<Chat, "metadata">): boolean {
 }
 
 /**
- * Split into Pinned-then-Recent.
- *
- * Returns `null` — meaning "render the list exactly as it renders with nothing
- * pinned" — when the pinned bucket is empty. That is the whole gate: a sidebar
- * with no pins is the overwhelmingly common case and it gets no headers at
- * all, which is what keeps this feature invisible to everyone who does not use
- * it.
- *
- * An empty **Recent** bucket is a different matter and does NOT collapse the
- * sections. The old Open/Archived split returned null whenever either bucket
- * was empty, because a lone "Open" header over an undivided list said nothing
- * the list did not already say. "Pinned" does say something: it is the only
- * thing on screen confirming that the pin took, it is the fold control the
- * user has a stored preference for, and dropping it once the last unpinned
- * chat scrolls out would make the list flip between two layouts as the user
- * pages. So the pinned bucket decides whether there are sections, and an empty
- * bucket is simply omitted — you can see "PINNED (3)" alone, and you never see
- * a "(0)" header of either kind.
- *
- * Two filter passes, never `Array.prototype.sort`: sort stability would give
- * the same answer, but a partition makes order-preservation obvious rather
- * than inherited, and removes any temptation to sort the caller's memoized
- * array in place. Recency order within each section is preserved for free.
+ * Split into Pinned-then-Recent. The folder-less case of
+ * {@link sectionChatRows}, kept for callers that have no folders to offer.
  */
 export function sectionByPinned<T>(
   items: readonly T[],
@@ -81,11 +62,87 @@ export function sectionByPinned<T>(
   /** Chats one item stands for; a row fronting a lineage group stands for more than one. */
   countOf: (item: T) => number = () => 1,
 ): ChatSection<T>[] | null {
-  const pinned = items.filter((item) => isPinned(item));
-  if (pinned.length === 0) return null;
-  const recent = items.filter((item) => !isPinned(item));
+  return sectionChatRows(items, { isPinned, countOf });
+}
+
+/** Folder names in display order: case-insensitive, then exact, so the order is total and stable. */
+export function compareSidebarFolders(a: string, b: string): number {
+  return a.localeCompare(b, undefined, { sensitivity: "base" }) || (a < b ? -1 : a > b ? 1 : 0);
+}
+
+/**
+ * Split into Pinned, then one section per sidebar folder, then Recent.
+ *
+ * Returns `null` — meaning "render the list exactly as it renders with nothing
+ * pinned or filed" — when there is neither a pinned row nor a foldered one.
+ * That is the whole gate: a sidebar with no pins and no folders is the
+ * overwhelmingly common case and it gets no headers at all, which is what
+ * keeps these features invisible to everyone who does not use them.
+ *
+ * An empty **Recent** bucket is a different matter and does NOT collapse the
+ * sections. The old Open/Archived split returned null whenever either bucket
+ * was empty, because a lone "Open" header over an undivided list said nothing
+ * the list did not already say. "Pinned" (or a folder) does say something: it
+ * is the only thing on screen confirming that the pin took, it is the fold
+ * control the user has a stored preference for, and dropping it once the last
+ * unfiled chat scrolls out would make the list flip between two layouts as
+ * the user pages. So the pinned and folder buckets decide whether there are
+ * sections, and an empty bucket is simply omitted — you can see "PINNED (3)"
+ * alone, and you never see a "(0)" header of any kind. That is also how a
+ * folder exists at all: there is no registry, so a folder is a section exactly
+ * when at least one row on screen is filed into it.
+ *
+ * **Pinned wins.** A row is filed in exactly one section, and a pinned row
+ * that is also in a folder goes under Pinned — the folder is where the chat is
+ * kept, the pin is the stronger "keep this in front of me", and showing the
+ * row twice would make the counts lie about the rows below them.
+ *
+ * Folders sort case-insensitively ({@link compareSidebarFolders}). Within each
+ * section the caller's order (recency) is preserved: every bucket is a filter
+ * pass over `items`, never `Array.prototype.sort`, so order-preservation is
+ * obvious rather than inherited and the caller's memoized array is never
+ * sorted in place.
+ */
+export function sectionChatRows<T>(
+  items: readonly T[],
+  {
+    isPinned,
+    folderOf = () => undefined,
+    countOf = () => 1,
+  }: {
+    isPinned: (item: T) => boolean;
+    /** The sidebar folder an item is filed in, or undefined. Asked only of unpinned items. */
+    folderOf?: (item: T) => string | undefined;
+    /** Chats one item stands for; a row fronting a lineage group stands for more than one. */
+    countOf?: (item: T) => number;
+  },
+): ChatSection<T>[] | null {
+  const pinned: T[] = [];
+  const recent: T[] = [];
+  const byFolder = new Map<string, T[]>();
+  for (const item of items) {
+    if (isPinned(item)) {
+      pinned.push(item);
+      continue;
+    }
+    const folder = folderOf(item);
+    if (folder === undefined) {
+      recent.push(item);
+      continue;
+    }
+    const bucket = byFolder.get(folder);
+    if (bucket) bucket.push(item);
+    else byFolder.set(folder, [item]);
+  }
+  if (pinned.length === 0 && byFolder.size === 0) return null;
+
   const total = (bucket: T[]) => bucket.reduce((sum, item) => sum + countOf(item), 0);
-  const sections: ChatSection<T>[] = [{ key: "pinned", label: "Pinned", items: pinned, count: total(pinned) }];
+  const sections: ChatSection<T>[] = [];
+  if (pinned.length > 0) sections.push({ key: "pinned", label: "Pinned", items: pinned, count: total(pinned) });
+  for (const folder of [...byFolder.keys()].sort(compareSidebarFolders)) {
+    const bucket = byFolder.get(folder)!;
+    sections.push({ key: `folder:${folder}`, label: folder, items: bucket, count: total(bucket) });
+  }
   if (recent.length > 0) sections.push({ key: "recent", label: "Recent", items: recent, count: total(recent) });
   return sections;
 }

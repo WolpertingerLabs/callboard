@@ -34,6 +34,18 @@ export interface Chat {
    */
   _lineage_appended?: boolean;
   /**
+   * True when the chat was returned beyond the pagination window because it is
+   * pinned (includePinned=true). Doesn't count toward pagination offsets.
+   */
+  _pinned_appended?: boolean;
+  /**
+   * True when the chat was returned beyond the pagination window because it is
+   * a root chat filed into a sidebar folder (includeFoldered=true). Its tree's
+   * other members, appended by the lineage pass, carry `_lineage_appended`
+   * instead. Doesn't count toward pagination offsets.
+   */
+  _folder_appended?: boolean;
+  /**
    * True when the chat's lineage root is archived — a closed or hidden card,
    * or, for a tree whose root is not a card (triggered, job step), the root's
    * `metadata.treeArchived` flag. Computed per `GET /api/chats` response, never

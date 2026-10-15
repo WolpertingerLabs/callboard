@@ -18,6 +18,7 @@ import {
   Pin,
   PinOff,
   Layers,
+  FolderInput,
 } from "lucide-react";
 import type { Chat } from "../api";
 import { chatMeta } from "../utils/chatMeta";
@@ -106,6 +107,14 @@ interface Props {
    */
   pinned?: boolean;
   /**
+   * Open the "Move to folder" dialog for this row. Omit to leave the entry out
+   * — the list omits it on every row not fronted by a lineage root, because a
+   * folder is the root's and a child's would be ignored.
+   */
+  onMoveToFolder?: () => void;
+  /** The sidebar folder the row is filed in, for the menu entry's wording. */
+  sidebarFolder?: string;
+  /**
    * Open the title editor for this chat. Omit to leave the entry out of the
    * menu entirely. Nothing is written from here — the dialog the handler opens
    * owns both the typed rename and the regenerate that shares it.
@@ -172,11 +181,11 @@ const stopGesture = {
 
 /**
  * Rough popup height used to decide whether the menu opens downward or upward.
- * Raised with the pin entry — an estimate that under-reports simply stops the
+ * Raised with the pin and folder entries — an estimate that under-reports simply stops the
  * menu flipping when it should, and the row it belongs to is at the bottom of
  * the sidebar precisely when that matters.
  */
-const MENU_ESTIMATED_HEIGHT = 250;
+const MENU_ESTIMATED_HEIGHT = 290;
 
 /**
  * The lifecycle entry's tooltip: what is about to happen, and to how much.
@@ -214,6 +223,8 @@ export default function ChatListItem({
   onToggleBookmark,
   onTogglePin,
   pinned,
+  onMoveToFolder,
+  sidebarFolder,
   onEditTitle,
   cardMenu,
   spaceChip,
@@ -837,6 +848,22 @@ export default function ChatListItem({
                       onClick={() => {
                         setMenuPos(null);
                         onTogglePin(!isPinned);
+                      }}
+                    />
+                  )}
+                  {onMoveToFolder && (
+                    <MenuRow
+                      icon={<FolderInput size={16} />}
+                      label={sidebarFolder ? "Move to folder…" : "Add to folder…"}
+                      // "its tree": a row is filed whole, by its root.
+                      title={
+                        sidebarFolder
+                          ? `In folder "${sidebarFolder}" — move it, with its tree, to another folder or out of folders`
+                          : "File this chat, with its tree, into a sidebar folder"
+                      }
+                      onClick={() => {
+                        setMenuPos(null);
+                        onMoveToFolder();
                       }}
                     />
                   )}

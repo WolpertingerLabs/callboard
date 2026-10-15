@@ -15,15 +15,35 @@
  * The count is chats, passed in rather than derived from the rows below: the
  * list renders one row per lineage group, so counting what it renders would
  * under-report every group with more than one member.
+ *
+ * A sidebar folder's header carries a folder glyph — the only thing that tells
+ * a folder the user named "Pinned" or "Recent" from the built-in sections — and
+ * its label is the user's own text, up to 64 characters with no guarantee of a
+ * space in it. So the label ellipsizes in its own shrinkable span, the count
+ * sits beside it in one that never shrinks, and the full name is the tooltip.
  */
 
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 
-export default function ChatSectionHeader({ label, count, expanded, onToggle }: { label: string; count: number; expanded: boolean; onToggle: () => void }) {
+export default function ChatSectionHeader({
+  label,
+  count,
+  expanded,
+  onToggle,
+  isFolder = false,
+}: {
+  label: string;
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+  /** A sidebar folder rather than Pinned/Recent: adds the folder glyph. */
+  isFolder?: boolean;
+}) {
   return (
     <button
       onClick={onToggle}
       aria-expanded={expanded}
+      title={isFolder ? `Folder: ${label}` : undefined}
       style={{
         width: "100%",
         display: "flex",
@@ -42,10 +62,15 @@ export default function ChatSectionHeader({ label, count, expanded, onToggle }: 
         cursor: "pointer",
         textTransform: "uppercase",
         letterSpacing: 0.5,
+        minWidth: 0,
+        textAlign: "left",
       }}
     >
-      {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-      {label} ({count})
+      {expanded ? <ChevronDown size={14} style={{ flexShrink: 0 }} /> : <ChevronRight size={14} style={{ flexShrink: 0 }} />}
+      {isFolder && <Folder size={13} aria-hidden style={{ flexShrink: 0 }} />}
+      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      {/* The leading space keeps the accessible name "Label (n)"; the flex gap does the visual spacing. */}
+      <span style={{ flexShrink: 0 }}> ({count})</span>
     </button>
   );
 }

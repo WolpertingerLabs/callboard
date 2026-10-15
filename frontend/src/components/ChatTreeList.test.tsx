@@ -996,3 +996,113 @@ describe("pinning a row", () => {
     expect(headers()).toEqual([]);
   });
 });
+
+describe("sidebar folders", () => {
+  const sectionHeaders = () =>
+    screen
+      .queryAllByRole("button")
+      .map((el) => el.textContent ?? "")
+      .filter((text) => /\(\d+\)$/.test(text));
+
+  function renderFolders(chats: Chat[], onMoveToFolder = vi.fn()) {
+    render(
+      <MemoryRouter>
+        <ChatTreeList
+          chats={chats}
+          refreshToken={0}
+          onChatClick={() => {}}
+          onDelete={() => {}}
+          onToggleBookmark={() => {}}
+          onTogglePin={() => {}}
+          cardMenuFor={() => ({})}
+          sessionStatusFor={() => undefined}
+          onMoveToFolder={onMoveToFolder}
+        />
+      </MemoryRouter>,
+    );
+    return onMoveToFolder;
+  }
+
+  it("files a lineage group whole, by its ROOT's folder, ignoring a child's", () => {
+    const rows = buildRows([
+      makeChat("child", { parentChatId: "root", rootChatId: "root", sidebarFolder: "Child folder" }),
+      makeChat("root", { sidebarFolder: "Work" }),
+      makeChat("lone-child-folder-root"),
+      makeChat("orphan-kid", { parentChatId: "lone-child-folder-root", rootChatId: "lone-child-folder-root", sidebarFolder: "Ignored" }),
+    ]);
+    expect(rows.map((r) => [r.rootKey, r.canFile, r.sidebarFolder ?? null])).toEqual([
+      ["root", true, "Work"],
+      ["lone-child-folder-root", true, null],
+    ]);
+  });
+
+  it("cannot file a group whose root is not loaded, since a member fronts it", () => {
+    const rows = buildRows([makeChat("kid", { parentChatId: "gone", rootChatId: "gone", sidebarFolder: "Work" })]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].canFile).toBe(false);
+    expect(rows[0].sidebarFolder).toBeUndefined();
+  });
+
+  it("treats a cleared (null) or blank folder as none", () => {
+    const rows = buildRows([makeChat("a", { sidebarFolder: null }), makeChat("b", { sidebarFolder: "   " })]);
+    expect(rows.map((r) => r.sidebarFolder)).toEqual([undefined, undefined]);
+  });
+
+  it("renders Pinned, folders, Recent — and the group counts all its members in its folder", () => {
+    renderFolders([
+      makeChat("loose"),
+      makeChat("kid", { parentChatId: "root", rootChatId: "root" }),
+      makeChat("root", { sidebarFolder: "Work" }),
+      makeChat("pinned-and-filed", { pinned: true, sidebarFolder: "Work" }),
+      makeChat("home", { sidebarFolder: "home" }),
+    ]);
+    expect(sectionHeaders()).toEqual(["Pinned (1)", "home (1)", "Work (2)", "Recent (1)"]);
+  });
+
+  it("renders no headers when nothing is pinned or filed", () => {
+    renderFolders([makeChat("a"), makeChat("b")]);
+    expect(sectionHeaders()).toEqual([]);
+  });
+
+  it("collapses a folder section independently, and remembers it", () => {
+    renderFolders([makeChat("w", { sidebarFolder: "Work" }), makeChat("loose")]);
+    expect(screen.getByText("chat w")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Work (1)" }));
+    expect(screen.queryByText("chat w")).toBeNull();
+    expect(screen.getByText("chat loose")).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem("claude-code-settings")!).chatSectionsExpanded["folder:Work"]).toBe(false);
+  });
+
+  function openMenu(text: string) {
+    const row = screen.getByText(text).closest('div[style*="border-bottom"]')!;
+    fireEvent.mouseEnter(row);
+    fireEvent.click(row.querySelector('[title="Chat actions"]')!);
+  }
+
+  it("offers the folder action on root rows, naming the current folder", () => {
+    const onMove = renderFolders([makeChat("w", { sidebarFolder: "Work" }), makeChat("loose")]);
+    openMenu("chat w");
+    fireEvent.click(screen.getByText("Move to folder…"));
+    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "w" }), "Work", false);
+
+    openMenu("chat loose");
+    fireEvent.click(screen.getByText("Add to folder…"));
+    expect(onMove).toHaveBeenLastCalledWith(expect.objectContaining({ id: "loose" }), undefined, false);
+  });
+
+  it("tells the handler a row is pinned when ANY member of its group is", () => {
+    const onMove = renderFolders([makeChat("kid", { parentChatId: "root", rootChatId: "root", pinned: true }), makeChat("root", { sidebarFolder: "Work" })]);
+    openMenu("chat root");
+    fireEvent.click(screen.getByText("Move to folder…"));
+    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "root" }), "Work", true);
+  });
+
+  it("does not offer it on a row fronted by a child (root not loaded)", () => {
+    renderFolders([makeChat("kid", { parentChatId: "gone", rootChatId: "gone" })]);
+    openMenu("chat kid");
+    expect(screen.queryByText("Add to folder…")).toBeNull();
+    expect(screen.queryByText("Move to folder…")).toBeNull();
+    // Control: the menu did open.
+    expect(screen.getByText("Delete")).toBeTruthy();
+  });
+});

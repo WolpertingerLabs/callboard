@@ -17,14 +17,21 @@ interface RecentDirectory {
 export type ThemeMode = "light" | "dark" | "system";
 
 /**
- * The sidebar's Pinned/Recent sections, as `sectionByPinned` keys them.
+ * The sidebar's sections, as `sectionChatRows` keys them: Pinned, Recent, and
+ * one `folder:<name>` per sidebar folder on screen.
  *
  * The keys are persisted, so treat them the way the wire rules treat a field
  * name: relabel the headers freely, never rename these. The record they live
  * in is shared with a pre-#440 bundle's `active`/`inactive` keys for the
  * Open/Archived split this replaced — see {@link LocalStorageData.chatSectionsExpanded}.
+ * The `folder:` prefix keeps a folder named "pinned" or "recent" from
+ * colliding with those sections' own keys.
+ *
+ * A folder's entry outlives the folder: once no chat names it the key is
+ * simply never read again, and a folder recreated under the same name comes
+ * back folded the way the user left it.
  */
-export type ChatSectionKey = "pinned" | "recent";
+export type ChatSectionKey = "pinned" | "recent" | `folder:${string}`;
 
 interface LocalStorageData {
   defaultPermissions?: DefaultPermissions;
