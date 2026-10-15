@@ -93,6 +93,12 @@ interface Props {
    * see `Row.canFile` — and absent hides the menu entry everywhere.
    */
   onMoveToFolder?: (chat: Chat, currentFolder: string | undefined, pinned: boolean) => void;
+  /**
+   * A section header was just collapsed, hiding these rows. The list drops
+   * them from its selection: a bulk action must never reach a chat the user
+   * cannot see, and the counts on the bar must describe checked rows on screen.
+   */
+  onSectionCollapsed?: (rows: Row[]) => void;
 }
 
 /** What one row is told about the selection it is part of. */
@@ -657,6 +663,7 @@ export default function ChatTreeList({
   spaceChipFor,
   onMoveToSpace,
   onMoveToFolder,
+  onSectionCollapsed,
 }: Props) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -903,7 +910,10 @@ export default function ChatTreeList({
               label={section.label}
               count={section.count}
               expanded={sectionExpansion.isExpanded(section.key)}
-              onToggle={() => sectionExpansion.toggle(section.key)}
+              onToggle={() => {
+                if (sectionExpansion.isExpanded(section.key)) onSectionCollapsed?.(section.items);
+                sectionExpansion.toggle(section.key);
+              }}
               isFolder={section.key.startsWith("folder:")}
             />
             {sectionExpansion.isExpanded(section.key) && section.items.map(renderRow)}

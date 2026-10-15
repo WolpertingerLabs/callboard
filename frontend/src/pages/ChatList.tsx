@@ -536,17 +536,18 @@ export default function ChatList({
         // takes it from the same function `load` does — the two request paths
         // cannot come to disagree about scope.
         cardLifecycleFor({ showArchived: viewOptions.showArchived, searching }),
-        // Sent on every page, not just the first, so the request is the same
-        // shape each time and the server's response cache is keyed on one
-        // query string per scope. The pinned chats it re-appends are already
-        // in the list and the dedupe below drops them — cheaper than reasoning
-        // about which page is allowed to carry them.
+        // includePinned stays on for later pages and includeFoldered goes off,
+        // and the difference is payload, not caching: `offset` is part of the
+        // server's cache key, so every page is its own entry whichever flags
+        // it carries. Both appends are already in the list from the first
+        // page (and every refresh re-requests from offset 0 via `load`), so
+        // whatever a later page re-appends, the dedupe below throws away. For
+        // pins that is a handful of single rows — cheap enough to keep the
+        // request shape this path has always had. For folders it is every
+        // filed root plus its whole tree, re-shipped on every page, so it is
+        // left off here.
         true,
         listSpace,
-        // No includeFoldered on later pages: the first page (and every
-        // refresh, which re-requests from offset 0 via `load`) already
-        // carried every filed tree, so re-appending them here would only
-        // ship trees the dedupe below throws away.
         false,
       );
       // A refresh (filter toggle, SSE event, poll) replaced the list while
@@ -1031,14 +1032,16 @@ export default function ChatList({
    * pinned or filed: a range from one row in a folder to another would
    * otherwise sweep up the Recent rows that sit between them by date.
    *
-   * `visibleOrderedIds` additionally drops rows under a collapsed section
-   * header. Ranges and select-all walk that one — a bulk delete must never
-   * reach a chat the user cannot see. `orderedIds` keeps every row, so a chat
-   * selected before its section was folded still goes out, in order, with
-   * the bulk request it is counted in.
+   * Rows under a collapsed section header are left out, and that is the
+   * selection's one rule about folds: **a collapsed section's rows are not in
+   * the selection.** Collapsing a header drops them (see
+   * `handleSectionCollapsed`), the derived `selectedIds` below only ever
+   * holds visible rows, and ranges and select-all walk only visible rows. So a
+   * bulk action never reaches a chat the user cannot see, and "N selected",
+   * the bar's verbs and "all selected" always describe the same set of
+   * checked rows on screen.
    */
   const sectionExpansion = useChatSectionExpansion();
-  const orderedIds = useMemo(() => rowsInRenderOrder(rows).map((row) => row.chat.id), [rows]);
   const visibleRows = useMemo(() => rowsInRenderOrder(rows, sectionExpansion.isExpanded), [rows, sectionExpansion.isExpanded]);
   const visibleOrderedIds = useMemo(() => visibleRows.map((row) => row.chat.id), [visibleRows]);
 
@@ -1073,9 +1076,13 @@ export default function ChatList({
    * dead id is gone the moment the response lands, and it can never reach a
    * bulk call.
    */
+  // Checked against the VISIBLE rows, not every row — see `visibleRows`.
+  // Collapsing already removes a section's rows from the raw set; this keeps
+  // the invariant in every render regardless of how a fold came about.
+  const visibleRowChats = new Map(visibleRows.map((row) => [row.chat.id, row.chat]));
   const selectedIds = new Set(
     [...rawSelectedIds].filter((id) => {
-      const chat = rowChats.get(id);
+      const chat = visibleRowChats.get(id);
       return chat !== undefined && scopeOf(chat) === selectionScope;
     }),
   );
@@ -1084,8 +1091,21 @@ export default function ChatList({
   // raw set behind it is cleared by the reaper below; the derivation alone
   // only HIDES the bar, and a hidden selection is one that can come back.
   const selectionMode = selectionScope !== null && selectedIds.size > 0;
-  // Over visible rows, matching what select-all selects, so "all selected" can be reached.
-  const selectionScopeCount = visibleRows.filter((row) => scopeOf(row.chat) === selectionScope).length;
+  /** Every visible in-scope row is checked — the same set select-all would select. */
+  const visibleInScope = visibleRows.filter((row) => scopeOf(row.chat) === selectionScope);
+  const allSelected = visibleInScope.length > 0 && visibleInScope.every((row) => selectedIds.has(row.chat.id));
+
+  /**
+   * A header was collapsed: forget its rows' selection, permanently — they do
+   * not come back checked when the section is reopened. Leaves selection mode
+   * by derivation if that was everything (the reaper clears the rest).
+   */
+  const handleSectionCollapsed = (hidden: { chat: Chat }[]) => {
+    if (rawSelectedIds.size === 0) return;
+    const next = new Set(rawSelectedIds);
+    for (const row of hidden) next.delete(row.chat.id);
+    if (next.size !== rawSelectedIds.size) setSelectedIds(next);
+  };
 
   /** Forget the selection itself, leaving any message about it standing. */
   const resetSelection = useCallback(() => {
@@ -1187,8 +1207,7 @@ export default function ChatList({
 
   const selectAllInScope = useCallback(() => {
     if (selectionScope === null) return;
-    // Visible rows only, for the same reason ranges are: never select a chat
-    // folded away under a collapsed section header.
+    // Visible rows only — a collapsed section's rows are not in the selection.
     setSelectedIds(new Set(visibleRows.filter((row) => scopeOf(row.chat) === selectionScope).map((row) => row.chat.id)));
   }, [visibleRows, scopeOf, selectionScope]);
 
@@ -1242,7 +1261,7 @@ export default function ChatList({
   }, [selectionMode]);
 
   /** Selected chat ids, in rendered order, so a bulk request is deterministic. */
-  const selectedInOrder = orderedIds.filter((id) => selectedIds.has(id));
+  const selectedInOrder = visibleOrderedIds.filter((id) => selectedIds.has(id));
 
   /**
    * No confirmation and no undo, by the same decision the board made: archiving
@@ -1757,6 +1776,7 @@ export default function ChatList({
           // which is the same way the dim degrades.)
           selectionFor={cardsLoaded ? selectionProps : undefined}
           spaceChipFor={showSpaceChips ? (chat) => spaceById(chat.spaceId) : undefined}
+          onSectionCollapsed={handleSectionCollapsed}
           onMoveToFolder={(chat, currentFolder, pinned) =>
             setFolderTarget({
               chatId: chat.id,
@@ -1825,7 +1845,7 @@ export default function ChatList({
           // Mobile has no Ctrl/Cmd+A, so the button is the only way to reach
           // "all of them" there.
           onSelectAll={isMobile ? selectAllInScope : undefined}
-          allSelected={selectedIds.size === selectionScopeCount}
+          allSelected={allSelected}
           actions={bulkActions}
           onCancel={exitSelection}
           busy={bulkBusy}

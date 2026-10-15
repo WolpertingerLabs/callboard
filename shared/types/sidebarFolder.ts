@@ -20,9 +20,12 @@
 export const SIDEBAR_FOLDER_MAX = 64;
 
 /**
- * Control characters, and the invisible/bidi format characters that make two
- * names look the same while comparing different — same class as space and
- * workspace names (`space-store.ts`, `workspace-store.ts`).
+ * C0 and C1 control characters, U+200B ZERO WIDTH SPACE, the LRM/RLM marks
+ * (U+200E/U+200F) and the bidi embedding/override/isolate controls
+ * (U+202A–U+202E, U+2066–U+2069). Exactly the class space and workspace names
+ * use (`space-store.ts`, `workspace-store.ts`), kept identical on purpose — so
+ * other zero-width characters (U+200C/U+200D, U+FEFF) and line/paragraph
+ * separators are NOT rejected here.
  */
 const FORBIDDEN_CLASS = "[\\u0000-\\u001F\\u007F-\\u009F\\u200B\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]";
 const FORBIDDEN = new RegExp(FORBIDDEN_CLASS);

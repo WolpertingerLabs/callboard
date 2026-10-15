@@ -513,6 +513,103 @@ describe("mobile Select all", () => {
   });
 });
 
+/*
+ * One rule for folds: a collapsed section's rows are not in the selection.
+ * Fixture in recency order a, b, c with b filed in "Work", which renders as
+ *   WORK: b  /  RECENT: a, c
+ */
+describe("collapsing a section drops its rows from the selection", () => {
+  const CHATS3 = [makeChat("a", "chat a"), makeChat("b", "chat b", { sidebarFolder: "Work" }), makeChat("c", "chat c")];
+  const workHeader = () => screen.getByRole("button", { name: /^Work \(1\)$/ });
+
+  it("removes the hidden rows, so the bar and the bulk request describe only checked rows on screen", async () => {
+    await mount(CHATS3, []);
+    fireEvent.click(row("chat b"), { metaKey: true });
+    fireEvent.click(row("chat a"));
+    expect(count()).toBe("2 chats selected");
+
+    fireEvent.click(workHeader());
+    expect(screen.queryByText("chat b")).toBeNull();
+    expect(count()).toBe("1 chat selected");
+
+    mockBulkArchive.mockResolvedValue({ updated: [moved("a", "a", true, false)], failed: [] });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Archive 1 chat/ }));
+    });
+    // `b` — selected, then hidden — never reaches the request.
+    expect(mockBulkArchive).toHaveBeenCalledWith(["a"], true);
+  });
+
+  it("does not bring them back checked when the section is reopened", async () => {
+    await mount(CHATS3, []);
+    fireEvent.click(row("chat b"), { metaKey: true });
+    fireEvent.click(row("chat a"));
+    fireEvent.click(workHeader());
+    fireEvent.click(workHeader());
+
+    expect(screen.getByText("chat b")).toBeTruthy();
+    expect(selectedPreviews()).toEqual(["chat a"]);
+    expect(count()).toBe("1 chat selected");
+  });
+
+  it("leaves selection mode when the collapse hid everything selected", async () => {
+    await mount(CHATS3, []);
+    fireEvent.click(row("chat b"), { metaKey: true });
+    fireEvent.click(workHeader());
+    expect(count()).toBeNull();
+
+    fireEvent.click(workHeader());
+    expect(count()).toBeNull();
+  });
+
+  it("mobile: Select all stays enabled while a visible row is unchecked, and selects only visible rows", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
+    await mount(CHATS3, []);
+    fireEvent.contextMenu(row("chat b"));
+    fireEvent.click(workHeader());
+    // That emptied the selection; start again on a visible row.
+    fireEvent.contextMenu(row("chat a"));
+    expect(count()).toBe("1 chat selected");
+
+    const selectAll = screen.getByRole("button", { name: "Select all" }) as HTMLButtonElement;
+    // `c` is visible and unchecked, so "all" has not been reached.
+    expect(selectAll.disabled).toBe(false);
+    fireEvent.click(selectAll);
+    expect(count()).toBe("2 chats selected");
+    expect(selectedPreviews()).toEqual(["chat a", "chat c"]);
+    expect(selectAll.disabled).toBe(true);
+  });
+
+  it("mobile: a row hidden while selected is not silently counted or dropped by Select all", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
+    await mount(CHATS3, []);
+    fireEvent.contextMenu(row("chat a"));
+    fireEvent.click(row("chat b"));
+    fireEvent.click(workHeader());
+    // `b` left the selection at the collapse, visibly — not at Select all.
+    expect(count()).toBe("1 chat selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+    expect(count()).toBe("2 chats selected");
+    expect(selectedPreviews()).toEqual(["chat a", "chat c"]);
+  });
+
+  it("Ctrl+A after a collapse selects the visible rows and the bulk request matches", async () => {
+    await mount(CHATS3, []);
+    fireEvent.click(row("chat a"), { metaKey: true });
+    fireEvent.click(row("chat b"));
+    fireEvent.click(workHeader());
+    fireEvent.keyDown(row("chat a"), { key: "a", ctrlKey: true });
+    expect(count()).toBe("2 chats selected");
+
+    mockBulkArchive.mockResolvedValue({ updated: [moved("a", "a", true, false), moved("c", "c", true, false)], failed: [] });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Archive 2 chats/ }));
+    });
+    expect(mockBulkArchive).toHaveBeenCalledWith(["a", "c"], true);
+  });
+});
+
 describe("bulk archive", () => {
   it("sends the selected chat ids, not card ids", async () => {
     await mount();
