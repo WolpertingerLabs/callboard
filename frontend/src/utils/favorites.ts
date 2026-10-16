@@ -21,7 +21,7 @@
  *
  * A star used to PUT the entire array, which meant every click carried an
  * opinion about entries the user had not touched — computed from whatever
- * snapshot this tab last read. Callboard is reached over a tunnel and two open
+ * snapshot this tab last read. Callboard is reached remotely and two open
  * tabs (a phone and a desk) is its ordinary shape, so that snapshot goes stale
  * constantly. Measured in a browser with no induced latency: tab A un-stars a
  * skill, tab B stars a different one and resurrects A's removal, and A's next

@@ -50,7 +50,7 @@ const MAX_ATTEMPTS = 3;
 const WINDOW_MS = 60 * 1000; // 1 minute
 
 function getClientIp(req: Request): string {
-  // Loopback-gated: trusts forwarding headers only for the local cloudflared tunnel,
+  // Loopback-gated: trusts forwarding headers only from a local reverse proxy,
   // otherwise keys on the direct socket address (local/LAN). See utils/client-ip.ts.
   return getClientKey(req);
 }
@@ -176,7 +176,7 @@ export async function loginHandler(req: Request, res: Response) {
     return res.status(503).json({ error: SESSION_STORE_UNAVAILABLE });
   }
 
-  // Over https (the tunnel — see `arrivedOverHttps`) the session gets the
+  // Over https (a local TLS proxy — see `arrivedOverHttps`) the session gets the
   // `__Secure-` cookie; over plain http (localhost, LAN, the Vite dev proxy) the
   // plain one, which a browser on http can store.
   const secure = arrivedOverHttps(req);
@@ -316,9 +316,9 @@ export async function changePasswordHandler(req: Request, res: Response) {
  *
  * Login is the endpoint an allowlist most exists to protect: it is the one an
  * off-list client can attack without a credential. Per-IP login throttling is
- * not a substitute — through the tunnel every request arrives from loopback and
- * the client's own `X-Forwarded-For` picks the bucket, so an attacker can mint
- * fresh ones by varying one header. That is correct for rate limiting (see
+ * not a substitute — behind a loopback proxy every request arrives from
+ * loopback and a forwarding header picks the bucket, and a throttle only slows
+ * a guesser it does not refuse. That is correct for rate limiting (see
  * `utils/client-ip.ts`) and it is exactly why the address gate has to come
  * first.
  *
@@ -354,7 +354,7 @@ export function requireAllowedIp(req: Request, res: Response, next: NextFunction
   // the documented default of no restriction.
   //
   // The cost is real and is accepted: an operator who reaches this daemon
-  // only through the tunnel is locked out until the file is repaired. It is
+  // only from off the LAN is locked out until the file is repaired. It is
   // the right way round — the alternative silently drops the restriction —
   // and it is survivable because loopback and LAN clients are never gated at
   // all, so a shell or a browser on the same network still gets in.

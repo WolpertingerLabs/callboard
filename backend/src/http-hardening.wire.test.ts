@@ -118,11 +118,11 @@ let server: Listening;
 let token: string;
 
 // Login allows 3 attempts a minute per client. From loopback the client is
-// CF-Connecting-IP (see utils/client-ip.ts), so each login gets its own bucket.
+// the last X-Forwarded-For entry (see utils/client-ip.ts), so each login gets its own bucket.
 let loginSeq = 0;
 
 async function login(to: Listening, headers: Record<string, string> = {}, localAddress?: string): Promise<Res> {
-  const client = { "cf-connecting-ip": `198.51.100.${++loginSeq}` };
+  const client = { "x-forwarded-for": `198.51.100.${++loginSeq}` };
   const res = await request(to, "POST", "/api/auth/login", { headers: { ...client, ...headers }, body: JSON.stringify({ password: PASSWORD }), localAddress });
   expect(res.status).toBe(200);
   return res;
@@ -226,7 +226,7 @@ const isSecure = (setCookie: string) => /;\s*Secure(;|$)/i.test(setCookie);
 
 /**
  * A browser's cookie store for ONE hostname that is not localhost (say the LAN
- * address), reachable over both https (the tunnel or another TLS terminator)
+ * address), reachable over both https (`tailscale serve` or another TLS terminator)
  * and plain http. It applies the RFC 6265bis rules that decide this bug:
  *
  * - a Secure cookie is only sent over https;
@@ -269,7 +269,7 @@ class BrowserJar {
   }
 
   async send(method: string, path: string, https: boolean, body?: unknown): Promise<Res> {
-    const headers = { ...this.headers(https), "cf-connecting-ip": `198.51.100.${++loginSeq}` };
+    const headers = { ...this.headers(https), "x-forwarded-for": `198.51.100.${++loginSeq}` };
     const res = await request(server, method, path, { headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     this.receive(res, https);
     return res;
@@ -345,7 +345,7 @@ describe("session cookie per scheme", () => {
 
   it("mixed schemes on one hostname: an https session never locks plain http out", async () => {
     const jar = new BrowserJar();
-    // 1. Log in over https (the tunnel), and use it — every request rolls the cookie.
+    // 1. Log in over https (a local TLS terminator), and use it — every request rolls the cookie.
     expect((await jar.send("POST", "/api/auth/login", true, { password: PASSWORD })).status).toBe(200);
     expect(await jar.authenticated(true)).toBe(true);
     // 2. Now plain http on the same hostname: logging in must actually log in.

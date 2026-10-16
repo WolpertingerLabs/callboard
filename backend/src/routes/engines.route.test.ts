@@ -45,8 +45,8 @@ const streamHandler = routeHandler("/installs/:installId/stream", "get");
 
 /** A loopback socket, which is what a browser on the same machine produces. */
 const LOCAL_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: {} };
-/** The same daemon reached through the cloudflared tunnel: loopback socket, real client in CF-Connecting-IP. */
-const TUNNELLED_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: { "cf-connecting-ip": "203.0.113.7" } };
+/** The same daemon reached through `tailscale serve`: loopback socket, real client in X-Forwarded-For. */
+const PROXIED_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: { "x-forwarded-for": "100.101.102.103" } };
 /** The measured bypass: a loopback socket and an XFF whose *head* is loopback. `getClientKey` keys this as 127.0.0.1. */
 const SPOOFED_XFF_REQ = { socket: { remoteAddress: "127.0.0.1" }, headers: { "x-forwarded-for": "127.0.0.1, 203.0.113.7" } };
 
@@ -186,10 +186,10 @@ describe("POST /api/engines/refresh", () => {
 describe("the client-scope gate", () => {
   // The plan's Phase 3 test list, item three: "a non-local client gets the
   // recipe, not the install endpoint". Both halves are asserted — that the
-  // status route still answers a tunnelled client (the copy block must survive
+  // status route still answers a proxied client (the copy block must survive
   // the refusal), and that the capability it hands them says no.
-  it("hands a tunnelled client a capability that refuses, and still answers with engines", async () => {
-    const { status, body } = await call(handler, { ...TUNNELLED_REQ, query: {} });
+  it("hands a proxied client a capability that refuses, and still answers with engines", async () => {
+    const { status, body } = await call(handler, { ...PROXIED_REQ, query: {} });
     expect(status).toBe(200);
     expect(body.engines).toHaveLength(1);
     expect(mocks.getEngineStatuses).toHaveBeenCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
@@ -201,8 +201,8 @@ describe("the client-scope gate", () => {
   });
 
   it("refuses a loopback socket carrying a spoofed X-Forwarded-For", async () => {
-    // The reviewer's measured bypass. cloudflared *appends* to a
-    // client-supplied XFF, so `127.0.0.1, 203.0.113.7` is exactly the header an
+    // The reviewer's measured bypass. An appending proxy passes a
+    // client-supplied XFF through, so `127.0.0.1, 203.0.113.7` is exactly the header an
     // attacker sends — and the old `getClientKey`-based check took the head and
     // called it local. `isDirectLocalClient` requires the socket to be local
     // *and* no forwarding header to be present at all.
@@ -224,13 +224,20 @@ describe("the client-scope gate", () => {
 
   it("treats a private LAN address as local", async () => {
     // Loopback *and* LAN, per the plan. A user whose browser is on another
-    // machine in the house is not the threat model the tunnel gate exists for.
+    // machine in the house is not the threat model the client gate exists for.
     await call(handler, { socket: { remoteAddress: "192.168.1.44" }, headers: {}, query: {} });
     expect(mocks.getEngineStatuses).toHaveBeenLastCalledWith(expect.objectContaining({ capability: { oneClick: true } }));
   });
 
+  it("does not treat a Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48) as LAN", async () => {
+    for (const ip of ["100.101.102.103", "fd7a:115c:a1e0::1"]) {
+      await call(handler, { socket: { remoteAddress: ip }, headers: {}, query: {} });
+      expect(mocks.getEngineStatuses).toHaveBeenLastCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
+    }
+  });
+
   it("passes the same capability to the refresh route", async () => {
-    await call(refreshHandler, TUNNELLED_REQ);
+    await call(refreshHandler, PROXIED_REQ);
     expect(mocks.refreshEngineStatuses).toHaveBeenCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
   });
 
@@ -258,7 +265,7 @@ describe("POST /api/engines/:id/install", () => {
   it("hands the service the capability derived from this request, not a fresh one", async () => {
     // The card and the endpoint must agree by construction: the button is shown
     // iff pressing it is allowed. Sharing one evaluation is how that holds.
-    await call(installHandler, { ...TUNNELLED_REQ, params: { id: "opencode" } });
+    await call(installHandler, { ...PROXIED_REQ, params: { id: "opencode" } });
     expect(mocks.startEngineInstall).toHaveBeenCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
   });
 
@@ -281,8 +288,8 @@ describe("POST /api/engines/:id/install", () => {
 });
 
 describe("GET /api/engines/installs/:installId/stream", () => {
-  it("refuses a tunnelled client before it looks the run up", async () => {
-    const { status, body } = await call(streamHandler, { ...TUNNELLED_REQ, params: { installId: "inst-1" } });
+  it("refuses a proxied client before it looks the run up", async () => {
+    const { status, body } = await call(streamHandler, { ...PROXIED_REQ, params: { installId: "inst-1" } });
     expect(status).toBe(403);
     expect(body.refusal).toMatch(/local network/);
     expect(mocks.getInstallRun).not.toHaveBeenCalled();

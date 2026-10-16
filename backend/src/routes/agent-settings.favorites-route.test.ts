@@ -7,10 +7,10 @@
  * Two things justify the route's existence and are what these pin down.
  *
  *  1. **It leaks nothing.** The full settings object is unredacted — `apiKey`,
- *     `authToken`, `openRouterApiKey`, `codexApiKey`, `cloudflaredToken`. That
+ *     `authToken`, `openRouterApiKey`, `codexApiKey`, `piApiKey`. That
  *     was survivable while every caller was the Settings page, which exists to
  *     edit those fields. The New Chat launchpad is not, and it asks on every
- *     new-chat open from whatever device is on the remote-access tunnel. The
+ *     new-chat open from whatever remote device is connected. The
  *     response here is two arrays and nothing else, and the test asserts the
  *     absence by name rather than by shape, because a new credential field
  *     added to `AgentSettings` later must not quietly start shipping.
@@ -43,13 +43,6 @@ vi.mock("../services/proxy-singleton.js", () => ({
   resetClient: () => {},
 }));
 vi.mock("../services/local-daemon.js", () => ({ getLocalDaemonStatus: () => ({}), fetchDaemonHealth: async () => null }));
-vi.mock("../services/web-tunnel.js", () => ({
-  startWebTunnel: async () => {},
-  stopWebTunnel: async () => {},
-  getWebTunnelStatus: () => ({ running: false }),
-  isCloudflaredAvailable: () => false,
-  resolveCallboardPort: () => 8000,
-}));
 vi.mock("../services/sdk-info.js", () => ({ refreshSdkInfoCache: async () => {} }));
 vi.mock("../services/codex-models.js", () => ({ refreshCodexModelsCache: async () => {} }));
 
@@ -93,7 +86,7 @@ const STORED = {
   authToken: "tok-secret",
   openRouterApiKey: "sk-or-secret",
   codexApiKey: "sk-codex-secret",
-  cloudflaredToken: "cf-secret",
+  piApiKey: "pi-secret",
   favoriteSkills: ["release-notes", "bug-triage"],
   favoriteJobs: ["bake-devin-pr"],
 };
@@ -112,7 +105,7 @@ describe("GET /api/agent-settings/favorites", () => {
   it("returns ONLY the two lists — no credential rides along", async () => {
     const res = await call("get");
     expect(Object.keys(res.body).sort()).toEqual(["favoriteJobs", "favoriteSkills"]);
-    for (const secret of ["apiKey", "authToken", "openRouterApiKey", "codexApiKey", "cloudflaredToken"]) {
+    for (const secret of ["apiKey", "authToken", "openRouterApiKey", "codexApiKey", "piApiKey"]) {
       expect(secret in res.body).toBe(false);
     }
     // Belt and braces: no stored secret VALUE appears anywhere in the payload,

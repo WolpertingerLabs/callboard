@@ -21,6 +21,20 @@ describe("isPrivateOrLoopback", () => {
     expect(isPrivateOrLoopback("2606:4700:4700::1111")).toBe(false);
   });
 
+  it("treats Tailscale's ranges as NOT local, on IPv4 and IPv6 alike", () => {
+    // 100.64.0.0/10 is CGNAT, which ipaddr.js does not call private.
+    expect(isPrivateOrLoopback("100.64.0.1")).toBe(false);
+    expect(isPrivateOrLoopback("100.101.102.103")).toBe(false);
+    expect(isPrivateOrLoopback("::ffff:100.101.102.103")).toBe(false);
+    // fd7a:115c:a1e0::/48 IS unique-local to ipaddr.js; it is carved out.
+    expect(isPrivateOrLoopback("fd7a:115c:a1e0::1")).toBe(false);
+    expect(isPrivateOrLoopback("fd7a:115c:a1e0:ab12:4843:cd96:6258:b240")).toBe(false);
+    expect(isPrivateOrLoopback("[fd7a:115c:a1e0::1%tailscale0]")).toBe(false);
+    // ...without taking the rest of fc00::/7 with it.
+    expect(isPrivateOrLoopback("fd7a:115c:a1e1::1")).toBe(true);
+    expect(isPrivateOrLoopback("fd00::1")).toBe(true);
+  });
+
   it("treats unparseable input as NOT local", () => {
     expect(isPrivateOrLoopback("not-an-ip")).toBe(false);
     expect(isPrivateOrLoopback("")).toBe(false);
@@ -66,6 +80,16 @@ describe("isIpAllowed", () => {
 
   it("returns false for an unparseable client address against a non-empty list", () => {
     expect(isIpAllowed("not-an-ip", ["203.0.113.0/24"])).toBe(false);
+  });
+});
+
+describe("isIpAllowed — Tailscale ranges", () => {
+  it("matches tailnet addresses against the suggested CIDRs", () => {
+    const list = ["100.64.0.0/10", "fd7a:115c:a1e0::/48"];
+    expect(isIpAllowed("100.101.102.103", list)).toBe(true);
+    expect(isIpAllowed("fd7a:115c:a1e0::1", list)).toBe(true);
+    expect(isIpAllowed("fd7a:115c:a1e1::1", list)).toBe(false);
+    expect(isIpAllowed("203.0.113.7", list)).toBe(false);
   });
 });
 

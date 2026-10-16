@@ -1,17 +1,22 @@
 import ipaddr from "ipaddr.js";
 
 /**
- * IP allowlisting for the remote-access (cloudflared) tunnel.
+ * IP allowlisting for remote access (any client that is not a direct
+ * loopback/LAN connection).
  *
- * Scope decision (see plan): the allowlist gates ONLY public/remote clients.
- * Loopback and private-LAN ranges are always allowed and never appear in
- * `isIpAllowed` checks, because callboard's primary usage is local/LAN and we
- * must never let a list lock those users out. Enforcement lives in
- * `requireAuth` (backend/src/auth.ts), which calls `isPrivateOrLoopback` first
- * and only consults `isIpAllowed` for public addresses.
+ * Scope decision (see plan): the allowlist gates ONLY remote clients. Direct
+ * loopback and private-LAN connections are always allowed and never reach
+ * `isIpAllowed`, because callboard's primary usage is local/LAN and we must
+ * never let a list lock those users out. Enforcement lives in
+ * `requireAllowedIp` (backend/src/auth.ts), which asks `allowlistSubject`
+ * (utils/client-ip.ts) whether the request is exempt and only consults
+ * `isIpAllowed` for the rest.
  */
 
 type ParsedIp = ReturnType<typeof ipaddr.parse>;
+
+/** Tailscale's IPv6 prefix. Unique-local by RFC, but a tailnet is not the LAN; see {@link isPrivateOrLoopback}. */
+const TAILSCALE_ULA = ipaddr.parseCIDR("fd7a:115c:a1e0::/48") as [ipaddr.IPv6, number];
 
 /** Parse an address string, unwrapping IPv4-mapped IPv6 (::ffff:a.b.c.d). Returns null if invalid. */
 function parse(addr: string): ParsedIp | null {
@@ -32,10 +37,21 @@ function parse(addr: string): ParsedIp | null {
  * True for loopback and private/LAN/link-local ranges (IPv4 RFC1918 + 127/8 +
  * 169.254/16, IPv6 ::1 + fc00::/7 unique-local + fe80::/10 link-local).
  * Unknown/unparseable addresses are treated as NOT local (so they get gated).
+ *
+ * Deliberately NOT local: Tailscale's ranges. IPv4 100.64.0.0/10 is carrier-
+ * grade NAT, shared address space rather than a LAN (an ISP's CGNAT puts
+ * strangers in it too), and ipaddr.js does not call it private. IPv6
+ * fd7a:115c:a1e0::/48 sits inside fc00::/7, so ipaddr.js *does* call it
+ * unique-local, and it is carved out explicitly — otherwise a tailnet device
+ * on IPv6 would skip the allowlist and pass the install/binary-override gate
+ * that the same device on IPv4 is refused. Either way a tailnet device is a
+ * remote client. Operators who want their tailnet allowed add `100.64.0.0/10`
+ * and `fd7a:115c:a1e0::/48` (or their devices' addresses) to the allowlist.
  */
 export function isPrivateOrLoopback(addr: string): boolean {
   const parsed = parse(addr);
   if (!parsed) return false;
+  if (parsed.kind() === "ipv6" && (parsed as ipaddr.IPv6).match(TAILSCALE_ULA)) return false;
   const range = parsed.range();
   return range === "loopback" || range === "private" || range === "linkLocal" || range === "uniqueLocal";
 }

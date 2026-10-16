@@ -16,8 +16,8 @@
  * deliberately left the group.
  *
  * `killProcessTree` escalates SIGTERM → SIGKILL after a grace period, the same
- * shape `services/local-daemon.ts` and `services/web-tunnel.ts` already use for
- * their single-process children — a hung CLI that ignores SIGTERM still dies.
+ * shape `services/local-daemon.ts` already uses for its single-process
+ * child — a hung CLI that ignores SIGTERM still dies.
  *
  * ## Windows
  *

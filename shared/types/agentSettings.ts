@@ -34,34 +34,17 @@ export interface AgentSettings {
   /** Enable cloudflared tunnel for webhook event ingestion (local mode only) */
   tunnelEnabled?: boolean;
 
-  // ── Remote access (expose callboard's web UI to the internet) ─────
-  // Distinct from `tunnelEnabled` above: that tunnels the drawlatch daemon for
-  // webhook ingestion; these expose callboard's OWN web server via cloudflared
-  // so the user can reach their instance from outside the LAN. Off by default —
-  // enabling makes the site globally reachable, so the backend blocks enabling
-  // unless a login password is configured. See services/web-tunnel.ts.
-
-  /** Master toggle for the remote-access cloudflared tunnel. Default: false. */
-  remoteAccessEnabled?: boolean;
+  // ── Remote access (reaching callboard's web UI from another device) ─
+  // Callboard has no tunnel of its own: remote access is a VPN or private
+  // network (e.g. Tailscale) pointed at the daemon port, with a login password.
 
   /**
-   * Tunnel flavour. "quick" → ephemeral *.trycloudflare.com URL (no Cloudflare
-   * account). "named" → stable hostname via a token-based Cloudflare tunnel.
-   * Default: "quick".
-   */
-  remoteAccessMode?: "quick" | "named";
-
-  /** Cloudflare tunnel token (secret) — required for "named" mode. */
-  cloudflaredToken?: string;
-
-  /** Public hostname for "named" mode (display + reference). */
-  remoteAccessHostname?: string;
-
-  /**
-   * Optional allowlist of IPs / CIDRs permitted to reach callboard through the
-   * remote-access tunnel. Empty or absent ⇒ no restriction (anyone with the URL
-   * can reach the login page). Loopback and private-LAN ranges are ALWAYS
-   * allowed and are never gated by this list. See backend/src/utils/ip-allowlist.ts.
+   * Optional allowlist of IPs / CIDRs permitted to reach callboard from a
+   * non-LAN address (including through a loopback reverse proxy such as
+   * `tailscale serve`). Empty or absent ⇒ no restriction (anyone who can reach
+   * the port can reach the login page). Loopback and private-LAN clients that
+   * connect directly are ALWAYS allowed and are never gated by this list;
+   * Tailscale's ranges are not LAN. See backend/src/utils/ip-allowlist.ts.
    */
   remoteAccessIpAllowlist?: string[];
 
@@ -73,11 +56,11 @@ export interface AgentSettings {
    * command on a user's request. Three things narrow it before this flag is even
    * read — the package must be in the closed allowlist in
    * `backend/src/services/engine-install-recipes.ts`, the client must be on the
-   * LAN (a request arriving through the remote-access tunnel never qualifies,
-   * whatever this is set to), and npm's global prefix must be writable — so this
-   * exists for the operator who wants none of it regardless: setting it to
-   * `false` removes the button everywhere and leaves the copy-and-paste command
-   * that was always the fallback.
+   * LAN (a request arriving through a proxy, or from a public or tailnet
+   * address, never qualifies whatever this is set to), and npm's global prefix
+   * must be writable — so this exists for the operator who wants none of it
+   * regardless: setting it to `false` removes the button everywhere and leaves
+   * the copy-and-paste command that was always the fallback.
    *
    * Default-on rather than default-off because the gate that matters is the
    * client scope, and a locally-reachable Callboard already runs whatever a chat
@@ -86,8 +69,8 @@ export interface AgentSettings {
    * ## What this does not defend against, said plainly
    *
    * `PUT /api/agent-settings` is not gated by client location — any logged-in
-   * session (API keys are refused that route outright), including one on the
-   * remote-access tunnel, can set this back to `true`. That
+   * session (API keys are refused that route outright), including one arriving
+   * from off the LAN, can set this back to `true`. That
    * is harmless today only because such a client still fails the
    * `isDirectLocalClient` check and is refused anyway, so flipping the flag buys
    * them nothing. But it does mean this switch governs *the operator's own local
@@ -641,7 +624,6 @@ export interface AgentSettings {
  * stored". A new credential field must be added here, or it goes out raw.
  */
 export const SECRET_SETTING_FIELDS = [
-  "cloudflaredToken",
   "apiKey",
   "authToken",
   "claudeCodeOpenRouterApiKey",

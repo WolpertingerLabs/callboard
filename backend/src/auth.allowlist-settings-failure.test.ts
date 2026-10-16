@@ -21,7 +21,7 @@
  *
  * ## The half that must keep working
  *
- * Failing closed on an IP restriction locks a tunnelled operator out until the
+ * Failing closed on an IP restriction locks a remote operator out until the
  * file is repaired. That is the right way round, and it is survivable only
  * because loopback and LAN clients are never gated at all — so the last two
  * cases here are as load-bearing as the first: a fail-closed that also locks
@@ -258,8 +258,8 @@ describe("the header bypass, reproduced and closed", () => {
     // 127.0.0.1, 8.8.8.8` skipped the gate entirely and `POST /api/auth/login`
     // returned `{"ok":true}` — a session issued to an excluded address.
     //
-    // `getClientKey` takes the HEAD of that list, which the client writes. That
-    // is right for rate-limit buckets and wrong for an address gate.
+    // `getClientKey` took the HEAD of that list, which the client writes. That
+    // was wrong for rate-limit buckets too, and fatal for an address gate.
     writeFileSync(SETTINGS_FILE, LIST);
     const result = call("127.0.0.1", "/auth/login", { "x-forwarded-for": "127.0.0.1, 8.8.8.8" });
     expect(result.passed).toBe(false);
@@ -274,12 +274,28 @@ describe("the header bypass, reproduced and closed", () => {
     expect(call("127.0.0.1", "/system-info", { "x-forwarded-for": "198.51.100.4, 8.8.8.8" }).passed).toBe(false);
   });
 
-  it("prefers CF-Connecting-IP, which cloudflared overwrites", () => {
-    // The supported remote-access path. cloudflared sets this itself, so it is
-    // not the client's to forge — and it wins over any XFF the client appended.
+  it("IGNORES CF-Connecting-IP — behind tailscale serve it is the client's own header", () => {
+    // Trusted only while Callboard bundled a cloudflared tunnel that overwrote
+    // it. Go's reverse proxy (which `tailscale serve` is) passes it through
+    // untouched, so preferring it let an off-list client name an allowlisted
+    // address and walk past the gate.
     writeFileSync(SETTINGS_FILE, LIST);
-    expect(call("127.0.0.1", "/system-info", { "cf-connecting-ip": "198.51.100.4", "x-forwarded-for": "127.0.0.1" }).passed).toBe(true);
-    expect(call("127.0.0.1", "/system-info", { "cf-connecting-ip": "8.8.8.8", "x-forwarded-for": "127.0.0.1" }).passed).toBe(false);
+    expect(call("127.0.0.1", "/system-info", { "cf-connecting-ip": "198.51.100.4", "x-forwarded-for": "8.8.8.8" }).passed).toBe(false);
+    expect(call("127.0.0.1", "/system-info", { "cf-connecting-ip": "198.51.100.4" }).passed).toBe(false);
+    expect(call("127.0.0.1", "/system-info", { "cf-connecting-ip": "8.8.8.8", "x-forwarded-for": "198.51.100.4" }).passed).toBe(true);
+  });
+
+  it("gates a Tailscale client like any other remote one, on IPv4 and IPv6", () => {
+    // 100.64.0.0/10 is shared address space and fd7a:115c:a1e0::/48 is carved
+    // out of unique-local: a direct tailnet connection is not exempt, and
+    // passes only if the list covers it.
+    writeFileSync(SETTINGS_FILE, LIST);
+    expect(call("100.101.102.103").passed).toBe(false);
+    expect(call("fd7a:115c:a1e0::1").passed).toBe(false);
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ remoteAccessIpAllowlist: ["100.64.0.0/10", "fd7a:115c:a1e0::/48"] }));
+    expect(call("100.101.102.103").passed).toBe(true);
+    expect(call("fd7a:115c:a1e0::1").passed).toBe(true);
+    expect(call("127.0.0.1", "/system-info", { "x-forwarded-for": "100.101.102.103" }).passed).toBe(true);
   });
 
   it("refuses a hop that announced itself without giving an address", () => {

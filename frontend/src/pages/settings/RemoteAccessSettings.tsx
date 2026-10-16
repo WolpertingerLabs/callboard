@@ -1,23 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
-import { usePolling } from "../../hooks/usePolling";
-import { useCopy } from "../../hooks/useCopy";
-import { Globe, ShieldAlert, Loader2, Check, Copy, ExternalLink, AlertTriangle, X } from "lucide-react";
-import { getAgentSettings, updateAgentSettings, getRemoteAccessStatus } from "../../api";
-import type { RemoteAccessStatus } from "../../api";
+import { useState, useEffect } from "react";
+import { Globe, ShieldAlert, Loader2, Check } from "lucide-react";
+import { getAgentSettings, updateAgentSettings, getCallerIp } from "../../api";
 import { errorMessage } from "../../utils/errorMessage";
-import ModalOverlay from "../../components/ModalOverlay";
-import { selectMaskedSecret } from "./maskedSecret";
-
-const CLOUDFLARED_INSTALL_URL = "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/";
-
-type Mode = "quick" | "named";
 
 export default function RemoteAccessSettings() {
   const [loading, setLoading] = useState(true);
-  const [enabled, setEnabled] = useState(false);
-  const [mode, setMode] = useState<Mode>("quick");
-  const [token, setToken] = useState("");
-  const [hostname, setHostname] = useState("");
   const [ipAllowlist, setIpAllowlist] = useState("");
   // Absent means on. Read as `!== false` on the backend too, so a settings file
   // written before this field existed keeps the documented default rather than
@@ -27,64 +14,34 @@ export default function RemoteAccessSettings() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [showWarning, setShowWarning] = useState(false);
-  const [copied, copy] = useCopy();
 
-  const [status, setStatus] = useState<RemoteAccessStatus | null>(null);
+  const [callerIp, setCallerIp] = useState<string | null>(null);
 
   // ── Load persisted settings ──────────────────────────────────────────
   useEffect(() => {
     getAgentSettings()
       .then((s) => {
-        setEnabled(!!s.remoteAccessEnabled);
-        setMode(s.remoteAccessMode === "named" ? "named" : "quick");
-        setToken(s.cloudflaredToken || "");
-        setHostname(s.remoteAccessHostname || "");
         setIpAllowlist((s.remoteAccessIpAllowlist || []).join("\n"));
         setAllowEngineInstalls(s.allowEngineInstalls !== false);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, []);
-
-  // ── Poll live tunnel status ───────────────────────────────────────────
-  const refreshStatus = useCallback(() => {
-    getRemoteAccessStatus()
-      .then(setStatus)
+    getCallerIp()
+      .then(setCallerIp)
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    refreshStatus();
-  }, [refreshStatus]);
-
-  usePolling(refreshStatus, 3000);
-
-  // ── Persist + apply ───────────────────────────────────────────────────
-  const persist = async (nextEnabled: boolean) => {
+  // ── Persist ───────────────────────────────────────────────────────────
+  const persistAllowlist = async () => {
     setSaving(true);
     setError(null);
-    setNeedsPassword(false);
     setSaved(false);
     try {
-      await updateAgentSettings({
-        remoteAccessEnabled: nextEnabled,
-        remoteAccessMode: mode,
-        cloudflaredToken: token,
-        remoteAccessHostname: hostname,
-        remoteAccessIpAllowlist: parseAllowlistInput(ipAllowlist),
-      });
-      setEnabled(nextEnabled);
+      await updateAgentSettings({ remoteAccessIpAllowlist: parseAllowlistInput(ipAllowlist) });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-      // Give the backend a beat to spawn/kill cloudflared, then refresh.
-      setTimeout(refreshStatus, 600);
     } catch (e) {
-      const msg = errorMessage(e, "Failed to save settings");
-      setError(msg);
-      // The backend blocks enabling without a password — surface that distinctly.
-      if (/password/i.test(msg)) setNeedsPassword(true);
+      setError(errorMessage(e, "Failed to save settings"));
     } finally {
       setSaving(false);
     }
@@ -94,17 +51,9 @@ export default function RemoteAccessSettings() {
   const [installsError, setInstallsError] = useState<string | null>(null);
 
   /**
-   * Persist the one-click-install switch on its own, immediately.
-   *
-   * Deliberately **not** routed through {@link persist}. That function submits
-   * every remote-access field together and the backend re-applies the tunnel
-   * from them, so putting a security switch behind the shared **Apply** button
-   * coupled "turn installs off" to "respawn cloudflared" — two unrelated
-   * effects, one of which the operator did not ask for, and a switch nobody
-   * flips until they want it to have already taken effect.
-   *
-   * Sending only this field also keeps the backend's `remoteFieldsTouched`
-   * check false, so no tunnel lifecycle runs at all.
+   * Persist the one-click-install switch on its own, immediately — a switch
+   * nobody flips until they want it to have already taken effect, so it does
+   * not wait for the allowlist's **Save** button.
    */
   const persistEngineInstalls = async (next: boolean) => {
     if (installsSaving) return;
@@ -124,27 +73,11 @@ export default function RemoteAccessSettings() {
     }
   };
 
-  const handleToggle = () => {
-    if (saving) return;
-    if (!enabled) {
-      // Turning ON — confirm the global-exposure warning first.
-      setShowWarning(true);
-    } else {
-      void persist(false);
-    }
-  };
-
-  const confirmEnable = () => {
-    setShowWarning(false);
-    void persist(true);
-  };
-
   const addMyIp = () => {
-    const ip = status?.callerIp;
-    if (!ip) return;
+    if (!callerIp) return;
     const lines = parseAllowlistInput(ipAllowlist);
-    if (!lines.includes(ip)) {
-      setIpAllowlist([...lines, ip].join("\n"));
+    if (!lines.includes(callerIp)) {
+      setIpAllowlist([...lines, callerIp].join("\n"));
     }
   };
 
@@ -156,8 +89,6 @@ export default function RemoteAccessSettings() {
     );
   }
 
-  const cloudflaredMissing = status?.available === false;
-
   return (
     <div style={{ maxWidth: 680, display: "flex", flexDirection: "column", gap: 20 }}>
       {/* Heading */}
@@ -166,8 +97,8 @@ export default function RemoteAccessSettings() {
           <Globe size={18} /> Remote access
         </div>
         <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.5 }}>
-          Expose this callboard to the public internet through a Cloudflare tunnel so you can reach it from outside your
-          local network. Off by default.
+          Callboard does not expose itself to the internet. To reach it from another device, put both on a private network
+          such as <strong>Tailscale</strong> (or another VPN) and open this server&rsquo;s address and port from there.
         </p>
       </div>
 
@@ -187,153 +118,41 @@ export default function RemoteAccessSettings() {
       >
         <ShieldAlert size={18} style={{ color: "var(--warning)", flexShrink: 0, marginTop: 1 }} />
         <div>
-          When enabled, <strong>anyone with the URL can reach your login page</strong>. Your password is the only barrier
-          to your sessions, files, and connected services — make sure it is strong and unique.
+          Anyone who can reach this port can reach your login page, and your password is what protects your sessions, files,
+          and connected services. Use a strong, unique one, and keep the port off the public internet.
         </div>
       </div>
-
-      {/* Master toggle */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text)" }}>Enable remote access</div>
-          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Starts a cloudflared tunnel pointed at this server.</div>
-        </div>
-        <button
-          role="switch"
-          aria-checked={enabled}
-          onClick={handleToggle}
-          disabled={saving}
-          style={{
-            position: "relative",
-            width: 44,
-            height: 24,
-            borderRadius: 999,
-            border: "none",
-            cursor: saving ? "default" : "pointer",
-            flexShrink: 0,
-            background: enabled ? "var(--accent)" : "var(--border)",
-            transition: "background 0.15s",
-            opacity: saving ? 0.6 : 1,
-          }}
-        >
-          <span
-            style={{
-              position: "absolute",
-              top: 2,
-              left: enabled ? 22 : 2,
-              width: 20,
-              height: 20,
-              borderRadius: "50%",
-              background: "var(--toggle-knob)",
-              transition: "left 0.15s",
-            }}
-          />
-        </button>
-      </div>
-
-      {/* No-password error */}
-      {needsPassword && (
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            padding: "12px 14px",
-            borderRadius: 8,
-            background: "var(--danger-bg)",
-            border: "1px solid var(--danger-border)",
-            color: "var(--text)",
-            fontSize: 12.5,
-            lineHeight: 1.5,
-          }}
-        >
-          <AlertTriangle size={18} style={{ color: "var(--danger)", flexShrink: 0, marginTop: 1 }} />
-          <div>
-            No login password is set. Set one in the <strong>Account</strong> tab before enabling remote access.
-          </div>
-        </div>
-      )}
 
       {/* Generic error */}
-      {error && !needsPassword && (
-        <div style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</div>
-      )}
+      {error && <div style={{ color: "var(--danger)", fontSize: 12.5 }}>{error}</div>}
 
-      {/* Mode + config */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, opacity: 1 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Tunnel type</div>
-
-        <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
-          <input type="radio" name="ra-mode" checked={mode === "quick"} onChange={() => setMode("quick")} style={{ marginTop: 3 }} />
-          <div>
-            <div style={{ fontSize: 13, color: "var(--text)" }}>Quick tunnel</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-              Free, no Cloudflare account. Gets a random <code>*.trycloudflare.com</code> URL that changes each restart.
-            </div>
-          </div>
-        </label>
-
-        <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
-          <input type="radio" name="ra-mode" checked={mode === "named"} onChange={() => setMode("named")} style={{ marginTop: 3 }} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, color: "var(--text)" }}>Named tunnel</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-              Stable hostname via a token from the Cloudflare Zero Trust dashboard. Create a tunnel there, route your
-              hostname to <code>http://localhost:8000</code>, then paste the token below.
-            </div>
-          </div>
-        </label>
-
-        {mode === "named" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingLeft: 28 }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Cloudflare tunnel token</span>
-              <input
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                onFocus={selectMaskedSecret}
-                placeholder="eyJ…"
-                style={inputStyle}
-              />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Public hostname</span>
-              <input
-                type="text"
-                value={hostname}
-                onChange={(e) => setHostname(e.target.value)}
-                placeholder="callboard.example.com"
-                style={inputStyle}
-              />
-            </label>
-          </div>
-        )}
-
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {/* IP allowlist */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Allowed IP addresses</div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-            Restrict which remote clients can reach callboard through the tunnel — one IP or CIDR range per line (e.g.{" "}
-            <code>203.0.113.7</code> or <code>203.0.113.0/24</code>). Leave empty to allow{" "}
-            <strong>anyone with the URL</strong>. Local and LAN access is always allowed regardless of this list.
+            Restrict which remote clients can reach callboard — one IP or CIDR range per line (e.g.{" "}
+            <code>100.101.102.103</code>, or <code>100.64.0.0/10</code> and <code>fd7a:115c:a1e0::/48</code> for a whole
+            Tailscale network). Leave empty to allow <strong>anyone who can reach this port</strong>. Direct local and LAN
+            access is always allowed regardless of this list; Tailscale addresses are not LAN and are checked against it.
           </div>
           <textarea
             value={ipAllowlist}
             onChange={(e) => setIpAllowlist(e.target.value)}
-            placeholder={"203.0.113.7\n203.0.113.0/24"}
+            placeholder={"100.101.102.103\n100.64.0.0/10\nfd7a:115c:a1e0::/48"}
             rows={4}
             spellCheck={false}
             style={{ ...inputStyle, fontFamily: "monospace", resize: "vertical", lineHeight: 1.5 }}
           />
-          {status?.callerIp && (
+          {callerIp && (
             <div style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span>
-                Your current IP: <code>{status.callerIp}</code>
+                Your current IP: <code>{callerIp}</code>
               </span>
               <button
                 type="button"
                 onClick={addMyIp}
-                disabled={parseAllowlistInput(ipAllowlist).includes(status.callerIp)}
+                disabled={parseAllowlistInput(ipAllowlist).includes(callerIp)}
                 style={{
                   padding: "3px 8px",
                   borderRadius: 6,
@@ -341,14 +160,36 @@ export default function RemoteAccessSettings() {
                   background: "var(--surface)",
                   color: "var(--text)",
                   fontSize: 12,
-                  cursor: parseAllowlistInput(ipAllowlist).includes(status.callerIp) ? "default" : "pointer",
-                  opacity: parseAllowlistInput(ipAllowlist).includes(status.callerIp) ? 0.6 : 1,
+                  cursor: parseAllowlistInput(ipAllowlist).includes(callerIp) ? "default" : "pointer",
+                  opacity: parseAllowlistInput(ipAllowlist).includes(callerIp) ? 0.6 : 1,
                 }}
               >
                 Add my IP
               </button>
             </div>
           )}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              onClick={() => void persistAllowlist()}
+              disabled={saving}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "7px 14px",
+                borderRadius: 7,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                fontSize: 13,
+                cursor: saving ? "default" : "pointer",
+              }}
+            >
+              {saving ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={14} />}
+              Save allowlist
+            </button>
+            {saved && <span style={{ color: "var(--success)", fontSize: 12.5, display: "flex", alignItems: "center", gap: 4 }}><Check size={14} /> Saved</span>}
+          </div>
         </div>
 
         {/* ── One-click engine installs ─────────────────────────────────
@@ -363,9 +204,10 @@ export default function RemoteAccessSettings() {
               <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
                 Let <strong>Settings &rarr; API</strong> run an engine&rsquo;s <code>npm install -g</code> on this machine instead of only showing you the
                 command. The package comes from a fixed list Callboard ships &mdash; nothing you type reaches a command line, and no shell is involved.
-                Clients reaching Callboard through the tunnel never get this, whatever this switch says &mdash; so this switch governs your own local
-                browsers, not a remote attacker, who is already refused by the client check. Turning it off leaves the copy-and-paste command, which is all
-                there ever was before. Saved as soon as you flip it.
+                Clients reaching Callboard from off the LAN or through a proxy (Tailscale included) never get this, whatever this
+                switch says &mdash; so this switch governs your own local browsers, not a remote attacker, who is already refused by
+                the client check. Turning it off leaves the copy-and-paste command, which is all there ever was before. Saved as soon
+                as you flip it.
               </div>
             </div>
             <button
@@ -403,121 +245,7 @@ export default function RemoteAccessSettings() {
           </div>
           {installsError && <div style={{ color: "var(--danger)", fontSize: 12 }}>{installsError}</div>}
         </div>
-
-        {/* Apply button (re-spawns the tunnel with the latest config when enabled) */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button
-            onClick={() => void persist(enabled)}
-            disabled={saving}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "7px 14px",
-              borderRadius: 7,
-              border: "1px solid var(--border)",
-              background: "var(--surface)",
-              color: "var(--text)",
-              fontSize: 13,
-              cursor: saving ? "default" : "pointer",
-            }}
-          >
-            {saving ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Check size={14} />}
-            {enabled ? "Save & apply" : "Save"}
-          </button>
-          {saved && <span style={{ color: "var(--success)", fontSize: 12.5, display: "flex", alignItems: "center", gap: 4 }}><Check size={14} /> Saved</span>}
-        </div>
       </div>
-
-      {/* Live status panel */}
-      <div
-        style={{
-          padding: "14px 16px",
-          borderRadius: 8,
-          border: "1px solid var(--border)",
-          background: "var(--bg-secondary)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <StatusDot status={status?.status} />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{statusLabel(status?.status)}</span>
-        </div>
-
-        {status?.url && status.status === "up" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <a
-              href={status.url}
-              target="_blank"
-              rel="noreferrer"
-              style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--accent-text)", fontSize: 13, textDecoration: "none", wordBreak: "break-all" }}
-            >
-              {status.url} <ExternalLink size={13} />
-            </a>
-            <button
-              onClick={() => void copy(status.url!)}
-              title="Copy URL"
-              style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text-muted)", fontSize: 12, cursor: "pointer" }}
-            >
-              {copied !== null ? <Check size={12} /> : <Copy size={12} />} {copied !== null ? "Copied" : "Copy"}
-            </button>
-          </div>
-        )}
-
-        {status?.error && (
-          <div style={{ fontSize: 12.5, color: "var(--danger)", lineHeight: 1.5 }}>{status.error}</div>
-        )}
-
-        {cloudflaredMissing && (
-          <div style={{ fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
-            The <code>cloudflared</code> binary is not installed.{" "}
-            <a href={CLOUDFLARED_INSTALL_URL} target="_blank" rel="noreferrer" style={{ color: "var(--accent-text)" }}>
-              Install it
-            </a>{" "}
-            and try again.
-          </div>
-        )}
-      </div>
-
-      {/* Enable confirmation modal */}
-      {showWarning && (
-        <ModalOverlay style={{ padding: 16 }} onClose={() => setShowWarning(false)} onBackdropClick={() => setShowWarning(false)}>
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20, maxWidth: 440, width: "100%", display: "flex", flexDirection: "column", gap: 14 }}
-          >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 15, fontWeight: 600, color: "var(--text)" }}>
-                <ShieldAlert size={18} style={{ color: "var(--warning)" }} /> Make callboard public?
-              </div>
-              <button onClick={() => setShowWarning(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", display: "flex" }}>
-                <X size={18} />
-              </button>
-            </div>
-            <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.55 }}>
-              This starts a Cloudflare tunnel that makes callboard reachable from the public internet. Anyone who learns
-              the URL will see your login page, and your <strong>password is the only thing protecting your data</strong>.
-              Make sure it is strong before continuing.
-            </p>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button
-                onClick={() => setShowWarning(false)}
-                style={{ padding: "8px 14px", borderRadius: 7, border: "1px solid var(--border)", background: "transparent", color: "var(--text)", fontSize: 13, cursor: "pointer" }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmEnable}
-                style={{ padding: "8px 14px", borderRadius: 7, border: "none", background: "var(--accent)", color: "var(--text-on-accent)", fontSize: 13, fontWeight: 500, cursor: "pointer" }}
-              >
-                Enable remote access
-              </button>
-            </div>
-          </div>
-        </ModalOverlay>
-      )}
     </div>
   );
 }
@@ -539,23 +267,4 @@ function parseAllowlistInput(raw: string): string[] {
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l && !seen.has(l) && seen.add(l));
-}
-
-function statusLabel(s?: RemoteAccessStatus["status"]): string {
-  switch (s) {
-    case "up":
-      return "Tunnel active";
-    case "starting":
-      return "Starting tunnel…";
-    case "error":
-      return "Tunnel error";
-    default:
-      return "Tunnel inactive";
-  }
-}
-
-function StatusDot({ status }: { status?: RemoteAccessStatus["status"] }) {
-  const color =
-    status === "up" ? "var(--success)" : status === "starting" ? "var(--warning)" : status === "error" ? "var(--danger)" : "var(--text-muted)";
-  return <span style={{ width: 9, height: 9, borderRadius: "50%", background: color, flexShrink: 0 }} />;
 }

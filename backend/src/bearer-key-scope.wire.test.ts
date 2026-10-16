@@ -29,7 +29,7 @@ const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-bearer-scope-"));
 process.env.CALLBOARD_DATA_DIR = tmpRoot;
 const SETTINGS_FILE = join(tmpRoot, "agent-settings.json");
 
-// Everything a settings save fans out to — daemons, tunnels, catalog refreshes.
+// Everything a settings save fans out to — daemons, catalog refreshes.
 vi.mock("./services/proxy-singleton.js", () => ({
   switchProxyMode: async () => {},
   testRemoteConnection: async () => ({ status: "connected", message: "" }),
@@ -38,13 +38,6 @@ vi.mock("./services/proxy-singleton.js", () => ({
   resetClient: () => {},
 }));
 vi.mock("./services/local-daemon.js", () => ({ getLocalDaemonStatus: () => ({}), fetchDaemonHealth: async () => null }));
-vi.mock("./services/web-tunnel.js", () => ({
-  startWebTunnel: async () => {},
-  stopWebTunnel: async () => {},
-  getWebTunnelStatus: () => ({ running: false }),
-  isCloudflaredAvailable: () => false,
-  resolveCallboardPort: () => 8000,
-}));
 vi.mock("./services/sdk-info.js", () => ({ refreshSdkInfoCache: async () => {} }));
 vi.mock("./services/codex-models.js", () => ({ refreshCodexModelsCache: async () => {} }));
 // change-password persists the new hash to .env; keep it off the disk.
@@ -66,10 +59,13 @@ const SECRETS = Object.fromEntries(SECRET_SETTING_FIELDS.map((field) => [field, 
 
 const SEED = {
   proxyMode: "local",
-  remoteAccessEnabled: false,
+  remoteAccessIpAllowlist: ["203.0.113.7"],
+  // Left behind by the removed cloudflared remote-access tunnel. `cloudflaredToken`
+  // is no longer a masked secret field, so it must never be read back at all.
+  remoteAccessEnabled: true,
   remoteAccessMode: "named",
   remoteAccessHostname: "callboard.example.com",
-  remoteAccessIpAllowlist: ["203.0.113.7"],
+  cloudflaredToken: "raw-retired-cloudflared-token-XYZ9",
   apiBaseUrl: "https://api.anthropic.example",
   codexSandboxMode: "workspace-write",
   model: "claude-opus-5-5",
@@ -120,8 +116,8 @@ function request(method: string, path: string, opts: { headers?: Record<string, 
 
 const asSession = (extra: Record<string, string> = {}) => ({ cookie: `callboard_session=${session}`, ...extra });
 const asBearer = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${bearer}`, ...extra });
-/** A remote client behind the tunnel: loopback socket, CF-Connecting-IP names the bucket. */
-const fromClient = (ip: string) => ({ "cf-connecting-ip": ip });
+/** A remote client behind a loopback reverse proxy: the appended X-Forwarded-For entry names the bucket. */
+const fromClient = (ip: string) => ({ "x-forwarded-for": ip });
 
 async function login(password: string, headers: Record<string, string> = {}): Promise<Res> {
   return request("POST", "/api/auth/login", { headers, body: { password } });
@@ -165,11 +161,10 @@ afterAll(async () => {
 
 describe("a bearer API key is refused every security-relevant write", () => {
   const gated: Array<[string, string, unknown]> = [
-    ["PUT", "/api/agent-settings", { remoteAccessEnabled: true }],
+    ["PUT", "/api/agent-settings", { allowEngineInstalls: true }],
     ["PUT", "/api/agent-settings", { remoteAccessIpAllowlist: [] }],
     ["PUT", "/api/agent-settings", { apiBaseUrl: "https://attacker.example" }],
     ["PUT", "/api/agent-settings", { codexSandboxMode: "danger-full-access" }],
-    ["PUT", "/api/agent-settings", { cloudflaredToken: "attacker-token" }],
     ["PUT", "/api/agent-settings", { model: "claude-haiku-4-5" }],
     ["POST", "/api/agent-settings/test-connection", { url: "https://attacker.example" }],
     ["PUT", "/api/agent-settings/default-caller", { alias: null }],
@@ -238,8 +233,13 @@ describe("GET /api/agent-settings never returns a raw secret", () => {
         expect(res.json[field]).toMatch(/^••••.{4}$/u);
       }
       // Non-secret fields come back as stored.
-      expect(res.json.remoteAccessHostname).toBe("callboard.example.com");
+      expect(res.json.remoteAccessIpAllowlist).toEqual(["203.0.113.7"]);
       expect(res.json.apiBaseUrl).toBe("https://api.anthropic.example");
+      // Retired tunnel fields still on disk are dropped, not echoed.
+      for (const retired of ["remoteAccessEnabled", "remoteAccessMode", "remoteAccessHostname", "cloudflaredToken"]) {
+        expect(retired in res.json, retired).toBe(false);
+      }
+      expect(res.text).not.toContain("raw-retired-cloudflared-token");
     });
   }
 

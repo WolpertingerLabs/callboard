@@ -90,7 +90,7 @@ Callboard can check that `opencode` is installed but not whether you're signed i
 
 The Claude Code and Codex **Binary path** fields only accept a path that is absolute, exists, is a regular file, and is executable by the daemon's user. If the path fails a check, Callboard ignores it and the card explains why. Changes apply to the next chat.
 
-Only a browser on the same machine or LAN can change these fields, because they decide what the daemon executes. A client coming through [Remote Access](#remote-access) can see them but not change them.
+Only a browser on the same machine or LAN can change these fields, because they decide what the daemon executes. A client on [remote access](#remote-access) (Tailscale, a VPN or a reverse proxy) can see them but not change them.
 
 ### After you install or sign in
 
@@ -259,14 +259,11 @@ Variables marked **process environment only** must be set in the daemon's enviro
 
 ## Remote access
 
-**Settings → Remote Access** can expose the UI through a [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) tunnel. It's off by default, and you need the `cloudflared` binary installed.
+Callboard doesn't expose itself to the internet. To reach it from your phone or another machine, put both devices on [Tailscale](https://tailscale.com/) (or another VPN or private network) and open `http://<host's tailnet address>:8000`. Running `tailscale serve` in front of the daemon port works too, and gives you HTTPS.
 
-- **Quick tunnel:** no Cloudflare account needed. You get a random `*.trycloudflare.com` URL that changes on every restart.
-- **Named tunnel:** paste a token from Cloudflare Zero Trust and route the hostname to `http://localhost:8000` for a stable address.
+> ⚠️ Anyone who can reach the port can reach the login page, and the password (`callboard set-password`) is what protects your sessions, files and connected services. Use a strong, unique one, and keep the port off the public internet.
 
-> ⚠️ With the tunnel on, your password is the only thing protecting your sessions, files and connected services. Callboard won't start the tunnel until a password is set. Use a strong, unique one.
-
-An optional **IP allowlist** (addresses or CIDR ranges) refuses all other tunnel traffic before it reaches the login page. Loopback and private-LAN addresses are always allowed. Tunnel clients can't change binary paths or use the Install button.
+**Settings → Remote Access** has an optional **IP allowlist** (addresses or CIDR ranges) that refuses every other remote client before it reaches the login page. Browsers on the same machine or the LAN that connect directly are always allowed. Tailscale addresses (`100.64.0.0/10` and `fd7a:115c:a1e0::/48`) are not treated as LAN, so if you set a list, add your devices or both of those ranges. Remote clients, Tailscale included, can't change binary paths or use the Install button.
 
 ## Development
 
