@@ -306,7 +306,7 @@ export interface EngineInstallGuidance {
    * recipe exists and no button is offered.
    *
    * Decision 8 is why this field exists. Every path that declines a one-click
-   * install — a tunnelled client, `allowEngineInstalls` off, an unsupported
+   * install — a remote or proxied client, `allowEngineInstalls` off, an unsupported
    * platform, a non-writable npm prefix, a `script`-only recipe — must land the
    * user on the copy block *above* with an explanation, rather than on a card
    * that quietly has one fewer button than it did on another machine. It sits
@@ -353,7 +353,7 @@ export interface EngineOneClickOffer {
  *
  * Not cached with the engine statuses, and deliberately not part of them: the
  * same daemon answers "yes" to a browser on the LAN and "no" to the same
- * browser reaching it through the remote-access tunnel a minute later. Baking it
+ * browser reaching it over Tailscale or a reverse proxy a minute later. Baking it
  * into the cached probe result would hand one client the other's verdict.
  */
 export interface EngineInstallCapability {
@@ -369,7 +369,7 @@ export interface EngineInstallCapability {
 
 /** Why an install was declined. Sent with the refusal so the UI can pick a status code's worth of nuance if it ever needs to. */
 export type EngineInstallRefusalCode =
-  /** The request came from outside the LAN — through the remote-access tunnel. */
+  /** The request came from outside the LAN, or through a proxy. */
   | "not-local"
   /** `AgentSettings.allowEngineInstalls` is off. */
   | "disabled"

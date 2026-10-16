@@ -32,10 +32,9 @@ import {
 import { switchProxyMode, testRemoteConnection, getConfiguredAliases, resetAllClients, resetClient } from "../services/proxy-singleton.js";
 import { CALLER_ALIAS_REGEX } from "@wolpertingerlabs/drawlatch/remote/caller-bootstrap";
 import { getLocalDaemonStatus, fetchDaemonHealth } from "../services/local-daemon.js";
-import { isPasswordConfigured, requireSessionAuth } from "../auth.js";
-import { getClientKey, isDirectLocalClient } from "../utils/client-ip.js";
-import { parseAllowlist, validateAllowlistEntry, isIpAllowed, isPrivateOrLoopback } from "../utils/ip-allowlist.js";
-import { startWebTunnel, stopWebTunnel, getWebTunnelStatus, isCloudflaredAvailable, resolveCallboardPort } from "../services/web-tunnel.js";
+import { requireSessionAuth } from "../auth.js";
+import { allowlistSubject, getClientKey, isDirectLocalClient } from "../utils/client-ip.js";
+import { parseAllowlist, validateAllowlistEntry, isIpAllowed } from "../utils/ip-allowlist.js";
 import { importBundle, BundleImportError } from "../services/bundle-import.js";
 import { refreshSdkInfoCache } from "../services/sdk-info.js";
 import { resetEngineProbeCaches } from "../services/engine-status.js";
@@ -164,8 +163,8 @@ agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
  * PUT /api/agent-settings — update agent settings. Logged-in sessions only.
  *
  * Gated whole rather than field by field. Most of this body widens exposure or
- * redirects traffic and credentials — remote access and its allowlist, the
- * tunnel token, every base URL and API key, `codexHome`, the binary paths,
+ * redirects traffic and credentials — the remote-access IP allowlist, every
+ * base URL and API key, `codexHome`, the binary paths,
  * `codexSandboxMode`, `allowEngineInstalls`, the drawlatch endpoint — and the
  * rest (model names, aliases, archive and callback preferences) has no API-key
  * caller. A per-field list would let the next sensitive field ship open by
@@ -199,10 +198,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     proxyMode,
     remoteServerUrl,
     tunnelEnabled,
-    remoteAccessEnabled,
-    remoteAccessMode,
-    cloudflaredToken,
-    remoteAccessHostname,
     remoteAccessIpAllowlist,
     allowEngineInstalls,
     apiBaseUrl,
@@ -413,15 +408,15 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
    * That is not privilege escalation — the daemon runs as the user and any
    * authenticated client can already run commands through a chat. It is a
    * consistency failure, and the inconsistency is the security argument's own:
-   * Phase 3 gates because Remote Access can put this server on the public
-   * internet with a password as the only barrier. A supported UI for pointing
+   * Phase 3 gates because a daemon reachable from off the LAN (a VPN, a reverse
+   * proxy) has the login password as its only barrier. A supported UI for pointing
    * the daemon at an arbitrary executable belongs on the same side of that line
    * as a supported UI for `npm install -g`.
    *
-   * Reads are untouched — a tunnelled client still sees which binary is in
+   * Reads are untouched — a remote client still sees which binary is in
    * effect on the status card, and still gets `binary-check`, which executes
    * nothing. Only the write is refused, and only when it would actually change
-   * something: an unrelated save from a tunnelled client that happens to echo
+   * something: an unrelated save from a remote client that happens to echo
    * the fields back unchanged is not an attempt to set them.
    *
    * @see plans/engine-availability-and-install.md — Decision 9
@@ -493,29 +488,14 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
   const normalizeCodexSandboxMode = (v: unknown): "read-only" | "workspace-write" | "danger-full-access" | undefined =>
     v === "read-only" || v === "workspace-write" || v === "danger-full-access" ? v : undefined;
 
-  const normalizeRemoteMode = (v: unknown): "quick" | "named" | undefined => (v === "quick" || v === "named" ? v : undefined);
-
   // Proxy mode is a closed enum — anything else clears the override (which
   // reads back as "local", the documented default).
   const normalizeProxyMode = (v: unknown): "local" | "remote" | undefined => (v === "local" || v === "remote" ? v : undefined);
 
-  // ── Remote-access (public tunnel) gate ───────────────────────────────
-  // Enabling exposes callboard to the internet — the login password becomes the
-  // only barrier. Block the enable if no password is configured (the UI mirrors
-  // this, but the server is the real gate). Only fires when the request itself
-  // asks to enable; unrelated saves while already-enabled are untouched.
-  const remoteFieldsTouched =
-    remoteAccessEnabled !== undefined || remoteAccessMode !== undefined || cloudflaredToken !== undefined || remoteAccessHostname !== undefined;
-  if (remoteAccessEnabled === true && !isPasswordConfigured()) {
-    res.status(400).json({
-      error: "Set a login password before enabling remote access — it makes callboard reachable from the public internet.",
-    });
-    return;
-  }
-
   // ── Remote-access IP allowlist ───────────────────────────────────────
   // Validate entries and guard against a remote saver locking themselves out.
-  // Local/LAN savers are exempt (they're never gated by the allowlist anyway).
+  // Judged exactly as `requireAllowedIp` will judge the saver's next request:
+  // a direct loopback/LAN saver is exempt, anyone else must be on the new list.
   let normalizedAllowlist: string[] | undefined;
   if (remoteAccessIpAllowlist !== undefined) {
     normalizedAllowlist = parseAllowlist(remoteAccessIpAllowlist);
@@ -524,9 +504,9 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       res.status(400).json({ error: `Invalid IP or CIDR in allowlist: "${bad}"` });
       return;
     }
-    const saverIp = getClientKey(req);
-    if (normalizedAllowlist.length > 0 && !isPrivateOrLoopback(saverIp) && !isIpAllowed(saverIp, normalizedAllowlist)) {
-      res.status(400).json({ error: `Add your current IP (${saverIp}) to the allowlist before saving, or you'll lose access through the tunnel.` });
+    const saver = allowlistSubject(req);
+    if (normalizedAllowlist.length > 0 && !saver.exempt && !isIpAllowed(saver.address, normalizedAllowlist)) {
+      res.status(400).json({ error: `Add your current IP (${saver.address}) to the allowlist before saving, or you'll lose access.` });
       return;
     }
   }
@@ -543,10 +523,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(proxyMode !== undefined && { proxyMode: normalizeProxyMode(proxyMode) }),
       ...(remoteServerUrl !== undefined && { remoteServerUrl: normalize(remoteServerUrl) }),
       ...(tunnelEnabled !== undefined && { tunnelEnabled: normalizeBool(tunnelEnabled) }),
-      ...(remoteAccessEnabled !== undefined && { remoteAccessEnabled: typeof remoteAccessEnabled === "boolean" ? remoteAccessEnabled : undefined }),
-      ...(remoteAccessMode !== undefined && { remoteAccessMode: normalizeRemoteMode(remoteAccessMode) }),
-      ...(cloudflaredToken !== undefined && { cloudflaredToken: normalize(cloudflaredToken) }),
-      ...(remoteAccessHostname !== undefined && { remoteAccessHostname: normalize(remoteAccessHostname) }),
       ...(remoteAccessIpAllowlist !== undefined && { remoteAccessIpAllowlist: normalizedAllowlist }),
       // NOT `normalizeBool`, and the difference is the direction it fails in.
       // `normalizeBool` returns `undefined` for a non-boolean, and an explicit
@@ -640,23 +616,6 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       await switchProxyMode(updated.proxyMode);
     }
 
-    // Apply remote-access tunnel changes live (only when a relevant field was
-    // touched, so an unrelated settings save never tears down a healthy tunnel).
-    if (remoteFieldsTouched) {
-      if (updated.remoteAccessEnabled) {
-        // Fire-and-forget: quick tunnels can take several seconds to surface a
-        // URL. The client polls /remote-access-status for the result.
-        void startWebTunnel({
-          port: resolveCallboardPort(),
-          host: "127.0.0.1",
-          mode: updated.remoteAccessMode === "named" ? "named" : "quick",
-          token: updated.cloudflaredToken,
-          hostname: updated.remoteAccessHostname,
-        }).catch((err) => log.error(`Remote-access tunnel start failed: ${err.message}`));
-      } else {
-        await stopWebTunnel().catch((err) => log.error(`Remote-access tunnel stop failed: ${err.message}`));
-      }
-    }
     if (binaryOverrideFieldsTouched) {
       // A different binary is now in effect, so every cached answer about which
       // one resolved — and the account info the *old* one reported — is stale.
@@ -700,7 +659,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
  * masks every credential, see `redactSecrets`), and it is still every setting
  * in the install. The New Chat launchpad needs two arrays of ids to draw a row
  * of chips, and it asks on every new-chat open, from whatever device is
- * reaching Callboard through the remote-access tunnel, so it gets a payload
+ * reaching Callboard remotely, so it gets a payload
  * shaped like its need.
  *
  * The write is the same `normalizeIdList` the main PUT uses — `[]` clears,
@@ -864,27 +823,13 @@ agentSettingsRouter.get("/daemon-status", async (_req: Request, res: Response): 
 });
 
 /**
- * GET /api/agent-settings/remote-access-status — public-tunnel status.
- *
- * Reports whether the cloudflared remote-access tunnel is up, its public URL,
- * and whether the `cloudflared` binary is installed (refreshed here so the UI
- * can show the install hint before the tunnel is ever started). Distinct from
- * /daemon-status, which reports the drawlatch webhook daemon.
+ * GET /api/agent-settings/caller-ip — the address the IP allowlist judges for
+ * this client, so the allowlist UI can offer an "Add my IP" shortcut. Through a
+ * loopback reverse proxy (`tailscale serve`) it is the proxied client's address;
+ * on a direct connection, the socket's. See `allowlistSubject` in utils/client-ip.ts.
  */
-agentSettingsRouter.get("/remote-access-status", async (req: Request, res: Response): Promise<void> => {
-  try {
-    const status = getWebTunnelStatus();
-    if (status.available === null) {
-      status.available = await isCloudflaredAvailable();
-    }
-    // callerIp lets the allowlist UI offer an "Add my IP" shortcut. Behind the
-    // tunnel this is the real remote client (CF-Connecting-IP); locally it's the
-    // socket address. See utils/client-ip.ts.
-    res.json({ ...status, callerIp: getClientKey(req) });
-  } catch (err: any) {
-    log.error(`Error getting remote-access status: ${err.message}`);
-    res.status(500).json({ error: "Failed to get remote-access status" });
-  }
+agentSettingsRouter.get("/caller-ip", (req: Request, res: Response): void => {
+  res.json({ callerIp: allowlistSubject(req).address });
 });
 
 /**

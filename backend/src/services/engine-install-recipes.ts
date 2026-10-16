@@ -302,7 +302,7 @@ export function oneClickRecipeFor(engineId: string): EngineInstallRecipe | undef
  * Everything above gates on **engine state alone**, and that is load-bearing
  * for Decision 8 rather than incidental: {@link withOneClick} runs afterwards
  * and can only *add* a button or a refusal line, never remove a recipe. So no
- * value of `capability` — not a tunnelled client, not the setting switched off,
+ * value of `capability` — not a remote client, not the setting switched off,
  * not a read-only npm prefix — can take the copyable command away. Omitting the
  * argument is the honest encoding of "install capability was never evaluated",
  * and leaves the Phase 2 shape untouched.

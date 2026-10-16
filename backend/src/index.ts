@@ -84,7 +84,6 @@ import { initCliWatcher, shutdownCliWatcher } from "./services/cli-watcher.js";
 import { getAgentSettings, migrateDrawlatchDirs, migrateDrawlatchKeyLayouts } from "./services/agent-settings.js";
 import { ensureCallerEnrolled } from "./services/proxy-singleton.js";
 import { startLocalDaemon, stopLocalDaemon } from "./services/local-daemon.js";
-import { startWebTunnel, stopWebTunnel } from "./services/web-tunnel.js";
 import { initSdkInfoCache } from "./services/sdk-info.js";
 import { getClaudeAuthStatus } from "./services/claude-auth-status.js";
 import { initOpenRouterModelsCache, stopOpenRouterModelsRefresh } from "./services/openrouter-models.js";
@@ -117,10 +116,10 @@ const publicLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
-  // Key on the real client. Behind the cloudflared tunnel every request arrives from
-  // loopback, so without this all remote clients would share one bucket — letting a
-  // single caller lock everyone out of login. We resolve forwarding headers only for
-  // loopback traffic; see utils/client-ip.ts. Disable the XFF validation because we
+  // Key on the real client. Behind a loopback reverse proxy (e.g. `tailscale serve`)
+  // every request arrives from loopback, so without this all remote clients would
+  // share one bucket — letting a single caller lock everyone out of login. We resolve
+  // forwarding headers only for loopback traffic; see utils/client-ip.ts. Disable the XFF validation because we
   // handle (and deliberately distrust non-loopback) forwarding headers ourselves.
   keyGenerator: getClientKey,
   validate: { xForwardedForHeader: false },
@@ -559,19 +558,6 @@ app.listen(PORT, () => {
       }
     })();
   }
-
-  // Bring up the remote-access (public) tunnel if the user left it enabled.
-  // Independent of proxy mode — this exposes callboard's own web UI. Failures
-  // are surfaced via /api/agent-settings/remote-access-status, never fatal.
-  if (settings.remoteAccessEnabled) {
-    void startWebTunnel({
-      port: Number(PORT),
-      host: "127.0.0.1",
-      mode: settings.remoteAccessMode === "named" ? "named" : "quick",
-      token: settings.cloudflaredToken,
-      hostname: settings.remoteAccessHostname,
-    }).catch((err: any) => log.error(`Remote-access tunnel start failed: ${err.message}`));
-  }
 });
 
 // Graceful shutdown
@@ -595,13 +581,6 @@ async function gracefulShutdown(signal: string) {
     await stopLocalDaemon();
   } catch (err: any) {
     log.error(`Failed to stop local drawlatch daemon: ${err.message}`);
-  }
-
-  // Tear down the remote-access tunnel (no-op when not running).
-  try {
-    await stopWebTunnel();
-  } catch (err: any) {
-    log.error(`Failed to stop remote-access tunnel: ${err.message}`);
   }
 
   process.exit(0);

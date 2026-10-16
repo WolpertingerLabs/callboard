@@ -224,7 +224,7 @@ enginesRouter.post("/:id/install", async (req, res) => {
  * otherwise.
  *
  * Gated on client scope like the POST: the output names paths on the daemon's
- * filesystem, and there is no reason a tunnelled client — who could not have
+ * filesystem, and there is no reason a remote client — who could not have
  * started this — should read it.
  */
 enginesRouter.get("/installs/:installId/stream", (req, res) => {

@@ -16,7 +16,7 @@
  *
  * Driven the same way as agent-settings.partial-update.test.ts: the handler is
  * pulled off the router stack and called with a fake req/res, with the save's
- * fan-out (daemon, tunnels, catalog refreshes) stubbed.
+ * fan-out (daemon, catalog refreshes) stubbed.
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -36,13 +36,6 @@ vi.mock("../services/proxy-singleton.js", () => ({
   resetClient: () => {},
 }));
 vi.mock("../services/local-daemon.js", () => ({ getLocalDaemonStatus: () => ({}), fetchDaemonHealth: async () => null }));
-vi.mock("../services/web-tunnel.js", () => ({
-  startWebTunnel: async () => {},
-  stopWebTunnel: async () => {},
-  getWebTunnelStatus: () => ({ running: false }),
-  isCloudflaredAvailable: () => false,
-  resolveCallboardPort: () => 8000,
-}));
 vi.mock("../services/sdk-info.js", () => ({ refreshSdkInfoCache: async () => {} }));
 vi.mock("../services/codex-models.js", () => ({ refreshCodexModelsCache: async () => {} }));
 

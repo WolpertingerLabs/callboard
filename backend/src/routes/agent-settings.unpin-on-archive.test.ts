@@ -29,13 +29,6 @@ vi.mock("../services/proxy-singleton.js", () => ({
   resetClient: () => {},
 }));
 vi.mock("../services/local-daemon.js", () => ({ getLocalDaemonStatus: () => ({}), fetchDaemonHealth: async () => null }));
-vi.mock("../services/web-tunnel.js", () => ({
-  startWebTunnel: async () => {},
-  stopWebTunnel: async () => {},
-  getWebTunnelStatus: () => ({ running: false }),
-  isCloudflaredAvailable: () => false,
-  resolveCallboardPort: () => 8000,
-}));
 vi.mock("../services/sdk-info.js", () => ({ refreshSdkInfoCache: async () => {} }));
 vi.mock("../services/codex-models.js", () => ({ refreshCodexModelsCache: async () => {} }));
 

@@ -1235,7 +1235,7 @@ export async function updateAgentSettings(settings: Partial<AgentSettings>): Pro
  * The favorites pair — the only part of agent settings the New Chat launchpad
  * needs. Deliberately NOT fetched via `getAgentSettings`: that response is
  * every setting in the install (credentials masked), and the launchpad asks for
- * this on every new-chat open from whatever device is on the tunnel. See the
+ * this on every new-chat open from whatever remote device is connected. See the
  * route's doc-comment in `backend/src/routes/agent-settings.ts`.
  */
 export interface FavoriteLists {
@@ -1284,20 +1284,13 @@ export async function patchFavorites(delta: FavoritesDelta): Promise<FavoriteLis
   return request("/agent-settings/favorites", { method: "PATCH", json: delta, error: "Failed to update favorites" });
 }
 
-export interface RemoteAccessStatus {
-  enabled: boolean;
-  mode: "quick" | "named";
-  available: boolean | null;
-  status: "down" | "starting" | "up" | "error";
-  url: string | null;
-  error: string | null;
-  /** The requesting client's resolved IP (real remote IP behind the tunnel) — used by the allowlist UI. */
-  callerIp?: string;
-}
-
-/** Current status of the remote-access (public cloudflared) tunnel. */
-export async function getRemoteAccessStatus(): Promise<RemoteAccessStatus> {
-  return request("/agent-settings/remote-access-status", { error: "Failed to get remote-access status" });
+/**
+ * The address the IP allowlist judges for this browser — the proxied client's
+ * address behind a loopback reverse proxy, else the socket's. Used by the
+ * allowlist UI's "Add my IP" shortcut.
+ */
+export async function getCallerIp(): Promise<string> {
+  return requestField("/agent-settings/caller-ip", "callerIp", { error: "Failed to get caller IP" });
 }
 
 export async function getKeyAliases(proxyMode?: "local" | "remote"): Promise<KeyAliasInfo[]> {

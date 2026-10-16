@@ -11,7 +11,7 @@
  *
  * The handler is pulled off the router stack and driven with a fake req/res,
  * matching the no-supertest style in cards.metadata.test.ts. Everything the
- * save fans out to (daemon lifecycle, tunnels, SDK/Codex catalog refreshes) is
+ * save fans out to (daemon lifecycle, SDK/Codex catalog refreshes) is
  * stubbed — only the persisted settings and the switchProxyMode call are
  * asserted on.
  */
@@ -34,13 +34,6 @@ vi.mock("../services/proxy-singleton.js", () => ({
   resetClient: () => {},
 }));
 vi.mock("../services/local-daemon.js", () => ({ getLocalDaemonStatus: () => ({}), fetchDaemonHealth: async () => null }));
-vi.mock("../services/web-tunnel.js", () => ({
-  startWebTunnel: async () => {},
-  stopWebTunnel: async () => {},
-  getWebTunnelStatus: () => ({ running: false }),
-  isCloudflaredAvailable: () => false,
-  resolveCallboardPort: () => 8000,
-}));
 vi.mock("../services/sdk-info.js", () => ({ refreshSdkInfoCache: async () => {} }));
 vi.mock("../services/codex-models.js", () => ({ refreshCodexModelsCache: async () => {} }));
 
@@ -102,7 +95,7 @@ describe("PUT /api/agent-settings — proxy fields survive unrelated saves", () 
   });
 
   it("survives a remote-access save, which touches neither field", async () => {
-    await put({ remoteAccessEnabled: false, remoteAccessMode: "quick" });
+    await put({ remoteAccessIpAllowlist: ["203.0.113.7"] });
     const saved = onDisk();
     expect(saved.proxyMode).toBe("remote");
     expect(saved.remoteServerUrl).toBe("http://192.168.1.179:9999");
@@ -133,6 +126,39 @@ describe("PUT /api/agent-settings — proxy fields survive unrelated saves", () 
     const saved = onDisk();
     expect(saved.remoteServerUrl).toBeUndefined();
     expect(saved.proxyMode).toBeUndefined();
+  });
+});
+
+/**
+ * The cloudflared remote-access tunnel is gone. A settings file written while it
+ * existed still carries its fields — one of them a credential that is no longer
+ * on the masked-secret list — so they must be dropped on read, purged by the
+ * next save, and ignored when an old tab sends them back.
+ */
+describe("PUT /api/agent-settings — retired remote-access tunnel fields", () => {
+  const RETIRED = {
+    remoteAccessEnabled: true,
+    remoteAccessMode: "named",
+    cloudflaredToken: "retired-cf-token",
+    remoteAccessHostname: "callboard.example.com",
+  };
+
+  it("neither echoes nor keeps them once anything is saved", async () => {
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ ...REMOTE_SETTINGS, ...RETIRED }, null, 2));
+    const res = await put({ model: "claude-opus-5" });
+    expect(res.code).toBe(200);
+    for (const key of Object.keys(RETIRED)) {
+      expect(key in res.body, key).toBe(false);
+      expect(key in onDisk(), key).toBe(false);
+    }
+    expect(JSON.stringify(res.body)).not.toContain("retired-cf-token");
+    expect(onDisk().proxyMode).toBe("remote");
+  });
+
+  it("does not store them when a stale client sends them", async () => {
+    const res = await put({ ...RETIRED, model: "claude-opus-5" });
+    expect(res.code).toBe(200);
+    for (const key of Object.keys(RETIRED)) expect(key in onDisk(), key).toBe(false);
   });
 });
 

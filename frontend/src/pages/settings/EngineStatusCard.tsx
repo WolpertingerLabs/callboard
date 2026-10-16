@@ -31,8 +31,7 @@ import { errorMessage } from "../../utils/errorMessage";
  * ## Phase 2 — the command
  *
  * Under the rows sits {@link InstallGuidance}: the copyable text for the engines
- * that have one, the shape `web-tunnel.ts`'s `INSTALL_HINT` already used for
- * `cloudflared`, promoted from a log string to an affordance.
+ * that have one, an install hint promoted from a log string to an affordance.
  *
  * A **bundled** engine never gets one, however far behind it is. Not out of
  * caution: `npm i -g @cline/sdk@latest` cannot reach Callboard's nested

@@ -17,13 +17,13 @@
  * The daemon then `execFile`d that path for its `--version`, and a chat spawned
  * it outright. Not privilege escalation — an authenticated client can already
  * run commands through a chat — but two phases disagreeing about the same
- * question, with Phase 3's own justification (Remote Access can put this server
- * on the public internet behind one password) settling which way.
+ * question, with Phase 3's own justification (a remotely reachable server has
+ * one password as its only barrier) settling which way.
  *
  * ## What is asserted, and why each half matters
  *
  * The gate has to be **narrow in two directions at once**: refuse the write
- * from a tunnelled client, and refuse *only* that — an unrelated save must not
+ * from a remote or proxied client, and refuse *only* that — an unrelated save must not
  * start 403ing because the settings page posts every field on every save, and
  * reads must keep working so a remote user can still see which binary is in
  * effect. Both halves are here; the second is the one that would break the app.
@@ -48,13 +48,6 @@ vi.mock("../services/proxy-singleton.js", () => ({
   resetClient: () => {},
 }));
 vi.mock("../services/local-daemon.js", () => ({ getLocalDaemonStatus: () => ({}), fetchDaemonHealth: async () => null }));
-vi.mock("../services/web-tunnel.js", () => ({
-  startWebTunnel: async () => {},
-  stopWebTunnel: async () => {},
-  getWebTunnelStatus: () => ({ running: false }),
-  isCloudflaredAvailable: () => false,
-  resolveCallboardPort: () => 8000,
-}));
 vi.mock("../services/sdk-info.js", () => ({ refreshSdkInfoCache: async () => {} }));
 vi.mock("../services/codex-models.js", () => ({ refreshCodexModelsCache: async () => {} }));
 const resetEngineProbeCaches = vi.fn();
@@ -75,10 +68,12 @@ const putHandler = (agentSettingsRouter as any).stack.find((layer: any) => layer
 const LOCAL = { socket: { remoteAddress: "127.0.0.1" }, headers: {} };
 /** A browser on the LAN — also local for this purpose. */
 const LAN = { socket: { remoteAddress: "192.168.1.42" }, headers: {} };
-/** The same daemon reached through cloudflared: loopback socket, real client in the header. */
-const TUNNELLED = { socket: { remoteAddress: "127.0.0.1" }, headers: { "cf-connecting-ip": "8.8.8.8" } };
-/** A plain reverse proxy that announces the hop. */
-const FORWARDED = { socket: { remoteAddress: "127.0.0.1" }, headers: { "x-forwarded-for": "8.8.8.8" } };
+/** The same daemon reached through `tailscale serve`: loopback socket, real client in X-Forwarded-For. */
+const PROXIED = { socket: { remoteAddress: "127.0.0.1" }, headers: { "x-forwarded-for": "100.101.102.103" } };
+/** Any other hop header, alone — e.g. a CF-Connecting-IP from a self-run cloudflared. */
+const FORWARDED = { socket: { remoteAddress: "127.0.0.1" }, headers: { "cf-connecting-ip": "8.8.8.8" } };
+/** A tailnet device connecting straight to the daemon port. 100.64.0.0/10 is not the LAN. */
+const TAILNET = { socket: { remoteAddress: "100.101.102.103" }, headers: {} };
 
 function put(body: unknown, client: Record<string, unknown> = LOCAL): Promise<{ code: number; body: any }> {
   return new Promise((resolve) => {
@@ -120,9 +115,9 @@ describe("a local client may set a binary override", () => {
   });
 });
 
-describe("a tunnelled client may not", () => {
+describe("a remote or proxied client may not", () => {
   it("refuses a codexPathOverride write with 403 and writes nothing", async () => {
-    const res = await put({ codexPathOverride: "/tmp/attacker/codex" }, TUNNELLED);
+    const res = await put({ codexPathOverride: "/tmp/attacker/codex" }, PROXIED);
     expect(res.code).toBe(403);
     expect(res.body.error).toMatch(/local network/i);
     expect(onDisk().codexPathOverride).toBeUndefined();
@@ -130,18 +125,22 @@ describe("a tunnelled client may not", () => {
   });
 
   it("refuses a pathToClaudeCodeExecutable write", async () => {
-    const res = await put({ pathToClaudeCodeExecutable: "/tmp/attacker/claude" }, TUNNELLED);
+    const res = await put({ pathToClaudeCodeExecutable: "/tmp/attacker/claude" }, PROXIED);
     expect(res.code).toBe(403);
     expect(onDisk().pathToClaudeCodeExecutable).toBeUndefined();
   });
 
-  it("refuses behind a plain forwarding header, not just cloudflared's", async () => {
+  it("refuses behind any forwarding header, not just X-Forwarded-For", async () => {
     expect((await put({ codexPathOverride: "/tmp/x" }, FORWARDED)).code).toBe(403);
+  });
+
+  it("refuses a direct Tailscale connection", async () => {
+    expect((await put({ codexPathOverride: "/tmp/x" }, TAILNET)).code).toBe(403);
   });
 
   it("refuses a *clearing* write too — removing an override is still deciding which binary runs", async () => {
     writeFileSync(SETTINGS_FILE, JSON.stringify({ proxyMode: "local", codexPathOverride: "/opt/codex" }, null, 2));
-    const res = await put({ codexPathOverride: "" }, TUNNELLED);
+    const res = await put({ codexPathOverride: "" }, PROXIED);
     expect(res.code).toBe(403);
     expect(onDisk().codexPathOverride).toBe("/opt/codex");
   });
@@ -150,7 +149,7 @@ describe("a tunnelled client may not", () => {
     // The realistic shape: the settings page posts every field it knows about.
     // A refusal that only looked at a lone-field request would be trivially
     // bypassed by the app's own save button.
-    const res = await put({ openRouterApiKey: "sk-or-x", codexModel: "gpt-5.5", codexPathOverride: "/tmp/attacker/codex" }, TUNNELLED);
+    const res = await put({ openRouterApiKey: "sk-or-x", codexModel: "gpt-5.5", codexPathOverride: "/tmp/attacker/codex" }, PROXIED);
     expect(res.code).toBe(403);
     // Nothing in the body is applied — the refusal precedes the write.
     expect(onDisk().openRouterApiKey).toBeUndefined();
@@ -158,19 +157,19 @@ describe("a tunnelled client may not", () => {
 });
 
 describe("the gate is narrow, which is the half that would break the app", () => {
-  it("lets a tunnelled client save every other setting", async () => {
-    const res = await put({ openRouterApiKey: "sk-or-test", codexModel: "gpt-5.5", clineApiKey: "k" }, TUNNELLED);
+  it("lets a proxied client save every other setting", async () => {
+    const res = await put({ openRouterApiKey: "sk-or-test", codexModel: "gpt-5.5", clineApiKey: "k" }, PROXIED);
     expect(res.code).toBe(200);
     expect(onDisk().openRouterApiKey).toBe("sk-or-test");
   });
 
-  it("lets a tunnelled client echo the fields back unchanged", async () => {
+  it("lets a proxied client echo the fields back unchanged", async () => {
     // The settings page sends every field on every save, so a remote user
     // saving an unrelated tab posts the override fields at their current values.
-    // Refusing that would make the whole page unusable through the tunnel while
+    // Refusing that would make the whole page unusable from a remote device while
     // looking, from the client, like an unexplained 403 on "Save".
     writeFileSync(SETTINGS_FILE, JSON.stringify({ proxyMode: "local", codexPathOverride: "/opt/codex" }, null, 2));
-    const res = await put({ codexPathOverride: "/opt/codex", openRouterApiKey: "sk-or-y" }, TUNNELLED);
+    const res = await put({ codexPathOverride: "/opt/codex", openRouterApiKey: "sk-or-y" }, PROXIED);
     expect(res.code).toBe(200);
     expect(onDisk().openRouterApiKey).toBe("sk-or-y");
     expect(onDisk().codexPathOverride).toBe("/opt/codex");
@@ -178,6 +177,6 @@ describe("the gate is narrow, which is the half that would break the app", () =>
 
   it("treats whitespace-only differences as unchanged rather than as an attempt", async () => {
     writeFileSync(SETTINGS_FILE, JSON.stringify({ proxyMode: "local", codexPathOverride: "/opt/codex" }, null, 2));
-    expect((await put({ codexPathOverride: "  /opt/codex  " }, TUNNELLED)).code).toBe(200);
+    expect((await put({ codexPathOverride: "  /opt/codex  " }, PROXIED)).code).toBe(200);
   });
 });

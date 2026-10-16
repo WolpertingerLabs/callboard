@@ -238,11 +238,11 @@ export interface EngineRefreshOptions {
  *
  * Kept out of the assembly and out of the caches on purpose. Capability is a
  * property of the requester — a browser on the LAN and the same browser
- * arriving through the remote-access tunnel get different answers from one
+ * arriving over Tailscale or a reverse proxy get different answers from one
  * daemon — while the probe result is a property of the machine. Caching them
  * together would let whichever client happened to warm the cache decide what
  * every later client is offered, and the first of those two mistakes hands a
- * tunnelled client a button.
+ * remote client a button.
  *
  * With no capability there is nothing to decorate and the input array comes back
  * **by identity**, which is what keeps the single-flight guarantee observable

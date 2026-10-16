@@ -31,44 +31,57 @@ describe("getClientKey", () => {
     });
   });
 
-  describe("behind the local cloudflared tunnel (loopback socket)", () => {
-    it("trusts CF-Connecting-IP", () => {
-      const req = mockReq({ socketIp: "127.0.0.1", headers: { "cf-connecting-ip": "203.0.113.7" } });
-      expect(getClientKey(req)).toBe("203.0.113.7");
+  describe("behind a local reverse proxy such as tailscale serve (loopback socket)", () => {
+    it("trusts the X-Forwarded-For entry the proxy appended", () => {
+      const req = mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": "100.101.102.103" } });
+      expect(getClientKey(req)).toBe("100.101.102.103");
     });
 
-    it("falls back to the first X-Forwarded-For hop when CF header is absent", () => {
-      const req = mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": "203.0.113.7, 10.0.0.1" } });
-      expect(getClientKey(req)).toBe("203.0.113.7");
+    it("takes the LAST entry, not a client-supplied head", () => {
+      // An appending proxy passes the client's own chain through and adds the
+      // real peer at the end. Keying on the head let one client pick a fresh
+      // bucket per request by varying one header.
+      const req = mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": "9.9.9.9, 100.101.102.103" } });
+      expect(getClientKey(req)).toBe("100.101.102.103");
     });
 
-    it("prefers CF-Connecting-IP over X-Forwarded-For", () => {
-      const req = mockReq({
-        socketIp: "127.0.0.1",
-        headers: { "cf-connecting-ip": "203.0.113.7", "x-forwarded-for": "8.8.8.8" },
-      });
-      expect(getClientKey(req)).toBe("203.0.113.7");
+    it("cannot be moved to a fresh bucket by varying the head", () => {
+      const a = getClientKey(mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": "1.1.1.1, 100.101.102.103" } }));
+      const b = getClientKey(mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": "2.2.2.2, 100.101.102.103" } }));
+      expect(a).toBe(b);
+    });
+
+    it("IGNORES CF-Connecting-IP — nothing on this host sets it any more", () => {
+      // It was trusted only while Callboard bundled a cloudflared tunnel that
+      // overwrote it. Through any other proxy it is the client's own header.
+      expect(getClientKey(mockReq({ socketIp: "127.0.0.1", headers: { "cf-connecting-ip": "203.0.113.7" } }))).toBe("127.0.0.1");
+      const req = mockReq({ socketIp: "127.0.0.1", headers: { "cf-connecting-ip": "9.9.9.9", "x-forwarded-for": "100.101.102.103" } });
+      expect(getClientKey(req)).toBe("100.101.102.103");
     });
 
     it("distinguishes two remote clients sharing the loopback socket", () => {
-      const a = getClientKey(mockReq({ socketIp: "127.0.0.1", headers: { "cf-connecting-ip": "203.0.113.7" } }));
-      const b = getClientKey(mockReq({ socketIp: "127.0.0.1", headers: { "cf-connecting-ip": "198.51.100.4" } }));
+      const a = getClientKey(mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": "100.101.102.103" } }));
+      const b = getClientKey(mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": "100.90.1.2" } }));
       expect(a).not.toBe(b);
     });
 
     it("handles IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)", () => {
-      const req = mockReq({ socketIp: "::ffff:127.0.0.1", headers: { "cf-connecting-ip": "203.0.113.7" } });
+      const req = mockReq({ socketIp: "::ffff:127.0.0.1", headers: { "x-forwarded-for": "203.0.113.7" } });
       expect(getClientKey(req)).toBe("203.0.113.7");
     });
 
     it("handles IPv6 loopback (::1)", () => {
-      const req = mockReq({ socketIp: "::1", headers: { "cf-connecting-ip": "203.0.113.7" } });
+      const req = mockReq({ socketIp: "::1", headers: { "x-forwarded-for": "203.0.113.7" } });
       expect(getClientKey(req)).toBe("203.0.113.7");
     });
 
-    it("array-valued X-Forwarded-For uses the first hop", () => {
-      const req = mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": ["203.0.113.7", "10.0.0.1"] } });
+    it("array-valued X-Forwarded-For uses the last hop", () => {
+      const req = mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": ["9.9.9.9", "203.0.113.7"] } });
       expect(getClientKey(req)).toBe("203.0.113.7");
+    });
+
+    it("falls back to the socket on an empty X-Forwarded-For", () => {
+      expect(getClientKey(mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": " , " } }))).toBe("127.0.0.1");
     });
   });
 
@@ -98,15 +111,15 @@ describe("getClientKey", () => {
  */
 describe("isDirectLocalClient", () => {
   it("REJECTS a loopback socket whose XFF starts with a loopback address", () => {
-    // The measured bypass. `getClientKey` trusts forwarding headers when the
-    // socket is loopback and takes XFF's *head* — and cloudflared appends to a
-    // client-supplied XFF, so this is precisely the header an attacker sends.
-    // Under the old derivation this keyed as "127.0.0.1" and passed.
+    // The measured bypass. `getClientKey` trusted forwarding headers when the
+    // socket was loopback and took XFF's *head* — and appending proxies pass a
+    // client-supplied XFF through, so this is precisely the header an attacker
+    // sends. Under the old derivation this keyed as "127.0.0.1" and passed.
     const req = mockReq({ socketIp: "127.0.0.1", headers: { "x-forwarded-for": "127.0.0.1, 203.0.113.7" } });
     expect(isDirectLocalClient(req)).toBe(false);
-    // And the loose function still resolves it the loose way, unchanged — the
-    // two answers differ on purpose.
-    expect(getClientKey(req)).toBe("127.0.0.1");
+    // The loose function attributes it to the appended hop — a rate-limit
+    // bucket — which is still not an answer to "is this local?".
+    expect(getClientKey(req)).toBe("203.0.113.7");
   });
 
   it("accepts a same-machine browser: loopback socket, no headers", () => {
@@ -127,13 +140,19 @@ describe("isDirectLocalClient", () => {
     }
   });
 
+  it("rejects a Tailscale (100.64.0.0/10 CGNAT) socket address — a tailnet is not the LAN", () => {
+    for (const ip of ["100.64.0.1", "100.101.102.103", "100.127.255.254"]) {
+      expect(isDirectLocalClient(mockReq({ socketIp: ip }))).toBe(false);
+    }
+  });
+
   it("rejects a public socket address", () => {
     for (const ip of ["203.0.113.7", "8.8.8.8", "2001:db8::1"]) {
       expect(isDirectLocalClient(mockReq({ socketIp: ip }))).toBe(false);
     }
   });
 
-  it("rejects the cloudflared shape — loopback socket plus CF-Connecting-IP", () => {
+  it("rejects a loopback socket plus CF-Connecting-IP", () => {
     expect(isDirectLocalClient(mockReq({ socketIp: "127.0.0.1", headers: { "cf-connecting-ip": "203.0.113.7" } }))).toBe(false);
   });
 

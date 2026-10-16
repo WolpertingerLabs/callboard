@@ -146,7 +146,7 @@ describe("getInstallCapability — every gate, and the sentence it hands the car
     const capability = await getInstallCapability({ local: false });
     expect(capability).toMatchObject({ oneClick: false, code: "not-local" });
     expect(capability.refusal).toMatch(/connected directly to it/);
-    // Cheapest and most decisive first: a tunnelled client must not cost this
+    // Cheapest and most decisive first: a remote client must not cost this
     // daemon an `npm root -g` spawn per settings-page load.
     expect(mocks.execFileAsync).not.toHaveBeenCalled();
   });

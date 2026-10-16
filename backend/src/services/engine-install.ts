@@ -31,7 +31,7 @@
  * - **loopback/LAN only, with no proxy in between** (`utils/client-ip.ts`'s
  *   `isDirectLocalClient`): the socket's own peer address must be local *and*
  *   the request must carry no forwarding header at all. A client arriving
- *   through the remote-access tunnel gets the copy-command instead —
+ *   from a VPN, a reverse proxy or the internet gets the copy-command instead —
  *   "authenticated" is not a strong enough answer for command execution on a
  *   box that may be internet-facing.
  * - **`AgentSettings.allowEngineInstalls`**, default on, so an operator can
@@ -246,7 +246,7 @@ export async function getInstallCapability(opts: { local: boolean }): Promise<En
     return {
       oneClick: false,
       code: "not-local",
-      // Worded for every shape this branch now catches, not just the tunnel.
+      // Worded for every shape this branch catches, not just one kind of proxy.
       // The check refuses any request that is not a *direct* local connection —
       // a public peer address, or a local one carrying a forwarding header —
       // because a proxy that does not mark the hop is indistinguishable from a
@@ -445,7 +445,7 @@ export interface InstallRun {
 /**
  * One install at a time, process-wide.
  *
- * A module-level singleton, the shape `web-tunnel.ts`'s supervisor already uses.
+ * A module-level singleton.
  * Two concurrent `npm install -g` runs against one global prefix are a genuine
  * hazard rather than merely wasteful — npm's global tree has no cross-process
  * lock — and serialising also bounds the whole endpoint's cost to one child
