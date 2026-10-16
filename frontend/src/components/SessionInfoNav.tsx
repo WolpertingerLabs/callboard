@@ -52,9 +52,10 @@ const PANEL_LIMIT = 12;
 /**
  * Minimum touch target, in px. The new-chat screen is often on a phone, and
  * these pills measured 28px tall before this floor, against the 44px both
- * platform guidelines ask for. Applied as `minHeight` plus a padding bump rather than a font change:
- * the pills are meant to read as secondary, and growing the type would undo
- * the whole reason this component collapses its contents to a count.
+ * platform guidelines ask for. Applied as `minHeight` plus a padding bump
+ * rather than a font change: the pills are meant to read as secondary, and
+ * growing the type would undo the whole reason this component collapses its
+ * contents to a count.
  */
 export const MIN_TAP_TARGET = 44;
 
