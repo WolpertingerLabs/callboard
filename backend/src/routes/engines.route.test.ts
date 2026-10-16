@@ -229,9 +229,11 @@ describe("the client-scope gate", () => {
     expect(mocks.getEngineStatuses).toHaveBeenLastCalledWith(expect.objectContaining({ capability: { oneClick: true } }));
   });
 
-  it("does not treat a Tailscale (100.64.0.0/10) address as LAN", async () => {
-    await call(handler, { socket: { remoteAddress: "100.101.102.103" }, headers: {}, query: {} });
-    expect(mocks.getEngineStatuses).toHaveBeenLastCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
+  it("does not treat a Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48) as LAN", async () => {
+    for (const ip of ["100.101.102.103", "fd7a:115c:a1e0::1"]) {
+      await call(handler, { socket: { remoteAddress: ip }, headers: {}, query: {} });
+      expect(mocks.getEngineStatuses).toHaveBeenLastCalledWith(expect.objectContaining({ capability: expect.objectContaining({ oneClick: false }) }));
+    }
   });
 
   it("passes the same capability to the refresh route", async () => {

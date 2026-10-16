@@ -50,10 +50,9 @@ const PANEL_ID: Record<Section, string> = {
 const PANEL_LIMIT = 12;
 
 /**
- * Minimum touch target, in px. The new-chat screen is a phone screen as often
- * as not — remote access is the point — and these pills measured
- * 28px tall before this floor, against the 44px both platform guidelines ask
- * for. Applied as `minHeight` plus a padding bump rather than a font change:
+ * Minimum touch target, in px. The new-chat screen is often on a phone, and
+ * these pills measured 28px tall before this floor, against the 44px both
+ * platform guidelines ask for. Applied as `minHeight` plus a padding bump rather than a font change:
  * the pills are meant to read as secondary, and growing the type would undo
  * the whole reason this component collapses its contents to a count.
  */

@@ -116,11 +116,12 @@ const publicLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
-  // Key on the real client. Behind a loopback reverse proxy (e.g. `tailscale serve`)
-  // every request arrives from loopback, so without this all remote clients would
-  // share one bucket — letting a single caller lock everyone out of login. We resolve
-  // forwarding headers only for loopback traffic; see utils/client-ip.ts. Disable the XFF validation because we
-  // handle (and deliberately distrust non-loopback) forwarding headers ourselves.
+  // Key on the real client. Behind a loopback reverse proxy (e.g. `tailscale
+  // serve`) every request arrives from loopback, so without this all remote
+  // clients would share one bucket — letting a single caller lock everyone out
+  // of login. We resolve forwarding headers only for loopback traffic; see
+  // utils/client-ip.ts. Disable the XFF validation because we handle (and
+  // deliberately distrust non-loopback) forwarding headers ourselves.
   keyGenerator: getClientKey,
   validate: { xForwardedForHeader: false },
 });

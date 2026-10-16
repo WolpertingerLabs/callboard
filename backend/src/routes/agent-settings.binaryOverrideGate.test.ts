@@ -134,8 +134,9 @@ describe("a remote or proxied client may not", () => {
     expect((await put({ codexPathOverride: "/tmp/x" }, FORWARDED)).code).toBe(403);
   });
 
-  it("refuses a direct Tailscale connection", async () => {
+  it("refuses a direct Tailscale connection, over IPv4 or IPv6", async () => {
     expect((await put({ codexPathOverride: "/tmp/x" }, TAILNET)).code).toBe(403);
+    expect((await put({ codexPathOverride: "/tmp/x" }, { socket: { remoteAddress: "fd7a:115c:a1e0::1" }, headers: {} })).code).toBe(403);
   });
 
   it("refuses a *clearing* write too — removing an override is still deciding which binary runs", async () => {

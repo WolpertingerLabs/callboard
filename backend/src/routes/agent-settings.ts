@@ -164,12 +164,12 @@ agentSettingsRouter.get("/", (_req: Request, res: Response): void => {
  *
  * Gated whole rather than field by field. Most of this body widens exposure or
  * redirects traffic and credentials — the remote-access IP allowlist, every
- * base URL and API key, `codexHome`, the binary paths,
- * `codexSandboxMode`, `allowEngineInstalls`, the drawlatch endpoint — and the
- * rest (model names, aliases, archive and callback preferences) has no API-key
- * caller. A per-field list would let the next sensitive field ship open by
- * default; this way a new field is session-only until someone decides
- * otherwise. Favorites keep their own ungated route below.
+ * base URL and API key, `codexHome`, the binary paths, `codexSandboxMode`,
+ * `allowEngineInstalls`, the drawlatch endpoint — and the rest (model names,
+ * aliases, archive and callback preferences) has no API-key caller. A
+ * per-field list would let the next sensitive field ship open by default; this
+ * way a new field is session-only until someone decides otherwise. Favorites
+ * keep their own ungated route below.
  */
 agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Response): Promise<void> => {
   // The exact mask of the stored secret, sent back, is the Settings page saving
@@ -659,8 +659,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
  * masks every credential, see `redactSecrets`), and it is still every setting
  * in the install. The New Chat launchpad needs two arrays of ids to draw a row
  * of chips, and it asks on every new-chat open, from whatever device is
- * reaching Callboard remotely, so it gets a payload
- * shaped like its need.
+ * reaching Callboard remotely, so it gets a payload shaped like its need.
  *
  * The write is the same `normalizeIdList` the main PUT uses — `[]` clears,
  * a non-array leaves the stored list alone — because the star in Settings and

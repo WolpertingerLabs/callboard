@@ -43,7 +43,8 @@ export interface AgentSettings {
    * non-LAN address (including through a loopback reverse proxy such as
    * `tailscale serve`). Empty or absent ⇒ no restriction (anyone who can reach
    * the port can reach the login page). Loopback and private-LAN clients that
-   * connect directly are ALWAYS allowed and are never gated by this list. See backend/src/utils/ip-allowlist.ts.
+   * connect directly are ALWAYS allowed and are never gated by this list;
+   * Tailscale's ranges are not LAN. See backend/src/utils/ip-allowlist.ts.
    */
   remoteAccessIpAllowlist?: string[];
 
@@ -57,9 +58,9 @@ export interface AgentSettings {
    * `backend/src/services/engine-install-recipes.ts`, the client must be on the
    * LAN (a request arriving through a proxy, or from a public or tailnet
    * address, never qualifies whatever this is set to), and npm's global prefix
-   * must be writable — so this exists for the operator who wants none of it regardless: setting it to
-   * `false` removes the button everywhere and leaves the copy-and-paste command
-   * that was always the fallback.
+   * must be writable — so this exists for the operator who wants none of it
+   * regardless: setting it to `false` removes the button everywhere and leaves
+   * the copy-and-paste command that was always the fallback.
    *
    * Default-on rather than default-off because the gate that matters is the
    * client scope, and a locally-reachable Callboard already runs whatever a chat

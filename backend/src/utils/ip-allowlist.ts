@@ -15,6 +15,9 @@ import ipaddr from "ipaddr.js";
 
 type ParsedIp = ReturnType<typeof ipaddr.parse>;
 
+/** Tailscale's IPv6 prefix. Unique-local by RFC, but a tailnet is not the LAN; see {@link isPrivateOrLoopback}. */
+const TAILSCALE_ULA = ipaddr.parseCIDR("fd7a:115c:a1e0::/48") as [ipaddr.IPv6, number];
+
 /** Parse an address string, unwrapping IPv4-mapped IPv6 (::ffff:a.b.c.d). Returns null if invalid. */
 function parse(addr: string): ParsedIp | null {
   let s = (addr || "").trim();
@@ -35,16 +38,20 @@ function parse(addr: string): ParsedIp | null {
  * 169.254/16, IPv6 ::1 + fc00::/7 unique-local + fe80::/10 link-local).
  * Unknown/unparseable addresses are treated as NOT local (so they get gated).
  *
- * Deliberately NOT local: 100.64.0.0/10 (carrier-grade NAT), the range
- * Tailscale hands out. It is shared address space, not a LAN — an ISP's CGNAT
- * puts strangers in it too — so a tailnet device is gated by a configured
- * allowlist and refused the install/binary-override capabilities like any
- * other remote client. Operators who want their tailnet allowed add
- * `100.64.0.0/10` (or their devices' addresses) to the allowlist.
+ * Deliberately NOT local: Tailscale's ranges. IPv4 100.64.0.0/10 is carrier-
+ * grade NAT, shared address space rather than a LAN (an ISP's CGNAT puts
+ * strangers in it too), and ipaddr.js does not call it private. IPv6
+ * fd7a:115c:a1e0::/48 sits inside fc00::/7, so ipaddr.js *does* call it
+ * unique-local, and it is carved out explicitly — otherwise a tailnet device
+ * on IPv6 would skip the allowlist and pass the install/binary-override gate
+ * that the same device on IPv4 is refused. Either way a tailnet device is a
+ * remote client. Operators who want their tailnet allowed add `100.64.0.0/10`
+ * and `fd7a:115c:a1e0::/48` (or their devices' addresses) to the allowlist.
  */
 export function isPrivateOrLoopback(addr: string): boolean {
   const parsed = parse(addr);
   if (!parsed) return false;
+  if (parsed.kind() === "ipv6" && (parsed as ipaddr.IPv6).match(TAILSCALE_ULA)) return false;
   const range = parsed.range();
   return range === "loopback" || range === "private" || range === "linkLocal" || range === "uniqueLocal";
 }

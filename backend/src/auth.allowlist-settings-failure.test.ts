@@ -285,13 +285,16 @@ describe("the header bypass, reproduced and closed", () => {
     expect(call("127.0.0.1", "/system-info", { "cf-connecting-ip": "8.8.8.8", "x-forwarded-for": "198.51.100.4" }).passed).toBe(true);
   });
 
-  it("gates a Tailscale (CGNAT) client like any other remote one", () => {
-    // 100.64.0.0/10 is shared address space, not a LAN: a direct tailnet
-    // connection is not exempt, and passes only if the list covers it.
+  it("gates a Tailscale client like any other remote one, on IPv4 and IPv6", () => {
+    // 100.64.0.0/10 is shared address space and fd7a:115c:a1e0::/48 is carved
+    // out of unique-local: a direct tailnet connection is not exempt, and
+    // passes only if the list covers it.
     writeFileSync(SETTINGS_FILE, LIST);
     expect(call("100.101.102.103").passed).toBe(false);
-    writeFileSync(SETTINGS_FILE, JSON.stringify({ remoteAccessIpAllowlist: ["100.64.0.0/10"] }));
+    expect(call("fd7a:115c:a1e0::1").passed).toBe(false);
+    writeFileSync(SETTINGS_FILE, JSON.stringify({ remoteAccessIpAllowlist: ["100.64.0.0/10", "fd7a:115c:a1e0::/48"] }));
     expect(call("100.101.102.103").passed).toBe(true);
+    expect(call("fd7a:115c:a1e0::1").passed).toBe(true);
     expect(call("127.0.0.1", "/system-info", { "x-forwarded-for": "100.101.102.103" }).passed).toBe(true);
   });
 

@@ -132,14 +132,14 @@ export default function RemoteAccessSettings() {
           <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>Allowed IP addresses</div>
           <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
             Restrict which remote clients can reach callboard — one IP or CIDR range per line (e.g.{" "}
-            <code>100.101.102.103</code> or <code>100.64.0.0/10</code> for a whole Tailscale network). Leave empty to allow{" "}
-            <strong>anyone who can reach this port</strong>. Direct local and LAN access is always allowed regardless of this
-            list; Tailscale addresses are not LAN and are checked against it.
+            <code>100.101.102.103</code>, or <code>100.64.0.0/10</code> and <code>fd7a:115c:a1e0::/48</code> for a whole
+            Tailscale network). Leave empty to allow <strong>anyone who can reach this port</strong>. Direct local and LAN
+            access is always allowed regardless of this list; Tailscale addresses are not LAN and are checked against it.
           </div>
           <textarea
             value={ipAllowlist}
             onChange={(e) => setIpAllowlist(e.target.value)}
-            placeholder={"100.101.102.103\n100.64.0.0/10"}
+            placeholder={"100.101.102.103\n100.64.0.0/10\nfd7a:115c:a1e0::/48"}
             rows={4}
             spellCheck={false}
             style={{ ...inputStyle, fontFamily: "monospace", resize: "vertical", lineHeight: 1.5 }}
@@ -204,9 +204,10 @@ export default function RemoteAccessSettings() {
               <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
                 Let <strong>Settings &rarr; API</strong> run an engine&rsquo;s <code>npm install -g</code> on this machine instead of only showing you the
                 command. The package comes from a fixed list Callboard ships &mdash; nothing you type reaches a command line, and no shell is involved.
-                Clients reaching Callboard from off the LAN or through a proxy (Tailscale included) never get this, whatever this switch says
-                &mdash; so this switch governs your own local browsers, not a remote attacker, who is already refused by the client check. Turning it off leaves the copy-and-paste command, which is all
-                there ever was before. Saved as soon as you flip it.
+                Clients reaching Callboard from off the LAN or through a proxy (Tailscale included) never get this, whatever this
+                switch says &mdash; so this switch governs your own local browsers, not a remote attacker, who is already refused by
+                the client check. Turning it off leaves the copy-and-paste command, which is all there ever was before. Saved as soon
+                as you flip it.
               </div>
             </div>
             <button

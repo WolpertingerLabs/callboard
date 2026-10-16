@@ -263,7 +263,7 @@ Callboard doesn't expose itself to the internet. To reach it from your phone or 
 
 > ⚠️ Anyone who can reach the port can reach the login page, and the password (`callboard set-password`) is what protects your sessions, files and connected services. Use a strong, unique one, and keep the port off the public internet.
 
-**Settings → Remote Access** has an optional **IP allowlist** (addresses or CIDR ranges) that refuses every other remote client before it reaches the login page. Browsers on the same machine or the LAN that connect directly are always allowed. Tailscale addresses (`100.64.0.0/10`) are not treated as LAN, so if you set a list, add your devices or `100.64.0.0/10`. Remote clients, Tailscale included, can't change binary paths or use the Install button.
+**Settings → Remote Access** has an optional **IP allowlist** (addresses or CIDR ranges) that refuses every other remote client before it reaches the login page. Browsers on the same machine or the LAN that connect directly are always allowed. Tailscale addresses (`100.64.0.0/10` and `fd7a:115c:a1e0::/48`) are not treated as LAN, so if you set a list, add your devices or both of those ranges. Remote clients, Tailscale included, can't change binary paths or use the Install button.
 
 ## Development
 

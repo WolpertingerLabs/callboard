@@ -140,8 +140,8 @@ describe("isDirectLocalClient", () => {
     }
   });
 
-  it("rejects a Tailscale (100.64.0.0/10 CGNAT) socket address — a tailnet is not the LAN", () => {
-    for (const ip of ["100.64.0.1", "100.101.102.103", "100.127.255.254"]) {
+  it("rejects a Tailscale socket address (100.64.0.0/10, fd7a:115c:a1e0::/48) — a tailnet is not the LAN", () => {
+    for (const ip of ["100.64.0.1", "100.101.102.103", "100.127.255.254", "::ffff:100.101.102.103", "fd7a:115c:a1e0::1"]) {
       expect(isDirectLocalClient(mockReq({ socketIp: ip }))).toBe(false);
     }
   });
