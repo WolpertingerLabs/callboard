@@ -137,6 +137,41 @@ describe("forkSession", () => {
     expect(synthetic.sessionId).toBe("new-id");
   });
 
+  it("copies api-request-blob lines but doesn't treat their repeated tool_use as unresolved", () => {
+    // CLI 2.1.305 writes the raw API request as untimestamped blobs after the
+    // tool_results, repeating the already-resolved assistant tool_use blocks.
+    const blob = {
+      type: "api-request-blob",
+      sessionId: "orig",
+      hash: "h1",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "plan", signature: "sig" },
+          { type: "tool_use", id: "t1", name: "Bash", input: {} },
+          { type: "tool_use", id: "t2", name: "Read", input: {} },
+        ],
+      },
+    };
+    writeSession("orig", [
+      userLine("orig", "u1", "2026-01-01T10:00:00.000Z", "do a thing"),
+      assistantLine("orig", "a1", "2026-01-01T10:00:05.000Z", [
+        { type: "tool_use", id: "t1", name: "Bash", input: {} },
+        { type: "tool_use", id: "t2", name: "Read", input: {} },
+      ]),
+      toolResultLine("orig", "r1", "2026-01-01T10:00:06.000Z", "t1"),
+      toolResultLine("orig", "r2", "2026-01-01T10:00:07.000Z", "t2"),
+      blob,
+      assistantLine("orig", "a2", "2026-01-01T10:00:10.000Z", [{ type: "text", text: "done" }]),
+      userLine("orig", "u2", "2026-01-01T10:01:00.000Z", "next"),
+    ]);
+
+    const forked = provider.forkSession(["orig"], "2026-01-01T10:00:10.000Z", "new-id");
+    const lines = readForked(forked!.logPath);
+    expect(lines.map((l) => l.uuid ?? l.type)).toEqual(["u1", "a1", "r1", "r2", "api-request-blob", "a2"]);
+    expect(lines.some((l) => JSON.stringify(l).includes("[Request interrupted by user]"))).toBe(false);
+  });
+
   it("returns null when no line falls at or before the cutoff", () => {
     writeSession("orig", [userLine("orig", "u1", "2026-01-01T10:00:00.000Z", "hello")]);
     expect(provider.forkSession(["orig"], "2025-12-31T00:00:00.000Z", "new-id")).toBeNull();

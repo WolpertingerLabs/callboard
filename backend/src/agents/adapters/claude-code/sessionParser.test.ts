@@ -147,6 +147,18 @@ describe("parseMessages — CLI plumbing is not conversation", () => {
           ],
         },
       },
+      {
+        type: "api-request-blob",
+        sessionId: "s",
+        hash: "h4",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "replayed reasoning", signature: "sig" },
+            { type: "tool_use", id: "toolu_replayed", name: "Bash", input: { command: "ls" } },
+          ],
+        },
+      },
       { type: "api-request-blob", sessionId: "s", hash: "h2", message: { role: "system", content: [{ type: "text", text: "# Environment\n..." }] } },
       { type: "api-request-blob", sessionId: "s", hash: "h3", message: { role: "system", content: [{ type: "text", text: "<total_tokens>1 tokens left</total_tokens>" }] } },
       { type: "api-request", sessionId: "s", id: "r1", timestamp: "2026-01-01T10:00:00.100Z", shapeHash: "h0", params: { model: "m" }, tail: ["h1"] },
