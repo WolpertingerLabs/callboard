@@ -496,6 +496,15 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
     // Skip other system messages (e.g. turn_duration) that aren't user-facing
     if (msg.type === "system") continue;
 
+    // Only user/assistant entries are conversation. Everything else is CLI
+    // bookkeeping, and some of it carries a `message` that looks like a turn:
+    // CLI 2.1.305 started writing `api-request-blob` lines — content-addressed
+    // chunks of the raw API request, holding the system prompt, every
+    // `<system-reminder>`, `<total_tokens>` notes and a second copy of each
+    // user prompt — as `{ message: { role, content } }`. Reading role/content
+    // off any entry type rendered all of it as chat bubbles.
+    if (msg.type !== "user" && msg.type !== "assistant") continue;
+
     const role: "user" | "assistant" = msg.message?.role || msg.type;
     const content = msg.message?.content || msg.content;
     const timestamp = msg.timestamp;
