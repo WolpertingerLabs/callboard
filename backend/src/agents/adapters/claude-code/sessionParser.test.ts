@@ -129,6 +129,47 @@ describe("parseMessages — CLI plumbing is not conversation", () => {
     expect(parsed).toEqual([]);
   });
 
+  it("drops the api-request bookkeeping CLI 2.1.305 writes between turns", () => {
+    // Shaped as they appear on disk. The blobs carry a `message` with role and
+    // content but no timestamp; the shape line carries the whole request.
+    const parsed = parseMessages([
+      userLine("Please try again"),
+      { type: "api-request-shape", sessionId: "s", shapeHash: "h0", timestamp: "2026-01-01T10:00:00.100Z", shape: { system: [{ type: "text", text: "You are Claude Code" }] } },
+      {
+        type: "api-request-blob",
+        sessionId: "s",
+        hash: "h1",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "<system-reminder>\nCodebase and user instructions are shown below.</system-reminder>" },
+            { type: "text", text: "Please try again" },
+          ],
+        },
+      },
+      {
+        type: "api-request-blob",
+        sessionId: "s",
+        hash: "h4",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "replayed reasoning", signature: "sig" },
+            { type: "tool_use", id: "toolu_replayed", name: "Bash", input: { command: "ls" } },
+          ],
+        },
+      },
+      { type: "api-request-blob", sessionId: "s", hash: "h2", message: { role: "system", content: [{ type: "text", text: "# Environment\n..." }] } },
+      { type: "api-request-blob", sessionId: "s", hash: "h3", message: { role: "system", content: [{ type: "text", text: "<total_tokens>1 tokens left</total_tokens>" }] } },
+      { type: "api-request", sessionId: "s", id: "r1", timestamp: "2026-01-01T10:00:00.100Z", shapeHash: "h0", params: { model: "m" }, tail: ["h1"] },
+      assistantLine([{ type: "text", text: "done" }]),
+    ]);
+    expect(parsed.map((m) => [m.role, m.content])).toEqual([
+      ["user", "Please try again"],
+      ["assistant", "done"],
+    ]);
+  });
+
   it("renders both interruption markers as system boundaries, not user messages", () => {
     for (const marker of ["[Request interrupted by user]", "[Request interrupted by user for tool use]"]) {
       const [msg] = parseMessages([userLine(marker)]);

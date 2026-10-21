@@ -19,6 +19,7 @@ import { join } from "path";
 import { fallbackBranchName, getGitInfo, resolveBranch, uniqueBranchName } from "../utils/git.js";
 import { chatFileService } from "../services/chat-file-service.js";
 import { findSessionLogPath } from "../utils/session-log.js";
+import { isConversationEntry } from "../agents/adapters/claude-code/sessionParser.js";
 import { assertChatContextUnchanged, chatContextFingerprint, ChatContextChangedError } from "../utils/chat-context.js";
 import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { findChatForStatus, withSessionProvider } from "../utils/chat-lookup.js";
@@ -680,8 +681,9 @@ streamRouter.get("/:id/stream", (req, res) => {
             // A background task's completion notice arrives as a queued-command
             // attachment, which carries no `message.content` — without this it
             // would sit unrendered until the agent's next output happened to
-            // poke a refetch.
-            if (parsed.message?.content || parsed.attachment?.commandMode === "task-notification") {
+            // poke a refetch. Bookkeeping lines with a `message` (api-request-blob)
+            // aren't conversation and render nothing.
+            if ((isConversationEntry(parsed) && parsed.message?.content) || parsed.attachment?.commandMode === "task-notification") {
               sendSSE(res, { type: "message_update" });
             }
             // Detect conversation compaction (context window auto-summary)

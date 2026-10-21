@@ -392,6 +392,20 @@ export function buildSubagentMap(rawMessages: any[]): Map<string, string> {
 // ── Message parsing ─────────────────────────────────────────────────
 
 /**
+ * Whether a raw JSONL entry is a conversation turn. Only user/assistant
+ * entries are; everything else is CLI bookkeeping, and some of it carries a
+ * `message` that looks like a turn: CLI 2.1.305 started writing
+ * `api-request-blob` lines — content-addressed chunks of the raw API request,
+ * holding the system prompt, every `<system-reminder>`, `<total_tokens>`
+ * notes, a second copy of each user prompt and assistant tool_use/thinking
+ * blocks that were already resolved — as `{ message: { role, content } }`.
+ * Anything reading role/content off a line must check this first.
+ */
+export function isConversationEntry(entry: { type?: unknown } | null | undefined): boolean {
+  return entry?.type === "user" || entry?.type === "assistant";
+}
+
+/**
  * Parse raw JSONL messages into the neutral ParsedMessage format.
  *
  * Handles Claude's JSONL schema: message.content arrays with text/thinking/
@@ -495,6 +509,10 @@ export function parseMessages(rawMessages: any[]): ParsedMessage[] {
 
     // Skip other system messages (e.g. turn_duration) that aren't user-facing
     if (msg.type === "system") continue;
+
+    // api-request-blob and other bookkeeping would otherwise render as chat
+    // bubbles (see isConversationEntry).
+    if (!isConversationEntry(msg)) continue;
 
     const role: "user" | "assistant" = msg.message?.role || msg.type;
     const content = msg.message?.content || msg.content;

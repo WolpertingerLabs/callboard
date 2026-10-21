@@ -22,7 +22,7 @@ import type {
   SessionSearchFilters,
   SessionSearchResponse,
 } from "../../ports/SessionProvider.js";
-import { readJsonlFile, getFirstUserMessage, parseMessages, parseSubagentMessages, buildSubagentMap } from "./sessionParser.js";
+import { readJsonlFile, getFirstUserMessage, isConversationEntry, parseMessages, parseSubagentMessages, buildSubagentMap } from "./sessionParser.js";
 import type { HandoffTurn } from "../../handoff.js";
 import {
   CLAUDE_PROJECTS_DIR,
@@ -372,8 +372,12 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
     // The cutoff line may carry tool_use blocks whose tool_result lines sit
     // just past the cutoff — a resumed session must not have dangling
     // tool_use, so extend forward through consecutive resolving lines.
+    // Only conversation lines take part: an api-request-blob can repeat
+    // tool_use blocks after their results, and would leave them "unresolved"
+    // (the blobs are still copied, just not scanned).
     const unresolved = new Set<string>();
     const scanLine = (line: any) => {
+      if (!isConversationEntry(line)) return;
       const content = line.message?.content;
       if (!Array.isArray(content)) return;
       for (const block of content) {
@@ -383,7 +387,7 @@ export class ClaudeCodeSessionProvider implements SessionProvider {
     };
     for (const line of copied) scanLine(line);
     for (let j = cutoffIdx + 1; unresolved.size > 0 && j < lines.length; j++) {
-      const content = lines[j].message?.content;
+      const content = isConversationEntry(lines[j]) ? lines[j].message?.content : undefined;
       const resolves = Array.isArray(content) && content.some((b: any) => b.type === "tool_result" && unresolved.has(b.tool_use_id));
       if (!resolves) break;
       copied.push(lines[j]);
