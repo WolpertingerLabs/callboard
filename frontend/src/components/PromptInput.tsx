@@ -166,6 +166,10 @@ interface Props {
    * untouched draft, an empty composer) gives way to the chat's stored text.
    * A key change during a pause is still a chat switch: user text is saved
    * under the outgoing key, and the incoming chat's text replaces it.
+   *
+   * An edited draft saved this way no longer carries the hold, so sending it
+   * later leaves the Staging draft in place. That is deliberate: losing the
+   * user's edits silently is worse than a draft that has to be deleted by hand.
    */
   draftPaused?: boolean;
 }
