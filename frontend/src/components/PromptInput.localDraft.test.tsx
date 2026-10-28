@@ -16,6 +16,8 @@ import { getComposerDraft, saveComposerDraft } from "../utils/localStorage";
 vi.mock("../api", () => ({ getSlashCommandContent: vi.fn(async (name: string) => ({ name, source: "custom-skill", content: "" })) }));
 
 const COMMANDS = ["compact", "model"];
+/** The composer's external setter, updater form included. */
+let latestSetter: ((v: string | ((cur: string) => string)) => void) | null = null;
 
 beforeEach(() => {
   localStorage.clear();
@@ -39,6 +41,7 @@ function renderComposer(props: Partial<React.ComponentProps<typeof PromptInput>>
     draftKey: "chat-a",
     onSetValue: (fn) => {
       setValue = (fn as unknown as () => (v: string) => void)();
+      latestSetter = setValue as unknown as typeof latestSetter;
     },
     ...props,
   };
@@ -199,41 +202,119 @@ describe("composer draft persistence", () => {
     expect(getComposerDraft("chat-a")).toBe("x");
   });
 
-  describe("paused (draftKey goes away while a server draft holds the composer)", () => {
-    it("keeps what is on screen and flushes the outgoing key's own pending text", () => {
+  describe("paused (a server draft holds the composer, or a new chat's first send is in flight)", () => {
+    /** Mount paused on chat-a and hand in an opened server draft, the way Chat.tsx's prefill does. */
+    function openServerDraft(text = "the server draft") {
+      const c = renderComposer({ draftPaused: true });
+      c.setValue(text);
+      return c;
+    }
+
+    it("mounting paused shows the handed-in draft, not the chat's stored text", () => {
+      saveComposerDraft("chat-a", "a's own");
+      const c = renderComposer({ draftPaused: true });
+      expect(c.textarea().value).toBe("");
+      c.setValue("the server draft");
+      expect(c.textarea().value).toBe("the server draft");
+    });
+
+    it("pausing keeps what is on screen and flushes the key's own pending text", () => {
       const c = renderComposer();
       c.type("typed in a");
-      c.rerender({ draftKey: undefined });
+      c.rerender({ draftPaused: true });
       expect(c.textarea().value).toBe("typed in a");
       expect(getComposerDraft("chat-a")).toBe("typed in a");
     });
 
     it("persists nothing while paused, and leaves the chat's own kept text alone", () => {
       saveComposerDraft("chat-a", "a's own");
-      const c = renderComposer();
-      c.rerender({ draftKey: undefined });
-      c.setValue("the server draft");
+      const c = openServerDraft();
       c.type("the server draft, edited");
       settle();
       expect(c.textarea().value).toBe("the server draft, edited");
       expect(getComposerDraft("chat-a")).toBe("a's own");
     });
 
-    it("after a send, coming back brings the chat's own kept text into the empty composer", () => {
+    it("resuming after a send with nothing typed brings the chat's own kept text back", () => {
       saveComposerDraft("chat-a", "a's own");
-      const c = renderComposer({ draftKey: undefined });
-      c.setValue("the server draft");
+      const c = openServerDraft();
       fireEvent.keyDown(c.textarea(), { key: "Enter" });
       expect(c.onSend).toHaveBeenCalledWith("the server draft", undefined);
-      c.rerender({ draftKey: "chat-a" });
+      c.rerender({ draftPaused: false });
       expect(c.textarea().value).toBe("a's own");
       expect(getComposerDraft("chat-a")).toBe("a's own");
     });
 
-    it("leaving the draft's view for another chat shows that chat's text, and never stores the server draft under it", () => {
-      const c = renderComposer({ draftKey: undefined });
-      c.setValue("the server draft");
+    it("a follow-up typed while the draft's send was in flight survives the resume and is saved", () => {
+      saveComposerDraft("chat-a", "a's own, older");
+      const c = openServerDraft();
+      fireEvent.keyDown(c.textarea(), { key: "Enter" });
+      c.type("the follow-up");
+      c.rerender({ draftPaused: false });
+      expect(c.textarea().value).toBe("the follow-up");
+      settle();
+      expect(getComposerDraft("chat-a")).toBe("the follow-up");
+    });
+
+    it("an edited draft is the user's: it stays when the hold is released in place, and is saved", () => {
+      saveComposerDraft("chat-a", "a's own");
+      const c = openServerDraft();
+      c.type("the server draft, edited");
+      c.rerender({ draftPaused: false });
+      expect(c.textarea().value).toBe("the server draft, edited");
+      settle();
+      expect(getComposerDraft("chat-a")).toBe("the server draft, edited");
+    });
+
+    it("an untouched draft gives way to the chat's own text when the hold is released in place", () => {
+      saveComposerDraft("chat-a", "a's own");
+      const c = openServerDraft();
+      c.rerender({ draftPaused: false });
+      expect(c.textarea().value).toBe("a's own");
+      settle();
+      expect(getComposerDraft("chat-a")).toBe("a's own");
+    });
+
+    it("leaving an untouched draft for another chat shows that chat's text and stores the draft nowhere", () => {
+      saveComposerDraft("chat-b", "b's own");
+      const c = openServerDraft();
+      // Chat.tsx moves the key first and releases the hold a commit later.
       c.rerender({ draftKey: "chat-b" });
+      expect(c.textarea().value).toBe("b's own");
+      c.rerender({ draftPaused: false });
+      expect(c.textarea().value).toBe("b's own");
+      settle();
+      expect(getComposerDraft("chat-a")).toBe("");
+      expect(getComposerDraft("chat-b")).toBe("b's own");
+    });
+
+    it("leaving with a follow-up typed during the pause saves it under the chat it was typed in, not the next one", () => {
+      const c = openServerDraft();
+      fireEvent.keyDown(c.textarea(), { key: "Enter" });
+      c.type("typed in a");
+      c.rerender({ draftKey: "chat-b" });
+      expect(c.textarea().value).toBe("");
+      c.rerender({ draftPaused: false });
+      settle();
+      expect(getComposerDraft("chat-a")).toBe("typed in a");
+      expect(getComposerDraft("chat-b")).toBe("");
+    });
+
+    it("a click building on the draft (updater form) does not move the baseline", () => {
+      const c = openServerDraft();
+      act(() => latestSetter!((cur: string) => `${cur} plus a chip`));
+      c.rerender({ draftPaused: false });
+      expect(c.textarea().value).toBe("the server draft plus a chip");
+    });
+
+    it("pausing for an in-flight new-chat send settles the slot as emptied by that send", () => {
+      saveComposerDraft("new", "start the chat");
+      const c = renderComposer({ draftKey: "new" });
+      // Send and pause land in one commit, as Chat.tsx's setStreaming does.
+      fireEvent.keyDown(c.textarea(), { key: "Enter" });
+      c.rerender({ draftPaused: true });
+      expect(getComposerDraft("new")).toBe("");
+      c.rerender({ draftKey: "chat-new-id", draftPaused: false });
       expect(c.textarea().value).toBe("");
       settle();
       expect(localStorage.getItem("callboard-composer-drafts")).toBeNull();

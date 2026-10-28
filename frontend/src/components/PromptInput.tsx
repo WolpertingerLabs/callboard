@@ -147,17 +147,27 @@ interface Props {
    * change of key is a change of chat: the outgoing text is saved under the
    * old key and the incoming chat's own text — or nothing — replaces it.
    * Text only; attachments are neither saved nor swapped.
-   *
-   * Going *to* absent is not a switch but a pause: what is on screen stays,
-   * and the outgoing key's stored text is left as it was. Chat.tsx pauses
-   * while an opened Staging draft holds the composer — that text belongs to
-   * the server draft, and a local copy would outlive the hold that lets a
-   * send retire it. Coming *back* from absent is a load like any other: the
-   * hold only ends on a send (the composer is already empty) or on leaving
-   * the draft's view, and either way the chat's own kept text is what belongs
-   * on screen.
    */
   draftKey?: string;
+  /**
+   * Stop saving to {@link Props.draftKey} for now, without leaving it. What is
+   * on screen stays, and the key's stored text is left as it was.
+   *
+   * Chat.tsx pauses while an opened Staging draft holds the composer — that
+   * text is the server draft's, and a local copy would outlive the hold that
+   * lets a send retire it — and while a new chat's first send is in flight.
+   *
+   * What a pause holds is told apart by a baseline: the last whole value
+   * handed in through `onSetValue` while paused (the draft being opened).
+   * Composed text that is non-empty and differs from it is the user's — a
+   * follow-up typed after a send emptied the composer, or an edit to the
+   * draft — and belongs to the chat it was typed in. So when the pause ends
+   * on the same key, user text stays and is saved, and anything else (the
+   * untouched draft, an empty composer) gives way to the chat's stored text.
+   * A key change during a pause is still a chat switch: user text is saved
+   * under the outgoing key, and the incoming chat's text replaces it.
+   */
+  draftPaused?: boolean;
 }
 
 /** How long typing has to pause before the draft is written to storage. */
@@ -181,18 +191,25 @@ export default function PromptInput({
   onInsertAtCaret,
   onAddImages,
   draftKey,
+  draftPaused = false,
 }: Props) {
   // The stored draft, read once for the first render. Later chats load theirs
-  // in the `draftKey` effect below.
-  const [initialDraft] = useState(() => (draftKey ? getComposerDraft(draftKey) : ""));
+  // in the `draftKey` effect below. Mounting paused shows nothing of it: the
+  // pause is there for a value about to be handed in.
+  const [initialDraft] = useState(() => (draftKey && !draftPaused ? getComposerDraft(draftKey) : ""));
   const [value, setValue] = useState(initialDraft);
   /**
-   * The `draftKey` that `value` belongs to. Trails the prop for one commit on
-   * a chat switch, and that lag is the guard: until the incoming chat's text
-   * has been loaded, the save effect sees a mismatch and stays out, rather
-   * than writing the outgoing chat's text under the incoming chat's key.
+   * The key the save effect may write `value` under: `draftKey`, or nothing
+   * while paused. Trails the props for one commit on every transition, and
+   * that lag is the guard: until the incoming chat's text has been loaded,
+   * the save effect sees a mismatch and stays out, rather than writing the
+   * outgoing text under the incoming key.
    */
-  const [valueKey, setValueKey] = useState(draftKey);
+  const [valueKey, setValueKey] = useState(draftPaused ? undefined : draftKey);
+  /** The key and pause state the transition effect last settled on. */
+  const settledRef = useRef({ key: draftKey, paused: draftPaused });
+  /** What a pause is holding that isn't the user's — see {@link Props.draftPaused}. */
+  const pauseBaselineRef = useRef<string | null>(draftPaused ? "" : null);
   /**
    * The text last loaded from storage, and under which key — until the first
    * write that differs from it. Saving it straight back would only bump its
@@ -299,6 +316,10 @@ export default function PromptInput({
       // commits after the last one.
       const next = typeof update === "function" ? update(composePrompt(activeCommandRef.current, valueRef.current)) : update;
       const { command, rest } = parseLeadingCommand(next, slashCommands);
+      // A whole value handed in while paused is what the pause holds (an
+      // opened draft). The updater form is a click building on what is
+      // already here, so it does not move the baseline.
+      if (typeof update === "string" && pauseBaselineRef.current !== null) pauseBaselineRef.current = composePrompt(command, rest);
       changeActiveCommand(command);
       setValue(rest);
       // The caret mirror has to move with the value it mirrors. Left behind, it
@@ -388,7 +409,7 @@ export default function PromptInput({
    * message back.
    */
   useEffect(() => {
-    if (!draftKey || valueKey !== draftKey) return;
+    if (!draftKey || draftPaused || valueKey !== draftKey) return;
     const text = composePrompt(activeCommand, value);
     if (pendingDraftRef.current?.key !== draftKey) flushDraft();
     else clearTimeout(pendingDraftRef.current.timer);
@@ -404,7 +425,7 @@ export default function PromptInput({
       return;
     }
     pendingDraftRef.current = { key: draftKey, text, timer: setTimeout(flushDraft, DRAFT_SAVE_DELAY_MS) };
-  }, [value, activeCommand, draftKey, valueKey, flushDraft]);
+  }, [value, activeCommand, draftKey, draftPaused, valueKey, flushDraft]);
 
   // The debounce must not cost the last keystrokes before a reload, a closed
   // tab, a backgrounded phone, or the composer unmounting.
@@ -422,27 +443,72 @@ export default function PromptInput({
   }, [flushDraft]);
 
   /**
-   * Another chat: put the outgoing text away and bring the incoming chat's
-   * back. A layout effect so the old chat's text is never painted under the
-   * new chat. The flush comes first, so A → B → A inside the debounce reads
-   * back what was typed in A rather than the write before it.
+   * Bring `key`'s stored text into the composer, replacing what is there. The
+   * pause baseline follows it: loaded text is the chat's own, not the user's
+   * new typing.
+   */
+  const loadDraft = useCallback(
+    (key: string, paused: boolean) => {
+      clearText();
+      setAutocompleteDismissed(false);
+      const stored = getComposerDraft(key);
+      loadedDraftRef.current = { key, text: stored };
+      pauseBaselineRef.current = paused ? stored : null;
+      if (stored) applyExternalValue(stored);
+      setValueKey(paused ? undefined : key);
+    },
+    [clearText, applyExternalValue],
+  );
+
+  /**
+   * Key and pause transitions — a layout effect, so the outgoing text is
+   * never painted under the incoming chat.
    *
-   * A key going away pauses instead — see {@link Props.draftKey}.
+   * - Another chat: put the outgoing text away and bring the incoming chat's
+   *   back. The flush comes first, so A → B → A inside the debounce reads back
+   *   what was typed in A rather than the write before it. Out of a pause,
+   *   "the outgoing text" is only the user's part of it.
+   * - Pausing: settle the key with what is on screen right now (the send that
+   *   pauses a new chat has just emptied it), then hold.
+   * - Resuming: see {@link Props.draftPaused}.
    */
   useLayoutEffect(() => {
-    if (valueKey === draftKey) return;
-    flushDraft();
-    setValueKey(draftKey);
-    if (!draftKey) {
-      loadedDraftRef.current = null;
+    const prev = settledRef.current;
+    if (prev.key === draftKey && prev.paused === draftPaused) return;
+    settledRef.current = { key: draftKey, paused: draftPaused };
+    const composed = composePrompt(activeCommand, value);
+    const baseline = pauseBaselineRef.current;
+    const userText = prev.paused && composed !== "" && composed !== baseline;
+
+    if (prev.key !== draftKey) {
+      if (!prev.paused) flushDraft();
+      else if (userText && prev.key) saveComposerDraft(prev.key, composed);
+      if (draftKey) loadDraft(draftKey, draftPaused);
+      else {
+        clearText();
+        loadedDraftRef.current = null;
+        pauseBaselineRef.current = draftPaused ? "" : null;
+        setValueKey(undefined);
+      }
       return;
     }
-    clearText();
-    setAutocompleteDismissed(false);
-    const stored = getComposerDraft(draftKey);
-    loadedDraftRef.current = { key: draftKey, text: stored };
-    if (stored) applyExternalValue(stored);
-  }, [draftKey, valueKey, flushDraft, clearText, applyExternalValue]);
+    if (draftPaused) {
+      flushDraft();
+      const loaded = loadedDraftRef.current;
+      if (draftKey && !(loaded?.key === draftKey && loaded.text === composed)) saveComposerDraft(draftKey, composed);
+      loadedDraftRef.current = draftKey ? { key: draftKey, text: composed } : null;
+      pauseBaselineRef.current = composed;
+      setValueKey(undefined);
+      return;
+    }
+    pauseBaselineRef.current = null;
+    if (!draftKey) return;
+    if (userText) {
+      // Keep it, and let the save effect write it under the key.
+      loadedDraftRef.current = null;
+      setValueKey(draftKey);
+    } else loadDraft(draftKey, false);
+  }, [draftKey, draftPaused, value, activeCommand, flushDraft, clearText, loadDraft]);
 
   // Size the textarea to a draft that was loaded rather than typed — the same
   // autosize `handleInput` does on input, which a programmatic value skips.

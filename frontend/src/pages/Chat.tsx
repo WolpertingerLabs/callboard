@@ -3909,7 +3909,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // is the server draft's: kept locally it would come back after the
           // hold is gone, and a send then would leave the draft in Staging to
           // be sent twice. It would also overwrite this chat's own kept text.
-          draftKey={activeDraftId ? undefined : (id ?? NEW_CHAT_DRAFT_KEY)}
+          // Also paused while a new chat's first send is in flight, so the
+          // "new" slot is not loaded back into the composer between that send
+          // and the redirect to the chat it creates.
+          draftKey={id ?? NEW_CHAT_DRAFT_KEY}
+          draftPaused={!!activeDraftId || (!id && streaming)}
           keywords={keywords}
           onKeywordCreated={handleKeywordCreated}
           chatId={id}
