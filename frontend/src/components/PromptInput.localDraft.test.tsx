@@ -176,6 +176,70 @@ describe("composer draft persistence", () => {
     expect(getComposerDraft("chat-a")).toBe("tab closing");
   });
 
+  it("viewing a chat does not rewrite its draft (no timestamp bump)", () => {
+    saveComposerDraft("chat-a", "untouched", 1_000);
+    saveComposerDraft("chat-b", "also untouched", 2_000);
+    const c = renderComposer();
+    settle();
+    c.rerender({ draftKey: "chat-b" });
+    settle();
+    const stored = JSON.parse(localStorage.getItem("callboard-composer-drafts")!);
+    expect(stored["chat-a"].at).toBe(1_000);
+    expect(stored["chat-b"].at).toBe(2_000);
+  });
+
+  it("an edit reverted back to the loaded text is still saved", () => {
+    saveComposerDraft("chat-a", "x");
+    const c = renderComposer();
+    c.type("xy");
+    settle();
+    expect(getComposerDraft("chat-a")).toBe("xy");
+    c.type("x");
+    settle();
+    expect(getComposerDraft("chat-a")).toBe("x");
+  });
+
+  describe("paused (draftKey goes away while a server draft holds the composer)", () => {
+    it("keeps what is on screen and flushes the outgoing key's own pending text", () => {
+      const c = renderComposer();
+      c.type("typed in a");
+      c.rerender({ draftKey: undefined });
+      expect(c.textarea().value).toBe("typed in a");
+      expect(getComposerDraft("chat-a")).toBe("typed in a");
+    });
+
+    it("persists nothing while paused, and leaves the chat's own kept text alone", () => {
+      saveComposerDraft("chat-a", "a's own");
+      const c = renderComposer();
+      c.rerender({ draftKey: undefined });
+      c.setValue("the server draft");
+      c.type("the server draft, edited");
+      settle();
+      expect(c.textarea().value).toBe("the server draft, edited");
+      expect(getComposerDraft("chat-a")).toBe("a's own");
+    });
+
+    it("after a send, coming back brings the chat's own kept text into the empty composer", () => {
+      saveComposerDraft("chat-a", "a's own");
+      const c = renderComposer({ draftKey: undefined });
+      c.setValue("the server draft");
+      fireEvent.keyDown(c.textarea(), { key: "Enter" });
+      expect(c.onSend).toHaveBeenCalledWith("the server draft", undefined);
+      c.rerender({ draftKey: "chat-a" });
+      expect(c.textarea().value).toBe("a's own");
+      expect(getComposerDraft("chat-a")).toBe("a's own");
+    });
+
+    it("leaving the draft's view for another chat shows that chat's text, and never stores the server draft under it", () => {
+      const c = renderComposer({ draftKey: undefined });
+      c.setValue("the server draft");
+      c.rerender({ draftKey: "chat-b" });
+      expect(c.textarea().value).toBe("");
+      settle();
+      expect(localStorage.getItem("callboard-composer-drafts")).toBeNull();
+    });
+  });
+
   it("persists nothing without a draftKey", () => {
     const c = renderComposer({ draftKey: undefined });
     c.type("ephemeral");

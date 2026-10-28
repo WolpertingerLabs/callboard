@@ -147,6 +147,15 @@ interface Props {
    * change of key is a change of chat: the outgoing text is saved under the
    * old key and the incoming chat's own text — or nothing — replaces it.
    * Text only; attachments are neither saved nor swapped.
+   *
+   * Going *to* absent is not a switch but a pause: what is on screen stays,
+   * and the outgoing key's stored text is left as it was. Chat.tsx pauses
+   * while an opened Staging draft holds the composer — that text belongs to
+   * the server draft, and a local copy would outlive the hold that lets a
+   * send retire it. Coming *back* from absent is a load like any other: the
+   * hold only ends on a send (the composer is already empty) or on leaving
+   * the draft's view, and either way the chat's own kept text is what belongs
+   * on screen.
    */
   draftKey?: string;
 }
@@ -184,6 +193,12 @@ export default function PromptInput({
    * than writing the outgoing chat's text under the incoming chat's key.
    */
   const [valueKey, setValueKey] = useState(draftKey);
+  /**
+   * The text last loaded from storage, and under which key — until the first
+   * write that differs from it. Saving it straight back would only bump its
+   * timestamp, and with it the LRU order, every time a chat is merely viewed.
+   */
+  const loadedDraftRef = useRef<{ key: string; text: string } | null>(draftKey ? { key: draftKey, text: initialDraft } : null);
   const [images, setImages] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -377,6 +392,12 @@ export default function PromptInput({
     const text = composePrompt(activeCommand, value);
     if (pendingDraftRef.current?.key !== draftKey) flushDraft();
     else clearTimeout(pendingDraftRef.current.timer);
+    const loaded = loadedDraftRef.current;
+    if (loaded?.key === draftKey && loaded.text === text) {
+      pendingDraftRef.current = null;
+      return;
+    }
+    loadedDraftRef.current = null;
     if (!text) {
       pendingDraftRef.current = null;
       saveComposerDraft(draftKey, "");
@@ -405,14 +426,21 @@ export default function PromptInput({
    * back. A layout effect so the old chat's text is never painted under the
    * new chat. The flush comes first, so A → B → A inside the debounce reads
    * back what was typed in A rather than the write before it.
+   *
+   * A key going away pauses instead — see {@link Props.draftKey}.
    */
   useLayoutEffect(() => {
     if (valueKey === draftKey) return;
     flushDraft();
     setValueKey(draftKey);
+    if (!draftKey) {
+      loadedDraftRef.current = null;
+      return;
+    }
     clearText();
     setAutocompleteDismissed(false);
-    const stored = draftKey ? getComposerDraft(draftKey) : "";
+    const stored = getComposerDraft(draftKey);
+    loadedDraftRef.current = { key: draftKey, text: stored };
     if (stored) applyExternalValue(stored);
   }, [draftKey, valueKey, flushDraft, clearText, applyExternalValue]);
 

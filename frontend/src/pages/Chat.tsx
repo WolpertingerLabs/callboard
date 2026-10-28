@@ -3904,7 +3904,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // "new" slot: there is no id to tell them apart, and whatever is in
           // it is on its way to becoming a chat — the send that creates one
           // empties the slot, and the created chat starts with its own.
-          draftKey={id ?? NEW_CHAT_DRAFT_KEY}
+          //
+          // Paused while an opened Staging draft holds the composer. Its text
+          // is the server draft's: kept locally it would come back after the
+          // hold is gone, and a send then would leave the draft in Staging to
+          // be sent twice. It would also overwrite this chat's own kept text.
+          draftKey={activeDraftId ? undefined : (id ?? NEW_CHAT_DRAFT_KEY)}
           keywords={keywords}
           onKeywordCreated={handleKeywordCreated}
           chatId={id}
