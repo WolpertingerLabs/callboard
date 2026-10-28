@@ -123,6 +123,24 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
 
   if (action.type === "user_question") {
     const questions = (action.questions || []) as Question[];
+    const isAnswered = (qi: number) => {
+      const val = answers[qi];
+      return Array.isArray(val) ? val.length > 0 : !!val;
+    };
+    const submitAnswers = () => {
+      // The SDK schema expects answers as Record<questionText, string>,
+      // with multi-select answers joined into a comma-separated string.
+      const formatted: Record<string, string> = {};
+      questions.forEach((q, qi) => {
+        const val = answers[qi];
+        if (Array.isArray(val)) {
+          if (val.length > 0) formatted[q.question] = val.join(", ");
+        } else if (val) {
+          formatted[q.question] = val;
+        }
+      });
+      onRespond(true, { answers: formatted });
+    };
     return (
       <div style={questionPanelStyle}>
         <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8, flexShrink: 0 }}>{agentName} is asking</div>
@@ -166,28 +184,21 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
                     setAnswers((prev) => ({ ...prev, [qi]: e.target.value }));
                   }
                 }}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // The button still allows a partial submit on purpose; Enter
+                  // is a shortcut, so it only fires once every question has an
+                  // answer — a stray Enter must not skip the rest.
+                  if (questions.every((_, i) => isAnswered(i))) submitAnswers();
+                }}
                 style={{ ...inputStyle, marginTop: 4 }}
               />
             </div>
           ))}
         </div>
-        <button
-          onClick={() => {
-            // The SDK schema expects answers as Record<questionText, string>,
-            // with multi-select answers joined into a comma-separated string.
-            const formatted: Record<string, string> = {};
-            questions.forEach((q, qi) => {
-              const val = answers[qi];
-              if (Array.isArray(val)) {
-                if (val.length > 0) formatted[q.question] = val.join(", ");
-              } else if (val) {
-                formatted[q.question] = val;
-              }
-            });
-            onRespond(true, { answers: formatted });
-          }}
-          style={{ ...allowBtn, flexShrink: 0 }}
-        >
+        <button onClick={submitAnswers} style={{ ...allowBtn, flexShrink: 0 }}>
           Submit
         </button>
       </div>
