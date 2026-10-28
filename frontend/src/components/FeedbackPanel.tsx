@@ -123,6 +123,25 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
 
   if (action.type === "user_question") {
     const questions = (action.questions || []) as Question[];
+    // A single-select answer is the clicked label or the Other text, whichever
+    // came last. A multi-select answer keeps only clicked labels in `answers`;
+    // the Other text is its own entry, appended here.
+    const answerFor = (qi: number): string | undefined => {
+      const val = answers[qi];
+      if (!questions[qi].multiSelect) return (val as string | undefined) || undefined;
+      const entries = [...((val as string[] | undefined) || []), ...(otherText[qi]?.trim() ? [otherText[qi]] : [])];
+      return entries.length > 0 ? entries.join(", ") : undefined;
+    };
+    const submitAnswers = () => {
+      // The SDK schema expects answers as Record<questionText, string>,
+      // with multi-select answers joined into a comma-separated string.
+      const formatted: Record<string, string> = {};
+      questions.forEach((q, qi) => {
+        const val = answerFor(qi);
+        if (val) formatted[q.question] = val;
+      });
+      onRespond(true, { answers: formatted });
+    };
     return (
       <div style={questionPanelStyle}>
         <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8, flexShrink: 0 }}>{agentName} is asking</div>
@@ -144,6 +163,9 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
                         }));
                       } else {
                         setAnswers((prev) => ({ ...prev, [qi]: opt.label }));
+                        // The option replaces the Other answer, so the box must
+                        // not keep showing text that is no longer submitted.
+                        setOtherText((prev) => ({ ...prev, [qi]: "" }));
                       }
                     }}
                     style={{
@@ -161,33 +183,36 @@ function FeedbackContent({ action, onRespond, agentName = "Claude" }: Props) {
                 placeholder="Other..."
                 value={otherText[qi] || ""}
                 onChange={(e) => {
-                  setOtherText((prev) => ({ ...prev, [qi]: e.target.value }));
-                  if (e.target.value) {
-                    setAnswers((prev) => ({ ...prev, [qi]: e.target.value }));
+                  const value = e.target.value;
+                  const previous = otherText[qi] || "";
+                  setOtherText((prev) => ({ ...prev, [qi]: value }));
+                  if (q.multiSelect) return;
+                  if (value) {
+                    setAnswers((prev) => ({ ...prev, [qi]: value }));
+                  } else if (answers[qi] === previous) {
+                    // Emptying the box withdraws the Other answer it gave.
+                    setAnswers((prev) => {
+                      const next = { ...prev };
+                      delete next[qi];
+                      return next;
+                    });
                   }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // The button still allows a partial submit on purpose; Enter
+                  // is a shortcut, so it only fires once every question has an
+                  // answer — a stray Enter must not skip the rest.
+                  if (questions.every((_, i) => answerFor(i))) submitAnswers();
                 }}
                 style={{ ...inputStyle, marginTop: 4 }}
               />
             </div>
           ))}
         </div>
-        <button
-          onClick={() => {
-            // The SDK schema expects answers as Record<questionText, string>,
-            // with multi-select answers joined into a comma-separated string.
-            const formatted: Record<string, string> = {};
-            questions.forEach((q, qi) => {
-              const val = answers[qi];
-              if (Array.isArray(val)) {
-                if (val.length > 0) formatted[q.question] = val.join(", ");
-              } else if (val) {
-                formatted[q.question] = val;
-              }
-            });
-            onRespond(true, { answers: formatted });
-          }}
-          style={{ ...allowBtn, flexShrink: 0 }}
-        >
+        <button onClick={submitAnswers} style={{ ...allowBtn, flexShrink: 0 }}>
           Submit
         </button>
       </div>
