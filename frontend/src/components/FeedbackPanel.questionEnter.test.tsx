@@ -88,6 +88,66 @@ it("Enter with an unanswered question does not submit a partial answer", () => {
   expect(onRespond).toHaveBeenCalledWith(true, { answers: { "Which colour?": "Green", "Which size?": "Large" } });
 });
 
+it("clearing the Other box withdraws its answer", () => {
+  const onRespond = vi.fn();
+  render(<FeedbackPanel action={oneQuestion} onRespond={onRespond} />);
+  const other = screen.getByPlaceholderText("Other...");
+  fireEvent.change(other, { target: { value: "G" } });
+  fireEvent.change(other, { target: { value: "" } });
+  fireEvent.keyDown(other, { key: "Enter" });
+  expect(onRespond).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+  expect(onRespond).toHaveBeenCalledWith(true, { answers: {} });
+});
+
+it("clearing the Other box keeps an option clicked after it", () => {
+  const onRespond = vi.fn();
+  render(<FeedbackPanel action={oneQuestion} onRespond={onRespond} />);
+  const other = screen.getByPlaceholderText("Other...") as HTMLInputElement;
+  fireEvent.change(other, { target: { value: "G" } });
+  fireEvent.click(screen.getByRole("button", { name: "Blue" }));
+  fireEvent.change(other, { target: { value: "" } });
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+  expect(onRespond).toHaveBeenCalledWith(true, { answers: { "Which colour?": "Blue" } });
+});
+
+it("clicking a single-select option clears the Other box it replaced", () => {
+  const onRespond = vi.fn();
+  render(<FeedbackPanel action={oneQuestion} onRespond={onRespond} />);
+  const other = screen.getByPlaceholderText("Other...") as HTMLInputElement;
+  fireEvent.change(other, { target: { value: "Green" } });
+  fireEvent.click(screen.getByRole("button", { name: "Blue" }));
+  expect(other.value).toBe("");
+  fireEvent.keyDown(other, { key: "Enter" });
+  expect(onRespond).toHaveBeenCalledWith(true, { answers: { "Which colour?": "Blue" } });
+});
+
+it("on a multi-select question, Other is an extra entry alongside clicked options", () => {
+  const onRespond = vi.fn();
+  const multi = {
+    type: "user_question" as const,
+    questions: [{ question: "Which toppings?", multiSelect: true, options: [{ label: "A" }, { label: "Olive" }] }],
+  };
+  render(<FeedbackPanel action={multi} onRespond={onRespond} />);
+  const other = screen.getByPlaceholderText("Other...") as HTMLInputElement;
+  // "Avocado" contains "A": a substring check would show option A as selected.
+  fireEvent.change(other, { target: { value: "Avocado" } });
+  const a = screen.getByRole("button", { name: "A" });
+  expect(a.style.background).toBe("var(--surface)");
+  fireEvent.click(a);
+  fireEvent.click(screen.getByRole("button", { name: "Olive" }));
+  expect(a.style.background).toBe("var(--accent-light)");
+  expect(other.value).toBe("Avocado");
+  fireEvent.keyDown(other, { key: "Enter" });
+  expect(onRespond).toHaveBeenLastCalledWith(true, { answers: { "Which toppings?": "A, Olive, Avocado" } });
+
+  // Clearing Other leaves the options; deselecting works on the real list.
+  fireEvent.change(other, { target: { value: "" } });
+  fireEvent.click(a);
+  fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+  expect(onRespond).toHaveBeenLastCalledWith(true, { answers: { "Which toppings?": "Olive" } });
+});
+
 it("typing in the Other box still replaces a selected option", () => {
   const onRespond = vi.fn();
   render(<FeedbackPanel action={oneQuestion} onRespond={onRespond} />);
