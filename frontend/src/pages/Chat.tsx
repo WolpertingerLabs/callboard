@@ -100,6 +100,7 @@ import {
   addRecentDirectory,
   getMaxTurns,
   getDefaultPermissions as getLocalDefaultPermissions,
+  NEW_CHAT_DRAFT_KEY,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -3899,6 +3900,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           onSetValue={setPromptInputSetValue}
           onInsertAtCaret={setPromptInputInsertAtCaret}
           onAddImages={setPromptInputAddImages}
+          // Unsent text is kept per chat. Every compose screen shares one
+          // "new" slot: there is no id to tell them apart, and whatever is in
+          // it is on its way to becoming a chat — the send that creates one
+          // empties the slot, and the created chat starts with its own.
+          draftKey={id ?? NEW_CHAT_DRAFT_KEY}
           keywords={keywords}
           onKeywordCreated={handleKeywordCreated}
           chatId={id}

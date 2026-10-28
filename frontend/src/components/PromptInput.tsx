@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
 import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces } from "lucide-react";
 import ImageUpload, { validateAttachmentFiles } from "./ImageUpload";
 import SlashCommandAutocomplete from "./SlashCommandAutocomplete";
@@ -17,6 +17,7 @@ import {
   type KeywordMatches,
 } from "../utils/keywordTrigger";
 import type { Keyword } from "../api";
+import { getComposerDraft, saveComposerDraft } from "../utils/localStorage";
 
 export type PromptMenuItem = MenuItem;
 
@@ -138,7 +139,20 @@ interface Props {
    * through this.
    */
   onAddImages?: (add: (files: File[]) => void) => void;
+  /**
+   * Where the unsent text is kept between visits: the chat id, or a fixed key
+   * for the new-chat composer. Absent, nothing is persisted.
+   *
+   * The composer is not remounted when the page moves to another chat, so a
+   * change of key is a change of chat: the outgoing text is saved under the
+   * old key and the incoming chat's own text — or nothing — replaces it.
+   * Text only; attachments are neither saved nor swapped.
+   */
+  draftKey?: string;
 }
+
+/** How long typing has to pause before the draft is written to storage. */
+export const DRAFT_SAVE_DELAY_MS = 300;
 
 export default function PromptInput({
   onSend,
@@ -157,8 +171,19 @@ export default function PromptInput({
   onKeywordCreated,
   onInsertAtCaret,
   onAddImages,
+  draftKey,
 }: Props) {
-  const [value, setValue] = useState("");
+  // The stored draft, read once for the first render. Later chats load theirs
+  // in the `draftKey` effect below.
+  const [initialDraft] = useState(() => (draftKey ? getComposerDraft(draftKey) : ""));
+  const [value, setValue] = useState(initialDraft);
+  /**
+   * The `draftKey` that `value` belongs to. Trails the prop for one commit on
+   * a chat switch, and that lag is the guard: until the incoming chat's text
+   * has been loaded, the save effect sees a mismatch and stays out, rather
+   * than writing the outgoing chat's text under the incoming chat's key.
+   */
+  const [valueKey, setValueKey] = useState(draftKey);
   const [images, setImages] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -169,10 +194,12 @@ export default function PromptInput({
   const [chipPopoverOpen, setChipPopoverOpen] = useState(false);
   // A value handed in from outside that did not chip. Held because the command
   // list it was matched against may simply not have arrived yet — see below.
-  const [unchippedValue, setUnchippedValue] = useState<string | null>(null);
+  // A restored draft starts here too: it may lead with a command, and the
+  // command list is fetched.
+  const [unchippedValue, setUnchippedValue] = useState<string | null>(initialDraft || null);
   // Caret offset in the textarea, mirrored into state because the `$keyword`
   // menu is derived at render time and the DOM's selection is not reactive.
-  const [caret, setCaret] = useState(0);
+  const [caret, setCaret] = useState(initialDraft.length);
   /**
    * The `$token` the user dismissed with Escape, or that an insertion parked
    * the caret inside — see `commitInsertion`.
@@ -307,9 +334,9 @@ export default function PromptInput({
     }
   }, [onSetValue, applyExternalValue]);
 
-  const clearComposer = useCallback(() => {
+  /** Empty the text side of the composer — prose, chip, and the menus' state over them. */
+  const clearText = useCallback(() => {
     setValue("");
-    setImages([]);
     setUnchippedValue(null);
     changeActiveCommand(null);
     setCaret(0);
@@ -319,6 +346,84 @@ export default function PromptInput({
       textareaRef.current.style.height = "auto";
     }
   }, [changeActiveCommand]);
+
+  const clearComposer = useCallback(() => {
+    clearText();
+    setImages([]);
+  }, [clearText]);
+
+  /**
+   * The draft write waiting out its debounce. It carries its own key, so it
+   * lands on the chat it was typed in whenever it fires.
+   */
+  const pendingDraftRef = useRef<{ key: string; text: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const flushDraft = useCallback(() => {
+    const pending = pendingDraftRef.current;
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingDraftRef.current = null;
+    saveComposerDraft(pending.key, pending.text);
+  }, []);
+
+  /**
+   * Save the composer's text under its chat, as the prompt string a send would
+   * produce — so a chip comes back as a chip, through the same parse a server
+   * draft takes. Empty removes the entry at once rather than after the
+   * debounce: that is the send, and a reload right after it must not bring the
+   * message back.
+   */
+  useEffect(() => {
+    if (!draftKey || valueKey !== draftKey) return;
+    const text = composePrompt(activeCommand, value);
+    if (pendingDraftRef.current?.key !== draftKey) flushDraft();
+    else clearTimeout(pendingDraftRef.current.timer);
+    if (!text) {
+      pendingDraftRef.current = null;
+      saveComposerDraft(draftKey, "");
+      return;
+    }
+    pendingDraftRef.current = { key: draftKey, text, timer: setTimeout(flushDraft, DRAFT_SAVE_DELAY_MS) };
+  }, [value, activeCommand, draftKey, valueKey, flushDraft]);
+
+  // The debounce must not cost the last keystrokes before a reload, a closed
+  // tab, a backgrounded phone, or the composer unmounting.
+  useEffect(() => {
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") flushDraft();
+    };
+    window.addEventListener("pagehide", flushDraft);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("pagehide", flushDraft);
+      document.removeEventListener("visibilitychange", onHidden);
+      flushDraft();
+    };
+  }, [flushDraft]);
+
+  /**
+   * Another chat: put the outgoing text away and bring the incoming chat's
+   * back. A layout effect so the old chat's text is never painted under the
+   * new chat. The flush comes first, so A → B → A inside the debounce reads
+   * back what was typed in A rather than the write before it.
+   */
+  useLayoutEffect(() => {
+    if (valueKey === draftKey) return;
+    flushDraft();
+    setValueKey(draftKey);
+    clearText();
+    setAutocompleteDismissed(false);
+    const stored = draftKey ? getComposerDraft(draftKey) : "";
+    if (stored) applyExternalValue(stored);
+  }, [draftKey, valueKey, flushDraft, clearText, applyExternalValue]);
+
+  // Size the textarea to a draft that was loaded rather than typed — the same
+  // autosize `handleInput` does on input, which a programmatic value skips.
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el || !el.value) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 120) + "px";
+  }, [valueKey]);
 
   const handleSend = useCallback(async () => {
     const prompt = composePrompt(activeCommand, value);
