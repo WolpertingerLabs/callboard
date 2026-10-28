@@ -262,6 +262,83 @@ export function writeStorageItem(key: string, value: string): void {
   }
 }
 
+/** `localStorage.removeItem`, ignoring an unavailable store. */
+function removeStorageItem(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Ignore localStorage errors
+  }
+}
+
+/**
+ * Unsent composer text, per chat — see {@link getComposerDraft}.
+ *
+ * Its own key rather than a field of the settings blob: it is written on
+ * (debounced) keystrokes, and every write to the blob re-serialises every
+ * preference in it.
+ */
+const COMPOSER_DRAFTS_KEY = "callboard-composer-drafts";
+/** Most drafts kept; past it the least recently edited go first. */
+export const COMPOSER_DRAFTS_MAX = 50;
+/** The new-chat composer's draft key. Not a possible chat id: `/chat/new` is that route. */
+export const NEW_CHAT_DRAFT_KEY = "new";
+/** A draft untouched this long is dropped on the next write — usually a chat since deleted. */
+export const COMPOSER_DRAFT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+interface ComposerDraftEntry {
+  text: string;
+  /** Epoch ms of the last write; what eviction orders by. */
+  at: number;
+}
+
+function readComposerDrafts(): Record<string, ComposerDraftEntry> {
+  try {
+    const parsed: unknown = JSON.parse(readStorageItem(COMPOSER_DRAFTS_KEY) ?? "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    // Shared with other bundles and hand edits: keep only well-formed entries.
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (e): e is [string, ComposerDraftEntry] => typeof e[1]?.text === "string" && e[1].text !== "" && typeof e[1]?.at === "number",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The text left unsent in a chat's composer, or "" for none.
+ *
+ * `key` is the chat id, or a fixed key for the new-chat composer. Drafts are
+ * per chat, not per `cwd`: two chats on one folder each keep their own.
+ */
+export function getComposerDraft(key: string): string {
+  return readComposerDrafts()[key]?.text ?? "";
+}
+
+/**
+ * Store (or, for "", forget) a chat's unsent composer text.
+ *
+ * Read-modify-write of the whole record, so another tab's drafts for other
+ * chats survive. Bounded on every write: entries older than
+ * {@link COMPOSER_DRAFT_MAX_AGE_MS} go, then the least recently written past
+ * {@link COMPOSER_DRAFTS_MAX}. A deleted chat's draft is never read again, and
+ * this is how it eventually leaves.
+ */
+export function saveComposerDraft(key: string, text: string, now = Date.now()): void {
+  const drafts = readComposerDrafts();
+  if (text) drafts[key] = { text, at: now };
+  else if (key in drafts) delete drafts[key];
+  else return;
+  const kept = Object.entries(drafts)
+    .filter(([, d]) => now - d.at <= COMPOSER_DRAFT_MAX_AGE_MS)
+    .sort(([, a], [, b]) => b.at - a.at)
+    .slice(0, COMPOSER_DRAFTS_MAX);
+  if (kept.length === 0) removeStorageItem(COMPOSER_DRAFTS_KEY);
+  else writeStorageItem(COMPOSER_DRAFTS_KEY, JSON.stringify(Object.fromEntries(kept)));
+}
+
 export function getDefaultPermissions(): DefaultPermissions {
   const data = getStorageData();
   return normalizePermissions(data.defaultPermissions);

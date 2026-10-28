@@ -1,3 +1,5 @@
+import { beforeEach } from "vitest";
+
 /**
  * jsdom 25 ships no `PointerEvent`, and the gap fails SILENTLY.
  *
@@ -34,3 +36,12 @@ class PointerEventShim extends MouseEvent {
 if (typeof globalThis.PointerEvent === "undefined") {
   globalThis.PointerEvent = PointerEventShim as unknown as typeof PointerEvent;
 }
+
+/**
+ * The composer keeps unsent text in localStorage per chat, and flushes it when
+ * it unmounts — so a test that types and then unmounts leaves its text for the
+ * next test's composer to restore. Every test starts with no composer drafts.
+ */
+beforeEach(() => {
+  if (typeof localStorage !== "undefined") localStorage.removeItem("callboard-composer-drafts");
+});

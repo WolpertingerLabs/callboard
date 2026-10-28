@@ -100,6 +100,7 @@ import {
   addRecentDirectory,
   getMaxTurns,
   getDefaultPermissions as getLocalDefaultPermissions,
+  NEW_CHAT_DRAFT_KEY,
   type AgentProviderKind,
   type EffortLevel,
 } from "../utils/localStorage";
@@ -3899,6 +3900,20 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           onSetValue={setPromptInputSetValue}
           onInsertAtCaret={setPromptInputInsertAtCaret}
           onAddImages={setPromptInputAddImages}
+          // Unsent text is kept per chat. Every compose screen shares one
+          // "new" slot: there is no id to tell them apart, and whatever is in
+          // it is on its way to becoming a chat — the send that creates one
+          // empties the slot, and the created chat starts with its own.
+          //
+          // Paused while an opened Staging draft holds the composer. Its text
+          // is the server draft's: kept locally it would come back after the
+          // hold is gone, and a send then would leave the draft in Staging to
+          // be sent twice. It would also overwrite this chat's own kept text.
+          // Also paused while a new chat's first send is in flight, so the
+          // "new" slot is not loaded back into the composer between that send
+          // and the redirect to the chat it creates.
+          draftKey={id ?? NEW_CHAT_DRAFT_KEY}
+          draftPaused={!!activeDraftId || (!id && streaming)}
           keywords={keywords}
           onKeywordCreated={handleKeywordCreated}
           chatId={id}
