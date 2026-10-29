@@ -22,24 +22,28 @@ interface Props {
   highlightedIndex: number;
   onHighlight: (index: number) => void;
   onSelect: (keyword: Keyword) => void;
+  /** DOM id of the listbox; option ids derive from it via {@link keywordOptionId}. */
+  listboxId: string;
 }
+
+/** DOM id of row `index`, for the textarea's `aria-activedescendant`. */
+export const keywordOptionId = (listboxId: string, index: number) => `${listboxId}-${index}`;
 
 /**
  * The `$keyword` dropdown — visually a sibling of `SlashCommandAutocomplete`,
  * anchored above the composer field with the same tokens and header row.
  *
- * The one thing it adds is a *highlight*, which the slash menu has no concept
- * of. That difference is load-bearing: the slash menu is click-or-type-through,
- * whereas keyword insertion is meant to be driven from the keyboard (Tab/Enter),
- * so there has to be a current row for those keys to act on — and, crucially,
- * a state in which there is *not* one. See `PromptInput`'s `keywordHighlight`
+ * Both menus have a highlight that the arrow keys move, but they differ in
+ * the default: keyword insertion is meant to be driven from the keyboard
+ * (Tab/Enter), so a typed query highlights the top row — and, crucially, there
+ * is a state in which nothing is highlighted. See `PromptInput`'s `keywordHighlight`
  * for why a bare `$` deliberately highlights nothing.
  *
  * Renders nothing when there are no matches. That is the last guard in the
  * trigger chain: it is what makes `$HOME` and `$PATH` inert on an install with
  * no keyword of that name, rather than showing an empty box.
  */
-export default function KeywordAutocomplete({ matches, totalMatches, highlightedIndex, onHighlight, onSelect }: Props) {
+export default function KeywordAutocomplete({ matches, totalMatches, highlightedIndex, onHighlight, onSelect, listboxId }: Props) {
   const highlightedRef = useRef<HTMLButtonElement | null>(null);
 
   /**
@@ -91,18 +95,27 @@ export default function KeywordAutocomplete({ matches, totalMatches, highlighted
         Keywords ({totalMatches > matches.length ? `${matches.length} of ${totalMatches}` : matches.length})
       </div>
 
+      <div role="listbox" id={listboxId} aria-label="Keywords">
       {matches.map((keyword, index) => {
         const isHighlighted = index === highlightedIndex;
         return (
           <button
             key={keyword.name}
+            id={keywordOptionId(listboxId, index)}
+            role="option"
+            aria-selected={isHighlighted}
             ref={isHighlighted ? highlightedRef : undefined}
             // Insertion has to survive the click without the textarea losing
             // focus first — mousedown-preventDefault keeps the caret where the
             // token is, so the replacement lands in the right place.
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => onSelect(keyword)}
-            onMouseEnter={() => onHighlight(index)}
+            // Move, not enter: scrolling the list under a resting pointer
+            // fires mouseenter on whatever row slides beneath it, which would
+            // yank the highlight away from the row the arrow keys just chose.
+            onMouseMove={() => {
+              if (!isHighlighted) onHighlight(index);
+            }}
             style={{
               width: "100%",
               padding: "8px 12px",
@@ -147,6 +160,7 @@ export default function KeywordAutocomplete({ matches, totalMatches, highlighted
           </button>
         );
       })}
+      </div>
     </div>
   );
 }

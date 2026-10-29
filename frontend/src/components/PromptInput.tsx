@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useId } from "react";
 import { ArrowUp, Paperclip, Edit, ImageIcon, Menu, Braces } from "lucide-react";
 import ImageUpload, { validateAttachmentFiles } from "./ImageUpload";
-import SlashCommandAutocomplete from "./SlashCommandAutocomplete";
-import KeywordAutocomplete from "./KeywordAutocomplete";
+import SlashCommandAutocomplete, { slashOptionId } from "./SlashCommandAutocomplete";
+import KeywordAutocomplete, { keywordOptionId } from "./KeywordAutocomplete";
+import { matchSlashCommands } from "../utils/commands";
 import SaveKeywordModal from "./SaveKeywordModal";
 import CommandChip from "./CommandChip";
 import MenuRow, { type MenuItem } from "./MenuRow";
@@ -67,6 +68,9 @@ export function stripLeadingCommandToken(text: string): string {
   const match = /^\s*\/\S*[ \t]?/.exec(text);
   return match ? text.slice(match[0].length) : text;
 }
+
+/** The `/` menu's rows while it is closed — one shared array, not a fresh `[]` per render. */
+const NO_COMMAND_MATCHES: string[] = [];
 
 interface Props {
   onSend: (prompt: string, images?: File[]) => void;
@@ -224,6 +228,12 @@ export default function PromptInput({
   const [dragActive, setDragActive] = useState(false);
   const [focused, setFocused] = useState(false);
   const [autocompleteDismissed, setAutocompleteDismissed] = useState(false);
+  /**
+   * The `/` menu row the arrow keys (or the pointer) last chose, or -1 for
+   * none. Unlike the keyword menu there is no non-empty default — see
+   * `commandHighlight` below.
+   */
+  const [commandHighlightOverride, setCommandHighlightOverride] = useState(-1);
   const [menuOpen, setMenuOpen] = useState(false);
   // The one command currently held as a chip. Picking a second replaces it.
   const [activeCommand, setActiveCommand] = useState<string | null>(null);
@@ -335,6 +345,7 @@ export default function PromptInput({
       // it either, which is the whole reason to just keep the two in step.
       setCaret(rest.length);
       setAutocompleteDismissed(false);
+      setCommandHighlightOverride(-1);
       // Nothing matched — but `slashCommands` is fetched, and the app restores
       // a router draft on the render right after it hands out this setter, so
       // "no match" here usually means "the list is still in flight" rather than
@@ -382,6 +393,7 @@ export default function PromptInput({
     setCaret(0);
     setKeywordDismissal(null);
     setKeywordHighlightOverride(null);
+    setCommandHighlightOverride(-1);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -539,7 +551,32 @@ export default function PromptInput({
     if (showAutocomplete && e.key === "Escape") {
       e.preventDefault();
       setAutocompleteDismissed(true);
+      setCommandHighlightOverride(-1);
       return;
+    }
+
+    // ── Slash-command menu ──────────────────────────────────────────────
+    // Gated on there being rows on screen, not just on `showAutocomplete`:
+    // a `/`-led value whose text matches no command shows no menu, and the
+    // arrows there have to keep moving the caret through a multi-line message.
+    if (commandMenuOpen) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        // From "nothing highlighted", ArrowDown lands on the first row and
+        // ArrowUp on the last, as in the keyword menu.
+        const from = commandHighlight < 0 ? (step === 1 ? -1 : 0) : commandHighlight;
+        setCommandHighlightOverride((from + step + commandMatches.length) % commandMatches.length);
+        return;
+      }
+      // Forward Tab and Enter pick the highlighted row. With nothing
+      // highlighted, Tab falls through unprevented (focus moves on) and Enter
+      // falls through to the dismiss-without-sending branch at the bottom.
+      if ((e.key === "Tab" || e.key === "Enter") && !e.shiftKey && commandHighlight >= 0) {
+        e.preventDefault();
+        handleCommandSelect(commandMatches[commandHighlight]);
+        return;
+      }
     }
 
     // ── Keyword menu ────────────────────────────────────────────────────
@@ -686,6 +723,23 @@ export default function PromptInput({
 
   // Derive autocomplete visibility from value (no effect needed)
   const showAutocomplete = !autocompleteDismissed && value.trim().startsWith("/") && slashCommands.length > 0;
+  const commandMatches = showAutocomplete ? matchSlashCommands(slashCommands, value) : NO_COMMAND_MATCHES;
+  const commandMenuOpen = commandMatches.length > 0;
+
+  /**
+   * Which `/` row Enter and Tab act on, or -1 for none.
+   *
+   * Nothing is highlighted until the user arrows or points at a row — not even
+   * once a query is typed, which is where this differs from the keyword menu.
+   * Enter on the `/` menu has always meant "dismiss" (the next Enter sends the
+   * text verbatim), and a top-row default would turn a fully typed `/compact`
+   * + Enter into picking whatever sorts first instead. Choosing a row is the
+   * opt-in; the reset on every edit is what keeps a highlight from outliving
+   * the list it was chosen from.
+   */
+  const commandHighlight = commandHighlightOverride < commandMatches.length ? commandHighlightOverride : -1;
+  const commandListboxId = useId();
+  const keywordListboxId = useId();
 
   /**
    * The `$name` token the caret is inside, or null.
@@ -867,6 +921,7 @@ export default function PromptInput({
       setValue(rest);
       setCaret(rest.length);
       setAutocompleteDismissed(true);
+      setCommandHighlightOverride(-1);
       textareaRef.current?.focus();
     },
     [changeActiveCommand],
@@ -942,10 +997,12 @@ export default function PromptInput({
           onDragLeave={handleDragLeave}
         >
           <SlashCommandAutocomplete
-            slashCommands={slashCommands}
-            query={value}
+            matches={commandMatches}
+            highlightedIndex={commandHighlight}
+            onHighlight={setCommandHighlightOverride}
             onSelect={handleCommandSelect}
             visible={showAutocomplete}
+            listboxId={commandListboxId}
             commandDescriptions={commandDescriptions}
           />
 
@@ -957,6 +1014,7 @@ export default function PromptInput({
             highlightedIndex={keywordHighlight}
             onHighlight={setKeywordHighlightOverride}
             onSelect={selectKeyword}
+            listboxId={keywordListboxId}
           />
 
           {activeCommand && (
@@ -987,6 +1045,9 @@ export default function PromptInput({
               const nextCaret = e.target.selectionStart ?? next.length;
               setValue(next);
               setAutocompleteDismissed(false);
+              // A new value is a new `/` match list; a row chosen from the old one
+              // must not be what the next Enter picks.
+              setCommandHighlightOverride(-1);
               // Typed text is the user's; a late command list must not rewrite it.
               setUnchippedValue(null);
               setCaret(nextCaret);
@@ -1014,6 +1075,16 @@ export default function PromptInput({
               setKeywordDismissal((prev) => (dismissalApplies(prev, findKeywordToken(next, nextCaret)) ? prev : null));
             }}
             onKeyDown={handleKeyDown}
+            // The two menus are never open together (slash wins), so at most
+            // one of these names a row.
+            aria-controls={commandMenuOpen ? commandListboxId : keywordMenuOpen ? keywordListboxId : undefined}
+            aria-activedescendant={
+              commandHighlight >= 0
+                ? slashOptionId(commandListboxId, commandHighlight)
+                : keywordHighlight >= 0
+                  ? keywordOptionId(keywordListboxId, keywordHighlight)
+                  : undefined
+            }
             onKeyUp={(e) => syncCaret(e.currentTarget)}
             onSelect={(e) => syncCaret(e.currentTarget)}
             onClick={(e) => syncCaret(e.currentTarget)}

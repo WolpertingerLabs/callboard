@@ -916,3 +916,34 @@ describe("save-as-keyword modal", () => {
     expect((screen.getByText("Save as keyword").closest("button") as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe("the keyword menu's highlight is shared with assistive tech and the pointer", () => {
+  it("points aria-activedescendant at the highlighted option", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    expect(textarea.getAttribute("aria-activedescendant")).toBeNull();
+    expect(textarea.getAttribute("aria-controls")).toBe(screen.getByRole("listbox").id);
+
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    const active = textarea.getAttribute("aria-activedescendant");
+    expect(document.getElementById(active!)?.textContent).toContain("$review");
+    expect(document.getElementById(active!)?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("moves the highlight to the row under a moving pointer, and Enter acts on it", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    fireEvent.mouseMove(row("standup")!);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("Yesterday:\nToday:\nBlockers:");
+  });
+
+  it("does not take the highlight on mouseenter alone, which a list scrolling under the pointer fires", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    fireEvent.mouseEnter(row("standup")!);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("Check the tests and the types.");
+  });
+});
