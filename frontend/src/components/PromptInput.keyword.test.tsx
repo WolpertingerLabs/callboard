@@ -916,3 +916,82 @@ describe("save-as-keyword modal", () => {
     expect((screen.getByText("Save as keyword").closest("button") as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe("the keyword menu's highlight is shared with assistive tech and the pointer", () => {
+  it("points aria-activedescendant at the highlighted option", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    expect(textarea.getAttribute("aria-activedescendant")).toBeNull();
+    expect(textarea.getAttribute("aria-controls")).toBe(screen.getByRole("listbox").id);
+
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    const active = textarea.getAttribute("aria-activedescendant");
+    expect(document.getElementById(active!)?.textContent).toContain("$review");
+    expect(document.getElementById(active!)?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("moves the highlight to the row under a moving pointer, and Enter acts on it", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    fireEvent.mouseMove(row("standup")!);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("Yesterday:\nToday:\nBlockers:");
+  });
+
+  it("drops a pointer-made highlight back to the default when the pointer leaves", () => {
+    const { textarea } = renderComposer();
+    // A typed query: the default is row 0, and leaving must restore exactly that.
+    type(textarea, "$rev");
+    fireEvent.mouseMove(row("review-deep")!);
+    fireEvent.mouseLeave(screen.getByRole("listbox"));
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("Check the tests and the types.");
+  });
+
+  it("on a bare $, a pointer that leaves leaves nothing highlighted, so Enter only dismisses", () => {
+    const { textarea, onSend } = renderComposer();
+    type(textarea, "$");
+    fireEvent.mouseMove(row("standup")!);
+    fireEvent.mouseLeave(screen.getByRole("listbox"));
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("$");
+    expect(menu()).toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("keeps a keyboard-made highlight when the pointer leaves", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    fireEvent.mouseLeave(screen.getByRole("listbox"));
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("Yesterday:\nToday:\nBlockers:");
+  });
+
+  it("leaves modified arrows to the textarea", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    for (const mod of ["shiftKey", "altKey", "metaKey", "ctrlKey"] as const) {
+      expect(keyDown(textarea, { key: "ArrowDown", [mod]: true }).prevented).toBe(false);
+    }
+    expect(textarea.getAttribute("aria-activedescendant")).toBeNull();
+  });
+
+  it("ignores IME composition keystrokes", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$rev");
+    fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(textarea, { key: "Enter", keyCode: 229 });
+    expect(textarea.value).toBe("$rev");
+    expect(menu()).toBeTruthy();
+  });
+
+  it("does not take the highlight on mouseenter alone, which a list scrolling under the pointer fires", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "$");
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    fireEvent.mouseEnter(row("standup")!);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("Check the tests and the types.");
+  });
+});

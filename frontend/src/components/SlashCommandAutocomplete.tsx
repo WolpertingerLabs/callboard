@@ -1,42 +1,64 @@
-import { useMemo } from "react";
+import { useEffect, useRef } from "react";
 import { getCommandDescription } from "../utils/commands";
 
 interface Props {
-  slashCommands: string[];
-  query: string;
+  /** Candidates, already filtered and ranked by `matchSlashCommands`. */
+  matches: string[];
+  /**
+   * Index of the highlighted row, or -1 for none.
+   *
+   * Owned by the composer for the same reason as `KeywordAutocomplete`'s: the
+   * highlight is what Enter and Tab act on, and those keys are handled in the
+   * textarea's `onKeyDown`, which cannot see state that lives down here.
+   */
+  highlightedIndex: number;
+  onHighlight: (index: number) => void;
+  /** The pointer left the rows — the composer drops a highlight the pointer made. */
+  onPointerLeave: () => void;
   onSelect: (command: string) => void;
   visible: boolean;
+  /** DOM id of the listbox; option ids derive from it via {@link slashOptionId}. */
+  listboxId: string;
   commandDescriptions?: Record<string, string>;
 }
 
-export default function SlashCommandAutocomplete({ slashCommands, query, onSelect, visible, commandDescriptions }: Props) {
-  const filteredCommands = useMemo(() => {
-    if (!query || !query.startsWith("/")) return [];
+/** DOM id of row `index`, for the textarea's `aria-activedescendant`. */
+export const slashOptionId = (listboxId: string, index: number) => `${listboxId}-${index}`;
 
-    const searchTerm = query.slice(1).toLowerCase(); // Remove the '/' prefix
+/**
+ * The `/command` dropdown, anchored above the composer field.
+ *
+ * Unlike the `$keyword` menu, nothing is highlighted until the user arrows (or
+ * points) at a row: Enter on an un-highlighted menu dismisses it, as it always
+ * has, so typing a whole command and pressing Enter keeps doing what it did.
+ * See `PromptInput`'s `commandHighlight`.
+ */
+export default function SlashCommandAutocomplete({
+  matches,
+  highlightedIndex,
+  onHighlight,
+  onPointerLeave,
+  onSelect,
+  visible,
+  listboxId,
+  commandDescriptions,
+}: Props) {
+  const highlightedRef = useRef<HTMLButtonElement | null>(null);
 
-    return slashCommands
-      .filter((cmd) => cmd.toLowerCase().includes(searchTerm))
-      .sort((a, b) => {
-        // Prioritize commands that start with the search term
-        const aStartsWith = a.toLowerCase().startsWith(searchTerm);
-        const bStartsWith = b.toLowerCase().startsWith(searchTerm);
+  // Keep the highlighted row on screen — the list is 200px tall and holds up
+  // to ten rows. Same reasoning, and the same jsdom-optional call, as
+  // `KeywordAutocomplete`.
+  useEffect(() => {
+    highlightedRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [highlightedIndex]);
 
-        if (aStartsWith && !bStartsWith) return -1;
-        if (!aStartsWith && bStartsWith) return 1;
-
-        // Then sort alphabetically
-        return a.localeCompare(b);
-      })
-      .slice(0, 10); // Limit to 10 results
-  }, [slashCommands, query]);
-
-  if (!visible || filteredCommands.length === 0) {
+  if (!visible || matches.length === 0) {
     return null;
   }
 
   return (
     <div
+      data-testid="slash-command-autocomplete"
       style={{
         position: "absolute",
         bottom: "100%",
@@ -61,64 +83,77 @@ export default function SlashCommandAutocomplete({ slashCommands, query, onSelec
           fontWeight: 600,
         }}
       >
-        Available Commands ({filteredCommands.length})
+        Available Commands ({matches.length})
       </div>
 
-      {filteredCommands.map((command, index) => (
-        <button
-          key={command}
-          onClick={() => onSelect(command)}
-          style={{
-            width: "100%",
-            padding: "8px 12px",
-            background: "transparent",
-            border: "none",
-            textAlign: "left" as const,
-            fontSize: 14,
-            color: "var(--text)",
-            cursor: "pointer",
-            borderBottom: index < filteredCommands.length - 1 ? "1px solid var(--border)" : "none",
-            transition: "background 0.1s ease",
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "var(--accent-bg)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "transparent";
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-            }}
-          >
-            <code
+      <div role="listbox" id={listboxId} aria-label="Commands" onMouseLeave={onPointerLeave}>
+        {matches.map((command, index) => {
+          const isHighlighted = index === highlightedIndex;
+          const description = commandDescriptions?.[command] || getCommandDescription(command);
+          return (
+            <button
+              key={command}
+              id={slashOptionId(listboxId, index)}
+              role="option"
+              // Options are reached through the textarea's
+              // aria-activedescendant, not by tabbing onto each row.
+              tabIndex={-1}
+              aria-selected={isHighlighted}
+              ref={isHighlighted ? highlightedRef : undefined}
+              onClick={() => onSelect(command)}
+              // Move, not enter: scrolling the list under a resting pointer
+              // fires mouseenter on whatever row slides beneath it, which would
+              // yank the highlight away from the row the arrow keys just chose.
+              onMouseMove={() => {
+                if (!isHighlighted) onHighlight(index);
+              }}
               style={{
-                background: "var(--bg-secondary)",
-                padding: "2px 6px",
-                borderRadius: "4px",
-                fontSize: 13,
-                fontFamily: "var(--font-mono)",
-                color: "var(--accent-text)",
+                width: "100%",
+                padding: "8px 12px",
+                background: isHighlighted ? "var(--accent-bg)" : "transparent",
+                border: "none",
+                textAlign: "left" as const,
+                fontSize: 14,
+                color: "var(--text)",
+                cursor: "pointer",
+                borderBottom: index < matches.length - 1 ? "1px solid var(--border)" : "none",
+                transition: "background 0.1s ease",
               }}
             >
-              {command}
-            </code>
-            {(commandDescriptions?.[command] || getCommandDescription(command)) && (
-              <span
+              <div
                 style={{
-                  fontSize: 12,
-                  color: "var(--text-muted)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
                 }}
               >
-                {commandDescriptions?.[command] || getCommandDescription(command)}
-              </span>
-            )}
-          </div>
-        </button>
-      ))}
+                <code
+                  style={{
+                    background: "var(--bg-secondary)",
+                    padding: "2px 6px",
+                    borderRadius: "4px",
+                    fontSize: 13,
+                    fontFamily: "var(--font-mono)",
+                    color: "var(--accent-text)",
+                  }}
+                >
+                  {command}
+                </code>
+                {description && (
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    {description}
+                  </span>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

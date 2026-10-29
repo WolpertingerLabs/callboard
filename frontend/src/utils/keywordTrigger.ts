@@ -193,7 +193,7 @@ export interface KeywordMatches<T> {
 /**
  * Case-insensitive substring match, prefix matches first then alphabetical.
  *
- * The sort mirrors `SlashCommandAutocomplete.tsx` so the two menus rank the
+ * The sort mirrors `matchSlashCommands` in `utils/commands.ts` so the two menus rank the
  * same way; an empty query matches everything, which is what a bare `$` shows.
  */
 export function matchKeywords<T extends KeywordMatchable>(keywords: T[], query: string, limit = KEYWORD_MATCH_LIMIT): KeywordMatches<T> {
