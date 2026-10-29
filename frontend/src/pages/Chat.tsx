@@ -3914,6 +3914,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
           // and the redirect to the chat it creates.
           draftKey={id ?? NEW_CHAT_DRAFT_KEY}
           draftPaused={!!activeDraftId || (!id && streaming)}
+          // Opening a chat or the new-chat composer, on a device with a
+          // keyboard, puts the caret in the composer.
+          focusKey={id ?? NEW_CHAT_DRAFT_KEY}
           keywords={keywords}
           onKeywordCreated={handleKeywordCreated}
           chatId={id}
