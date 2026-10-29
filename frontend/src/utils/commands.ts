@@ -1,7 +1,8 @@
 /**
  * Descriptions for common Claude Code slash commands.
  *
- * Used by SlashCommandAutocomplete and SlashCommandsModal.
+ * Read through `getCommandDescription` by SlashCommandAutocomplete and
+ * SlashCommandsModal; `matchSlashCommands` below is the `/` menu's filter.
  * Keys are command names WITHOUT the leading "/" prefix.
  */
 const COMMAND_DESCRIPTIONS: Record<string, string> = {

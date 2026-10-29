@@ -21,6 +21,8 @@ interface Props {
    */
   highlightedIndex: number;
   onHighlight: (index: number) => void;
+  /** The pointer left the rows — the composer drops a highlight the pointer made. */
+  onPointerLeave: () => void;
   onSelect: (keyword: Keyword) => void;
   /** DOM id of the listbox; option ids derive from it via {@link keywordOptionId}. */
   listboxId: string;
@@ -43,7 +45,7 @@ export const keywordOptionId = (listboxId: string, index: number) => `${listboxI
  * trigger chain: it is what makes `$HOME` and `$PATH` inert on an install with
  * no keyword of that name, rather than showing an empty box.
  */
-export default function KeywordAutocomplete({ matches, totalMatches, highlightedIndex, onHighlight, onSelect, listboxId }: Props) {
+export default function KeywordAutocomplete({ matches, totalMatches, highlightedIndex, onHighlight, onPointerLeave, onSelect, listboxId }: Props) {
   const highlightedRef = useRef<HTMLButtonElement | null>(null);
 
   /**
@@ -95,71 +97,74 @@ export default function KeywordAutocomplete({ matches, totalMatches, highlighted
         Keywords ({totalMatches > matches.length ? `${matches.length} of ${totalMatches}` : matches.length})
       </div>
 
-      <div role="listbox" id={listboxId} aria-label="Keywords">
-      {matches.map((keyword, index) => {
-        const isHighlighted = index === highlightedIndex;
-        return (
-          <button
-            key={keyword.name}
-            id={keywordOptionId(listboxId, index)}
-            role="option"
-            aria-selected={isHighlighted}
-            ref={isHighlighted ? highlightedRef : undefined}
-            // Insertion has to survive the click without the textarea losing
-            // focus first — mousedown-preventDefault keeps the caret where the
-            // token is, so the replacement lands in the right place.
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => onSelect(keyword)}
-            // Move, not enter: scrolling the list under a resting pointer
-            // fires mouseenter on whatever row slides beneath it, which would
-            // yank the highlight away from the row the arrow keys just chose.
-            onMouseMove={() => {
-              if (!isHighlighted) onHighlight(index);
-            }}
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              background: isHighlighted ? "var(--accent-bg)" : "transparent",
-              border: "none",
-              textAlign: "left" as const,
-              fontSize: 14,
-              color: "var(--text)",
-              cursor: "pointer",
-              borderBottom: index < matches.length - 1 ? "1px solid var(--border)" : "none",
-              transition: "background 0.1s ease",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <code
-                style={{
-                  background: "var(--bg-secondary)",
-                  padding: "2px 6px",
-                  borderRadius: "4px",
-                  fontSize: 13,
-                  fontFamily: "var(--font-mono)",
-                  color: "var(--accent-text)",
-                  flexShrink: 0,
-                }}
-              >
-                ${keyword.name}
-              </code>
-              {keyword.description && (
-                <span
+      <div role="listbox" id={listboxId} aria-label="Keywords" onMouseLeave={onPointerLeave}>
+        {matches.map((keyword, index) => {
+          const isHighlighted = index === highlightedIndex;
+          return (
+            <button
+              key={keyword.name}
+              id={keywordOptionId(listboxId, index)}
+              role="option"
+              // Options are reached through the textarea's
+              // aria-activedescendant, not by tabbing onto each row.
+              tabIndex={-1}
+              aria-selected={isHighlighted}
+              ref={isHighlighted ? highlightedRef : undefined}
+              // Insertion has to survive the click without the textarea losing
+              // focus first — mousedown-preventDefault keeps the caret where the
+              // token is, so the replacement lands in the right place.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onSelect(keyword)}
+              // Move, not enter: scrolling the list under a resting pointer
+              // fires mouseenter on whatever row slides beneath it, which would
+              // yank the highlight away from the row the arrow keys just chose.
+              onMouseMove={() => {
+                if (!isHighlighted) onHighlight(index);
+              }}
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                background: isHighlighted ? "var(--accent-bg)" : "transparent",
+                border: "none",
+                textAlign: "left" as const,
+                fontSize: 14,
+                color: "var(--text)",
+                cursor: "pointer",
+                borderBottom: index < matches.length - 1 ? "1px solid var(--border)" : "none",
+                transition: "background 0.1s ease",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <code
                   style={{
-                    fontSize: 12,
-                    color: "var(--text-muted)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    background: "var(--bg-secondary)",
+                    padding: "2px 6px",
+                    borderRadius: "4px",
+                    fontSize: 13,
+                    fontFamily: "var(--font-mono)",
+                    color: "var(--accent-text)",
+                    flexShrink: 0,
                   }}
                 >
-                  {keyword.description}
-                </span>
-              )}
-            </div>
-          </button>
-        );
-      })}
+                  ${keyword.name}
+                </code>
+                {keyword.description && (
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: "var(--text-muted)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {keyword.description}
+                  </span>
+                )}
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

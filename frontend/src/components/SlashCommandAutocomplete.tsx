@@ -13,6 +13,8 @@ interface Props {
    */
   highlightedIndex: number;
   onHighlight: (index: number) => void;
+  /** The pointer left the rows — the composer drops a highlight the pointer made. */
+  onPointerLeave: () => void;
   onSelect: (command: string) => void;
   visible: boolean;
   /** DOM id of the listbox; option ids derive from it via {@link slashOptionId}. */
@@ -35,6 +37,7 @@ export default function SlashCommandAutocomplete({
   matches,
   highlightedIndex,
   onHighlight,
+  onPointerLeave,
   onSelect,
   visible,
   listboxId,
@@ -83,7 +86,7 @@ export default function SlashCommandAutocomplete({
         Available Commands ({matches.length})
       </div>
 
-      <div role="listbox" id={listboxId} aria-label="Commands">
+      <div role="listbox" id={listboxId} aria-label="Commands" onMouseLeave={onPointerLeave}>
         {matches.map((command, index) => {
           const isHighlighted = index === highlightedIndex;
           const description = commandDescriptions?.[command] || getCommandDescription(command);
@@ -92,6 +95,9 @@ export default function SlashCommandAutocomplete({
               key={command}
               id={slashOptionId(listboxId, index)}
               role="option"
+              // Options are reached through the textarea's
+              // aria-activedescendant, not by tabbing onto each row.
+              tabIndex={-1}
               aria-selected={isHighlighted}
               ref={isHighlighted ? highlightedRef : undefined}
               onClick={() => onSelect(command)}

@@ -69,6 +69,22 @@ export function stripLeadingCommandToken(text: string): string {
   return match ? text.slice(match[0].length) : text;
 }
 
+/**
+ * A menu row someone chose, and how. The source matters for one thing: a
+ * pointer-made highlight is dropped when the pointer leaves the menu, and a
+ * keyboard-made one is not.
+ */
+interface HighlightChoice<T> {
+  value: T;
+  source: "keys" | "pointer";
+}
+
+/**
+ * Arrow keys with a modifier are the textarea's: Shift extends the selection,
+ * Cmd/Ctrl jump to the start or end, Alt moves by paragraph on macOS.
+ */
+const hasModifier = (e: React.KeyboardEvent) => e.shiftKey || e.altKey || e.metaKey || e.ctrlKey;
+
 /** The `/` menu's rows while it is closed — one shared array, not a fresh `[]` per render. */
 const NO_COMMAND_MATCHES: string[] = [];
 
@@ -229,11 +245,15 @@ export default function PromptInput({
   const [focused, setFocused] = useState(false);
   const [autocompleteDismissed, setAutocompleteDismissed] = useState(false);
   /**
-   * The `/` menu row the arrow keys (or the pointer) last chose, or -1 for
+   * The `/` menu row the arrow keys (or the pointer) last chose, or null for
    * none. Unlike the keyword menu there is no non-empty default — see
    * `commandHighlight` below.
+   *
+   * Held by command *name*, not index: `slashCommands` is fetched and can
+   * change under an unchanged value, and an index would then silently point
+   * at a different command than the one the user chose.
    */
-  const [commandHighlightOverride, setCommandHighlightOverride] = useState(-1);
+  const [commandHighlightChoice, setCommandHighlightChoice] = useState<HighlightChoice<string> | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   // The one command currently held as a chip. Picking a second replaces it.
   const [activeCommand, setActiveCommand] = useState<string | null>(null);
@@ -265,7 +285,7 @@ export default function PromptInput({
    * character has been typed, and *nothing* for a bare `$`. See
    * `keywordHighlight` below.
    */
-  const [keywordHighlightOverride, setKeywordHighlightOverride] = useState<number | null>(null);
+  const [keywordHighlightOverride, setKeywordHighlightOverride] = useState<HighlightChoice<number> | null>(null);
   const [saveKeywordBody, setSaveKeywordBody] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -345,7 +365,7 @@ export default function PromptInput({
       // it either, which is the whole reason to just keep the two in step.
       setCaret(rest.length);
       setAutocompleteDismissed(false);
-      setCommandHighlightOverride(-1);
+      setCommandHighlightChoice(null);
       // Nothing matched — but `slashCommands` is fetched, and the app restores
       // a router draft on the render right after it hands out this setter, so
       // "no match" here usually means "the list is still in flight" rather than
@@ -393,7 +413,7 @@ export default function PromptInput({
     setCaret(0);
     setKeywordDismissal(null);
     setKeywordHighlightOverride(null);
-    setCommandHighlightOverride(-1);
+    setCommandHighlightChoice(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -548,10 +568,15 @@ export default function PromptInput({
   }, [value, activeCommand, images, disabled, sendBlockedReason, onSend, clearComposer]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Keystrokes that belong to an IME composition (picking a candidate,
+    // committing a kana run) are the IME's, not ours: they must never drive a
+    // menu or send. 229 is what Safari reports for them instead of the flag.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+
     if (showAutocomplete && e.key === "Escape") {
       e.preventDefault();
       setAutocompleteDismissed(true);
-      setCommandHighlightOverride(-1);
+      setCommandHighlightChoice(null);
       return;
     }
 
@@ -560,13 +585,13 @@ export default function PromptInput({
     // a `/`-led value whose text matches no command shows no menu, and the
     // arrows there have to keep moving the caret through a multi-line message.
     if (commandMenuOpen) {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !hasModifier(e)) {
         e.preventDefault();
         const step = e.key === "ArrowDown" ? 1 : -1;
         // From "nothing highlighted", ArrowDown lands on the first row and
         // ArrowUp on the last, as in the keyword menu.
         const from = commandHighlight < 0 ? (step === 1 ? -1 : 0) : commandHighlight;
-        setCommandHighlightOverride((from + step + commandMatches.length) % commandMatches.length);
+        setCommandHighlightChoice({ value: commandMatches[(from + step + commandMatches.length) % commandMatches.length], source: "keys" });
         return;
       }
       // Forward Tab and Enter pick the highlighted row. With nothing
@@ -589,14 +614,14 @@ export default function PromptInput({
         setKeywordHighlightOverride(null);
         return;
       }
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !hasModifier(e)) {
         e.preventDefault();
         const step = e.key === "ArrowDown" ? 1 : -1;
         // From "nothing highlighted", ArrowDown lands on the first row and
         // ArrowUp on the last — and either way a highlight now exists, so the
         // next Enter inserts instead of dismissing.
         const from = keywordHighlight < 0 ? (step === 1 ? -1 : 0) : keywordHighlight;
-        setKeywordHighlightOverride((from + step + keywordMatches.length) % keywordMatches.length);
+        setKeywordHighlightOverride({ value: (from + step + keywordMatches.length) % keywordMatches.length, source: "keys" });
         return;
       }
       // Forward Tab completes the highlighted row, on the same condition as
@@ -737,7 +762,7 @@ export default function PromptInput({
    * opt-in; the reset on every edit is what keeps a highlight from outliving
    * the list it was chosen from.
    */
-  const commandHighlight = commandHighlightOverride < commandMatches.length ? commandHighlightOverride : -1;
+  const commandHighlight = commandHighlightChoice ? commandMatches.indexOf(commandHighlightChoice.value) : -1;
   const commandListboxId = useId();
   const keywordListboxId = useId();
 
@@ -777,7 +802,7 @@ export default function PromptInput({
   const keywordHighlight = (() => {
     if (keywordMatches.length === 0) return -1;
     const fallback = activeKeywordToken?.query ? 0 : -1;
-    const raw = keywordHighlightOverride ?? fallback;
+    const raw = keywordHighlightOverride?.value ?? fallback;
     if (raw < 0) return -1;
     return Math.min(raw, keywordMatches.length - 1);
   })();
@@ -921,7 +946,7 @@ export default function PromptInput({
       setValue(rest);
       setCaret(rest.length);
       setAutocompleteDismissed(true);
-      setCommandHighlightOverride(-1);
+      setCommandHighlightChoice(null);
       textareaRef.current?.focus();
     },
     [changeActiveCommand],
@@ -999,7 +1024,11 @@ export default function PromptInput({
           <SlashCommandAutocomplete
             matches={commandMatches}
             highlightedIndex={commandHighlight}
-            onHighlight={setCommandHighlightOverride}
+            onHighlight={(index) => setCommandHighlightChoice({ value: commandMatches[index], source: "pointer" })}
+            // A highlight the pointer made goes with the pointer. Left behind,
+            // it would turn a later Enter — which on an untouched menu means
+            // "dismiss" — into a pick of whatever row the mouse last crossed.
+            onPointerLeave={() => setCommandHighlightChoice((prev) => (prev?.source === "pointer" ? null : prev))}
             onSelect={handleCommandSelect}
             visible={showAutocomplete}
             listboxId={commandListboxId}
@@ -1012,7 +1041,11 @@ export default function PromptInput({
             matches={keywordMatches}
             totalMatches={keywordMatchTotal}
             highlightedIndex={keywordHighlight}
-            onHighlight={setKeywordHighlightOverride}
+            onHighlight={(index) => setKeywordHighlightOverride({ value: index, source: "pointer" })}
+            // Same rule as the `/` menu. Clearing only drops back to the
+            // default — row 0 with a query, nothing on a bare `$` — so it
+            // never fights the typed-query highlight, only undoes the mouse's.
+            onPointerLeave={() => setKeywordHighlightOverride((prev) => (prev?.source === "pointer" ? null : prev))}
             onSelect={selectKeyword}
             listboxId={keywordListboxId}
           />
@@ -1047,7 +1080,7 @@ export default function PromptInput({
               setAutocompleteDismissed(false);
               // A new value is a new `/` match list; a row chosen from the old one
               // must not be what the next Enter picks.
-              setCommandHighlightOverride(-1);
+              setCommandHighlightChoice(null);
               // Typed text is the user's; a late command list must not rewrite it.
               setUnchippedValue(null);
               setCaret(nextCaret);
@@ -1077,6 +1110,7 @@ export default function PromptInput({
             onKeyDown={handleKeyDown}
             // The two menus are never open together (slash wins), so at most
             // one of these names a row.
+            aria-autocomplete="list"
             aria-controls={commandMenuOpen ? commandListboxId : keywordMenuOpen ? keywordListboxId : undefined}
             aria-activedescendant={
               commandHighlight >= 0

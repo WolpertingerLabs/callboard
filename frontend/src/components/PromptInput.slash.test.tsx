@@ -10,7 +10,7 @@
  * has rows; otherwise they are the textarea's.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, createEvent, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen } from "@testing-library/react";
 import PromptInput from "./PromptInput";
 import { matchSlashCommands } from "../utils/commands";
 
@@ -28,9 +28,11 @@ afterEach(() => {
 
 function renderComposer(props: Partial<React.ComponentProps<typeof PromptInput>> = {}) {
   const onSend = vi.fn();
-  render(<PromptInput onSend={onSend} disabled={false} slashCommands={COMMANDS} {...props} />);
+  const view = render(<PromptInput onSend={onSend} disabled={false} slashCommands={COMMANDS} {...props} />);
   const textarea = screen.getByPlaceholderText("Send a message...") as HTMLTextAreaElement;
-  return { onSend, textarea };
+  const rerender = (next: Partial<React.ComponentProps<typeof PromptInput>>) =>
+    act(() => view.rerender(<PromptInput onSend={onSend} disabled={false} slashCommands={COMMANDS} {...props} {...next} />));
+  return { onSend, textarea, rerender };
 }
 
 function type(textarea: HTMLTextAreaElement, text: string) {
@@ -100,6 +102,8 @@ describe("arrow keys move a highlight through the / menu", () => {
     expect(active).toBeTruthy();
     expect(document.getElementById(active!)?.textContent).toContain("compact");
     expect(textarea.getAttribute("aria-controls")).toBe(screen.getByRole("listbox").id);
+    expect(textarea.getAttribute("aria-autocomplete")).toBe("list");
+    for (const option of options()) expect(option.tabIndex).toBe(-1);
   });
 
   it("resets the highlight when the query changes", () => {
@@ -138,6 +142,93 @@ describe("arrow keys move a highlight through the / menu", () => {
     // The arrows continue from where the pointer left the highlight.
     keyDown(textarea, { key: "ArrowUp" });
     expect(highlighted()[0].textContent).toContain("compact");
+  });
+});
+
+describe("what the / highlight survives, and what it does not", () => {
+  it("is dropped when the pointer that set it leaves the menu, so Enter dismisses again", () => {
+    const { textarea, onSend } = renderComposer();
+    type(textarea, "/co");
+    fireEvent.mouseMove(screen.getByText("context"));
+    expect(highlighted()).toHaveLength(1);
+
+    fireEvent.mouseLeave(screen.getByRole("listbox"));
+    expect(highlighted()).toHaveLength(0);
+    expect(textarea.getAttribute("aria-activedescendant")).toBeNull();
+
+    keyDown(textarea, { key: "Enter" });
+    expect(chip("context")).toBeNull();
+    expect(menu()).toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("is kept when the pointer leaves after the arrow keys chose the row", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "/co");
+    keyDown(textarea, { key: "ArrowDown" });
+    fireEvent.mouseLeave(screen.getByRole("listbox"));
+    expect(highlighted()[0].textContent).toContain("compact");
+  });
+
+  it("stays on the chosen command when the command list changes under it", () => {
+    const { textarea, rerender } = renderComposer();
+    type(textarea, "/co");
+    keyDown(textarea, { key: "ArrowDown" });
+    keyDown(textarea, { key: "ArrowDown" });
+    expect(highlighted()[0].textContent).toContain("context");
+
+    // A command sorting ahead of it arrives: row 1 is now `compact`, and an
+    // index-held highlight would silently have moved onto it.
+    rerender({ slashCommands: ["compact", "context", "cobalt", "model"] });
+    expect(highlighted()[0].textContent).toContain("context");
+    keyDown(textarea, { key: "Enter" });
+    expect(chip("context")).toBeTruthy();
+  });
+
+  it("is dropped when the chosen command leaves the list", () => {
+    const { textarea, rerender, onSend } = renderComposer();
+    type(textarea, "/co");
+    keyDown(textarea, { key: "ArrowDown" });
+    keyDown(textarea, { key: "ArrowDown" });
+
+    rerender({ slashCommands: ["compact", "model"] });
+    expect(options()).toHaveLength(1);
+    expect(highlighted()).toHaveLength(0);
+    keyDown(textarea, { key: "Enter" });
+    expect(chip("compact")).toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("keys the / menu leaves alone", () => {
+  it("modified arrows stay the textarea's (selection, jump to start/end)", () => {
+    const { textarea } = renderComposer();
+    type(textarea, "/co");
+    for (const mod of ["shiftKey", "altKey", "metaKey", "ctrlKey"] as const) {
+      expect(keyDown(textarea, { key: "ArrowDown", [mod]: true }).prevented).toBe(false);
+      expect(keyDown(textarea, { key: "ArrowUp", [mod]: true }).prevented).toBe(false);
+    }
+    expect(highlighted()).toHaveLength(0);
+  });
+
+  it("IME composition keystrokes never drive the menu or send", () => {
+    const { textarea, onSend } = renderComposer();
+    type(textarea, "/co");
+    keyDown(textarea, { key: "ArrowDown", isComposing: true });
+    keyDown(textarea, { key: "ArrowDown", keyCode: 229 });
+    expect(highlighted()).toHaveLength(0);
+
+    keyDown(textarea, { key: "ArrowDown" });
+    expect(keyDown(textarea, { key: "Enter", isComposing: true }).prevented).toBe(false);
+    expect(keyDown(textarea, { key: "Enter", keyCode: 229 }).prevented).toBe(false);
+    expect(chip("compact")).toBeNull();
+    expect(menu()).toBeTruthy();
+
+    // And with no menu up, a composing Enter is not a send.
+    type(textarea, "みどり");
+    keyDown(textarea, { key: "Enter", isComposing: true });
+    keyDown(textarea, { key: "Enter", keyCode: 229 });
+    expect(onSend).not.toHaveBeenCalled();
   });
 });
 
@@ -193,11 +284,16 @@ describe("Enter and Tab on the / menu", () => {
 describe("the highlighted / row is kept on screen", () => {
   const TWELVE = Array.from({ length: 12 }, (_, i) => `cmd-${String(i).padStart(2, "0")}`);
   const scrollIntoView = vi.fn();
+  // Restore whatever was there before (jsdom has nothing, but a future jsdom
+  // or another setup file might), rather than assuming it was absent.
+  let original: PropertyDescriptor | undefined;
   beforeEach(() => {
+    original = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
     Object.defineProperty(Element.prototype, "scrollIntoView", { value: scrollIntoView, writable: true, configurable: true });
   });
   afterEach(() => {
-    delete (Element.prototype as Partial<Element>).scrollIntoView;
+    if (original) Object.defineProperty(Element.prototype, "scrollIntoView", original);
+    else delete (Element.prototype as Partial<Element>).scrollIntoView;
   });
 
   it("scrolls the row the arrow keys land on into view", () => {
