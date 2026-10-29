@@ -19,6 +19,7 @@ import {
 } from "../utils/keywordTrigger";
 import type { Keyword } from "../api";
 import { getComposerDraft, saveComposerDraft } from "../utils/localStorage";
+import { canAutoFocusTextInput, isEditingElsewhere } from "../utils/autoFocus";
 
 export type PromptMenuItem = MenuItem;
 
@@ -192,6 +193,17 @@ interface Props {
    * user's edits silently is worse than a draft that has to be deleted by hand.
    */
   draftPaused?: boolean;
+  /**
+   * Focus the textarea on mount and whenever this changes — Chat.tsx passes the
+   * chat being shown, so opening a chat, switching to another or opening the
+   * new-chat composer puts the caret in it, at the end of any restored draft.
+   *
+   * Only where the device has a keyboard ({@link canAutoFocusTextInput}): on a
+   * phone, focus raises the on-screen keyboard over the chat. Nor while the
+   * user is typing in some other field. Absent, the composer never focuses
+   * itself.
+   */
+  focusKey?: string;
 }
 
 /** How long typing has to pause before the draft is written to storage. */
@@ -216,6 +228,7 @@ export default function PromptInput({
   onAddImages,
   draftKey,
   draftPaused = false,
+  focusKey,
 }: Props) {
   // The stored draft, read once for the first render. Later chats load theirs
   // in the `draftKey` effect below. Mounting paused shows nothing of it: the
@@ -554,6 +567,29 @@ export default function PromptInput({
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 120) + "px";
   }, [valueKey]);
+
+  /** The {@link Props.focusKey} already acted on, so each one focuses once. */
+  const autoFocusedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (focusKey === undefined || autoFocusedKeyRef.current === focusKey) return;
+    // Wait out the commit that still shows the outgoing chat's text, so the
+    // caret lands at the end of the incoming chat's draft. While paused there
+    // is nothing to wait for: the composer may still be empty (a Staging draft
+    // opened through router state), and the value handed in places its own
+    // caret when `applyExternalValue` lands it.
+    if (!draftPaused && valueKey !== draftKey) return;
+    // Marked handled before the checks below on purpose: a declined focus
+    // (disabled, touch device, typing elsewhere) is this key's answer, so the
+    // same chat becoming enabled later must not grab focus.
+    autoFocusedKeyRef.current = focusKey;
+    const el = textareaRef.current;
+    if (!el || el.disabled || !canAutoFocusTextInput() || isEditingElsewhere(el)) return;
+    // The page lays out its own scroll position; focus must not move it.
+    el.focus({ preventScroll: true });
+    const end = el.value.length;
+    el.setSelectionRange(end, end);
+    setCaret(end);
+  }, [focusKey, draftKey, draftPaused, valueKey]);
 
   const handleSend = useCallback(async () => {
     const prompt = composePrompt(activeCommand, value);
