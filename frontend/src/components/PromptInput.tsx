@@ -573,8 +573,14 @@ export default function PromptInput({
   useEffect(() => {
     if (focusKey === undefined || autoFocusedKeyRef.current === focusKey) return;
     // Wait out the commit that still shows the outgoing chat's text, so the
-    // caret lands at the end of the incoming chat's draft.
+    // caret lands at the end of the incoming chat's draft. While paused there
+    // is nothing to wait for: the composer may still be empty (a Staging draft
+    // opened through router state), and the value handed in places its own
+    // caret when `applyExternalValue` lands it.
     if (!draftPaused && valueKey !== draftKey) return;
+    // Marked handled before the checks below on purpose: a declined focus
+    // (disabled, touch device, typing elsewhere) is this key's answer, so the
+    // same chat becoming enabled later must not grab focus.
     autoFocusedKeyRef.current = focusKey;
     const el = textareaRef.current;
     if (!el || el.disabled || !canAutoFocusTextInput() || isEditingElsewhere(el)) return;

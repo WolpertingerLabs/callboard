@@ -26,12 +26,12 @@ function fakeServer(input: RequestInfo | URL): Promise<Response> {
   return Promise.resolve({ ok: false, status: 404, json: async () => ({}), text: async () => "" } as unknown as Response);
 }
 
-/** A desktop answers `(pointer: fine)`; a phone answers neither that nor the width query. */
+/** A desktop answers `(pointer: fine)`; a phone matches no query at all. */
 function stubDevice(desktop: boolean) {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
-      matches: desktop ? query.includes("pointer: fine") : query.includes("not all and (min-width"),
+      matches: desktop && query.includes("pointer: fine"),
       media: query,
       addEventListener: () => {},
       removeEventListener: () => {},
