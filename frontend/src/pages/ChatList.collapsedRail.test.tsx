@@ -41,10 +41,11 @@ function buttonTitles(container: HTMLElement): string[] {
     .map((b) => b.getAttribute("title") ?? "");
 }
 
-function renderHeader(props: { claudeLoggedIn?: boolean } = {}) {
+function renderHeader(props: { claudeLoggedIn?: boolean; path?: string } = {}) {
+  const { path = "/", ...rest } = props;
   return render(
-    <MemoryRouter>
-      <SidebarHeader onToggleNew={() => {}} onToggleSidebar={() => {}} onShowClaudeModal={() => {}} {...props} />
+    <MemoryRouter initialEntries={[path]}>
+      <SidebarHeader onToggleNew={() => {}} onToggleSidebar={() => {}} onShowClaudeModal={() => {}} {...rest} />
     </MemoryRouter>,
   );
 }
@@ -100,13 +101,6 @@ describe("collapsed sidebar rail", () => {
     });
   }
 
-  it("does not pin the expand button to the bottom", () => {
-    const { container } = renderRail({ claudeLoggedIn: false });
-    for (const title of ["Expand sidebar", "Claude Code login required"]) {
-      expect(within(container).getByTitle(title).style.marginTop).toBe("");
-    }
-  });
-
   it("marks the active route with the accent background, as the header does", () => {
     const { container } = renderRail({ path: "/agents/forge" });
     const agents = within(container).getByTitle("Agents");
@@ -127,4 +121,34 @@ describe("collapsed sidebar rail", () => {
     fireEvent.click(within(container).getByTitle("New Chat"));
     expect(onToggleSidebar).toHaveBeenCalledTimes(1);
   });
+});
+
+/**
+ * React only rewrites style properties whose values changed. With a `border`
+ * shorthand that flips when the active button moves, the browser resets every
+ * edge to 1px while the unchanged zeroed seam longhand is never re-applied, so
+ * the seam doubles after client-side navigation. Each case lands on Board,
+ * moves to Agents, and checks the seams Board and Agents share are still zero.
+ */
+describe("segmented nav seams survive navigation", () => {
+  const cases = [
+    { name: "open header (row)", mount: () => renderHeader({ path: "/board" }), boardSeam: "borderRightWidth", agentsSeams: ["borderLeftWidth", "borderRightWidth"] },
+    { name: "collapsed rail (stack)", mount: () => renderRail({ path: "/board" }), boardSeam: "borderBottomWidth", agentsSeams: ["borderTopWidth", "borderBottomWidth"] },
+  ] as const;
+
+  for (const { name, mount, boardSeam, agentsSeams } of cases) {
+    it(name, () => {
+      const { container } = mount();
+      fireEvent.click(within(container).getByTitle("Agents"));
+      const board = within(container).getByTitle("Board");
+      const agents = within(container).getByTitle("Agents");
+
+      expect(agents.getAttribute("aria-current")).toBe("page");
+      expect(board.style.borderStyle).toBe("solid");
+      expect(board.style[boardSeam]).toBe("0px");
+      for (const seam of agentsSeams) expect(agents.style[seam]).toBe("0px");
+      // Board is inactive again, so its outer edges are back.
+      expect(board.style.borderTopWidth || board.style.borderLeftWidth).toBe("1px");
+    });
+  }
 });

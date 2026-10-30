@@ -205,7 +205,7 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
             the list on every keystroke; a boolean has no half-typed state.
 
             One group rather than three buttons, bordered exactly as
-            SidebarHeader borders its nav controls: outer corners rounded, inner
+            SidebarControls borders its nav controls: outer corners rounded, inner
             corners square, and BOTH sides of every seam suppressed — the first
             drops its right, the last its left, the middle both. So there are no
             internal dividers at all: in the default all-off state the rail is
@@ -248,7 +248,7 @@ export default function ChatFilterBar({ filters, viewOptions, onApply, searchQue
                   ...HEADER_BUTTON_STYLE,
                   // The chatlist-nav tokens, not the generic --text/--border,
                   // because this group is claiming to be the same control as
-                  // SidebarHeader's nav group and that is what the header uses.
+                  // SidebarControls' nav group and that is what the header uses.
                   // They alias to --text/--border/--text-on-accent in both
                   // built-in themes, so this is pixel-neutral today. It starts
                   // mattering the moment a custom theme in ~/.callboard/themes/

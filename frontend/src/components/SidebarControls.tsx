@@ -26,29 +26,37 @@ export const SIDEBAR_NAV_ITEMS: readonly SidebarNavItem[] = [
 const RADIUS = 6;
 
 /**
- * Rounds the outer corners of a segmented group and drops the borders its
- * buttons share, along whichever axis the group runs.
+ * Borders and corners for one button of a segmented group, along whichever axis
+ * the group runs: outer corners rounded, the borders its buttons share dropped,
+ * and no border at all on the active one.
+ *
+ * Every edge is set as a longhand on every render, never via `border` (or
+ * `borderWidth`, also a shorthand). React only rewrites the properties whose
+ * values changed, so when the active button moves, a changed `border` shorthand
+ * resets all four widths to 1px while the unchanged `borderRightWidth: 0`
+ * beside it is not re-applied — and the seam doubles.
  */
-function segmentStyle(index: number, count: number, vertical: boolean): CSSProperties {
+function segmentStyle(index: number, count: number, vertical: boolean, active: boolean): CSSProperties {
   const first = index === 0;
   const last = index === count - 1;
-  if (vertical) {
-    return {
-      borderTopLeftRadius: first ? RADIUS : 0,
-      borderTopRightRadius: first ? RADIUS : 0,
-      borderBottomLeftRadius: last ? RADIUS : 0,
-      borderBottomRightRadius: last ? RADIUS : 0,
-      ...(last ? {} : { borderBottomWidth: 0 }),
-      ...(first ? {} : { borderTopWidth: 0 }),
-    };
-  }
+  const width = (shown: boolean) => (active || !shown ? 0 : 1);
+  const edges = vertical
+    ? { top: width(first), bottom: width(last), left: width(true), right: width(true) }
+    : { top: width(true), bottom: width(true), left: width(first), right: width(last) };
+  const corners = vertical
+    ? { topLeft: first, topRight: first, bottomLeft: last, bottomRight: last }
+    : { topLeft: first, bottomLeft: first, topRight: last, bottomRight: last };
   return {
-    borderTopLeftRadius: first ? RADIUS : 0,
-    borderBottomLeftRadius: first ? RADIUS : 0,
-    borderTopRightRadius: last ? RADIUS : 0,
-    borderBottomRightRadius: last ? RADIUS : 0,
-    ...(last ? {} : { borderRightWidth: 0 }),
-    ...(first ? {} : { borderLeftWidth: 0 }),
+    borderStyle: "solid",
+    borderColor: "var(--chatlist-item-border)",
+    borderTopWidth: edges.top,
+    borderRightWidth: edges.right,
+    borderBottomWidth: edges.bottom,
+    borderLeftWidth: edges.left,
+    borderTopLeftRadius: corners.topLeft ? RADIUS : 0,
+    borderTopRightRadius: corners.topRight ? RADIUS : 0,
+    borderBottomLeftRadius: corners.bottomLeft ? RADIUS : 0,
+    borderBottomRightRadius: corners.bottomRight ? RADIUS : 0,
   };
 }
 
@@ -107,8 +115,7 @@ export default function SidebarControls({ orientation, onNewChat, claudeLoggedIn
                 ...HEADER_BUTTON_STYLE,
                 background: active ? "var(--accent)" : "var(--bg-secondary)",
                 color: active ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-                border: active ? "none" : "1px solid var(--chatlist-item-border)",
-                ...segmentStyle(index, SIDEBAR_NAV_ITEMS.length, vertical),
+                ...segmentStyle(index, SIDEBAR_NAV_ITEMS.length, vertical, active),
               }}
               title={item.title}
             >
