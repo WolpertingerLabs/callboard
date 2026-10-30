@@ -255,7 +255,7 @@ describe("the toggles as one segmented group", () => {
    *
    * Asserted on the `--chatlist-*` tokens rather than on `--text`/`--border`,
    * because "exactly as the header does" is the claim and those are the tokens
-   * SidebarHeader uses. They alias to the generic ones in both built-in themes,
+   * SidebarControls uses. They alias to the generic ones in both built-in themes,
    * so this is not a visual difference today — it is a difference that only
    * shows up under a custom theme, which is the case where the two rails must
    * still agree.
