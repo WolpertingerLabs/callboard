@@ -1,8 +1,8 @@
 import { filterChatRows } from "shared/types/chat-filters.js";
 import { publishChatView, stopChatViewPublisher } from "../utils/chat-view.js";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { Plus, Settings, Bot, PanelLeftOpen, ChevronDown, ChevronRight, AlertTriangle, FileText } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { ChevronDown, ChevronRight, FileText } from "lucide-react";
 import {
   listChats,
   deleteChat,
@@ -22,6 +22,7 @@ import {
 } from "../api";
 import { useSessionContext } from "../contexts/SessionContext";
 import SidebarHeader from "../components/SidebarHeader";
+import SidebarControls from "../components/SidebarControls";
 import SpaceSwitcher, { SpaceNotice } from "../components/SpaceSwitcher";
 import MoveToSpaceModal from "../components/MoveToSpaceModal";
 import MoveToFolderModal from "../components/MoveToFolderModal";
@@ -269,9 +270,6 @@ export default function ChatList({
    */
   const listRootRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
-  const location = useLocation();
-  const isSettingsActive = location.pathname === "/settings";
-  const isAgentsActive = location.pathname.startsWith("/agents");
   const [drafts, setDrafts] = useState<QueueItem[]>([]);
   const [stagingCollapsed, setStagingCollapsed] = useState(false);
 
@@ -1555,95 +1553,16 @@ export default function ChatList({
         >
           C
         </div>
-        <button
-          onClick={() => {
-            if (sidebarCollapsed && onToggleSidebar) {
-              onToggleSidebar();
-            }
+        <SidebarControls
+          orientation="vertical"
+          onNewChat={() => {
+            onToggleSidebar?.();
             setShowNew(true);
           }}
-          style={{
-            background: "var(--accent)",
-            color: "var(--text-on-accent)",
-            padding: "6px",
-            borderRadius: 6,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-          title="New Chat"
-        >
-          <Plus size={16} />
-        </button>
-        <button
-          onClick={() => navigate("/agents")}
-          style={{
-            background: isAgentsActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isAgentsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-            padding: "6px",
-            borderRadius: 6,
-            border: isAgentsActive ? "none" : "1px solid var(--chatlist-item-border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-          title="Agents"
-        >
-          <Bot size={16} />
-        </button>
-        <button
-          onClick={() => navigate("/settings")}
-          style={{
-            background: isSettingsActive ? "var(--accent)" : "var(--bg-secondary)",
-            color: isSettingsActive ? "var(--chatlist-icon-nav-active)" : "var(--chatlist-icon-nav)",
-            padding: "6px",
-            borderRadius: 6,
-            border: isSettingsActive ? "none" : "1px solid var(--chatlist-item-border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-          title="Settings"
-        >
-          <Settings size={16} />
-        </button>
-        {claudeLoggedIn === false && onShowClaudeModal && (
-          <button
-            onClick={onShowClaudeModal}
-            style={{
-              background: "var(--warning-bg)",
-              color: "var(--warning)",
-              padding: "6px",
-              borderRadius: 6,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              marginTop: "auto",
-            }}
-            title="Claude Code login required"
-          >
-            <AlertTriangle size={16} />
-          </button>
-        )}
-        {onToggleSidebar && (
-          <button
-            onClick={onToggleSidebar}
-            style={{
-              background: "transparent",
-              color: "var(--chatlist-icon)",
-              padding: "6px",
-              borderRadius: 6,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              ...(claudeLoggedIn !== false ? { marginTop: "auto" } : {}),
-              marginBottom: 16,
-            }}
-            title="Expand sidebar"
-          >
-            <PanelLeftOpen size={16} />
-          </button>
-        )}
+          claudeLoggedIn={claudeLoggedIn}
+          onShowClaudeModal={onShowClaudeModal}
+          onToggleSidebar={onToggleSidebar}
+        />
       </div>
     );
   }
