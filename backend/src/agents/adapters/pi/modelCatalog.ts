@@ -10,10 +10,14 @@ import type { OpenRouterModelInfo } from "shared";
  * tolerates failure.
  *
  * pi needs neither workaround. `ModelRuntime.create({ allowModelNetwork: false })`
- * answers from a catalog shipped in the package — the spike measured **1,157
- * models across all providers, 307 of them OpenRouter's**, with the network
+ * answers from a catalog shipped in the package — over a thousand models across
+ * all providers and several hundred of them OpenRouter's (pi 0.85.1: 1,354 and
+ * 366; the spike, on an older pi, counted 1,157 and 307), with the network
  * explicitly disabled. A user who has never run a pi chat still gets a fully
  * populated picker, and no model lookup can hang on a provider being down.
+ * (One lookup may *wait*, boundedly: a turn on an OpenRouter model newer than
+ * that catalog, which needs live prices to be billed — see
+ * {@link resolvePiModelForRun}.)
  *
  * ## The catalog is not frozen, and this used to assume it was
  *
@@ -50,7 +54,7 @@ import type { OpenRouterModelInfo } from "shared";
  */
 import { join } from "node:path";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { getOpenRouterModelsSnapshot } from "../../../services/openrouter-models.js";
+import { getOpenRouterModelsAsync, getOpenRouterModelsSnapshot } from "../../../services/openrouter-models.js";
 import { resolvePiAgentDir } from "./optionsAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -129,15 +133,15 @@ function getCatalogRuntime(): Promise<ModelRuntime> {
     // Both handlers below write generation-guarded state, so they take the
     // guard too. A `create()` outliving a reset would otherwise stamp its
     // timestamp into the state that replaced it, or null a newer live promise
-    // and cost a duplicate 1,157-model build — the exact leak `_generation`
+    // and cost a duplicate full-catalog build — the exact leak `_generation`
     // exists to stop, in the one place that was still exempt from it.
     const gen = _generation;
     _catalogRuntime = ModelRuntime.create({
       authPath: join(agentDir, "auth.json"),
       modelsPath: join(agentDir, "models.json"),
       // Never reach out *here*. A model picker is not worth a network stall,
-      // and the bundled catalog is complete enough that the spike found 307
-      // OpenRouter models in it offline. Freshness is the revalidation's job.
+      // and the bundled catalog is complete enough to carry hundreds of
+      // OpenRouter models offline. Freshness is the revalidation's job.
       allowModelNetwork: false,
     }).then(
       (runtime) => {
@@ -186,8 +190,8 @@ function isCatalogFresh(): boolean {
  * Revalidate the catalog from pi's own sources, in the background.
  *
  * Deliberately *not* awaited by readers. The first read of a cold process is
- * answered from the package's bundled catalog — complete enough that the spike
- * counted 1,157 models offline — and the network refresh lands behind it. A
+ * answered from the package's bundled catalog — over a thousand models
+ * offline — and the network refresh lands behind it. A
  * picker that is instantly populated and current a moment later beats one that
  * blocks on a provider being slow.
  *
@@ -287,9 +291,9 @@ export async function listPiProviderIds(): Promise<string[]> {
  * definition supplies a `fetchModels`, and `openrouterProvider()` supplies
  * none: it passes a static `OPENROUTER_MODELS` and nothing else. So OpenRouter
  * is not among the providers `runtime.refresh()` even visits, and pi's
- * OpenRouter list is exactly what shipped in the installed package — measured
- * at 303 models against 349 tool-calling models live, i.e. **62 missing**,
- * including current flagships.
+ * OpenRouter list is exactly what shipped in the installed package. pi 0.85.1
+ * ships 366; on 2026-10-31 OpenRouter listed 386 tool-calling models, **81 of
+ * them missing** from pi's list, including current flagships.
  *
  * That gap does not close on its own; only a pi upgrade moves it. Callboard
  * already warms an hourly-refreshed catalog of OpenRouter's tool-calling
@@ -317,6 +321,11 @@ export async function listPiProviderIds(): Promise<string[]> {
  * premise. The snapshot answers from memory, never throws, and kicks the
  * refresh in the background — the same stale-while-revalidate trade this file
  * already makes for pi's own catalog.
+ *
+ * That trade is the *picker's*, and only the picker's. A turn that is about to
+ * call OpenRouter anyway takes the opposite one — see
+ * {@link resolvePiModelForRun} — because there a cold snapshot is not a
+ * slightly stale list but a $0 cost recorded against real spend.
  */
 function overlayOpenRouterModels(options: PiModelOption[], baseUrl = "https://openrouter.ai/api/v1"): PiModelOption[] {
   const orModels = getOpenRouterModelsSnapshot(baseUrl);
@@ -401,6 +410,117 @@ export async function getPiModels(providerId: string, baseUrl = "https://openrou
 const PI_DEFAULT_CONTEXT_WINDOW = 128_000;
 const PI_DEFAULT_MAX_TOKENS = 16_384;
 
+type PiModel = ReturnType<ModelRuntime["getModels"]>[number];
+
+/**
+ * Whether an OpenRouter per-token price can be billed at face value.
+ *
+ * Not every listed price is a price. OpenRouter's variable-priced routers —
+ * `openrouter/pareto-code`, `typesafe/jev-router` and a few more — list
+ * `prompt` and `completion` as `"-1"`, and multiplying that through would bill
+ * every token at −$1,000,000 per million. A negative or non-numeric price is
+ * unknown, and unknown is billed at 0 with a warning, exactly like a missing
+ * one. An absent price is not an unusable one: it is how OpenRouter says a
+ * model has no cache tier, so 0 is the honest answer there.
+ *
+ * This guards *synthesized* models only. Two routers, `openrouter/auto` and
+ * `openrouter/auto-beta`, are bundled in pi 0.85.1 with the same "-1" already
+ * multiplied into their `cost`; they never reach synthesis, and
+ * {@link withUsableCost} is what keeps them from billing negative.
+ */
+function isUsablePrice(price: string | undefined): boolean {
+  if (price === undefined) return true;
+  const n = Number(price);
+  return Number.isFinite(n) && n >= 0;
+}
+
+/** True when OpenRouter lists a price for `info` that cannot be billed as-is. */
+function hasUnusablePrice(info: OpenRouterModelInfo): boolean {
+  return ![info.promptPrice, info.completionPrice, info.cacheReadPrice, info.cacheWritePrice].every(isUsablePrice);
+}
+
+type PiCostRates = Pick<PiModel["cost"], "input" | "output" | "cacheRead" | "cacheWrite">;
+
+const isUsableRate = (rate: number): boolean => Number.isFinite(rate) && rate >= 0;
+
+function hasUnusableRate(rates: PiCostRates): boolean {
+  return ![rates.input, rates.output, rates.cacheRead, rates.cacheWrite].every(isUsableRate);
+}
+
+function clampRates<T extends PiCostRates>(rates: T): T {
+  const clamp = (rate: number): number => (isUsableRate(rate) ? rate : 0);
+  return { ...rates, input: clamp(rates.input), output: clamp(rates.output), cacheRead: clamp(rates.cacheRead), cacheWrite: clamp(rates.cacheWrite) };
+}
+
+/**
+ * `model`, or a copy of it with every negative or non-finite rate billed at 0.
+ *
+ * pi's bundled data is generated from OpenRouter's `/models`, and the generator
+ * multiplies through without checking: pi 0.85.1 ships `openrouter/auto` and
+ * `openrouter/auto-beta` — variable-priced routers OpenRouter lists at `"-1"` —
+ * with `cost.input` and `cost.output` of −1,000,000 per million. pi's
+ * `calculateCost` applies those as-is, so a 20k-in / 1k-out turn on either
+ * recorded about −$21,000. The real price is unknowable up front (the router
+ * picks the model), so it is unknown, billed at 0 and warned about — the same
+ * answer {@link isUsablePrice} gives a synthesized model.
+ *
+ * A copy, not an edit: the object is pi's registry entry, shared by every
+ * lookup on that runtime. A copy is accepted everywhere the original is —
+ * pi's `modelsAreEqual` compares `id` and `provider` only, the session takes
+ * the `model` it is handed rather than re-resolving it, and `prepareRequest`
+ * spreads it before use. Tiers are clamped too, since `calculateCost` bills a
+ * whole request at a matching tier's rates.
+ */
+function withUsableCost<M extends PiModel>(model: M): M {
+  const { cost } = model;
+  if (!hasUnusableRate(cost) && !(cost.tiers ?? []).some(hasUnusableRate)) return model;
+  log.warn(`pi model "${model.provider}/${model.id}" carries a negative or invalid price in pi's catalog — its unpriced rates will be recorded as $0`);
+  return { ...model, cost: { ...clampRates(cost), ...(cost.tiers ? { tiers: cost.tiers.map(clampRates) } : {}) } };
+}
+
+/**
+ * The bundled OpenRouter model whose transport a synthesized slug should copy.
+ *
+ * This used to be `getModels("openrouter")[0]`, on the claim that every bundled
+ * OpenRouter model agreed on `api`/`baseUrl`. They do not. pi 0.85.1 ships two
+ * dialects: 15 models on `anthropic-messages` against `https://openrouter.ai/api`
+ * — exactly the plain `anthropic/…` slugs — and 351 on `openai-completions`
+ * against `…/api/v1`, which is every other vendor *and* the `anthropic/…:batch`
+ * variants. Index 0 sorts to `anthropic/claude-3-haiku`, so every synthesized
+ * Gemini, Llama or DeepSeek slug was being sent through OpenRouter's
+ * Anthropic-compatible endpoint.
+ *
+ * pi ships no rule for this, only the generated per-model data, so the choice
+ * is read off that data rather than hardcoded: the majority transport among
+ * bundled models from the same vendor with the same `:variant`-ness, and the
+ * whole catalog's majority when the vendor is new to pi. Against today's
+ * catalog that sends `anthropic/claude-opus-9` to `anthropic-messages` and
+ * `google/…`, `anthropic/…:batch` and an unknown vendor to
+ * `openai-completions` — what pi itself does for every bundled sibling — and a
+ * pi release that moves a vendor's dialect carries its new slugs with it.
+ */
+function pickOpenRouterTemplate(bundled: readonly PiModel[], modelId: string): PiModel | undefined {
+  const slash = modelId.indexOf("/");
+  const vendor = slash > 0 ? modelId.slice(0, slash + 1) : "";
+  const isVariant = modelId.includes(":");
+  const siblings = vendor ? bundled.filter((m) => m.id.startsWith(vendor) && m.id.includes(":") === isVariant) : [];
+  return majorityTransport(siblings.length > 0 ? siblings : bundled);
+}
+
+/** A representative of the most common `api` + `baseUrl` pair; first seen wins a tie. */
+function majorityTransport(models: readonly PiModel[]): PiModel | undefined {
+  const tally = new Map<string, { model: PiModel; count: number }>();
+  for (const model of models) {
+    const key = `${model.api}\u0000${model.baseUrl}`;
+    const entry = tally.get(key);
+    if (entry) entry.count++;
+    else tally.set(key, { model, count: 1 });
+  }
+  let best: { model: PiModel; count: number } | undefined;
+  for (const entry of tally.values()) if (!best || entry.count > best.count) best = entry;
+  return best?.model;
+}
+
 /**
  * Build a `Model` for an OpenRouter slug pi's bundled catalog does not carry.
  *
@@ -415,11 +535,16 @@ const PI_DEFAULT_MAX_TOKENS = 16_384;
  * The transport — `api`, `provider`, `baseUrl` — is read off a bundled
  * OpenRouter model rather than written as literals, so a pi release that moves
  * the base URL or switches API dialect carries synthesized models with it.
- * Those three are the only fields all 303 bundled OpenRouter models agree on,
- * which is what makes templating sound; the rest are set explicitly, and the
- * fields are enumerated rather than spread so that a `Model` gaining a member
- * in a pi upgrade fails the build instead of silently inheriting a value that
- * describes a different model.
+ * *Which* bundled model is not arbitrary: see {@link pickOpenRouterTemplate}.
+ * The rest are set explicitly, and the fields are enumerated rather than spread
+ * so that a `Model` gaining a member in a pi upgrade fails the build instead of
+ * silently inheriting a value that describes a different model.
+ *
+ * A user-set `pi.baseUrl` needs no handling here. `registerProvider(id,
+ * { baseUrl })` rewrites the `baseUrl` of every model `runtime.getModels()`
+ * returns — measured, for both API dialects — and `PiAgentQuery` registers it
+ * before resolving the model on the same runtime, so the template already
+ * carries the override.
  *
  * Notably `compat` is left off: pi *derives* it per-slug from the provider and
  * the id — `cacheControlFormat: "anthropic"` only for `anthropic/…`,
@@ -428,11 +553,23 @@ const PI_DEFAULT_MAX_TOKENS = 16_384;
  * overrides that. Copying the template's would attach one arbitrary model's
  * quirks to every synthesized slug.
  *
- * Metadata comes from callboard's OpenRouter catalog where the catalog has it:
- * prices convert cleanly (pi's `cost` is USD per million tokens, OpenRouter's
- * `pricing` is USD per token — verified equal for every model both carry), and
- * `reasoning` is `supported_parameters` containing `"reasoning"`, which agreed
- * with pi's own flag on 287 of 288 shared models.
+ * Metadata comes from callboard's OpenRouter catalog where the catalog has it.
+ * pi's `cost` is USD per million tokens and OpenRouter's `pricing` USD per
+ * token, so each price is the other times 10⁶: `prompt` / `completion` →
+ * `input` / `output`, `input_cache_read` / `input_cache_write` → `cacheRead` /
+ * `cacheWrite`. Measured against pi 0.85.1 on the 308 OpenRouter models both
+ * carry (live `/models`, 2026-10-31), within pi's six-decimal rounding:
+ * input+output agreed on 242, cache-write on 299, cache-read on 250. The
+ * disagreements are not a unit mismatch — the mismatches inspected were
+ * repricings since pi's snapshot (e.g. `openai/gpt-5.6-sol` cache-write, pi
+ * 2.5 vs OpenRouter 5) — which is the argument for live prices over pi's, not
+ * against the mapping. OpenRouter omits the cache fields for a model with no
+ * cache tier, and 0 is then the right price — but not always: on 2 shared
+ * models it omitted cache-write and on 5 cache-read where pi carries a nonzero
+ * price, so a synthesized model can under-bill cached tokens. Negative prices
+ * are a separate case, see {@link isUsablePrice}. And `reasoning` is
+ * `supported_parameters` containing `"reasoning"`, which agreed with pi's own
+ * flag on 307 of the 308.
  *
  * `input` is text-only regardless: OpenRouter's `/models` modality data is not
  * in `OpenRouterModelInfo`, and claiming vision that isn't there fails a turn,
@@ -440,14 +577,11 @@ const PI_DEFAULT_MAX_TOKENS = 16_384;
  * upgrade that bundles the model replaces all of this with the real definition.
  */
 function synthesizeOpenRouterModel(runtime: ModelRuntime, modelId: string, metadata?: OpenRouterModelInfo | null): ReturnType<ModelRegistry["find"]> {
-  const template = runtime.getModels("openrouter")[0];
+  const template = pickOpenRouterTemplate(runtime.getModels("openrouter"), modelId);
   if (!template) return undefined;
 
   const info = metadata === undefined ? getOpenRouterModelsSnapshot("https://openrouter.ai/api/v1").find((m) => m.id === modelId) : metadata;
-  const perMillion = (price: string | undefined): number => {
-    const n = Number(price);
-    return Number.isFinite(n) ? n * 1_000_000 : 0;
-  };
+  const perMillion = (price: string | undefined): number => (price !== undefined && isUsablePrice(price) ? Number(price) * 1_000_000 : 0);
 
   return {
     id: modelId,
@@ -457,7 +591,12 @@ function synthesizeOpenRouterModel(runtime: ModelRuntime, modelId: string, metad
     baseUrl: template.baseUrl,
     reasoning: info?.supportedParameters.includes("reasoning") ?? false,
     input: ["text"],
-    cost: { input: perMillion(info?.promptPrice), output: perMillion(info?.completionPrice), cacheRead: 0, cacheWrite: 0 },
+    cost: {
+      input: perMillion(info?.promptPrice),
+      output: perMillion(info?.completionPrice),
+      cacheRead: perMillion(info?.cacheReadPrice),
+      cacheWrite: perMillion(info?.cacheWritePrice),
+    },
     contextWindow: info?.contextLength ?? PI_DEFAULT_CONTEXT_WINDOW,
     maxTokens: PI_DEFAULT_MAX_TOKENS,
   };
@@ -488,7 +627,7 @@ export function findPiModel(
   const model = modelId.trim();
   if (!provider || !model) return undefined;
   const found = new ModelRegistry(runtime).find(provider, model);
-  if (found) return found;
+  if (found) return withUsableCost(found);
 
   if (provider === "openrouter") {
     const synthesized = synthesizeOpenRouterModel(runtime, model, openRouterInfo);
@@ -500,6 +639,119 @@ export function findPiModel(
 
   log.debug(`pi model "${provider}/${model}" is not in the catalog — deferring to pi's default`);
   return undefined;
+}
+
+/**
+ * How long a turn will wait for the OpenRouter catalog before synthesizing a
+ * model without prices. Short on purpose: a healthy `/models` answers in about
+ * a second, and the fetch outlives the wait (it is bounded at 30s on its own),
+ * so giving up here still warms the entry for the next turn.
+ */
+export const PI_RUN_CATALOG_WAIT_MS = 5_000;
+
+/**
+ * {@link findPiModel} for a turn that is about to run, with the OpenRouter
+ * metadata fetched rather than merely peeked at.
+ *
+ * ## Why the run path waits when the picker must not
+ *
+ * A synthesized model's `cost` *is* the price pi bills the turn at — pi's
+ * `calculateCost` multiplies it by the usage the provider reports — so a
+ * synthesis without metadata records real spend as $0. And the metadata it
+ * needs lives in the catalog for this turn's *execution* endpoint, which is a
+ * different cache from the boot-warmed, hourly-refreshed utility one:
+ * `getOpenRouterModelsSnapshot(baseUrl)` with an explicit URL reads the
+ * per-endpoint entry, and nothing warms that. So the first pi turn of every
+ * daemon on any model newer than pi's bundled list read an empty snapshot,
+ * kicked the fetch it needed, and synthesized at $0 while that fetch landed
+ * behind it — measured, on a 25,796-in / 998-out turn worth about $0.06.
+ *
+ * The picker's reason for never waiting (see {@link overlayOpenRouterModels}) is
+ * that a model list is not worth a network stall. That does not transfer: this
+ * turn is about to make a network call to the same host regardless, and the
+ * wait is bounded by {@link PI_RUN_CATALOG_WAIT_MS}.
+ *
+ * It is paid only when it can buy something: a bundled model never consults the
+ * catalog, and a snapshot that already carries the slug — even a stale one,
+ * since an hour-old price beats none and the snapshot kicks its own refresh —
+ * answers without waiting. What remains is an endpoint entry that is cold, aged
+ * out, or does not carry the slug. While the endpoint is healthy that is about
+ * once per process per endpoint per hour, plus a slug the catalog genuinely
+ * lacks, which a fresh entry answers instantly. While it is *not*, it is more:
+ * a failed fetch is cached for only `OPENROUTER_MODELS_RETRY_MS` (60s), so an
+ * endpoint that accepts connections and then stalls costs every turn on an
+ * unbundled slug the full wait, roughly once a minute or more. That is
+ * accepted: the wait is bounded, stop interrupts it (`opts.signal`), and such a
+ * turn is talking to the same stalled host anyway.
+ *
+ * ## Why not borrow the warm utility catalog instead
+ *
+ * When `pi.baseUrl` is OpenRouter's default, the utility catalog fetches the
+ * very same URL, and reading it would skip even the one cold wait. It is not
+ * done because it fixes only that case — a pi chat pointed at a proxy or mirror
+ * would still bill its first turn at $0 — and because the two caches are kept
+ * apart deliberately (#408): the utility entry follows the account-wide
+ * `openRouterBaseUrl`, and an execution route must never take capabilities from
+ * a host it is not talking to. Waiting on this endpoint's own entry fixes every
+ * endpoint without touching that boundary.
+ *
+ * When the price still cannot be had — the fetch failed or timed out, the
+ * catalog does not list the slug, or it lists a price that is not one (see
+ * {@link isUsablePrice}) — the turn runs anyway, on a model whose unknown
+ * prices are zero, and says so at `warn`. A $0 cost against real tokens should
+ * be explicable from the log, not discovered in a usage report.
+ *
+ * A stop during the wait (`opts.signal`) ends it at once and resolves
+ * `undefined` without the warning: the caller is abandoning the turn, so there
+ * is no cost to explain.
+ */
+export async function resolvePiModelForRun(
+  runtime: ModelRuntime,
+  providerId: string,
+  modelId: string,
+  baseUrl: string,
+  opts: { catalogWaitMs?: number; signal?: AbortSignal } = {},
+): Promise<ReturnType<ModelRegistry["find"]>> {
+  const provider = providerId.trim();
+  const model = modelId.trim();
+  if (provider !== "openrouter" || !model || new ModelRegistry(runtime).find(provider, model)) {
+    return findPiModel(runtime, provider, model);
+  }
+
+  let info = getOpenRouterModelsSnapshot(baseUrl).find((m) => m.id === model) ?? null;
+  if (!info) info = await waitForOpenRouterModel(baseUrl, model, opts.catalogWaitMs ?? PI_RUN_CATALOG_WAIT_MS, opts.signal);
+  if (opts.signal?.aborted) return undefined;
+  if (!info || hasUnusablePrice(info)) {
+    const why = info ? "OpenRouter lists a variable or invalid price" : "catalog unavailable, slow, or missing the slug";
+    log.warn(`no usable OpenRouter pricing for pi model "${model}" at ${baseUrl} (${why}) — its unpriced rates will be recorded as $0`);
+  }
+  return findPiModel(runtime, provider, model, info);
+}
+
+/** The endpoint catalog's entry for `modelId`, or null once `waitMs` passes or `signal` aborts. Never rejects. */
+async function waitForOpenRouterModel(baseUrl: string, modelId: string, waitMs: number, signal?: AbortSignal): Promise<OpenRouterModelInfo | null> {
+  if (signal?.aborted) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), waitMs);
+    onAbort = () => resolve(null);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  // The accessor is contracted never to reject. The catch is belt and braces so
+  // a catalog bug degrades to the warned $0 rather than failing the turn — and
+  // it hangs off `lookup` itself, not the race, because a rejection landing
+  // after the timeout has won would otherwise be unhandled.
+  const lookup = getOpenRouterModelsAsync(baseUrl).then(
+    (models) => models.find((m) => m.id === modelId) ?? null,
+    () => null,
+  );
+  try {
+    return await Promise.race([lookup, timeout]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 /**

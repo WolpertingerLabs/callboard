@@ -154,6 +154,31 @@ describe("context length", () => {
   });
 });
 
+describe("cache pricing", () => {
+  function bodyWith(pricing: Record<string, unknown>): Response {
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ data: [{ id: "a/b", name: "A B", supported_parameters: ["tools"], pricing }] }),
+    } as unknown as Response;
+  }
+
+  it("carries the cached-input read and write prices through", async () => {
+    // pi bills cached tokens at these for a model it has to synthesize; without
+    // them every cache hit on such a model is recorded as free.
+    fetchMock.mockResolvedValue(bodyWith({ prompt: "0.000002", completion: "0.00001", input_cache_read: "0.0000001", input_cache_write: "0.0000001875" }));
+    expect((await getOpenRouterModelsAsync())[0]).toMatchObject({ cacheReadPrice: "0.0000001", cacheWritePrice: "0.0000001875" });
+  });
+
+  it("omits them for a model that advertises no prompt caching", async () => {
+    fetchMock.mockResolvedValue(bodyWith({ prompt: "0.000002", completion: "0.00001" }));
+    const [model] = await getOpenRouterModelsAsync();
+    expect(model).not.toHaveProperty("cacheReadPrice");
+    expect(model).not.toHaveProperty("cacheWritePrice");
+  });
+});
+
 describe("failure handling", () => {
   it("retries a failed fetch after the retry window, not the full TTL", async () => {
     fetchMock.mockRejectedValue(new Error("offline"));

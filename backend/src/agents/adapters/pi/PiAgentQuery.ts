@@ -1,4 +1,3 @@
-import { getOpenRouterModelsSnapshot } from "../../../services/openrouter-models.js";
 /**
  * One pi turn, as a callboard {@link AgentQuery}.
  *
@@ -65,7 +64,7 @@ import type { ToolServerSpec } from "../../ports/tools.js";
 import { buildTerminalResult, recordTerminalSignal, translatePiEvent, type PiTurnAccounting } from "./messageAdapter.js";
 import { buildPiServicesOptions, buildPiSessionOptions, resolvePiAgentDir, DEFAULT_PI_PROVIDER_ID, type PiRunOptions } from "./optionsAdapter.js";
 import { buildPermissionExtension, buildToolFilters, type PiPermissionContext } from "./permissionAdapter.js";
-import { findPiModel, getPiModels, type PiModelOption } from "./modelCatalog.js";
+import { getPiModels, resolvePiModelForRun, type PiModelOption } from "./modelCatalog.js";
 import { buildPiTools } from "./toolAdapter.js";
 import { resolvePiPrompt } from "./promptAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -149,6 +148,12 @@ export class PiAgentQuery implements AgentQuery {
     // Flattened before anything else: `prompt()` takes a string plus separate
     // images, so a streaming prompt has to be drained exactly once, up front.
     const { prompt, images } = await resolvePiPrompt(this.opts.prompt);
+    // Every await before the session exists is re-checked against `closed`.
+    // `close()` can only abort a session it can see, so a stop that lands
+    // during setup is recorded and nothing else; without these the turn would
+    // go on to start a session and spend tokens nobody wants, and every later
+    // `close()` would return early on the flag it already set.
+    if (this.closed) return;
 
     const permissionCtx: PiPermissionContext = { ...this.opts.permissions, signal: this.abort.signal };
 
@@ -160,7 +165,16 @@ export class PiAgentQuery implements AgentQuery {
     const customToolNames = bundles.flatMap((b) => b.names);
 
     const agentDir = resolvePiAgentDir();
-    const runtime = await this.buildRuntime(agentDir);
+    let runtime: ModelRuntime;
+    try {
+      runtime = await this.buildRuntime(agentDir);
+    } catch (err) {
+      // A stop aborts the key refresh, and pi throws for that
+      // (`CredentialSynchronizationError`). It is the stop, not a failure.
+      if (this.closed) return;
+      throw err;
+    }
+    if (this.closed) return;
 
     // The trust denial, the settings manager and the inline gate all live in
     // here. This is the ONLY sanctioned way into a pi session in this adapter —
@@ -169,17 +183,20 @@ export class PiAgentQuery implements AgentQuery {
       ...buildPiServicesOptions({ cwd, extension: buildPermissionExtension(permissionCtx), agentDir }),
       modelRuntime: runtime,
     });
+    if (this.closed) return;
 
     const sessionManager = this.opts.resumePath
       ? SessionManager.open(this.opts.resumePath, this.opts.sessionDir, cwd)
       : SessionManager.create(cwd, this.opts.sessionDir, { id: sessionId });
 
+    // Awaited, not peeked: a model newer than pi's bundled catalog is billed at
+    // whatever price this resolves, and on a cold endpoint catalog a peek is $0.
+    // The stop signal ends the wait at once rather than after its bound.
     const providerId = pi.providerId?.trim() || DEFAULT_PI_PROVIDER_ID;
-    const scopedOrInfo =
-      providerId === "openrouter"
-        ? (getOpenRouterModelsSnapshot(pi.baseUrl?.trim() || "https://openrouter.ai/api/v1").find((entry) => entry.id === pi.model?.trim()) ?? null)
-        : null;
-    const model = findPiModel(runtime, providerId, pi.model ?? "", scopedOrInfo);
+    const model = await resolvePiModelForRun(runtime, providerId, pi.model ?? "", pi.baseUrl?.trim() || "https://openrouter.ai/api/v1", {
+      signal: this.abort.signal,
+    });
+    if (this.closed) return;
 
     const { session } = await createAgentSessionFromServices({
       services,
@@ -191,6 +208,13 @@ export class PiAgentQuery implements AgentQuery {
         filters: buildToolFilters(this.opts.permissions.getPermissions?.() ?? null, customToolNames),
       }),
     });
+    if (this.closed) {
+      // The session exists but `close()` already ran without seeing it, so it
+      // will never be torn down by anyone else. It has not been prompted, so
+      // disposing is all it needs.
+      session.dispose();
+      return;
+    }
     this.session = session;
 
     const queue = new EventQueue<AgentSessionEvent>();
@@ -257,7 +281,7 @@ export class PiAgentQuery implements AgentQuery {
       authPath: join(agentDir, "auth.json"),
       modelsPath: join(agentDir, "models.json"),
       // No network during *construction*. A turn should not stall on a catalog
-      // refresh, and the bundled catalog carries 1,157 models.
+      // refresh, and the bundled catalog carries over a thousand models.
       //
       // Note what this does not cover: `setRuntimeApiKey` below refreshes the
       // catalog internally, and that refresh is governed by pi's own
@@ -274,8 +298,8 @@ export class PiAgentQuery implements AgentQuery {
     //
     // `registerProvider` *composes* with the built-in provider rather than
     // replacing it — measured: registering `openrouter` with only a `baseUrl`
-    // moved the URL and left all 303 catalog models intact. That is what makes
-    // this safe to apply unconditionally when the setting is present, and it is
+    // moved the URL and left every bundled OpenRouter model intact. That is what
+    // makes this safe to apply unconditionally when the setting is present, and it is
     // the reason the field is wired rather than dropped: Phase 3 removed
     // `piThinkingLevel` for being unread, and a `piBaseUrl` the adapter ignored
     // would have been the same dead control in a different place.
@@ -291,7 +315,13 @@ export class PiAgentQuery implements AgentQuery {
       // `create()` bounds its own refresh with a 15s abort, but this path
       // passes whatever we give it and otherwise waits indefinitely. Without a
       // deadline a hung catalog host stalls the turn, not just the catalog.
-      await runtime.setRuntimeApiKey(providerId, apiKey, { signal: AbortSignal.timeout(MODEL_REFRESH_TIMEOUT_MS) });
+      //
+      // The stop signal rides along so a stop does not sit out that deadline.
+      // pi reports an abort here by throwing, which `iterate()` turns back into
+      // the clean exit a stop should be.
+      await runtime.setRuntimeApiKey(providerId, apiKey, {
+        signal: AbortSignal.any([AbortSignal.timeout(MODEL_REFRESH_TIMEOUT_MS), this.abort.signal]),
+      });
     } else {
       // Not fatal: pi falls back to its own environment lookup, and the
       // provider's own error message reaching the user is better than a
