@@ -984,7 +984,12 @@ pre {
 
 /* Fork-point menu rows (ForkPointMarker). Background lives here, not inline,
    so :hover / :focus-visible can override it; the highlight is the colour the
-   header's chat-tree dropdown marks its current row with. */
+   header's chat-tree dropdown marks its current row with.
+
+   That tint is too faint to be a focus indicator on its own (and forced-colors
+   mode drops backgrounds entirely), so keyboard focus also gets a real outline,
+   inset so the menu's overflow does not clip it. Same approach as the composer
+   focus ring below. */
 .fork-point-menu-item {
   background: transparent;
 }
@@ -992,7 +997,17 @@ pre {
 .fork-point-menu-item:hover,
 .fork-point-menu-item:focus-visible {
   background: var(--chatlist-item-active-bg);
-  outline: none;
+}
+
+.fork-point-menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (forced-colors: active) {
+  .fork-point-menu-item:focus-visible {
+    outline: 2px solid Highlight;
+  }
 }
 
 /* Copy button on code-block hover. Same contract as `.copy-btn` above: the
