@@ -6,6 +6,7 @@ import { chatMeta } from "../utils/chatMeta";
 import ChatListItem, { type ChatCardMenu } from "./ChatListItem";
 import ChatSectionHeader from "./ChatSectionHeader";
 import ProviderBadge from "./ProviderBadge";
+import ChatRoleBadge from "./ChatRoleBadge";
 import { isChatPinned, sectionChatRows, type ChatSection } from "../utils/chatSections";
 import type { ChatSectionKey } from "../utils/localStorage";
 import { useChatSectionExpansion } from "../hooks/useChatSectionExpansion";
@@ -602,21 +603,7 @@ function TreeNodeRow({
           }}
         />
         <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} acpProviderId={node.acpProviderId} compact />
-        {node.role && (
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 600,
-              padding: "1px 5px",
-              borderRadius: 4,
-              background: "var(--chatlist-badge-status-bg)",
-              color: "var(--chatlist-badge-status-text)",
-              flexShrink: 0,
-            }}
-          >
-            {node.role}
-          </span>
-        )}
+        {node.role && <ChatRoleBadge role={node.role} />}
         <span
           style={{
             fontSize: 13,

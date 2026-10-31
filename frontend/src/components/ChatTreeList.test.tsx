@@ -95,6 +95,31 @@ async function expandGroup() {
   chevron.click();
 }
 
+describe("ChatTreeList role badges", () => {
+  it("shows forks and engine switches as icons, and every other role as its label", async () => {
+    mockGetChatTree.mockResolvedValueOnce(
+      makeTree(
+        makeNode("root", "Root chat", {
+          children: [
+            makeNode("child-1", "Forked", { role: "fork" }),
+            makeNode("child-2", "Handed off", { role: "engine-switch", provider: "codex" }),
+            makeNode("child-3", "Helper", { role: "subagent" }),
+          ],
+        }),
+      ),
+    );
+    renderTree({ refreshToken: 0 });
+    await expandGroup();
+    await screen.findByText("Forked");
+
+    expect(screen.getByRole("img", { name: "Fork" })).toHaveProperty("title", "Fork");
+    expect(screen.getByRole("img", { name: "Engine switch" })).toHaveProperty("title", "Engine switch");
+    expect(screen.queryByText("fork")).toBeNull();
+    expect(screen.queryByText("engine-switch")).toBeNull();
+    expect(screen.getByText("subagent")).toBeTruthy();
+  });
+});
+
 describe("ChatTreeList refresh", () => {
   it("refetches an expanded group when the chat list refreshes, showing chats spawned since", async () => {
     mockGetChatTree.mockResolvedValueOnce(makeTree(makeNode("root", "Root chat", { children: [makeNode("child-1", "Implementer")] })));

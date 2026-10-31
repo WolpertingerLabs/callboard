@@ -177,6 +177,20 @@ describe("buildChatTree", () => {
     expect(new Set(flat).size).toBe(flat.length);
   });
 
+  it("exposes a fork's forkedAt, and omits it on legacy or malformed stamps", () => {
+    writeChat("root");
+    writeChat("fork", { parentChatId: "root", rootChatId: "root", chatRole: "fork", forkedAt: "2026-02-03T04:05:06.000Z" });
+    writeChat("legacy-fork", { parentChatId: "root", rootChatId: "root", chatRole: "fork" });
+    writeChat("empty", { parentChatId: "root", rootChatId: "root", chatRole: "engine-switch", forkedAt: "" });
+    writeChat("bogus", { parentChatId: "root", rootChatId: "root", chatRole: "fork", forkedAt: 42 });
+
+    const byId = new Map(buildChatTree("root")!.tree.children.map((c) => [c.chatId, c]));
+    expect(byId.get("fork")!.forkedAt).toBe("2026-02-03T04:05:06.000Z");
+    expect(byId.get("legacy-fork")).not.toHaveProperty("forkedAt");
+    expect(byId.get("empty")).not.toHaveProperty("forkedAt");
+    expect(byId.get("bogus")).not.toHaveProperty("forkedAt");
+  });
+
   it("marks statuses stopped when no session registry entries exist", () => {
     writeChat("root");
     const result = buildChatTree("root");

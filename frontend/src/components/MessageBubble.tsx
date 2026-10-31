@@ -1,9 +1,10 @@
 import { memo, useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
 import { Check, FileText, GitFork, RotateCw, Square, X } from "lucide-react";
-import type { ForkProvider, ParsedMessage } from "../api";
+import type { ChatTreeNode, ForkProvider, ParsedMessage } from "../api";
 import { parseTaskList, splitAttachmentBlocks, type AttachedFile, type TaskListItem } from "shared/types/index.js";
 import MarkdownRenderer from "./MarkdownRenderer";
 import CopyButton from "./CopyButton";
+import ForkPointMarker from "./ForkPointMarker";
 import JsonContentView from "./JsonContentView";
 import { useRelativeTime } from "../hooks/useRelativeTime";
 import { copyToClipboard } from "../utils/clipboard";
@@ -452,6 +453,11 @@ interface Props {
   onFork?: (timestamp: string, provider?: ForkProvider) => void;
   /** The harness this chat runs on — omitted from the "continue in" choices. */
   forkCurrentProvider?: ForkProvider;
+  /**
+   * Forks of this chat that branched off at this message, shown as a chip
+   * under the bubble. Must be identity-stable between renders (see the memo).
+   */
+  forks?: ChatTreeNode[];
 }
 
 /** Format a millisecond delta as a human-readable duration */
@@ -593,7 +599,7 @@ export function MessageMetadata({ message, align = "right" }: { message: ParsedM
   );
 }
 
-function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code" }: Props) {
+function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "claude-code", forks }: Props) {
   const [expanded, setExpanded] = useState(false);
   const isUser = message.role === "user";
   const isTeamMessage = !!message.teamName;
@@ -908,6 +914,7 @@ function MessageBubble({ message, teamColorMap, onFork, forkCurrentProvider = "c
         {message.imageIds && message.imageIds.length > 0 && <ImageThumbnails imageIds={message.imageIds} />}
       </div>
       <MessageMetadata message={message} align={isUser ? "right" : "left"} />
+      {forks && forks.length > 0 && <ForkPointMarker forks={forks} align={isUser ? "right" : "left"} />}
     </div>
   );
 }

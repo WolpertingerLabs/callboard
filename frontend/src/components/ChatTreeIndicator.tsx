@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CornerLeftUp, ListTree, Plus } from "lucide-react";
-import { getChatTree, type ChatTreeNode, type ChatTreeResponse } from "../api";
+import type { ChatTreeNode, ChatTreeResponse } from "../api";
 import ProviderBadge from "./ProviderBadge";
+import ChatRoleBadge from "./ChatRoleBadge";
 import type { ChatRouteState } from "../types/chatRouteState";
 
 /**
  * Chat-header indicator for the chat parentage tree.
  *
- * Fetches GET /api/chats/:id/tree once per chat and renders:
+ * Renders the chat's GET /api/chats/:id/tree response, which Chat.tsx fetches
+ * (it also feeds the inline fork-point markers, so the tree is fetched once):
  *  - a parent breadcrumb pill (navigates to the immediate parent), and
  *  - a "Tree (N)" pill opening a dropdown of the full tree (ancestors +
  *    descendants across engines) for quick switching between linked chats,
@@ -20,6 +22,8 @@ import type { ChatRouteState } from "../types/chatRouteState";
 
 interface Props {
   chatId: string;
+  /** The chat's tree; null while loading or when the chat has none. */
+  tree: ChatTreeResponse | null;
   folder?: string;
   compact?: boolean;
 }
@@ -35,33 +39,16 @@ function flatten(node: ChatTreeNode, depth: number, out: FlatNode[]): FlatNode[]
   return out;
 }
 
-const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
+export const STATUS_DOT: Record<ChatTreeNode["status"], string> = {
   ongoing: "var(--status-active)",
   waiting: "var(--warning)",
   stopped: "var(--text-muted)",
 };
 
-export default function ChatTreeIndicator({ chatId, folder, compact }: Props) {
+export default function ChatTreeIndicator({ chatId, tree, folder, compact }: Props) {
   const navigate = useNavigate();
-  const [tree, setTree] = useState<ChatTreeResponse | null>(null);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Fetched once per chat — the parent renders this component with
-  // key={chatId}, so state resets naturally on chat switch.
-  useEffect(() => {
-    let cancelled = false;
-    getChatTree(chatId)
-      .then((result) => {
-        if (!cancelled) setTree(result);
-      })
-      .catch(() => {
-        // No stored record / no tree — render nothing.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [chatId]);
 
   // Close the dropdown on outside click.
   useEffect(() => {
@@ -163,21 +150,7 @@ export default function ChatTreeIndicator({ chatId, folder, compact }: Props) {
                   }}
                 />
                 <ProviderBadge provider={node.provider === "claude-code" ? undefined : node.provider} acpProviderId={node.acpProviderId} compact />
-                {node.role && (
-                  <span
-                    style={{
-                      fontSize: 10,
-                      fontWeight: 600,
-                      padding: "1px 5px",
-                      borderRadius: 4,
-                      background: "var(--chatlist-badge-status-bg)",
-                      color: "var(--chatlist-badge-status-text)",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {node.role}
-                  </span>
-                )}
+                {node.role && <ChatRoleBadge role={node.role} />}
                 <span
                   style={{
                     fontSize: 12,
