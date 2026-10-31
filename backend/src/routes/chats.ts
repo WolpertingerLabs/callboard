@@ -1443,6 +1443,9 @@ chatsRouter.post("/:id/fork", async (req, res) => {
     // chains may never have carried rootChatId at all.
     rootChatId: walkToRootId(chat.id),
     chatRole: isHandoff ? "engine-switch" : "fork",
+    // The message the fork branched off, so the original thread can mark the
+    // spot. Forks from before this field carry none and get no inline marker.
+    forkedAt: timestamp,
     // Pin the target harness for the new chat's lifetime, mirroring
     // sendMessage's convention of omitting the "claude-code" default rather
     // than writing it (an explicit value there is redundant, and resolving an

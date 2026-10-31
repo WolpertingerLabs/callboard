@@ -48,9 +48,11 @@ import {
   fetchDraftImages,
   forkChat,
   getCard,
+  getChatTree,
   handshakeHeaders,
   type CardSummary,
   type ChatActivityResponse,
+  type ChatTreeResponse,
   type Chat as ChatType,
   type ForkProvider,
   type ParsedMessage,
@@ -61,6 +63,7 @@ import {
   type Keyword,
 } from "../api";
 import { readChatRouteState, type ChatRouteState } from "../types/chatRouteState";
+import { assignForkMarkers, forksByTimestamp } from "../utils/forkMarkers";
 import { providerKindOf, useChatMeta } from "../hooks/useChatMeta";
 import { INTERRUPTED_MESSAGE, useStopController } from "../hooks/useStopController";
 import { useMessageNavigation } from "../hooks/useMessageNavigation";
@@ -833,6 +836,32 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
               (acpLabels[acpProviderId] ?? "The agent")
             : "Claude";
 
+  // The chat's parentage tree, shared by the header's ChatTreeIndicator and
+  // the inline fork-point markers so it is fetched once per chat (and again
+  // after this chat forks), never per render or message. Stored with the id it
+  // was fetched for, so a chat switch never shows the previous chat's tree.
+  const [chatTreeState, setChatTreeState] = useState<{ chatId: string; tree: ChatTreeResponse } | null>(null);
+  const [chatTreeRefresh, setChatTreeRefresh] = useState(0);
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    getChatTree(id)
+      .then((tree) => {
+        if (!cancelled && tree?.tree) setChatTreeState({ chatId: id, tree });
+      })
+      .catch(() => {
+        // No stored record / no tree — no indicator, no markers.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, chatTreeRefresh]);
+  const chatTree = chatTreeState && chatTreeState.chatId === id ? chatTreeState.tree : null;
+
+  // This chat's direct forks by fork point; the arrays are what the memoized
+  // bubbles receive, so they only change with the tree.
+  const forksAt = useMemo(() => forksByTimestamp(chatTree, id), [chatTree, id]);
+
   // Fork the conversation at a message: the backend copies session history
   // up to and including that message into a new chat, which we navigate to.
   // No agent run is started — the user sends the next message from there.
@@ -844,6 +873,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       try {
         const newChat = await forkChat(id, timestamp, opts);
         onChatListRefresh?.();
+        setChatTreeRefresh((n) => n + 1);
         navigate(`/chat/${newChat.id}`);
       } catch (err) {
         console.error("Failed to fork chat:", err);
@@ -945,6 +975,9 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
 
   // Group tool_use + tool_result pairs into combined display items
   const displayItems: DisplayItem[] = useMemo(() => groupToolMessages(messages), [messages]);
+
+  // Which bubble carries each fork-point marker (the last of a timestamp's).
+  const forkMarkers = useMemo(() => assignForkMarkers(displayItems, forksAt), [displayItems, forksAt]);
 
   // Background tasks launched but never reported on. A background shell belongs
   // to the session's subprocess and cannot outlive it, so an unreported task in
@@ -2970,7 +3003,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             {/* Parentage-tree indicator — parent breadcrumb + tree dropdown
                 for chats linked into a cross-engine chat tree. Renders
                 nothing when the chat has no lineage and no descendants. */}
-            {id && <ChatTreeIndicator key={id} chatId={id} folder={chat?.folder} compact={isMobile} />}
+            {id && <ChatTreeIndicator key={id} chatId={id} tree={chatTree} folder={chat?.folder} compact={isMobile} />}
             {/* Card pill — which ticket this chat sits on, and whether it's
                 still open. Archiving/unarchiving lives in the sidebar row's
                 menu; this is what makes that state visible without opening it. */}
@@ -3646,6 +3679,7 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
                         teamColorMap={teamColorMap}
                         onFork={canFork ? handleFork : undefined}
                         forkCurrentProvider={forkSourceProvider ?? undefined}
+                        forks={forkMarkers.get(item.originalIndex)}
                       />
                     </div>
                   );

@@ -242,6 +242,16 @@ describe("POST /api/chats/:id/fork metadata", () => {
     expect(res.chat.workspaceId).toBe("ws-abc123");
   });
 
+  it("stamps the fork point so the original thread can mark it", async () => {
+    setParent({});
+    const same = await fork({ timestamp: "2026-02-03T04:05:06.000Z" });
+    expect(same.meta.forkedAt).toBe("2026-02-03T04:05:06.000Z");
+    // A handoff branches off a message too, and is marked the same way.
+    const handoff = await fork({ timestamp: "2026-02-03T04:05:06.000Z", provider: "codex" });
+    expect(handoff.meta.chatRole).toBe("engine-switch");
+    expect(handoff.meta.forkedAt).toBe("2026-02-03T04:05:06.000Z");
+  });
+
   it("omits workspaceId when the parent has none", async () => {
     setParent({});
     const res = await fork();

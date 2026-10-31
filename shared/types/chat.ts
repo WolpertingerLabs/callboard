@@ -112,6 +112,11 @@ export interface ChatTreeNode {
   title: string | null;
   /** Free-form role label (e.g. "subagent", "monitor", "router", "fork"). */
   role?: string;
+  /**
+   * For a `"fork"` / `"engine-switch"` child: the timestamp of the parent
+   * message it branched off. Absent on forks made before it was recorded.
+   */
+  forkedAt?: string;
   /** "claude-code" | "codex" | "acp" | "cline" | "pi" */
   provider: string;
   /** Which ACP vendor, when `provider` is `"acp"`. Absent otherwise. */
