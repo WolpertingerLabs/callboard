@@ -17,14 +17,17 @@ function findNode(node: ChatTreeNode, chatId: string): ChatTreeNode | null {
 }
 
 /**
- * The chat's DIRECT forks (role `fork` or `engine-switch`), grouped by the
- * message timestamp they branched off. Forks made before `forkedAt` was
- * recorded carry none and are left out — they just get no marker.
+ * The tree's target chat's DIRECT forks (role `fork` or `engine-switch`),
+ * grouped by the message timestamp they branched off. Forks made before
+ * `forkedAt` was recorded carry none and are left out — they just get no marker.
+ *
+ * Keyed on `targetChatId`, the server's resolved chat id, not the route's:
+ * a URL may carry a session id, which matches no node in the tree.
  */
-export function forksByTimestamp(tree: ChatTreeResponse | null, chatId: string | undefined): Map<string, ChatTreeNode[]> {
+export function forksByTimestamp(tree: ChatTreeResponse | null): Map<string, ChatTreeNode[]> {
   const map = new Map<string, ChatTreeNode[]>();
-  if (!tree || !chatId) return map;
-  for (const child of findNode(tree.tree, chatId)?.children ?? []) {
+  if (!tree) return map;
+  for (const child of findNode(tree.tree, tree.targetChatId)?.children ?? []) {
     if ((child.role !== "fork" && child.role !== "engine-switch") || !child.forkedAt) continue;
     const list = map.get(child.forkedAt);
     if (list) list.push(child);

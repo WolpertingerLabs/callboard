@@ -837,11 +837,11 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
             : "Claude";
 
   // The chat's parentage tree, shared by the header's ChatTreeIndicator and
-  // the inline fork-point markers so it is fetched once per chat (and again
-  // after this chat forks), never per render or message. Stored with the id it
-  // was fetched for, so a chat switch never shows the previous chat's tree.
+  // the inline fork-point markers so it is fetched once per chat, never per
+  // render or message. A fork needs no refetch: runFork navigates to the new
+  // chat, and coming back changes the id again. Stored with the id it was
+  // fetched for, so a chat switch never shows the previous chat's tree.
   const [chatTreeState, setChatTreeState] = useState<{ chatId: string; tree: ChatTreeResponse } | null>(null);
-  const [chatTreeRefresh, setChatTreeRefresh] = useState(0);
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
@@ -855,12 +855,12 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
     return () => {
       cancelled = true;
     };
-  }, [id, chatTreeRefresh]);
+  }, [id]);
   const chatTree = chatTreeState && chatTreeState.chatId === id ? chatTreeState.tree : null;
 
   // This chat's direct forks by fork point; the arrays are what the memoized
   // bubbles receive, so they only change with the tree.
-  const forksAt = useMemo(() => forksByTimestamp(chatTree, id), [chatTree, id]);
+  const forksAt = useMemo(() => forksByTimestamp(chatTree), [chatTree]);
 
   // Fork the conversation at a message: the backend copies session history
   // up to and including that message into a new chat, which we navigate to.
@@ -873,7 +873,6 @@ export default function Chat({ onChatListRefresh }: ChatProps = {}) {
       try {
         const newChat = await forkChat(id, timestamp, opts);
         onChatListRefresh?.();
-        setChatTreeRefresh((n) => n + 1);
         navigate(`/chat/${newChat.id}`);
       } catch (err) {
         console.error("Failed to fork chat:", err);

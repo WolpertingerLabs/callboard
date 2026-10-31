@@ -103,6 +103,7 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
               key={node.chatId}
               role="menuitem"
               tabIndex={-1}
+              className="fork-point-menu-item"
               onClick={() => {
                 setOpen(false);
                 navigate(`/chat/${node.chatId}`);
@@ -115,7 +116,6 @@ export default function ForkPointMarker({ forks, align }: { forks: ChatTreeNode[
                 width: "100%",
                 padding: "5px 12px",
                 border: "none",
-                background: "transparent",
                 textAlign: "left",
                 cursor: "pointer",
                 minWidth: 0,

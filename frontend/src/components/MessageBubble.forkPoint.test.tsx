@@ -87,6 +87,17 @@ describe("MessageBubble fork-point marker", () => {
     expect(screen.getByText("opened f2")).toBeTruthy();
   });
 
+  it("leaves row backgrounds to the stylesheet, so its hover / focus-visible highlight applies", () => {
+    // jsdom cannot enter :hover, so this pins the structure index.css's
+    // .fork-point-menu-item rules depend on: the class is present, and no
+    // inline background outranks them.
+    renderBubble([fork("f1", "Fork: one")]);
+    fireEvent.click(screen.getByRole("button", { name: "1 fork" }));
+    const row = screen.getByRole("menuitem");
+    expect(row.classList.contains("fork-point-menu-item")).toBe(true);
+    expect(row.style.background).toBe("");
+  });
+
   it("closes on Escape, returning focus to the chip", () => {
     renderBubble([fork("f1", "Fork: one")]);
     const chip = screen.getByRole("button", { name: "1 fork" });

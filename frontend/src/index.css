@@ -982,6 +982,19 @@ pre {
   pointer-events: auto;
 }
 
+/* Fork-point menu rows (ForkPointMarker). Background lives here, not inline,
+   so :hover / :focus-visible can override it; the highlight is the colour the
+   header's chat-tree dropdown marks its current row with. */
+.fork-point-menu-item {
+  background: transparent;
+}
+
+.fork-point-menu-item:hover,
+.fork-point-menu-item:focus-visible {
+  background: var(--chatlist-item-active-bg);
+  outline: none;
+}
+
 /* Copy button on code-block hover. Same contract as `.copy-btn` above: the
    rule matches a DIRECT child of the hovered wrapper, so the button must stay
    a sibling of the <pre>. Keyboard users get it via :focus-visible, since

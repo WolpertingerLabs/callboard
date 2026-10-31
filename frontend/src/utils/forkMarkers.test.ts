@@ -32,28 +32,37 @@ describe("forksByTimestamp", () => {
     const f1 = node("f1", { role: "fork", forkedAt: T1 });
     const f2 = node("f2", { role: "engine-switch", forkedAt: T1 });
     const f3 = node("f3", { role: "fork", forkedAt: T2 });
-    const map = forksByTimestamp(tree(node("me", { children: [f1, f2, f3] })), "me");
+    const map = forksByTimestamp(tree(node("me", { children: [f1, f2, f3] })));
     expect(map.get(T1)).toEqual([f1, f2]);
     expect(map.get(T2)).toEqual([f3]);
   });
 
-  it("finds the chat anywhere in the tree, and ignores grandchildren", () => {
+  it("finds the target chat anywhere in the tree, and ignores grandchildren", () => {
     const grandchild = node("gc", { role: "fork", forkedAt: T2 });
     const mine = node("f1", { role: "fork", forkedAt: T1, children: [grandchild] });
     const root = node("root", { children: [node("me", { role: "subagent", children: [mine] })] });
-    const map = forksByTimestamp(tree(root, "me"), "me");
+    const map = forksByTimestamp(tree(root, "me"));
     expect([...map.keys()]).toEqual([T1]);
+  });
+
+  it("reads the chat from targetChatId, so a route carrying a session id keeps its markers", () => {
+    // The server resolves /chats/<session-id>/tree to the chat and reports its
+    // real id as the target; the route param never appears in the tree.
+    const f1 = node("f1", { role: "fork", forkedAt: T1 });
+    const root = node("root", { children: [node("me", { children: [f1] }), node("sibling", { children: [node("x", { role: "fork", forkedAt: T2 })] })] });
+    expect(forksByTimestamp(tree(root, "me")).get(T1)).toEqual([f1]);
+    expect(forksByTimestamp(tree(root, "me")).has(T2)).toBe(false);
   });
 
   it("skips legacy forks without forkedAt and children that are not forks", () => {
     const root = node("me", {
       children: [node("legacy", { role: "fork" }), node("sub", { role: "subagent", forkedAt: T1 }), node("plain", { forkedAt: T1 })],
     });
-    expect(forksByTimestamp(tree(root), "me").size).toBe(0);
+    expect(forksByTimestamp(tree(root)).size).toBe(0);
   });
 
   it("is empty without a tree", () => {
-    expect(forksByTimestamp(null, "me").size).toBe(0);
+    expect(forksByTimestamp(null).size).toBe(0);
   });
 });
 
