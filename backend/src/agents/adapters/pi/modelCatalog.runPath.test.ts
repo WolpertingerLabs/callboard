@@ -148,6 +148,46 @@ describe("resolvePiModelForRun", () => {
     expect(String(warn.mock.calls[0]?.[0])).toContain("vendor/not-in-any-catalog");
   });
 
+  it("bills a variable-priced router's -1 prices as unknown, never as a negative cost", async () => {
+    // As OpenRouter lists `openrouter/auto`, `openrouter/pareto-code` and
+    // `typesafe/jev-router`. Taken at face value, -1 per token is
+    // -$1,000,000 per million, and every turn would record a refund.
+    fetchMock.mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        data: [
+          {
+            id: "openrouter/pareto-code",
+            name: "Pareto Code Router",
+            supported_parameters: ["tools"],
+            pricing: { prompt: "-1", completion: "-1", input_cache_read: "-1", input_cache_write: "NaN" },
+          },
+        ],
+      }),
+    }));
+
+    const model = await resolvePiModelForRun(runtime, "openrouter", "openrouter/pareto-code", DEFAULT_ROOT);
+    expect(model?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain("openrouter/pareto-code");
+  });
+
+  it("ends the wait at once on a stop, without warning about a turn that will not run", async () => {
+    fetchMock.mockImplementation(() => new Promise(() => {}));
+    const stop = new AbortController();
+
+    const started = Date.now();
+    const pending = resolvePiModelForRun(runtime, "openrouter", NEW_MODEL, DEFAULT_ROOT, { catalogWaitMs: 10_000, signal: stop.signal });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    stop.abort();
+
+    expect(await pending).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it("does not fetch the OpenRouter catalog for another provider", async () => {
     await resolvePiModelForRun(runtime, "anthropic", "claude-unknown-model", DEFAULT_ROOT);
     expect(fetchMock).not.toHaveBeenCalled();

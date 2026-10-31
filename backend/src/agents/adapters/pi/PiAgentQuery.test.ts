@@ -25,6 +25,9 @@ let nextSession: InstanceType<typeof FakePiSession> | null = null;
 let capturedServicesOptions: Record<string, unknown> | null = null;
 /** The session options — the resolved `model` among them. */
 let capturedSessionOptions: Record<string, unknown> | null = null;
+/** Run inside the setup calls, before they return — where a stop can land unseen. */
+let duringServices: (() => Promise<void>) | null = null;
+let duringSession: (() => Promise<void>) | null = null;
 
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
@@ -34,11 +37,14 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
     // adapter's whole §2 mitigation lives in.
     createAgentSessionServices: async (options: Record<string, unknown>) => {
       capturedServicesOptions = options;
-      return actual.createAgentSessionServices(options as never);
+      const services = await actual.createAgentSessionServices(options as never);
+      await duringServices?.();
+      return services;
     },
     // Faked: the only thing that would otherwise need a model and a network.
     createAgentSessionFromServices: async (options: Record<string, unknown>) => {
       capturedSessionOptions = options;
+      await duringSession?.();
       return { session: nextSession };
     },
   };
@@ -54,6 +60,8 @@ beforeEach(() => {
   nextSession = null;
   capturedServicesOptions = null;
   capturedSessionOptions = null;
+  duringServices = null;
+  duringSession = null;
 });
 
 const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
@@ -255,6 +263,95 @@ describe("the session is built with project trust denied", () => {
     for await (const _ of new PiAdapter().query({ prompt: "b", options: { cwd: tmpRoot } })) void _;
     seen.push((capturedServicesOptions as { modelRuntime: unknown }).modelRuntime);
     expect(seen[0]).not.toBe(seen[1]);
+  });
+});
+
+/**
+ * A stop that lands before the session exists. `close()` can only abort a
+ * session it can see, so these all used to be recorded and then ignored: the
+ * turn went on to start a session, prompt it, and spend tokens.
+ */
+describe("close() during setup", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetOpenRouterModelsCacheForTesting();
+  });
+
+  /** Drain a query to the end, returning what it yielded and how long it took. */
+  async function drain(query: AsyncIterable<AgentEvent>): Promise<{ events: AgentEvent[]; ms: number }> {
+    const started = Date.now();
+    const events: AgentEvent[] = [];
+    for await (const event of query) events.push(event);
+    return { events, ms: Date.now() - started };
+  }
+
+  it("builds nothing at all for a query whose external signal was already aborted", async () => {
+    // The constructor calls `close()` for an aborted signal, before iteration
+    // has begun, so the first guards — after the prompt and the runtime — are
+    // what keep it from even building pi's services.
+    const session = new FakePiSession({ text: "should never run" });
+    nextSession = session;
+    const stopped = new AbortController();
+    stopped.abort();
+
+    const { events } = await drain(new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, abortController: stopped } }));
+    expect(events).toEqual([]);
+    expect(capturedServicesOptions).toBeNull();
+    expect(session.prompts).toHaveLength(0);
+  });
+
+  it("ends the cold-catalog wait at once and never starts a session", async () => {
+    resetOpenRouterModelsCacheForTesting();
+    // An OpenRouter that accepts the request and never answers: the wait would
+    // otherwise run its full bound before the turn went ahead regardless.
+    const fetchMock = vi.fn(() => new Promise<never>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    const session = new FakePiSession({ text: "should never run" });
+    nextSession = session;
+
+    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, pi: { providerId: "openrouter", model: "google/gemini-4-argon" } } });
+    const drained = drain(query);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await query.close();
+    const { events, ms } = await drained;
+
+    expect(ms).toBeLessThan(2_000);
+    expect(events).toEqual([]);
+    expect(capturedSessionOptions).toBeNull();
+    expect(session.prompts).toHaveLength(0);
+  });
+
+  it("does not go on to resolve the model or build a session after a stop during service setup", async () => {
+    resetOpenRouterModelsCacheForTesting();
+    const fetchMock = vi.fn(() => new Promise<never>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    const session = new FakePiSession({ text: "should never run" });
+    nextSession = session;
+    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, pi: { providerId: "openrouter", model: "google/gemini-4-argon" } } });
+    duringServices = () => query.close();
+
+    const { events } = await drain(query);
+    expect(events).toEqual([]);
+    // The next step after services is the model lookup, which for an unbundled
+    // slug reaches OpenRouter. A stopped turn has no business on the network —
+    // and asserting it is what tells this guard apart from the later ones,
+    // which would still keep the session itself from starting.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(capturedSessionOptions).toBeNull();
+    expect(session.prompts).toHaveLength(0);
+  });
+
+  it("disposes, unprompted, a session that finished building after the stop", async () => {
+    const session = new FakePiSession({ text: "should never run" });
+    nextSession = session;
+    const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot } });
+    duringSession = () => query.close();
+
+    const { events } = await drain(query);
+    expect(events).toEqual([]);
+    expect(session.prompts).toHaveLength(0);
+    // Nobody else will: `close()` already ran, and found no session to tear down.
+    expect(session.isDisposed).toBe(true);
   });
 });
 
