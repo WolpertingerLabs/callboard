@@ -6,7 +6,7 @@
  * permission extension. Only `createAgentSessionFromServices` is swapped, so
  * these cases exercise the wiring rather than a diagram of it.
  */
-import { describe, it, expect, vi, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterAll, afterEach, beforeEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,8 @@ type FakeScript = import("./__fixtures__/fakePiSession.js").FakePiScript;
 let nextSession: InstanceType<typeof FakePiSession> | null = null;
 /** The services options the adapter built, for the trust assertions. */
 let capturedServicesOptions: Record<string, unknown> | null = null;
+/** The session options — the resolved `model` among them. */
+let capturedSessionOptions: Record<string, unknown> | null = null;
 
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
@@ -35,18 +37,23 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
       return actual.createAgentSessionServices(options as never);
     },
     // Faked: the only thing that would otherwise need a model and a network.
-    createAgentSessionFromServices: async () => ({ session: nextSession }),
+    createAgentSessionFromServices: async (options: Record<string, unknown>) => {
+      capturedSessionOptions = options;
+      return { session: nextSession };
+    },
   };
 });
 
 const { PiAdapter } = await import("./PiAdapter.js");
 const { buildPermissionExtension } = await import("./permissionAdapter.js");
 const { assertPiTrustDenied } = await import("./permissionAdapter.js");
+const { resetOpenRouterModelsCacheForTesting } = await import("../../../services/openrouter-models.js");
 
 afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 beforeEach(() => {
   nextSession = null;
   capturedServicesOptions = null;
+  capturedSessionOptions = null;
 });
 
 const ALL_ALLOW: DefaultPermissions = { fileRead: "allow", fileWrite: "allow", codeExecution: "allow", webAccess: "allow", computerControl: "deny" };
@@ -248,6 +255,36 @@ describe("the session is built with project trust denied", () => {
     for await (const _ of new PiAdapter().query({ prompt: "b", options: { cwd: tmpRoot } })) void _;
     seen.push((capturedServicesOptions as { modelRuntime: unknown }).modelRuntime);
     expect(seen[0]).not.toBe(seen[1]);
+  });
+});
+
+describe("an OpenRouter model newer than pi's bundled catalog", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetOpenRouterModelsCacheForTesting();
+  });
+
+  it("is priced on the first turn after a restart, not billed at $0", async () => {
+    // A cold daemon: no catalog in memory for this turn's endpoint. The turn
+    // used to peek at it, find nothing, and hand pi a model costed at zero.
+    resetOpenRouterModelsCacheForTesting();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        data: [{ id: "google/gemini-4-argon", name: "Gemini 4 Argon", supported_parameters: ["tools"], pricing: { prompt: "0.000002", completion: "0.00001" } }],
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await run({ text: "ok" }, { pi: { providerId: "openrouter", model: "google/gemini-4-argon" } });
+
+    const model = capturedSessionOptions?.model as { id: string; api: string; cost: { input: number; output: number } } | undefined;
+    expect(model).toMatchObject({ id: "google/gemini-4-argon", api: "openai-completions" });
+    expect(model?.cost.input).toBeCloseTo(2, 10);
+    expect(model?.cost.output).toBeCloseTo(10, 10);
+    expect(fetchMock).toHaveBeenCalledWith("https://openrouter.ai/api/v1/models", expect.anything());
   });
 });
 

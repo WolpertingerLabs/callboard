@@ -24,14 +24,46 @@ process.env.PI_OFFLINE = "1";
  * The transport fields are not decoration: `findPiModel` synthesizes a model
  * for an OpenRouter slug pi doesn't carry by templating off one of these, so a
  * stub without them would let a broken synthesis pass.
+ *
+ * Two dialects, as in the real catalog: plain `anthropic/…` slugs on
+ * `anthropic-messages` against `/api`, everything else — the `:batch` variants
+ * included — on `openai-completions` against `/api/v1`. The Anthropic one comes
+ * first on purpose: pi's list sorts `anthropic/claude-3-haiku` to index 0, and
+ * templating off index 0 is the bug the synthesis tests below pin down.
  */
 const bundled = () => [
+  {
+    id: "anthropic/claude-3-haiku",
+    name: "Haiku 3",
+    provider: "openrouter",
+    api: "anthropic-messages",
+    baseUrl: "https://openrouter.ai/api",
+    reasoning: false,
+    input: ["text", "image"],
+    cost: { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 },
+    contextWindow: 200_000,
+    maxTokens: 4_096,
+  },
+  {
+    id: "anthropic/claude-opus-4.8:batch",
+    name: "Opus (batch)",
+    provider: "openrouter",
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    thinkingLevelMap: { off: null, max: "max" },
+    cost: { input: 2.5, output: 12.5, cacheRead: 0.25, cacheWrite: 3.125 },
+    contextWindow: 1_000_000,
+    maxTokens: 64_000,
+    compat: { supportsDeveloperRole: false, thinkingFormat: "openrouter" },
+  },
   {
     id: "anthropic/claude-opus-4.8",
     name: "Opus",
     provider: "openrouter",
-    api: "openai-completions",
-    baseUrl: "https://openrouter.ai/api/v1",
+    api: "anthropic-messages",
+    baseUrl: "https://openrouter.ai/api",
     reasoning: true,
     thinkingLevelMap: { off: null, max: "max" },
     input: ["text", "image"],
@@ -52,6 +84,18 @@ const bundled = () => [
     contextWindow: 1_048_576,
     maxTokens: 65_535,
     compat: { supportsDeveloperRole: false, thinkingFormat: "openrouter" },
+  },
+  {
+    id: "openai/gpt-5",
+    name: "GPT-5",
+    provider: "openrouter",
+    api: "openai-completions",
+    baseUrl: "https://openrouter.ai/api/v1",
+    reasoning: true,
+    input: ["text", "image"],
+    cost: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+    contextWindow: 400_000,
+    maxTokens: 128_000,
   },
 ];
 
@@ -253,11 +297,46 @@ describe("findPiModel", () => {
     });
   });
 
+  it("templates a non-Anthropic slug off an openai-completions sibling, not index 0", () => {
+    // Index 0 is an anthropic-messages model. Copying its transport sent every
+    // synthesized Gemini, Llama or DeepSeek slug through OpenRouter's
+    // Anthropic-compatible endpoint.
+    getOpenRouterModelsSnapshot.mockReturnValue([{ ...maverick, id: "google/gemini-4-argon" }]);
+    expect(findPiModel(runtime(), "openrouter", "google/gemini-4-argon")).toMatchObject({
+      api: "openai-completions",
+      baseUrl: "https://openrouter.ai/api/v1",
+    });
+  });
+
+  it("templates a new plain anthropic/ slug the way pi carries its bundled siblings", () => {
+    expect(findPiModel(runtime(), "openrouter", "anthropic/claude-opus-9", null)).toMatchObject({
+      api: "anthropic-messages",
+      baseUrl: "https://openrouter.ai/api",
+    });
+  });
+
+  it("keeps a :variant slug with its variant siblings, even from the same vendor", () => {
+    // pi's `anthropic/…:batch` models are openai-completions, unlike plain
+    // `anthropic/…` — the vendor alone does not decide the dialect.
+    expect(findPiModel(runtime(), "openrouter", "anthropic/claude-opus-9:batch", null)).toMatchObject({
+      api: "openai-completions",
+      baseUrl: "https://openrouter.ai/api/v1",
+    });
+  });
+
+  it("carries OpenRouter's cached-input prices instead of billing cache hits at $0", () => {
+    getOpenRouterModelsSnapshot.mockReturnValue([{ ...maverick, cacheReadPrice: "0.0000001", cacheWritePrice: "0.0000001875" }]);
+    const cost = findPiModel(runtime(), "openrouter", "meta-llama/llama-4-maverick")?.cost;
+    expect(cost?.cacheRead).toBeCloseTo(0.1, 10);
+    expect(cost?.cacheWrite).toBeCloseTo(0.1875, 10);
+  });
+
   it("does not inherit the template's per-model traits", () => {
     getOpenRouterModelsSnapshot.mockReturnValue([{ ...maverick, supportedParameters: ["tools"] }]);
 
     const model = findPiModel(runtime(), "openrouter", "meta-llama/llama-4-maverick");
-    // The template is a reasoning, vision-capable, thinking-level-mapped Opus.
+    // The template (a vendor new to pi takes the catalog's majority dialect,
+    // first seen) is a reasoning, vision-capable, thinking-level-mapped Opus.
     // Carrying any of that over would claim capabilities OpenRouter never
     // advertised for this slug — and a claimed-but-absent vision input fails a
     // turn, where a declined one only means no image attachments.

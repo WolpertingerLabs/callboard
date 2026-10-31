@@ -24,6 +24,14 @@ export interface OpenRouterModelInfo {
   /** Completion (output) price in USD per token, as a string. */
   completionPrice: string;
   /**
+   * Cached-input read and write prices in USD per token, from OpenRouter's
+   * `pricing.input_cache_read` / `pricing.input_cache_write`. Absent when the
+   * model does not advertise prompt caching. Carried for the pi adapter, whose
+   * synthesized models would otherwise bill every cached token at $0.
+   */
+  cacheReadPrice?: string;
+  cacheWritePrice?: string;
+  /**
    * OpenRouter's `supported_parameters` for this model (snake_case, e.g.
    * "top_k", "min_p", "tools"). Used by the per-model parameter editor to gray
    * out sampling knobs the model doesn't advertise. May be empty for models

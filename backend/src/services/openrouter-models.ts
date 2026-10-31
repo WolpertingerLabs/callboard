@@ -74,7 +74,7 @@ interface RawOpenRouterModel {
   id?: string;
   name?: string;
   supported_parameters?: string[];
-  pricing?: { prompt?: string; completion?: string };
+  pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
   context_length?: number;
   top_provider?: { context_length?: number };
 }
@@ -129,6 +129,8 @@ async function fetchOpenRouterModels(endpoint?: string, previousModels: OpenRout
           name: m.name || m.id,
           promptPrice: m.pricing?.prompt ?? "0",
           completionPrice: m.pricing?.completion ?? "0",
+          ...(typeof m.pricing?.input_cache_read === "string" ? { cacheReadPrice: m.pricing.input_cache_read } : {}),
+          ...(typeof m.pricing?.input_cache_write === "string" ? { cacheWritePrice: m.pricing.input_cache_write } : {}),
           supportedParameters: m.supported_parameters ?? [],
           ...(typeof contextLength === "number" && contextLength > 0 ? { contextLength } : {}),
         };

@@ -1,4 +1,3 @@
-import { getOpenRouterModelsSnapshot } from "../../../services/openrouter-models.js";
 /**
  * One pi turn, as a callboard {@link AgentQuery}.
  *
@@ -65,7 +64,7 @@ import type { ToolServerSpec } from "../../ports/tools.js";
 import { buildTerminalResult, recordTerminalSignal, translatePiEvent, type PiTurnAccounting } from "./messageAdapter.js";
 import { buildPiServicesOptions, buildPiSessionOptions, resolvePiAgentDir, DEFAULT_PI_PROVIDER_ID, type PiRunOptions } from "./optionsAdapter.js";
 import { buildPermissionExtension, buildToolFilters, type PiPermissionContext } from "./permissionAdapter.js";
-import { findPiModel, getPiModels, type PiModelOption } from "./modelCatalog.js";
+import { getPiModels, resolvePiModelForRun, type PiModelOption } from "./modelCatalog.js";
 import { buildPiTools } from "./toolAdapter.js";
 import { resolvePiPrompt } from "./promptAdapter.js";
 import { createLogger } from "../../../utils/logger.js";
@@ -174,12 +173,10 @@ export class PiAgentQuery implements AgentQuery {
       ? SessionManager.open(this.opts.resumePath, this.opts.sessionDir, cwd)
       : SessionManager.create(cwd, this.opts.sessionDir, { id: sessionId });
 
+    // Awaited, not peeked: a model newer than pi's bundled catalog is billed at
+    // whatever price this resolves, and on a cold endpoint catalog a peek is $0.
     const providerId = pi.providerId?.trim() || DEFAULT_PI_PROVIDER_ID;
-    const scopedOrInfo =
-      providerId === "openrouter"
-        ? (getOpenRouterModelsSnapshot(pi.baseUrl?.trim() || "https://openrouter.ai/api/v1").find((entry) => entry.id === pi.model?.trim()) ?? null)
-        : null;
-    const model = findPiModel(runtime, providerId, pi.model ?? "", scopedOrInfo);
+    const model = await resolvePiModelForRun(runtime, providerId, pi.model ?? "", pi.baseUrl?.trim() || "https://openrouter.ai/api/v1");
 
     const { session } = await createAgentSessionFromServices({
       services,
