@@ -321,6 +321,35 @@ describe("close() during setup", () => {
     expect(session.prompts).toHaveLength(0);
   });
 
+  it("ends a stalled key refresh at once on a stop, as a clean exit rather than a thrown error", async () => {
+    // pi's `setRuntimeApiKey` waits on its signal and *throws* when it aborts
+    // (a `CredentialSynchronizationError`). Stubbed to stall until then, so the
+    // only way out before its 15s deadline is the stop.
+    const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
+    const setKey = vi.spyOn(ModelRuntime.prototype, "setRuntimeApiKey").mockImplementation(
+      (_provider, _key, options) =>
+        new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => reject(new Error("CredentialSynchronizationError: aborted")), { once: true });
+        }),
+    );
+    try {
+      const session = new FakePiSession({ text: "should never run" });
+      nextSession = session;
+      const query = new PiAdapter().query({ prompt: "hi", options: { cwd: tmpRoot, pi: { providerId: "openrouter", apiKey: "sk-or-test" } } });
+      const drained = drain(query);
+      await vi.waitFor(() => expect(setKey).toHaveBeenCalled());
+      await query.close();
+
+      const { events, ms } = await drained;
+      expect(ms).toBeLessThan(2_000);
+      expect(events).toEqual([]);
+      expect(capturedServicesOptions).toBeNull();
+      expect(session.prompts).toHaveLength(0);
+    } finally {
+      setKey.mockRestore();
+    }
+  });
+
   it("does not go on to resolve the model or build a session after a stop during service setup", async () => {
     resetOpenRouterModelsCacheForTesting();
     const fetchMock = vi.fn(() => new Promise<never>(() => {}));

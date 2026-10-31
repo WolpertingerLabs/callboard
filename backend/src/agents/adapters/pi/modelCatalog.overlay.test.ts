@@ -365,6 +365,25 @@ describe("findPiModel", () => {
     });
   });
 
+  it("clamps a negative rate inside a bundled model's pricing tiers too", () => {
+    // `calculateCost` bills the whole request at a matching tier's rates, so a
+    // negative tier is as bad as a negative base rate. pi ships none today.
+    const tiered = {
+      ...bundled()[3],
+      id: "vendor/tiered",
+      cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0, tiers: [{ inputTokensAbove: 200_000, input: -1_000_000, output: 4, cacheRead: 0.2, cacheWrite: 0 }] },
+    };
+    getModels.mockImplementation((provider?: string) => [...bundled(), tiered].filter((m) => !provider || m.provider === provider));
+
+    expect(findPiModel(runtime(), "openrouter", "vendor/tiered")?.cost).toEqual({
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+      cacheWrite: 0,
+      tiers: [{ inputTokensAbove: 200_000, input: 0, output: 4, cacheRead: 0.2, cacheWrite: 0 }],
+    });
+  });
+
   it("still defers to pi's default for a non-OpenRouter provider", () => {
     getOpenRouterModelsSnapshot.mockReturnValue([maverick]);
 

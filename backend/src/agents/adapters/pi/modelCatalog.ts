@@ -416,12 +416,17 @@ type PiModel = ReturnType<ModelRuntime["getModels"]>[number];
  * Whether an OpenRouter per-token price can be billed at face value.
  *
  * Not every listed price is a price. OpenRouter's variable-priced routers —
- * `openrouter/auto`, `openrouter/pareto-code`, `typesafe/jev-router` and a few
- * more — list `prompt` and `completion` as `"-1"`, and multiplying that through
- * would bill every token at −$1,000,000 per million. A negative or non-numeric
- * price is unknown, and unknown is billed at 0 with a warning, exactly like a
- * missing one. An absent price is not an unusable one: it is how OpenRouter
- * says a model has no cache tier, so 0 is the honest answer there.
+ * `openrouter/pareto-code`, `typesafe/jev-router` and a few more — list
+ * `prompt` and `completion` as `"-1"`, and multiplying that through would bill
+ * every token at −$1,000,000 per million. A negative or non-numeric price is
+ * unknown, and unknown is billed at 0 with a warning, exactly like a missing
+ * one. An absent price is not an unusable one: it is how OpenRouter says a
+ * model has no cache tier, so 0 is the honest answer there.
+ *
+ * This guards *synthesized* models only. Two routers, `openrouter/auto` and
+ * `openrouter/auto-beta`, are bundled in pi 0.85.1 with the same "-1" already
+ * multiplied into their `cost`; they never reach synthesis, and
+ * {@link withUsableCost} is what keeps them from billing negative.
  */
 function isUsablePrice(price: string | undefined): boolean {
   if (price === undefined) return true;
@@ -432,6 +437,45 @@ function isUsablePrice(price: string | undefined): boolean {
 /** True when OpenRouter lists a price for `info` that cannot be billed as-is. */
 function hasUnusablePrice(info: OpenRouterModelInfo): boolean {
   return ![info.promptPrice, info.completionPrice, info.cacheReadPrice, info.cacheWritePrice].every(isUsablePrice);
+}
+
+type PiCostRates = Pick<PiModel["cost"], "input" | "output" | "cacheRead" | "cacheWrite">;
+
+const isUsableRate = (rate: number): boolean => Number.isFinite(rate) && rate >= 0;
+
+function hasUnusableRate(rates: PiCostRates): boolean {
+  return ![rates.input, rates.output, rates.cacheRead, rates.cacheWrite].every(isUsableRate);
+}
+
+function clampRates<T extends PiCostRates>(rates: T): T {
+  const clamp = (rate: number): number => (isUsableRate(rate) ? rate : 0);
+  return { ...rates, input: clamp(rates.input), output: clamp(rates.output), cacheRead: clamp(rates.cacheRead), cacheWrite: clamp(rates.cacheWrite) };
+}
+
+/**
+ * `model`, or a copy of it with every negative or non-finite rate billed at 0.
+ *
+ * pi's bundled data is generated from OpenRouter's `/models`, and the generator
+ * multiplies through without checking: pi 0.85.1 ships `openrouter/auto` and
+ * `openrouter/auto-beta` — variable-priced routers OpenRouter lists at `"-1"` —
+ * with `cost.input` and `cost.output` of −1,000,000 per million. pi's
+ * `calculateCost` applies those as-is, so a 20k-in / 1k-out turn on either
+ * recorded about −$21,000. The real price is unknowable up front (the router
+ * picks the model), so it is unknown, billed at 0 and warned about — the same
+ * answer {@link isUsablePrice} gives a synthesized model.
+ *
+ * A copy, not an edit: the object is pi's registry entry, shared by every
+ * lookup on that runtime. A copy is accepted everywhere the original is —
+ * pi's `modelsAreEqual` compares `id` and `provider` only, the session takes
+ * the `model` it is handed rather than re-resolving it, and `prepareRequest`
+ * spreads it before use. Tiers are clamped too, since `calculateCost` bills a
+ * whole request at a matching tier's rates.
+ */
+function withUsableCost<M extends PiModel>(model: M): M {
+  const { cost } = model;
+  if (!hasUnusableRate(cost) && !(cost.tiers ?? []).some(hasUnusableRate)) return model;
+  log.warn(`pi model "${model.provider}/${model.id}" carries a negative or invalid price in pi's catalog — its unpriced rates will be recorded as $0`);
+  return { ...model, cost: { ...clampRates(cost), ...(cost.tiers ? { tiers: cost.tiers.map(clampRates) } : {}) } };
 }
 
 /**
@@ -583,7 +627,7 @@ export function findPiModel(
   const model = modelId.trim();
   if (!provider || !model) return undefined;
   const found = new ModelRegistry(runtime).find(provider, model);
-  if (found) return found;
+  if (found) return withUsableCost(found);
 
   if (provider === "openrouter") {
     const synthesized = synthesizeOpenRouterModel(runtime, model, openRouterInfo);
@@ -679,7 +723,7 @@ export async function resolvePiModelForRun(
   if (opts.signal?.aborted) return undefined;
   if (!info || hasUnusablePrice(info)) {
     const why = info ? "OpenRouter lists a variable or invalid price" : "catalog unavailable, slow, or missing the slug";
-    log.warn(`no usable OpenRouter pricing for pi model "${model}" at ${baseUrl} (${why}) — this turn's cost will be recorded as $0`);
+    log.warn(`no usable OpenRouter pricing for pi model "${model}" at ${baseUrl} (${why}) — its unpriced rates will be recorded as $0`);
   }
   return findPiModel(runtime, provider, model, info);
 }

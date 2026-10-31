@@ -149,8 +149,8 @@ describe("resolvePiModelForRun", () => {
   });
 
   it("bills a variable-priced router's -1 prices as unknown, never as a negative cost", async () => {
-    // As OpenRouter lists `openrouter/auto`, `openrouter/pareto-code` and
-    // `typesafe/jev-router`. Taken at face value, -1 per token is
+    // As OpenRouter lists `openrouter/pareto-code` and `typesafe/jev-router`,
+    // neither bundled in pi. Taken at face value, -1 per token is
     // -$1,000,000 per million, and every turn would record a refund.
     fetchMock.mockImplementation(async () => ({
       ok: true,
@@ -172,6 +172,31 @@ describe("resolvePiModelForRun", () => {
     expect(model?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toContain("openrouter/pareto-code");
+  });
+
+  it("clamps pi's own bundled negative prices to 0, without touching pi's registry entry", async () => {
+    // pi 0.85.1 bundles `openrouter/auto` with OpenRouter's "-1" multiplied
+    // through to -1,000,000 per million. It is found, not synthesized, so the
+    // synthesis guard never sees it; left alone, a 20k-in / 1k-out turn on it
+    // recorded about -$21,000.
+    const bundled = runtime.getModels("openrouter").find((m) => m.id === "openrouter/auto");
+    expect(bundled?.cost.input).toBeLessThan(0);
+
+    const model = await resolvePiModelForRun(runtime, "openrouter", "openrouter/auto", DEFAULT_ROOT);
+    expect(model).toMatchObject({ id: "openrouter/auto", provider: "openrouter", api: bundled!.api, baseUrl: bundled!.baseUrl });
+    expect(model?.cost).toEqual({ ...bundled!.cost, input: 0, output: 0 });
+    // A copy: the registry entry every other lookup on this runtime shares is unchanged.
+    expect(model).not.toBe(bundled);
+    expect(runtime.getModels("openrouter").find((m) => m.id === "openrouter/auto")?.cost.input).toBeLessThan(0);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("openrouter/auto");
+    // Bundled, so the OpenRouter catalog is never consulted for it.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns pi's entry itself, unwarned, when its prices are sound", async () => {
+    const bundled = runtime.getModels("openrouter").find((m) => m.id.startsWith("google/"))!;
+    expect(await resolvePiModelForRun(runtime, "openrouter", bundled.id, DEFAULT_ROOT)).toBe(bundled);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("ends the wait at once on a stop, without warning about a turn that will not run", async () => {

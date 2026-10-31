@@ -165,7 +165,15 @@ export class PiAgentQuery implements AgentQuery {
     const customToolNames = bundles.flatMap((b) => b.names);
 
     const agentDir = resolvePiAgentDir();
-    const runtime = await this.buildRuntime(agentDir);
+    let runtime: ModelRuntime;
+    try {
+      runtime = await this.buildRuntime(agentDir);
+    } catch (err) {
+      // A stop aborts the key refresh, and pi throws for that
+      // (`CredentialSynchronizationError`). It is the stop, not a failure.
+      if (this.closed) return;
+      throw err;
+    }
     if (this.closed) return;
 
     // The trust denial, the settings manager and the inline gate all live in
@@ -307,7 +315,13 @@ export class PiAgentQuery implements AgentQuery {
       // `create()` bounds its own refresh with a 15s abort, but this path
       // passes whatever we give it and otherwise waits indefinitely. Without a
       // deadline a hung catalog host stalls the turn, not just the catalog.
-      await runtime.setRuntimeApiKey(providerId, apiKey, { signal: AbortSignal.timeout(MODEL_REFRESH_TIMEOUT_MS) });
+      //
+      // The stop signal rides along so a stop does not sit out that deadline.
+      // pi reports an abort here by throwing, which `iterate()` turns back into
+      // the clean exit a stop should be.
+      await runtime.setRuntimeApiKey(providerId, apiKey, {
+        signal: AbortSignal.any([AbortSignal.timeout(MODEL_REFRESH_TIMEOUT_MS), this.abort.signal]),
+      });
     } else {
       // Not fatal: pi falls back to its own environment lookup, and the
       // provider's own error message reaching the user is better than a
