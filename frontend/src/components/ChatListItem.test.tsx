@@ -264,6 +264,64 @@ describe("ChatListItem card menu", () => {
 });
 
 /**
+ * "Session ID" is `chat.session_id`, the provider session a CLI resumes — not
+ * `chat.id`, Callboard's own id. The fixture keeps the two distinct so copying
+ * the wrong one fails.
+ */
+describe("ChatListItem copy session ID", () => {
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+
+  function stubClipboard(writeText: (text: string) => Promise<void>) {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  }
+
+  afterEach(() => {
+    if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+    else delete (navigator as { clipboard?: unknown }).clipboard;
+  });
+
+  it("offers the entry above Delete", () => {
+    const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
+    openRowMenu(container);
+
+    const labels = Array.from(document.body.querySelectorAll("button")).map((b) => b.textContent);
+    const copyAt = labels.indexOf("Copy session ID");
+    expect(copyAt).toBeGreaterThanOrEqual(0);
+    expect(copyAt).toBe(labels.indexOf("Delete") - 1);
+  });
+
+  it("copies the session id, not the chat id, and closes the menu without opening the chat", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    stubClipboard(writeText);
+    const onClick = vi.fn();
+    const { container } = render(<ChatListItem chat={makeChat({ id: "chat-1", session_id: "sess-1" })} onClick={onClick} onDelete={() => {}} />);
+    openRowMenu(container);
+
+    fireEvent.click(screen.getByText("Copy session ID"));
+
+    expect(writeText).toHaveBeenCalledWith("sess-1");
+    expect(screen.queryByText("Copy session ID")).toBeNull();
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("still closes the menu when the clipboard refuses the write", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("not allowed"));
+    stubClipboard(writeText);
+    const { container } = render(<ChatListItem chat={makeChat()} onClick={() => {}} onDelete={() => {}} />);
+    openRowMenu(container);
+
+    fireEvent.click(screen.getByText("Copy session ID"));
+    // Let the rejection reach copyToClipboard's fallback; an unhandled one
+    // would fail the run.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith("sess-1");
+    expect(screen.queryByText("Copy session ID")).toBeNull();
+  });
+});
+
+/**
  * `dimmed` arrives already decided (utils/chatDimming has that half); what is
  * tested here is the veto — the row states that must stay at full opacity
  * however archived their card is, because a faded row you are being asked to

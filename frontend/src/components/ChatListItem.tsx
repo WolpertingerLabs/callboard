@@ -19,10 +19,12 @@ import {
   PinOff,
   Layers,
   FolderInput,
+  Copy,
 } from "lucide-react";
 import type { Chat } from "../api";
 import { chatMeta } from "../utils/chatMeta";
 import { dismissSummon } from "../api";
+import { copyToClipboard } from "../utils/clipboard";
 // Type-only, so this is not a runtime cycle with the list that renders us.
 import type { RowActivity } from "./ChatTreeList";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -900,6 +902,24 @@ export default function ChatListItem({
                       }}
                     />
                   )}
+                  {/*
+                   * The provider's session id (what `claude --resume` takes),
+                   * not `chat.id` — that is Callboard's own id and is already
+                   * in the URL. On a group row `chat` is the chat the row
+                   * opens, so this is that chat's session, not the group's.
+                   * There is no toast to report into and the menu closes on
+                   * click; `copyToClipboard` never rejects, so a failed copy
+                   * is simply a no-op.
+                   */}
+                  <MenuRow
+                    icon={<Copy size={16} />}
+                    label="Copy session ID"
+                    title={`Copy this chat's session ID (${chat.session_id}) to the clipboard`}
+                    onClick={() => {
+                      setMenuPos(null);
+                      void copyToClipboard(chat.session_id);
+                    }}
+                  />
                   <MenuRow
                     icon={<X size={16} />}
                     label="Delete"
