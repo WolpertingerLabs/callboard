@@ -4,8 +4,7 @@
  * The sidebar sections **rows**, not chats — a parentage group collapses into
  * one row and its members can disagree about the pin, so it must be filed
  * whole rather than have its members partitioned out from under it. Hence the
- * generic item type and the separate `countOf`: the thing being partitioned
- * and the thing being counted are not the same thing.
+ * generic item type.
  *
  * The verdict for a group is the caller's to supply, and `ChatTreeList` gives
  * it as "any member is pinned" — see `Row.pinnedMembers` for why the header
@@ -27,18 +26,14 @@ export interface ChatSection<T> {
   label: string;
   items: T[];
   /**
-   * Chats in this section, which is **not** `items.length`: one row stands for
-   * a whole lineage group, so a group's members are counted where the group is
-   * filed.
+   * One per thread (row) in this section — `items.length`. Child chats are
+   * never counted: a group's subagents and forks are part of its thread, so a
+   * pinned thread that has spawned ten of them still reads "(1)".
    *
-   * A lineage group is filed **whole**, so a group with one pinned member
-   * counts all of them under "Pinned". That is the deliberate filing rule, not
-   * a counting bug — a group is one row and cannot be in two sections, and a
-   * count that reported only the pinned members would not match the rows the
-   * section actually holds. The list also requests
-   * `includeLineage`, so group members from outside the pagination window are
-   * on screen (folded into their group) and counted too; totals can therefore
-   * exceed the page size, which is honest about what is being shown.
+   * A lineage group is filed **whole**, so a group pinned through a child
+   * counts once under "Pinned"; the count follows the filing, so it always
+   * matches the rows the section actually holds. Recent counts by the same
+   * rule, so every header answers the same question.
    */
   count: number;
 }
@@ -59,10 +54,8 @@ export function isChatPinned(chat: Pick<Chat, "metadata">): boolean {
 export function sectionByPinned<T>(
   items: readonly T[],
   isPinned: (item: T) => boolean,
-  /** Chats one item stands for; a row fronting a lineage group stands for more than one. */
-  countOf: (item: T) => number = () => 1,
 ): ChatSection<T>[] | null {
-  return sectionChatRows(items, { isPinned, countOf });
+  return sectionChatRows(items, { isPinned });
 }
 
 /** Folder names in display order: case-insensitive, then exact, so the order is total and stable. */
@@ -108,13 +101,10 @@ export function sectionChatRows<T>(
   {
     isPinned,
     folderOf = () => undefined,
-    countOf = () => 1,
   }: {
     isPinned: (item: T) => boolean;
     /** The sidebar folder an item is filed in, or undefined. Asked only of unpinned items. */
     folderOf?: (item: T) => string | undefined;
-    /** Chats one item stands for; a row fronting a lineage group stands for more than one. */
-    countOf?: (item: T) => number;
   },
 ): ChatSection<T>[] | null {
   const pinned: T[] = [];
@@ -136,13 +126,12 @@ export function sectionChatRows<T>(
   }
   if (pinned.length === 0 && byFolder.size === 0) return null;
 
-  const total = (bucket: T[]) => bucket.reduce((sum, item) => sum + countOf(item), 0);
   const sections: ChatSection<T>[] = [];
-  if (pinned.length > 0) sections.push({ key: "pinned", label: "Pinned", items: pinned, count: total(pinned) });
+  if (pinned.length > 0) sections.push({ key: "pinned", label: "Pinned", items: pinned, count: pinned.length });
   for (const folder of [...byFolder.keys()].sort(compareSidebarFolders)) {
     const bucket = byFolder.get(folder)!;
-    sections.push({ key: `folder:${folder}`, label: folder, items: bucket, count: total(bucket) });
+    sections.push({ key: `folder:${folder}`, label: folder, items: bucket, count: bucket.length });
   }
-  if (recent.length > 0) sections.push({ key: "recent", label: "Recent", items: recent, count: total(recent) });
+  if (recent.length > 0) sections.push({ key: "recent", label: "Recent", items: recent, count: recent.length });
   return sections;
 }

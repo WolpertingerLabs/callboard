@@ -229,8 +229,9 @@ describe("pinning from the kebab", () => {
     fireEvent.click(screen.getByText("Pin"));
 
     await waitFor(() => expect(mockTogglePin).toHaveBeenCalledWith("chat-parent", true));
-    // (2), not (1): the group is filed whole, so the count is its chats.
-    await waitFor(() => expect(headers()).toEqual(["Pinned (2)"]));
+    // (1), not (2): the group is filed whole, but only its top-level chat is
+    // counted — the child is part of the parent's thread.
+    await waitFor(() => expect(headers()).toEqual(["Pinned (1)"]));
   });
 
   it("clears a group's pin from whichever member is holding it", async () => {
@@ -241,7 +242,7 @@ describe("pinning from the kebab", () => {
     const child = makeChat("chat-child", { preview: "child chat", parentChatId: "chat-parent", rootChatId: "chat-parent", pinned: true });
     mockListChats.mockResolvedValue(listResponse([parent, child]));
     await renderList("parent chat");
-    expect(headers()).toEqual(["Pinned (2)"]);
+    expect(headers()).toEqual(["Pinned (1)"]);
 
     openRowMenu("parent chat");
     fireEvent.click(screen.getByText("Unpin"));
@@ -261,7 +262,7 @@ describe("pinning from the kebab", () => {
     const child = makeChat("chat-child", { preview: "child chat", parentChatId: "chat-parent", rootChatId: "chat-parent", pinned: true });
     mockListChats.mockResolvedValue(listResponse([parent, child]));
     await renderList("parent chat");
-    expect(headers()).toEqual(["Pinned (2)"]);
+    expect(headers()).toEqual(["Pinned (1)"]);
 
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     mockTogglePin.mockImplementation((id: string) => (id === "chat-parent" ? Promise.reject(new Error("server said no")) : Promise.resolve({} as Chat)));
@@ -274,7 +275,7 @@ describe("pinning from the kebab", () => {
     // The group still reads as pinned, correctly — the parent's pin is really
     // still there. What must have changed is the child's, and the only way to
     // see it is what the NEXT unpin reaches for.
-    expect(headers()).toEqual(["Pinned (2)"]);
+    expect(headers()).toEqual(["Pinned (1)"]);
     mockTogglePin.mockClear();
     openRowMenu("parent chat");
     fireEvent.click(screen.getByText("Unpin"));

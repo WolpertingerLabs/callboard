@@ -68,46 +68,24 @@ describe("sectionByPinned", () => {
     expect(sections).toHaveLength(1);
   });
 
-  it("counts one per item by default", () => {
+  it("counts one per item", () => {
     const sections = sectionByPinned([pinnedChat("a"), chat("b"), chat("c")], byPin)!;
     expect(sections.map((s) => s.count)).toEqual([1, 2]);
-  });
-
-  it("counts by countOf, so a tree row can speak for its whole group", () => {
-    // A row stands for a whole lineage group. Counting rows would report 1
-    // for a three-chat group — the header must count chats.
-    const rows = [
-      { chat: chat("loose"), size: 1 },
-      { chat: pinnedChat("group"), size: 3 },
-      { chat: chat("pair"), size: 2 },
-    ];
-    const sections = sectionByPinned(
-      rows,
-      (row) => byPin(row.chat),
-      (row) => row.size,
-    )!;
-    expect(sections.map((s) => [s.key, s.items.length, s.count])).toEqual([
-      ["pinned", 1, 3],
-      ["recent", 2, 3],
-    ]);
   });
 
   it("files a lineage group WHOLE, by its header row, when its members straddle both buckets", () => {
     // The rule the generic exists for. A group is ONE row: pinning a member
     // that is not the header row cannot pull that member out on its own, and
     // pinning the header row takes the whole group up with it. The count
-    // follows the filing, which is why 4 lands entirely under "pinned".
+    // follows the filing — the group counts once under "pinned", however many
+    // children it holds.
     const rows = [
-      { rootKey: "r1", chat: chat("plain"), size: 1 },
-      { rootKey: "r2", chat: pinnedChat("header-of-group"), size: 4 },
+      { rootKey: "r1", chat: chat("plain") },
+      { rootKey: "r2", chat: pinnedChat("header-of-group") },
     ];
-    const sections = sectionByPinned(
-      rows,
-      (row) => byPin(row.chat),
-      (row) => row.size,
-    )!;
+    const sections = sectionByPinned(rows, (row) => byPin(row.chat))!;
     expect(sections.map((s) => [s.key, s.count])).toEqual([
-      ["pinned", 4],
+      ["pinned", 1],
       ["recent", 1],
     ]);
     // ...and the group appears exactly once, under its header row's section.
@@ -158,11 +136,10 @@ describe("isChatPinned", () => {
 });
 
 describe("sectionChatRows — folders", () => {
-  type Item = { id: string; pinned?: boolean; folder?: string; size?: number };
+  type Item = { id: string; pinned?: boolean; folder?: string };
   const opts = {
     isPinned: (i: Item) => i.pinned === true,
     folderOf: (i: Item) => i.folder,
-    countOf: (i: Item) => i.size ?? 1,
   };
   const keys = (sections: { key: string }[] | null) => sections?.map((s) => s.key);
 
@@ -208,10 +185,11 @@ describe("sectionChatRows — folders", () => {
     expect(keys(sectionChatRows<Item>([{ id: "both", pinned: true, folder: "F" }, { id: "x" }], opts))).toEqual(["pinned", "recent"]);
   });
 
-  it("counts chats, not rows, per folder", () => {
-    const sections = sectionChatRows<Item>([{ id: "group", folder: "F", size: 4 }, { id: "lone", folder: "F" }, { id: "r" }], opts)!;
+  it("counts one per row in every section", () => {
+    const sections = sectionChatRows<Item>([{ id: "p", pinned: true }, { id: "group", folder: "F" }, { id: "lone", folder: "F" }, { id: "r" }], opts)!;
     expect(sections.map((s) => [s.key, s.count])).toEqual([
-      ["folder:F", 5],
+      ["pinned", 1],
+      ["folder:F", 2],
       ["recent", 1],
     ]);
   });

@@ -182,7 +182,11 @@ export interface RowActivity {
   chatStatusEmoji?: string;
 }
 
-/** One visible entry: a lone chat, or a lineage group fronted by `chat`. */
+/**
+ * One visible entry: a lone chat, or a lineage group fronted by `chat`. One
+ * row is one thread, and counts as one in its section header — child chats
+ * are never counted (see `ChatSection.count`).
+ */
 export interface Row {
   chat: Chat;
   rootKey: string;
@@ -205,20 +209,6 @@ export interface Row {
   members: Chat[];
   /** What the row reports about live work anywhere in `members`. */
   activity: RowActivity;
-  /**
-   * Chats from the `chats` prop this row stands for — 1 for a lone chat, the
-   * group's size for a group. The section headers count chats, not rows, so a
-   * group has to carry its own weight to the tally.
-   *
-   * Deliberately *not* "chats visible under this row": expanding a group
-   * renders `trees[rootKey]`, the server's authoritative tree, which no client
-   * filter has been applied to — expand a group under "Show triggered chats:
-   * off" and more rows can appear than this counted. Following that would make
-   * the header's number jump on every expand, and jump to a figure the section
-   * above it does not share. The count answers "how many of the chats this
-   * list loaded are filed here", which is stable.
-   */
-  size: number;
   /**
    * The loaded chats in this row's group that carry the pin — `[chat]` or `[]`
    * for a lone row, and for a group row every pinned member, not just the one
@@ -355,8 +345,7 @@ function lineageOf(chat: Chat, byId: Map<string, Chat>): LineageInfo {
 export function buildRows(chats: Chat[]): Row[] {
   const byId = new Map<string, Chat>(chats.map((c) => [c.id, c]));
   const infoById = new Map<string, LineageInfo>();
-  // The group's membership, in the prop's order. Also the row's size: a
-  // separate counter alongside this list could only ever disagree with it.
+  // The group's membership, in the prop's order.
   const groupMembers = new Map<string, Chat[]>();
   const groupLineage = new Map<string, boolean>();
   // Collected per group, not per chat: a pin set on any member files the
@@ -384,8 +373,7 @@ export function buildRows(chats: Chat[]): Row[] {
     seen.add(rootKey);
     // Always set: this row's own chat filed itself into the bucket above.
     const members = groupMembers.get(rootKey)!;
-    const size = members.length;
-    const isGroup = size > 1 || hasLineage || groupLineage.get(rootKey) === true;
+    const isGroup = members.length > 1 || hasLineage || groupLineage.get(rootKey) === true;
     // `chat` — the first member seen, i.e. the most recently updated one — has
     // already fixed this row's position by being the iteration that created it.
     // Which chat FRONTS it is a separate question, answered by the root when
@@ -406,7 +394,6 @@ export function buildRows(chats: Chat[]): Row[] {
       isGroup,
       members,
       activity: rollUpActivity(members),
-      size,
       pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS,
       canFile,
       sidebarFolder: canFile ? readSidebarFolder(frontMeta) : undefined,
@@ -418,7 +405,7 @@ export function buildRows(chats: Chat[]): Row[] {
 /**
  * The sidebar's sections over `rows`: Pinned, folders, Recent — or `null` for
  * the flat, headerless list. Each row is filed once: pinned if any member is,
- * otherwise by its root's folder.
+ * otherwise by its root's folder. Each row counts once in its header.
  *
  * Exported for the same reason {@link buildRows} is: ChatList's shift+click
  * ranges must walk the order this component RENDERS, and the only way to keep
@@ -428,7 +415,6 @@ export function sectionRows(rows: Row[]): ChatSection<Row>[] | null {
   return sectionChatRows(rows, {
     isPinned: (row) => row.pinnedMembers.length > 0,
     folderOf: (row) => row.sidebarFolder,
-    countOf: (row) => row.size,
   });
 }
 
