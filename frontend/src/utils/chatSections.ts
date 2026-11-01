@@ -4,8 +4,7 @@
  * The sidebar sections **rows**, not chats — a parentage group collapses into
  * one row and its members can disagree about the pin, so it must be filed
  * whole rather than have its members partitioned out from under it. Hence the
- * generic item type and the separate `countOf`: the thing being partitioned
- * (rows) and the thing being counted (top-level chats) are not the same thing.
+ * generic item type.
  *
  * The verdict for a group is the caller's to supply, and `ChatTreeList` gives
  * it as "any member is pinned" — see `Row.pinnedMembers` for why the header
@@ -27,17 +26,14 @@ export interface ChatSection<T> {
   label: string;
   items: T[];
   /**
-   * Top-level chats in this section — chats with no parent — which is **not**
-   * `items.length` in general: one row stands for a whole lineage group, and
-   * a group can (rarely) front more than one parentless chat. Children are
-   * never counted, so a pinned thread that has spawned ten subagents still
-   * reads "(1)". See `Row.topLevelCount` for the exact rule, including why a
-   * row whose root is not loaded still counts 1.
+   * One per thread (row) in this section — `items.length`. Child chats are
+   * never counted: a group's subagents and forks are part of its thread, so a
+   * pinned thread that has spawned ten of them still reads "(1)".
    *
    * A lineage group is filed **whole**, so a group pinned through a child
-   * counts its top-level chat under "Pinned"; the count follows the filing, so
-   * it always matches the rows the section actually holds. Recent counts by
-   * the same rule, so every header answers the same question.
+   * counts once under "Pinned"; the count follows the filing, so it always
+   * matches the rows the section actually holds. Recent counts by the same
+   * rule, so every header answers the same question.
    */
   count: number;
 }
@@ -58,10 +54,8 @@ export function isChatPinned(chat: Pick<Chat, "metadata">): boolean {
 export function sectionByPinned<T>(
   items: readonly T[],
   isPinned: (item: T) => boolean,
-  /** Chats one item counts for in its section header; see `ChatSection.count`. */
-  countOf: (item: T) => number = () => 1,
 ): ChatSection<T>[] | null {
-  return sectionChatRows(items, { isPinned, countOf });
+  return sectionChatRows(items, { isPinned });
 }
 
 /** Folder names in display order: case-insensitive, then exact, so the order is total and stable. */
@@ -107,13 +101,10 @@ export function sectionChatRows<T>(
   {
     isPinned,
     folderOf = () => undefined,
-    countOf = () => 1,
   }: {
     isPinned: (item: T) => boolean;
     /** The sidebar folder an item is filed in, or undefined. Asked only of unpinned items. */
     folderOf?: (item: T) => string | undefined;
-    /** Chats one item counts for in its section header; see `ChatSection.count`. */
-    countOf?: (item: T) => number;
   },
 ): ChatSection<T>[] | null {
   const pinned: T[] = [];
@@ -135,13 +126,12 @@ export function sectionChatRows<T>(
   }
   if (pinned.length === 0 && byFolder.size === 0) return null;
 
-  const total = (bucket: T[]) => bucket.reduce((sum, item) => sum + countOf(item), 0);
   const sections: ChatSection<T>[] = [];
-  if (pinned.length > 0) sections.push({ key: "pinned", label: "Pinned", items: pinned, count: total(pinned) });
+  if (pinned.length > 0) sections.push({ key: "pinned", label: "Pinned", items: pinned, count: pinned.length });
   for (const folder of [...byFolder.keys()].sort(compareSidebarFolders)) {
     const bucket = byFolder.get(folder)!;
-    sections.push({ key: `folder:${folder}`, label: folder, items: bucket, count: total(bucket) });
+    sections.push({ key: `folder:${folder}`, label: folder, items: bucket, count: bucket.length });
   }
-  if (recent.length > 0) sections.push({ key: "recent", label: "Recent", items: recent, count: total(recent) });
+  if (recent.length > 0) sections.push({ key: "recent", label: "Recent", items: recent, count: recent.length });
   return sections;
 }

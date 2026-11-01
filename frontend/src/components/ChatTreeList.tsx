@@ -182,7 +182,11 @@ export interface RowActivity {
   chatStatusEmoji?: string;
 }
 
-/** One visible entry: a lone chat, or a lineage group fronted by `chat`. */
+/**
+ * One visible entry: a lone chat, or a lineage group fronted by `chat`. One
+ * row is one thread, and counts as one in its section header — child chats
+ * are never counted (see `ChatSection.count`).
+ */
 export interface Row {
   chat: Chat;
   rootKey: string;
@@ -205,28 +209,6 @@ export interface Row {
   members: Chat[];
   /** What the row reports about live work anywhere in `members`. */
   activity: RowActivity;
-  /**
-   * Top-level chats this row stands for — what the section headers count.
-   * Children are not counted: a subagent or fork is part of its parent's
-   * thread, and a header reading "(12)" over three rows says more about how
-   * busy one thread got than about what is filed there.
-   *
-   * "Top-level" is a member with no parent pointer of either spelling
-   * (`parentChatId`/`forkedFrom`), counted rather than assumed to be 1. A
-   * group usually holds exactly one, but a chat detached from its tree by
-   * hand keeps its stamped `rootChatId` and so still folds into the old
-   * group's row, which then fronts two real top-level chats.
-   *
-   * Floored at 1: a row whose root is not loaded (filtered out, or deleted
-   * and its children orphaned) holds no parentless member, yet still stands
-   * for one thread on screen — counting it 0 would let a section read
-   * "PINNED (0)" over a row.
-   *
-   * Counted over the chats the list LOADED, not "chats visible under this
-   * row": expanding a group renders `trees[rootKey]`, the server's tree with
-   * no client filter applied, and the header must not jump on every expand.
-   */
-  topLevelCount: number;
   /**
    * The loaded chats in this row's group that carry the pin — `[chat]` or `[]`
    * for a lone row, and for a group row every pinned member, not just the one
@@ -290,12 +272,6 @@ const NO_PINNED_MEMBERS: Chat[] = [];
 
 /** Defense cap against corrupt parent-pointer chains (mirrors the server). */
 const MAX_LINEAGE_DEPTH = 50;
-
-/** No parent pointer of either spelling — a thread's own root, not a child of one. See `Row.topLevelCount`. */
-function isTopLevel(chat: Chat): boolean {
-  const meta = chatMeta(chat);
-  return !meta.parentChatId && !meta.forkedFrom;
-}
 
 /**
  * Resolve a chat's lineage group key by walking parent pointers through the
@@ -418,7 +394,6 @@ export function buildRows(chats: Chat[]): Row[] {
       isGroup,
       members,
       activity: rollUpActivity(members),
-      topLevelCount: Math.max(1, members.filter(isTopLevel).length),
       pinnedMembers: groupPinned.get(rootKey) ?? NO_PINNED_MEMBERS,
       canFile,
       sidebarFolder: canFile ? readSidebarFolder(frontMeta) : undefined,
@@ -430,7 +405,7 @@ export function buildRows(chats: Chat[]): Row[] {
 /**
  * The sidebar's sections over `rows`: Pinned, folders, Recent — or `null` for
  * the flat, headerless list. Each row is filed once: pinned if any member is,
- * otherwise by its root's folder.
+ * otherwise by its root's folder. Each row counts once in its header.
  *
  * Exported for the same reason {@link buildRows} is: ChatList's shift+click
  * ranges must walk the order this component RENDERS, and the only way to keep
@@ -440,7 +415,6 @@ export function sectionRows(rows: Row[]): ChatSection<Row>[] | null {
   return sectionChatRows(rows, {
     isPinned: (row) => row.pinnedMembers.length > 0,
     folderOf: (row) => row.sidebarFolder,
-    countOf: (row) => row.topLevelCount,
   });
 }
 

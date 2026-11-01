@@ -475,7 +475,6 @@ describe("ChatTreeList group identity", () => {
     // itself on both counts.
     const [row] = buildRows([makeChat("s", { rootChatId: "s" })]);
     expect(row.isGroup).toBe(true);
-    expect(row.topLevelCount).toBe(1);
     expect(row.chat.id).toBe("s");
     expect(row.members.map((c) => c.id)).toEqual(["s"]);
 
@@ -710,32 +709,6 @@ describe("buildRows activity roll-up", () => {
     const rows = buildRows([child("child-2"), child("child-1", {}, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT), makeChat("solo", {}, ROOT_AT)]);
     expect(rows[0].members.map((c) => c.id)).toEqual(["child-2", "child-1", "root"]);
     expect(rows[1].members.map((c) => c.id)).toEqual(["solo"]);
-  });
-
-  it("counts a group as its top-level chats, not its members", () => {
-    // Root + two children: one thread, one top-level chat.
-    const rows = buildRows([child("child-2"), child("child-1", {}, "2026-08-01T16:30:00Z"), makeChat("root", {}, ROOT_AT), makeChat("solo", {}, ROOT_AT)]);
-    expect(rows.map((r) => [r.rootKey, r.members.length, r.topLevelCount])).toEqual([
-      ["root", 3, 1],
-      ["solo", 1, 1],
-    ]);
-  });
-
-  it("counts every parentless member a group holds, and floors a rootless group at 1", () => {
-    const rows = buildRows([
-      // Detached by hand: no parent pointer, but the stale stamped rootChatId
-      // still folds it into root's group — a second real top-level chat.
-      makeChat("detached", { rootChatId: "root" }, ROOT_AT),
-      makeChat("root", {}, ROOT_AT),
-      child("kid"),
-      // Root not loaded: no parentless member, but still one thread on screen.
-      makeChat("stray", { parentChatId: "gone", rootChatId: "gone" }, ROOT_AT),
-      makeChat("stray-2", { forkedFrom: "stray" }, ROOT_AT),
-    ]);
-    expect(rows.map((r) => [r.rootKey, r.members.length, r.topLevelCount])).toEqual([
-      ["root", 3, 2],
-      ["gone", 2, 1],
-    ]);
   });
 });
 
@@ -1109,12 +1082,15 @@ describe("sidebar folders", () => {
     expect(sectionHeaders()).toEqual(["Pinned (1)", "home (1)", "Work (1)", "Recent (1)"]);
   });
 
-  it("does not count children in Pinned, folder or Recent headers", () => {
+  it("counts one per thread in Pinned, folder and Recent headers — never the children", () => {
     renderFolders([
       makeChat("pin-kid", { parentChatId: "pinned-root", rootChatId: "pinned-root", pinned: true }),
       makeChat("pinned-root"),
       makeChat("work-kid-1", { parentChatId: "work-root", rootChatId: "work-root" }),
       makeChat("work-kid-2", { parentChatId: "work-kid-1", rootChatId: "work-root" }),
+      // Detached by hand: no parent, but its stale stamped root still folds it
+      // into work-root's row — one card on the Board, so one here too.
+      makeChat("work-detached", { rootChatId: "work-root" }),
       makeChat("work-root", { sidebarFolder: "Work" }),
       makeChat("work-lone", { sidebarFolder: "Work" }),
       makeChat("recent-kid", { parentChatId: "recent-root", rootChatId: "recent-root" }),
